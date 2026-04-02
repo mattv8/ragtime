@@ -8,6 +8,7 @@
 const targetUrl = process.argv[1];
 const timeoutMs = Number(process.argv[2] || 15000);
 const waitAfterLoadMs = Number(process.argv[3] || 2000);
+const injectMockContext = process.argv[4] === 'true';
 
 let playwright;
 try {
@@ -85,6 +86,35 @@ async function run() {
         page.on('pageerror', (err) => {
             consoleErrors.push(String(err).slice(0, 300));
         });
+
+        // When injectMockContext is enabled, provide a stub
+        // window.__ragtime_context so that dashboards relying on live data
+        // (context.components[id].execute()) still exercise their rendering
+        // code paths.  Without this, data-dependent code never runs during the
+        // probe and runtime errors in render logic go undetected.
+        if (injectMockContext) {
+            await page.addInitScript(() => {
+                window.__ragtime_context = Object.freeze({
+                    components: Object.freeze(new Proxy({}, {
+                        get: function (_, prop) {
+                            if (typeof prop !== 'string') return undefined;
+                            return Object.freeze({
+                                component_id: prop,
+                                execute: function () {
+                                    return Promise.resolve({
+                                        rows: [],
+                                        columns: [],
+                                        row_count: 0,
+                                    });
+                                },
+                            });
+                        },
+                        has: function () { return true; },
+                    })),
+                });
+                if (!window.context) window.context = window.__ragtime_context;
+            });
+        }
 
         const initialResponse = await page.goto(targetUrl, {
             waitUntil: 'domcontentloaded',

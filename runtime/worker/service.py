@@ -1619,6 +1619,8 @@ class WorkerService:
 
         node_env = {**os.environ, "NODE_PATH": "/usr/local/lib/node_modules"}
 
+        inject_mock_flag = "true" if getattr(payload, "inject_mock_context", False) else "false"
+
         process = await asyncio.create_subprocess_exec(
             node_binary,
             "-e",
@@ -1626,6 +1628,7 @@ class WorkerService:
             upstream_url,
             str(payload.timeout_ms),
             str(payload.wait_after_load_ms),
+            inject_mock_flag,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=node_env,

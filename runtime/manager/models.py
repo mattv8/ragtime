@@ -147,6 +147,10 @@ class RuntimeContentProbeRequest(BaseModel):
         default=2000,
         description="Post-load settle wait for JS rendering",
     )
+    inject_mock_context: bool = Field(
+        default=False,
+        description="Inject a mock window.__ragtime_context so live-data rendering code paths execute during probe",
+    )
 
 
 class RuntimeContentProbeResponse(BaseModel):

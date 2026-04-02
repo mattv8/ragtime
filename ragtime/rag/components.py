@@ -631,6 +631,73 @@ def validate_userspace_runtime_contract(content: str, file_path: str) -> list[st
     return violations
 
 
+def normalize_runtime_console_errors(console_errors: Any) -> list[str]:
+    """Normalize browser console/page errors returned by runtime probes."""
+    if not isinstance(console_errors, list):
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in console_errors:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def is_serious_runtime_console_error(message: str) -> bool:
+    """Return True for console errors that indicate runtime execution failure."""
+    lowered = (message or "").strip().lower()
+    if not lowered:
+        return False
+
+    serious_markers = (
+        "typeerror",
+        "referenceerror",
+        "syntaxerror",
+        "uncaught",
+        "unhandled",
+        "is not a function",
+        "cannot read properties",
+        "failed to resolve module specifier",
+        "does not provide an export named",
+        "cannot use import statement outside a module",
+    )
+    return any(marker in lowered for marker in serious_markers)
+
+
+def explain_runtime_console_error(message: str) -> str:
+    """Provide a targeted remediation hint for common runtime probe failures."""
+    lowered = (message or "").strip().lower()
+    if not lowered:
+        return ""
+
+    if "getcontext" in lowered and "is not a function" in lowered:
+        return (
+            "This usually means the DOM lookup returned a non-canvas element. "
+            "Create a real <canvas> node and call getContext() on that canvas, "
+            "not on the container div."
+        )
+    if "cannot read properties" in lowered and "null" in lowered:
+        return (
+            "This usually means a selector lookup returned null. Verify the "
+            "target element exists before using it and keep IDs/selectors in sync."
+        )
+    if "failed to resolve module specifier" in lowered:
+        return (
+            "Use workspace-local import paths only and ensure the served bundle "
+            "uses browser-resolvable module specifiers."
+        )
+    if "does not provide an export named" in lowered:
+        return (
+            "The imported module/export shape does not match the code. Verify the "
+            "export name and the bundle format served by the runtime."
+        )
+    return ""
+
+
 async def validate_live_data_binding(
     content: str,
     file_path: str,
@@ -2526,7 +2593,9 @@ class RAGComponents:
                 num_steps = len(intermediate_steps)
 
                 if window_size <= 0 or num_steps <= window_size:
-                    result = format_to_tool_messages(intermediate_steps)
+                    result = self._format_intermediate_steps_for_agent(
+                        intermediate_steps
+                    )
                     if num_steps > 0:
                         total_chars = sum(len(str(m.content)) for m in result)
                         logger.debug(
@@ -2535,46 +2604,45 @@ class RAGComponents:
                         )
                     return result
 
-                # Format all steps first
-                all_msgs = format_to_tool_messages(intermediate_steps)
-                full_chars = sum(len(str(m.content)) for m in all_msgs)
+                full_chars = sum(
+                    len(str(m.content))
+                    for m in self._format_intermediate_steps_for_agent(
+                        intermediate_steps
+                    )
+                )
 
-                # Compress old tool results (messages beyond recent window)
-                # Each step produces 2 messages: AIMessage + ToolMessage
-                # So window_size steps = window_size * 2 messages from the end
-                recent_msg_count = window_size * 2
-                old_msg_count = len(all_msgs) - recent_msg_count
+                old_steps = intermediate_steps[:-window_size]
+                recent_steps = intermediate_steps[-window_size:]
 
-                if old_msg_count > 0:
-                    compressed_msgs = []
-                    for i, msg in enumerate(all_msgs):
-                        if i < old_msg_count and isinstance(msg, ToolMessage):
-                            # Compress old tool results to brief summary
+                compressed_msgs: list[BaseMessage] = []
+                for step in old_steps:
+                    for msg in format_to_tool_messages([step]):
+                        if isinstance(msg, ToolMessage):
                             content = str(msg.content)
                             if len(content) > 200:
-                                summary = content[:150] + "... [truncated]"
-                            else:
-                                summary = content
-                            # Preserve tool_call_id for Anthropic pairing
+                                content = content[:150] + "... [truncated]"
                             compressed_msgs.append(
                                 ToolMessage(
-                                    content=summary,
+                                    content=content,
                                     tool_call_id=msg.tool_call_id,
                                 )
                             )
                         else:
                             compressed_msgs.append(msg)
-                    all_msgs = compressed_msgs
+
+                all_msgs = compressed_msgs + self._format_intermediate_steps_for_agent(
+                    recent_steps
+                )
 
                 compressed_chars = sum(len(str(m.content)) for m in all_msgs)
                 reduction = (
                     100 * (1 - compressed_chars / full_chars) if full_chars > 0 else 0
                 )
 
-                if old_msg_count > 0:
+                if old_steps:
                     logger.info(
                         f"Scratchpad compression: {num_steps} steps | "
-                        f"{old_msg_count // 2} old results compressed | "
+                        f"{len(old_steps)} old results compressed | "
                         f"{full_chars:,} -> {compressed_chars:,} chars ({reduction:.1f}% reduction)"
                     )
 
@@ -2586,7 +2654,7 @@ class RAGComponents:
         message_formatter = (
             create_windowed_formatter(scratchpad_window_size)
             if scratchpad_window_size > 0
-            else None  # Use default formatter when disabled
+            else self._format_intermediate_steps_for_agent
         )
 
         if scratchpad_window_size > 0:
@@ -2611,7 +2679,7 @@ class RAGComponents:
                 self.llm,
                 tools,
                 prompt,
-                message_formatter=message_formatter or format_to_tool_messages,
+                message_formatter=message_formatter,
             )
             self.agent_executor = AgentExecutor(
                 agent=agent,
@@ -2644,7 +2712,7 @@ class RAGComponents:
                 self.llm,
                 ui_tools,
                 prompt_ui,
-                message_formatter=message_formatter or format_to_tool_messages,
+                message_formatter=message_formatter,
             )
             self.agent_executor_ui = AgentExecutor(
                 agent=agent_ui,
@@ -4926,6 +4994,142 @@ except Exception as e:
                 return True
 
         return False
+
+    def _build_local_image_data_url(self, file_path: str) -> str | None:
+        """Load a local image file and convert it to a downsampled data URL."""
+        raw_path = (file_path or "").strip()
+        if not raw_path:
+            return None
+
+        try:
+            resolved_path = Path(raw_path).resolve()
+        except Exception:
+            logger.debug("Ignoring unreadable image path for tool context: %s", raw_path)
+            return None
+
+        try:
+            data_root = Path(settings.index_data_path).resolve()
+            resolved_path.relative_to(data_root)
+        except Exception:
+            logger.debug(
+                "Ignoring out-of-bounds image path for tool context: %s",
+                resolved_path,
+            )
+            return None
+
+        if not resolved_path.exists() or not resolved_path.is_file():
+            return None
+
+        suffix = resolved_path.suffix.lower()
+        content_type = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+            ".gif": "image/gif",
+        }.get(suffix)
+        if not content_type:
+            return None
+
+        try:
+            encoded = base64.b64encode(resolved_path.read_bytes()).decode("ascii")
+        except Exception:
+            logger.exception(
+                "Failed reading local image for tool context: %s",
+                resolved_path,
+            )
+            return None
+
+        data_url = f"data:{content_type};base64,{encoded}"
+        return self._downsample_image_data_url(data_url)
+
+    def _build_screenshot_reference_content(
+        self, observation: Any
+    ) -> list[dict[str, Any]] | None:
+        """Attach the latest userspace screenshot as multimodal tool context."""
+        raw = observation if isinstance(observation, str) else str(observation or "")
+        if not raw:
+            return None
+
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        image_data_url = self._build_local_image_data_url(
+            str(payload.get("screenshot_path") or "")
+        )
+        if not image_data_url:
+            return None
+
+        preview_path = str(payload.get("preview_path") or "").strip() or "/"
+        return [
+            {
+                "type": "text",
+                "text": (
+                    "Reference image from the latest capture_userspace_screenshot "
+                    f"tool result for path '{preview_path}'. Use this image when "
+                    "describing what was actually captured."
+                ),
+            },
+            {
+                "type": "image_url",
+                "image_url": {"url": image_data_url},
+            },
+        ]
+
+    def _format_intermediate_steps_for_agent(
+        self,
+        intermediate_steps: list[Any],
+        *,
+        include_latest_screenshot_image: bool = True,
+    ) -> list[BaseMessage]:
+        """Format agent scratchpad steps and preserve the latest screenshot visually."""
+        if not intermediate_steps:
+            return []
+
+        latest_screenshot_index: int | None = None
+        if include_latest_screenshot_image:
+            for idx, step in enumerate(intermediate_steps):
+                action = step[0] if isinstance(step, tuple) and step else None
+                if getattr(action, "tool", "") == "capture_userspace_screenshot":
+                    latest_screenshot_index = idx
+
+        formatted_messages: list[BaseMessage] = []
+        for idx, step in enumerate(intermediate_steps):
+            step_messages = format_to_tool_messages([step])
+            if idx == latest_screenshot_index:
+                observation = (
+                    step[1] if isinstance(step, tuple) and len(step) > 1 else None
+                )
+                reference_content = self._build_screenshot_reference_content(
+                    observation
+                )
+                if reference_content is not None:
+                    augmented_messages: list[BaseMessage] = []
+                    for msg in step_messages:
+                        if isinstance(msg, ToolMessage):
+                            tool_text = str(msg.content or "").strip()
+                            content: list[dict[str, Any]] = []
+                            if tool_text:
+                                content.append({"type": "text", "text": tool_text})
+                            content.extend(reference_content)
+                            augmented_messages.append(
+                                ToolMessage(
+                                    content=content,
+                                    tool_call_id=msg.tool_call_id,
+                                )
+                            )
+                        else:
+                            augmented_messages.append(msg)
+                    step_messages = augmented_messages
+
+            formatted_messages.extend(step_messages)
+
+        return formatted_messages
 
     def _extract_text_from_message(self, message: Any) -> str:
         """
@@ -7685,6 +7889,17 @@ except Exception as e:
                         else:
                             # Run a Playwright content probe to detect white
                             # screens (JS fails to render any visible content).
+                            # When the workspace has selected tools, inject a
+                            # mock window.__ragtime_context so data-dependent
+                            # rendering code (charts, tables) actually executes
+                            # during the probe — exposing runtime DOM errors
+                            # that would otherwise be hidden behind a "loading"
+                            # placeholder that never resolves.
+                            workspace_has_tools = bool(
+                                live_data_contract_context.get(
+                                    "workspace_has_selected_tools"
+                                )
+                            )
                             try:
                                 probe_result = await userspace_runtime_service.probe_workspace_content(
                                     workspace_id,
@@ -7692,15 +7907,42 @@ except Exception as e:
                                     path="",
                                     timeout_ms=15000,
                                     wait_after_load_ms=2000,
+                                    inject_mock_context=workspace_has_tools,
                                 )
                                 runtime_probe["content_probe"] = probe_result
                                 body_text_length = int(
                                     probe_result.get("body_text_length", 0)
                                 )
-                                console_errors = probe_result.get("console_errors", [])
+                                console_errors = normalize_runtime_console_errors(
+                                    probe_result.get("console_errors", [])
+                                )
                                 has_error_indicator = bool(
                                     probe_result.get("has_error_indicator", False)
                                 )
+                                runtime_probe["console_error_count"] = len(
+                                    console_errors
+                                )
+                                if console_errors:
+                                    runtime_probe["console_errors"] = console_errors[:5]
+
+                                serious_console_errors = [
+                                    error
+                                    for error in console_errors
+                                    if is_serious_runtime_console_error(error)
+                                ]
+                                if serious_console_errors:
+                                    sample_error = serious_console_errors[0][:220]
+                                    guidance = explain_runtime_console_error(
+                                        serious_console_errors[0]
+                                    )
+                                    detail_suffix = (
+                                        f" {guidance}" if guidance else ""
+                                    )
+                                    add_runtime_error(
+                                        "Runtime validation failed: browser console "
+                                        "reported a JavaScript exception during preview. "
+                                        f"Example: {sample_error}.{detail_suffix}"
+                                    )
 
                                 if body_text_length == 0:
                                     runtime_probe["blank_screen_detected"] = True
@@ -8471,7 +8713,7 @@ except Exception as e:
             runtime_llm,
             tools,
             prompt,
-            message_formatter=format_to_tool_messages,
+            message_formatter=self._format_intermediate_steps_for_agent,
         )
 
         max_iterations = 15

@@ -2061,6 +2061,7 @@ class UserSpaceRuntimeService:
         path: str = "",
         timeout_ms: int = 15000,
         wait_after_load_ms: int = 2000,
+        inject_mock_context: bool = False,
     ) -> dict[str, Any]:
         """Run a lightweight Playwright content probe against the preview."""
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
@@ -2069,6 +2070,7 @@ class UserSpaceRuntimeService:
             "path": str(path or ""),
             "timeout_ms": int(timeout_ms),
             "wait_after_load_ms": int(wait_after_load_ms),
+            "inject_mock_context": bool(inject_mock_context),
         }
         return await self._runtime_provider_content_probe(
             session.provider_session_id,
