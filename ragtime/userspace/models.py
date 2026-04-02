@@ -443,6 +443,10 @@ class UserspaceMountSource(BaseModel):
     tool_name: str | None = None
     connection_config: dict[str, Any] = Field(default_factory=dict)
     approved_paths: list[str] = Field(default_factory=list)
+    sync_interval_seconds: int | None = Field(
+        default=30,
+        description="Polling interval in seconds for auto-sync (1 to 2592000)",
+    )
     usage_count: int = 0
     created_at: datetime
     updated_at: datetime
@@ -461,6 +465,12 @@ class CreateUserspaceMountSourceRequest(BaseModel):
     )
     connection_config: dict[str, Any] = Field(default_factory=dict)
     approved_paths: list[str] = Field(default_factory=list)
+    sync_interval_seconds: int | None = Field(
+        default=30,
+        ge=1,
+        le=2592000,
+        description="Polling interval in seconds for auto-sync (1s to ~1 month)",
+    )
 
 
 class UpdateUserspaceMountSourceRequest(BaseModel):
@@ -469,6 +479,12 @@ class UpdateUserspaceMountSourceRequest(BaseModel):
     enabled: bool | None = None
     connection_config: dict[str, Any] | None = None
     approved_paths: list[str] | None = None
+    sync_interval_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        le=2592000,
+        description="Polling interval in seconds for auto-sync (1s to ~1 month)",
+    )
 
 
 class BrowseUserspaceMountSourceRequest(BaseModel):
@@ -507,6 +523,8 @@ class WorkspaceMount(BaseModel):
     enabled: bool = True
     sync_deletes: bool = False
     sync_status: MountSyncStatus = "pending"
+    sync_backend: str | None = None
+    sync_notice: str | None = None
     last_sync_at: datetime | None = None
     last_sync_error: str | None = None
     auto_sync_enabled: bool = False
@@ -601,4 +619,6 @@ class WorkspaceMountSyncResponse(BaseModel):
     mount_id: str
     sync_status: MountSyncStatus
     files_synced: int = 0
+    sync_backend: str | None = None
+    sync_notice: str | None = None
     last_sync_error: str | None = None

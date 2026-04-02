@@ -9,15 +9,19 @@ Supports:
 
 import io
 import os as _os
+import shlex
 import shutil
 import socket
 import stat
+import subprocess
+import tempfile
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path as _Path
+from pathlib import PurePosixPath
 from typing import Optional
 
 import paramiko
@@ -630,6 +634,434 @@ class SSHSyncResult:
     files_synced: int
     errors: list[str]
     success: bool
+    backend_used: str = "rsync"
+    notice: str | None = None
+
+
+def _remote_join(root: str, relative_path: str) -> str:
+    normalized_root = root.rstrip("/") or "/"
+    if not relative_path:
+        return normalized_root
+    relative = relative_path.strip("/")
+    return f"{normalized_root}/{relative}" if normalized_root != "/" else f"/{relative}"
+
+
+def _scan_remote_tree(
+    sftp: paramiko.SFTPClient,
+    remote_root: str,
+    *,
+    max_files: int,
+    max_file_size_bytes: int,
+) -> tuple[dict[str, tuple[int, int]], set[str], list[str]]:
+    """Collect remote file metadata relative to *remote_root*."""
+    errors: list[str] = []
+    files: dict[str, tuple[int, int]] = {}
+    directories: set[str] = {""}
+    queue: deque[tuple[str, str]] = deque([(_remote_join(remote_root, ""), "")])
+
+    while queue and len(files) < max_files:
+        current_remote_dir, current_relative_dir = queue.popleft()
+        try:
+            entries = sftp.listdir_attr(current_remote_dir)
+        except Exception as exc:
+            errors.append(f"listdir {current_remote_dir}: {exc}")
+            continue
+
+        for entry in entries:
+            if entry.filename in (".", ".."):
+                continue
+            child_relative = (
+                entry.filename
+                if not current_relative_dir
+                else f"{current_relative_dir}/{entry.filename}"
+            )
+            child_remote = _remote_join(remote_root, child_relative)
+            mode = entry.st_mode or 0
+            if stat.S_ISDIR(mode):
+                directories.add(child_relative)
+                queue.append((child_remote, child_relative))
+                continue
+            if not stat.S_ISREG(mode):
+                continue
+            if (entry.st_size or 0) > max_file_size_bytes:
+                continue
+            files[child_relative] = (int(entry.st_size or 0), int(entry.st_mtime or 0))
+            if len(files) >= max_files:
+                break
+
+    return files, directories, errors
+
+
+def _scan_local_tree(
+    local_root: _Path,
+    *,
+    max_files: int,
+    max_file_size_bytes: int,
+) -> tuple[dict[str, tuple[int, int]], set[str], list[str]]:
+    """Collect local file metadata relative to *local_root*."""
+    errors: list[str] = []
+    files: dict[str, tuple[int, int]] = {}
+    directories: set[str] = {""}
+
+    if not local_root.exists():
+        return files, directories, errors
+
+    for root, _dirnames, filenames in _os.walk(str(local_root)):
+        root_path = _Path(root)
+        relative_dir = root_path.relative_to(local_root)
+        relative_dir_str = "" if str(relative_dir) == "." else relative_dir.as_posix()
+        directories.add(relative_dir_str)
+        for filename in filenames:
+            if len(files) >= max_files:
+                return files, directories, errors
+            local_file = root_path / filename
+            relative_file = (
+                filename if not relative_dir_str else f"{relative_dir_str}/{filename}"
+            )
+            try:
+                stat_result = local_file.stat()
+            except Exception as exc:
+                errors.append(f"stat {local_file}: {exc}")
+                continue
+            if stat_result.st_size > max_file_size_bytes:
+                continue
+            files[relative_file] = (
+                int(stat_result.st_size),
+                int(stat_result.st_mtime),
+            )
+
+    return files, directories, errors
+
+
+def _ensure_remote_directory(
+    sftp: paramiko.SFTPClient,
+    remote_root: str,
+    relative_dir: str,
+    created_dirs: set[str],
+) -> None:
+    """Create *relative_dir* and its parents on the remote server if missing."""
+    normalized_relative = relative_dir.strip("/")
+    if normalized_relative in created_dirs:
+        return
+    current = ""
+    for part in PurePosixPath(normalized_relative).parts:
+        current = part if not current else f"{current}/{part}"
+        if current in created_dirs:
+            continue
+        remote_dir = _remote_join(remote_root, current)
+        try:
+            sftp.stat(remote_dir)
+        except IOError:
+            sftp.mkdir(remote_dir)
+        created_dirs.add(current)
+
+
+def _set_local_mtime(path: _Path, mtime_seconds: int) -> None:
+    timestamp = float(max(0, mtime_seconds))
+    _os.utime(path, (timestamp, timestamp))
+
+
+def _set_remote_mtime(
+    sftp: paramiko.SFTPClient,
+    remote_path: str,
+    mtime_seconds: int,
+) -> None:
+    timestamp = int(max(0, mtime_seconds))
+    sftp.utime(remote_path, (timestamp, timestamp))
+
+
+def _download_sftp_file(
+    sftp: paramiko.SFTPClient,
+    remote_root: str,
+    local_root: _Path,
+    relative_path: str,
+    remote_mtime: int,
+) -> None:
+    remote_file = _remote_join(remote_root, relative_path)
+    local_file = local_root / PurePosixPath(relative_path)
+    local_file.parent.mkdir(parents=True, exist_ok=True)
+    sftp.get(remote_file, str(local_file))
+    _set_local_mtime(local_file, remote_mtime)
+
+
+def _upload_sftp_file(
+    sftp: paramiko.SFTPClient,
+    remote_root: str,
+    local_root: _Path,
+    relative_path: str,
+    created_remote_dirs: set[str],
+) -> None:
+    local_file = local_root / PurePosixPath(relative_path)
+    remote_file = _remote_join(remote_root, relative_path)
+    remote_parent = PurePosixPath(relative_path).parent
+    remote_parent_str = "" if str(remote_parent) == "." else remote_parent.as_posix()
+    if remote_parent_str:
+        _ensure_remote_directory(sftp, remote_root, remote_parent_str, created_remote_dirs)
+    sftp.put(str(local_file), remote_file)
+    _set_remote_mtime(sftp, remote_file, int(local_file.stat().st_mtime))
+
+
+def _sync_ssh_directory_merge(
+    sftp: paramiko.SFTPClient,
+    remote_root: str,
+    local_root: _Path,
+    *,
+    max_files: int,
+    max_file_size_bytes: int,
+) -> SSHSyncResult:
+    """Bidirectional merge where newest mtime wins and nothing is deleted."""
+    errors: list[str] = []
+    files_synced = 0
+    remote_files, remote_dirs, remote_errors = _scan_remote_tree(
+        sftp,
+        remote_root,
+        max_files=max_files,
+        max_file_size_bytes=max_file_size_bytes,
+    )
+    local_files, local_dirs, local_errors = _scan_local_tree(
+        local_root,
+        max_files=max_files,
+        max_file_size_bytes=max_file_size_bytes,
+    )
+    errors.extend(remote_errors)
+    errors.extend(local_errors)
+
+    local_root.mkdir(parents=True, exist_ok=True)
+    created_remote_dirs = set(remote_dirs)
+    for relative_dir in sorted(remote_dirs - local_dirs):
+        if relative_dir:
+            (local_root / PurePosixPath(relative_dir)).mkdir(parents=True, exist_ok=True)
+    for relative_dir in sorted(local_dirs - remote_dirs):
+        if relative_dir:
+            try:
+                _ensure_remote_directory(sftp, remote_root, relative_dir, created_remote_dirs)
+            except Exception as exc:
+                errors.append(f"mkdir {relative_dir}: {exc}")
+
+    for relative_path in sorted(set(remote_files) | set(local_files)):
+        remote_meta = remote_files.get(relative_path)
+        local_meta = local_files.get(relative_path)
+        try:
+            if remote_meta is None and local_meta is not None:
+                _upload_sftp_file(
+                    sftp,
+                    remote_root,
+                    local_root,
+                    relative_path,
+                    created_remote_dirs,
+                )
+                files_synced += 1
+                continue
+
+            if local_meta is None and remote_meta is not None:
+                _download_sftp_file(
+                    sftp,
+                    remote_root,
+                    local_root,
+                    relative_path,
+                    remote_meta[1],
+                )
+                files_synced += 1
+                continue
+
+            if remote_meta is None or local_meta is None:
+                continue
+
+            remote_size, remote_mtime = remote_meta
+            local_size, local_mtime = local_meta
+            if remote_mtime > local_mtime:
+                _download_sftp_file(
+                    sftp,
+                    remote_root,
+                    local_root,
+                    relative_path,
+                    remote_mtime,
+                )
+                files_synced += 1
+            elif local_mtime > remote_mtime:
+                _upload_sftp_file(
+                    sftp,
+                    remote_root,
+                    local_root,
+                    relative_path,
+                    created_remote_dirs,
+                )
+                files_synced += 1
+            elif remote_size != local_size:
+                _download_sftp_file(
+                    sftp,
+                    remote_root,
+                    local_root,
+                    relative_path,
+                    remote_mtime,
+                )
+                files_synced += 1
+        except Exception as exc:
+            errors.append(f"sync {relative_path}: {exc}")
+
+    return SSHSyncResult(
+        files_synced=files_synced,
+        errors=errors,
+        success=len(errors) == 0,
+        backend_used="paramiko",
+    )
+
+
+def _sync_ssh_directory_delete(
+    sftp: paramiko.SFTPClient,
+    remote_root: str,
+    local_root: _Path,
+    *,
+    max_files: int,
+    max_file_size_bytes: int,
+) -> SSHSyncResult:
+    """Remote-wins sync that deletes local files absent on the remote."""
+    local_root.parent.mkdir(parents=True, exist_ok=True)
+    temp_root = local_root.parent / (
+        f".{local_root.name}.sync-{_os.getpid()}-{threading.get_ident()}-{int(time.time() * 1000)}"
+    )
+    if temp_root.exists():
+        shutil.rmtree(temp_root, ignore_errors=True)
+    temp_root.mkdir(parents=True, exist_ok=True)
+
+    errors: list[str] = []
+    files_synced = 0
+    try:
+        remote_files, remote_dirs, remote_errors = _scan_remote_tree(
+            sftp,
+            remote_root,
+            max_files=max_files,
+            max_file_size_bytes=max_file_size_bytes,
+        )
+        errors.extend(remote_errors)
+
+        for relative_dir in sorted(remote_dirs):
+            if relative_dir:
+                (temp_root / PurePosixPath(relative_dir)).mkdir(parents=True, exist_ok=True)
+
+        for relative_path, (_size, remote_mtime) in sorted(remote_files.items()):
+            try:
+                _download_sftp_file(
+                    sftp,
+                    remote_root,
+                    temp_root,
+                    relative_path,
+                    remote_mtime,
+                )
+                files_synced += 1
+            except Exception as exc:
+                errors.append(f"get {_remote_join(remote_root, relative_path)}: {exc}")
+
+        if local_root.is_symlink() or local_root.is_file():
+            local_root.unlink(missing_ok=True)
+        elif local_root.exists():
+            shutil.rmtree(local_root)
+        temp_root.replace(local_root)
+    except Exception as exc:
+        errors.append(f"SSH sync error: {exc}")
+    finally:
+        if temp_root.exists():
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    return SSHSyncResult(
+        files_synced=files_synced,
+        errors=errors,
+        success=len(errors) == 0,
+        backend_used="paramiko",
+    )
+
+
+def is_rsync_missing_error(output: str | None) -> bool:
+    """Return True when stderr/stdout clearly shows remote rsync is unavailable."""
+    normalized = (output or "").lower()
+    if not normalized:
+        return False
+    patterns = (
+        "rsync: command not found",
+        "rsync: not found",
+        "bash: rsync: command not found",
+        "sh: 1: rsync: not found",
+        "remote command not found",
+    )
+    return any(pattern in normalized for pattern in patterns)
+
+
+def check_remote_rsync_available(config: SSHConfig) -> tuple[bool | None, str | None]:
+    """Check whether the remote SSH endpoint has an rsync binary available.
+
+    Returns ``(True, None)`` when rsync is available, ``(False, message)`` when
+    the remote explicitly lacks rsync, and ``(None, message)`` when the probe
+    could not be completed because the SSH command itself failed.
+    """
+    config.validate()
+    temp_key_file: str | None = None
+    temp_dir: str | None = None
+    askpass_path: str | None = None
+    ssh_wrapper_path: str | None = None
+
+    try:
+        temp_dir = tempfile.mkdtemp(prefix="ragtime_rsync_probe_")
+
+        if config.key_content:
+            temp_key_file = _os.path.join(temp_dir, "id_rsa")
+            with open(temp_key_file, "w", encoding="utf-8") as fh:
+                fh.write(config.key_content)
+                if not config.key_content.endswith("\n"):
+                    fh.write("\n")
+            _os.chmod(temp_key_file, 0o600)
+
+        ssh_args = _build_rsync_ssh_cmd(config, temp_key_path=temp_key_file)
+        if config.password or config.key_passphrase:
+            askpass_path = _write_rsync_askpass_script(temp_dir)
+        ssh_wrapper_path = _write_rsync_ssh_wrapper(
+            ssh_args,
+            askpass_path=askpass_path,
+            temp_dir=temp_dir,
+        )
+
+        env = _os.environ.copy()
+        if config.password:
+            env["RAGTIME_SSH_PASSWORD"] = config.password
+        if config.key_passphrase:
+            env["RAGTIME_SSH_KEY_PASSPHRASE"] = config.key_passphrase
+
+        remote_command = (
+            'env PATH="$PATH:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" '
+            "sh -lc 'if command -v rsync >/dev/null 2>&1 "
+            "|| [ -x /usr/local/bin/rsync ] "
+            "|| [ -x /usr/bin/rsync ] "
+            "|| [ -x /bin/rsync ]; "
+            "then printf __RAGTIME_RSYNC_AVAILABLE__; "
+            "else printf __RAGTIME_RSYNC_MISSING__; fi'"
+        )
+        proc = subprocess.run(
+            [ssh_wrapper_path, f"{config.user}@{config.host}", remote_command],
+            capture_output=True,
+            text=True,
+            timeout=config.timeout,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+        stdout_data = (proc.stdout or "").strip()
+        stderr_data = _filter_stderr_noise(proc.stderr or "").strip()
+
+        if proc.returncode != 0:
+            error_msg = stderr_data or stdout_data or "Failed to check remote rsync availability"
+            return None, error_msg
+
+        if "__RAGTIME_RSYNC_AVAILABLE__" in stdout_data:
+            return True, None
+        if "__RAGTIME_RSYNC_MISSING__" in stdout_data:
+            return False, "Remote server does not have rsync installed"
+        return None, stdout_data or stderr_data or "Unexpected response while checking remote rsync availability"
+    except subprocess.TimeoutExpired:
+        return None, f"Timed out checking remote rsync availability after {config.timeout}s"
+    except Exception as exc:
+        return None, f"Failed to check remote rsync availability: {exc}"
+    finally:
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def sync_ssh_directory(
@@ -641,109 +1073,323 @@ def sync_ssh_directory(
     max_file_size_bytes: int = 50 * 1024 * 1024,
     sync_deletes: bool = False,
 ) -> SSHSyncResult:
-    """Sync a remote directory to a local path via SFTP.
+    """Sync a remote directory to a local path via Paramiko/SFTP.
 
-    Downloads files from ``remote_path`` into ``local_path`` using Paramiko
-    SFTP.  The sync is best-effort: individual file errors are collected but
-    do not abort the overall operation.
-
-    Args:
-        config: SSH connection configuration.
-        remote_path: Absolute path on the remote host.
-        local_path: Local destination directory (created if missing).
-        max_files: Safety cap on number of files to download.
-        max_file_size_bytes: Skip files larger than this.
-        sync_deletes: When True, local files not present on the remote are
-            deleted (atomic swap).  When False, new/updated files are merged
-            into the existing local tree without removing anything.
-
-    Returns:
-        SSHSyncResult with counts and error list.
+    This is the built-in fallback for SSH mounts when the remote server does
+    not have ``rsync`` installed. It mirrors the userspace rsync semantics:
+    - ``sync_deletes=True``: remote wins and local-only files are deleted
+    - ``sync_deletes=False``: two-way merge where newest mtime wins
     """
     config.validate()
     local_root = _Path(local_path)
-    local_root.parent.mkdir(parents=True, exist_ok=True)
-    temp_root = local_root.parent / (
-        f".{local_root.name}.sync-{_os.getpid()}-{threading.get_ident()}-{int(time.time() * 1000)}"
-    )
-    if temp_root.exists():
-        shutil.rmtree(temp_root, ignore_errors=True)
-    temp_root.mkdir(parents=True, exist_ok=True)
-    errors: list[str] = []
-    files_synced = 0
     client: Optional[paramiko.SSHClient] = None
+    sftp: Optional[paramiko.SFTPClient] = None
 
     try:
         client = _create_ssh_client(config)
         sftp = client.open_sftp()
-
-        # Iterative BFS to avoid deep recursion
-        normalized_remote_root = remote_path.rstrip("/") or "/"
-        queue: deque[tuple[str, _Path]] = deque([(normalized_remote_root, temp_root)])
-        while queue and files_synced < max_files:
-            r_dir, l_dir = queue.popleft()
-            try:
-                entries = sftp.listdir_attr(r_dir)
-            except Exception as exc:
-                errors.append(f"listdir {r_dir}: {exc}")
-                continue
-
-            for entry in entries:
-                if entry.filename in (".", ".."):
-                    continue
-                r_entry = f"{r_dir}/{entry.filename}"
-                l_entry = l_dir / entry.filename
-
-                if stat.S_ISDIR(entry.st_mode or 0):
-                    l_entry.mkdir(parents=True, exist_ok=True)
-                    queue.append((r_entry, l_entry))
-                elif stat.S_ISREG(entry.st_mode or 0):
-                    if (entry.st_size or 0) > max_file_size_bytes:
-                        continue
-                    if files_synced >= max_files:
-                        break
-                    try:
-                        l_entry.parent.mkdir(parents=True, exist_ok=True)
-                        sftp.get(r_entry, str(l_entry))
-                        files_synced += 1
-                    except Exception as exc:
-                        errors.append(f"get {r_entry}: {exc}")
-
-        sftp.close()
-
-        # Finalize: either atomic swap (sync_deletes) or merge into existing.
-        try:
-            if sync_deletes:
-                # Atomic swap: replace entire local tree with the fresh download.
-                if local_root.is_symlink() or local_root.is_file():
-                    local_root.unlink(missing_ok=True)
-                elif local_root.exists():
-                    shutil.rmtree(local_root)
-                temp_root.replace(local_root)
-            else:
-                # Merge mode: copy downloaded files into the existing local tree
-                # without removing files that are absent from the remote.
-                local_root.mkdir(parents=True, exist_ok=True)
-                for root, dirnames, filenames in _os.walk(str(temp_root)):
-                    root_path = _Path(root)
-                    rel = root_path.relative_to(temp_root)
-                    dest_dir = local_root / rel
-                    dest_dir.mkdir(parents=True, exist_ok=True)
-                    for fname in filenames:
-                        src_file = root_path / fname
-                        dst_file = dest_dir / fname
-                        shutil.copy2(str(src_file), str(dst_file))
-        except Exception as exc:
-            errors.append(f"finalize {local_root}: {exc}")
+        result = (
+            _sync_ssh_directory_delete(
+                sftp,
+                remote_path,
+                local_root,
+                max_files=max_files,
+                max_file_size_bytes=max_file_size_bytes,
+            )
+            if sync_deletes
+            else _sync_ssh_directory_merge(
+                sftp,
+                remote_path,
+                local_root,
+                max_files=max_files,
+                max_file_size_bytes=max_file_size_bytes,
+            )
+        )
+        return result
     except paramiko.AuthenticationException as exc:
-        errors.append(f"SSH auth failed: {exc}")
+        return SSHSyncResult(
+            files_synced=0,
+            errors=[f"SSH auth failed: {exc}"],
+            success=False,
+            backend_used="paramiko",
+        )
     except Exception as exc:
-        errors.append(f"SSH sync error: {exc}")
+        return SSHSyncResult(
+            files_synced=0,
+            errors=[f"SSH sync error: {exc}"],
+            success=False,
+            backend_used="paramiko",
+        )
     finally:
+        if sftp:
+            sftp.close()
         if client:
             client.close()
-        if temp_root.exists():
-            shutil.rmtree(temp_root, ignore_errors=True)
+
+
+# =============================================================================
+# Rsync-based SSH file sync
+# =============================================================================
+
+
+def _build_rsync_ssh_cmd(
+    config: SSHConfig,
+    *,
+    temp_key_path: str | None = None,
+) -> list[str]:
+    """Build SSH command arguments for rsync transport.
+
+    This mirrors Ragtime's Paramiko behavior as closely as OpenSSH allows:
+    - password-only auth
+    - key file or key content auth
+    - encrypted keys via key passphrase
+    - key plus password fallback / second factor
+    """
+    parts = [
+        "ssh",
+        "-F",
+        "/dev/null",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+    ]
+    if config.port and config.port != 22:
+        parts.extend(["-p", str(config.port)])
+    key = temp_key_path or config.key_path
+    if key:
+        parts.extend(["-i", key])
+        parts.extend(["-o", "IdentitiesOnly=yes"])
+    if config.timeout:
+        parts.extend(["-o", f"ConnectTimeout={config.timeout}"])
+
+    if key and config.password:
+        parts.extend(
+            [
+                "-o",
+                "PreferredAuthentications=publickey,keyboard-interactive,password",
+                "-o",
+                "PasswordAuthentication=yes",
+                "-o",
+                "KbdInteractiveAuthentication=yes",
+                "-o",
+                "NumberOfPasswordPrompts=3",
+            ]
+        )
+    elif key:
+        parts.extend(
+            [
+                "-o",
+                "PreferredAuthentications=publickey",
+                "-o",
+                "PasswordAuthentication=no",
+                "-o",
+                "KbdInteractiveAuthentication=no",
+            ]
+        )
+    else:
+        parts.extend(
+            [
+                "-o",
+                "PreferredAuthentications=keyboard-interactive,password",
+                "-o",
+                "PubkeyAuthentication=no",
+                "-o",
+                "PasswordAuthentication=yes",
+                "-o",
+                "KbdInteractiveAuthentication=yes",
+                "-o",
+                "NumberOfPasswordPrompts=3",
+            ]
+        )
+
+    return parts
+
+
+def _write_rsync_askpass_script(temp_dir: str) -> str:
+    """Create an askpass helper that serves key passphrases and passwords."""
+    script_path = _os.path.join(temp_dir, "ssh-askpass.py")
+    script = """#!/usr/bin/env python3
+import os
+import sys
+
+prompt = " ".join(sys.argv[1:]).lower()
+password = os.environ.get("RAGTIME_SSH_PASSWORD", "")
+passphrase = os.environ.get("RAGTIME_SSH_KEY_PASSPHRASE", "")
+
+if "passphrase" in prompt:
+    value = passphrase
+elif "password" in prompt or "verification code" in prompt:
+    value = password or passphrase
+else:
+    value = passphrase or password
+
+sys.stdout.write(value)
+sys.stdout.write("\\n")
+"""
+    with open(script_path, "w", encoding="utf-8") as handle:
+        handle.write(script)
+    _os.chmod(script_path, 0o700)
+    return script_path
+
+
+def _write_rsync_ssh_wrapper(
+    ssh_args: list[str],
+    *,
+    askpass_path: str | None,
+    temp_dir: str,
+) -> str:
+    """Create a wrapper script for rsync's ``-e`` transport command."""
+    wrapper_path = _os.path.join(temp_dir, "ssh-wrapper.sh")
+    quoted_ssh = " ".join(shlex.quote(part) for part in ssh_args)
+    script_lines = ["#!/bin/sh", "set -eu"]
+    if askpass_path:
+        script_lines.extend(
+            [
+                'export DISPLAY="${DISPLAY:-:0}"',
+                f"export SSH_ASKPASS={shlex.quote(askpass_path)}",
+                'export SSH_ASKPASS_REQUIRE="force"',
+            ]
+        )
+    script_lines.append(f'exec {quoted_ssh} "$@" < /dev/null')
+    with open(wrapper_path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(script_lines) + "\n")
+    _os.chmod(wrapper_path, 0o700)
+    return wrapper_path
+
+
+def rsync_ssh_directory(
+    config: SSHConfig,
+    remote_path: str,
+    local_path: str,
+    *,
+    sync_deletes: bool = False,
+    timeout_seconds: int = 300,
+) -> SSHSyncResult:
+    """Sync a remote directory to a local path using the ``rsync`` binary over SSH.
+
+    When *sync_deletes* is True a single rsync pass with ``--delete`` is
+    executed (remote wins, local-only files are removed).
+
+    When *sync_deletes* is False two rsync passes run:
+      1. remote -> local  (merge, no delete — picks up remote changes)
+      2. local  -> remote (merge, no delete, ``--update`` — pushes local-only
+         or newer-mtime local files back to the remote)
+    This implements "newest mtime wins" bidirectional merge.
+
+    Returns:
+        SSHSyncResult with a best-effort ``files_synced`` count.
+    """
+    config.validate()
+    local_root = _Path(local_path)
+    local_root.mkdir(parents=True, exist_ok=True)
+
+    normalized_remote = remote_path.rstrip("/") + "/"
+    remote_spec = f"{config.user}@{config.host}:{normalized_remote}"
+
+    errors: list[str] = []
+    files_synced = 0
+    temp_key_file: str | None = None
+    temp_dir: str | None = None
+    askpass_path: str | None = None
+    ssh_wrapper_path: str | None = None
+
+    try:
+        temp_dir = tempfile.mkdtemp(prefix="ragtime_rsync_")
+
+        # If auth is key_content, write it to a secure temp file.
+        if config.key_content:
+            temp_key_file = _os.path.join(temp_dir, "id_rsa")
+            with open(temp_key_file, "w", encoding="utf-8") as fh:
+                fh.write(config.key_content)
+                if not config.key_content.endswith("\n"):
+                    fh.write("\n")
+            _os.chmod(temp_key_file, 0o600)
+
+        ssh_args = _build_rsync_ssh_cmd(config, temp_key_path=temp_key_file)
+        if config.password or config.key_passphrase:
+            askpass_path = _write_rsync_askpass_script(temp_dir)
+        ssh_wrapper_path = _write_rsync_ssh_wrapper(
+            ssh_args,
+            askpass_path=askpass_path,
+            temp_dir=temp_dir,
+        )
+
+        # Base rsync flags: archive mode, compress, partial (resume),
+        # itemize changes (for counting transferred files).
+        base_flags = [
+            "-az",
+            "--partial",
+            "--itemize-changes",
+            "--timeout=60",
+        ]
+
+        def _run_rsync(args: list[str]) -> tuple[int, str, str]:
+            """Execute rsync with the generated SSH wrapper."""
+            cmd: list[str] = []
+            env = _os.environ.copy()
+            if config.password:
+                env["RAGTIME_SSH_PASSWORD"] = config.password
+            if config.key_passphrase:
+                env["RAGTIME_SSH_KEY_PASSPHRASE"] = config.key_passphrase
+            cmd.append("rsync")
+            cmd.extend(args)
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                env=env,
+                check=False,
+            )
+            return proc.returncode, proc.stdout, proc.stderr
+
+        def _count_transferred(stdout: str) -> int:
+            """Count file transfers from rsync itemize-changes output."""
+            count = 0
+            for line in stdout.splitlines():
+                # Itemized lines start with a change indicator like ">f" (receiving file)
+                # or "<f" (sending file). Directories are "cd" or ".d".
+                stripped = line.strip()
+                if stripped and len(stripped) > 2 and stripped[0] in "><c." and "f" in stripped[:3]:
+                    count += 1
+            return count
+
+        # --- Pass 1: remote -> local ---
+        pull_args = list(base_flags) + ["-e", ssh_wrapper_path or "ssh"]
+        if sync_deletes:
+            pull_args.append("--delete")
+        pull_args.extend([remote_spec, str(local_root) + "/"])
+
+        rc, stdout, stderr = _run_rsync(pull_args)
+        files_synced += _count_transferred(stdout)
+        if rc != 0:
+            # rsync exit code 23 = partial transfer (some files couldn't be read)
+            # rsync exit code 24 = partial transfer (source files vanished)
+            if rc in (23, 24):
+                errors.append(f"rsync pull partial error (exit {rc}): {stderr.strip()[:300]}")
+            else:
+                errors.append(f"rsync pull failed (exit {rc}): {stderr.strip()[:300]}")
+                return SSHSyncResult(files_synced=files_synced, errors=errors, success=False)
+
+        # --- Pass 2: local -> remote (bidirectional merge, only when not deleting) ---
+        if not sync_deletes:
+            push_args = list(base_flags) + ["-e", ssh_wrapper_path or "ssh", "--update"]
+            push_args.extend([str(local_root) + "/", remote_spec])
+            rc2, stdout2, stderr2 = _run_rsync(push_args)
+            files_synced += _count_transferred(stdout2)
+            if rc2 != 0 and rc2 not in (23, 24):
+                errors.append(f"rsync push failed (exit {rc2}): {stderr2.strip()[:300]}")
+
+    except subprocess.TimeoutExpired:
+        errors.append(f"rsync timed out after {timeout_seconds}s")
+    except FileNotFoundError:
+        errors.append("rsync binary not found — ensure rsync is installed in the container")
+    except Exception as exc:
+        errors.append(f"rsync error: {exc}")
+    finally:
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     return SSHSyncResult(
         files_synced=files_synced,

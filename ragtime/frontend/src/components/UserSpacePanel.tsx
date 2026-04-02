@@ -3468,6 +3468,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setCreateMountStagedSourceDirectories({});
       setCreateMountStagedTargetDirectories([]);
       setCreateMountDescription('');
+      setError(created.sync_notice || null);
       if (targetDirectoryToCreate) {
         await loadWorkspaceData(activeWorkspaceId);
       }
@@ -3548,8 +3549,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setSyncingMountId(mountId);
     try {
       const result = await api.syncWorkspaceMount(activeWorkspaceId, mountId);
-      setMounts((prev) => prev.map((m) => m.id === mountId ? { ...m, sync_status: result.sync_status, last_sync_error: result.last_sync_error } : m));
-      setError(null);
+      setMounts((prev) => prev.map((m) => m.id === mountId ? {
+        ...m,
+        sync_status: result.sync_status,
+        sync_backend: result.sync_backend,
+        sync_notice: result.sync_notice,
+        last_sync_error: result.last_sync_error,
+      } : m));
+      setError(result.last_sync_error || result.sync_notice || null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to sync mount');
     } finally {
@@ -3575,6 +3582,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const handleToggleMountSyncDeletes = useCallback(async (mountId: string, enabled: boolean) => {
     if (!activeWorkspaceId || !isOwner) return;
+    // When enabling sync-deletes, require explicit confirmation because local
+    // files absent on remote will be permanently deleted on next sync.
+    if (enabled) {
+      const confirmed = window.confirm(
+        'Enable sync-deletes?\n\n'
+        + 'When enabled, files in the local mount that do not exist on the remote source '
+        + 'will be permanently deleted on the next sync.\n\n'
+        + 'This cannot be undone. Proceed?'
+      );
+      if (!confirmed) return;
+    }
     setSavingMountWatchId(mountId);
     try {
       const updated = await api.updateWorkspaceMount(activeWorkspaceId, mountId, {
@@ -5496,7 +5514,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             <div className="modal-body">
               <p className="userspace-muted" style={{ marginBottom: 0 }}>
                 Mount remote directories from configured tools into the runtime sandbox.
-                SSH mounts are synced on demand; synced SFTP mounts can then be refreshed into the running sandbox.
+                SSH mounts are synced on demand. Ragtime uses rsync when the remote server has it installed, and automatically falls back to built-in SSH sync otherwise.
               </p>
               <p className="userspace-muted" style={{ marginBottom: 12, fontSize: 12 }}>
                 Mounted targets are runtime overlays. Changes made by a running app inside a mounted folder may not be written directly to workspace files and can appear after a sync/refresh cycle.
@@ -5524,6 +5542,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                               <ArrowRight size={12} className="userspace-mount-path-arrow" />
                               <span className="userspace-mount-target-path">{mount.target_path}</span>
                               <span className="userspace-mount-tool-label">({mount.source_name ?? 'Unknown source'})</span>
+                              {mount.source_type === 'ssh' && mount.sync_backend === 'paramiko' && (
+                                <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }} title="Using built-in SSH sync fallback because remote rsync is unavailable">
+                                  Fallback
+                                </span>
+                              )}
                             </span>
                             <div className="userspace-mount-controls">
                               <span className="userspace-mount-sync-status">
@@ -5552,10 +5575,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                       )}
                                     </button>
                                     <button
-                                      className={`btn btn-sm ${mount.sync_deletes ? 'btn-primary' : 'btn-secondary'}`}
+                                      className={`btn btn-sm ${mount.sync_deletes ? 'btn-danger' : 'btn-secondary'}`}
                                       onClick={() => handleToggleMountSyncDeletes(mount.id, !mount.sync_deletes)}
                                       disabled={savingMountWatchId === mount.id || isEjected}
-                                      title={mount.sync_deletes ? 'Sync-deletes enabled: local files removed from remote will be deleted on sync' : 'Sync-deletes disabled: local files are preserved even if removed from remote'}
+                                      title={mount.sync_deletes ? 'Sync-deletes ENABLED: local files removed from remote will be permanently deleted on sync' : 'Sync-deletes disabled: local files are preserved even if removed from remote (bidirectional merge)'}
                                     >
                                       {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : (
                                         <span className="userspace-mount-toggle-icon">
@@ -5670,6 +5693,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                               </div>
                             )}
                           </div>
+                          {mount.sync_notice && (
+                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
+                              <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                              <span>{mount.sync_notice}</span>
+                            </div>
+                          )}
                         </div>
                       );
                     })}

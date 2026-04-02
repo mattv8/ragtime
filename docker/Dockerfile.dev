@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     openssl \
     openssh-client \
+    rsync \
     nfs-common \
     cifs-utils \
     smbclient \

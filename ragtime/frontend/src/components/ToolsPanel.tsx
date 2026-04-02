@@ -16,6 +16,14 @@ type EditingField = 'name' | 'description' | null;
 // Heartbeat polling interval (15 seconds)
 const HEARTBEAT_INTERVAL = 15000;
 
+function formatMountSourceInterval(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) { const m = Math.floor(seconds / 60); const s = seconds % 60; return s > 0 ? `${m}m ${s}s` : `${m}m`; }
+  if (seconds < 86400) { const h = Math.floor(seconds / 3600); const m = Math.floor((seconds % 3600) / 60); return m > 0 ? `${h}h ${m}m` : `${h}h`; }
+  const d = Math.floor(seconds / 86400); const h = Math.floor((seconds % 86400) / 3600);
+  return h > 0 ? `${d}d ${h}h` : `${d}d`;
+}
+
 interface ToolCardProps {
   tool: ToolConfig;
   heartbeat: HeartbeatStatus | null;
@@ -1214,6 +1222,11 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [] }: ToolsPanel
                     </code>
                   ))}
                 </div>
+              )}
+              {source.source_type === 'ssh' && source.sync_interval_seconds != null && (
+                <span className="muted" style={{ fontSize: '0.75rem' }}>
+                  Sync interval: {formatMountSourceInterval(source.sync_interval_seconds)}
+                </span>
               )}
             </div>
           )) : (

@@ -23,6 +23,7 @@ export type MountSourceDraft = {
   enabled: boolean;
   tool_config_id: string | null;
   approved_paths: string[];
+  sync_interval_seconds: number;
 };
 
 export function createEmptyMountSourceDraft(): MountSourceDraft {
@@ -33,6 +34,7 @@ export function createEmptyMountSourceDraft(): MountSourceDraft {
     enabled: true,
     tool_config_id: null,
     approved_paths: ['.'],
+    sync_interval_seconds: 30,
   };
 }
 
@@ -44,6 +46,7 @@ export function mountSourceToDraft(source: UserspaceMountSource): MountSourceDra
     enabled: source.enabled,
     tool_config_id: source.tool_config_id,
     approved_paths: source.approved_paths.length > 0 ? [...source.approved_paths] : ['.'],
+    sync_interval_seconds: source.sync_interval_seconds ?? 30,
   };
 }
 
@@ -52,6 +55,45 @@ export function mountSourceToDraft(source: UserspaceMountSource): MountSourceDra
 // ---------------------------------------------------------------------------
 
 const MOUNT_TOOL_TYPES: ToolType[] = ['ssh_shell', 'filesystem_indexer'];
+
+// Sync interval slider: exponential scale from 1 second to ~1 month
+const SYNC_INTERVAL_MIN = 1;
+const SYNC_INTERVAL_MAX = 2592000; // 30 days in seconds
+const SYNC_INTERVAL_SCALE = Math.log(SYNC_INTERVAL_MAX / SYNC_INTERVAL_MIN);
+
+function syncIntervalToSlider(seconds: number): number {
+  if (seconds >= SYNC_INTERVAL_MAX) return 100;
+  if (seconds <= SYNC_INTERVAL_MIN) return 0;
+  return Math.max(0, Math.min(100, (Math.log(seconds / SYNC_INTERVAL_MIN) / SYNC_INTERVAL_SCALE) * 100));
+}
+
+function sliderToSyncInterval(slider: number): number {
+  if (slider >= 100) return SYNC_INTERVAL_MAX;
+  if (slider <= 0) return SYNC_INTERVAL_MIN;
+  return Math.round(SYNC_INTERVAL_MIN * Math.exp((slider / 100) * SYNC_INTERVAL_SCALE));
+}
+
+function formatSyncInterval(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return s > 0 ? `${m}m ${s}s` : `${m}m`;
+  }
+  if (seconds < 86400) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  }
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  if (d >= 7 && h === 0) {
+    const w = Math.floor(d / 7);
+    const rd = d % 7;
+    return rd > 0 ? `${w}w ${rd}d` : `${w}w`;
+  }
+  return h > 0 ? `${d}d ${h}h` : `${d}d`;
+}
 
 function isMountTool(tool: ToolConfig): boolean {
   return MOUNT_TOOL_TYPES.includes(tool.tool_type);
@@ -197,6 +239,7 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
   }, [currentStep]);
 
   const selectedTool = tools.find((t) => t.id === draft.tool_config_id) ?? null;
+  const isSSHSource = selectedTool?.tool_type === 'ssh_shell' || existingSource?.source_type === 'ssh';
 
   // Auto-fill name from tool when tool is selected and name is empty/default
   const namesForDedup = useMemo(() => existingNames, [existingNames]);
@@ -339,6 +382,7 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
           description: null,
           enabled: true,
           approved_paths: approvedPaths.length > 0 ? approvedPaths : ['.'],
+          sync_interval_seconds: draft.sync_interval_seconds,
         });
         onSaved(saved);
       } else {
@@ -349,6 +393,7 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
           enabled: true,
           tool_config_id: draft.tool_config_id ?? undefined,
           approved_paths: approvedPaths.length > 0 ? approvedPaths : ['.'],
+          sync_interval_seconds: draft.sync_interval_seconds,
         });
         onSaved(saved);
       }
@@ -509,6 +554,38 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
           </div>
         </div>
       </div>
+
+      {/* Sync interval slider — SSH sources only */}
+      {isSSHSource && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <strong>Auto-Sync Polling Interval</strong>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}>
+              {formatSyncInterval(draft.sync_interval_seconds)}
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span className="muted" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>1s</span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              style={{ flex: 1 }}
+              value={syncIntervalToSlider(draft.sync_interval_seconds)}
+              onChange={(e) => {
+                const val = sliderToSyncInterval(parseInt(e.target.value, 10));
+                setDraft((d) => ({ ...d, sync_interval_seconds: val }));
+              }}
+            />
+            <span className="muted" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>30d</span>
+          </div>
+          <p className="field-help" style={{ marginTop: 4 }}>
+            How often workspaces using this source check for changes when auto-sync is enabled.
+            Lower values increase responsiveness but use more resources. Uses rsync for efficient delta transfers.
+          </p>
+        </div>
+      )}
     </div>
   );
 
@@ -546,6 +623,12 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
               ))}
             </td>
           </tr>
+          {isSSHSource && (
+            <tr>
+              <td className="review-label">Sync Interval</td>
+              <td style={{ fontFamily: 'var(--font-mono)' }}>{formatSyncInterval(draft.sync_interval_seconds)}</td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>

@@ -1721,6 +1721,7 @@ export interface UserspaceMountSource {
   tool_name: string | null;
   connection_config: ConnectionConfig;
   approved_paths: string[];
+  sync_interval_seconds: number | null;
   usage_count: number;
   created_at: string;
   updated_at: string;
@@ -1734,6 +1735,7 @@ export interface CreateUserspaceMountSourceRequest {
   source_type?: UserspaceMountSourceType;
   connection_config?: ConnectionConfig;
   approved_paths?: string[];
+  sync_interval_seconds?: number | null;
 }
 
 export interface UpdateUserspaceMountSourceRequest {
@@ -1742,6 +1744,7 @@ export interface UpdateUserspaceMountSourceRequest {
   enabled?: boolean;
   connection_config?: ConnectionConfig;
   approved_paths?: string[];
+  sync_interval_seconds?: number | null;
 }
 
 export interface MountSourceAffectedWorkspace {
@@ -1769,6 +1772,8 @@ export interface WorkspaceMount {
   enabled: boolean;
   sync_deletes: boolean;
   sync_status: MountSyncStatus;
+  sync_backend: string | null;
+  sync_notice: string | null;
   last_sync_at: string | null;
   last_sync_error: string | null;
   auto_sync_enabled: boolean;
@@ -1839,6 +1844,8 @@ export interface WorkspaceMountSyncResponse {
   mount_id: string;
   sync_status: MountSyncStatus;
   files_synced: number;
+  sync_backend: string | null;
+  sync_notice: string | null;
   last_sync_error: string | null;
 }
 

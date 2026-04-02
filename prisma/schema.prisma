@@ -919,6 +919,7 @@ model UserspaceMountSource {
   toolConfig   ToolConfig? @relation(fields: [toolConfigId], references: [id], onDelete: Restrict)
   connectionConfig Json @map("connection_config")
   approvedPaths Json    @default("[]") @map("approved_paths")
+  syncIntervalSeconds Int? @default(30) @map("sync_interval_seconds")
 
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
@@ -943,6 +944,8 @@ model WorkspaceMount {
   autoSyncEnabled Boolean @default(false) @map("auto_sync_enabled")
   syncDeletes  Boolean  @default(false) @map("sync_deletes")
   syncStatus   String   @default("pending") @map("sync_status") // pending | synced | error
+  syncBackend  String?  @map("sync_backend") // rsync | paramiko
+  syncNotice   String?  @map("sync_notice")
   lastSyncAt   DateTime? @map("last_sync_at")
   lastSyncError String?  @map("last_sync_error")
 

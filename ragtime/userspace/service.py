@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import time as _time
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, TypedDict, cast
 from urllib.parse import quote
@@ -25,88 +26,73 @@ from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
-    USERSPACE_MOUNT_WATCH_JITTER_SECONDS,
-    SSHSyncResult,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    ssh_config_from_dict,
-    ssh_tunnel_config_from_dict,
-    sync_ssh_directory,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
+                              USERSPACE_MOUNT_WATCH_JITTER_SECONDS, SSHTunnel,
+                              build_ssh_tunnel_config,
+                              check_remote_rsync_available,
+                              execute_ssh_command, is_rsync_missing_error,
+                              rsync_ssh_directory, ssh_config_from_dict,
+                              ssh_tunnel_config_from_dict, sync_ssh_directory)
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    ArtifactType,
-    BrowseUserspaceMountSourceRequest,
-    CreateUserspaceMountSourceRequest,
-    CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest,
-    DeleteUserspaceMountSourceResponse,
-    DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    MountableSource,
-    MountSourceAffectedWorkspace,
-    MountSourceAffectedWorkspacesResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
-    UpdateUserspaceMountSourceRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserspaceMountBackend,
-    UserspaceMountSource,
-    UserspaceMountSourceType,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotBranch,
-    UserSpaceSnapshotDiffFileSummary,
-    UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceEnvVar,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceMount,
-    WorkspaceMountBrowseRequest,
-    WorkspaceMountBrowseResponse,
-    WorkspaceMountDirectoryEntry,
-    WorkspaceMountSyncResponse,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (ArtifactType,
+                                      BrowseUserspaceMountSourceRequest,
+                                      CreateUserspaceMountSourceRequest,
+                                      CreateWorkspaceMountRequest,
+                                      CreateWorkspaceRequest,
+                                      DeleteUserspaceMountSourceResponse,
+                                      DeleteWorkspaceEnvVarResponse,
+                                      DeleteWorkspaceMountResponse,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      MountableSource,
+                                      MountSourceAffectedWorkspace,
+                                      MountSourceAffectedWorkspacesResponse,
+                                      PaginatedWorkspacesResponse,
+                                      ShareAccessMode, SqlitePersistenceMode,
+                                      SwitchSnapshotBranchRequest,
+                                      UpdateSnapshotRequest,
+                                      UpdateUserspaceMountSourceRequest,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceMountRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpsertWorkspaceEnvVarRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserspaceMountBackend,
+                                      UserspaceMountSource,
+                                      UserspaceMountSourceType,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot,
+                                      UserSpaceSnapshotBranch,
+                                      UserSpaceSnapshotDiffFileSummary,
+                                      UserSpaceSnapshotDiffSummaryResponse,
+                                      UserSpaceSnapshotFileDiffResponse,
+                                      UserSpaceSnapshotTimelineResponse,
+                                      UserSpaceWorkspace,
+                                      UserSpaceWorkspaceEnvVar,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember, WorkspaceMount,
+                                      WorkspaceMountBrowseRequest,
+                                      WorkspaceMountBrowseResponse,
+                                      WorkspaceMountDirectoryEntry,
+                                      WorkspaceMountSyncResponse,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -826,6 +812,8 @@ def _enforce_sqlite_file_path_policy(relative_path: str) -> None:
 
 
 class UserSpaceService:
+    _SSH_RSYNC_MISSING_RECHECK_SECONDS = 300.0
+
     def __init__(self) -> None:
         self._base_dir = Path(settings.index_data_path) / "_userspace"
         self._workspaces_dir = self._base_dir / "workspaces"
@@ -839,10 +827,15 @@ class UserSpaceService:
         ] = {}
         # Limit concurrent git status requests to avoid overloading process slots.
         self._git_status_semaphore = asyncio.Semaphore(8)
-        # Limit concurrent SSH mount sync jobs; each uses blocking Paramiko I/O.
+        # Limit concurrent mount sync jobs; each runs blocking SSH or rsync work
+        # in a worker thread.
         self._workspace_mount_sync_semaphore = asyncio.Semaphore(
             self._positive_int_env("USERSPACE_MOUNT_SYNC_CONCURRENCY", 2)
         )
+        self._workspace_mount_sync_tasks: dict[
+            str, asyncio.Task[WorkspaceMountSyncResponse]
+        ] = {}
+        self._workspace_mount_sync_tasks_lock = asyncio.Lock()
         self._workspace_mount_watch_interval_seconds = (
             USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS
         )
@@ -853,6 +846,11 @@ class UserSpaceService:
         self._workspace_mount_watch_task_lock = asyncio.Lock()
         self._workspace_mount_watch_inflight: set[str] = set()
         self._workspace_mount_watch_next_due_monotonic: dict[str, float] = {}
+        # Per-endpoint rsync capability state.
+        # True  => rsync was observed working and can be attempted directly.
+        # False => rsync was observed missing; float is the next monotonic time
+        #          when it is worth re-checking remote availability.
+        self._ssh_rsync_capability_cache: dict[str, tuple[bool, float]] = {}
         # Serialize snapshot mutations to keep timeline metadata consistent.
         self._snapshot_operation_semaphore = asyncio.Semaphore(1)
         # Startup drift reconciliation runs in a single background task.
@@ -866,6 +864,107 @@ class UserSpaceService:
         except Exception:
             return default_value
         return parsed if parsed > 0 else default_value
+
+    @staticmethod
+    def _ssh_rsync_capability_cache_key(ssh_config: Any) -> str:
+        return (
+            f"{getattr(ssh_config, 'user', '')}@{getattr(ssh_config, 'host', '')}:"
+            f"{getattr(ssh_config, 'port', 22)}"
+        )
+
+    @staticmethod
+    def _ssh_rsync_fallback_notice() -> str:
+        return (
+            "Remote server does not have rsync installed. Falling back to "
+            "Ragtime's built-in SSH sync for this mount. Sync will still work, "
+            "but large trees may be slower until rsync is installed remotely."
+        )
+
+    def _prune_workspace_mount_sync_task(
+        self,
+        mount_id: str,
+        task: asyncio.Task[WorkspaceMountSyncResponse],
+    ) -> None:
+        if self._workspace_mount_sync_tasks.get(mount_id) is task:
+            self._workspace_mount_sync_tasks.pop(mount_id, None)
+
+    def _attach_workspace_mount_sync_task_cleanup(
+        self,
+        mount_id: str,
+        task: asyncio.Task[WorkspaceMountSyncResponse],
+    ) -> None:
+        task.add_done_callback(partial(self._prune_workspace_mount_sync_task, mount_id))
+
+    def _set_remote_rsync_availability(
+        self,
+        ssh_config: Any,
+        *,
+        available: bool,
+    ) -> None:
+        next_recheck_monotonic = 0.0
+        if not available:
+            next_recheck_monotonic = (
+                _time.monotonic() + self._SSH_RSYNC_MISSING_RECHECK_SECONDS
+            )
+        self._ssh_rsync_capability_cache[
+            self._ssh_rsync_capability_cache_key(ssh_config)
+        ] = (available, next_recheck_monotonic)
+
+    async def _probe_remote_rsync_availability(
+        self,
+        ssh_config: Any,
+    ) -> bool | None:
+        available, _message = await asyncio.to_thread(
+            check_remote_rsync_available,
+            ssh_config,
+        )
+        if available is not None:
+            self._set_remote_rsync_availability(
+                ssh_config,
+                available=available,
+            )
+        return available
+
+    def _remember_remote_rsync_available(
+        self,
+        ssh_config: Any,
+    ) -> None:
+        self._set_remote_rsync_availability(ssh_config, available=True)
+
+    def _remember_remote_rsync_missing(
+        self,
+        ssh_config: Any,
+    ) -> None:
+        self._set_remote_rsync_availability(ssh_config, available=False)
+
+    async def _resolve_ssh_sync_backend(
+        self,
+        ssh_config: Any,
+        *,
+        probe_if_unknown: bool = False,
+    ) -> tuple[str, str | None]:
+        cache_key = self._ssh_rsync_capability_cache_key(ssh_config)
+        cached = self._ssh_rsync_capability_cache.get(cache_key)
+        now_monotonic = _time.monotonic()
+
+        if cached is not None:
+            cached_available, next_recheck_monotonic = cached
+            if cached_available:
+                return "rsync", None
+            if now_monotonic < next_recheck_monotonic:
+                return "paramiko", self._ssh_rsync_fallback_notice()
+
+            rechecked = await self._probe_remote_rsync_availability(ssh_config)
+            if rechecked is False:
+                return "paramiko", self._ssh_rsync_fallback_notice()
+            if rechecked is True:
+                return "rsync", None
+
+        if probe_if_unknown:
+            probed_available = await self._probe_remote_rsync_availability(ssh_config)
+            if probed_available is False:
+                return "paramiko", self._ssh_rsync_fallback_notice()
+        return "rsync", None
 
     def record_execution_proof(
         self,
@@ -1436,14 +1535,19 @@ class UserSpaceService:
             if now_monotonic < due_at:
                 continue
 
-            self._workspace_mount_watch_inflight.add(mount_id)
-            self._workspace_mount_watch_next_due_monotonic[mount_id] = (
-                now_monotonic
-                + self._workspace_mount_watch_interval_seconds
-                + self._workspace_mount_watch_stagger_seconds(mount_id)
+            # Per-source interval from DB, falling back to the global default.
+            source_interval = float(
+                getattr(mount_source, "syncIntervalSeconds", None)
+                or self._workspace_mount_watch_interval_seconds
             )
+
+            self._workspace_mount_watch_inflight.add(mount_id)
+            # Compute the next due time when the run completes so each mount
+            # gets a full cooldown interval after finishing a sync.
             asyncio.create_task(
-                self._run_watched_workspace_mount_sync(workspace_id, mount_id),
+                self._run_watched_workspace_mount_sync(
+                    workspace_id, mount_id, source_interval,
+                ),
                 name=f"userspace-mount-watch-sync:{workspace_id}:{mount_id}",
             )
 
@@ -1458,7 +1562,9 @@ class UserSpaceService:
         self,
         workspace_id: str,
         mount_id: str,
+        source_interval_seconds: float,
     ) -> None:
+        t0 = _time.monotonic()
         try:
             db = await get_db()
             mount = await db.workspacemount.find_first(
@@ -1487,6 +1593,22 @@ class UserSpaceService:
                 exc_info=True,
             )
         finally:
+            elapsed = _time.monotonic() - t0
+            if elapsed > source_interval_seconds:
+                logger.warning(
+                    "Mount %s sync took %.1fs, exceeding configured interval of %.0fs; "
+                    "next sync deferred until cooldown elapses",
+                    mount_id,
+                    elapsed,
+                    source_interval_seconds,
+                )
+            # Schedule from completion so the interval is measured between the
+            # end of one sync and the start of the next.
+            self._workspace_mount_watch_next_due_monotonic[mount_id] = (
+                _time.monotonic()
+                + source_interval_seconds
+                + self._workspace_mount_watch_stagger_seconds(mount_id)
+            )
             self._workspace_mount_watch_inflight.discard(mount_id)
 
     async def _startup_git_drift_reconciliation(self) -> None:
@@ -4251,6 +4373,7 @@ class UserSpaceService:
             tool_name=tool_name or None,
             connection_config=connection_config,
             approved_paths=cls._load_mount_source_approved_paths(record),
+            sync_interval_seconds=getattr(record, "syncIntervalSeconds", 30) or 30,
             usage_count=usage_count,
             created_at=getattr(record, "createdAt"),
             updated_at=getattr(record, "updatedAt"),
@@ -4261,6 +4384,10 @@ class UserSpaceService:
         record: Any,
         mount_source: UserspaceMountSource | None = None,
     ) -> WorkspaceMount:
+        source_type = mount_source.source_type if mount_source else None
+        sync_backend = getattr(record, "syncBackend", None)
+        if source_type == "ssh" and not sync_backend:
+            sync_backend = "rsync"
         return WorkspaceMount(
             id=str(getattr(record, "id", "") or ""),
             workspace_id=str(getattr(record, "workspaceId", "") or ""),
@@ -4271,11 +4398,13 @@ class UserSpaceService:
             enabled=bool(getattr(record, "enabled", True)),
             sync_deletes=bool(getattr(record, "syncDeletes", False)),
             sync_status=str(getattr(record, "syncStatus", "pending") or "pending"),  # type: ignore[arg-type]
+            sync_backend=str(sync_backend) if sync_backend else None,
+            sync_notice=str(getattr(record, "syncNotice", "") or "").strip() or None,
             last_sync_at=getattr(record, "lastSyncAt", None),
             last_sync_error=getattr(record, "lastSyncError", None),
             auto_sync_enabled=bool(getattr(record, "autoSyncEnabled", False)),
             source_name=mount_source.name if mount_source else None,
-            source_type=mount_source.source_type if mount_source else None,
+            source_type=source_type,
             mount_backend=mount_source.mount_backend if mount_source else None,
             created_at=getattr(record, "createdAt"),
             updated_at=getattr(record, "updatedAt"),
@@ -4321,6 +4450,34 @@ class UserSpaceService:
         db: Any,
         mount: Any,
     ) -> WorkspaceMountSyncResponse:
+        mount_id = str(getattr(mount, "id", "") or "")
+        if not mount_id:
+            raise HTTPException(status_code=400, detail="Mount not found")
+
+        async with self._workspace_mount_sync_tasks_lock:
+            existing_task = self._workspace_mount_sync_tasks.get(mount_id)
+            if existing_task is None or existing_task.done():
+                existing_task = asyncio.create_task(
+                    self._sync_workspace_mount_record_once(db, mount),
+                    name=f"userspace-mount-sync:{mount_id}",
+                )
+                self._attach_workspace_mount_sync_task_cleanup(
+                    mount_id,
+                    existing_task,
+                )
+                self._workspace_mount_sync_tasks[mount_id] = existing_task
+
+        try:
+            return await asyncio.shield(existing_task)
+        finally:
+            if existing_task.done():
+                self._prune_workspace_mount_sync_task(mount_id, existing_task)
+
+    async def _sync_workspace_mount_record_once(
+        self,
+        db: Any,
+        mount: Any,
+    ) -> WorkspaceMountSyncResponse:
         mount_source_record = getattr(mount, "mountSource", None)
         source_type = str(getattr(mount_source_record, "sourceType", "") or "")
         mount_id = str(getattr(mount, "id", "") or "")
@@ -4342,55 +4499,101 @@ class UserSpaceService:
         )
         cache_dir = self._base_dir / "mount_cache" / workspace_id / mount_id
         mount_sync_deletes = bool(getattr(mount, "syncDeletes", False))
+        preferred_backend, preferred_notice = await self._resolve_ssh_sync_backend(
+            ssh_config
+        )
 
         try:
             async with self._workspace_mount_sync_semaphore:
-                result: SSHSyncResult = await asyncio.to_thread(
-                    sync_ssh_directory,
-                    ssh_config,
-                    remote_path,
-                    str(cache_dir),
-                    sync_deletes=mount_sync_deletes,
-                )
+                if preferred_backend == "paramiko":
+                    result = await asyncio.to_thread(
+                        sync_ssh_directory,
+                        ssh_config,
+                        remote_path,
+                        str(cache_dir),
+                        sync_deletes=mount_sync_deletes,
+                    )
+                    result.notice = preferred_notice
+                else:
+                    result = await asyncio.to_thread(
+                        rsync_ssh_directory,
+                        ssh_config,
+                        remote_path,
+                        str(cache_dir),
+                        sync_deletes=mount_sync_deletes,
+                    )
+                    if result.success:
+                        self._remember_remote_rsync_available(ssh_config)
+                    elif is_rsync_missing_error("\n".join(result.errors)):
+                        self._remember_remote_rsync_missing(ssh_config)
+                        result = await asyncio.to_thread(
+                            sync_ssh_directory,
+                            ssh_config,
+                            remote_path,
+                            str(cache_dir),
+                            sync_deletes=mount_sync_deletes,
+                        )
+                        result.notice = self._ssh_rsync_fallback_notice()
             sync_status = "synced" if result.success else "error"
+            sync_backend = result.backend_used or preferred_backend
+            sync_notice = result.notice
             last_error = "; ".join(result.errors[:5]) if result.errors else None
-            now = _utc_now()
-
-            await db.workspacemount.update(
-                where={"id": mount_id},
-                data={
-                    "syncStatus": sync_status,
-                    "lastSyncAt": now,
-                    "lastSyncError": last_error,
-                    "updatedAt": now,
-                },
-            )
-            self.invalidate_file_list_cache(workspace_id)
-            return WorkspaceMountSyncResponse(
+            return await self._finalize_workspace_mount_sync(
+                db,
                 mount_id=mount_id,
-                sync_status=sync_status,  # type: ignore[arg-type]
+                workspace_id=workspace_id,
+                sync_status=sync_status,
                 files_synced=result.files_synced,
+                sync_backend=sync_backend,
+                sync_notice=sync_notice,
                 last_sync_error=last_error,
             )
         except Exception as exc:
             logger.error("Mount sync failed for %s/%s: %s", workspace_id, mount_id, exc)
-            now = _utc_now()
-            await db.workspacemount.update(
-                where={"id": mount_id},
-                data={
-                    "syncStatus": "error",
-                    "lastSyncAt": now,
-                    "lastSyncError": str(exc)[:500],
-                    "updatedAt": now,
-                },
-            )
-            self.invalidate_file_list_cache(workspace_id)
-            return WorkspaceMountSyncResponse(
+            return await self._finalize_workspace_mount_sync(
+                db,
                 mount_id=mount_id,
+                workspace_id=workspace_id,
                 sync_status="error",
                 files_synced=0,
+                sync_backend=preferred_backend,
+                sync_notice=preferred_notice,
                 last_sync_error=str(exc)[:500],
             )
+
+    async def _finalize_workspace_mount_sync(
+        self,
+        db: Any,
+        *,
+        mount_id: str,
+        workspace_id: str,
+        sync_status: str,
+        files_synced: int,
+        sync_backend: str | None,
+        sync_notice: str | None,
+        last_sync_error: str | None,
+    ) -> WorkspaceMountSyncResponse:
+        now = _utc_now()
+        await db.workspacemount.update(
+            where={"id": mount_id},
+            data={
+                "syncStatus": sync_status,
+                "syncBackend": sync_backend,
+                "syncNotice": sync_notice,
+                "lastSyncAt": now,
+                "lastSyncError": last_sync_error,
+                "updatedAt": now,
+            },
+        )
+        self.invalidate_file_list_cache(workspace_id)
+        return WorkspaceMountSyncResponse(
+            mount_id=mount_id,
+            sync_status=cast(Any, sync_status),
+            files_synced=files_synced,
+            sync_backend=sync_backend,
+            sync_notice=sync_notice,
+            last_sync_error=last_sync_error,
+        )
 
     def _validate_mount_target_path(self, target_path: str) -> str:
         target = target_path.strip()
@@ -4733,6 +4936,11 @@ class UserSpaceService:
                 )
             ),
             "approvedPaths": Json(approved_paths),
+            "syncIntervalSeconds": (
+                request.sync_interval_seconds
+                if request.sync_interval_seconds is not None
+                else 30
+            ),
             "createdAt": now,
             "updatedAt": now,
         }
@@ -4811,6 +5019,11 @@ class UserSpaceService:
             if "approved_paths" not in fields_set
             else list(request.approved_paths or [])
         )
+        next_sync_interval = (
+            existing.sync_interval_seconds
+            if "sync_interval_seconds" not in fields_set
+            else request.sync_interval_seconds
+        )
 
         normalized_connection_config, normalized_approved_paths, _mount_backend = (
             self._normalize_mount_source_payload(
@@ -4819,21 +5032,26 @@ class UserSpaceService:
                 approved_paths=next_approved_paths,
             )
         )
+        update_data: dict[str, Any] = {
+            "name": next_name,
+            "description": next_description,
+            "enabled": next_enabled,
+            "connectionConfig": Json(
+                encrypt_json_passwords(
+                    normalized_connection_config,
+                    CONNECTION_CONFIG_PASSWORD_FIELDS,
+                )
+            ),
+            "approvedPaths": Json(normalized_approved_paths),
+            "updatedAt": _utc_now(),
+        }
+        if next_sync_interval is not None:
+            update_data["syncIntervalSeconds"] = max(
+                1, min(2592000, next_sync_interval)
+            )
         updated = await db.userspacemountsource.update(
             where={"id": mount_source_id},
-            data={
-                "name": next_name,
-                "description": next_description,
-                "enabled": next_enabled,
-                "connectionConfig": Json(
-                    encrypt_json_passwords(
-                        normalized_connection_config,
-                        CONNECTION_CONFIG_PASSWORD_FIELDS,
-                    )
-                ),
-                "approvedPaths": Json(normalized_approved_paths),
-                "updatedAt": _utc_now(),
-            },
+            data=update_data,
             include={"toolConfig": True},
         )
 
@@ -5083,6 +5301,14 @@ class UserSpaceService:
         initial_sync_status = (
             "synced" if mount_source.source_type == "filesystem" else "pending"
         )
+        initial_sync_backend: str | None = None
+        initial_sync_notice: str | None = None
+        if mount_source.source_type == "ssh":
+            ssh_config = ssh_config_from_dict(mount_source.connection_config)
+            initial_sync_backend, initial_sync_notice = await self._resolve_ssh_sync_backend(
+                ssh_config,
+                probe_if_unknown=True,
+            )
         created = await db.workspacemount.create(
             data={
                 "id": str(uuid4()),
@@ -5094,6 +5320,8 @@ class UserSpaceService:
                 "syncDeletes": bool(request.sync_deletes),
                 "description": self._normalize_mount_description(request.description),
                 "syncStatus": initial_sync_status,
+                "syncBackend": initial_sync_backend,
+                "syncNotice": initial_sync_notice,
                 "createdAt": now,
                 "updatedAt": now,
             }
@@ -5205,13 +5433,17 @@ class UserSpaceService:
                         )
                 self.invalidate_file_list_cache(workspace_id)
 
-        mount_source_record = getattr(existing, "mountSource", None)
+        refreshed = await db.workspacemount.find_first(
+            where={"id": mount_id, "workspaceId": workspace_id},
+            include={"mountSource": True},
+        )
+        mount_source_record = getattr(refreshed, "mountSource", None) if refreshed else getattr(existing, "mountSource", None)
         mount_source = (
             self._userspace_mount_source_from_record(mount_source_record)
             if mount_source_record is not None
             else None
         )
-        return self._workspace_mount_from_record(updated, mount_source)
+        return self._workspace_mount_from_record(refreshed or updated, mount_source)
 
     async def delete_workspace_mount(
         self,

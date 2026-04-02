@@ -87,6 +87,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
     openssl \
     openssh-client \
+    rsync \
     nfs-common \
     cifs-utils \
     smbclient \
