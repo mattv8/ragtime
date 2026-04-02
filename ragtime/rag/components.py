@@ -21,7 +21,6 @@ from typing import Any, List, Optional, Union
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -44,6 +43,7 @@ from langchain_openai.chat_models.base import (
     _construct_responses_api_payload,
     _get_last_messages,
 )
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
@@ -4400,9 +4400,9 @@ except Exception as e:
         mount_items: list[dict[str, str]] = []
         for mount in mounts:
             target_path = str(getattr(mount, "target_path", "") or "").strip() or "/"
-            tool_name = (
-                str(getattr(mount, "tool_name", "") or "").strip() or "Unknown tool"
-            )
+            source_name = str(getattr(mount, "source_name", "") or "").strip()
+            tool_name = str(getattr(mount, "tool_name", "") or "").strip()
+            display_name = source_name or tool_name or "Unknown tool"
             source_path = str(getattr(mount, "source_path", "") or "").strip() or "."
             sync_status = str(getattr(mount, "sync_status", "") or "pending")
             normalized_target = (
@@ -4414,7 +4414,8 @@ except Exception as e:
                 {
                     "workspace_relative_path": workspace_relative,
                     "target_path": normalized_target,
-                    "tool_name": tool_name,
+                    "tool_name": display_name,
+                    "source_name": source_name,
                     "source_path": source_path,
                     "sync_status": sync_status,
                     "description": str(getattr(mount, "description", "") or "").strip(),
