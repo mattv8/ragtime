@@ -172,7 +172,6 @@ _WORKSPACE_DEFAULT_GITIGNORE_PATTERNS = (
     "__pycache__/",
 )
 _PLATFORM_MANAGED_GITIGNORE_PATTERNS = (
-    ".ragtime/bridge.js",
     ".ragtime/runtime-bootstrap.json",
     ".ragtime/.runtime-bootstrap.done",
 )
@@ -191,7 +190,6 @@ _MODULE_SOURCE_EXTENSIONS = (
 )
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 5
-_RUNTIME_BRIDGE_PATH = ".ragtime/bridge.js"
 _RUNTIME_BRIDGE_VERSION = 7
 _RUNTIME_BRIDGE_VERSION_TAG = f"@ragtime/bridge v{_RUNTIME_BRIDGE_VERSION}"
 _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS = 310_000  # 300s + 10s buffer
@@ -230,9 +228,23 @@ def _build_bridge_content(timeout_ms: int = _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS) 
     )
 
 
-# Keep a static reference for the runtime-bridge.js endpoint (no workspace
-# context available there, so use the default timeout).
-_RUNTIME_BRIDGE_CONTENT = _build_bridge_content()
+def _compute_bridge_timeout_ms(selected_tool_ids: list[str] | None = None) -> int:
+    """Derive the bridge postMessage timeout from workspace tool configs."""
+    if not selected_tool_ids:
+        return _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS
+
+    max_timeout = 300
+    cached_configs = SettingsCache.get_instance()._tool_configs
+    if cached_configs:
+        id_set = set(selected_tool_ids)
+        for cfg in cached_configs:
+            if cfg.get("id") in id_set:
+                timeout_seconds = cfg.get("timeout_max_seconds", 300) or 300
+                if timeout_seconds > max_timeout:
+                    max_timeout = timeout_seconds
+    return (max(max_timeout, 300) + 10) * 1000
+
+
 _SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
 _SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
 
@@ -581,6 +593,7 @@ class UserSpaceService:
         ssh_config: Any,
         *,
         probe_if_unknown: bool = False,
+        force_recheck_missing: bool = False,
     ) -> tuple[str, str | None]:
         cache_key = self._ssh_rsync_capability_cache_key(ssh_config)
         cached = self._ssh_rsync_capability_cache.get(cache_key)
@@ -590,7 +603,7 @@ class UserSpaceService:
             cached_available, next_recheck_monotonic = cached
             if cached_available:
                 return "rsync", None
-            if now_monotonic < next_recheck_monotonic:
+            if now_monotonic < next_recheck_monotonic and not force_recheck_missing:
                 return "paramiko", self._ssh_rsync_fallback_notice()
 
             rechecked = await self._probe_remote_rsync_availability(ssh_config)
@@ -834,65 +847,21 @@ class UserSpaceService:
 
     def _seed_runtime_bootstrap_config(self, workspace_id: str) -> None:
         self._sync_runtime_bootstrap_config(workspace_id)
-        self._sync_runtime_bridge_script(workspace_id)
 
-    def _sync_runtime_bridge_script(
-        self,
-        workspace_id: str,
-        selected_tool_ids: list[str] | None = None,
-    ) -> None:
-        """Write or update the platform-managed ``.ragtime/bridge.js`` file.
+    async def build_runtime_bridge_content(self, workspace_id: str | None = None) -> str:
+        if not workspace_id:
+            return _build_bridge_content()
 
-        The bridge provides ``window.__ragtime_context`` with a
-        ``components[id].execute()`` data bridge using ``postMessage``
-        to the parent preview host.
+        db = await get_db()
+        workspace = await db.workspace.find_unique(
+            where={"id": workspace_id},
+            include={"toolSelections": True},
+        )
+        if not workspace:
+            return _build_bridge_content()
 
-        The bridge timeout is derived from the workspace's selected tool
-        configs so that complex dashboard queries are not prematurely
-        cancelled by the client-side timeout.
-        """
-        files_dir = self._workspace_files_dir(workspace_id)
-        bridge_path = files_dir / _RUNTIME_BRIDGE_PATH
-
-        # Compute per-workspace timeout from selected tool configs.
-        timeout_ms = self._compute_bridge_timeout_ms(selected_tool_ids)
-
-        # Re-generate if version changed OR if timeout changed.
-        if bridge_path.exists():
-            try:
-                existing = bridge_path.read_text(encoding="utf-8")
-            except Exception:
-                existing = ""
-            if _RUNTIME_BRIDGE_VERSION_TAG in existing:
-                # Check if the timeout value embedded in the file matches.
-                if f"var T = {timeout_ms};" in existing:
-                    return
-        bridge_path.parent.mkdir(parents=True, exist_ok=True)
-        bridge_path.write_text(_build_bridge_content(timeout_ms), encoding="utf-8")
-
-    @staticmethod
-    def _compute_bridge_timeout_ms(
-        selected_tool_ids: list[str] | None = None,
-    ) -> int:
-        """Derive the bridge postMessage timeout from workspace tool configs.
-
-        Uses the maximum ``timeout_max_seconds`` across the workspace's
-        selected tools (with a 300 s floor) plus a 10 s buffer, converted
-        to milliseconds.
-        """
-        if not selected_tool_ids:
-            return _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS
-
-        max_timeout = 300
-        cached_configs = SettingsCache.get_instance()._tool_configs
-        if cached_configs:
-            id_set = set(selected_tool_ids)
-            for cfg in cached_configs:
-                if cfg.get("id") in id_set:
-                    t = cfg.get("timeout_max_seconds", 300) or 300
-                    if t > max_timeout:
-                        max_timeout = t
-        return (max(max_timeout, 300) + 10) * 1000
+        selected_tool_ids = self._selected_tool_ids_from_workspace_record(workspace)
+        return _build_bridge_content(_compute_bridge_timeout_ms(selected_tool_ids))
 
     @staticmethod
     def _default_runtime_entrypoint_config() -> dict[str, str]:
@@ -2754,13 +2723,8 @@ class UserSpaceService:
         if not workspace:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
-        # Extract selected tool IDs early so we can pass them to the bridge
-        # sync for per-workspace timeout computation.
-        _selected_tool_ids = self._selected_tool_ids_from_workspace_record(workspace)
-
         if is_admin:
             self._sync_runtime_bootstrap_config(workspace_id)
-            self._sync_runtime_bridge_script(workspace_id, _selected_tool_ids)
             return self._workspace_from_record(workspace)
 
         user_role: str | None = None
@@ -2783,7 +2747,6 @@ class UserSpaceService:
             user_record = await db.user.find_unique(where={"id": user_id})
             if user_record and getattr(user_record, "role", None) == "admin":
                 self._sync_runtime_bootstrap_config(workspace_id)
-                self._sync_runtime_bridge_script(workspace_id, _selected_tool_ids)
                 return self._workspace_from_record(workspace)
             raise HTTPException(status_code=404, detail="Workspace not found")
 
@@ -2793,7 +2756,6 @@ class UserSpaceService:
             raise HTTPException(status_code=403, detail="Owner access required")
 
         self._sync_runtime_bootstrap_config(workspace_id)
-        self._sync_runtime_bridge_script(workspace_id, _selected_tool_ids)
         return self._workspace_from_record(workspace)
 
     async def _get_workspace_record(self, workspace_id: str) -> Any:
@@ -3304,8 +3266,6 @@ class UserSpaceService:
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
         await self._enforce_share_access(workspace_record, current_user, password)
-        tool_ids = self._selected_tool_ids_from_workspace_record(workspace_record)
-        self._sync_runtime_bridge_script(workspace_id, tool_ids)
         return workspace_record
 
     async def resolve_shared_workspace_id(
@@ -4076,6 +4036,8 @@ class UserSpaceService:
         self,
         db: Any,
         mount: Any,
+        *,
+        force_backend_recheck: bool = False,
     ) -> WorkspaceMountSyncResponse:
         mount_id = str(getattr(mount, "id", "") or "")
         if not mount_id:
@@ -4085,7 +4047,11 @@ class UserSpaceService:
             existing_task = self._workspace_mount_sync_tasks.get(mount_id)
             if existing_task is None or existing_task.done():
                 existing_task = asyncio.create_task(
-                    self._sync_workspace_mount_record_once(db, mount),
+                    self._sync_workspace_mount_record_once(
+                        db,
+                        mount,
+                        force_backend_recheck=force_backend_recheck,
+                    ),
                     name=f"userspace-mount-sync:{mount_id}",
                 )
                 self._attach_workspace_mount_sync_task_cleanup(
@@ -4104,6 +4070,8 @@ class UserSpaceService:
         self,
         db: Any,
         mount: Any,
+        *,
+        force_backend_recheck: bool = False,
     ) -> WorkspaceMountSyncResponse:
         mount_source_record = getattr(mount, "mountSource", None)
         source_type = str(getattr(mount_source_record, "sourceType", "") or "")
@@ -4124,14 +4092,22 @@ class UserSpaceService:
             connection_config,
             str(getattr(mount, "sourcePath", "") or ""),
         )
+        target_path = str(getattr(mount, "targetPath", "") or "")
         cache_dir = self._base_dir / "mount_cache" / workspace_id / mount_id
         mount_sync_deletes = bool(getattr(mount, "syncDeletes", False))
         preferred_backend, preferred_notice = await self._resolve_ssh_sync_backend(
-            ssh_config
+            ssh_config,
+            force_recheck_missing=force_backend_recheck,
         )
 
         try:
             async with self._workspace_mount_sync_semaphore:
+                await asyncio.to_thread(
+                    self._stage_runtime_mount_into_sync_cache,
+                    workspace_id,
+                    target_path,
+                    cache_dir,
+                )
                 if preferred_backend == "paramiko":
                     result = await asyncio.to_thread(
                         sync_ssh_directory,
@@ -4186,6 +4162,40 @@ class UserSpaceService:
                 sync_backend=preferred_backend,
                 sync_notice=preferred_notice,
                 last_sync_error=str(exc)[:500],
+            )
+
+    def _stage_runtime_mount_into_sync_cache(
+        self,
+        workspace_id: str,
+        target_path: str,
+        cache_dir: Path,
+    ) -> None:
+        runtime_dir = self._resolve_workspace_mount_runtime_target_dir(
+            workspace_id,
+            target_path,
+        )
+        if runtime_dir is None or not runtime_dir.is_dir():
+            return
+
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            [
+                "rsync",
+                "-a",
+                "--update",
+                f"{runtime_dir}/",
+                f"{cache_dir}/",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            logger.warning(
+                "Failed to stage runtime mount content %s into sync cache %s: %s",
+                runtime_dir,
+                cache_dir,
+                (proc.stderr or proc.stdout or f"rsync exited {proc.returncode}").strip()[:300],
             )
 
     async def _finalize_workspace_mount_sync(
@@ -5142,7 +5152,13 @@ class UserSpaceService:
         )
         if not mount:
             raise HTTPException(status_code=404, detail="Mount not found")
-        return await self._sync_workspace_mount_record(db, mount)
+        # Manual sync requests should re-check previously-missing rsync endpoints
+        # immediately so UI state can recover without waiting for cooldown expiry.
+        return await self._sync_workspace_mount_record(
+            db,
+            mount,
+            force_backend_recheck=True,
+        )
 
     async def browse_workspace_mount_source(
         self,

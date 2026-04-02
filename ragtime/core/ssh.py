@@ -1150,9 +1150,13 @@ def _build_rsync_ssh_cmd(
         "-F",
         "/dev/null",
         "-o",
+        "LogLevel=ERROR",
+        "-o",
         "StrictHostKeyChecking=no",
         "-o",
         "UserKnownHostsFile=/dev/null",
+        "-o",
+        "GlobalKnownHostsFile=/dev/null",
     ]
     if config.port and config.port != 22:
         parts.extend(["-p", str(config.port)])
@@ -1251,7 +1255,8 @@ def _write_rsync_ssh_wrapper(
                 'export SSH_ASKPASS_REQUIRE="force"',
             ]
         )
-    script_lines.append(f'exec {quoted_ssh} "$@" < /dev/null')
+    # Keep stdin attached so rsync can stream its protocol over the SSH transport.
+    script_lines.append(f'exec {quoted_ssh} "$@"')
     with open(wrapper_path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(script_lines) + "\n")
     _os.chmod(wrapper_path, 0o700)

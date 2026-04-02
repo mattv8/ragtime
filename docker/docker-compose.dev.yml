@@ -67,6 +67,8 @@ services:
       - ~/.ssh:/root/.ssh:ro
       # Mount scripts for backup/restore
       - ./scripts:/docker-scripts:ro
+      # Mount downloads directory for filesystem tool testing
+      - /mnt/c/Users/matt/Downloads:/mnt/downloads:ro
     privileged: true
     cap_add:
       - SYS_ADMIN

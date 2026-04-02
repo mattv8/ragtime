@@ -5542,11 +5542,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                               <ArrowRight size={12} className="userspace-mount-path-arrow" />
                               <span className="userspace-mount-target-path">{mount.target_path}</span>
                               <span className="userspace-mount-tool-label">({mount.source_name ?? 'Unknown source'})</span>
-                              {mount.source_type === 'ssh' && mount.sync_backend === 'paramiko' && (
-                                <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }} title="Using built-in SSH sync fallback because remote rsync is unavailable">
-                                  Fallback
-                                </span>
-                              )}
                             </span>
                             <div className="userspace-mount-controls">
                               <span className="userspace-mount-sync-status">

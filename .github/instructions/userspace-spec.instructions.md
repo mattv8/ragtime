@@ -83,10 +83,10 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 
 ## Live Data Bridge Architecture
 
-- Bridge file `.ragtime/bridge.js` is platform-managed (seeded per workspace by `_sync_runtime_bridge_script` in `ragtime/userspace/service.py`). Version tracked via `_RUNTIME_BRIDGE_VERSION`.
+- Bridge script is served by `/indexes/userspace/runtime-bridge.js` and rendered by `build_runtime_bridge_content()` in `ragtime/userspace/service.py`. Version tracked via `_RUNTIME_BRIDGE_VERSION`.
 - Bridge provides `window.__ragtime_context` with a Proxy-based `components[componentId].execute(params)` that sends postMessage (`USERSPACE_EXEC_BRIDGE` channel) to the parent frame.
 - Parent-side handler in `UserSpaceArtifactPreview.tsx` listens for `ragtime-execute` messages, calls `api.executeWorkspaceComponent()`, and sends results back via `ragtime-execute-result` / `ragtime-execute-error`.
-- Proxy auto-injects `<script src=".ragtime/bridge.js"></script>` into HTML responses so workspaces never need to manually include it.
+- Proxy auto-injects `<script src="/indexes/userspace/runtime-bridge.js?workspace_id=..."></script>` into HTML responses so workspaces never need to manually include it.
 - LLM prompt instructs passing `window.__ragtime_context` as the context argument to `render(container, context)`.
 
 ## Security + Proxy Rules (Do Not Violate)
@@ -96,7 +96,7 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 - Keep hop-by-hop header filtering in proxy request/response paths.
 - Preview proxy performs text-content rewrites (no DOM parsing):
   1. Root-relative URL prefixing — `_rewrite_root_relative_urls` matches *any* quoted root-relative string literal (`"/"`, `'/'`, backtick) in HTML, JavaScript, and CSS responses and rewrites it to the proxy base path. A negative-lookahead prevents double-rewriting of already-proxied paths. This covers HTML attributes, ES module imports, `fetch()`, CSS `url()`, and any other context.
-  2. Live data bridge injection — `_inject_bridge_script` inserts `<script src=".ragtime/bridge.js"></script>` before `</head>` or before the first `<script` tag (skipped if already present). Applied only to `text/html` responses.
+  2. Live data bridge injection — `_inject_bridge_script` inserts `<script src="/indexes/userspace/runtime-bridge.js?workspace_id=..."></script>` before `</head>` or before the first `<script` tag (skipped if already present). Applied only to `text/html` responses.
   Both are in `runtime_routes.py`.
 - Proxy response strips `X-Frame-Options`, `Content-Security-Policy`, and `Content-Security-Policy-Report-Only` headers from devserver responses to prevent iframe-blocking policies from reaching the browser (the iframe `sandbox` attribute is the real security boundary).
 - Root-relative `Location` headers in redirect responses are rewritten to include the proxy base path.

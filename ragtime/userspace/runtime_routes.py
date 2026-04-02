@@ -39,7 +39,7 @@ from ragtime.userspace.runtime_service import (
     RuntimeVersionConflictError,
     userspace_runtime_service,
 )
-from ragtime.userspace.service import _RUNTIME_BRIDGE_CONTENT, userspace_service
+from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
@@ -344,6 +344,7 @@ async def _proxy_http_request(
     upstream_url: str,
     *,
     proxy_base_path: str | None = None,
+    bridge_workspace_id: str | None = None,
 ) -> Response:
     if request.headers.get("upgrade", "").lower() == "websocket":
         raise HTTPException(
@@ -408,7 +409,11 @@ async def _proxy_http_request(
                 )
             except Exception:
                 sandbox_flags = None
-            content = _inject_bridge_script(content, sandbox_flags)
+            content = _inject_bridge_script(
+                content,
+                sandbox_flags,
+                workspace_id=bridge_workspace_id,
+            )
         # Content length changed after rewriting; drop stale header so
         # Starlette re-calculates it from the actual body.
         resp_headers.pop("content-length", None)
@@ -435,12 +440,19 @@ async def _proxy_http_request(
         media_type=media_type or None,
     )
 
-
-_BRIDGE_SCRIPT_TAG = b'<script src="/indexes/userspace/runtime-bridge.js"></script>'
 _BRIDGE_CONFIG_MARKER = b"__ragtime_preview_sandbox_flags"
 _BRIDGE_DETECT_RE = re.compile(rb"bridge\.js", re.IGNORECASE)
 _HEAD_CLOSE_RE = re.compile(rb"(</head\s*>)", re.IGNORECASE)
 _FIRST_SCRIPT_RE = re.compile(rb"(<script[\s>])", re.IGNORECASE)
+
+
+def _build_bridge_script_tag(workspace_id: str | None = None) -> bytes:
+    params = {"workspace_id": workspace_id} if workspace_id else {}
+    query = urlencode(params)
+    src = "/indexes/userspace/runtime-bridge.js"
+    if query:
+        src = f"{src}?{query}"
+    return f'<script src="{src}"></script>'.encode("utf-8")
 
 
 def _build_bridge_config_tag(sandbox_flags: list[str]) -> bytes:
@@ -455,10 +467,15 @@ def _build_bridge_config_tag(sandbox_flags: list[str]) -> bytes:
     )
 
 
-def _inject_bridge_script(html: bytes, sandbox_flags: list[str] | None = None) -> bytes:
+def _inject_bridge_script(
+    html: bytes,
+    sandbox_flags: list[str] | None = None,
+    *,
+    workspace_id: str | None = None,
+) -> bytes:
     """Inject the platform data-bridge script into HTML responses.
 
-    Inserts ``<script src="/indexes/userspace/runtime-bridge.js">`` before
+    Inserts ``<script src="/indexes/userspace/runtime-bridge.js?...">`` before
     ``</head>`` or the first ``<script`` tag so ``window.__ragtime_context``
     and platform visualization libraries are available to workspace code.
     Skips injection if bridge.js is already referenced.
@@ -467,7 +484,7 @@ def _inject_bridge_script(html: bytes, sandbox_flags: list[str] | None = None) -
     if sandbox_flags is not None and _BRIDGE_CONFIG_MARKER not in html:
         injected += _build_bridge_config_tag(sandbox_flags) + b"\n"
     if not _BRIDGE_DETECT_RE.search(html):
-        injected += _BRIDGE_SCRIPT_TAG + b"\n"
+        injected += _build_bridge_script_tag(workspace_id) + b"\n"
     if not injected:
         return html
     m = _HEAD_CLOSE_RE.search(html)
@@ -480,12 +497,12 @@ def _inject_bridge_script(html: bytes, sandbox_flags: list[str] | None = None) -
 
 
 @router.get("/runtime-bridge.js", include_in_schema=False)
-async def runtime_bridge_script() -> Response:
+async def runtime_bridge_script(workspace_id: str | None = None) -> Response:
     return Response(
-        content=_RUNTIME_BRIDGE_CONTENT,
+        content=await userspace_service.build_runtime_bridge_content(workspace_id),
         media_type="application/javascript",
         headers={
-            "Cache-Control": "public, max-age=3600",
+            "Cache-Control": "no-store",
         },
     )
 
@@ -1130,7 +1147,12 @@ async def workspace_preview_proxy(
         query=_sanitize_preview_query(request.url.query),
     )
     base = f"/indexes/userspace/workspaces/{workspace_id}/preview"
-    response = await _proxy_http_request(request, upstream_url, proxy_base_path=base)
+    response = await _proxy_http_request(
+        request,
+        upstream_url,
+        proxy_base_path=base,
+        bridge_workspace_id=workspace_id,
+    )
     response.set_cookie(
         key=_PREVIEW_CAPABILITY_COOKIE,
         value=capability_token,
@@ -1172,7 +1194,12 @@ async def shared_preview_proxy(
         query=request.url.query or None,
     )
     base = f"/indexes/userspace/shared/{owner_username}/{share_slug}/preview"
-    return await _proxy_http_request(request, upstream_url, proxy_base_path=base)
+    return await _proxy_http_request(
+        request,
+        upstream_url,
+        proxy_base_path=base,
+        bridge_workspace_id=workspace_id,
+    )
 
 
 @router.api_route("/shared/{share_token}/preview", methods=_PROXY_METHODS)
@@ -1197,7 +1224,12 @@ async def shared_token_preview_proxy(
         query=request.url.query or None,
     )
     base = f"/indexes/userspace/shared/{share_token}/preview"
-    return await _proxy_http_request(request, upstream_url, proxy_base_path=base)
+    return await _proxy_http_request(
+        request,
+        upstream_url,
+        proxy_base_path=base,
+        bridge_workspace_id=workspace_id,
+    )
 
 
 @router.websocket("/workspaces/{workspace_id}/preview")
