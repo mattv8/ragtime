@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { api } from '@/api';
-import type { ToolConfig, ToolGroup, HeartbeatStatus, SchemaIndexStats, SchemaIndexJob } from '@/types';
+import type { ToolConfig, ToolGroup, HeartbeatStatus, SchemaIndexStats, SchemaIndexJob, UserspaceMountSource, MountSourceAffectedWorkspacesResponse } from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
 import { ToolWizard } from './ToolWizard';
+import { MountSourceWizard } from './MountSourceWizard';
 import { Icon, getToolIconType } from './Icon';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
 import { IndexingPill } from './IndexingPill';
+import { HardDrive, Trash2, Pencil, X } from 'lucide-react';
 
 // Inline field being edited
 type EditingField = 'name' | 'description' | null;
@@ -429,17 +431,30 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [] }: ToolsPanel
   const [editingGroupName, setEditingGroupName] = useState('');
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Mount source state
+  const [mountSources, setMountSources] = useState<UserspaceMountSource[]>([]);
+  const [mountSourceDeletingId, setMountSourceDeletingId] = useState<string | null>(null);
+  const [showMountSourceWizard, setShowMountSourceWizard] = useState(false);
+  const [editingMountSource, setEditingMountSource] = useState<UserspaceMountSource | null>(null);
+  const [disableConfirmation, setDisableConfirmation] = useState<{
+    source: UserspaceMountSource;
+    affected: MountSourceAffectedWorkspacesResponse | null;
+    loading: boolean;
+  } | null>(null);
+
   const loadTools = useCallback(async () => {
     try {
       setLoading(true);
-      const [data, groupData] = await Promise.all([
+      const [data, groupData, sources] = await Promise.all([
         api.listToolConfigs(),
         api.listToolGroups(),
+        api.listUserspaceMountSources(),
       ]);
       // Filter out filesystem_indexer tools - they're shown in the Indexer tab
       const connectionTools = data.filter(t => t.tool_type !== 'filesystem_indexer');
       setTools(connectionTools);
       setGroups(groupData);
+      setMountSources(sources);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load tools');
@@ -719,6 +734,87 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [] }: ToolsPanel
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [selectedGroupId]);
+
+  // ---------------------------------------------------------------------------
+  // Mount source handlers
+  // ---------------------------------------------------------------------------
+
+  const handleMountSourceWizardSaved = useCallback((saved: UserspaceMountSource) => {
+    setMountSources((current) => {
+      const next = current.some((source) => source.id === saved.id)
+        ? current.map((source) => source.id === saved.id ? saved : source)
+        : [...current, saved];
+      return [...next].sort((left, right) => left.name.localeCompare(right.name));
+    });
+    setShowMountSourceWizard(false);
+    setEditingMountSource(null);
+    setSuccess(saved.id === editingMountSource?.id ? 'Mount source updated.' : 'Mount source created.');
+    setTimeout(() => setSuccess(null), 5000);
+  }, [editingMountSource]);
+
+  const handleDeleteMountSource = useCallback(async (mountSourceId: string) => {
+    setMountSourceDeletingId(mountSourceId);
+    setSuccess(null);
+    setError(null);
+
+    try {
+      await api.deleteUserspaceMountSource(mountSourceId);
+      setMountSources((current) => current.filter((source) => source.id !== mountSourceId));
+      setSuccess('Mount source deleted.');
+      setTimeout(() => setSuccess(null), 5000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete mount source');
+    } finally {
+      setMountSourceDeletingId(null);
+    }
+  }, []);
+
+  const handleToggleMountSourceEnabled = useCallback(async (source: UserspaceMountSource) => {
+    const nextEnabled = !source.enabled;
+
+    if (!nextEnabled && source.usage_count > 0) {
+      setDisableConfirmation({ source, affected: null, loading: true });
+      try {
+        const affected = await api.getMountSourceAffectedWorkspaces(source.id);
+        setDisableConfirmation({ source, affected, loading: false });
+      } catch {
+        setDisableConfirmation({ source, affected: null, loading: false });
+      }
+      return;
+    }
+
+    setMountSources((current) =>
+      current.map((s) => s.id === source.id ? { ...s, enabled: nextEnabled } : s)
+    );
+    try {
+      await api.updateUserspaceMountSource(source.id, { enabled: nextEnabled });
+    } catch (err) {
+      setMountSources((current) =>
+        current.map((s) => s.id === source.id ? { ...s, enabled: source.enabled } : s)
+      );
+      setError(err instanceof Error ? err.message : 'Failed to update mount source');
+    }
+  }, []);
+
+  const handleConfirmDisableMountSource = useCallback(async () => {
+    if (!disableConfirmation) return;
+    const { source } = disableConfirmation;
+    setDisableConfirmation(null);
+    setMountSources((current) =>
+      current.map((s) => s.id === source.id ? { ...s, enabled: false } : s)
+    );
+    try {
+      const updated = await api.updateUserspaceMountSource(source.id, { enabled: false });
+      setMountSources((current) =>
+        current.map((s) => s.id === source.id ? { ...updated, usage_count: s.usage_count } : s)
+      );
+    } catch (err) {
+      setMountSources((current) =>
+        current.map((s) => s.id === source.id ? { ...s, enabled: true } : s)
+      );
+      setError(err instanceof Error ? err.message : 'Failed to disable mount source');
+    }
+  }, [disableConfirmation]);
 
   // Drag-and-drop state
   const [dragToolId, setDragToolId] = useState<string | null>(null);
@@ -1009,6 +1105,186 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [] }: ToolsPanel
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Mounts section */}
+      <div className="card">
+        <div className="card-header">
+          <h2>Mounts</h2>
+          <AnimatedCreateButton
+            isExpanded={showMountSourceWizard}
+            onClick={() => {
+              if (showMountSourceWizard) {
+                setShowMountSourceWizard(false);
+                setEditingMountSource(null);
+              } else {
+                setEditingMountSource(null);
+                setShowMountSourceWizard(true);
+              }
+            }}
+            label="New Mount Source"
+          />
+        </div>
+
+        {showMountSourceWizard ? (
+          <MountSourceWizard
+            existingSource={editingMountSource}
+            existingNames={mountSources.map((s) => s.name)}
+            onClose={() => { setShowMountSourceWizard(false); setEditingMountSource(null); }}
+            onSaved={handleMountSourceWizardSaved}
+            embedded={true}
+          />
+        ) : (
+          <>
+        <p className="fieldset-help">
+          Define mount sources backed by existing SSH or filesystem tools. Workspaces attach these sources without duplicating connection credentials.
+        </p>
+
+        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
+          {mountSources.length > 0 ? mountSources.map((source) => (
+            <div
+              key={source.id}
+              className="card"
+              style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '12px 14px', opacity: source.enabled ? 1 : 0.6 }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+                  <HardDrive size={14} style={{ flexShrink: 0 }} />
+                  <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{source.name}</span>
+                  <span className="muted" style={{ fontSize: '0.8rem', flexShrink: 0 }}>
+                    {source.source_type === 'ssh' ? 'SSH' : source.mount_backend.replace('_', ' ')}
+                  </span>
+                  {source.usage_count > 0 && (
+                    <span
+                      style={{
+                        fontSize: '0.7rem',
+                        fontWeight: 600,
+                        padding: '1px 6px',
+                        borderRadius: 8,
+                        background: 'var(--color-accent)',
+                        color: 'var(--color-bg)',
+                        flexShrink: 0,
+                      }}
+                      title={`Used by ${source.usage_count} workspace${source.usage_count !== 1 ? 's' : ''}`}
+                    >
+                      {source.usage_count}
+                    </span>
+                  )}
+                </span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => { setEditingMountSource(source); setShowMountSourceWizard(true); }}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => void handleDeleteMountSource(source.id)}
+                    disabled={mountSourceDeletingId === source.id}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                  <label className="toggle-switch" style={{ marginLeft: 2 }}>
+                    <input
+                      type="checkbox"
+                      checked={source.enabled}
+                      onChange={() => void handleToggleMountSourceEnabled(source)}
+                    />
+                    <span className="toggle-slider"></span>
+                  </label>
+                </span>
+              </div>
+              {source.approved_paths.length > 0 && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {source.approved_paths.map((p) => (
+                    <code key={p} style={{ fontSize: '0.8rem', padding: '2px 8px', background: 'var(--color-bg-tertiary)', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                      {p === '.'
+                        ? '/'
+                        : p.split('/').filter(Boolean).map((seg, i) => (
+                          <span key={i}>
+                            <span style={{ opacity: 0.5 }}>/</span>{seg}
+                          </span>
+                        ))
+                      }
+                    </code>
+                  ))}
+                </div>
+              )}
+            </div>
+          )) : (
+            <p className="muted" style={{ margin: 0 }}>No mount sources configured yet.</p>
+          )}
+        </div>
+          </>
+        )}
+      </div>
+
+      {/* Mount Source Disable Confirmation Modal */}
+      {disableConfirmation && (
+        <div className="modal-overlay" onClick={() => setDisableConfirmation(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Disable Mount Source</h3>
+              <button className="modal-close" onClick={() => setDisableConfirmation(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              {disableConfirmation.loading ? (
+                <p className="muted">Loading affected workspaces...</p>
+              ) : (
+                <>
+                  <p>
+                    Disabling <strong>{disableConfirmation.source.name}</strong> will immediately stop
+                    {disableConfirmation.source.source_type === 'ssh' ? ' SFTP sync' : ' mount access'} for
+                    {' '}<strong>{disableConfirmation.affected?.total_mounts ?? disableConfirmation.source.usage_count}</strong> mount{(disableConfirmation.affected?.total_mounts ?? disableConfirmation.source.usage_count) !== 1 ? 's' : ''} across
+                    {' '}<strong>{disableConfirmation.affected?.workspaces.length ?? '?'}</strong> workspace{(disableConfirmation.affected?.workspaces.length ?? 0) !== 1 ? 's' : ''}.
+                  </p>
+                  {disableConfirmation.affected && disableConfirmation.affected.workspaces.length > 0 && (
+                    <div style={{ maxHeight: 200, overflowY: 'auto', margin: '12px 0', border: '1px solid var(--color-border)', borderRadius: 6 }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)' }}>
+                            <th style={{ padding: '6px 10px', textAlign: 'left' }}>Workspace</th>
+                            <th style={{ padding: '6px 10px', textAlign: 'right' }}>Mounts</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {disableConfirmation.affected.workspaces.map((ws) => (
+                            <tr key={ws.workspace_id} style={{ borderBottom: '1px solid var(--color-border)' }}>
+                              <td style={{ padding: '6px 10px' }}>{ws.workspace_name}</td>
+                              <td style={{ padding: '6px 10px', textAlign: 'right' }}>{ws.mount_count}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <p className="field-help" style={{ margin: '8px 0 0' }}>
+                    {disableConfirmation.source.source_type === 'ssh'
+                      ? 'Auto-sync will be stopped for all affected mounts. Re-enabling the source will allow mounts to resume syncing.'
+                      : 'Workspace access to this mount will be interrupted. Re-enabling restores access without reconfiguration.'}
+                  </p>
+                </>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setDisableConfirmation(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => void handleConfirmDisableMountSource()}
+                disabled={disableConfirmation.loading}
+              >
+                Disable Mount Source
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -1197,7 +1197,6 @@ textarea:focus {
 
 /* Tool group sections in ToolsPanel */
 .tool-group-section-panel {
-  margin-bottom: var(--space-md);
 }
 
 /* Drag-and-drop feedback */
@@ -2987,7 +2986,7 @@ textarea:focus {
   justify-content: center;
   opacity: 0.7;
   pointer-events: none;
-  color: var(--color-warning);
+  color: var(--color-text-muted);
 }
 
 .userspace-mount-controls {

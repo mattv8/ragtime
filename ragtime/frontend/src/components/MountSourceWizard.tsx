@@ -145,9 +145,10 @@ interface MountSourceWizardProps {
   existingNames?: string[];
   onClose: () => void;
   onSaved: (source: UserspaceMountSource) => void;
+  embedded?: boolean;
 }
 
-export function MountSourceWizard({ existingSource, existingNames = [], onClose, onSaved }: MountSourceWizardProps) {
+export function MountSourceWizard({ existingSource, existingNames = [], onClose, onSaved, embedded = false }: MountSourceWizardProps) {
   const isEditing = existingSource !== null;
   const progressRef = useRef<HTMLDivElement>(null);
 
@@ -398,19 +399,19 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
                 key={tool.id}
                 type="button"
                 className={`tool-type-option ${draft.tool_config_id === tool.id ? 'selected' : ''}`}
+                style={!tool.enabled ? { opacity: 0.6 } : undefined}
                 onClick={() => setDraft((d) => ({ ...d, tool_config_id: tool.id }))}
               >
                 <div className="tool-type-option-icon">
                   <Icon name={toolTypeIcon(tool)} size={24} />
                 </div>
                 <div>
-                  <span className="tool-type-option-name">{tool.name}</span>
+                  <span className="tool-type-option-name">{tool.name}{!tool.enabled && (
+                      <span style={{ fontStyle: 'italic', fontWeight: 400, opacity: 0.7 }}> (disabled)</span>
+                    )}</span>
                   <span className="tool-type-option-desc">
                     {toolTypeLabel(tool)}{' '}{toolSummary(tool)}
                   </span>
-                  {!tool.enabled && (
-                    <span className="tool-type-option-desc" style={{ fontStyle: 'italic' }}>(disabled)</span>
-                  )}
                 </div>
               </button>
             ))}
@@ -564,12 +565,14 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-      <div className="modal-header" style={{ borderBottom: 'none' }}>
-        <h3>{isEditing ? 'Edit Mount Source' : 'New Mount Source'}</h3>
-        <button type="button" className="modal-close" onClick={onClose}>
-          <X size={18} />
-        </button>
-      </div>
+      {!embedded && (
+        <div className="modal-header" style={{ borderBottom: 'none' }}>
+          <h3>{isEditing ? 'Edit Mount Source' : 'New Mount Source'}</h3>
+          <button type="button" className="modal-close" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+      )}
 
       {!showToolWizard && (
         <div className="wizard-progress" ref={progressRef} style={{ padding: '0 var(--space-lg)' }}>
@@ -580,9 +583,8 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
               <button
                 key={step}
                 type="button"
-                className={`wizard-step ${currentStep === step ? 'active' : ''} ${
-                  getCurrentStepIndex() > index ? 'completed' : ''
-                } ${isNavigable ? 'navigable' : ''}`}
+                className={`wizard-step ${currentStep === step ? 'active' : ''} ${getCurrentStepIndex() > index ? 'completed' : ''
+                  } ${isNavigable ? 'navigable' : ''}`}
                 onClick={() => goToStep(step)}
                 disabled={!isNavigable}
               >
