@@ -28,7 +28,7 @@ import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceWorkspace, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceWorkspace, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { LdapGroupSelect } from './LdapGroupSelect';
@@ -45,6 +45,12 @@ interface UserSpacePanelProps {
 interface WorkspaceChatState {
   hasLive: boolean;
   hasInterrupted: boolean;
+}
+
+interface CachedUserSpaceFile {
+  content: string;
+  updatedAt: string;
+  artifactType: UserSpaceArtifactType | null;
 }
 
 type MountSyncPreviewIntent = 'sync' | 'enable-auto' | 'update-auto-sync-mode';
@@ -533,7 +539,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [selectedFilePath, setSelectedFilePath] = useState<string>('dashboard/main.ts');
   const [fileContent, setFileContent] = useState<string>('');
   const [fileDirty, setFileDirty] = useState(false);
-  const [fileContentCache, setFileContentCache] = useState<Record<string, { content: string; updatedAt: string }>>({});
+  const [selectedFileArtifactType, setSelectedFileArtifactType] = useState<UserSpaceArtifactType | null>(null);
+  const [fileContentCache, setFileContentCache] = useState<Record<string, CachedUserSpaceFile>>({});
   const [selectedFileUnsupportedMessage, setSelectedFileUnsupportedMessage] = useState<string | null>(null);
   const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
   const [previewExecuting, setPreviewExecuting] = useState(false);
@@ -1162,7 +1169,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const codeMirrorExtensions = useMemo(
     () => [
-      javascript({ typescript: true, jsx: true }),
+      getLanguageExtensionForPath(selectedFilePath) ?? javascript({ typescript: true, jsx: true }),
       keymap.of([
         {
           key: 'Mod-f',
@@ -1171,7 +1178,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         },
       ]),
     ],
-    []
+    [selectedFilePath]
   );
 
   const selectedFileDisplayName = useMemo(() => {
@@ -1406,7 +1413,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
       const validPaths = new Set(nextFiles.map((file) => file.path));
       setFileContentCache((current) => {
-        const next: Record<string, { content: string; updatedAt: string }> = {};
+        const next: Record<string, CachedUserSpaceFile> = {};
         for (const [path, value] of Object.entries(current)) {
           if (validPaths.has(path)) {
             next[path] = value;
@@ -1438,6 +1445,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             return;
           }
           setFileContent(cached.content);
+          setSelectedFileArtifactType(cached.artifactType ?? null);
           setSelectedFileUnsupportedMessage(null);
         } else {
           try {
@@ -1448,11 +1456,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             }
 
             setFileContent(file.content);
+            setSelectedFileArtifactType(file.artifact_type ?? null);
             setFileContentCache((current) => ({
               ...current,
               [file.path]: {
                 content: file.content,
                 updatedAt: preferredUpdatedAt,
+                artifactType: file.artifact_type ?? null,
               },
             }));
             setSelectedFileUnsupportedMessage(null);
@@ -1467,11 +1477,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             }
 
             setFileContent('');
+            setSelectedFileArtifactType(null);
             setSelectedFileUnsupportedMessage(unsupportedMessage);
           }
         }
       } else {
         setFileContent('');
+        setSelectedFileArtifactType(null);
         setSelectedFileUnsupportedMessage(null);
       }
 
@@ -2043,7 +2055,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
       if (staleFiles.length === 0) {
         setFileContentCache((current) => {
-          const next: Record<string, { content: string; updatedAt: string }> = {};
+          const next: Record<string, CachedUserSpaceFile> = {};
           for (const [path, value] of Object.entries(current)) {
             if (validPaths.has(path)) {
               next[path] = value;
@@ -2062,6 +2074,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               path: loaded.path,
               content: loaded.content,
               updatedAt: file.updated_at ?? '',
+              artifactType: loaded.artifact_type ?? null,
             };
           } catch (err) {
             if (getUnsupportedEditorFileMessage(err)) {
@@ -2075,7 +2088,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       if (cancelled) return;
 
       setFileContentCache((current) => {
-        const next: Record<string, { content: string; updatedAt: string }> = {};
+        const next: Record<string, CachedUserSpaceFile> = {};
         for (const [path, value] of Object.entries(current)) {
           if (validPaths.has(path)) {
             next[path] = value;
@@ -2089,6 +2102,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           next[file.path] = {
             content: file.content,
             updatedAt: file.updatedAt,
+            artifactType: file.artifactType,
           };
         }
 
@@ -2271,6 +2285,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       if (cached && cached.updatedAt === selectedUpdatedAt) {
         setFileContent(cached.content);
         setFileDirty(false);
+        setSelectedFileArtifactType(cached.artifactType ?? null);
         setSelectedFileUnsupportedMessage(null);
         setError(null);
         return;
@@ -2278,11 +2293,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
       const file = await api.getUserSpaceFile(activeWorkspaceId, path);
       setFileContent(file.content);
+      setSelectedFileArtifactType(file.artifact_type ?? null);
       setFileContentCache((current) => ({
         ...current,
         [file.path]: {
           content: file.content,
           updatedAt: selectedUpdatedAt,
+          artifactType: file.artifact_type ?? null,
         },
       }));
       setFileDirty(false);
@@ -2293,11 +2310,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       if (unsupportedMessage) {
         setFileContent('');
         setFileDirty(false);
+        setSelectedFileArtifactType(null);
         setSelectedFileUnsupportedMessage(unsupportedMessage);
         setError(null);
         return;
       }
 
+      setSelectedFileArtifactType(null);
       setSelectedFileUnsupportedMessage(null);
       setError(err instanceof Error ? err.message : 'Failed to open file');
     }
@@ -2334,9 +2353,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       const content = filePath === selectedFilePath
         ? fileContent
         : (fileContentCacheRef.current[filePath]?.content ?? '');
+      const artifactType = filePath === selectedFilePath
+        ? (selectedFileArtifactType ?? undefined)
+        : (fileContentCacheRef.current[filePath]?.artifactType ?? undefined);
       await api.upsertUserSpaceFile(activeWorkspaceId, filePath, {
         content,
-        artifact_type: 'module_ts',
+        artifact_type: artifactType,
       });
       const changedFileState = await api.acknowledgeUserSpaceChangedFilePath(activeWorkspaceId, { path: filePath });
       setChangedFiles(new Set(changedFileState.changed_file_paths));
@@ -2350,7 +2372,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } finally {
       setSavingTreeFile(null);
     }
-  }, [activeWorkspaceId, canEditWorkspace, fileContent, selectedFilePath]);
+  }, [activeWorkspaceId, canEditWorkspace, fileContent, selectedFileArtifactType, selectedFilePath]);
 
   const handleToggleWorkspaceTool = useCallback(async (toolId: string) => {
     if (!activeWorkspace || !canEditWorkspace) return;
@@ -2757,6 +2779,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               [selectedFilePath]: {
                 content: payload.content,
                 updatedAt: current[selectedFilePath]?.updatedAt ?? '',
+                artifactType: current[selectedFilePath]?.artifactType ?? selectedFileArtifactType,
               },
             }));
           }
@@ -3057,6 +3080,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         [nextPath]: {
           content: '',
           updatedAt: current[nextPath]?.updatedAt ?? '',
+          artifactType: current[nextPath]?.artifactType ?? null,
         },
       }));
       setNewFileName(null);
