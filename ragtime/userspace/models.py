@@ -24,6 +24,7 @@ RuntimeSessionState = Literal[
 ]
 RuntimeOperationPhase = Literal[
     "queued",
+    "provisioning",
     "bootstrapping",
     "deps_install",
     "launching",

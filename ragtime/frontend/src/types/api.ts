@@ -1636,6 +1636,7 @@ export interface UpdateConversationToolsRequest {
 export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
 export type UserSpaceArtifactType = 'module_ts';
 export type SqlitePersistenceMode = 'include' | 'exclude';
+export type UserSpaceWorkspaceDeletionPhase = 'queued' | 'deleting' | 'refreshing' | 'failed';
 
 export interface UserSpaceWorkspaceMember {
   user_id: string;
@@ -2097,6 +2098,7 @@ export interface UserSpaceSharedPreviewResponse {
 export type UserSpaceRuntimeSessionState = 'starting' | 'running' | 'stopping' | 'stopped' | 'error';
 export type UserSpaceRuntimeOperationPhase =
   | 'queued'
+  | 'provisioning'
   | 'bootstrapping'
   | 'deps_install'
   | 'launching'

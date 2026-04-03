@@ -21,15 +21,17 @@ from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.userspace.models import (RuntimeOperationPhase,
-                                      RuntimeSessionState,
-                                      UserSpaceCapabilityTokenResponse,
-                                      UserSpaceCollabSnapshotResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSession,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse)
+from ragtime.userspace.models import (
+    RuntimeOperationPhase,
+    RuntimeSessionState,
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceCollabSnapshotResponse,
+    UserSpaceFileResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSession,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -1144,6 +1146,7 @@ class UserSpaceRuntimeService:
         runtime_operation_updated_at: Any | None = None
         allowed_runtime_phases = {
             "queued",
+            "provisioning",
             "bootstrapping",
             "deps_install",
             "launching",
@@ -1380,9 +1383,7 @@ class UserSpaceRuntimeService:
             )
             await self.bump_workspace_generation(workspace_id, "mount_refresh")
             if provider_status is None:
-                return (
-                    "Sync completed, but the active runtime did not report a mount refresh result."
-                )
+                return "Sync completed, but the active runtime did not report a mount refresh result."
             return None
         except HTTPException as exc:
             detail = str(exc.detail).strip() or "runtime mount refresh failed"
@@ -2334,6 +2335,7 @@ class UserSpaceRuntimeService:
             )
             if raw_phase in {
                 "queued",
+                "provisioning",
                 "bootstrapping",
                 "deps_install",
                 "launching",

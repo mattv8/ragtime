@@ -989,12 +989,14 @@ async def spawn_sandboxed(
     stderr: int | IO[Any] | None = None,
     stdin: int | IO[Any] | None = None,
     start_new_session: bool = False,
+    ensure_ready: bool = True,
 ) -> asyncio.subprocess.Process:
     """Spawn a command inside the workspace sandbox.
 
     This is the ONLY way user commands should be executed.
     """
-    ensure_sandbox_ready(spec)
+    if ensure_ready:
+        await asyncio.to_thread(ensure_sandbox_ready, spec)
     preexec_fn = make_sandbox_preexec(spec, target_cwd=cwd)
     effective_env = sandbox_env(spec, env)
 

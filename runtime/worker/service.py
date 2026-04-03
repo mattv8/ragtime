@@ -10,7 +10,8 @@ import signal
 import socket
 import time
 import uuid
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -89,19 +90,11 @@ MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
 MAX_USERSPACE_SCREENSHOT_PIXELS = 1_440_000
 _SCREENSHOT_WAIT_AFTER_LOAD_FLOOR_MS = 900
 _SCREENSHOT_WAIT_AFTER_LOAD_HMR_FLOOR_MS = 1800
+_PLAYWRIGHT_BROKER_READY_TIMEOUT_SECONDS = 20.0
+_PLAYWRIGHT_BROKER_STDERR_MAX_LINES = 40
+_PLAYWRIGHT_BROKER_POOL_SIZE = 2
 
-_SCREENSHOT_JS_PATH = Path(__file__).with_name("screenshot.js")
-_CONTENT_PROBE_JS_PATH = Path(__file__).with_name("content_probe.js")
-
-
-def _load_screenshot_script() -> str:
-    """Load the Playwright screenshot script from the adjacent JS file."""
-    return _SCREENSHOT_JS_PATH.read_text(encoding="utf-8")
-
-
-def _load_content_probe_script() -> str:
-    """Load the Playwright content probe script from the adjacent JS file."""
-    return _CONTENT_PROBE_JS_PATH.read_text(encoding="utf-8")
+_PLAYWRIGHT_BROKER_JS_PATH = Path(__file__).with_name("playwright_broker.js")
 
 
 @dataclass
@@ -113,6 +106,16 @@ class DevserverResolution:
     framework: str | None = None
     cwd: str | None = None
     port: int | None = None
+
+
+@dataclass
+class PlaywrightBrokerSlot:
+    slot_id: int
+    process: asyncio.subprocess.Process | None = None
+    stderr_task: asyncio.Task[None] | None = None
+    stderr_lines: deque[str] = field(
+        default_factory=lambda: deque(maxlen=_PLAYWRIGHT_BROKER_STDERR_MAX_LINES)
+    )
 
 
 @dataclass
@@ -177,6 +180,20 @@ class WorkerService:
                 2,
             )
         )
+        self._playwright_pool_size = self._get_positive_int_env(
+            "RUNTIME_PLAYWRIGHT_BROKER_POOL_SIZE",
+            _PLAYWRIGHT_BROKER_POOL_SIZE,
+        )
+        self._playwright_slots = [
+            PlaywrightBrokerSlot(slot_id=index)
+            for index in range(self._playwright_pool_size)
+        ]
+        self._playwright_available_slots: asyncio.Queue[int] = asyncio.Queue(
+            maxsize=self._playwright_pool_size
+        )
+        for index in range(self._playwright_pool_size):
+            self._playwright_available_slots.put_nowait(index)
+        self._playwright_request_counter = 0
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -216,7 +233,6 @@ class WorkerService:
         workspace_files = workspace_root / "files"
         workspace_files.mkdir(parents=True, exist_ok=True)
         spec = get_sandbox_spec(workspace_id, workspace_root, workspace_files)
-        ensure_sandbox_ready(spec)
         return workspace_root, workspace_files, spec
 
     def _resolve_launch_cwd(self, session: WorkerSession) -> str:
@@ -337,7 +353,7 @@ class WorkerService:
         """Return canonical entrypoint status for a workspace."""
         return parse_entrypoint_config(workspace_root)
 
-    def _read_runtime_bootstrap_config(
+    def _read_runtime_bootstrap_config_sync(
         self, workspace_root: Path
     ) -> list[dict[str, str]]:
         config_path = workspace_root / RUNTIME_BOOTSTRAP_CONFIG_PATH
@@ -370,7 +386,15 @@ class WorkerService:
             )
         return normalized
 
-    def _runtime_bootstrap_config_digest(self, workspace_root: Path) -> str | None:
+    async def _read_runtime_bootstrap_config(
+        self, workspace_root: Path
+    ) -> list[dict[str, str]]:
+        return await asyncio.to_thread(
+            self._read_runtime_bootstrap_config_sync,
+            workspace_root,
+        )
+
+    def _runtime_bootstrap_config_digest_sync(self, workspace_root: Path) -> str | None:
         config_path = workspace_root / RUNTIME_BOOTSTRAP_CONFIG_PATH
         if not config_path.exists() or not config_path.is_file():
             return None
@@ -424,6 +448,14 @@ class WorkerService:
 
         return digest.hexdigest()
 
+    async def _runtime_bootstrap_config_digest(
+        self, workspace_root: Path
+    ) -> str | None:
+        return await asyncio.to_thread(
+            self._runtime_bootstrap_config_digest_sync,
+            workspace_root,
+        )
+
     def _resolve_bootstrap_relative_path(
         self,
         workspace_files: Path,
@@ -443,11 +475,15 @@ class WorkerService:
     ) -> str | None:
         workspace_root = session.workspace_files_path
         stamp_path = workspace_root / RUNTIME_BOOTSTRAP_STAMP_PATH
-        config_digest = self._runtime_bootstrap_config_digest(workspace_root)
+        config_digest = await self._runtime_bootstrap_config_digest(workspace_root)
         existing_digest = ""
         if stamp_path.exists() and stamp_path.is_file():
             try:
-                existing_digest = stamp_path.read_text(encoding="utf-8").strip()
+                existing_digest = await asyncio.to_thread(
+                    stamp_path.read_text,
+                    encoding="utf-8",
+                )
+                existing_digest = existing_digest.strip()
             except Exception:
                 existing_digest = ""
             if config_digest and existing_digest == config_digest:
@@ -455,7 +491,7 @@ class WorkerService:
             if not config_digest and existing_digest:
                 return None
 
-        commands = self._read_runtime_bootstrap_config(workspace_root)
+        commands = await self._read_runtime_bootstrap_config(workspace_root)
         if not commands:
             return None
 
@@ -511,6 +547,7 @@ class WorkerService:
                     cwd=sandbox_cwd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    ensure_ready=False,
                 )
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     process.communicate(),
@@ -536,7 +573,11 @@ class WorkerService:
 
         stamp_path.parent.mkdir(parents=True, exist_ok=True)
         stamp_value = config_digest or self._utc_now().isoformat()
-        stamp_path.write_text(stamp_value, encoding="utf-8")
+        await asyncio.to_thread(
+            stamp_path.write_text,
+            stamp_value,
+            encoding="utf-8",
+        )
         return None
 
     async def _ensure_entrypoint_dependencies(
@@ -567,6 +608,7 @@ class WorkerService:
                 cwd=SANDBOX_WORKSPACE_MOUNT,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                ensure_ready=False,
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 process.communicate(),
@@ -641,6 +683,236 @@ class WorkerService:
         if len(compact) > _RUNTIME_DEVSERVER_LOG_TAIL_CHARS:
             return compact[-_RUNTIME_DEVSERVER_LOG_TAIL_CHARS:]
         return compact
+
+    def _playwright_broker_error_tail(self, slot: PlaywrightBrokerSlot) -> str:
+        compact = " ".join(
+            line.replace("\x00", "").strip()
+            for line in slot.stderr_lines
+            if line and line.strip()
+        )
+        compact = " ".join(compact.split())
+        if len(compact) > _RUNTIME_DEVSERVER_LOG_TAIL_CHARS:
+            return compact[-_RUNTIME_DEVSERVER_LOG_TAIL_CHARS:]
+        return compact
+
+    async def _drain_playwright_stderr(
+        self,
+        slot: PlaywrightBrokerSlot,
+        stream: asyncio.StreamReader | None,
+    ) -> None:
+        if stream is None:
+            return
+        try:
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").strip()
+                if text:
+                    slot.stderr_lines.append(text)
+        except Exception:
+            pass
+
+    async def _terminate_playwright_broker_slot(
+        self,
+        slot: PlaywrightBrokerSlot,
+    ) -> None:
+        process = slot.process
+        stderr_task = slot.stderr_task
+        slot.process = None
+        slot.stderr_task = None
+
+        if process is not None:
+            stdin = process.stdin
+            if stdin is not None:
+                try:
+                    stdin.close()
+                except Exception:
+                    pass
+            if process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=3)
+                except Exception:
+                    process.kill()
+                    try:
+                        await process.wait()
+                    except Exception:
+                        pass
+
+        if stderr_task is not None and not stderr_task.done():
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+    async def _terminate_playwright_brokers(self) -> None:
+        for slot in self._playwright_slots:
+            await self._terminate_playwright_broker_slot(slot)
+
+    async def _ensure_playwright_broker_slot(
+        self,
+        slot: PlaywrightBrokerSlot,
+    ) -> asyncio.subprocess.Process:
+        process = slot.process
+        if (
+            process is not None
+            and process.returncode is None
+            and process.stdin is not None
+            and process.stdout is not None
+        ):
+            return process
+
+        if process is not None:
+            await self._terminate_playwright_broker_slot(slot)
+
+        node_binary = shutil.which("node")
+        if not node_binary:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Runtime screenshot/content probe requires Node.js in runtime container "
+                    "but it is not installed."
+                ),
+            )
+
+        slot.stderr_lines.clear()
+        node_env = {**os.environ, "NODE_PATH": "/usr/local/lib/node_modules"}
+        process = await asyncio.create_subprocess_exec(
+            node_binary,
+            str(_PLAYWRIGHT_BROKER_JS_PATH),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=node_env,
+        )
+        slot.process = process
+        slot.stderr_task = asyncio.create_task(
+            self._drain_playwright_stderr(slot, process.stderr)
+        )
+        stdout = process.stdout
+        if stdout is None:
+            await self._terminate_playwright_broker_slot(slot)
+            raise HTTPException(
+                status_code=503,
+                detail="Playwright broker stdout pipe was not created.",
+            )
+
+        try:
+            ready_line = await asyncio.wait_for(
+                stdout.readline(),
+                timeout=_PLAYWRIGHT_BROKER_READY_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            await self._terminate_playwright_broker_slot(slot)
+            stderr_tail = self._playwright_broker_error_tail(slot)
+            detail = "Timed out starting Playwright broker in runtime container."
+            if stderr_tail:
+                detail = f"{detail} {stderr_tail}"
+            raise HTTPException(status_code=503, detail=detail) from exc
+
+        if not ready_line:
+            await self._terminate_playwright_broker_slot(slot)
+            stderr_tail = self._playwright_broker_error_tail(slot)
+            detail = "Playwright broker exited before becoming ready."
+            if stderr_tail:
+                detail = f"{detail} {stderr_tail}"
+            raise HTTPException(status_code=503, detail=detail)
+
+        try:
+            ready_payload = json.loads(ready_line.decode("utf-8", errors="replace"))
+        except Exception:
+            ready_payload = {}
+
+        if ready_payload.get("type") != "ready":
+            await self._terminate_playwright_broker_slot(slot)
+            detail = str(
+                ready_payload.get("error") or "Invalid Playwright broker handshake"
+            )
+            stderr_tail = self._playwright_broker_error_tail(slot)
+            if stderr_tail:
+                detail = f"{detail}. {stderr_tail}"
+            raise HTTPException(status_code=503, detail=detail)
+
+        return process
+
+    async def _invoke_playwright_broker(
+        self,
+        request: dict[str, Any],
+        *,
+        timeout_ms: int,
+    ) -> dict[str, Any]:
+        slot_index = await self._playwright_available_slots.get()
+        slot = self._playwright_slots[slot_index]
+        try:
+            for attempt in range(2):
+                try:
+                    process = await self._ensure_playwright_broker_slot(slot)
+                    if process.stdin is None or process.stdout is None:
+                        raise RuntimeError("Playwright broker streams are unavailable")
+
+                    self._playwright_request_counter += 1
+                    request_id = f"pw-{slot.slot_id}-{self._playwright_request_counter}"
+                    payload = {"id": request_id, **request}
+                    process.stdin.write(
+                        (json.dumps(payload, separators=(",", ":")) + "\n").encode(
+                            "utf-8"
+                        )
+                    )
+                    await process.stdin.drain()
+                    response_line = await asyncio.wait_for(
+                        process.stdout.readline(),
+                        timeout=max(5.0, (int(timeout_ms) / 1000.0) + 5.0),
+                    )
+
+                    if not response_line:
+                        raise RuntimeError(
+                            "Playwright broker closed the response stream"
+                        )
+
+                    response = json.loads(
+                        response_line.decode("utf-8", errors="replace")
+                    )
+                    if response.get("id") != request_id:
+                        raise RuntimeError(
+                            "Playwright broker returned a mismatched response"
+                        )
+                    if response.get("ok"):
+                        result = response.get("result")
+                        return result if isinstance(result, dict) else {}
+
+                    code = str(response.get("code") or "")
+                    detail = str(response.get("error") or "Playwright request failed")
+                    stderr_tail = self._playwright_broker_error_tail(slot)
+                    if stderr_tail:
+                        detail = f"{detail}. {stderr_tail}"
+                    status_code = (
+                        503 if code in {"node_missing", "playwright_missing"} else 502
+                    )
+                    raise HTTPException(status_code=status_code, detail=detail)
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    await self._terminate_playwright_broker_slot(slot)
+                    if attempt == 0:
+                        continue
+                    stderr_tail = self._playwright_broker_error_tail(slot)
+                    detail = f"Playwright broker request failed: {exc}"
+                    if stderr_tail:
+                        detail = f"{detail}. {stderr_tail}"
+                    raise HTTPException(status_code=502, detail=detail) from exc
+
+            raise HTTPException(
+                status_code=502, detail="Playwright broker request failed"
+            )
+        finally:
+            try:
+                self._playwright_available_slots.put_nowait(slot_index)
+            except asyncio.QueueFull:
+                pass
 
     def _should_retry_bootstrap_after_exit(
         self,
@@ -877,8 +1149,18 @@ class WorkerService:
                     session = self._sessions.get(session_id)
                     if not session or session.runtime_operation_id != operation_id:
                         return
-                    self._set_operation_phase(session, "bootstrapping")
+                    self._set_operation_phase(session, "provisioning")
                     session.updated_at = self._utc_now()
+
+                try:
+                    await asyncio.to_thread(ensure_sandbox_ready, session.sandbox_spec)
+                except Exception as exc:
+                    await self._mark_operation_failed(
+                        session_id,
+                        operation_id,
+                        f"Failed to prepare runtime sandbox: {exc}",
+                    )
+                    return
 
                 try:
                     await self._materialize_workspace_mounts(session)
@@ -895,6 +1177,7 @@ class WorkerService:
                     if not session or session.runtime_operation_id != operation_id:
                         return
                     session.mount_targets_to_clear = set()
+                    self._set_operation_phase(session, "bootstrapping")
                     session.updated_at = self._utc_now()
 
                 bootstrap_error = await self._run_workspace_bootstrap_if_needed(session)
@@ -990,6 +1273,7 @@ class WorkerService:
                         stdout=log_handle,
                         stderr=asyncio.subprocess.STDOUT,
                         start_new_session=True,
+                        ensure_ready=False,
                     )
                 except FileNotFoundError:
                     try:
@@ -1025,7 +1309,9 @@ class WorkerService:
                         self._devserver_log_handles.pop(session.id, None)
                         session.state = "running"
                         session.devserver_running = False
-                        session.last_error = _spawn_error or "Failed to launch dev server"
+                        session.last_error = (
+                            _spawn_error or "Failed to launch dev server"
+                        )
                         self._set_operation_phase(session, "failed")
                         session.updated_at = self._utc_now()
                         return
@@ -1488,57 +1774,24 @@ class WorkerService:
 
             output_path = output_dir / safe_candidate
 
-        node_binary = shutil.which("node")
-        if not node_binary:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Runtime screenshot capture requires Node.js in runtime container "
-                    "but it is not installed."
-                ),
-            )
-
-        # Ensure Node.js can resolve globally-installed packages (e.g. playwright)
-        node_env = {**os.environ, "NODE_PATH": "/usr/local/lib/node_modules"}
-
-        process = await asyncio.create_subprocess_exec(
-            node_binary,
-            "-e",
-            _load_screenshot_script(),
-            cache_busted_url,
-            str(output_path),
-            str(width),
-            str(height),
-            "true" if payload.full_page else "false",
-            str(payload.timeout_ms),
-            wait_selector,
-            "true" if capture_element else "false",
-            str(requested_clip_padding_px),
-            str(requested_wait_after_load_ms),
-            "true" if payload.refresh_before_capture else "false",
-            str(MAX_USERSPACE_SCREENSHOT_PIXELS),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=node_env,
+        probe = await self._invoke_playwright_broker(
+            {
+                "type": "screenshot",
+                "url": cache_busted_url,
+                "output_path": str(output_path),
+                "viewport_width": width,
+                "viewport_height": height,
+                "capture_full_page": bool(payload.full_page),
+                "timeout_ms": int(payload.timeout_ms),
+                "wait_for_selector": wait_selector,
+                "capture_element": capture_element,
+                "clip_padding_px": requested_clip_padding_px,
+                "wait_after_load_ms": requested_wait_after_load_ms,
+                "refresh_before_capture": bool(payload.refresh_before_capture),
+                "max_pixels": MAX_USERSPACE_SCREENSHOT_PIXELS,
+            },
+            timeout_ms=int(payload.timeout_ms),
         )
-        stdout, stderr = await process.communicate()
-        stdout_text = stdout.decode("utf-8", errors="replace").strip()
-        stderr_text = stderr.decode("utf-8", errors="replace").strip()
-
-        if process.returncode != 0:
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    "Runtime screenshot capture failed. Ensure Playwright + Chromium "
-                    f"are available in runtime container. {stderr_text or stdout_text or 'unknown error'}"
-                ),
-            )
-
-        probe: dict[str, Any]
-        try:
-            probe = json.loads(stdout_text) if stdout_text else {}
-        except Exception:
-            probe = {}
 
         if not output_path.exists() or not output_path.is_file():
             raise HTTPException(
@@ -1610,47 +1863,18 @@ class WorkerService:
                 else f"{upstream_base}/"
             )
 
-        node_binary = shutil.which("node")
-        if not node_binary:
-            raise HTTPException(
-                status_code=503,
-                detail="Content probe requires Node.js but it is not installed.",
-            )
-
-        node_env = {**os.environ, "NODE_PATH": "/usr/local/lib/node_modules"}
-
-        inject_mock_flag = "true" if getattr(payload, "inject_mock_context", False) else "false"
-
-        process = await asyncio.create_subprocess_exec(
-            node_binary,
-            "-e",
-            _load_content_probe_script(),
-            upstream_url,
-            str(payload.timeout_ms),
-            str(payload.wait_after_load_ms),
-            inject_mock_flag,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=node_env,
-        )
-        stdout, stderr = await process.communicate()
-        stdout_text = stdout.decode("utf-8", errors="replace").strip()
-        stderr_text = stderr.decode("utf-8", errors="replace").strip()
-
-        if process.returncode != 0:
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    "Content probe failed. Ensure Playwright + Chromium "
-                    f"are available. {stderr_text or stdout_text or 'unknown error'}"
+        probe = await self._invoke_playwright_broker(
+            {
+                "type": "content_probe",
+                "url": upstream_url,
+                "timeout_ms": int(payload.timeout_ms),
+                "wait_after_load_ms": int(payload.wait_after_load_ms),
+                "inject_mock_context": bool(
+                    getattr(payload, "inject_mock_context", False)
                 ),
-            )
-
-        probe: dict[str, Any]
-        try:
-            probe = json.loads(stdout_text) if stdout_text else {}
-        except Exception:
-            probe = {}
+            },
+            timeout_ms=int(payload.timeout_ms),
+        )
 
         return RuntimeContentProbeResponse(
             ok=probe.get("ok", False),
@@ -1684,6 +1908,7 @@ class WorkerService:
             if not session.devserver_running or not session.devserver_port:
                 if session.runtime_operation_phase in {
                     "queued",
+                    "provisioning",
                     "bootstrapping",
                     "deps_install",
                     "launching",
@@ -1724,6 +1949,7 @@ class WorkerService:
                     task.cancel()
             for sid in list(self._devserver_processes.keys()):
                 await self._terminate_devserver_locked(sid)
+        await self._terminate_playwright_brokers()
 
     async def health(self) -> WorkerHealthResponse:
         async with self._lock:

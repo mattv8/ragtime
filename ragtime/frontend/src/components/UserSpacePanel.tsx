@@ -28,7 +28,7 @@ import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceWorkspace, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { LdapGroupSelect } from './LdapGroupSelect';
@@ -56,6 +56,25 @@ interface CachedUserSpaceFile {
 type MountSyncPreviewIntent = 'sync' | 'enable-auto' | 'update-auto-sync-mode';
 
 const DEFAULT_WORKSPACE_CHAT_STATE: WorkspaceChatState = { hasLive: false, hasInterrupted: false };
+
+function formatWorkspaceDeletionStatus(
+  phase: UserSpaceWorkspaceDeletionPhase | null,
+  workspaceName: string | null,
+): string | null {
+  const label = workspaceName?.trim() || 'workspace';
+  switch (phase) {
+    case 'queued':
+      return `Preparing to delete ${label}...`;
+    case 'deleting':
+      return `Deleting ${label}...`;
+    case 'refreshing':
+      return 'Refreshing workspace list...';
+    case 'failed':
+      return `Failed to delete ${label}.`;
+    default:
+      return null;
+  }
+}
 
 function normalizeWorkspacePath(value: string): string {
   return value.trim().replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
@@ -560,7 +579,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [creatingWorkspaceStatus, setCreatingWorkspaceStatus] = useState<string | null>(null);
   const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
-  const [deletingWorkspaceStatus, setDeletingWorkspaceStatus] = useState<string | null>(null);
+  const [deletingWorkspaceName, setDeletingWorkspaceName] = useState<string | null>(null);
+  const [deletingWorkspacePhase, setDeletingWorkspacePhase] = useState<UserSpaceWorkspaceDeletionPhase | null>(null);
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [shareLinkType, setShareLinkType] = useState<'named' | 'anonymous'>('named');
@@ -1200,9 +1220,25 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const runtimeOperationLabel = useMemo(() => {
     const phase = runtimeStatus?.runtime_operation_phase;
     if (!phase) return null;
+    if (phase === 'provisioning') return 'preparing sandbox';
     if (phase === 'deps_install') return 'installing deps';
     return phase.replace(/_/g, ' ');
   }, [runtimeStatus?.runtime_operation_phase]);
+
+  const runtimeOverlayStatus = useMemo(() => {
+    if (runtimeDisplayState === 'starting') {
+      return `Starting runtime${runtimeOperationLabel ? ` (${runtimeOperationLabel})` : ''}...`;
+    }
+    if (runtimeDisplayState === 'stopping') {
+      return 'Stopping runtime...';
+    }
+    return null;
+  }, [runtimeDisplayState, runtimeOperationLabel]);
+
+  const deletingWorkspaceStatus = useMemo(
+    () => formatWorkspaceDeletionStatus(deletingWorkspacePhase, deletingWorkspaceName),
+    [deletingWorkspaceName, deletingWorkspacePhase],
+  );
 
   const showStartRuntimeButton = runtimeDisplayState === 'stopped' || runtimeDisplayState === 'error';
   const showRestartRuntimeButton = runtimeDisplayState === 'running';
@@ -1226,15 +1262,26 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     try {
       const offset = append ? workspaces.length : 0;
       const page = await api.listUserSpaceWorkspaces(offset, 50);
+      const pendingDeleteWorkspaceId = deletingWorkspaceId;
+      const visibleItems = page.items.filter((workspace) => workspace.id !== pendingDeleteWorkspaceId);
       if (append) {
-        setWorkspaces((prev) => [...prev, ...page.items]);
+        setWorkspaces((prev) => [
+          ...prev,
+          ...visibleItems.filter((workspace) => !prev.some((existing) => existing.id === workspace.id)),
+        ]);
       } else {
-        let nextItems = page.items;
+        let nextItems = visibleItems;
 
-        if (activeWorkspaceId && !nextItems.some((workspace) => workspace.id === activeWorkspaceId)) {
+        if (
+          activeWorkspaceId
+          && activeWorkspaceId !== pendingDeleteWorkspaceId
+          && !nextItems.some((workspace) => workspace.id === activeWorkspaceId)
+        ) {
           try {
             const activeWorkspace = await api.getUserSpaceWorkspace(activeWorkspaceId);
-            nextItems = [activeWorkspace, ...nextItems.filter((workspace) => workspace.id !== activeWorkspace.id)];
+            if (activeWorkspace.id !== pendingDeleteWorkspaceId) {
+              nextItems = [activeWorkspace, ...nextItems.filter((workspace) => workspace.id !== activeWorkspace.id)];
+            }
           } catch {
             // Ignore fetch errors for active workspace backfill.
           }
@@ -1246,21 +1293,24 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           clearCookieValue(lastWorkspaceCookieName);
         } else if (!activeWorkspaceId) {
           const lastWorkspaceId = getCookieValue(lastWorkspaceCookieName);
-          const matchingWorkspace = lastWorkspaceId
-            ? nextItems.find((workspace) => workspace.id === lastWorkspaceId)
+          const restorableWorkspaceId = lastWorkspaceId === pendingDeleteWorkspaceId ? null : lastWorkspaceId;
+          const matchingWorkspace = restorableWorkspaceId
+            ? nextItems.find((workspace) => workspace.id === restorableWorkspaceId)
             : null;
 
           if (matchingWorkspace) {
             setActiveWorkspaceId(matchingWorkspace.id);
-          } else if (lastWorkspaceId) {
+          } else if (restorableWorkspaceId) {
             try {
-              const workspace = await api.getUserSpaceWorkspace(lastWorkspaceId);
-              setWorkspaces((prev) => (
-                prev.some((item) => item.id === workspace.id)
-                  ? prev
-                  : [workspace, ...prev]
-              ));
-              setActiveWorkspaceId(workspace.id);
+              const workspace = await api.getUserSpaceWorkspace(restorableWorkspaceId);
+              if (workspace.id !== pendingDeleteWorkspaceId) {
+                setWorkspaces((prev) => (
+                  prev.some((item) => item.id === workspace.id)
+                    ? prev
+                    : [workspace, ...prev]
+                ));
+                setActiveWorkspaceId(workspace.id);
+              }
             } catch {
               setActiveWorkspaceId(nextItems[0].id);
             }
@@ -1269,7 +1319,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           }
         }
       }
-      setWorkspacesTotal(page.total);
+      setWorkspacesTotal(Math.max(0, page.total - (pendingDeleteWorkspaceId ? 1 : 0)));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load User Space workspaces');
@@ -1277,7 +1327,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [activeWorkspaceId, lastWorkspaceCookieName, workspaces.length]);
+  }, [activeWorkspaceId, deletingWorkspaceId, lastWorkspaceCookieName, workspaces.length]);
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
@@ -2584,7 +2634,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const handleStartRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
     setRuntimeBusy(true);
-    setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'starting' } : prev);
+    setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'starting', runtime_operation_phase: 'queued', last_error: null } : prev);
     try {
       await api.startUserSpaceRuntimeSession(activeWorkspaceId);
       await refreshRuntimeStatus();
@@ -2614,7 +2664,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const handleRestartRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
     setRuntimeBusy(true);
-    setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'starting' } : prev);
+    setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'starting', runtime_operation_phase: 'queued', last_error: null } : prev);
     try {
       await api.restartUserSpaceRuntimeDevserver(activeWorkspaceId);
       await refreshRuntimeStatus();
@@ -3309,18 +3359,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const handleDeleteWorkspace = useCallback(async (workspaceId: string) => {
     setError(null);
-    setDeletingWorkspaceId(workspaceId);
-    setDeletingWorkspaceStatus('Deleting workspace...');
-
+    const workspaceToDelete = workspaces.find((workspace) => workspace.id === workspaceId) ?? null;
+    const workspaceName = workspaceToDelete?.name ?? 'workspace';
     const deletingActiveWorkspace = activeWorkspaceId === workspaceId;
     const fallbackWorkspaceId = deletingActiveWorkspace
       ? workspaces.find((workspace) => workspace.id !== workspaceId)?.id ?? null
       : activeWorkspaceId;
+    let restoreDeletedWorkspace = false;
+
+    setDeletingWorkspaceId(workspaceId);
+    setDeletingWorkspaceName(workspaceName);
+    setDeletingWorkspacePhase('queued');
 
     setDeleteConfirmWorkspaceId(null);
     setIsWorkspaceMenuOpen(false);
-    setWorkspaces((current) => current.filter((workspace) => workspace.id !== workspaceId));
-    setWorkspacesTotal((current) => Math.max(0, current - 1));
 
     if (deletingActiveWorkspace) {
       setRuntimeStatus(null);
@@ -3343,9 +3395,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
 
     try {
+      setDeletingWorkspacePhase('deleting');
       await api.deleteUserSpaceWorkspace(workspaceId);
 
-      setDeletingWorkspaceStatus('Refreshing workspace list...');
+      setDeletingWorkspacePhase('refreshing');
       await loadWorkspaces();
     } catch (err) {
       try {
@@ -3356,13 +3409,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
       try {
         await api.getUserSpaceWorkspace(workspaceId);
+        restoreDeletedWorkspace = true;
+        setDeletingWorkspacePhase('failed');
         setError(err instanceof Error ? err.message : 'Failed to delete workspace');
       } catch {
         setError(null);
       }
     } finally {
-      setDeletingWorkspaceStatus(null);
+      if (restoreDeletedWorkspace && workspaceToDelete) {
+        setWorkspaces((current) => (
+          current.some((workspace) => workspace.id === workspaceToDelete.id)
+            ? current
+            : [workspaceToDelete, ...current]
+        ));
+        setWorkspacesTotal((current) => current + 1);
+        if (deletingActiveWorkspace && !fallbackWorkspaceId) {
+          setActiveWorkspaceId(workspaceToDelete.id);
+        }
+      }
+
+      setDeletingWorkspacePhase(null);
       setDeletingWorkspaceId(null);
+      setDeletingWorkspaceName(null);
     }
   }, [activeWorkspaceId, lastWorkspaceCookieName, loadWorkspaces, workspaces]);
 
@@ -4502,7 +4570,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     : 'Two-lane persistence mode. Live data wiring is primary for dashboards; SQLite local state is persisted with snapshots. Click to switch to live data only mode.';
   const formattedError = useMemo(() => formatUserSpaceErrorMessage(error), [error]);
   const hasStatusOverlayContent = Boolean(
-    loading || creatingWorkspace || deletingWorkspaceId || (formattedError && !creatingWorkspace && !deletingWorkspaceId)
+    loading || creatingWorkspace || deletingWorkspaceId || runtimeOverlayStatus || (formattedError && !creatingWorkspace && !deletingWorkspaceId)
   );
   const statusOverlaySignature = useMemo(() => JSON.stringify({
     loading,
@@ -4510,6 +4578,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     creatingWorkspaceStatus,
     deletingWorkspaceId,
     deletingWorkspaceStatus,
+    runtimeOverlayStatus,
     formattedError: formattedError && !creatingWorkspace && !deletingWorkspaceId ? formattedError : null,
   }), [
     loading,
@@ -4517,6 +4586,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     creatingWorkspaceStatus,
     deletingWorkspaceId,
     deletingWorkspaceStatus,
+    runtimeOverlayStatus,
     formattedError,
   ]);
 
@@ -4538,7 +4608,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   }, [hasStatusOverlayContent, statusOverlaySignature]);
 
   useEffect(() => {
-    if (!hasStatusOverlayContent || !statusOverlayVisible || statusOverlayPinned || statusOverlayInteracting) {
+    if (!hasStatusOverlayContent || !statusOverlayVisible || statusOverlayPinned || statusOverlayInteracting || runtimeOverlayStatus) {
       setStatusOverlayFading(false);
       return;
     }
@@ -4561,6 +4631,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     statusOverlayVisible,
     statusOverlayPinned,
     statusOverlayInteracting,
+    runtimeOverlayStatus,
     statusOverlaySignature,
   ]);
 
@@ -4655,7 +4726,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                             role="option"
                             aria-selected={ws.id === activeWorkspaceId}
                             className="userspace-workspace-select-btn"
-                            disabled={Boolean(deletingWorkspaceId)}
+                            disabled={isDeletingWorkspace}
                             onClick={() => {
                               if (ws.id !== activeWorkspaceId) {
                                   setRuntimeStatus(null);
@@ -5002,6 +5073,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           {deletingWorkspaceId && (
             <p className="userspace-status userspace-status-overlay-item">
               <MiniLoadingSpinner variant="icon" size={14} /> {deletingWorkspaceStatus || 'Deleting workspace...'}
+            </p>
+          )}
+          {runtimeOverlayStatus && !creatingWorkspace && !deletingWorkspaceId && (
+            <p className="userspace-status userspace-status-overlay-item">
+              <MiniLoadingSpinner variant="icon" size={14} /> {runtimeOverlayStatus}
             </p>
           )}
           {formattedError && !creatingWorkspace && !deletingWorkspaceId && (
