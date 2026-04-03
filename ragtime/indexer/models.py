@@ -2326,6 +2326,7 @@ class ProviderPromptDebugRecord(BaseModel):
     tool_scope_prompt: str = ""
     prompt_additions: str = ""
     turn_reminders: str = ""
+    debug_metadata: Optional[dict] = None
     prompt_token_count: Optional[int] = None
     message_index: Optional[int] = None
     created_at: datetime

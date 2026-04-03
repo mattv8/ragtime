@@ -87,17 +87,21 @@ This is a turn-level reminder to follow real tool-calling behavior.
 """
 
 _USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
+- Preferred implementation loop: assay -> read/inspect -> minimal write -> validate -> patch -> validate -> snapshot.
 - Before finalizing, run validate_userspace_code on EVERY changed source file
     (including .ts/.tsx, .py, .js, .html, and the entrypoint), then fix all reported errors.
 - Persist implementation changes via userspace file tools (not chat-only prose).
 - Build first; do not generate docs/readmes/specs/plans/changelogs unless the user explicitly requested documentation.
 - Treat any tool result with rejected=true as a failed step and fix/retry.
+- Treat any tool result with retryable=false as a strategy failure: change approach before retrying the same call.
+- If a tool result includes next_best_tool, follow that recommendation unless new evidence changes the plan.
 - If a tool result has persisted_with_violations=true, the file WAS saved but has contract issues:
     use patch_userspace_file to fix the specific violations listed in contract_violations
     (do NOT re-send the full file content).
 - Never use hardcoded/mock/sample/static data in entrypoint files (dashboard/main.ts, app.py, etc.)
     when the workspace has selected tools; wire live data instead.
 {sqlite_reminder_line}{env_var_reminder_line}- Prefer incremental edits: use patch_userspace_file or targeted upsert_userspace_file calls to extend existing code rather than regenerating entire files.
+- If validation reports TypeScript/runtime/live-data failures, fix those exact failures before adding more feature work.
 - After validation passes with no errors, call create_userspace_snapshot with a concise completion message.
 - Never skip validation or snapshot.
 - Finalization sequence: validate -> fix errors -> validate again -> snapshot.
@@ -240,6 +244,14 @@ USERSPACE_SHARED_LIVE_DATA_GUARDRAILS = """
 - Use SQLite only for out-of-scope local persistence (for example: UI preferences, drafts, local cache, or non-live operational state).
 - If live wiring is blocked by missing context, persist a scaffold with `execute()` call sites and state the blocker. Do NOT substitute mock data.
 - If no tools are selected for the workspace, report the conflict and request tool configuration before proceeding. Do NOT fabricate data.
+
+Good live-data pattern:
+- `const rows = await context.components[componentId].execute(request)` inside a try/catch, then pass `rows` into charts, tables, and derived UI state.
+
+Bad live-data pattern:
+- `const rows = [{ ...mock objects... }]`
+- `const rows = await db.query('select ...')` when the dashboard dataset is supposed to come from workspace tool connections.
+- Persisting `live_data_connections` metadata without actual `context.components[componentId].execute()` call sites in module code.
 """
 
 
@@ -472,6 +484,7 @@ def build_workspace_continuity_context(
     framework: str | None,
     entrypoint_valid: bool,
     last_snapshot_message: str | None,
+    recent_failure_summaries: list[str] | None = None,
 ) -> str:
     """Build the workspace continuity prompt section.
 
@@ -509,14 +522,23 @@ def build_workspace_continuity_context(
             f'- Last snapshot: "{last_snapshot_message[:_WORKSPACE_CONTINUITY_MAX_SNAPSHOT_CHARS].strip()}"'
         )
 
+    failure_block = ""
+    if recent_failure_summaries:
+        failure_lines = "\n".join(
+            f"- {item}" for item in recent_failure_summaries[:3] if str(item).strip()
+        )
+        if failure_lines:
+            failure_block = (
+                "\n\n**Recent failed attempts to avoid repeating:**\n" + failure_lines
+            )
+
     rules_block = "\n".join(_WORKSPACE_CONTINUITY_EXISTING_RULES)
 
     return (
         "### Workspace continuity\n"
         "\n"
         "This workspace contains an existing application. Build on top of it.\n"
-        "\n" + "\n".join(state_lines) + "\n"
-        "\n"
+        "\n" + "\n".join(state_lines) + "\n" + failure_block + "\n"
         "**Rules for existing workspaces:**\n" + rules_block
     )
 

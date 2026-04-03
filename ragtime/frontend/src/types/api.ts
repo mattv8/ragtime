@@ -2394,6 +2394,7 @@ export interface ProviderPromptDebugRecord {
   tool_scope_prompt: string;
   prompt_additions: string;
   turn_reminders: string;
+  debug_metadata?: Record<string, unknown> | null;
   prompt_token_count?: number | null;
   message_index?: number | null;
   created_at: string;

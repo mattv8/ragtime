@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,6 +22,7 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -2259,6 +2259,7 @@ class IndexerRepository:
         tool_scope_prompt: str = "",
         prompt_additions: str = "",
         turn_reminders: str = "",
+        debug_metadata: Optional[dict[str, Any]] = None,
         user_id: Optional[str] = None,
         chat_task_id: Optional[str] = None,
         message_index: Optional[int] = None,
@@ -2292,6 +2293,9 @@ class IndexerRepository:
                         "toolScopePrompt": _sanitize_for_postgres(tool_scope_prompt),
                         "promptAdditions": _sanitize_for_postgres(prompt_additions),
                         "turnReminders": _sanitize_for_postgres(turn_reminders),
+                        "debugMetadata": (
+                            Json(debug_metadata) if debug_metadata is not None else None
+                        ),
                         "messageIndex": message_index,
                     },
                 )
@@ -2378,6 +2382,7 @@ class IndexerRepository:
             tool_scope_prompt=prisma_record.toolScopePrompt,
             prompt_additions=prisma_record.promptAdditions,
             turn_reminders=prisma_record.turnReminders,
+            debug_metadata=getattr(prisma_record, "debugMetadata", None),
             message_index=getattr(prisma_record, "messageIndex", None),
             created_at=prisma_record.createdAt,
         )

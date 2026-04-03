@@ -5,6 +5,7 @@ RAG Components - FAISS Vector Store and LangChain Agent setup.
 import asyncio
 import base64
 import fnmatch
+import hashlib
 import io
 import json
 import math
@@ -17,7 +18,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path, PurePosixPath
-from typing import Any, List, Optional, Union
+from typing import Any, List, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
@@ -183,6 +184,11 @@ _USERSPACE_LIVE_DATA_BINDING_VALIDATOR_JS_PATH = Path(__file__).with_name(
 _USERSPACE_TYPESCRIPT_VALIDATOR_JS_PATH = Path(__file__).with_name(
     "userspace_typescript_validator.js"
 )
+
+USERSPACE_RECENT_FAILURE_LIMIT = 6
+USERSPACE_RECENT_FAILURE_PROMPT_LIMIT = 3
+USERSPACE_TOOL_REPEAT_THRESHOLD = 2
+USERSPACE_TOOL_ROUND_SUMMARY_LIMIT = 10
 
 
 def escape_prompt_template_braces(text: str) -> str:
@@ -1284,6 +1290,436 @@ class RAGComponents:
         self._image_downsample_semaphore = asyncio.Semaphore(
             IMAGE_DOWNSAMPLE_MAX_CONCURRENCY
         )
+        self._userspace_recent_failures: dict[str, list[dict[str, Any]]] = {}
+
+    @staticmethod
+    def _stable_tool_signature(
+        tool_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> str:
+        payload = {
+            "tool": tool_name,
+            "args": args,
+            "kwargs": kwargs,
+        }
+        serialized = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _parse_json_object(value: Any) -> dict[str, Any] | None:
+        if isinstance(value, dict):
+            return value
+        if not isinstance(value, str):
+            return None
+        raw = value.strip()
+        if not raw.startswith("{"):
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @classmethod
+    def _classify_userspace_failure(cls, *messages: Any) -> str:
+        combined = " ".join(str(message or "") for message in messages).lower()
+        if not combined:
+            return "validation_failed"
+        if "repeated identical tool call" in combined or "strategy failure" in combined:
+            return "repeated_tool_call"
+        if (
+            "no server-verified execution proof" in combined
+            or "execution proof" in combined
+        ):
+            return "execution_proof_missing"
+        if (
+            "no runnable web entrypoint found" in combined
+            or "missing runtime entrypoint" in combined
+        ):
+            return "entrypoint_missing"
+        if ".ragtime/runtime-entrypoint.json" in combined and (
+            "invalid" in combined
+            or "parsing failed" in combined
+            or "invalid json" in combined
+        ):
+            return "entrypoint_invalid"
+        if "entry-point wiring required" in combined:
+            return "entrypoint_wiring_required"
+        if "live_data_connections" in combined:
+            return "live_connections_missing"
+        if "live_data_checks" in combined:
+            return "live_checks_missing"
+        if "context.components" in combined or "live data binding" in combined:
+            return "live_binding_missing"
+        if "hardcoded data" in combined or "mock data" in combined:
+            return "hardcoded_data_detected"
+        if (
+            "unable to resolve local import" in combined
+            or "unsupported bare imports" in combined
+        ):
+            return "import_contract_error"
+        if "typescript" in combined or "contract violation" in combined:
+            return "typescript_error"
+        if "blank page" in combined or "blank screen" in combined:
+            return "runtime_blank_preview"
+        if "browser console" in combined or "javascript exception" in combined:
+            return "runtime_console_error"
+        if "directory listing" in combined:
+            return "runtime_entrypoint_misconfigured"
+        if "devserver is not running" in combined:
+            return "runtime_unavailable"
+        if (
+            "invalid live_data_connections component_id" in combined
+            or "invalid live_data_checks component_id" in combined
+        ):
+            return "invalid_component_id"
+        if "invalid file path" in combined or "does not exist" in combined:
+            return "path_invalid"
+        return "validation_failed"
+
+    @staticmethod
+    def _next_best_tool_for_failure(
+        failure_class: str, fallback_tool: str = "patch_userspace_file"
+    ) -> str:
+        if failure_class in {"repeated_tool_call", "path_invalid"}:
+            return "read_userspace_file"
+        if failure_class in {
+            "live_connections_missing",
+            "live_checks_missing",
+            "live_binding_missing",
+            "execution_proof_missing",
+        }:
+            return "assay_userspace_code"
+        if failure_class in {
+            "runtime_blank_preview",
+            "runtime_console_error",
+            "runtime_unavailable",
+        }:
+            return "run_terminal_command"
+        if failure_class in {
+            "entrypoint_missing",
+            "entrypoint_invalid",
+            "entrypoint_wiring_required",
+        }:
+            return "upsert_userspace_file"
+        if failure_class in {
+            "typescript_error",
+            "import_contract_error",
+            "hardcoded_data_detected",
+        }:
+            return fallback_tool
+        return fallback_tool
+
+    def _record_userspace_failure(
+        self,
+        workspace_id: str,
+        *,
+        failure_class: str,
+        summary: str,
+        tool_name: str | None = None,
+        resolved: bool = False,
+    ) -> None:
+        if not workspace_id or not summary.strip():
+            return
+
+        entries = self._userspace_recent_failures.setdefault(workspace_id, [])
+        normalized_summary = summary.strip()
+        for entry in reversed(entries):
+            if (
+                entry.get("failure_class") == failure_class
+                and entry.get("summary") == normalized_summary
+                and entry.get("tool_name") == tool_name
+            ):
+                entry["resolved"] = resolved
+                entry["updated_at"] = time.time()
+                return
+
+        entries.append(
+            {
+                "failure_class": failure_class,
+                "summary": normalized_summary,
+                "tool_name": tool_name,
+                "resolved": resolved,
+                "updated_at": time.time(),
+            }
+        )
+        if len(entries) > USERSPACE_RECENT_FAILURE_LIMIT:
+            del entries[:-USERSPACE_RECENT_FAILURE_LIMIT]
+
+    def _mark_userspace_failures_resolved(
+        self,
+        workspace_id: str,
+        resolution_summary: str,
+    ) -> None:
+        entries = self._userspace_recent_failures.get(workspace_id)
+        if not entries:
+            return
+        now = time.time()
+        for entry in entries:
+            if not entry.get("resolved"):
+                entry["resolved"] = True
+                entry["resolution_summary"] = resolution_summary
+                entry["updated_at"] = now
+
+    def _get_userspace_recent_failure_summaries(self, workspace_id: str) -> list[str]:
+        entries = self._userspace_recent_failures.get(workspace_id, [])
+        summaries: list[str] = []
+        for entry in sorted(
+            entries,
+            key=lambda item: float(item.get("updated_at", 0)),
+            reverse=True,
+        )[:USERSPACE_RECENT_FAILURE_PROMPT_LIMIT]:
+            failure_class = str(entry.get("failure_class", "validation_failed"))
+            summary = str(entry.get("summary", "")).strip()
+            if not summary:
+                continue
+            status = "resolved" if entry.get("resolved") else "unresolved"
+            summaries.append(f"{failure_class}: {summary} [{status}]")
+        return summaries
+
+    @classmethod
+    def _group_userspace_validation_diagnostics(
+        cls,
+        *,
+        errors: list[str],
+        contract_errors: list[str],
+        runtime_errors: list[str],
+        runtime_warnings: list[str],
+    ) -> dict[str, list[str]]:
+        groups: dict[str, list[str]] = {
+            "entrypoint": [],
+            "live_data": [],
+            "imports": [],
+            "typescript": [],
+            "runtime": [],
+            "policy": [],
+            "other": [],
+        }
+
+        def add(group: str, message: str) -> None:
+            text = str(message or "").strip()
+            if text and text not in groups[group]:
+                groups[group].append(text)
+
+        for message in errors:
+            failure_class = cls._classify_userspace_failure(message)
+            if failure_class.startswith("entrypoint"):
+                add("entrypoint", message)
+            elif failure_class in {
+                "live_connections_missing",
+                "live_checks_missing",
+                "live_binding_missing",
+                "execution_proof_missing",
+                "invalid_component_id",
+            }:
+                add("live_data", message)
+            elif failure_class == "import_contract_error":
+                add("imports", message)
+            elif failure_class in {
+                "runtime_blank_preview",
+                "runtime_console_error",
+                "runtime_unavailable",
+                "runtime_entrypoint_misconfigured",
+            }:
+                add("runtime", message)
+            elif failure_class == "hardcoded_data_detected":
+                add("policy", message)
+            elif failure_class == "typescript_error":
+                add("typescript", message)
+            else:
+                add("other", message)
+
+        for message in contract_errors:
+            add(
+                (
+                    "live_data"
+                    if "live_data" in message.lower()
+                    or "context.components" in message.lower()
+                    else "typescript"
+                ),
+                message,
+            )
+        for message in runtime_errors:
+            add("runtime", message)
+        for message in runtime_warnings:
+            add("runtime", message)
+
+        return {key: value for key, value in groups.items() if value}
+
+    def _wrap_runtime_tools_with_request_state(
+        self,
+        tools: list[Any],
+        *,
+        mode: str,
+        workspace_id: str | None = None,
+    ) -> tuple[list[Any], dict[str, Any]]:
+        request_state: dict[str, Any] = {
+            "tool_calls": cast(list[dict[str, Any]], []),
+            "signature_counts": cast(dict[str, int], {}),
+            "blocked_repeat_calls": 0,
+            "max_iterations_reached": False,
+        }
+        if mode != "userspace" or not tools:
+            return tools, request_state
+
+        repeat_threshold = USERSPACE_TOOL_REPEAT_THRESHOLD
+        wrapped_tools: list[Any] = []
+
+        for tool in tools:
+            tool_name = getattr(tool, "name", "")
+            original_coroutine = getattr(tool, "coroutine", None)
+            if not tool_name or original_coroutine is None:
+                wrapped_tools.append(tool)
+                continue
+
+            async def guarded_coroutine(
+                *args: Any,
+                _tool_name: str = tool_name,
+                _orig=original_coroutine,
+                **kwargs: Any,
+            ) -> Any:
+                signature = self._stable_tool_signature(_tool_name, args, kwargs)
+                signature_counts = cast(
+                    dict[str, int], request_state["signature_counts"]
+                )
+                call_count = int(signature_counts.get(signature, 0)) + 1
+                signature_counts[signature] = call_count
+
+                if call_count > repeat_threshold:
+                    failure_class = "repeated_tool_call"
+                    payload = {
+                        "tool": _tool_name,
+                        "status": "rejected_not_persisted",
+                        "rejected": True,
+                        "persisted": False,
+                        "retryable": False,
+                        "failure_class": failure_class,
+                        "message": (
+                            f"Repeated identical tool call blocked for {_tool_name}. "
+                            "Read the latest tool output and change strategy before retrying."
+                        ),
+                        "action_required": (
+                            "Use the latest diagnostics or file contents to choose a different next step before calling this tool again."
+                        ),
+                        "next_best_tool": self._next_best_tool_for_failure(
+                            failure_class,
+                            fallback_tool="assay_userspace_code",
+                        ),
+                        "diagnostics": {
+                            "tool": _tool_name,
+                            "repeat_count": call_count,
+                            "signature": signature,
+                        },
+                    }
+                    request_state["blocked_repeat_calls"] += 1
+                    request_state["tool_calls"].append(
+                        {
+                            "tool": _tool_name,
+                            "signature": signature,
+                            "repeat_count": call_count,
+                            "status": payload["status"],
+                            "failure_class": failure_class,
+                            "blocked": True,
+                        }
+                    )
+                    if workspace_id:
+                        self._record_userspace_failure(
+                            workspace_id,
+                            failure_class=failure_class,
+                            summary=f"Repeated {_tool_name} without new inputs.",
+                            tool_name=_tool_name,
+                        )
+                    return json.dumps(payload, indent=2)
+
+                result = await _orig(*args, **kwargs)
+                parsed = self._parse_json_object(result)
+                status = "completed"
+                failure_class = None
+                if parsed:
+                    status = str(parsed.get("status") or status)
+                    failure_class = (
+                        str(parsed.get("failure_class") or "").strip() or None
+                    )
+                    if not failure_class and (
+                        parsed.get("rejected")
+                        or parsed.get("persisted_with_violations")
+                    ):
+                        failure_class = self._classify_userspace_failure(
+                            parsed.get("message"),
+                            parsed.get("error"),
+                            parsed.get("contract_violations"),
+                        )
+
+                request_state["tool_calls"].append(
+                    {
+                        "tool": _tool_name,
+                        "signature": signature,
+                        "repeat_count": call_count,
+                        "status": status,
+                        "failure_class": failure_class,
+                        "blocked": False,
+                    }
+                )
+
+                if (
+                    workspace_id
+                    and failure_class
+                    and parsed
+                    and (
+                        parsed.get("rejected")
+                        or parsed.get("persisted_with_violations")
+                    )
+                ):
+                    summary = str(
+                        parsed.get("message") or parsed.get("error") or failure_class
+                    )
+                    self._record_userspace_failure(
+                        workspace_id,
+                        failure_class=failure_class,
+                        summary=summary,
+                        tool_name=_tool_name,
+                    )
+
+                return result
+
+            wrapped_tools.append(
+                self._clone_structured_tool(
+                    tool,
+                    coroutine=guarded_coroutine,
+                    func=getattr(tool, "func", None),
+                )
+            )
+
+        return wrapped_tools, request_state
+
+    def _build_request_debug_metadata(
+        self,
+        *,
+        mode: str,
+        request_tool_state: dict[str, Any] | None,
+        workspace_id: str | None,
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "mode": mode,
+        }
+        state = request_tool_state or {}
+        if state:
+            tool_calls = list(state.get("tool_calls") or [])
+            metadata["tool_rounds"] = tool_calls[-USERSPACE_TOOL_ROUND_SUMMARY_LIMIT:]
+            metadata["blocked_repeat_calls"] = int(state.get("blocked_repeat_calls", 0))
+            metadata["max_iterations_reached"] = bool(
+                state.get("max_iterations_reached", False)
+            )
+
+        if mode == "userspace":
+            metadata["userspace_agent"] = {
+                "tool_repeat_threshold": USERSPACE_TOOL_REPEAT_THRESHOLD,
+                "recent_failures": (
+                    self._get_userspace_recent_failure_summaries(workspace_id or "")
+                    if workspace_id
+                    else []
+                ),
+            }
+        return metadata
 
     def _get_image_payload_limits(self) -> dict[str, int]:
         """Resolve image payload limits from settings with sane bounds."""
@@ -4792,6 +5228,7 @@ except Exception as e:
         tool_scope_prompt: str,
         prompt_additions: str,
         turn_reminders: str,
+        debug_metadata: dict[str, Any] | None = None,
         message_index: Optional[int] = None,
     ) -> None:
         """Persist a provider input debug row when DEBUG_MODE is enabled."""
@@ -4833,6 +5270,7 @@ except Exception as e:
                 tool_scope_prompt=tool_scope_prompt,
                 prompt_additions=prompt_additions,
                 turn_reminders=turn_reminders,
+                debug_metadata=debug_metadata,
                 message_index=message_index,
             )
         except Exception:
@@ -6470,12 +6908,120 @@ except Exception as e:
                 description="Brief description of why this command is being run",
             )
 
+        def _append_sqlite_hint(message: str, include_sqlite: bool) -> str:
+            if not include_sqlite:
+                return message
+            suffix = SQLITE_INCLUDE_MODE_HINT
+            base = (message or "").strip()
+            if not base:
+                return suffix
+            if suffix in base:
+                return base
+            return f"{base} {suffix}"
+
+        def _build_userspace_tool_payload(
+            *,
+            tool_name: str,
+            status: str,
+            path: str | None = None,
+            message: str | None = None,
+            error: str | None = None,
+            rejected: bool = False,
+            persisted: bool = False,
+            persisted_with_violations: bool = False,
+            retryable: bool = True,
+            failure_class: str | None = None,
+            next_best_tool: str | None = None,
+            action_required: str | None = None,
+            diagnostics: dict[str, Any] | None = None,
+            include_sqlite_hint: bool = False,
+            contract_violations: list[str] | None = None,
+            warnings: list[str] | None = None,
+            **extra: Any,
+        ) -> dict[str, Any]:
+            payload: dict[str, Any] = {
+                "tool": tool_name,
+                "status": status,
+                "rejected": rejected,
+                "persisted": persisted,
+                "persisted_with_violations": persisted_with_violations,
+                "retryable": retryable,
+            }
+            if path:
+                payload["path"] = path
+            if message:
+                payload["message"] = (
+                    _append_sqlite_hint(message, include_sqlite_hint)
+                    if include_sqlite_hint
+                    else message
+                )
+            if error:
+                payload["error"] = (
+                    _append_sqlite_hint(error, include_sqlite_hint)
+                    if include_sqlite_hint
+                    else error
+                )
+            resolved_failure_class = failure_class or self._classify_userspace_failure(
+                message,
+                error,
+                contract_violations,
+                warnings,
+            )
+            payload["failure_class"] = resolved_failure_class
+            payload["next_best_tool"] = (
+                next_best_tool
+                or self._next_best_tool_for_failure(
+                    resolved_failure_class,
+                    fallback_tool="patch_userspace_file",
+                )
+            )
+            if action_required:
+                payload["action_required"] = (
+                    _append_sqlite_hint(action_required, include_sqlite_hint)
+                    if include_sqlite_hint
+                    else action_required
+                )
+            if contract_violations:
+                payload["contract_violations"] = contract_violations
+            if warnings:
+                payload["warnings"] = warnings
+            if diagnostics:
+                payload["diagnostics"] = diagnostics
+            payload.update(extra)
+            return payload
+
+        def _render_userspace_tool_payload(
+            *,
+            tool_name: str,
+            status: str,
+            **kwargs: Any,
+        ) -> str:
+            return json.dumps(
+                _build_userspace_tool_payload(
+                    tool_name=tool_name,
+                    status=status,
+                    **kwargs,
+                ),
+                indent=2,
+            )
+
         async def list_userspace_files(reason: str = "", **_: Any) -> str:
             del reason
             files = await userspace_service.list_workspace_files(
                 workspace_id, user_id, include_dirs=True
             )
-            return json.dumps([f.model_dump(mode="json") for f in files], indent=2)
+            file_items = [f.model_dump(mode="json") for f in files]
+            return _render_userspace_tool_payload(
+                tool_name="list_userspace_files",
+                status="listed",
+                message=f"Listed {len(file_items)} workspace paths.",
+                persisted=False,
+                retryable=True,
+                failure_class="none",
+                next_best_tool="read_userspace_file",
+                files=file_items,
+                count=len(file_items),
+            )
 
         async def list_userspace_env_vars(reason: str = "", **_: Any) -> str:
             del reason
@@ -6483,8 +7029,17 @@ except Exception as e:
                 workspace_id,
                 user_id,
             )
-            return json.dumps(
-                [item.model_dump(mode="json") for item in env_vars], indent=2
+            env_var_items = [item.model_dump(mode="json") for item in env_vars]
+            return _render_userspace_tool_payload(
+                tool_name="list_userspace_env_vars",
+                status="listed",
+                message=f"Listed {len(env_var_items)} workspace environment variables.",
+                persisted=False,
+                retryable=True,
+                failure_class="none",
+                next_best_tool="upsert_userspace_env_var",
+                env_vars=env_var_items,
+                count=len(env_var_items),
             )
 
         async def upsert_userspace_env_var(
@@ -6504,7 +7059,22 @@ except Exception as e:
                     description=description,
                 ),
             )
-            return json.dumps(updated.model_dump(mode="json"), indent=2)
+            normalized_key = (key or "").strip()
+            return _render_userspace_tool_payload(
+                tool_name="upsert_userspace_env_var",
+                status="persisted",
+                message=(
+                    f"Environment variable {normalized_key} saved."
+                    if value is not None
+                    else f"Environment variable placeholder {normalized_key} saved."
+                ),
+                persisted=True,
+                retryable=True,
+                failure_class="none",
+                next_best_tool="upsert_userspace_file",
+                key=normalized_key,
+                env_var=updated.model_dump(mode="json"),
+            )
 
         def _compute_authoritative_entrypoint(
             file_paths: set[str],  # noqa: ARG001 – kept for call-site compat
@@ -6720,7 +7290,21 @@ except Exception as e:
                     "When dashboard/main.ts exists, implement dashboard feature changes in dashboard/* files and avoid index.html edits for behavior changes."
                 ),
             }
-            return json.dumps(assay, indent=2)
+            return _render_userspace_tool_payload(
+                tool_name="assay_userspace_code",
+                status="assayed",
+                message="Workspace assay completed.",
+                persisted=False,
+                retryable=True,
+                failure_class="none",
+                next_best_tool="read_userspace_file",
+                workspace=assay,
+                diagnostics={
+                    "total_files": len(files),
+                    "inspected_file_count": len(inspected),
+                    "has_dashboard_entry": has_dashboard_entry,
+                },
+            )
 
         async def read_userspace_file(
             path: str,
@@ -6738,23 +7322,30 @@ except Exception as e:
                 )
             except HTTPException as exc:
                 if exc.status_code == 404:
-                    return json.dumps(
-                        {
-                            "error": "file_not_found",
-                            "path": normalized_path,
-                            "message": f"File '{normalized_path}' does not exist in this workspace.",
-                            "suggestion": "Use list_userspace_files to see available files.",
-                        },
-                        indent=2,
+                    return _render_userspace_tool_payload(
+                        tool_name="read_userspace_file",
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=True,
+                        failure_class="path_invalid",
+                        next_best_tool="list_userspace_files",
+                        path=normalized_path,
+                        error=f"File '{normalized_path}' does not exist in this workspace.",
+                        action_required="Use list_userspace_files to see available files and retry with an exact path.",
                     )
                 if exc.status_code == 415:
-                    return json.dumps(
-                        {
-                            "error": "not_utf8_text",
-                            "path": normalized_path,
-                            "message": f"File '{normalized_path}' is a binary file and cannot be read as text.",
-                        },
-                        indent=2,
+                    return _render_userspace_tool_payload(
+                        tool_name="read_userspace_file",
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=False,
+                        failure_class="binary_file",
+                        next_best_tool="list_userspace_files",
+                        path=normalized_path,
+                        error=f"File '{normalized_path}' is a binary file and cannot be read as text.",
+                        action_required="Choose a text file path or use another tool better suited to the binary artifact.",
                     )
                 raise
             payload = file_data.model_dump(mode="json")
@@ -6830,7 +7421,21 @@ except Exception as e:
                 payload["warning"] = (
                     "This workspace has dashboard/main.ts. For dashboard behavior changes, edit dashboard/* files (especially dashboard/main.ts and imported modules) instead of index.html."
                 )
-            return json.dumps(payload, indent=2)
+            warning = payload.pop("warning", None)
+            meta = payload.pop("_meta", None)
+            return _render_userspace_tool_payload(
+                tool_name="read_userspace_file",
+                status="read",
+                path=normalized_path,
+                message=f"Read {normalized_path}.",
+                persisted=False,
+                retryable=True,
+                failure_class="none",
+                next_best_tool="patch_userspace_file",
+                file=payload,
+                warnings=[warning] if warning else None,
+                diagnostics=meta,
+            )
 
         async def delete_userspace_file(path: str, reason: str = "", **_: Any) -> str:
             del reason
@@ -6848,22 +7453,45 @@ except Exception as e:
                 )
             except HTTPException as exc:
                 if getattr(exc, "status_code", None) == 404:
-                    raise ToolException(
-                        f"File not found: {normalized_path}. "
-                        "Check the path with list_userspace_files."
-                    ) from exc
-                raise ToolException(
-                    f"Cannot delete {normalized_path}: {getattr(exc, 'detail', exc)}"
-                ) from exc
+                    return _render_userspace_tool_payload(
+                        tool_name="delete_userspace_file",
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=True,
+                        failure_class="path_invalid",
+                        next_best_tool="list_userspace_files",
+                        path=normalized_path,
+                        error=f"File not found: {normalized_path}.",
+                        action_required="Check the exact path with list_userspace_files and retry delete_userspace_file.",
+                    )
+                return _render_userspace_tool_payload(
+                    tool_name="delete_userspace_file",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=True,
+                    failure_class=self._classify_userspace_failure(
+                        getattr(exc, "detail", exc)
+                    ),
+                    next_best_tool="list_userspace_files",
+                    path=normalized_path,
+                    error=f"Cannot delete {normalized_path}: {getattr(exc, 'detail', exc)}",
+                    action_required="Inspect the file path and workspace state, then retry delete_userspace_file.",
+                )
             await userspace_runtime_service.bump_workspace_generation(
                 workspace_id, "file_delete", payload={"path": normalized_path}
             )
-            return json.dumps(
-                {
-                    "deleted": True,
-                    "path": normalized_path,
-                },
-                indent=2,
+            return _render_userspace_tool_payload(
+                tool_name="delete_userspace_file",
+                status="persisted",
+                path=normalized_path,
+                message=f"Deleted {normalized_path}.",
+                persisted=True,
+                retryable=True,
+                failure_class="none",
+                next_best_tool="assay_userspace_code",
+                deleted=True,
             )
 
         async def move_userspace_file(
@@ -6894,20 +7522,57 @@ except Exception as e:
             except HTTPException as exc:
                 status_code = getattr(exc, "status_code", None)
                 if status_code == 404:
-                    raise ToolException(
-                        f"File not found: {normalized_old_path}. "
-                        "Check the source path with list_userspace_files."
-                    ) from exc
+                    return _render_userspace_tool_payload(
+                        tool_name="move_userspace_file",
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=True,
+                        failure_class="path_invalid",
+                        next_best_tool="list_userspace_files",
+                        path=normalized_old_path,
+                        error=f"File not found: {normalized_old_path}.",
+                        action_required="Check the source path with list_userspace_files and retry move_userspace_file.",
+                    )
                 if status_code == 409:
-                    raise ToolException(
-                        f"Target already exists: {normalized_new_path}. "
-                        "Move to a different path or delete/rename the destination first."
-                    ) from exc
-                raise ToolException(
-                    "Cannot move file from "
-                    f"{normalized_old_path} to {normalized_new_path}: "
-                    f"{getattr(exc, 'detail', exc)}"
-                ) from exc
+                    return _render_userspace_tool_payload(
+                        tool_name="move_userspace_file",
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=True,
+                        failure_class="path_conflict",
+                        next_best_tool="delete_userspace_file",
+                        path=normalized_old_path,
+                        error=f"Target already exists: {normalized_new_path}.",
+                        action_required="Move to a different path or delete or rename the destination first.",
+                        diagnostics={
+                            "old_path": normalized_old_path,
+                            "new_path": normalized_new_path,
+                        },
+                    )
+                return _render_userspace_tool_payload(
+                    tool_name="move_userspace_file",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=True,
+                    failure_class=self._classify_userspace_failure(
+                        getattr(exc, "detail", exc)
+                    ),
+                    next_best_tool="list_userspace_files",
+                    path=normalized_old_path,
+                    error=(
+                        "Cannot move file from "
+                        f"{normalized_old_path} to {normalized_new_path}: "
+                        f"{getattr(exc, 'detail', exc)}"
+                    ),
+                    action_required="Inspect both paths and retry move_userspace_file.",
+                    diagnostics={
+                        "old_path": normalized_old_path,
+                        "new_path": normalized_new_path,
+                    },
+                )
 
             await userspace_runtime_service.bump_workspace_generation(
                 workspace_id,
@@ -6917,13 +7582,18 @@ except Exception as e:
                     "new_path": normalized_new_path,
                 },
             )
-            return json.dumps(
-                {
-                    "moved": True,
-                    "old_path": result["old_path"],
-                    "new_path": result["new_path"],
-                },
-                indent=2,
+            return _render_userspace_tool_payload(
+                tool_name="move_userspace_file",
+                status="persisted",
+                path=result["new_path"],
+                message=(f"Moved {result['old_path']} to {result['new_path']}."),
+                persisted=True,
+                retryable=True,
+                failure_class="none",
+                next_best_tool="read_userspace_file",
+                moved=True,
+                old_path=result["old_path"],
+                new_path=result["new_path"],
             )
 
         async def patch_userspace_file(
@@ -7068,40 +7738,37 @@ except Exception as e:
                         )
 
                         file_excerpt = updated_content[:1200]
-                        return json.dumps(
-                            {
-                                "rejected": True,
-                                "status": "rejected_not_persisted",
-                                "updated": False,
-                                "persisted": False,
-                                "path": normalized_path,
-                                "message": (
-                                    f"Replacement #{index} failed: old_text not found."
-                                ),
-                                "action_required": (
-                                    "Read the file again with read_userspace_file and patch using exact current text. "
-                                    "Avoid using terminal output from a different file view as the patch source."
-                                ),
-                                "diagnostics": {
-                                    "replacement_index": index,
-                                    "old_text_chars": len(old_text),
-                                    "new_text_chars": len(new_text),
-                                    "file_chars": len(updated_content),
-                                    "old_text_newline_style": _newline_style(old_text),
-                                    "file_newline_style": _newline_style(
-                                        updated_content
-                                    ),
-                                    "newline_normalized_match": newline_normalized_match,
-                                    "old_text_prefix": old_prefix,
-                                    "old_text_suffix": old_suffix,
-                                    "prefix_occurrences_in_file": prefix_matches,
-                                    "suffix_occurrences_in_file": suffix_matches,
-                                    "file_excerpt_start": file_excerpt,
-                                },
-                                "attempted_replacements": applied,
-                                "skipped": skipped,
+                        return _render_userspace_tool_payload(
+                            tool_name="patch_userspace_file",
+                            status="rejected_not_persisted",
+                            rejected=True,
+                            persisted=False,
+                            retryable=True,
+                            failure_class="patch_context_mismatch",
+                            next_best_tool="read_userspace_file",
+                            path=normalized_path,
+                            message=f"Replacement #{index} failed: old_text not found.",
+                            action_required=(
+                                "Read the file again with read_userspace_file and patch using exact current text. "
+                                "Avoid using terminal output from a different file view as the patch source."
+                            ),
+                            diagnostics={
+                                "replacement_index": index,
+                                "old_text_chars": len(old_text),
+                                "new_text_chars": len(new_text),
+                                "file_chars": len(updated_content),
+                                "old_text_newline_style": _newline_style(old_text),
+                                "file_newline_style": _newline_style(updated_content),
+                                "newline_normalized_match": newline_normalized_match,
+                                "old_text_prefix": old_prefix,
+                                "old_text_suffix": old_suffix,
+                                "prefix_occurrences_in_file": prefix_matches,
+                                "suffix_occurrences_in_file": suffix_matches,
+                                "file_excerpt_start": file_excerpt,
                             },
-                            indent=2,
+                            attempted_replacements=applied,
+                            skipped=skipped,
+                            updated=False,
                         )
                     skipped.append(
                         {
@@ -7126,15 +7793,17 @@ except Exception as e:
                 )
 
             if updated_content == file_data.content:
-                return json.dumps(
-                    {
-                        "path": normalized_path,
-                        "updated": False,
-                        "message": "No content changes were applied.",
-                        "applied": applied,
-                        "skipped": skipped,
-                    },
-                    indent=2,
+                return _render_userspace_tool_payload(
+                    tool_name="patch_userspace_file",
+                    status="no_changes",
+                    path=normalized_path,
+                    message="No content changes were applied.",
+                    retryable=True,
+                    failure_class="no_change",
+                    next_best_tool="read_userspace_file",
+                    applied=applied,
+                    skipped=skipped,
+                    updated=False,
                 )
 
             normalized_lower_path = normalized_path.lower()
@@ -7145,11 +7814,24 @@ except Exception as e:
             patch_mock_patterns = find_hardcoded_data_patterns(updated_content)
             patch_hardcoded_warning: str | None = None
             if patch_mock_patterns and patch_is_dashboard_entry:
-                raise ToolException(
-                    "LIVE DATA POLICY VIOLATION -- Hardcoded data patterns detected: "
-                    + ", ".join(patch_mock_patterns)
-                    + ". Replace static/mock data with live runtime data via "
-                    "context.components[componentId].execute()."
+                return _render_userspace_tool_payload(
+                    tool_name="patch_userspace_file",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=True,
+                    failure_class="hardcoded_data_detected",
+                    next_best_tool="patch_userspace_file",
+                    path=normalized_path,
+                    error=(
+                        "LIVE DATA POLICY VIOLATION -- Hardcoded data patterns detected: "
+                        + ", ".join(patch_mock_patterns)
+                        + ". Replace static/mock data with live runtime data via context.components[componentId].execute()."
+                    ),
+                    action_required=(
+                        "Replace mock/static dashboard data with live runtime data wiring, then retry patch_userspace_file."
+                    ),
+                    diagnostics={"patterns": patch_mock_patterns},
                 )
             elif patch_mock_patterns and normalized_lower_path.endswith(
                 _HARDCODED_DATA_SOURCE_EXTENSIONS
@@ -7208,24 +7890,24 @@ except Exception as e:
                 status_code = getattr(exc, "status_code", None)
                 detail_text = str(getattr(exc, "detail", exc))
                 if status_code == 400:
-                    return json.dumps(
-                        {
-                            "rejected": True,
-                            "status": "rejected_not_persisted",
-                            "updated": False,
-                            "persisted": False,
-                            "message": (
-                                "Patch text replacements were computed locally but the file was NOT persisted."
-                            ),
-                            "error": detail_text,
-                            "action_required": (
-                                "Apply the required wiring/contract fixes, then retry patch_userspace_file."
-                            ),
-                            "path": normalized_path,
-                            "attempted_replacements": applied,
-                            "skipped": skipped,
-                        },
-                        indent=2,
+                    return _render_userspace_tool_payload(
+                        tool_name="patch_userspace_file",
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=True,
+                        failure_class=self._classify_userspace_failure(detail_text),
+                        path=normalized_path,
+                        message=(
+                            "Patch text replacements were computed locally but the file was NOT persisted."
+                        ),
+                        error=detail_text,
+                        action_required=(
+                            "Apply the required wiring or validation fixes from this response, then retry patch_userspace_file."
+                        ),
+                        attempted_replacements=applied,
+                        skipped=skipped,
+                        updated=False,
                     )
                 raise
 
@@ -7236,21 +7918,47 @@ except Exception as e:
                     normalized_path,
                 )
 
-            response_payload: dict[str, Any] = {
-                "updated": True,
-                "path": normalized_path,
-                "file": result.model_dump(mode="json"),
-                "applied": applied,
-                "skipped": skipped,
-            }
-            if patch_hardcoded_warning:
-                response_payload["persisted_with_violations"] = True
-                response_payload["contract_violations"] = [patch_hardcoded_warning]
-                response_payload["action_required"] = (
-                    "File was persisted but has hardcoded data violations. "
-                    "Use patch_userspace_file to replace mock/static data with live data sources, "
-                    "then run validate_userspace_code."
-                )
+            write_signature = hashlib.sha256(
+                f"{normalized_path}\0{updated_content}".encode("utf-8")
+            ).hexdigest()[:16]
+            response_payload = _build_userspace_tool_payload(
+                tool_name="patch_userspace_file",
+                status=(
+                    "persisted_with_violations"
+                    if patch_hardcoded_warning
+                    else "persisted"
+                ),
+                path=normalized_path,
+                message=(
+                    "Patch applied and persisted."
+                    if not patch_hardcoded_warning
+                    else "Patch applied and persisted, but the file still has live data policy violations."
+                ),
+                persisted=True,
+                persisted_with_violations=bool(patch_hardcoded_warning),
+                retryable=True,
+                failure_class=(
+                    "hardcoded_data_detected" if patch_hardcoded_warning else "none"
+                ),
+                next_best_tool=(
+                    "patch_userspace_file"
+                    if patch_hardcoded_warning
+                    else "validate_userspace_code"
+                ),
+                action_required=(
+                    "Run validate_userspace_code on the changed file."
+                    if not patch_hardcoded_warning
+                    else "Use patch_userspace_file to replace mock/static data with live data sources, then run validate_userspace_code."
+                ),
+                contract_violations=(
+                    [patch_hardcoded_warning] if patch_hardcoded_warning else None
+                ),
+                file=result.model_dump(mode="json"),
+                applied=applied,
+                skipped=skipped,
+                updated=True,
+                write_signature=write_signature,
+            )
             if typecheck is not None:
                 response_payload["typescript_validation"] = typecheck
             await userspace_runtime_service.bump_workspace_generation(
@@ -7479,6 +8187,48 @@ except Exception as e:
                             + ", ".join(missing_ids)
                         )
 
+            if requires_live_data_contract and parsed_live_data_connections:
+                declared_connection_ids = {
+                    connection.component_id
+                    for connection in parsed_live_data_connections
+                }
+                missing_execution_proofs = userspace_service.verify_execution_proofs(
+                    workspace_id,
+                    declared_connection_ids,
+                )
+                if missing_execution_proofs:
+                    proof_message = (
+                        "No server-verified execution proof for component_id(s): "
+                        + ", ".join(missing_execution_proofs)
+                        + ". Execute a successful query via the selected workspace data tool before persisting live data connections."
+                    )
+                    self._record_userspace_failure(
+                        workspace_id,
+                        failure_class="execution_proof_missing",
+                        summary=proof_message,
+                        tool_name="upsert_userspace_file",
+                    )
+                    return _render_userspace_tool_payload(
+                        tool_name="upsert_userspace_file",
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=True,
+                        failure_class="execution_proof_missing",
+                        next_best_tool="assay_userspace_code",
+                        path=path,
+                        error=proof_message,
+                        action_required=(
+                            "Run the selected workspace query tool successfully for each declared component_id, then retry upsert_userspace_file."
+                        ),
+                        include_sqlite_hint=ws_sqlite_include,
+                        diagnostics={
+                            "missing_component_ids": missing_execution_proofs,
+                        },
+                        live_data_contract=live_data_contract_context,
+                        warnings=warnings or None,
+                    )
+
             # AST-based structural validation: verify the module code
             # contains context.components[id].execute() call patterns.
             # This is deterministic and cannot be satisfied by fabricating
@@ -7573,27 +8323,32 @@ except Exception as e:
                     detail = "LIVE DATA POLICY VIOLATION -- " + " | ".join(hard_errors)
                 if warnings:
                     detail += " [Warnings: " + "; ".join(warnings) + "]"
-
-                rejected_payload: dict[str, Any] = {
-                    "rejected": True,
-                    "status": "rejected_not_persisted",
-                    "error": detail,
-                    "path": path,
-                    "persisted": False,
-                    "policy_violations": hard_errors,
-                    "live_data_contract": live_data_contract_context,
-                    "action_required": (
-                        "Fix the hard policy violations listed above, then retry "
-                        "upsert_userspace_file."
-                        + (" " + SQLITE_INCLUDE_MODE_HINT if ws_sqlite_include else "")
+                failure_class = self._classify_userspace_failure(detail, hard_errors)
+                self._record_userspace_failure(
+                    workspace_id,
+                    failure_class=failure_class,
+                    summary=detail,
+                    tool_name="upsert_userspace_file",
+                )
+                rejected_payload = _build_userspace_tool_payload(
+                    tool_name="upsert_userspace_file",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=True,
+                    failure_class=failure_class,
+                    path=path,
+                    error=detail,
+                    action_required=(
+                        "Fix the hard policy violations listed above, then retry upsert_userspace_file."
                     ),
-                }
-                if contract_violations:
-                    rejected_payload["contract_violations"] = contract_violations
-                if warnings:
-                    rejected_payload["warnings"] = warnings
-                if allowed_violations:
-                    rejected_payload["allowed_violations"] = allowed_violations
+                    include_sqlite_hint=ws_sqlite_include,
+                    diagnostics={"policy_violations": hard_errors},
+                    contract_violations=contract_violations or None,
+                    warnings=warnings or None,
+                    live_data_contract=live_data_contract_context,
+                    allowed_violations=allowed_violations or None,
+                )
                 if typecheck is not None:
                     rejected_payload["typescript_validation"] = typecheck
                 return json.dumps(rejected_payload, indent=2)
@@ -7625,18 +8380,24 @@ except Exception as e:
                 detail_text = str(getattr(exc, "detail", exc))
                 lower_detail_text = detail_text.lower()
                 if status_code == 400 and "invalid file path" in lower_detail_text:
-                    policy_response_payload: dict[str, Any] = {
-                        "rejected": True,
-                        "error": (
-                            f"File not found: {path}. The requested path does not exist "
-                            "or is not accessible in this workspace."
+                    policy_response_payload = _build_userspace_tool_payload(
+                        tool_name="upsert_userspace_file",
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=True,
+                        failure_class="path_invalid",
+                        next_best_tool="list_userspace_files",
+                        path=path,
+                        error=(
+                            f"File not found: {path}. The requested path does not exist or is not accessible in this workspace."
                         ),
-                        "live_data_contract": live_data_contract_context,
-                        "action_required": (
-                            "Use list_userspace_files to choose an existing path, or provide "
-                            "a valid relative file path under the workspace files root."
+                        action_required=(
+                            "Use list_userspace_files to choose an existing path, or provide a valid relative file path under the workspace files root."
                         ),
-                    }
+                        live_data_contract=live_data_contract_context,
+                        warnings=warnings or None,
+                    )
                     if warnings:
                         policy_response_payload["warnings"] = warnings
                     if typecheck is not None:
@@ -7649,14 +8410,22 @@ except Exception as e:
                         "invalid live_data_checks component_id",
                     )
                 ):
-                    policy_response_payload = {
-                        "rejected": True,
-                        "error": detail_text,
-                        "live_data_contract": live_data_contract_context,
-                        "action_required": (
+                    policy_response_payload = _build_userspace_tool_payload(
+                        tool_name="upsert_userspace_file",
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=True,
+                        failure_class="invalid_component_id",
+                        next_best_tool="assay_userspace_code",
+                        path=path,
+                        error=detail_text,
+                        action_required=(
                             "Use only component_ids from tools selected for this workspace."
                         ),
-                    }
+                        live_data_contract=live_data_contract_context,
+                        warnings=warnings or None,
+                    )
                     if warnings:
                         policy_response_payload["warnings"] = warnings
                     if typecheck is not None:
@@ -7665,15 +8434,22 @@ except Exception as e:
                 if status_code == 400 and detail_text.startswith(
                     "Entry-point wiring required:"
                 ):
-                    entrypoint_response_payload: dict[str, Any] = {
-                        "rejected": True,
-                        "error": detail_text,
-                        "live_data_contract": live_data_contract_context,
-                        "action_required": (
-                            "Upsert dashboard/main.ts so it imports/composes the module, "
-                            "then retry upsert_userspace_file for the non-entry dashboard file."
+                    entrypoint_response_payload = _build_userspace_tool_payload(
+                        tool_name="upsert_userspace_file",
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=True,
+                        failure_class="entrypoint_wiring_required",
+                        next_best_tool="upsert_userspace_file",
+                        path=path,
+                        error=detail_text,
+                        action_required=(
+                            "Upsert dashboard/main.ts so it imports or composes the module, then retry upsert_userspace_file for the non-entry dashboard file."
                         ),
-                    }
+                        live_data_contract=live_data_contract_context,
+                        warnings=warnings or None,
+                    )
                     if warnings:
                         entrypoint_response_payload["warnings"] = warnings
                     if typecheck is not None:
@@ -7683,66 +8459,94 @@ except Exception as e:
                     status_code == 400
                     and "no server-verified execution proof" in lower_detail_text
                 ):
-                    execution_proof_response_payload: dict[str, Any] = {
-                        "rejected": True,
-                        "status": "rejected_not_persisted",
-                        "persisted": False,
-                        "error": detail_text,
-                        "path": path,
-                        "live_data_contract": live_data_contract_context,
-                        "action_required": (
-                            "Execute the declared component queries via the workspace tool or "
-                            "execute-component endpoint so the server can verify successful execution, "
-                            "then retry upsert_userspace_file."
+                    execution_proof_response_payload = _build_userspace_tool_payload(
+                        tool_name="upsert_userspace_file",
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=True,
+                        failure_class="execution_proof_missing",
+                        next_best_tool="assay_userspace_code",
+                        path=path,
+                        error=detail_text,
+                        action_required=(
+                            "Execute the declared component queries via the workspace tool or execute-component endpoint so the server can verify successful execution, then retry upsert_userspace_file."
                         ),
-                    }
+                        live_data_contract=live_data_contract_context,
+                        warnings=warnings or None,
+                        contract_violations=contract_violations or None,
+                    )
                     if warnings:
                         execution_proof_response_payload["warnings"] = warnings
-                    if contract_violations:
-                        execution_proof_response_payload["contract_violations"] = (
-                            contract_violations
-                        )
                     if typecheck is not None:
                         execution_proof_response_payload["typescript_validation"] = (
                             typecheck
                         )
                     return json.dumps(execution_proof_response_payload, indent=2)
                 if status_code == 400:
-                    policy_response_payload = {
-                        "rejected": True,
-                        "status": "rejected_not_persisted",
-                        "persisted": False,
-                        "error": detail_text,
-                        "path": path,
-                        "live_data_contract": live_data_contract_context,
-                        "action_required": (
+                    failure_class = self._classify_userspace_failure(detail_text)
+                    policy_response_payload = _build_userspace_tool_payload(
+                        tool_name="upsert_userspace_file",
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=True,
+                        failure_class=failure_class,
+                        path=path,
+                        error=detail_text,
+                        action_required=(
                             "Resolve the validation error in this response and retry upsert_userspace_file."
                         ),
-                    }
+                        live_data_contract=live_data_contract_context,
+                        warnings=warnings or None,
+                        contract_violations=contract_violations or None,
+                    )
                     if warnings:
                         policy_response_payload["warnings"] = warnings
-                    if contract_violations:
-                        policy_response_payload["contract_violations"] = (
-                            contract_violations
-                        )
                     if typecheck is not None:
                         policy_response_payload["typescript_validation"] = typecheck
                     return json.dumps(policy_response_payload, indent=2)
                 raise
 
-            success_response_payload: dict[str, Any] = {
-                "file": result.model_dump(mode="json"),
-                "live_data_contract": live_data_contract_context,
-            }
-            if contract_violations:
-                success_response_payload["persisted_with_violations"] = True
-                success_response_payload["contract_violations"] = contract_violations
-                success_response_payload["action_required"] = (
-                    "File was persisted but has live data contract violations. "
-                    "Use patch_userspace_file to fix the issues listed in "
-                    "contract_violations, then run validate_userspace_code."
-                    + (" " + SQLITE_INCLUDE_MODE_HINT if ws_sqlite_include else "")
-                )
+            write_signature = hashlib.sha256(
+                f"{path}\0{content}".encode("utf-8")
+            ).hexdigest()[:16]
+            success_response_payload = _build_userspace_tool_payload(
+                tool_name="upsert_userspace_file",
+                status=(
+                    "persisted_with_violations" if contract_violations else "persisted"
+                ),
+                path=path,
+                message=(
+                    "File persisted."
+                    if not contract_violations
+                    else "File persisted, but follow-up fixes are required before the build loop is complete."
+                ),
+                persisted=True,
+                persisted_with_violations=bool(contract_violations),
+                retryable=True,
+                failure_class=(
+                    self._classify_userspace_failure(contract_violations)
+                    if contract_violations
+                    else "none"
+                ),
+                next_best_tool=(
+                    "patch_userspace_file"
+                    if contract_violations
+                    else "validate_userspace_code"
+                ),
+                action_required=(
+                    "Run validate_userspace_code on every changed source file."
+                    if not contract_violations
+                    else "Use patch_userspace_file to fix the listed violations, then run validate_userspace_code."
+                ),
+                include_sqlite_hint=ws_sqlite_include and bool(contract_violations),
+                contract_violations=contract_violations or None,
+                warnings=warnings or None,
+                file=result.model_dump(mode="json"),
+                live_data_contract=live_data_contract_context,
+                write_signature=write_signature,
+            )
             if warnings:
                 success_response_payload["warnings"] = warnings
             if allowed_violations:
@@ -7771,10 +8575,23 @@ except Exception as e:
                 user_id,
                 message.strip() or "AI checkpoint",
             )
+            self._mark_userspace_failures_resolved(
+                workspace_id,
+                "Snapshot created after successful validation loop.",
+            )
             await userspace_runtime_service.bump_workspace_generation(
                 workspace_id, "snapshot"
             )
-            return json.dumps(snapshot.model_dump(mode="json"), indent=2)
+            return _render_userspace_tool_payload(
+                tool_name="create_userspace_snapshot",
+                status="persisted",
+                persisted=True,
+                retryable=True,
+                failure_class="none",
+                next_best_tool="assay_userspace_code",
+                message="Snapshot created.",
+                snapshot=snapshot.model_dump(mode="json"),
+            )
 
         async def validate_userspace_code(
             path: str = "dashboard/main.ts",
@@ -8266,6 +9083,22 @@ except Exception as e:
                 and not aggregate_errors
             )
 
+            diagnostic_groups = self._group_userspace_validation_diagnostics(
+                errors=aggregate_errors,
+                contract_errors=aggregate_contract_errors,
+                runtime_errors=aggregate_runtime_errors,
+                runtime_warnings=aggregate_runtime_warnings,
+            )
+            primary_failure_class = (
+                "none"
+                if overall_ok
+                else self._classify_userspace_failure(
+                    aggregate_runtime_errors,
+                    aggregate_contract_errors,
+                    aggregate_errors,
+                )
+            )
+
             root_artifact_type = None
             root_file = file_cache.get(normalized_start_path)
             if root_file is not None:
@@ -8298,12 +9131,52 @@ except Exception as e:
                 result["hardcoded_data_violation_count"] = sum(
                     len(v) for v in hardcoded_data_violations.values()
                 )
-            response_payload = {
-                "path": normalized_start_path,
-                "artifact_type": root_artifact_type,
-                "live_data_contract": live_data_contract_context,
-                "validation": result,
-            }
+            result["diagnostics_by_category"] = diagnostic_groups
+
+            if overall_ok:
+                self._mark_userspace_failures_resolved(
+                    workspace_id,
+                    "Validation passed with no remaining errors.",
+                )
+            else:
+                summary = (
+                    aggregate_errors[0] if aggregate_errors else primary_failure_class
+                )
+                self._record_userspace_failure(
+                    workspace_id,
+                    failure_class=primary_failure_class,
+                    summary=str(summary),
+                    tool_name="validate_userspace_code",
+                )
+
+            response_payload = _build_userspace_tool_payload(
+                tool_name="validate_userspace_code",
+                status="validated" if overall_ok else "validation_failed",
+                path=normalized_start_path,
+                message=(
+                    "Validation passed."
+                    if overall_ok
+                    else "Validation failed. Fix the reported diagnostics before finalizing."
+                ),
+                persisted=False,
+                rejected=not overall_ok,
+                retryable=True,
+                failure_class=primary_failure_class,
+                next_best_tool=(
+                    "create_userspace_snapshot"
+                    if overall_ok
+                    else self._next_best_tool_for_failure(primary_failure_class)
+                ),
+                action_required=(
+                    "Create a snapshot for this completed change loop."
+                    if overall_ok
+                    else "Fix the diagnostics in this response, then run validate_userspace_code again."
+                ),
+                diagnostics=diagnostic_groups,
+                artifact_type=root_artifact_type,
+                live_data_contract=live_data_contract_context,
+                validation=result,
+            )
             return json.dumps(response_payload, indent=2)
 
         async def capture_userspace_screenshot(
@@ -8340,13 +9213,29 @@ except Exception as e:
                 )
             except HTTPException as exc:
                 detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
-                raise ToolException(
-                    f"Runtime screenshot capture failed: {detail_text}"
-                ) from exc
+                return _render_userspace_tool_payload(
+                    tool_name="capture_userspace_screenshot",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=True,
+                    failure_class=self._classify_userspace_failure(detail_text),
+                    next_best_tool="run_terminal_command",
+                    error=f"Runtime screenshot capture failed: {detail_text}",
+                    action_required="Inspect the runtime state and retry capture_userspace_screenshot after the preview is reachable.",
+                )
             except Exception as exc:
-                raise ToolException(
-                    f"Screenshot capture failed unexpectedly: {exc}"
-                ) from exc
+                return _render_userspace_tool_payload(
+                    tool_name="capture_userspace_screenshot",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=True,
+                    failure_class="runtime_capture_failed",
+                    next_best_tool="run_terminal_command",
+                    error=f"Screenshot capture failed unexpectedly: {exc}",
+                    action_required="Inspect the runtime state and retry capture_userspace_screenshot.",
+                )
 
             screenshot_path = str(response_payload.get("screenshot_path") or "").strip()
             if screenshot_path:
@@ -8357,7 +9246,16 @@ except Exception as e:
                         f"screenshots/{quote(screenshot_name)}"
                     )
                     response_payload["preview_image_url"] = image_url
-            return json.dumps(response_payload, indent=2)
+            return _render_userspace_tool_payload(
+                tool_name="capture_userspace_screenshot",
+                status="captured",
+                message="Runtime screenshot captured.",
+                persisted=False,
+                retryable=True,
+                failure_class="none",
+                next_best_tool="patch_userspace_file",
+                screenshot=response_payload,
+            )
 
         async def run_terminal_command(
             command: str,
@@ -8384,8 +9282,61 @@ except Exception as e:
                 )
             except HTTPException as exc:
                 detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
-                raise ToolException(f"Terminal command failed: {detail_text}") from exc
-            return json.dumps(result, indent=2)
+                return _render_userspace_tool_payload(
+                    tool_name="run_terminal_command",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=True,
+                    failure_class=self._classify_userspace_failure(detail_text),
+                    next_best_tool="read_userspace_file",
+                    error=f"Terminal command failed: {detail_text}",
+                    action_required="Inspect the command, cwd, and runtime state, then retry run_terminal_command.",
+                    diagnostics={
+                        "command": command,
+                        "cwd": cwd_value,
+                        "timeout_seconds": timeout_seconds,
+                    },
+                )
+
+            exit_code = int(result.get("exit_code", 0) or 0)
+            timed_out = bool(result.get("timed_out", False))
+            command_failed = timed_out or exit_code != 0
+            return _render_userspace_tool_payload(
+                tool_name="run_terminal_command",
+                status=(
+                    "command_timed_out"
+                    if timed_out
+                    else "command_failed" if command_failed else "completed"
+                ),
+                message=(
+                    "Terminal command completed successfully."
+                    if not command_failed
+                    else "Terminal command finished with an error."
+                ),
+                rejected=command_failed,
+                persisted=False,
+                retryable=True,
+                failure_class=(
+                    "none" if not command_failed else "runtime_command_failed"
+                ),
+                next_best_tool=(
+                    "patch_userspace_file"
+                    if command_failed
+                    else "validate_userspace_code"
+                ),
+                action_required=(
+                    None
+                    if not command_failed
+                    else "Inspect stdout and stderr in this response, adjust the workspace or command, then retry run_terminal_command."
+                ),
+                terminal_result=result,
+                diagnostics={
+                    "command": command,
+                    "cwd": cwd_value,
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
 
         return [
             _create_userspace_tool(
@@ -8454,6 +9405,8 @@ except Exception as e:
                 name="upsert_userspace_file",
                 description=(
                     "Create or update a file in the active User Space workspace. "
+                    "Use when you need to add a new file or replace most of an existing file. "
+                    "Do not use for small surgical edits when patch_userspace_file is sufficient. "
                     "For interactive reports, write TypeScript modules (artifact_type=module_ts). "
                     "Dashboard module writes in workspaces with selected tools automatically "
                     "require live_data_connections, live_data_checks, AND structurally verified "
@@ -8470,6 +9423,7 @@ except Exception as e:
                 description=(
                     "Apply targeted sed-style in-place replacements to an existing User Space file. "
                     "Use for surgical edits to avoid re-rendering full file content. "
+                    "Do not use to create new files or replace large files wholesale. "
                     "Supports ordered exact old/new replacements with per-op required flags. "
                     "For reliable matches, source old_text from read_userspace_file output (not shell-derived views)."
                 ),
@@ -8490,6 +9444,7 @@ except Exception as e:
                 description=(
                     "Validate a workspace code file and return TypeScript/runtime diagnostics with file/line details. "
                     "Always includes live_data_contract guidance (selected_tool_ids, entrypoint metadata, and required live-data wiring rules). "
+                    "Use after every write loop and before snapshot creation. Do not skip this even when the file persisted successfully. "
                     "Use after edits and before creating snapshots."
                 ),
                 args_schema=ValidateUserSpaceCodeInput,
@@ -8633,12 +9588,17 @@ except Exception as e:
             # Snapshot history is optional prompt context; never fail request assembly.
             pass
 
+        recent_failure_summaries = self._get_userspace_recent_failure_summaries(
+            workspace_id
+        )
+
         return build_workspace_continuity_context(
             file_count=len(ws_file_paths),
             key_files=ws_file_paths,
             framework=ep_status.framework if ep_status.state == "valid" else None,
             entrypoint_valid=ep_status.state == "valid" and not is_default_entrypoint,
             last_snapshot_message=last_snapshot_msg,
+            recent_failure_summaries=recent_failure_summaries,
         )
 
     async def _build_request_runtime_context(
@@ -8666,6 +9626,12 @@ except Exception as e:
         prompt_additions = ""
         include_sqlite_persistence = False
         userspace_env_var_turn_hint = ""
+        request_tool_state: dict[str, Any] = {
+            "tool_calls": [],
+            "signature_counts": {},
+            "blocked_repeat_calls": 0,
+            "max_iterations_reached": False,
+        }
 
         workspace_id = (workspace_context or {}).get("workspace_id", "").strip()
         user_id = (workspace_context or {}).get("user_id", "").strip()
@@ -8727,6 +9693,13 @@ except Exception as e:
                 runtime_tools,
                 workspace_id,
                 allowed_tool_config_ids,
+            )
+            runtime_tools, request_tool_state = (
+                self._wrap_runtime_tools_with_request_state(
+                    runtime_tools,
+                    mode="userspace",
+                    workspace_id=workspace_id,
+                )
             )
 
             mode = "userspace"
@@ -8803,6 +9776,8 @@ except Exception as e:
             "prompt_additions": prompt_additions,
             "include_sqlite_persistence": include_sqlite_persistence,
             "userspace_env_var_turn_hint": userspace_env_var_turn_hint,
+            "request_tool_state": request_tool_state,
+            "workspace_id": workspace_id or None,
         }
 
     def _build_request_system_prompt(
@@ -8942,7 +9917,7 @@ except Exception as e:
             verbose=False,
             handle_parsing_errors=True,
             max_iterations=max(1, max_iterations),
-            return_intermediate_steps=False,
+            return_intermediate_steps=True,
         )
 
     # ------------------------------------------------------------------
@@ -9380,6 +10355,7 @@ except Exception as e:
             )
             system_prompt += request_context["prompt_additions"]
             runtime_tools = request_context["runtime_tools"]
+            request_tool_state = request_context["request_tool_state"]
             tool_scope_prompt = ""
 
             # Build per-turn system content (reminders + context headroom)
@@ -9462,23 +10438,6 @@ except Exception as e:
                 effective_model = request_model_id or str(
                     (self._app_settings or {}).get("llm_model", "")
                 )
-                await self._persist_provider_prompt_debug_record(
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    chat_task_id=chat_task_id,
-                    provider=provider_name,
-                    model=effective_model,
-                    mode=request_context["mode"],
-                    request_kind="agent_executor",
-                    system_prompt=system_prompt,
-                    rendered_user_input=langchain_content,
-                    chat_history=chat_history,
-                    provider_messages=provider_messages,
-                    tool_scope_prompt=tool_scope_prompt,
-                    prompt_additions=request_context["prompt_additions"],
-                    turn_reminders=turn_system_content,
-                    message_index=message_index,
-                )
                 # Use agent with tools
                 result = await executor.ainvoke(
                     {
@@ -9494,6 +10453,43 @@ except Exception as e:
                         block.get("text", "") if isinstance(block, dict) else str(block)
                         for block in output
                     )
+                lowered_output = str(output).lower()
+                request_tool_state["max_iterations_reached"] = bool(
+                    "iteration limit" in lowered_output
+                    or "max iterations" in lowered_output
+                )
+                if request_tool_state["max_iterations_reached"] and request_context.get(
+                    "workspace_id"
+                ):
+                    self._record_userspace_failure(
+                        request_context["workspace_id"],
+                        failure_class="max_iterations_reached",
+                        summary="Agent hit the max iteration limit before completing the userspace build loop.",
+                        tool_name="agent_executor",
+                    )
+                debug_metadata = self._build_request_debug_metadata(
+                    mode=request_context["mode"],
+                    request_tool_state=request_tool_state,
+                    workspace_id=request_context.get("workspace_id"),
+                )
+                await self._persist_provider_prompt_debug_record(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    chat_task_id=chat_task_id,
+                    provider=provider_name,
+                    model=effective_model,
+                    mode=request_context["mode"],
+                    request_kind="agent_executor",
+                    system_prompt=system_prompt,
+                    rendered_user_input=langchain_content,
+                    chat_history=chat_history,
+                    provider_messages=provider_messages,
+                    tool_scope_prompt=tool_scope_prompt,
+                    prompt_additions=request_context["prompt_additions"],
+                    turn_reminders=turn_system_content,
+                    debug_metadata=debug_metadata,
+                    message_index=message_index,
+                )
                 return output
             else:
                 # Direct LLM call without tools - use multimodal content
@@ -9524,6 +10520,13 @@ except Exception as e:
                 effective_model = request_model_id or str(
                     (self._app_settings or {}).get("llm_model", "")
                 )
+                response = await request_llm.ainvoke(messages)
+                content = response.content
+                debug_metadata = self._build_request_debug_metadata(
+                    mode=request_context["mode"],
+                    request_tool_state=request_tool_state,
+                    workspace_id=request_context.get("workspace_id"),
+                )
                 await self._persist_provider_prompt_debug_record(
                     conversation_id=conversation_id,
                     user_id=user_id,
@@ -9541,10 +10544,9 @@ except Exception as e:
                     tool_scope_prompt="",
                     prompt_additions=request_context["prompt_additions"],
                     turn_reminders=turn_system_content,
+                    debug_metadata=debug_metadata,
                     message_index=message_index,
                 )
-                response = await request_llm.ainvoke(messages)
-                content = response.content
                 return content if isinstance(content, str) else str(content)
 
         except Exception as e:
@@ -9609,6 +10611,7 @@ except Exception as e:
         )
         system_prompt += request_context["prompt_additions"]
         runtime_tools = request_context["runtime_tools"]
+        request_tool_state = request_context["request_tool_state"]
         tool_scope_prompt = ""
 
         # Build per-turn system content (reminders + context headroom)
@@ -9700,23 +10703,6 @@ except Exception as e:
                         "content": self._serialize_prompt_content(agent_input),
                     }
                 )
-                await self._persist_provider_prompt_debug_record(
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    chat_task_id=chat_task_id,
-                    provider=provider_name,
-                    model=effective_model,
-                    mode=request_context["mode"],
-                    request_kind="agent_executor",
-                    system_prompt=system_prompt,
-                    rendered_user_input=agent_input,
-                    chat_history=chat_history,
-                    provider_messages=stream_provider_messages,
-                    tool_scope_prompt=tool_scope_prompt,
-                    prompt_additions=request_context["prompt_additions"],
-                    turn_reminders=turn_system_content,
-                    message_index=message_index,
-                )
 
                 # Track tool runs to avoid duplicates from nested events
                 active_tool_runs: set[str] = set()
@@ -9730,224 +10716,282 @@ except Exception as e:
                     {}
                 )  # run_id -> (mono_time, tool_name)
 
-                async for event in executor.astream_events(
-                    {
-                        "input": agent_input,
-                        "user_input": [HumanMessage(content=agent_input)],
-                        "chat_history": chat_history,
-                    },
-                    version="v2",
-                ):
-                    kind = event.get("event", "")
-                    run_id = event.get("run_id", "")
+                try:
+                    async for event in executor.astream_events(
+                        {
+                            "input": agent_input,
+                            "user_input": [HumanMessage(content=agent_input)],
+                            "chat_history": chat_history,
+                        },
+                        version="v2",
+                    ):
+                        kind = event.get("event", "")
+                        run_id = event.get("run_id", "")
 
-                    # Emit tool start events - only for new tool runs
-                    if kind == "on_tool_start":
-                        # Skip if we've already seen this tool run
-                        if run_id in active_tool_runs:
-                            continue
-                        active_tool_runs.add(run_id)
+                        # Emit tool start events - only for new tool runs
+                        if kind == "on_tool_start":
+                            # Skip if we've already seen this tool run
+                            if run_id in active_tool_runs:
+                                continue
+                            active_tool_runs.add(run_id)
 
-                        tool_name = event.get("name", "unknown")
-                        tool_input = event.get("data", {}).get("input", {})
-                        connection_meta = self._get_tool_connection_metadata(tool_name)
-                        _tool_start_times[run_id] = (time.monotonic(), tool_name)
-                        logger.debug(f"Tool started: {tool_name} (run_id={run_id[:8]})")
-                        yield {
-                            "type": "tool_start",
-                            "tool": tool_name,
-                            "input": tool_input,
-                            "connection": connection_meta,
-                            "run_id": run_id,  # Include run_id for matching with tool_end
-                        }
+                            tool_name = event.get("name", "unknown")
+                            tool_input = event.get("data", {}).get("input", {})
+                            connection_meta = self._get_tool_connection_metadata(
+                                tool_name
+                            )
+                            _tool_start_times[run_id] = (time.monotonic(), tool_name)
+                            logger.debug(
+                                f"Tool started: {tool_name} (run_id={run_id[:8]})"
+                            )
+                            yield {
+                                "type": "tool_start",
+                                "tool": tool_name,
+                                "input": tool_input,
+                                "connection": connection_meta,
+                                "run_id": run_id,
+                            }
 
-                    # Emit tool end events - only for runs we started
-                    elif kind == "on_tool_end":
-                        # Skip if we didn't track this tool run starting
-                        if run_id not in active_tool_runs:
-                            continue
-                        active_tool_runs.discard(run_id)
+                        # Emit tool end events - only for runs we started
+                        elif kind == "on_tool_end":
+                            # Skip if we didn't track this tool run starting
+                            if run_id not in active_tool_runs:
+                                continue
+                            active_tool_runs.discard(run_id)
 
-                        tool_name = event.get("name", "unknown")
-                        tool_output = event.get("data", {}).get("output", "")
-                        connection_meta = self._get_tool_connection_metadata(tool_name)
-
-                        # Watchdog: log tool execution duration
-                        start_info = _tool_start_times.pop(run_id, None)
-                        if start_info:
-                            elapsed = time.monotonic() - start_info[0]
-                            if elapsed > 10:
-                                logger.warning(
-                                    f"Slow tool execution: {tool_name} took {elapsed:.1f}s (run_id={run_id[:8]})"
-                                )
-                            else:
-                                logger.debug(
-                                    f"Tool completed: {tool_name} in {elapsed:.1f}s (run_id={run_id[:8]})"
-                                )
-
-                        # Don't truncate UI visualization tools - their JSON must be complete
-                        # Truncate other long outputs for display
-                        ui_tools = {"create_chart", "create_datatable"}
-                        if (
-                            isinstance(tool_output, str)
-                            and len(tool_output) > 2000
-                            and tool_name not in ui_tools
-                        ):
-                            tool_output = tool_output[:2000] + "... (truncated)"
-                        yield {
-                            "type": "tool_end",
-                            "tool": tool_name,
-                            "output": tool_output,
-                            "connection": connection_meta,
-                            "run_id": run_id,  # Include run_id for matching with tool_start
-                        }
-
-                    # Handle tool errors so the UI never shows a permanently "running" tool card
-                    elif kind == "on_tool_error":
-                        if run_id not in active_tool_runs:
-                            continue
-                        active_tool_runs.discard(run_id)
-
-                        tool_name = event.get("name", "unknown")
-                        error_data = event.get("data", {})
-                        error_output = (
-                            str(error_data.get("error", error_data)).strip()
-                            or "Tool execution failed"
-                        )
-                        connection_meta = self._get_tool_connection_metadata(tool_name)
-
-                        # Watchdog: log tool error duration
-                        start_info = _tool_start_times.pop(run_id, None)
-                        if start_info:
-                            elapsed = time.monotonic() - start_info[0]
-                            logger.warning(
-                                f"Tool error: {tool_name} failed after {elapsed:.1f}s (run_id={run_id[:8]}): {error_output[:200]}"
+                            tool_name = event.get("name", "unknown")
+                            tool_output = event.get("data", {}).get("output", "")
+                            connection_meta = self._get_tool_connection_metadata(
+                                tool_name
                             )
 
-                        yield {
-                            "type": "tool_end",
-                            "tool": tool_name,
-                            "output": f"Error: {error_output}",
-                            "connection": connection_meta,
-                            "run_id": run_id,
-                        }
-
-                    # Stream tokens from the chat model
-                    elif kind == "on_chat_model_stream":
-                        chunk = event.get("data", {}).get("chunk")
-                        if chunk:
-                            # Detect tool-call argument streaming (LLM generating
-                            # tool input). Count newlines to report line progress.
-                            tool_call_chunks = getattr(chunk, "tool_call_chunks", None)
-                            if tool_call_chunks:
-                                for tc_chunk in tool_call_chunks:
-                                    tc_id = (
-                                        tc_chunk.get("id") or tc_chunk.get("index")
-                                        if isinstance(tc_chunk, dict)
-                                        else getattr(tc_chunk, "id", None)
-                                        or getattr(tc_chunk, "index", None)
+                            # Watchdog: log tool execution duration
+                            start_info = _tool_start_times.pop(run_id, None)
+                            if start_info:
+                                elapsed = time.monotonic() - start_info[0]
+                                if elapsed > 10:
+                                    logger.warning(
+                                        f"Slow tool execution: {tool_name} took {elapsed:.1f}s (run_id={run_id[:8]})"
                                     )
-                                    tc_name = (
-                                        tc_chunk.get("name")
-                                        if isinstance(tc_chunk, dict)
-                                        else getattr(tc_chunk, "name", None)
+                                else:
+                                    logger.debug(
+                                        f"Tool completed: {tool_name} in {elapsed:.1f}s (run_id={run_id[:8]})"
                                     )
-                                    tc_args = (
-                                        tc_chunk.get("args", "")
-                                        if isinstance(tc_chunk, dict)
-                                        else getattr(tc_chunk, "args", "")
-                                    ) or ""
-                                    tc_key = str(tc_id) if tc_id is not None else run_id
-                                    if tc_name:
-                                        _generating_tool_names[tc_key] = tc_name
-                                    if tc_args and tc_key:
-                                        prev = _generating_tool_lines.get(tc_key, 0)
-                                        new_lines = tc_args.count("\n")
-                                        if new_lines:
-                                            total = prev + new_lines
-                                            _generating_tool_lines[tc_key] = total
-                                            yield {
-                                                "type": "tool_generating",
-                                                "tool": _generating_tool_names.get(
-                                                    tc_key, ""
-                                                ),
-                                                "lines": total,
-                                            }
 
-                            # Check for provider-specific reasoning/thinking tokens.
-                            reasoning_text = self._extract_reasoning_from_stream_chunk(
-                                chunk
-                            )
-                            if reasoning_text:
-                                if run_id:
-                                    streamed_reasoning_by_chat_run[run_id] = (
-                                        streamed_reasoning_by_chat_run.get(run_id, "")
-                                        + reasoning_text
-                                    )
-                                yield {"type": "reasoning", "content": reasoning_text}
-
-                            if hasattr(chunk, "content") and chunk.content:
-                                content = self._extract_text_from_stream_content(
-                                    chunk.content
-                                )
-                                if content:
-                                    if run_id:
-                                        streamed_content_by_chat_run[run_id] = (
-                                            streamed_content_by_chat_run.get(run_id, "")
-                                            + content
-                                        )
-                                    yield content
-
-                    elif kind == "on_chat_model_end":
-                        output = event.get("data", {}).get("output")
-                        # Only emit final reasoning if it wasn't already
-                        # streamed token-by-token (avoids duplicate events).
-                        final_reasoning = (
-                            self._extract_reasoning_from_chat_model_output(output)
-                        )
-                        emitted_reasoning = streamed_reasoning_by_chat_run.pop(
-                            run_id, ""
-                        )
-                        if final_reasoning:
-                            reasoning_suffix = self._compute_missing_suffix(
-                                emitted_reasoning, final_reasoning
-                            )
-                            if reasoning_suffix:
-                                yield {
-                                    "type": "reasoning",
-                                    "content": reasoning_suffix,
-                                }
-                        final_text = self._extract_text_from_chat_model_output(output)
-                        emitted_text = streamed_content_by_chat_run.get(run_id, "")
-                        missing_suffix = self._compute_missing_suffix(
-                            emitted_text, final_text
-                        )
-                        if missing_suffix:
-                            if run_id:
-                                streamed_content_by_chat_run[run_id] = (
-                                    emitted_text + missing_suffix
-                                )
-                            yield missing_suffix
-
-                    # Detect when agent executor finishes - check for max iterations
-                    elif kind == "on_chain_end":
-                        # Check if this is the AgentExecutor finishing
-                        output = event.get("data", {}).get("output", {})
-
-                        # AgentExecutor sets "Agent stopped due to iteration limit" in output
-                        if isinstance(output, dict):
-                            agent_output = output.get("output", "")
+                            # Don't truncate UI visualization tools - their JSON must be complete
+                            # Truncate other long outputs for display
+                            ui_tools = {"create_chart", "create_datatable"}
                             if (
-                                "iteration limit" in str(agent_output).lower()
-                                or "max iterations" in str(agent_output).lower()
+                                isinstance(tool_output, str)
+                                and len(tool_output) > 2000
+                                and tool_name not in ui_tools
                             ):
-                                yield {"type": "max_iterations_reached"}
-                            # Also check return_values for the same message
-                            return_values = output.get("return_values", {})
-                            if isinstance(return_values, dict):
-                                rv_output = return_values.get("output", "")
-                                if "iteration limit" in str(rv_output).lower():
+                                tool_output = tool_output[:2000] + "... (truncated)"
+                            yield {
+                                "type": "tool_end",
+                                "tool": tool_name,
+                                "output": tool_output,
+                                "connection": connection_meta,
+                                "run_id": run_id,
+                            }
+
+                        # Handle tool errors so the UI never shows a permanently "running" tool card
+                        elif kind == "on_tool_error":
+                            if run_id not in active_tool_runs:
+                                continue
+                            active_tool_runs.discard(run_id)
+
+                            tool_name = event.get("name", "unknown")
+                            error_data = event.get("data", {})
+                            error_output = (
+                                str(error_data.get("error", error_data)).strip()
+                                or "Tool execution failed"
+                            )
+                            connection_meta = self._get_tool_connection_metadata(
+                                tool_name
+                            )
+
+                            # Watchdog: log tool error duration
+                            start_info = _tool_start_times.pop(run_id, None)
+                            if start_info:
+                                elapsed = time.monotonic() - start_info[0]
+                                logger.warning(
+                                    f"Tool error: {tool_name} failed after {elapsed:.1f}s (run_id={run_id[:8]}): {error_output[:200]}"
+                                )
+
+                            yield {
+                                "type": "tool_end",
+                                "tool": tool_name,
+                                "output": f"Error: {error_output}",
+                                "connection": connection_meta,
+                                "run_id": run_id,
+                            }
+
+                        # Stream tokens from the chat model
+                        elif kind == "on_chat_model_stream":
+                            chunk = event.get("data", {}).get("chunk")
+                            if chunk:
+                                # Detect tool-call argument streaming (LLM generating
+                                # tool input). Count newlines to report line progress.
+                                tool_call_chunks = getattr(
+                                    chunk, "tool_call_chunks", None
+                                )
+                                if tool_call_chunks:
+                                    for tc_chunk in tool_call_chunks:
+                                        tc_id = (
+                                            tc_chunk.get("id") or tc_chunk.get("index")
+                                            if isinstance(tc_chunk, dict)
+                                            else getattr(tc_chunk, "id", None)
+                                            or getattr(tc_chunk, "index", None)
+                                        )
+                                        tc_name = (
+                                            tc_chunk.get("name")
+                                            if isinstance(tc_chunk, dict)
+                                            else getattr(tc_chunk, "name", None)
+                                        )
+                                        tc_args = (
+                                            tc_chunk.get("args", "")
+                                            if isinstance(tc_chunk, dict)
+                                            else getattr(tc_chunk, "args", "")
+                                        ) or ""
+                                        tc_key = (
+                                            str(tc_id) if tc_id is not None else run_id
+                                        )
+                                        if tc_name:
+                                            _generating_tool_names[tc_key] = tc_name
+                                        if tc_args and tc_key:
+                                            prev = _generating_tool_lines.get(tc_key, 0)
+                                            new_lines = tc_args.count("\n")
+                                            if new_lines:
+                                                total = prev + new_lines
+                                                _generating_tool_lines[tc_key] = total
+                                                yield {
+                                                    "type": "tool_generating",
+                                                    "tool": _generating_tool_names.get(
+                                                        tc_key, ""
+                                                    ),
+                                                    "lines": total,
+                                                }
+
+                                # Check for provider-specific reasoning/thinking tokens.
+                                reasoning_text = (
+                                    self._extract_reasoning_from_stream_chunk(chunk)
+                                )
+                                if reasoning_text:
+                                    if run_id:
+                                        streamed_reasoning_by_chat_run[run_id] = (
+                                            streamed_reasoning_by_chat_run.get(
+                                                run_id, ""
+                                            )
+                                            + reasoning_text
+                                        )
+                                    yield {
+                                        "type": "reasoning",
+                                        "content": reasoning_text,
+                                    }
+
+                                if hasattr(chunk, "content") and chunk.content:
+                                    content = self._extract_text_from_stream_content(
+                                        chunk.content
+                                    )
+                                    if content:
+                                        if run_id:
+                                            streamed_content_by_chat_run[run_id] = (
+                                                streamed_content_by_chat_run.get(
+                                                    run_id, ""
+                                                )
+                                                + content
+                                            )
+                                        yield content
+
+                        elif kind == "on_chat_model_end":
+                            output = event.get("data", {}).get("output")
+                            # Only emit final reasoning if it wasn't already
+                            # streamed token-by-token (avoids duplicate events).
+                            final_reasoning = (
+                                self._extract_reasoning_from_chat_model_output(output)
+                            )
+                            emitted_reasoning = streamed_reasoning_by_chat_run.pop(
+                                run_id, ""
+                            )
+                            if final_reasoning:
+                                reasoning_suffix = self._compute_missing_suffix(
+                                    emitted_reasoning, final_reasoning
+                                )
+                                if reasoning_suffix:
+                                    yield {
+                                        "type": "reasoning",
+                                        "content": reasoning_suffix,
+                                    }
+                            final_text = self._extract_text_from_chat_model_output(
+                                output
+                            )
+                            emitted_text = streamed_content_by_chat_run.get(run_id, "")
+                            missing_suffix = self._compute_missing_suffix(
+                                emitted_text, final_text
+                            )
+                            if missing_suffix:
+                                if run_id:
+                                    streamed_content_by_chat_run[run_id] = (
+                                        emitted_text + missing_suffix
+                                    )
+                                yield missing_suffix
+
+                        # Detect when agent executor finishes - check for max iterations
+                        elif kind == "on_chain_end":
+                            # Check if this is the AgentExecutor finishing
+                            output = event.get("data", {}).get("output", {})
+
+                            # AgentExecutor sets "Agent stopped due to iteration limit" in output
+                            if isinstance(output, dict):
+                                agent_output = output.get("output", "")
+                                if (
+                                    "iteration limit" in str(agent_output).lower()
+                                    or "max iterations" in str(agent_output).lower()
+                                ):
+                                    request_tool_state["max_iterations_reached"] = True
                                     yield {"type": "max_iterations_reached"}
+                                return_values = output.get("return_values", {})
+                                if isinstance(return_values, dict):
+                                    rv_output = return_values.get("output", "")
+                                    if "iteration limit" in str(rv_output).lower():
+                                        request_tool_state["max_iterations_reached"] = (
+                                            True
+                                        )
+                                        yield {"type": "max_iterations_reached"}
+                finally:
+                    if request_tool_state.get(
+                        "max_iterations_reached"
+                    ) and request_context.get("workspace_id"):
+                        self._record_userspace_failure(
+                            request_context["workspace_id"],
+                            failure_class="max_iterations_reached",
+                            summary="Agent hit the max iteration limit before completing the userspace build loop.",
+                            tool_name="agent_executor",
+                        )
+                    debug_metadata = self._build_request_debug_metadata(
+                        mode=request_context["mode"],
+                        request_tool_state=request_tool_state,
+                        workspace_id=request_context.get("workspace_id"),
+                    )
+                    await self._persist_provider_prompt_debug_record(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        chat_task_id=chat_task_id,
+                        provider=provider_name,
+                        model=effective_model,
+                        mode=request_context["mode"],
+                        request_kind="agent_executor",
+                        system_prompt=system_prompt,
+                        rendered_user_input=agent_input,
+                        chat_history=chat_history,
+                        provider_messages=stream_provider_messages,
+                        tool_scope_prompt=tool_scope_prompt,
+                        prompt_additions=request_context["prompt_additions"],
+                        turn_reminders=turn_system_content,
+                        debug_metadata=debug_metadata,
+                        message_index=message_index,
+                    )
             else:
                 # Direct LLM streaming without tools - use multimodal content
                 if request_llm is None:
@@ -9977,37 +11021,47 @@ except Exception as e:
                 effective_model = request_model_id or str(
                     (self._app_settings or {}).get("llm_model", "")
                 )
-                await self._persist_provider_prompt_debug_record(
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    chat_task_id=chat_task_id,
-                    provider=provider_name,
-                    model=effective_model,
-                    mode=request_context["mode"],
-                    request_kind="direct_llm",
-                    system_prompt=system_prompt,
-                    rendered_user_input=langchain_content,
-                    chat_history=chat_history,
-                    provider_messages=[
-                        self._serialize_base_message(message) for message in messages
-                    ],
-                    tool_scope_prompt="",
-                    prompt_additions=request_context["prompt_additions"],
-                    turn_reminders=turn_system_content,
-                    message_index=message_index,
-                )
+                try:
+                    async for chunk in request_llm.astream(messages):
+                        reasoning_text = self._extract_reasoning_from_stream_chunk(
+                            chunk
+                        )
+                        if reasoning_text:
+                            yield {"type": "reasoning", "content": reasoning_text}
 
-                # Use astream for true token-by-token streaming
-                async for chunk in request_llm.astream(messages):
-                    # Check for provider-specific reasoning/thinking tokens.
-                    reasoning_text = self._extract_reasoning_from_stream_chunk(chunk)
-                    if reasoning_text:
-                        yield {"type": "reasoning", "content": reasoning_text}
-
-                    if hasattr(chunk, "content") and chunk.content:
-                        content = self._extract_text_from_stream_content(chunk.content)
-                        if content:
-                            yield content
+                        if hasattr(chunk, "content") and chunk.content:
+                            content = self._extract_text_from_stream_content(
+                                chunk.content
+                            )
+                            if content:
+                                yield content
+                finally:
+                    debug_metadata = self._build_request_debug_metadata(
+                        mode=request_context["mode"],
+                        request_tool_state=request_tool_state,
+                        workspace_id=request_context.get("workspace_id"),
+                    )
+                    await self._persist_provider_prompt_debug_record(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        chat_task_id=chat_task_id,
+                        provider=provider_name,
+                        model=effective_model,
+                        mode=request_context["mode"],
+                        request_kind="direct_llm",
+                        system_prompt=system_prompt,
+                        rendered_user_input=langchain_content,
+                        chat_history=chat_history,
+                        provider_messages=[
+                            self._serialize_base_message(message)
+                            for message in messages
+                        ],
+                        tool_scope_prompt="",
+                        prompt_additions=request_context["prompt_additions"],
+                        turn_reminders=turn_system_content,
+                        debug_metadata=debug_metadata,
+                        message_index=message_index,
+                    )
 
         except Exception as e:
             logger.exception("Error in streaming query")
