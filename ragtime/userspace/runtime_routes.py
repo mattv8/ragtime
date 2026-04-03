@@ -34,6 +34,7 @@ from ragtime.userspace.models import (
     UserSpaceRuntimeActionResponse,
     UserSpaceRuntimeSessionResponse,
     UserSpaceRuntimeStatusResponse,
+    UserSpaceWorkspaceTabStateResponse,
 )
 from ragtime.userspace.runtime_service import (
     RuntimeVersionConflictError,
@@ -440,6 +441,7 @@ async def _proxy_http_request(
         media_type=media_type or None,
     )
 
+
 _BRIDGE_CONFIG_MARKER = b"__ragtime_preview_sandbox_flags"
 _BRIDGE_DETECT_RE = re.compile(rb"bridge\.js", re.IGNORECASE)
 _HEAD_CLOSE_RE = re.compile(rb"(</head\s*>)", re.IGNORECASE)
@@ -643,6 +645,23 @@ async def get_devserver_status(
     user: Any = Depends(get_current_user),
 ):
     return await userspace_runtime_service.get_devserver_status(workspace_id, user.id)
+
+
+@router.get(
+    "/runtime/workspaces/{workspace_id}/tab-state",
+    response_model=UserSpaceWorkspaceTabStateResponse,
+)
+async def get_workspace_tab_state(
+    workspace_id: str,
+    selected_conversation_id: str | None = None,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_runtime_service.get_workspace_tab_state(
+        workspace_id,
+        user.id,
+        selected_conversation_id=selected_conversation_id,
+        is_admin=bool(getattr(user, "role", None) == "admin"),
+    )
 
 
 @router.post(

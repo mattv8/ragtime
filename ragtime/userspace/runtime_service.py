@@ -21,6 +21,7 @@ from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
+from ragtime.indexer.workspace_state import build_workspace_chat_state
 from ragtime.userspace.models import (
     RuntimeOperationPhase,
     RuntimeSessionState,
@@ -31,6 +32,7 @@ from ragtime.userspace.models import (
     UserSpaceRuntimeSession,
     UserSpaceRuntimeSessionResponse,
     UserSpaceRuntimeStatusResponse,
+    UserSpaceWorkspaceTabStateResponse,
 )
 from ragtime.userspace.service import userspace_service
 
@@ -1197,6 +1199,35 @@ class UserSpaceRuntimeService:
             runtime_operation_phase=runtime_operation_phase,
             runtime_operation_started_at=runtime_operation_started_at,
             runtime_operation_updated_at=runtime_operation_updated_at,
+        )
+
+    async def get_workspace_tab_state(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        selected_conversation_id: str | None = None,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceTabStateResponse:
+        await userspace_service.enforce_workspace_role(
+            workspace_id,
+            user_id,
+            "viewer",
+            is_admin=is_admin,
+        )
+        runtime_status, chat_state = await asyncio.gather(
+            self.get_devserver_status(workspace_id, user_id),
+            build_workspace_chat_state(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                is_admin=is_admin,
+                selected_conversation_id=selected_conversation_id,
+            ),
+        )
+        return UserSpaceWorkspaceTabStateResponse(
+            workspace_id=workspace_id,
+            runtime_status=runtime_status,
+            chat_state=chat_state,
         )
 
     async def restart_devserver(

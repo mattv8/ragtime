@@ -3,7 +3,7 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ToolCallRecord, ProviderModelState } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ToolCallRecord, ProviderModelState, WorkspaceChatStateResponse } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -1474,6 +1474,7 @@ interface ChatPanelProps {
   currentUser: User;
   debugMode?: boolean;
   workspaceId?: string;
+  workspaceChatState?: WorkspaceChatStateResponse | null;
   workspaceAvailableTools?: UserSpaceAvailableTool[];
   workspaceSelectedToolIds?: string[];
   workspaceSelectedToolGroupIds?: string[];
@@ -1484,6 +1485,7 @@ interface ChatPanelProps {
   onUserMessageSubmitted?: (message: string) => void | Promise<void>;
   onTaskComplete?: () => void;
   onConversationStateChange?: (hasLive: boolean, hasInterrupted: boolean) => void;
+  onActiveConversationChange?: (conversationId: string | null) => void;
   onFullscreenChange?: (fullscreen: boolean) => void;
   embedded?: boolean;
   readOnly?: boolean;
@@ -1494,6 +1496,7 @@ export function ChatPanel({
   currentUser,
   debugMode = false,
   workspaceId,
+  workspaceChatState,
   workspaceAvailableTools,
   workspaceSelectedToolIds,
   workspaceSelectedToolGroupIds,
@@ -1504,6 +1507,7 @@ export function ChatPanel({
   onUserMessageSubmitted,
   onTaskComplete,
   onConversationStateChange,
+  onActiveConversationChange,
   onFullscreenChange,
   embedded = false,
   readOnly = false,
@@ -1827,6 +1831,10 @@ export function ChatPanel({
   useEffect(() => {
     activeConversationRef.current = activeConversation;
   }, [activeConversation]);
+
+  useEffect(() => {
+    onActiveConversationChange?.(activeConversation?.id ?? null);
+  }, [activeConversation?.id, onActiveConversationChange]);
 
   useEffect(() => {
     streamingEventsRef.current = streamingEvents;
@@ -2395,10 +2403,74 @@ export function ChatPanel({
     inputRef.current?.focus();
   }, [activeConversation?.id]);
 
+  const applyWorkspaceChatState = useCallback((nextWorkspaceState: WorkspaceChatStateResponse) => {
+    const visibleConversations = nextWorkspaceState.conversations;
+
+    setConversations((prev) => {
+      let changed = prev.length !== visibleConversations.length;
+
+      const prevById = new Map(prev.map((conversation) => [conversation.id, conversation]));
+      const next = visibleConversations.map((conversation) => {
+        const existing = prevById.get(conversation.id);
+        if (!existing) {
+          changed = true;
+          return conversation;
+        }
+
+        if (existing.active_task_id !== conversation.active_task_id || existing.title !== conversation.title) {
+          changed = true;
+          return { ...existing, ...conversation };
+        }
+
+        return existing;
+      });
+
+      return changed ? next : prev;
+    });
+
+    setActiveConversation((current) => {
+      const targetConversationId = nextWorkspaceState.selected_conversation_id ?? current?.id ?? null;
+      if (!targetConversationId) {
+        return visibleConversations[0] ?? null;
+      }
+      const matchingConversation = visibleConversations.find((conversation) => conversation.id === targetConversationId);
+      return matchingConversation ?? visibleConversations[0] ?? null;
+    });
+
+    const nextInterruptedIds = new Set<string>(nextWorkspaceState.interrupted_conversation_ids);
+    setInterruptedConversationIds((prev) => {
+      if (prev.size !== nextInterruptedIds.size) return nextInterruptedIds;
+      for (const id of nextInterruptedIds) {
+        if (!prev.has(id)) return nextInterruptedIds;
+      }
+      return prev;
+    });
+
+    const selectedConversationId = nextWorkspaceState.selected_conversation_id;
+    if (!selectedConversationId) {
+      setActiveTask(null);
+      setInterruptedTask(null);
+      return;
+    }
+
+    const activeT = nextWorkspaceState.active_task;
+    const interruptedT = nextWorkspaceState.interrupted_task;
+    if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
+      setActiveTask(activeT);
+      setInterruptedTask(null);
+      syncConversationActiveTaskId(selectedConversationId, activeT.id);
+      return;
+    }
+
+    setActiveTask(null);
+    setInterruptedTask(interruptedT ?? null);
+    syncConversationActiveTaskId(selectedConversationId, null);
+  }, [syncConversationActiveTaskId]);
+
   const loadConversations = async () => {
     try {
       const workspaceState = workspaceId
-        ? await api.getWorkspaceConversationState(workspaceId)
+        ? (workspaceChatState ?? await api.getWorkspaceChatState(workspaceId, activeConversationRef.current?.id ?? null))
         : null;
       const data = workspaceState?.conversations ?? await api.listConversations(workspaceId);
       let userspaceConversationIds = new Set<string>();
@@ -2437,23 +2509,21 @@ export function ChatPanel({
       });
 
       if (workspaceState) {
-        const nextInterruptedIds = new Set<string>(workspaceState.interrupted_conversation_ids);
-        setInterruptedConversationIds((prev) => {
-          if (prev.size !== nextInterruptedIds.size) return nextInterruptedIds;
-          for (const id of nextInterruptedIds) {
-            if (!prev.has(id)) return nextInterruptedIds;
-          }
-          return prev;
-        });
+        applyWorkspaceChatState(workspaceState);
       }
     } catch (err) {
       console.error('Failed to load conversations:', err);
     }
   };
 
+  useEffect(() => {
+    if (!workspaceId || !workspaceChatState) return;
+    applyWorkspaceChatState(workspaceChatState);
+  }, [applyWorkspaceChatState, workspaceChatState, workspaceId]);
+
   // Poll workspace conversation summaries so live/attention indicators update without refresh
   useEffect(() => {
-    if (!workspaceId) return;
+    if (!workspaceId || workspaceChatState) return;
 
     let cancelled = false;
     let pollInProgress = false;
@@ -2462,50 +2532,12 @@ export function ChatPanel({
       if (pollInProgress) return;
       pollInProgress = true;
       try {
-        const workspaceState = await api.getWorkspaceConversationState(workspaceId);
+        const workspaceState = await api.getWorkspaceChatState(
+          workspaceId,
+          activeConversationRef.current?.id ?? null,
+        );
         if (cancelled) return;
-
-        const visibleConversations = workspaceState.conversations;
-
-        setConversations((prev) => {
-          let changed = prev.length !== visibleConversations.length;
-
-          const prevById = new Map(prev.map((conversation) => [conversation.id, conversation]));
-          const next = visibleConversations.map((conversation) => {
-            const existing = prevById.get(conversation.id);
-            if (!existing) {
-              changed = true;
-              return conversation;
-            }
-
-            if (existing.active_task_id !== conversation.active_task_id || existing.title !== conversation.title) {
-              changed = true;
-              return { ...existing, ...conversation };
-            }
-
-            return existing;
-          });
-
-          return changed ? next : prev;
-        });
-
-        setActiveConversation((current) => {
-          if (!current) {
-            return visibleConversations[0] ?? null;
-          }
-          const matchingConversation = visibleConversations.find((conversation) => conversation.id === current.id);
-          return matchingConversation ?? visibleConversations[0] ?? null;
-        });
-
-        const nextInterruptedIds = new Set<string>(workspaceState.interrupted_conversation_ids);
-
-        setInterruptedConversationIds((prev) => {
-          if (prev.size !== nextInterruptedIds.size) return nextInterruptedIds;
-          for (const id of nextInterruptedIds) {
-            if (!prev.has(id)) return nextInterruptedIds;
-          }
-          return prev;
-        });
+        applyWorkspaceChatState(workspaceState);
       } catch (err) {
         console.error('Failed to poll workspace conversation states:', err);
       } finally {
@@ -2522,7 +2554,7 @@ export function ChatPanel({
       cancelled = true;
       clearInterval(interval);
     };
-  }, [workspaceId]);
+  }, [applyWorkspaceChatState, workspaceChatState, workspaceId, activeConversation?.id]);
 
   const fetchConversationMembers = useCallback(async (conversationId: string) => {
     try {
@@ -3130,8 +3162,19 @@ export function ChatPanel({
     }
   }, [activeConversation, connectTaskStream, workspaceId]);
 
+  // Keep task streaming in sync when workspace aggregate state sets activeTask.
+  useEffect(() => {
+    if (!activeTask) return;
+    if (activeTask.status !== 'pending' && activeTask.status !== 'running') return;
+    void connectTaskStream(activeTask.id);
+  }, [activeTask?.id, activeTask?.status, connectTaskStream]);
+
   // Check for active/interrupted background task when conversation changes
   useEffect(() => {
+    if (workspaceChatState || workspaceId) {
+      return;
+    }
+
     let checkInProgress = false;
     const checkTasks = async () => {
       if (checkInProgress) return;
@@ -3193,7 +3236,7 @@ export function ChatPanel({
         // Stop streaming when conversation ID changes (unmounting this effect instance)
         stopTaskStreaming();
     };
-  }, [activeConversation?.id, connectTaskStream, stopTaskStreaming, syncConversationActiveTaskId, workspaceId]);
+  }, [activeConversation?.id, connectTaskStream, stopTaskStreaming, syncConversationActiveTaskId, workspaceChatState, workspaceId]);
 
   // Cleanup on component unmount
   useEffect(() => {

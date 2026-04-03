@@ -1599,6 +1599,14 @@ export interface WorkspaceConversationStateSummaryItem {
   has_interrupted_task: boolean;
 }
 
+export interface WorkspaceChatStateResponse {
+  conversations: Conversation[];
+  interrupted_conversation_ids: string[];
+  selected_conversation_id: string | null;
+  active_task: ChatTask | null;
+  interrupted_task: ChatTask | null;
+}
+
 export interface CreateConversationRequest {
   title?: string;
   model?: string;
@@ -2142,6 +2150,12 @@ export interface UserSpaceRuntimeStatusResponse {
   runtime_operation_phase?: UserSpaceRuntimeOperationPhase | null;
   runtime_operation_started_at?: string | null;
   runtime_operation_updated_at?: string | null;
+}
+
+export interface UserSpaceWorkspaceTabStateResponse {
+  workspace_id: string;
+  runtime_status: UserSpaceRuntimeStatusResponse;
+  chat_state: WorkspaceChatStateResponse;
 }
 
 export interface UserSpaceRuntimeActionResponse {

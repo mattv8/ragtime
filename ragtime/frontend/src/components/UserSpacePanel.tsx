@@ -28,7 +28,7 @@ import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { LdapGroupSelect } from './LdapGroupSelect';
@@ -540,6 +540,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [statusOverlayInteracting, setStatusOverlayInteracting] = useState(false);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
+  const [activeWorkspaceConversationId, setActiveWorkspaceConversationId] = useState<string | null>(null);
+  const [activeWorkspaceChatSnapshot, setActiveWorkspaceChatSnapshot] = useState<WorkspaceChatStateResponse | null>(null);
   const [workspaceChatStates, setWorkspaceChatStates] = useState<Record<string, WorkspaceChatState>>({});
   const [fileBrowserEntries, setFileBrowserEntries] = useState<UserSpaceFileInfo[]>([]);
   const [files, setFiles] = useState<UserSpaceFileInfo[]>([]);
@@ -1334,6 +1336,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setCookieValue(lastWorkspaceCookieName, activeWorkspaceId);
   }, [activeWorkspaceId, lastWorkspaceCookieName]);
 
+  useEffect(() => {
+    setActiveWorkspaceConversationId(null);
+    setActiveWorkspaceChatSnapshot(null);
+  }, [activeWorkspaceId]);
+
   const handleConversationStateChange = useCallback((hasLive: boolean, hasInterrupted: boolean) => {
     if (!activeWorkspaceId) return;
     // The active workspace should reflect the live chat state from ChatPanel
@@ -1948,27 +1955,33 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     fileBrowserEntriesRef.current = fileBrowserEntries;
   }, [fileBrowserEntries]);
 
-  const refreshRuntimeStatus = useCallback(async () => {
+  const refreshActiveWorkspaceState = useCallback(async () => {
     if (!activeWorkspaceId) {
       setRuntimeStatus(null);
+      setActiveWorkspaceChatSnapshot(null);
       return;
     }
     if (refreshRuntimeStatusInflightRef.current) return;
     refreshRuntimeStatusInflightRef.current = true;
     const requestId = ++loadRuntimeStatusRequestIdRef.current;
     try {
-      const status = await api.getUserSpaceRuntimeDevserverStatus(activeWorkspaceId);
+      const state = await api.getUserSpaceWorkspaceTabState(
+        activeWorkspaceId,
+        activeWorkspaceConversationId,
+      );
       if (requestId === loadRuntimeStatusRequestIdRef.current) {
-        setRuntimeStatus(status);
+        setRuntimeStatus(state.runtime_status);
+        setActiveWorkspaceChatSnapshot(state.chat_state);
       }
     } catch {
       if (requestId === loadRuntimeStatusRequestIdRef.current) {
         setRuntimeStatus(null);
+        setActiveWorkspaceChatSnapshot(null);
       }
     } finally {
       refreshRuntimeStatusInflightRef.current = false;
     }
-  }, [activeWorkspaceId]);
+  }, [activeWorkspaceConversationId, activeWorkspaceId]);
 
   // SSE subscription for workspace change events (file upsert/patch/delete, snapshots).
   // Bumps previewRefreshCounter to remount the preview iframe and reloads workspace data.
@@ -1993,7 +2006,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           lastGeneration = data.generation;
           const eventType = data.event_type ?? 'update';
           if (eventType === 'runtime_phase') {
-            void refreshRuntimeStatus();
+            void refreshActiveWorkspaceState();
             return;
           }
 
@@ -2082,7 +2095,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     debouncedLoadChangedFileState,
     debouncedLoadWorkspaceData,
     isCodeEditorFocused,
-    refreshRuntimeStatus,
+    refreshActiveWorkspaceState,
     workspaceEventsReconnectNonce,
   ]);
 
@@ -2637,14 +2650,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'starting', runtime_operation_phase: 'queued', last_error: null } : prev);
     try {
       await api.startUserSpaceRuntimeSession(activeWorkspaceId);
-      await refreshRuntimeStatus();
+      await refreshActiveWorkspaceState();
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start runtime');
     } finally {
       setRuntimeBusy(false);
     }
-  }, [activeWorkspaceId, canEditWorkspace, refreshRuntimeStatus]);
+  }, [activeWorkspaceId, canEditWorkspace, refreshActiveWorkspaceState]);
 
   const handleStopRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -2652,14 +2665,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'stopping' } : prev);
     try {
       await api.stopUserSpaceRuntimeSession(activeWorkspaceId);
-      await refreshRuntimeStatus();
+      await refreshActiveWorkspaceState();
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to stop runtime');
     } finally {
       setRuntimeBusy(false);
     }
-  }, [activeWorkspaceId, canEditWorkspace, refreshRuntimeStatus]);
+  }, [activeWorkspaceId, canEditWorkspace, refreshActiveWorkspaceState]);
 
   const handleRestartRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -2667,26 +2680,31 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'starting', runtime_operation_phase: 'queued', last_error: null } : prev);
     try {
       await api.restartUserSpaceRuntimeDevserver(activeWorkspaceId);
-      await refreshRuntimeStatus();
+      await refreshActiveWorkspaceState();
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to restart runtime');
     } finally {
       setRuntimeBusy(false);
     }
-  }, [activeWorkspaceId, canEditWorkspace, refreshRuntimeStatus]);
+  }, [activeWorkspaceId, canEditWorkspace, refreshActiveWorkspaceState]);
 
   useEffect(() => {
-    void refreshRuntimeStatus();
+    void refreshActiveWorkspaceState();
     if (!activeWorkspaceId) return;
     // Poll faster during transitional states (starting/stopping)
     const isTransitional = runtimeDisplayState === 'starting' || runtimeDisplayState === 'stopping';
     const interval = isTransitional ? 2000 : 10000;
     const timer = window.setInterval(() => {
-      void refreshRuntimeStatus();
+      void refreshActiveWorkspaceState();
     }, interval);
     return () => window.clearInterval(timer);
-  }, [activeWorkspaceId, refreshRuntimeStatus, runtimeDisplayState]);
+  }, [activeWorkspaceId, refreshActiveWorkspaceState, runtimeDisplayState]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+    void refreshActiveWorkspaceState();
+  }, [activeWorkspaceConversationId, activeWorkspaceId, refreshActiveWorkspaceState]);
 
   useEffect(() => {
     if (!activeWorkspaceId) {
@@ -5045,7 +5063,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           className={`userspace-status-overlay${statusOverlayFading ? ' is-fading' : ''}${statusOverlayPinned ? ' is-pinned' : ''}`}
           role="status"
           aria-live="polite"
-          tabIndex={0}
           onMouseEnter={() => {
             setStatusOverlayInteracting(true);
             setStatusOverlayFading(false);
@@ -5212,6 +5229,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 currentUser={currentUser}
                 debugMode={debugMode}
                 workspaceId={activeWorkspaceId}
+                workspaceChatState={activeWorkspaceChatSnapshot}
                 workspaceAvailableTools={availableTools}
                 workspaceSelectedToolIds={resolvedSelectedToolIds}
                 workspaceSelectedToolGroupIds={resolvedSelectedToolGroupIds}
@@ -5221,6 +5239,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 workspaceSavingTools={savingWorkspaceTools}
                 onUserMessageSubmitted={canEditWorkspace ? handleUserMessageSubmitted : undefined}
                 onConversationStateChange={handleConversationStateChange}
+                onActiveConversationChange={setActiveWorkspaceConversationId}
                 embedded
                 readOnly={!canEditWorkspace}
                 readOnlyMessage="Workspace is read-only for viewers. You can review chat and files, but only owners/editors can send prompts."

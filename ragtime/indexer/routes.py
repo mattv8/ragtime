@@ -114,7 +114,8 @@ from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
                                     UpdateToolConfigRequest,
                                     UpdateToolGroupRequest,
                                     UserSpacePreviewSettingsResponse,
-                                    VectorStoreType)
+                                    VectorStoreType,
+                                    WorkspaceChatStateResponse)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
@@ -124,6 +125,7 @@ from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 from ragtime.indexer.vector_utils import ensure_pgvector_extension
+from ragtime.indexer.workspace_state import build_workspace_chat_state
 from ragtime.mcp.server import notify_tools_changed
 from ragtime.rag import rag
 from ragtime.tools.chart import create_chart
@@ -8502,6 +8504,25 @@ class WorkspaceConversationStateSummaryItem(BaseModel):
     has_interrupted_task: bool = Field(
         default=False,
         description="True when any conversation has an interrupted task.",
+    )
+
+
+@router.get(
+    "/conversations/workspace/{workspace_id}/chat-state",
+    response_model=WorkspaceChatStateResponse,
+)
+async def get_workspace_chat_state(
+    workspace_id: str,
+    selected_conversation_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Return workspace conversations plus selected conversation task state."""
+    await _assert_workspace_access(workspace_id, user, "viewer")
+    return await build_workspace_chat_state(
+        workspace_id=workspace_id,
+        user_id=user.id,
+        is_admin=(user.role == "admin"),
+        selected_conversation_id=selected_conversation_id,
     )
 
 

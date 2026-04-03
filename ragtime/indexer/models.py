@@ -2,7 +2,6 @@
 Indexer data models and schemas.
 """
 
-
 import hashlib
 import json
 from datetime import datetime
@@ -20,6 +19,7 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
     normalize_userspace_preview_sandbox_flags,
 )
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -2279,6 +2279,31 @@ class ChatTaskResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     last_update_at: datetime
+
+
+class WorkspaceChatStateResponse(BaseModel):
+    """Combined workspace chat state for a selected conversation."""
+
+    conversations: List[ConversationResponse] = Field(
+        default_factory=list,
+        description="Conversation summaries for a workspace.",
+    )
+    interrupted_conversation_ids: List[str] = Field(
+        default_factory=list,
+        description="Conversation IDs that currently have interrupted tasks.",
+    )
+    selected_conversation_id: Optional[str] = Field(
+        default=None,
+        description="Conversation ID whose task state is included below.",
+    )
+    active_task: Optional[ChatTaskResponse] = Field(
+        default=None,
+        description="Current pending or running task for the selected conversation, if any.",
+    )
+    interrupted_task: Optional[ChatTaskResponse] = Field(
+        default=None,
+        description="Most recent interrupted task for the selected conversation when there is no active task.",
+    )
 
 
 class ProviderPromptDebugRecord(BaseModel):

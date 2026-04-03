@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from ragtime.indexer.models import WorkspaceChatStateResponse
+
 WorkspaceRole = Literal["owner", "editor", "viewer"]
 ArtifactType = Literal["module_ts"]
 SqlitePersistenceMode = Literal["include", "exclude"]
@@ -395,6 +397,12 @@ class UserSpaceRuntimeStatusResponse(BaseModel):
     runtime_operation_phase: RuntimeOperationPhase | None = None
     runtime_operation_started_at: datetime | None = None
     runtime_operation_updated_at: datetime | None = None
+
+
+class UserSpaceWorkspaceTabStateResponse(BaseModel):
+    workspace_id: str
+    runtime_status: UserSpaceRuntimeStatusResponse
+    chat_state: WorkspaceChatStateResponse
 
 
 class UserSpaceRuntimeActionResponse(BaseModel):
