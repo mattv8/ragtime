@@ -335,6 +335,7 @@ const USERSPACE_CODEMIRROR_BASIC_SETUP = {
   tabSize: 2,
 };
 const USERSPACE_CHANGED_FILE_STATE_MIN_INTERVAL_MS = 1000;
+const USERSPACE_FILE_TREE_POLL_INTERVAL_MS = 5000;
 const SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES = 20;
 
 function getLastWorkspaceCookieName(userId: string): string {
@@ -1448,23 +1449,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     };
   }, [workspaces, activeWorkspaceId, currentUser.id]);
 
-  const loadWorkspaceData = useCallback(async (workspaceId: string) => {
-    const requestId = ++loadWorkspaceDataRequestIdRef.current;
+  const reconcileWorkspaceFileTree = useCallback((nextEntries: UserSpaceFileInfo[]) => {
+    const nextFiles = nextEntries.filter((entry) => entry.entry_type !== 'directory');
+    const currentSelectedPath = selectedFilePathRef.current;
+    const selectedExists = nextFiles.some((file) => file.path === currentSelectedPath);
+    const preferredPath = selectedExists
+      ? currentSelectedPath
+      : nextFiles.some((file) => file.path === previewEntryPath)
+        ? previewEntryPath
+        : nextFiles[0]?.path ?? previewEntryPath;
+    const treeChanged = fileEntriesFingerprint(nextEntries) !== fileEntriesFingerprint(fileBrowserEntriesRef.current);
 
-    try {
-      const nextEntries = await api.listUserSpaceFiles(workspaceId, { includeDirs: true });
-
-      const nextFiles = nextEntries.filter((entry) => entry.entry_type !== 'directory');
-
-      if (requestId !== loadWorkspaceDataRequestIdRef.current) {
-        return;
-      }
-
-      // Skip state updates if the file list is unchanged (same paths and timestamps).
-      if (fileEntriesFingerprint(nextEntries) === fileEntriesFingerprint(fileBrowserEntriesRef.current)) {
-        return;
-      }
-
+    if (treeChanged) {
       setFileBrowserEntries(nextEntries);
       setFiles(nextFiles);
 
@@ -1478,21 +1474,130 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         }
         return next;
       });
+    }
 
-      const currentSelectedPath = selectedFilePathRef.current;
-      const selectedExists = nextFiles.some((file) => file.path === currentSelectedPath);
-      const preferredPath = selectedExists
-        ? currentSelectedPath
-        : nextFiles.some((file) => file.path === previewEntryPath)
-          ? previewEntryPath
-          : nextFiles[0]?.path ?? previewEntryPath;
+    if (selectedFilePathRef.current !== preferredPath) {
+      selectedFilePathRef.current = preferredPath;
+      setSelectedFilePath(preferredPath);
+    }
 
-      if (selectedFilePathRef.current !== preferredPath) {
-        selectedFilePathRef.current = preferredPath;
-        setSelectedFilePath(preferredPath);
+    return {
+      changed: treeChanged,
+      nextFiles,
+      preferredPath,
+    };
+  }, [previewEntryPath]);
+
+  const warmWorkspaceFileCache = useCallback(async (
+    workspaceId: string,
+    nextFiles: UserSpaceFileInfo[],
+    options?: {
+      excludePaths?: string[];
+    },
+  ) => {
+    const excludedPaths = new Set(options?.excludePaths ?? []);
+    const staleFiles = nextFiles.filter((file) => {
+      if (excludedPaths.has(file.path)) {
+        return false;
+      }
+      const cached = fileContentCacheRef.current[file.path];
+      return !cached || cached.updatedAt !== (file.updated_at ?? '');
+    });
+
+    if (staleFiles.length === 0) {
+      return;
+    }
+
+    const fetched = await Promise.all(
+      staleFiles.map(async (file) => {
+        try {
+          const loaded = await api.getUserSpaceFile(workspaceId, file.path);
+          return {
+            path: loaded.path,
+            content: loaded.content,
+            updatedAt: file.updated_at ?? '',
+            artifactType: loaded.artifact_type ?? null,
+          };
+        } catch (err) {
+          if (getUnsupportedEditorFileMessage(err)) {
+            return null;
+          }
+          throw err;
+        }
+      })
+    );
+
+    setFileContentCache((current) => {
+      const next: Record<string, CachedUserSpaceFile> = { ...current };
+      for (const file of fetched) {
+        if (!file) {
+          continue;
+        }
+        next[file.path] = {
+          content: file.content,
+          updatedAt: file.updatedAt,
+          artifactType: file.artifactType,
+        };
+      }
+      return next;
+    });
+  }, []);
+
+  const refreshWorkspaceFileTree = useCallback(async (
+    workspaceId: string,
+  ) => {
+    const nextEntries = await api.listUserSpaceFiles(workspaceId, {
+      includeDirs: true,
+    });
+
+    reconcileWorkspaceFileTree(nextEntries);
+    setError(null);
+  }, [reconcileWorkspaceFileTree]);
+
+  const loadWorkspaceData = useCallback(async (
+    workspaceId: string,
+    options?: {
+      skipSelectedFileReload?: boolean;
+    },
+  ) => {
+    const requestId = ++loadWorkspaceDataRequestIdRef.current;
+
+    try {
+      const nextEntries = await api.listUserSpaceFiles(workspaceId, {
+        includeDirs: true,
+      });
+
+      if (requestId !== loadWorkspaceDataRequestIdRef.current) {
+        return;
       }
 
-      if (nextFiles.some((file) => file.path === preferredPath)) {
+      const { changed, nextFiles, preferredPath } = reconcileWorkspaceFileTree(nextEntries);
+
+      if (!changed) {
+        return;
+      }
+
+      const selectedExists = nextFiles.some((file) => file.path === preferredPath);
+      const skipSelectedFileReload = Boolean(
+        options?.skipSelectedFileReload
+        && selectedExists
+        && selectedFilePathRef.current === preferredPath,
+      );
+
+      await warmWorkspaceFileCache(workspaceId, nextFiles, {
+        excludePaths: selectedExists ? [preferredPath] : [],
+      });
+
+      if (requestId !== loadWorkspaceDataRequestIdRef.current) {
+        return;
+      }
+
+      if (selectedExists) {
+        if (skipSelectedFileReload) {
+          setError(null);
+          return;
+        }
+
         const preferredMeta = nextFiles.find((file) => file.path === preferredPath);
         const preferredUpdatedAt = preferredMeta?.updated_at ?? '';
         const cached = fileContentCacheRef.current[preferredPath];
@@ -1552,7 +1657,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       }
       setError(err instanceof Error ? err.message : 'Failed to load workspace data');
     }
-  }, [previewEntryPath]);
+  }, [reconcileWorkspaceFileTree, warmWorkspaceFileCache]);
 
   const loadChangedFileState = useCallback(async (workspaceId: string) => {
     if (changedFileStateInFlightRef.current) {
@@ -1934,6 +2039,36 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     ]);
   }, [activeWorkspaceId, dismissSnapshotFileDiffOverlay, loadChangedFileState, loadWorkspaceData]);
 
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+
+    let cancelled = false;
+    let isPolling = false;
+
+    const pollWorkspaceFiles = async () => {
+      if (isPolling) return;
+      isPolling = true;
+      try {
+        await refreshWorkspaceFileTree(activeWorkspaceId);
+      } catch {
+        // Ignore polling failures; the next interval will retry.
+      } finally {
+        if (!cancelled) {
+          isPolling = false;
+        }
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void pollWorkspaceFiles();
+    }, USERSPACE_FILE_TREE_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeWorkspaceId, refreshWorkspaceFileTree]);
+
   useEffect(() => () => {
     if (snapshotFileDiffHoverTimerRef.current !== null) {
       window.clearTimeout(snapshotFileDiffHoverTimerRef.current);
@@ -2102,85 +2237,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   useEffect(() => {
     selectedFilePathRef.current = selectedFilePath;
   }, [selectedFilePath]);
-
-  useEffect(() => {
-    if (!activeWorkspaceId) return;
-
-    let cancelled = false;
-
-    const syncWorkspaceFileCache = async () => {
-      const staleFiles = files.filter((file) => {
-        const cached = fileContentCacheRef.current[file.path];
-        return !cached || cached.updatedAt !== (file.updated_at ?? '');
-      });
-
-      const validPaths = new Set(files.map((file) => file.path));
-
-      if (staleFiles.length === 0) {
-        setFileContentCache((current) => {
-          const next: Record<string, CachedUserSpaceFile> = {};
-          for (const [path, value] of Object.entries(current)) {
-            if (validPaths.has(path)) {
-              next[path] = value;
-            }
-          }
-          return next;
-        });
-        return;
-      }
-
-      const fetched = await Promise.all(
-        staleFiles.map(async (file) => {
-          try {
-            const loaded = await api.getUserSpaceFile(activeWorkspaceId, file.path);
-            return {
-              path: loaded.path,
-              content: loaded.content,
-              updatedAt: file.updated_at ?? '',
-              artifactType: loaded.artifact_type ?? null,
-            };
-          } catch (err) {
-            if (getUnsupportedEditorFileMessage(err)) {
-              return null;
-            }
-            throw err;
-          }
-        })
-      );
-
-      if (cancelled) return;
-
-      setFileContentCache((current) => {
-        const next: Record<string, CachedUserSpaceFile> = {};
-        for (const [path, value] of Object.entries(current)) {
-          if (validPaths.has(path)) {
-            next[path] = value;
-          }
-        }
-
-        for (const file of fetched) {
-          if (!file) {
-            continue;
-          }
-          next[file.path] = {
-            content: file.content,
-            updatedAt: file.updatedAt,
-            artifactType: file.artifactType,
-          };
-        }
-
-        return next;
-      });
-    };
-
-    syncWorkspaceFileCache().catch((err) => {
-      console.warn('Failed to sync userspace file cache', err);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeWorkspaceId, files]);
 
   useEffect(() => {
     if (!showToolPicker) return;

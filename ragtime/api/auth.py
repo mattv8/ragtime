@@ -10,8 +10,16 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
-from fastapi import (APIRouter, Depends, Form, HTTPException, Query, Request,
-                     Response, status)
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from prisma.enums import UserRole
 from prisma.models import User
@@ -19,16 +27,20 @@ from pydantic import BaseModel, Field
 
 from prisma import Json
 from ragtime.config.settings import settings
-from ragtime.core.auth import (authenticate, create_access_token,
-                               create_session, discover_ldap_structure,
-                               get_ldap_config, invalidate_session,
-                               lookup_bind_dn)
+from ragtime.core.auth import (
+    authenticate,
+    create_access_token,
+    create_session,
+    discover_ldap_structure,
+    get_ldap_config,
+    invalidate_session,
+    lookup_bind_dn,
+)
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
-from ragtime.core.security import (get_current_user, get_session_token,
-                                   require_admin)
+from ragtime.core.security import get_current_user, get_session_token, require_admin
 
 logger = get_logger(__name__)
 
@@ -304,7 +316,8 @@ async def get_auth_status(request: Request):
         local_admin_enabled=bool(settings.local_admin_password),
         debug_mode=settings.debug_mode,
         debug_username=settings.local_admin_user if settings.debug_mode else None,
-        debug_password=None,  # Never expose password over API
+        # Debug mode is development-only; frontend uses this for local login autofill.
+        debug_password=settings.local_admin_password if settings.debug_mode else None,
         cookie_warning=cookie_warning,
         api_key_configured=bool(settings.api_key),
         session_cookie_secure=settings.session_cookie_secure,

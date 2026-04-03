@@ -27,78 +27,95 @@ from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
-                                     decrypt_json_passwords, decrypt_secret,
-                                     encrypt_json_passwords, encrypt_secret)
-from ragtime.core.entrypoint_status import (EntrypointStatus,
-                                            parse_entrypoint_config)
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_json_passwords,
+    encrypt_secret,
+)
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
-                              USERSPACE_MOUNT_WATCH_JITTER_SECONDS, SSHTunnel,
-                              build_ssh_tunnel_config,
-                              check_remote_rsync_available,
-                              execute_ssh_command, is_rsync_missing_error,
-                              preview_ssh_directory_sync, rsync_ssh_directory,
-                              ssh_config_from_dict,
-                              ssh_tunnel_config_from_dict, sync_ssh_directory)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
+    USERSPACE_MOUNT_WATCH_JITTER_SECONDS,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    check_remote_rsync_available,
+    execute_ssh_command,
+    is_rsync_missing_error,
+    preview_ssh_directory_sync,
+    rsync_ssh_directory,
+    ssh_config_from_dict,
+    ssh_tunnel_config_from_dict,
+    sync_ssh_directory,
+)
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType,
-                                      BrowseUserspaceMountSourceRequest,
-                                      CreateUserspaceMountSourceRequest,
-                                      CreateWorkspaceMountRequest,
-                                      CreateWorkspaceRequest,
-                                      DeleteUserspaceMountSourceResponse,
-                                      DeleteWorkspaceEnvVarResponse,
-                                      DeleteWorkspaceMountResponse,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      MountableSource,
-                                      MountSourceAffectedWorkspace,
-                                      MountSourceAffectedWorkspacesResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode, SqlitePersistenceMode,
-                                      SwitchSnapshotBranchRequest,
-                                      UpdateSnapshotRequest,
-                                      UpdateUserspaceMountSourceRequest,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceMountRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceEnvVarRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserspaceMountBackend,
-                                      UserspaceMountSource,
-                                      UserspaceMountSourceType,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot,
-                                      UserSpaceSnapshotBranch,
-                                      UserSpaceSnapshotDiffFileSummary,
-                                      UserSpaceSnapshotDiffSummaryResponse,
-                                      UserSpaceSnapshotFileDiffResponse,
-                                      UserSpaceSnapshotTimelineResponse,
-                                      UserSpaceWorkspace,
-                                      UserSpaceWorkspaceEnvVar,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember, WorkspaceMount,
-                                      WorkspaceMountBrowseRequest,
-                                      WorkspaceMountBrowseResponse,
-                                      WorkspaceMountDirectoryEntry,
-                                      WorkspaceMountSyncMode,
-                                      WorkspaceMountSyncPreviewRequest,
-                                      WorkspaceMountSyncPreviewResponse,
-                                      WorkspaceMountSyncRequest,
-                                      WorkspaceMountSyncResponse,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    BrowseUserspaceMountSourceRequest,
+    CreateUserspaceMountSourceRequest,
+    CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest,
+    DeleteUserspaceMountSourceResponse,
+    DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    MountableSource,
+    MountSourceAffectedWorkspace,
+    MountSourceAffectedWorkspacesResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest,
+    UpdateUserspaceMountSourceRequest,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserspaceMountBackend,
+    UserspaceMountSource,
+    UserspaceMountSourceType,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceSnapshotBranch,
+    UserSpaceSnapshotDiffFileSummary,
+    UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceMount,
+    WorkspaceMountBrowseRequest,
+    WorkspaceMountBrowseResponse,
+    WorkspaceMountDirectoryEntry,
+    WorkspaceMountSyncMode,
+    WorkspaceMountSyncPreviewRequest,
+    WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest,
+    WorkspaceMountSyncResponse,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -1397,8 +1414,9 @@ class UserSpaceService:
                     ),
                 )
                 try:
-                    from ragtime.userspace.runtime_service import \
-                        userspace_runtime_service
+                    from ragtime.userspace.runtime_service import (
+                        userspace_runtime_service,
+                    )
 
                     await userspace_runtime_service.bump_workspace_generation(
                         workspace_id,
@@ -1424,8 +1442,7 @@ class UserSpaceService:
                 allow_destructive_auto_sync_approval=True,
             )
             try:
-                from ragtime.userspace.runtime_service import \
-                    userspace_runtime_service
+                from ragtime.userspace.runtime_service import userspace_runtime_service
 
                 await userspace_runtime_service.bump_workspace_generation(
                     workspace_id,
@@ -2595,7 +2612,9 @@ class UserSpaceService:
             provided = (provided_password or "").strip()
             if not provided:
                 raise HTTPException(status_code=401, detail="Password required")
-            if not hmac.compare_digest(decrypt_secret(password_encrypted) or "", provided):
+            if not hmac.compare_digest(
+                decrypt_secret(password_encrypted) or "", provided
+            ):
                 raise HTTPException(status_code=401, detail="Invalid password")
             return
 
@@ -4516,8 +4535,7 @@ class UserSpaceService:
         mount_id: str,
     ) -> str | None:
         try:
-            from ragtime.userspace.runtime_service import \
-                userspace_runtime_service
+            from ragtime.userspace.runtime_service import userspace_runtime_service
 
             return await userspace_runtime_service.refresh_workspace_mount_after_sync(
                 workspace_id,
@@ -6412,7 +6430,10 @@ class UserSpaceService:
         )
 
     async def list_workspace_files(
-        self, workspace_id: str, user_id: str, include_dirs: bool = False
+        self,
+        workspace_id: str,
+        user_id: str,
+        include_dirs: bool = False,
     ) -> list[UserSpaceFileInfo]:
         await self._enforce_workspace_access(workspace_id, user_id)
         await self._ensure_workspace_git_repo(workspace_id)

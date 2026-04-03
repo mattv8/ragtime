@@ -2,70 +2,46 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi import (APIRouter, Depends, Header, HTTPException, Query, Request,
+                     Response)
 
 from ragtime.core.logging import get_logger
-from ragtime.core.security import (
-    get_current_user,
-    get_current_user_optional,
-    require_admin,
-)
+from ragtime.core.security import (get_current_user, get_current_user_optional,
+                                   require_admin)
 from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
-    BrowseUserspaceMountSourceRequest,
-    CreateSnapshotRequest,
-    CreateUserspaceMountSourceRequest,
-    CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest,
-    DeleteUserspaceMountSourceResponse,
-    DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    MountableSource,
-    MountSourceAffectedWorkspacesResponse,
-    PaginatedWorkspacesResponse,
-    RestoreSnapshotResponse,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
-    UpdateUserspaceMountSourceRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpdateWorkspaceShareSlugRequest,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceAcknowledgeChangedFilePathRequest,
-    UserSpaceAvailableTool,
-    UserSpaceChangedFileStateResponse,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserspaceMountSource,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceEnvVar,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMount,
-    WorkspaceMountBrowseRequest,
-    WorkspaceMountBrowseResponse,
-    WorkspaceMountSyncPreviewRequest,
-    WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest,
-    WorkspaceMountSyncResponse,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+    BrowseUserspaceMountSourceRequest, CreateSnapshotRequest,
+    CreateUserspaceMountSourceRequest, CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest, DeleteUserspaceMountSourceResponse,
+    DeleteWorkspaceEnvVarResponse, DeleteWorkspaceMountResponse,
+    ExecuteComponentRequest, ExecuteComponentResponse, MountableSource,
+    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
+    RestoreSnapshotResponse, SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest, UpdateUserspaceMountSourceRequest,
+    UpdateWorkspaceMembersRequest, UpdateWorkspaceMountRequest,
+    UpdateWorkspaceRequest, UpdateWorkspaceShareAccessRequest,
+    UpdateWorkspaceShareSlugRequest, UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest, UserSpaceAcknowledgeChangedFilePathRequest,
+    UserSpaceAvailableTool, UserSpaceChangedFileStateResponse,
+    UserSpaceFileInfo, UserSpaceFileResponse, UserspaceMountSource,
+    UserSpaceSharedPreviewResponse, UserSpaceSnapshot,
+    UserSpaceSnapshotDiffSummaryResponse, UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse, UserSpaceWorkspace,
+    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus, WorkspaceMount,
+    WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
+    WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
+    WorkspaceShareSlugAvailabilityResponse)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space"])
+
+_USERSPACE_SURFACE_HEADER = "X-Ragtime-Userspace-Surface"
+_USERSPACE_TREE_MOUNTS_HEADER = "X-Ragtime-Userspace-Tree-Includes-Mounts"
 
 
 async def _normalize_selected_tool_ids(
@@ -342,8 +318,10 @@ async def browse_tool_config(
 )
 async def list_workspace_mounts(
     workspace_id: str,
+    response: Response,
     user: Any = Depends(get_current_user),
 ):
+    response.headers[_USERSPACE_SURFACE_HEADER] = "mount-config"
     return await userspace_service.list_workspace_mounts(workspace_id, user.id)
 
 
@@ -481,19 +459,15 @@ async def list_workspace_files(
     workspace_id: str,
     response: Response,
     include_dirs: bool = False,
-    if_none_match: str | None = Header(None),
     user: Any = Depends(get_current_user),
 ):
-    generation = await userspace_runtime_service.get_workspace_generation(workspace_id)
-    etag = f'W/"{workspace_id}:{generation}"'
-
-    if if_none_match and if_none_match == etag:
-        return Response(status_code=304, headers={"ETag": etag})
-
+    response.headers[_USERSPACE_SURFACE_HEADER] = "workspace-tree"
+    response.headers[_USERSPACE_TREE_MOUNTS_HEADER] = "true"
     result = await userspace_service.list_workspace_files(
-        workspace_id, user.id, include_dirs=include_dirs
+        workspace_id,
+        user.id,
+        include_dirs=include_dirs,
     )
-    response.headers["ETag"] = etag
     return result
 
 

@@ -12,15 +12,8 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Depends,
-    Header,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
@@ -28,18 +21,14 @@ from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-    UserSpaceWorkspaceTabStateResponse,
-)
-from ragtime.userspace.runtime_service import (
-    RuntimeVersionConflictError,
-    userspace_runtime_service,
-)
+from ragtime.userspace.models import (UserSpaceCapabilityTokenResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse,
+                                      UserSpaceWorkspaceTabStateResponse)
+from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
+                                               userspace_runtime_service)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
@@ -49,6 +38,8 @@ _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 _PREVIEW_CAPABILITY_COOKIE = "userspace_preview_capability"
 _PROXY_TIMEOUT_FLOOR = 300.0  # seconds — minimum proxy read/write timeout
 _PROXY_TIMEOUT_BUFFER = 20.0  # seconds — headroom above max tool timeout
+_USERSPACE_SURFACE_HEADER = "X-Ragtime-Userspace-Surface"
+_USERSPACE_PREVIEW_PROXY_HEADER = "X-Ragtime-Userspace-Preview-Proxy"
 
 
 def _get_max_proxy_timeout() -> float:
@@ -390,6 +381,8 @@ async def _proxy_http_request(
     resp_headers = _proxy_response_headers(
         upstream_response.headers, proxy_base_path=proxy_base_path
     )
+    resp_headers[_USERSPACE_SURFACE_HEADER] = "preview-proxy"
+    resp_headers[_USERSPACE_PREVIEW_PROXY_HEADER] = "true"
 
     rewrite = proxy_base_path and _should_rewrite_proxy_content(media_type)
     if rewrite:
