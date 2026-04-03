@@ -341,6 +341,7 @@ class MCPToolAdapter:
         self._heartbeat_cache_ttl = heartbeat_cache_ttl
         self._heartbeat_cache: dict[str, ToolHealthStatus] = {}
         self._last_heartbeat_check: datetime | None = None
+        self._heartbeat_refresh_task: asyncio.Task[None] | None = None
         self._tool_executors: dict[str, Callable[..., Awaitable[str]]] = {}
 
     async def get_available_tools(
@@ -548,6 +549,45 @@ class MCPToolAdapter:
             < self._heartbeat_cache_ttl
         ):
             return self._heartbeat_cache
+
+        if self._heartbeat_cache:
+            self._schedule_heartbeat_refresh(tool_configs)
+            return {
+                tool_id: status
+                for tool_id, status in self._heartbeat_cache.items()
+                if tool_id in {str(config.get("id") or "") for config in tool_configs}
+            }
+
+        return await self._refresh_heartbeats(tool_configs)
+
+    def _schedule_heartbeat_refresh(self, tool_configs: list[dict]) -> None:
+        task = self._heartbeat_refresh_task
+        if task is not None and not task.done():
+            return
+
+        refresh_configs = [dict(config) for config in tool_configs]
+        task = asyncio.create_task(self._refresh_heartbeats_background(refresh_configs))
+        self._heartbeat_refresh_task = task
+
+        def _cleanup(done_task: asyncio.Task[None]) -> None:
+            current = self._heartbeat_refresh_task
+            if current is done_task:
+                self._heartbeat_refresh_task = None
+
+        task.add_done_callback(_cleanup)
+
+    async def _refresh_heartbeats_background(self, tool_configs: list[dict]) -> None:
+        try:
+            await self._refresh_heartbeats(tool_configs)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Background MCP heartbeat refresh failed", exc_info=True)
+
+    async def _refresh_heartbeats(
+        self, tool_configs: list[dict]
+    ) -> dict[str, ToolHealthStatus]:
+        now = datetime.now(timezone.utc)
 
         # Import here to avoid circular imports
         try:
@@ -1465,6 +1505,10 @@ class MCPToolAdapter:
         """Invalidate the heartbeat cache, forcing a fresh check on next call."""
         self._heartbeat_cache = {}
         self._last_heartbeat_check = None
+        refresh_task = self._heartbeat_refresh_task
+        if refresh_task and not refresh_task.done():
+            refresh_task.cancel()
+        self._heartbeat_refresh_task = None
         self._tool_executors = {}
 
 
