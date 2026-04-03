@@ -417,6 +417,8 @@ model McpRouteToolSelection {
   toolConfig ToolConfig     @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
 
   @@unique([mcpRouteId, toolConfigId])
+  @@index([mcpRouteId])
+  @@index([toolConfigId])
   @@map("mcp_route_tool_selections")
 }
 
@@ -465,6 +467,8 @@ model McpDefaultRouteFilterToolSelection {
   toolConfig ToolConfig            @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
 
   @@unique([filterId, toolConfigId])
+  @@index([filterId])
+  @@index([toolConfigId])
   @@map("mcp_default_route_filter_tool_selections")
 }
 
@@ -758,6 +762,9 @@ model Session {
 
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
   @@map("sessions")
 }
 
@@ -851,6 +858,8 @@ model Conversation {
   toolSelections  ConversationToolSelection[]
   toolGroupSelections ConversationToolGroupSelection[]
 
+  @@index([userId])
+  @@index([activeTaskId])
   @@index([workspaceId, updatedAt])
   @@index([userId, workspaceId, updatedAt])
   @@map("conversations")
@@ -1063,6 +1072,7 @@ model WorkspaceToolSelection {
   createdAt    DateTime   @default(now()) @map("created_at")
 
   @@unique([workspaceId, toolConfigId])
+  @@index([workspaceId])
   @@index([toolConfigId])
   @@map("workspace_tool_selections")
 }
@@ -1079,6 +1089,7 @@ model WorkspaceToolGroupSelection {
   createdAt   DateTime  @default(now()) @map("created_at")
 
   @@unique([workspaceId, toolGroupId])
+  @@index([workspaceId])
   @@index([toolGroupId])
   @@map("workspace_tool_group_selections")
 }
@@ -1178,6 +1189,7 @@ model ConversationToolSelection {
   createdAt      DateTime     @default(now()) @map("created_at")
 
   @@unique([conversationId, toolConfigId])
+  @@index([conversationId])
   @@index([toolConfigId])
   @@map("conversation_tool_selections")
 }
@@ -1194,6 +1206,7 @@ model ConversationToolGroupSelection {
   createdAt      DateTime     @default(now()) @map("created_at")
 
   @@unique([conversationId, toolGroupId])
+  @@index([conversationId])
   @@index([toolGroupId])
   @@map("conversation_tool_group_selections")
 }

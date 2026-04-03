@@ -10,13 +10,22 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse
-from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
+from prisma import Json
 from ragtime.config.settings import settings
 from ragtime.core.auth import (
     authenticate,
@@ -159,6 +168,15 @@ class UserResponse(BaseModel):
     email: Optional[str]
     role: str
     auth_provider: str
+
+
+class UserListResponse(BaseModel):
+    """Paginated user list response."""
+
+    users: list[UserResponse]
+    total: int
+    skip: int
+    take: int
 
 
 class LdapConfigRequest(BaseModel):
@@ -967,25 +985,37 @@ async def test_ldap_connection(
 # =============================================================================
 
 
-@router.get("/users")
-async def list_users(_user: User = Depends(get_current_user)):
+@router.get("/users", response_model=UserListResponse)
+async def list_users(
+    skip: int = Query(0, ge=0),
+    take: int = Query(50, ge=1, le=500),
+    _user: User = Depends(get_current_user),
+):
     """List all users."""
     db = await get_db()
+    total = await db.user.count()
     users = await db.user.find_many(
         order={"createdAt": "desc"},
+        skip=skip,
+        take=take,
     )
 
-    return [
-        UserResponse(
-            id=u.id,
-            username=u.username,
-            display_name=u.displayName,
-            email=u.email,
-            role=u.role,
-            auth_provider=u.authProvider,
-        )
-        for u in users
-    ]
+    return UserListResponse(
+        users=[
+            UserResponse(
+                id=u.id,
+                username=u.username,
+                display_name=u.displayName,
+                email=u.email,
+                role=u.role,
+                auth_provider=u.authProvider,
+            )
+            for u in users
+        ],
+        total=total,
+        skip=skip,
+        take=take,
+    )
 
 
 @router.delete("/users/{user_id}")

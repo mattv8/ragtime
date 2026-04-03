@@ -965,6 +965,42 @@ class FilesystemIndexerService:
             last_indexed=result.lastIndexed,
         )
 
+    async def _get_file_metadata_batch(
+        self,
+        index_name: str,
+        file_paths: List[str],
+    ) -> Dict[str, FilesystemFileMetadata]:
+        """Get file metadata for incremental indexing in batches."""
+        if not file_paths:
+            return {}
+
+        db = await get_db()
+        metadata_by_path: Dict[str, FilesystemFileMetadata] = {}
+        batch_size = 500
+
+        for batch_start in range(0, len(file_paths), batch_size):
+            batch_paths = file_paths[batch_start : batch_start + batch_size]
+            results = await db.filesystemfilemetadata.find_many(
+                where={
+                    "indexName": index_name,
+                    "filePath": {"in": batch_paths},
+                }
+            )
+
+            for result in results:
+                metadata_by_path[result.filePath] = FilesystemFileMetadata(
+                    id=result.id,
+                    index_name=result.indexName,
+                    file_path=result.filePath,
+                    file_hash=result.fileHash,
+                    file_size=int(result.fileSize),
+                    mime_type=result.mimeType,
+                    chunk_count=result.chunkCount,
+                    last_indexed=result.lastIndexed,
+                )
+
+        return metadata_by_path
+
     async def _upsert_file_metadata(self, metadata: FilesystemFileMetadata) -> None:
         """Upsert file metadata for tracking."""
         db = await get_db()
@@ -1418,6 +1454,12 @@ class FilesystemIndexerService:
                     await self.delete_index(config.index_name)
 
                 base_path = effective_path
+                existing_metadata_by_path: Dict[str, FilesystemFileMetadata] = {}
+                if not full_reindex:
+                    existing_metadata_by_path = await self._get_file_metadata_batch(
+                        config.index_name,
+                        [str(file_path.relative_to(base_path)) for file_path in files],
+                    )
 
                 # Process files in parallel batches (like document indexer)
                 # Concurrency limit: scale with hardware but leave headroom for
@@ -1457,16 +1499,33 @@ class FilesystemIndexerService:
                     async with file_semaphore:
                         rel_path = str(file_path.relative_to(base_path))
                         try:
+                            existing_meta = existing_metadata_by_path.get(rel_path)
+                            if existing_meta and not full_reindex:
+                                stat_result = await asyncio.to_thread(file_path.stat)
+                                last_indexed = existing_meta.last_indexed
+                                if last_indexed.tzinfo is None:
+                                    last_indexed = last_indexed.replace(
+                                        tzinfo=timezone.utc
+                                    )
+                                modified_at = datetime.fromtimestamp(
+                                    stat_result.st_mtime,
+                                    tz=timezone.utc,
+                                )
+                                if (
+                                    stat_result.st_size == existing_meta.file_size
+                                    and modified_at <= last_indexed
+                                ):
+                                    return (
+                                        rel_path,
+                                        [],
+                                        existing_meta.file_hash,
+                                        "unchanged",
+                                    )
+
                             # Check if file changed (incremental indexing)
                             current_hash = await asyncio.to_thread(
                                 compute_file_hash, file_path
                             )
-
-                            existing_meta = None
-                            if not full_reindex:
-                                existing_meta = await self._get_file_metadata(
-                                    config.index_name, rel_path
-                                )
 
                             if (
                                 not full_reindex
