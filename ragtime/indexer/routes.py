@@ -25,8 +25,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional
 
 import httpx
-from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
-                     Query, UploadFile)
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
@@ -35,91 +43,129 @@ from starlette.responses import StreamingResponse
 from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.copilot_auth import (ensure_copilot_token_fresh,
-                                       exchange_github_token_for_copilot_token,
-                                       is_copilot_token_refresh_in_progress)
-from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
-                                           get_embedding_models)
+from ragtime.core.copilot_auth import (
+    ensure_copilot_token_fresh,
+    exchange_github_token_for_copilot_token,
+    is_copilot_token_refresh_in_progress,
+)
+from ragtime.core.embedding_models import (
+    OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
+)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
-                                       get_context_limit, get_output_limit,
-                                       register_model_reasoning_capabilities,
-                                       register_model_supported_endpoints,
-                                       supports_function_calling,
-                                       update_model_function_calling,
-                                       update_model_limit,
-                                       update_model_output_limit)
-from ragtime.core.ollama import (extract_effective_context_length,
-                                 get_model_details, is_embedding_capable,
-                                 is_reachable)
+from ragtime.core.model_limits import (
+    MODEL_FAMILY_PATTERNS,
+    get_context_limit,
+    get_output_limit,
+    register_model_reasoning_capabilities,
+    register_model_supported_endpoints,
+    requires_responses_api,
+    supports_function_calling,
+    supports_responses_api,
+    update_model_function_calling,
+    update_model_limit,
+    update_model_output_limit,
+)
+from ragtime.core.ollama import (
+    extract_capabilities,
+    extract_effective_context_length,
+    get_model_details,
+    is_embedding_capable,
+    is_reachable,
+)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
-                                    mssql_connect, mysql_connect,
-                                    normalize_mssql_error_message)
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, ssh_tunnel_config_from_dict,
-                              test_ssh_connection)
+from ragtime.core.sql_utils import (
+    MssqlConnectionError,
+    MysqlConnectionError,
+    mssql_connect,
+    mysql_connect,
+    normalize_mssql_error_message,
+)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    ssh_tunnel_config_from_dict,
+    test_ssh_connection,
+)
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
-    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS)
+    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
+)
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    ChatMessage, ChatTaskResponse,
-                                    ChatTaskStatus, CheckRepoVisibilityRequest,
-                                    ConfigurationWarning, Conversation,
-                                    ConversationResponse,
-                                    CreateConversationRequest,
-                                    CreateIndexRequest,
-                                    CreateToolConfigRequest,
-                                    CreateToolGroupRequest,
-                                    DatabaseDiscoverOption, EmbeddingStatus,
-                                    FetchBranchesRequest,
-                                    FetchBranchesResponse,
-                                    FilesystemAnalysisJobResponse,
-                                    FilesystemConnectionConfig,
-                                    FilesystemIndexJobResponse,
-                                    IndexAnalysisResult, IndexConfig,
-                                    IndexInfo, IndexJobResponse, IndexStatus,
-                                    InfluxdbDiscoverRequest,
-                                    InfluxdbDiscoverResponse,
-                                    MssqlDiscoverRequest,
-                                    MssqlDiscoverResponse,
-                                    MysqlDiscoverRequest,
-                                    MysqlDiscoverResponse, OcrMode,
-                                    PdmDiscoverRequest, PdmDiscoverResponse,
-                                    PdmIndexJobResponse,
-                                    PostgresDiscoverRequest,
-                                    PostgresDiscoverResponse,
-                                    ProviderPromptDebugListResponse,
-                                    ProviderPromptDebugRecord,
-                                    RepoVisibilityResponse,
-                                    RetryVisualizationRequest,
-                                    RetryVisualizationResponse,
-                                    SchemaIndexJobResponse, SendMessageRequest,
-                                    ToolConfig, ToolGroup, ToolTestRequest,
-                                    ToolType, TriggerFilesystemIndexRequest,
-                                    TriggerPdmIndexRequest,
-                                    TriggerSchemaIndexRequest,
-                                    UpdateSettingsRequest,
-                                    UpdateToolConfigRequest,
-                                    UpdateToolGroupRequest,
-                                    UserSpacePreviewSettingsResponse,
-                                    VectorStoreType,
-                                    WorkspaceChatStateResponse)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    ChatMessage,
+    ChatTaskResponse,
+    ChatTaskStatus,
+    CheckRepoVisibilityRequest,
+    ConfigurationWarning,
+    Conversation,
+    ConversationResponse,
+    CreateConversationRequest,
+    CreateIndexRequest,
+    CreateToolConfigRequest,
+    CreateToolGroupRequest,
+    DatabaseDiscoverOption,
+    EmbeddingStatus,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    FilesystemAnalysisJobResponse,
+    FilesystemConnectionConfig,
+    FilesystemIndexJobResponse,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJobResponse,
+    IndexStatus,
+    InfluxdbDiscoverRequest,
+    InfluxdbDiscoverResponse,
+    MssqlDiscoverRequest,
+    MssqlDiscoverResponse,
+    MysqlDiscoverRequest,
+    MysqlDiscoverResponse,
+    OcrMode,
+    PdmDiscoverRequest,
+    PdmDiscoverResponse,
+    PdmIndexJobResponse,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
+    ProviderPromptDebugListResponse,
+    ProviderPromptDebugRecord,
+    RepoVisibilityResponse,
+    RetryVisualizationRequest,
+    RetryVisualizationResponse,
+    SchemaIndexJobResponse,
+    SendMessageRequest,
+    ToolConfig,
+    ToolGroup,
+    ToolTestRequest,
+    ToolType,
+    TriggerFilesystemIndexRequest,
+    TriggerPdmIndexRequest,
+    TriggerSchemaIndexRequest,
+    UpdateSettingsRequest,
+    UpdateToolConfigRequest,
+    UpdateToolGroupRequest,
+    UserSpacePreviewSettingsResponse,
+    VectorStoreType,
+    WorkspaceChatStateResponse,
+)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -1855,8 +1901,7 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1877,8 +1922,7 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        get_faiss_backend
+                    from ragtime.indexer.vector_backends import get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -2569,7 +2613,17 @@ async def discover_mysql_databases(
 
                 # Execute mysql command inside container to list databases
                 result = subprocess.run(
-                    ["docker", "exec", container, "mysql", f"-u{user}", f"-p{password}", "-N", "-e", "SHOW DATABASES"],
+                    [
+                        "docker",
+                        "exec",
+                        container,
+                        "mysql",
+                        f"-u{user}",
+                        f"-p{password}",
+                        "-N",
+                        "-e",
+                        "SHOW DATABASES",
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -2594,7 +2648,19 @@ async def discover_mysql_databases(
                 container_database_options: list[DatabaseDiscoverOption] = []
                 for db in databases:
                     check_result = subprocess.run(
-                        ["docker", "exec", container, "mysql", f"-u{user}", f"-p{password}", "-D", db, "-N", "-e", "SELECT 1"],
+                        [
+                            "docker",
+                            "exec",
+                            container,
+                            "mysql",
+                            f"-u{user}",
+                            f"-p{password}",
+                            "-D",
+                            db,
+                            "-N",
+                            "-e",
+                            "SELECT 1",
+                        ],
                         capture_output=True,
                         text=True,
                         timeout=10,
@@ -2836,8 +2902,7 @@ async def discover_influxdb_buckets(
 
     def discover_buckets(effective_url: str) -> tuple[bool, list[str], str | None]:
         try:
-            from influxdb_client import \
-                InfluxDBClient  # type: ignore[import-untyped]
+            from influxdb_client import InfluxDBClient  # type: ignore[import-untyped]
         except ImportError:
             return False, [], "influxdb-client package not installed"
 
@@ -6409,6 +6474,11 @@ class LLMModel(BaseModel):
     is_latest: bool = False
     max_output_tokens: Optional[int] = None
     context_limit: Optional[int] = None
+    capabilities: Optional[List[str]] = None
+    supported_endpoints: Optional[List[str]] = None
+    reasoning_supported: Optional[bool] = None
+    thinking_budget_supported: Optional[bool] = None
+    effort_levels: Optional[List[str]] = None
 
 
 class LLMModelsResponse(BaseModel):
@@ -6431,6 +6501,11 @@ class AvailableModel(BaseModel):
     group: Optional[str] = None  # Model group for UI organization
     is_latest: bool = False  # Whether this is the latest version in its group
     created: Optional[int] = None
+    capabilities: Optional[List[str]] = None
+    supported_endpoints: Optional[List[str]] = None
+    reasoning_supported: Optional[bool] = None
+    thinking_budget_supported: Optional[bool] = None
+    effort_levels: Optional[List[str]] = None
 
 
 class ProviderModelState(BaseModel):
@@ -7301,6 +7376,13 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
             # Filter for chat-capable models using LiteLLM's function calling support
             for model in data.get("data", []):
                 model_id = model.get("id", "")
+                (
+                    capabilities,
+                    supported_endpoints,
+                    reasoning_supported,
+                    thinking_budget_supported,
+                    effort_levels,
+                ) = _extract_provider_capability_metadata(model)
                 # Include GPT models suitable for chat (exclude embeddings, whisper, tts, dall-e, etc.)
                 if model_id.startswith("gpt-") and not any(
                     x in model_id
@@ -7315,6 +7397,11 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
                                 name=model_id,
                                 created=model.get("created"),
                                 max_output_tokens=output_limit,
+                                capabilities=capabilities or None,
+                                supported_endpoints=supported_endpoints or None,
+                                reasoning_supported=reasoning_supported,
+                                thinking_budget_supported=thinking_budget_supported,
+                                effort_levels=effort_levels or None,
                             )
                         )
 
@@ -7373,6 +7460,22 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
             for model in data.get("data", []):
                 model_id = model.get("id", "")
                 display_name = model.get("display_name", model_id)
+                (
+                    capabilities,
+                    supported_endpoints,
+                    reasoning_supported,
+                    thinking_budget_supported,
+                    effort_levels,
+                ) = _extract_provider_capability_metadata(model)
+
+                if supported_endpoints:
+                    register_model_supported_endpoints(model_id, supported_endpoints)
+                if reasoning_supported or thinking_budget_supported:
+                    register_model_reasoning_capabilities(
+                        model_id,
+                        reasoning_supported=bool(reasoning_supported),
+                        thinking_budget_supported=bool(thinking_budget_supported),
+                    )
                 # All Claude models support function calling (chat capable)
                 output_limit = await get_output_limit(model_id)
                 models.append(
@@ -7381,6 +7484,11 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
                         name=display_name,
                         created=None,
                         max_output_tokens=output_limit,
+                        capabilities=capabilities or None,
+                        supported_endpoints=supported_endpoints or None,
+                        reasoning_supported=reasoning_supported,
+                        thinking_budget_supported=thinking_budget_supported,
+                        effort_levels=effort_levels or None,
                     )
                 )
 
@@ -7456,6 +7564,11 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
 
                 for idx, details in enumerate(results):
                     if isinstance(details, dict) and details:
+                        capabilities = extract_capabilities(details)
+                        models[idx].capabilities = capabilities or None
+                        models[idx].reasoning_supported = (
+                            True if "thinking" in capabilities else None
+                        )
                         # Filter out embedding-only models (nomic-embed-text, etc.)
                         if is_embedding_capable(details, models[idx].id):
                             embedding_model_ids.add(models[idx].id)
@@ -7607,6 +7720,92 @@ def _extract_output_limit_from_model_row(row: dict[str, Any]) -> int | None:
     return None
 
 
+def _extract_provider_capability_metadata(
+    row: dict[str, Any],
+) -> tuple[list[str], list[str], bool | None, bool | None, list[str]]:
+    """Extract normalized capability metadata from provider model payloads."""
+
+    capabilities_out: list[str] = []
+    supported_endpoints_out: list[str] = []
+    reasoning_supported: bool | None = None
+    thinking_budget_supported: bool | None = None
+    effort_levels: list[str] = []
+
+    supported_endpoints = row.get("supportedEndpoints")
+    if isinstance(supported_endpoints, list):
+        supported_endpoints_out = [str(item) for item in supported_endpoints]
+
+    capabilities_obj = row.get("capabilities")
+    if isinstance(capabilities_obj, list):
+        capabilities_out = [str(item).lower() for item in capabilities_obj]
+        if "reasoning" in capabilities_out or "reasoning_effort" in capabilities_out:
+            reasoning_supported = True
+        if "thinking_budget" in capabilities_out:
+            thinking_budget_supported = True
+    elif isinstance(capabilities_obj, dict):
+        supports_obj = capabilities_obj.get("supports")
+        if isinstance(supports_obj, list):
+            capabilities_out = [str(flag).lower() for flag in supports_obj]
+        elif isinstance(supports_obj, dict):
+            capabilities_out = [
+                str(flag).lower() for flag, enabled in supports_obj.items() if enabled
+            ]
+            reasoning_effort_value = supports_obj.get("reasoning_effort")
+            if isinstance(reasoning_effort_value, list):
+                effort_levels.extend(
+                    str(level).lower() for level in reasoning_effort_value if level
+                )
+
+        thinking_obj = capabilities_obj.get("thinking")
+        if isinstance(thinking_obj, dict):
+            if thinking_obj.get("supported") is True:
+                reasoning_supported = True
+
+            thinking_types = thinking_obj.get("types")
+            if isinstance(thinking_types, dict):
+                enabled_obj = thinking_types.get("enabled")
+                if (
+                    isinstance(enabled_obj, dict)
+                    and enabled_obj.get("supported") is True
+                ):
+                    thinking_budget_supported = True
+                elif enabled_obj is True:
+                    thinking_budget_supported = True
+
+        effort_obj = capabilities_obj.get("effort")
+        if isinstance(effort_obj, dict):
+            if effort_obj.get("supported") is True:
+                reasoning_supported = True
+            for key, value in effort_obj.items():
+                if key == "supported":
+                    continue
+                if isinstance(value, dict) and value.get("supported") is True:
+                    effort_levels.append(str(key).lower())
+                elif value is True:
+                    effort_levels.append(str(key).lower())
+
+        if capabilities_out:
+            if (
+                "reasoning" in capabilities_out
+                or "reasoning_effort" in capabilities_out
+            ):
+                reasoning_supported = True
+            if "thinking_budget" in capabilities_out:
+                thinking_budget_supported = True
+
+    effort_levels = [level for level in effort_levels if level]
+    if effort_levels:
+        reasoning_supported = True
+
+    return (
+        capabilities_out,
+        supported_endpoints_out,
+        reasoning_supported,
+        thinking_budget_supported,
+        effort_levels,
+    )
+
+
 async def _fetch_github_copilot_models(
     access_token: str,
     base_url: str = COPILOT_DEFAULT_BASE_URL,
@@ -7736,48 +7935,40 @@ async def _fetch_github_copilot_models(
                             if isinstance(row.get("created"), int)
                             else None
                         )
+                        (
+                            capabilities,
+                            supported_endpoints,
+                            reasoning_supported,
+                            thinking_budget_supported,
+                            effort_levels,
+                        ) = _extract_provider_capability_metadata(row)
                         candidate = LLMModel(
                             id=model_id,
                             name=model_name,
                             created=created,
                             max_output_tokens=output_limit,
                             context_limit=context_limit,
+                            capabilities=capabilities or None,
+                            supported_endpoints=supported_endpoints or None,
+                            reasoning_supported=reasoning_supported,
+                            thinking_budget_supported=thinking_budget_supported,
+                            effort_levels=effort_levels or None,
                         )
 
                         # Cache supported API endpoints so the LLM builder
                         # knows when to use the Responses API.
-                        supported_endpoints = row.get("supportedEndpoints")
-                        if isinstance(supported_endpoints, list):
+                        if supported_endpoints:
                             register_model_supported_endpoints(
                                 model_id, supported_endpoints
                             )
 
                         # Cache reasoning capability hints from Copilot model metadata.
-                        capabilities = row.get("capabilities")
-                        supports_flags = []
-                        if isinstance(capabilities, dict):
-                            supports_obj = capabilities.get("supports")
-                            if isinstance(supports_obj, list):
-                                supports_flags = [
-                                    str(flag).lower() for flag in supports_obj
-                                ]
-                            elif isinstance(supports_obj, dict):
-                                supports_flags = [
-                                    str(flag).lower()
-                                    for flag, enabled in supports_obj.items()
-                                    if enabled
-                                ]
-
-                        if supports_flags:
+                        if reasoning_supported or thinking_budget_supported:
                             register_model_reasoning_capabilities(
                                 model_id,
-                                reasoning_supported=(
-                                    "reasoning_effort" in supports_flags
-                                    or "reasoning" in supports_flags
-                                ),
-                                thinking_budget_supported=(
-                                    "thinking_budget" in supports_flags
-                                    or "max_thinking_budget" in supports_flags
+                                reasoning_supported=bool(reasoning_supported),
+                                thinking_budget_supported=bool(
+                                    thinking_budget_supported
                                 ),
                             )
 
@@ -7859,6 +8050,23 @@ async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
                 if "text" not in [str(m).lower() for m in output_modalities]:
                     continue
 
+            (
+                capabilities,
+                supported_endpoints,
+                reasoning_supported,
+                thinking_budget_supported,
+                effort_levels,
+            ) = _extract_provider_capability_metadata(row)
+
+            if supported_endpoints:
+                register_model_supported_endpoints(model_id, supported_endpoints)
+            if reasoning_supported or thinking_budget_supported:
+                register_model_reasoning_capabilities(
+                    model_id,
+                    reasoning_supported=bool(reasoning_supported),
+                    thinking_budget_supported=bool(thinking_budget_supported),
+                )
+
             model_name = str(row.get("name") or model_id)
             output_limit = _extract_output_limit_from_model_row(row)
             context_limit = _extract_context_limit_from_model_row(row)
@@ -7885,6 +8093,11 @@ async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
                     ),
                     max_output_tokens=output_limit,
                     context_limit=context_limit,
+                    capabilities=capabilities or None,
+                    supported_endpoints=supported_endpoints or None,
+                    reasoning_supported=reasoning_supported,
+                    thinking_budget_supported=thinking_budget_supported,
+                    effort_levels=effort_levels or None,
                 )
             )
 
@@ -8139,6 +8352,16 @@ async def get_available_chat_models():
             else:
                 context_model_id = m.id
 
+            resolved_supported_endpoints = m.supported_endpoints
+            if not resolved_supported_endpoints:
+                if await requires_responses_api(context_model_id):
+                    resolved_supported_endpoints = ["/responses"]
+                elif await supports_responses_api(context_model_id):
+                    resolved_supported_endpoints = [
+                        "/chat/completions",
+                        "/responses",
+                    ]
+
             all_models.append(
                 # Prefer provider-reported limits when available.
                 # For Ollama, the model detail endpoint remains the source of truth.
@@ -8158,6 +8381,11 @@ async def get_available_chat_models():
                     ),
                     max_output_tokens=m.max_output_tokens,
                     created=m.created,
+                    capabilities=m.capabilities,
+                    supported_endpoints=resolved_supported_endpoints,
+                    reasoning_supported=m.reasoning_supported,
+                    thinking_budget_supported=m.thinking_budget_supported,
+                    effort_levels=m.effort_levels,
                 )
             )
         if not default_model and result.default_model:
@@ -8414,6 +8642,16 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
             else:
                 context_model_id = m.id
 
+            resolved_supported_endpoints = m.supported_endpoints
+            if not resolved_supported_endpoints:
+                if await requires_responses_api(context_model_id):
+                    resolved_supported_endpoints = ["/responses"]
+                elif await supports_responses_api(context_model_id):
+                    resolved_supported_endpoints = [
+                        "/chat/completions",
+                        "/responses",
+                    ]
+
             all_models.append(
                 AvailableModel(
                     id=m.id,
@@ -8430,6 +8668,11 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                     ),
                     max_output_tokens=m.max_output_tokens,
                     created=m.created,
+                    capabilities=m.capabilities,
+                    supported_endpoints=resolved_supported_endpoints,
+                    reasoning_supported=m.reasoning_supported,
+                    thinking_budget_supported=m.thinking_budget_supported,
+                    effort_levels=m.effort_levels,
                 )
             )
 

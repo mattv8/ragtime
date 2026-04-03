@@ -30,6 +30,10 @@ _model_supports_thinking_budget: dict[str, bool] = {}
 _model_requires_responses_api: dict[str, bool] = {}
 # Cache for models that support Responses API (including dual-endpoint models)
 _model_supports_responses_api: dict[str, bool] = {}
+# Cache for provider-reported reasoning capabilities (authoritative)
+_provider_supports_reasoning: dict[str, bool] = {}
+# Cache for provider-reported thinking-budget capabilities (authoritative)
+_provider_supports_thinking_budget: dict[str, bool] = {}
 _cache_lock = asyncio.Lock()
 _cache_loaded = False
 
@@ -484,6 +488,8 @@ def invalidate_cache() -> None:
     _model_supports_reasoning.clear()
     _model_supports_thinking_budget.clear()
     _model_requires_responses_api.clear()
+    _provider_supports_reasoning.clear()
+    _provider_supports_thinking_budget.clear()
 
 
 async def supports_function_calling(model_id: str) -> bool:
@@ -522,59 +528,27 @@ async def supports_reasoning(model_id: str) -> bool:
     """
     Check if a model supports reasoning/thinking tokens.
 
-    Returns True if the model supports extended thinking, False otherwise.
-    Uses models.dev metadata when available, with heuristic fallbacks.
+    Returns True when provider-reported metadata confirms support.
     """
     await _ensure_cache_loaded()
 
-    matched = _best_match_flag(_model_supports_reasoning, model_id)
+    matched = _best_match_flag(_provider_supports_reasoning, model_id)
     if matched is not None:
         return matched
 
-    # Heuristic fallbacks if not in LiteLLM data
-    model_lower = model_id.lower()
-
-    # OpenAI: o-series reasoning models (o1, o3, o4-mini, etc.)
-    if any(model_lower.startswith(p) for p in ["o1", "o3", "o4"]):
-        return True
-
-    # Anthropic: Claude 3.7+ and Claude 4+ support extended thinking
-    if "claude" in model_lower:
-        if any(x in model_lower for x in ["claude-3-7", "claude-3.7"]):
-            return True
-        if any(
-            x in model_lower
-            for x in [
-                "claude-4",
-                "claude-opus-4",
-                "claude-sonnet-4",
-                "claude-haiku-4",
-            ]
-        ):
-            return True
-
-    # Ollama: qwen3 models support thinking (qwen3, qwen3.5, etc.)
-    if any(model_lower.startswith(p) for p in ["qwen3", "qwq"]):
-        return True
-    # DeepSeek reasoning models
-    if "deepseek-r1" in model_lower:
-        return True
-
-    # Conservative default
+    # Do not infer by model-name heuristics. Reasoning support must come from
+    # provider-reported structured capability metadata.
     return False
 
 
 async def supports_thinking_budget(model_id: str) -> bool:
     """Check if a model supports Copilot/OpenAI-style `thinking_budget`.
 
-    Only returns True when explicit budget-related fields are present in the
-    models.dev metadata. The generic ``reasoning`` capability is NOT used as a
-    fallback because reasoning-capable models (e.g. GPT-5.x) may not accept a
-    ``thinking_budget`` parameter.
+    Only returns True when provider-reported metadata confirms support.
     """
     await _ensure_cache_loaded()
 
-    matched = _best_match_flag(_model_supports_thinking_budget, model_id)
+    matched = _best_match_flag(_provider_supports_thinking_budget, model_id)
     if matched is not None:
         return matched
 
@@ -628,6 +602,10 @@ def register_model_reasoning_capabilities(
             key_variants.add(short_id)
 
     for key in key_variants:
+        if reasoning_supported:
+            _provider_supports_reasoning[key] = True
+        if thinking_budget_supported:
+            _provider_supports_thinking_budget[key] = True
         if reasoning_supported:
             _model_supports_reasoning[key] = True
         if thinking_budget_supported:

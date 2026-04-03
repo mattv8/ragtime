@@ -703,6 +703,12 @@ export interface LLMModel {
   group?: string;
   is_latest?: boolean;
   max_output_tokens?: number;
+  context_limit?: number;
+  capabilities?: string[];
+  supported_endpoints?: string[];
+  reasoning_supported?: boolean;
+  thinking_budget_supported?: boolean;
+  effort_levels?: string[];
 }
 
 export interface LLMModelsResponse {
@@ -2269,6 +2275,11 @@ export interface AvailableModel {
   max_output_tokens?: number;  // Max output tokens for this model
   group?: string;  // Optional group for UI organization
   is_latest?: boolean; // Whether this model is considered the latest in its group
+  capabilities?: string[];
+  supported_endpoints?: string[];
+  reasoning_supported?: boolean;
+  thinking_budget_supported?: boolean;
+  effort_levels?: string[];
 }
 
 export interface ProviderModelState {

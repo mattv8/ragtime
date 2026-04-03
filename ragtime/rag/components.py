@@ -21,7 +21,6 @@ from typing import Any, List, Optional, Union
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -44,6 +43,7 @@ from langchain_openai.chat_models.base import (
     _construct_responses_api_payload,
     _get_last_messages,
 )
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
@@ -60,6 +60,7 @@ from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
     get_context_limit,
     get_output_limit,
+    register_model_reasoning_capabilities,
     register_model_supported_endpoints,
     requires_responses_api,
     supports_reasoning,
@@ -974,7 +975,8 @@ class _CopilotChatOpenAI(ChatOpenAI):
 
         payload = {**self._default_params, **kwargs}
         if not self._use_responses_api(payload):
-            return super()._get_request_payload(input_, stop=stop, **kwargs)
+            chat_payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+            return chat_payload
 
         leading_system_messages: list[SystemMessage] = []
         remaining_messages = list(messages)
@@ -1010,59 +1012,112 @@ class _CopilotChatOpenAI(ChatOpenAI):
         return _construct_responses_api_payload(remaining_messages, payload)
 
     @staticmethod
-    def _is_unsupported_api_error(exc: Exception) -> bool:
-        """Return True if *exc* is an OpenAI ``unsupported_api_for_model`` error."""
-        msg = str(exc).lower()
-
+    def _get_error_body(exc: Exception) -> dict[str, Any] | None:
         body = getattr(exc, "body", None)
         if isinstance(body, dict):
+            return body
+
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    return payload
+            except Exception:
+                return None
+
+        return None
+
+    @staticmethod
+    def _get_error_code(exc: Exception) -> str:
+        code = getattr(exc, "code", None)
+        if code:
+            return str(code).lower()
+
+        body = _CopilotChatOpenAI._get_error_body(exc)
+        if isinstance(body, dict):
             error_obj = body.get("error", {})
-            code = str(error_obj.get("code", "") or "")
-            if code == "unsupported_api_for_model":
-                return True
+            return str(error_obj.get("code", "") or "").lower()
 
-            # TODO: Replace message-phrase heuristics with capability-driven
-            # endpoint selection (supportedEndpoints from provider /models),
-            # and persist normalized provider::model IDs at settings-save time
-            # so request routing does not depend on runtime alias recovery.
-            # Some Copilot/OpenAI-compatible responses omit ``code`` and only
-            # provide a human-readable message like:
-            # "This model is only supported in v1/responses ..."
-            message = str(error_obj.get("message", "") or "").lower()
-            if "only supported in v1/responses" in message:
-                return True
-            if "not in v1/chat/completions" in message:
-                return True
-            if "not a chat model" in message and "v1/completions" in message:
-                return True
+        return ""
 
-        if "unsupported_api_for_model" in msg:
+    @staticmethod
+    def _is_unsupported_api_error(exc: Exception) -> bool:
+        """Return True if *exc* is an OpenAI ``unsupported_api_for_model`` error."""
+        code = _CopilotChatOpenAI._get_error_code(exc)
+        if code == "unsupported_api_for_model":
             return True
-        if "only supported in v1/responses" in msg:
-            return True
-        if "not in v1/chat/completions" in msg:
-            return True
-        if "not a chat model" in msg and "v1/completions" in msg:
-            return True
+
+        body = _CopilotChatOpenAI._get_error_body(exc)
+        if isinstance(body, dict):
+            error_obj = body.get("error", {})
+
+            # Prefer structured endpoint capability hints when providers include
+            # them in error payloads.
+            supported_endpoints = error_obj.get("supported_endpoints")
+            if isinstance(supported_endpoints, list):
+                endpoints = {str(item).lower() for item in supported_endpoints}
+                if "/responses" in endpoints and "/chat/completions" not in endpoints:
+                    return True
+
+            details = error_obj.get("details")
+            if isinstance(details, dict):
+                detail_endpoints = details.get("supported_endpoints")
+                if isinstance(detail_endpoints, list):
+                    endpoints = {str(item).lower() for item in detail_endpoints}
+                    if (
+                        "/responses" in endpoints
+                        and "/chat/completions" not in endpoints
+                    ):
+                        return True
+
         return False
 
     @staticmethod
     def _looks_like_summary_error(exc: Exception) -> bool:
-        msg = str(exc).lower()
-        return (
-            "reasoning.summary" in msg
-            or "unsupported_reasoning_summary" in msg
-            or ("summary" in msg and "reasoning" in msg and "invalid" in msg)
-        )
+        code = _CopilotChatOpenAI._get_error_code(exc)
+        if code in {"unsupported_reasoning_summary", "invalid_reasoning_summary"}:
+            return True
+
+        body = _CopilotChatOpenAI._get_error_body(exc)
+        if isinstance(body, dict):
+            error_obj = body.get("error", {})
+            param = str(error_obj.get("param", "") or "").lower()
+            if param == "reasoning.summary":
+                return True
+        return False
 
     @staticmethod
     def _looks_like_effort_error(exc: Exception) -> bool:
-        msg = str(exc).lower()
-        return (
-            "reasoning.effort" in msg
-            or "invalid_reasoning_effort" in msg
-            or ("effort" in msg and "reasoning" in msg and "unsupported" in msg)
-        )
+        code = _CopilotChatOpenAI._get_error_code(exc)
+        if code in {"invalid_reasoning_effort", "unsupported_reasoning_effort"}:
+            return True
+
+        body = _CopilotChatOpenAI._get_error_body(exc)
+        if isinstance(body, dict):
+            error_obj = body.get("error", {})
+            param = str(error_obj.get("param", "") or "").lower()
+            if param == "reasoning.effort":
+                return True
+        return False
+
+    def _should_probe_responses_fallback(self, exc: Exception) -> bool:
+        """Retry on /responses when chat+tools+reasoning fails structurally."""
+        if self.use_responses_api:
+            return False
+
+        body = self._get_error_body(exc)
+        code = self._get_error_code(exc)
+        if code == "invalid_request_body":
+            return True
+
+        if isinstance(body, dict):
+            error_obj = body.get("error", {})
+            return (
+                str(error_obj.get("code", "") or "").lower() == "invalid_request_body"
+            )
+
+        return False
 
     def _switch_to_responses_api(self) -> None:
         """Flip this instance (and cache) to use the Responses API."""
@@ -1131,7 +1186,10 @@ class _CopilotChatOpenAI(ChatOpenAI):
                 **kwargs,
             )
         except Exception as exc:
-            if not self.use_responses_api and self._is_unsupported_api_error(exc):
+            if not self.use_responses_api and (
+                self._is_unsupported_api_error(exc)
+                or self._should_probe_responses_fallback(exc)
+            ):
                 self._switch_to_responses_api()
                 return await self._retry_after_reasoning_downgrade(
                     super()._agenerate,
@@ -1152,7 +1210,10 @@ class _CopilotChatOpenAI(ChatOpenAI):
                     yield chunk
                 return
 
-            if not self.use_responses_api and self._is_unsupported_api_error(exc):
+            if not self.use_responses_api and (
+                self._is_unsupported_api_error(exc)
+                or self._should_probe_responses_fallback(exc)
+            ):
                 self._switch_to_responses_api()
                 try:
                     async for chunk in super()._astream(*args, **kwargs):
@@ -1687,6 +1748,101 @@ class RAGComponents:
         assert self._app_settings is not None
         provider_normalized = provider.lower().strip()
 
+        async def _hydrate_openai_compatible_capabilities(
+            *,
+            metadata_urls: list[str],
+            headers: dict[str, str],
+            requested_model: str,
+        ) -> None:
+            """Populate endpoint/reasoning capability caches from provider APIs."""
+
+            def _extract_rows(payload: Any) -> list[dict[str, Any]]:
+                if isinstance(payload, dict):
+                    data = payload.get("data", payload)
+                    if isinstance(data, list):
+                        return [row for row in data if isinstance(row, dict)]
+                    return []
+                if isinstance(payload, list):
+                    return [row for row in payload if isinstance(row, dict)]
+                return []
+
+            def _normalized_model_id(raw_model_id: str) -> str:
+                value = str(raw_model_id or "").strip()
+                value = re.sub(r"/+", "/", value).lstrip("/")
+                if "/" in value:
+                    _, _, short_id = value.partition("/")
+                    return short_id or value
+                return value
+
+            requested_variants = {
+                _normalized_model_id(requested_model).lower(),
+                str(requested_model or "").strip().lower(),
+            }
+
+            try:
+                async with httpx.AsyncClient(timeout=12.0) as client:
+                    for url in metadata_urls:
+                        try:
+                            response = await client.get(url, headers=headers)
+                            if response.status_code == 404:
+                                continue
+                            response.raise_for_status()
+                            rows = _extract_rows(response.json())
+                        except Exception:
+                            continue
+
+                        for row in rows:
+                            row_model_id = str(row.get("id", "") or "").strip()
+                            if not row_model_id:
+                                continue
+
+                            normalized_row_id = _normalized_model_id(row_model_id)
+                            row_variants = {
+                                row_model_id.lower(),
+                                normalized_row_id.lower(),
+                            }
+                            if requested_variants.isdisjoint(row_variants):
+                                continue
+
+                            supported_endpoints = row.get("supportedEndpoints")
+                            if isinstance(supported_endpoints, list):
+                                register_model_supported_endpoints(
+                                    normalized_row_id, supported_endpoints
+                                )
+
+                            capabilities = row.get("capabilities")
+                            if isinstance(capabilities, dict):
+                                supports_obj = capabilities.get("supports")
+                                supports_flags: list[str] = []
+                                if isinstance(supports_obj, list):
+                                    supports_flags = [
+                                        str(flag).lower() for flag in supports_obj
+                                    ]
+                                elif isinstance(supports_obj, dict):
+                                    supports_flags = [
+                                        str(flag).lower()
+                                        for flag, enabled in supports_obj.items()
+                                        if enabled
+                                    ]
+
+                                if supports_flags:
+                                    register_model_reasoning_capabilities(
+                                        normalized_row_id,
+                                        reasoning_supported=(
+                                            "reasoning_effort" in supports_flags
+                                            or "reasoning" in supports_flags
+                                        ),
+                                        thinking_budget_supported=(
+                                            "thinking_budget" in supports_flags
+                                            or "max_thinking_budget" in supports_flags
+                                        ),
+                                    )
+
+                            return
+            except Exception:
+                # Capability hydration is best-effort and must not block request setup.
+                return
+
         if provider_normalized in {"github_copilot", "github_models"}:
             model = model.lstrip("/")
 
@@ -1764,7 +1920,19 @@ class RAGComponents:
                 "Editor-Version": "vscode/1.99.0",
                 "Editor-Plugin-Version": "copilot-chat/0.26.3",
                 "User-Agent": "GitHubCopilotChat/0.26.3",
+                "Accept": "application/json",
             }
+
+            copilot_metadata_headers = {
+                **copilot_headers,
+                "Authorization": f"Bearer {token}",
+            }
+
+            await _hydrate_openai_compatible_capabilities(
+                metadata_urls=[f"{base_url}/models", f"{base_url}/v1/models"],
+                headers=copilot_metadata_headers,
+                requested_model=model,
+            )
 
             # Build kwargs for _CopilotChatOpenAI — it handles both
             # /chat/completions and /responses via use_responses_api,
@@ -1824,20 +1992,38 @@ class RAGComponents:
                 logger.warning("GitHub Models selected but no PAT token configured")
                 return None
 
-            # GitHub Models exposes OpenAI-compatible chat completions at /inference.
-            return ChatOpenAI(
-                model=model,
-                temperature=0,
-                streaming=True,
-                api_key=token,
-                base_url="https://models.github.ai/inference",
-                max_tokens=max_tokens,
-                request_timeout=LLM_REQUEST_TIMEOUT_SECONDS,
-                default_headers={
+            await _hydrate_openai_compatible_capabilities(
+                metadata_urls=["https://models.github.ai/catalog/models"],
+                headers={
+                    "Authorization": f"Bearer {token}",
                     "Accept": "application/vnd.github+json",
                     "X-GitHub-Api-Version": "2022-11-28",
                     "User-Agent": "ragtime",
                 },
+                requested_model=model,
+            )
+
+            github_models_kwargs: dict[str, Any] = {
+                "model": model,
+                "temperature": 0,
+                "streaming": True,
+                "api_key": token,
+                "base_url": "https://models.github.ai/inference",
+                "max_tokens": max_tokens,
+                "request_timeout": LLM_REQUEST_TIMEOUT_SECONDS,
+                "default_headers": {
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "User-Agent": "ragtime",
+                },
+            }
+
+            if await supports_reasoning(model):
+                github_models_kwargs["reasoning_effort"] = "high"
+
+            # GitHub Models exposes OpenAI-compatible chat completions at /inference.
+            return _CopilotChatOpenAI(
+                **github_models_kwargs,
             )
 
         api_key = self._app_settings.get("openai_api_key", "")
@@ -1845,13 +2031,29 @@ class RAGComponents:
             logger.warning("OpenAI selected but no API key configured")
             return None
 
-        return ChatOpenAI(
-            model=model,
-            temperature=0,
-            streaming=True,
-            api_key=api_key,
-            max_tokens=max_tokens,
-            request_timeout=LLM_REQUEST_TIMEOUT_SECONDS,
+        await _hydrate_openai_compatible_capabilities(
+            metadata_urls=[
+                "https://api.openai.com/v1/models",
+                f"https://api.openai.com/v1/models/{quote(model, safe=':/_-')}",
+            ],
+            headers={"Authorization": f"Bearer {api_key}"},
+            requested_model=model,
+        )
+
+        openai_kwargs: dict[str, Any] = {
+            "model": model,
+            "temperature": 0,
+            "streaming": True,
+            "api_key": api_key,
+            "max_tokens": max_tokens,
+            "request_timeout": LLM_REQUEST_TIMEOUT_SECONDS,
+        }
+
+        if await supports_reasoning(model):
+            openai_kwargs["reasoning_effort"] = "high"
+
+        return _CopilotChatOpenAI(
+            **openai_kwargs,
         )
 
     async def _get_embedding_model(self):
@@ -5004,7 +5206,9 @@ except Exception as e:
         try:
             resolved_path = Path(raw_path).resolve()
         except Exception:
-            logger.debug("Ignoring unreadable image path for tool context: %s", raw_path)
+            logger.debug(
+                "Ignoring unreadable image path for tool context: %s", raw_path
+            )
             return None
 
         try:
@@ -5192,20 +5396,31 @@ except Exception as e:
             return ""
 
         reasoning_parts: list[str] = []
+        reasoning_block_types = {
+            "thinking",
+            "reasoning",
+            "reasoning_content",
+            "reasoning_summary",
+            "reasoning_text",
+            "reasoning_summary_text",
+            "redacted_thinking",
+        }
+        reasoning_delta_suffixes = (
+            "reasoning.delta",
+            "thinking.delta",
+            "reasoning_text.delta",
+            "reasoning_summary_text.delta",
+        )
         for block in content:
             if not isinstance(block, dict):
                 continue
 
             block_type = str(block.get("type", "")).lower()
+            is_reasoning_block_type = block_type in reasoning_block_types or any(
+                block_type.endswith(suffix) for suffix in reasoning_delta_suffixes
+            )
             if (
-                block_type
-                not in {
-                    "thinking",
-                    "reasoning",
-                    "reasoning_content",
-                    "reasoning_summary",
-                    "redacted_thinking",
-                }
+                not is_reasoning_block_type
                 and block.get("thought") is not True
                 and not any(
                     key in block
@@ -7935,9 +8150,7 @@ except Exception as e:
                                     guidance = explain_runtime_console_error(
                                         serious_console_errors[0]
                                     )
-                                    detail_suffix = (
-                                        f" {guidance}" if guidance else ""
-                                    )
+                                    detail_suffix = f" {guidance}" if guidance else ""
                                     add_runtime_error(
                                         "Runtime validation failed: browser console "
                                         "reported a JavaScript exception during preview. "
