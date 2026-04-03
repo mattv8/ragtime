@@ -19,85 +19,102 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
+
 from prisma import Json
 from prisma import fields as prisma_fields
-
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
-                                     decrypt_json_passwords, decrypt_secret,
-                                     encrypt_json_passwords, encrypt_secret)
-from ragtime.core.entrypoint_status import (EntrypointStatus,
-                                            parse_entrypoint_config)
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_json_passwords,
+    encrypt_secret,
+)
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
-                              USERSPACE_MOUNT_WATCH_JITTER_SECONDS, SSHTunnel,
-                              build_ssh_tunnel_config,
-                              check_remote_rsync_available,
-                              execute_ssh_command, is_rsync_missing_error,
-                              preview_ssh_directory_sync, rsync_ssh_directory,
-                              ssh_config_from_dict,
-                              ssh_tunnel_config_from_dict, sync_ssh_directory)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
+    USERSPACE_MOUNT_WATCH_JITTER_SECONDS,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    check_remote_rsync_available,
+    execute_ssh_command,
+    is_rsync_missing_error,
+    preview_ssh_directory_sync,
+    rsync_ssh_directory,
+    ssh_config_from_dict,
+    ssh_tunnel_config_from_dict,
+    sync_ssh_directory,
+)
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType,
-                                      BrowseUserspaceMountSourceRequest,
-                                      CreateUserspaceMountSourceRequest,
-                                      CreateWorkspaceMountRequest,
-                                      CreateWorkspaceRequest,
-                                      DeleteUserspaceMountSourceResponse,
-                                      DeleteWorkspaceEnvVarResponse,
-                                      DeleteWorkspaceMountResponse,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      MountableSource,
-                                      MountSourceAffectedWorkspace,
-                                      MountSourceAffectedWorkspacesResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode, SqlitePersistenceMode,
-                                      SwitchSnapshotBranchRequest,
-                                      UpdateSnapshotRequest,
-                                      UpdateUserspaceMountSourceRequest,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceMountRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceEnvVarRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserspaceMountBackend,
-                                      UserspaceMountSource,
-                                      UserspaceMountSourceType,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot,
-                                      UserSpaceSnapshotBranch,
-                                      UserSpaceSnapshotDiffFileSummary,
-                                      UserSpaceSnapshotDiffSummaryResponse,
-                                      UserSpaceSnapshotFileDiffResponse,
-                                      UserSpaceSnapshotTimelineResponse,
-                                      UserSpaceWorkspace,
-                                      UserSpaceWorkspaceEnvVar,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember, WorkspaceMount,
-                                      WorkspaceMountBrowseRequest,
-                                      WorkspaceMountBrowseResponse,
-                                      WorkspaceMountDirectoryEntry,
-                                      WorkspaceMountSyncMode,
-                                      WorkspaceMountSyncPreviewRequest,
-                                      WorkspaceMountSyncPreviewResponse,
-                                      WorkspaceMountSyncRequest,
-                                      WorkspaceMountSyncResponse,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    BrowseUserspaceMountSourceRequest,
+    CreateUserspaceMountSourceRequest,
+    CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest,
+    DeleteUserspaceMountSourceResponse,
+    DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    MountableSource,
+    MountSourceAffectedWorkspace,
+    MountSourceAffectedWorkspacesResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest,
+    UpdateUserspaceMountSourceRequest,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserspaceMountBackend,
+    UserspaceMountSource,
+    UserspaceMountSourceType,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceSnapshotBranch,
+    UserSpaceSnapshotDiffFileSummary,
+    UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceMount,
+    WorkspaceMountBrowseRequest,
+    WorkspaceMountBrowseResponse,
+    WorkspaceMountDirectoryEntry,
+    WorkspaceMountSyncMode,
+    WorkspaceMountSyncPreviewRequest,
+    WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest,
+    WorkspaceMountSyncResponse,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -1030,7 +1047,9 @@ class UserSpaceService:
     def _seed_runtime_bootstrap_config(self, workspace_id: str) -> None:
         self._sync_runtime_bootstrap_config(workspace_id)
 
-    async def build_runtime_bridge_content(self, workspace_id: str | None = None) -> str:
+    async def build_runtime_bridge_content(
+        self, workspace_id: str | None = None
+    ) -> str:
         if not workspace_id:
             return _build_bridge_content()
 
@@ -1336,7 +1355,9 @@ class UserSpaceService:
             # gets a full cooldown interval after finishing a sync.
             asyncio.create_task(
                 self._run_watched_workspace_mount_sync(
-                    workspace_id, mount_id, source_interval,
+                    workspace_id,
+                    mount_id,
+                    source_interval,
                 ),
                 name=f"userspace-mount-watch-sync:{workspace_id}:{mount_id}",
             )
@@ -1375,7 +1396,9 @@ class UserSpaceService:
                 getattr(mount, "syncMode", None),
                 legacy_sync_deletes=bool(getattr(mount, "syncDeletes", False)),
             )
-            if self._is_destructive_workspace_mount_sync_mode(sync_mode) and not self._has_destructive_auto_sync_approval(mount, sync_mode):
+            if self._is_destructive_workspace_mount_sync_mode(
+                sync_mode
+            ) and not self._has_destructive_auto_sync_approval(mount, sync_mode):
                 await self._finalize_workspace_mount_sync(
                     db,
                     mount_id=mount_id,
@@ -1390,8 +1413,9 @@ class UserSpaceService:
                     ),
                 )
                 try:
-                    from ragtime.userspace.runtime_service import \
-                        userspace_runtime_service
+                    from ragtime.userspace.runtime_service import (
+                        userspace_runtime_service,
+                    )
 
                     await userspace_runtime_service.bump_workspace_generation(
                         workspace_id,
@@ -1417,8 +1441,7 @@ class UserSpaceService:
                 allow_destructive_auto_sync_approval=True,
             )
             try:
-                from ragtime.userspace.runtime_service import \
-                    userspace_runtime_service
+                from ragtime.userspace.runtime_service import userspace_runtime_service
 
                 await userspace_runtime_service.bump_workspace_generation(
                     workspace_id,
@@ -1533,6 +1556,53 @@ class UserSpaceService:
         self, workspace_id: str, relative_path: str
     ) -> Path:
         return self._resolve_workspace_file_path(workspace_id, relative_path)
+
+    async def _resolve_workspace_tree_file_path(
+        self,
+        workspace_id: str,
+        relative_path: str,
+    ) -> Path:
+        normalized_path = self._normalize_workspace_relative_path(relative_path)
+        if not normalized_path or normalized_path.startswith("/"):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+
+        best_prefix = ""
+        best_source_dir: Path | None = None
+        mount_specs = await self.resolve_workspace_mounts_for_runtime(workspace_id)
+        for spec in mount_specs:
+            repo_relative_prefix = self._workspace_mount_target_repo_relative_path(
+                str(spec.get("target_path", "") or "")
+            )
+            if (
+                not repo_relative_prefix
+                or not self._workspace_path_matches_mount_prefix(
+                    normalized_path,
+                    repo_relative_prefix,
+                )
+            ):
+                continue
+
+            source_local_path = str(spec.get("source_local_path", "") or "").strip()
+            if not source_local_path:
+                continue
+
+            if len(repo_relative_prefix) > len(best_prefix):
+                best_prefix = repo_relative_prefix
+                best_source_dir = Path(source_local_path)
+
+        if best_source_dir is None:
+            return self._resolve_workspace_file_path(workspace_id, normalized_path)
+
+        suffix = normalized_path[len(best_prefix) :].lstrip("/")
+        target = best_source_dir if not suffix else best_source_dir / suffix
+        resolved_source_dir = best_source_dir.resolve()
+        resolved_target = target.resolve()
+        if (
+            resolved_target != resolved_source_dir
+            and resolved_source_dir not in resolved_target.parents
+        ):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+        return resolved_target
 
     @staticmethod
     def _normalize_workspace_relative_path(relative_path: str) -> str:
@@ -4293,7 +4363,9 @@ class UserSpaceService:
             getattr(mount, "syncMode", None),
             legacy_sync_deletes=bool(getattr(mount, "syncDeletes", False)),
         )
-        if preview_token is not None or self._is_destructive_workspace_mount_sync_mode(sync_mode):
+        if preview_token is not None or self._is_destructive_workspace_mount_sync_mode(
+            sync_mode
+        ):
             return await self._sync_workspace_mount_record_once(
                 db,
                 mount,
@@ -4373,7 +4445,9 @@ class UserSpaceService:
                             )
                         elif not (
                             allow_destructive_auto_sync_approval
-                            and self._has_destructive_auto_sync_approval(mount, sync_mode)
+                            and self._has_destructive_auto_sync_approval(
+                                mount, sync_mode
+                            )
                         ):
                             raise HTTPException(
                                 status_code=409,
@@ -4416,9 +4490,11 @@ class UserSpaceService:
             sync_backend = result.backend_used or preferred_backend
             sync_notice = result.notice
             if result.success:
-                refresh_notice = await self._maybe_refresh_active_runtime_mount_after_sync(
-                    workspace_id,
-                    mount_id,
+                refresh_notice = (
+                    await self._maybe_refresh_active_runtime_mount_after_sync(
+                        workspace_id,
+                        mount_id,
+                    )
                 )
                 sync_notice = self._merge_workspace_mount_sync_notices(
                     sync_notice,
@@ -4456,8 +4532,7 @@ class UserSpaceService:
         mount_id: str,
     ) -> str | None:
         try:
-            from ragtime.userspace.runtime_service import \
-                userspace_runtime_service
+            from ragtime.userspace.runtime_service import userspace_runtime_service
 
             return await userspace_runtime_service.refresh_workspace_mount_after_sync(
                 workspace_id,
@@ -4612,13 +4687,13 @@ class UserSpaceService:
         workspace_id: str,
         target_path: str,
         cache_dir: Path,
-    ) -> None:
+    ) -> bool:
         runtime_dir = self._resolve_workspace_mount_runtime_target_dir(
             workspace_id,
             target_path,
         )
         if runtime_dir is None or not runtime_dir.is_dir():
-            return
+            return False
 
         cache_dir.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(
@@ -4638,8 +4713,28 @@ class UserSpaceService:
                 "Failed to stage runtime mount content %s into sync cache %s: %s",
                 runtime_dir,
                 cache_dir,
-                (proc.stderr or proc.stdout or f"rsync exited {proc.returncode}").strip()[:300],
+                (
+                    proc.stderr or proc.stdout or f"rsync exited {proc.returncode}"
+                ).strip()[:300],
             )
+            return False
+
+        return True
+
+    def _stage_runtime_mounts_into_sync_cache_sync(
+        self,
+        workspace_id: str,
+        stage_specs: list[tuple[str, Path]],
+    ) -> bool:
+        staged_any = False
+        for target_path, cache_dir in stage_specs:
+            if self._stage_runtime_mount_into_sync_cache(
+                workspace_id,
+                target_path,
+                cache_dir,
+            ):
+                staged_any = True
+        return staged_any
 
     async def _finalize_workspace_mount_sync(
         self,
@@ -5393,9 +5488,11 @@ class UserSpaceService:
         initial_sync_notice: str | None = None
         if mount_source.source_type == "ssh":
             ssh_config = ssh_config_from_dict(mount_source.connection_config)
-            initial_sync_backend, initial_sync_notice = await self._resolve_ssh_sync_backend(
-                ssh_config,
-                probe_if_unknown=True,
+            initial_sync_backend, initial_sync_notice = (
+                await self._resolve_ssh_sync_backend(
+                    ssh_config,
+                    probe_if_unknown=True,
+                )
             )
         created = await db.workspacemount.create(
             data={
@@ -5462,9 +5559,11 @@ class UserSpaceService:
             auto_sync_enabled=next_auto_sync_enabled,
         )
 
-        existing_has_destructive_auto_sync_approval = self._has_destructive_auto_sync_approval(
-            existing,
-            next_sync_mode,
+        existing_has_destructive_auto_sync_approval = (
+            self._has_destructive_auto_sync_approval(
+                existing,
+                next_sync_mode,
+            )
         )
         needs_destructive_auto_sync_confirmation = (
             next_auto_sync_enabled
@@ -5610,7 +5709,11 @@ class UserSpaceService:
             where={"id": mount_id, "workspaceId": workspace_id},
             include={"mountSource": True},
         )
-        mount_source_record = getattr(refreshed, "mountSource", None) if refreshed else getattr(existing, "mountSource", None)
+        mount_source_record = (
+            getattr(refreshed, "mountSource", None)
+            if refreshed
+            else getattr(existing, "mountSource", None)
+        )
         mount_source = (
             self._userspace_mount_source_from_record(mount_source_record)
             if mount_source_record is not None
@@ -5980,6 +6083,62 @@ class UserSpaceService:
 
         return specs
 
+    async def stage_runtime_mounts_into_sync_cache(
+        self,
+        workspace_id: str,
+        mount_ids: list[str] | None = None,
+    ) -> bool:
+        db = await get_db()
+        rows = await db.workspacemount.find_many(
+            where={"workspaceId": workspace_id},
+            include={"mountSource": True},
+        )
+        if not rows:
+            return False
+
+        mount_id_filter = (
+            {str(mount_id).strip() for mount_id in mount_ids if str(mount_id).strip()}
+            if mount_ids is not None
+            else None
+        )
+        stage_specs: list[tuple[str, Path]] = []
+
+        for row in rows:
+            mount_id = str(getattr(row, "id", "") or "")
+            if mount_id_filter is not None and mount_id not in mount_id_filter:
+                continue
+            if not bool(getattr(row, "enabled", True)):
+                continue
+
+            mount_source_record = getattr(row, "mountSource", None)
+            if not mount_source_record:
+                continue
+            if str(getattr(mount_source_record, "sourceType", "") or "") != "ssh":
+                continue
+
+            target_path = str(getattr(row, "targetPath", "") or "").strip()
+            if not target_path:
+                continue
+
+            stage_specs.append(
+                (
+                    target_path,
+                    self._base_dir / "mount_cache" / workspace_id / mount_id,
+                )
+            )
+
+        if not stage_specs:
+            return False
+
+        staged_any = await asyncio.to_thread(
+            self._stage_runtime_mounts_into_sync_cache_sync,
+            workspace_id,
+            stage_specs,
+        )
+        if staged_any:
+            self.invalidate_file_list_cache(workspace_id)
+        return staged_any
+
     def invalidate_file_list_cache(self, workspace_id: str) -> None:
         self._file_list_cache.pop(workspace_id, None)
 
@@ -6319,10 +6478,34 @@ class UserSpaceService:
                     )
                     existing_paths.add(prefix)
 
-        # Augment with files from mount source directories so they appear in
-        # the file tree even though they live outside the workspace files dir.
         mount_specs = await self.resolve_workspace_mounts_for_runtime(workspace_id)
         if mount_specs:
+            mount_prefixes = self._deduplicate_ancestor_paths(
+                [
+                    repo_rel
+                    for spec in mount_specs
+                    if (
+                        repo_rel := self._workspace_mount_target_repo_relative_path(
+                            str(spec.get("target_path", "") or "")
+                        )
+                    )
+                ]
+            )
+            if mount_prefixes:
+                base_result = [
+                    entry
+                    for entry in base_result
+                    if not any(
+                        self._workspace_path_matches_mount_prefix(
+                            entry.path,
+                            prefix,
+                        )
+                        for prefix in mount_prefixes
+                    )
+                ]
+
+            # Augment with files from mount source directories so they appear in
+            # the file tree even though they live outside the workspace files dir.
             existing_paths = {f.path for f in base_result}
             mount_entries = await asyncio.to_thread(
                 self._list_mount_source_files_sync,
@@ -6506,7 +6689,10 @@ class UserSpaceService:
                     ),
                 )
 
-        file_path = self._resolve_workspace_file_path(workspace_id, normalized_path)
+        file_path = await self._resolve_workspace_tree_file_path(
+            workspace_id,
+            normalized_path,
+        )
         stat = await asyncio.to_thread(
             self._write_workspace_file_sync,
             file_path,
@@ -6552,7 +6738,10 @@ class UserSpaceService:
             normalized_path,
         )
 
-        file_path = self._resolve_workspace_file_path(workspace_id, normalized_path)
+        file_path = await self._resolve_workspace_tree_file_path(
+            workspace_id,
+            normalized_path,
+        )
         if not file_path.exists() or not file_path.is_file():
             raise HTTPException(status_code=404, detail="File not found")
 
@@ -6597,7 +6786,10 @@ class UserSpaceService:
             normalized_path,
         )
 
-        file_path = self._resolve_workspace_file_path(workspace_id, normalized_path)
+        file_path = await self._resolve_workspace_tree_file_path(
+            workspace_id,
+            normalized_path,
+        )
         await asyncio.to_thread(self._delete_workspace_file_sync, file_path)
 
         await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
@@ -6651,8 +6843,14 @@ class UserSpaceService:
             normalized_new,
         )
 
-        source_path = self._resolve_workspace_file_path(workspace_id, normalized_old)
-        target_path = self._resolve_workspace_file_path(workspace_id, normalized_new)
+        source_path = await self._resolve_workspace_tree_file_path(
+            workspace_id,
+            normalized_old,
+        )
+        target_path = await self._resolve_workspace_tree_file_path(
+            workspace_id,
+            normalized_new,
+        )
 
         try:
             await asyncio.to_thread(

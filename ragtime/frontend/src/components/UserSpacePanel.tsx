@@ -18,7 +18,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
-import { api } from '@/api';
+import { api, ApiError } from '@/api';
 import {
   clearInterruptDismiss,
   resolveWorkspaceInterruptStateFromSummary,
@@ -493,6 +493,15 @@ function formatUserSpaceErrorMessage(rawError: string | null): string | null {
   return normalized;
 }
 
+function getUnsupportedEditorFileMessage(error: unknown): string | null {
+  if (!(error instanceof ApiError) || error.status !== 415) {
+    return null;
+  }
+
+  return formatUserSpaceErrorMessage(error.detail ?? error.message)
+    ?? 'This file cannot be opened in the text editor.';
+}
+
 export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenChange }: UserSpacePanelProps) {
   const previewEntryPath = 'dashboard/main.ts';
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
@@ -525,6 +534,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [fileContent, setFileContent] = useState<string>('');
   const [fileDirty, setFileDirty] = useState(false);
   const [fileContentCache, setFileContentCache] = useState<Record<string, { content: string; updatedAt: string }>>({});
+  const [selectedFileUnsupportedMessage, setSelectedFileUnsupportedMessage] = useState<string | null>(null);
   const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
   const [previewExecuting, setPreviewExecuting] = useState(false);
   const [previewRefreshCounter, setPreviewRefreshCounter] = useState(0);
@@ -1164,6 +1174,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     []
   );
 
+  const selectedFileDisplayName = useMemo(() => {
+    const parts = selectedFilePath.split('/').filter(Boolean);
+    return parts[parts.length - 1] ?? selectedFilePath;
+  }, [selectedFilePath]);
+
   // Derive effective runtime display state from session_state + devserver_running
   const runtimeDisplayState = useMemo(() => {
     if (!runtimeStatus) return 'stopped';
@@ -1423,24 +1438,41 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             return;
           }
           setFileContent(cached.content);
+          setSelectedFileUnsupportedMessage(null);
         } else {
-          const file = await api.getUserSpaceFile(workspaceId, preferredPath);
+          try {
+            const file = await api.getUserSpaceFile(workspaceId, preferredPath);
 
-          if (requestId !== loadWorkspaceDataRequestIdRef.current || selectedFilePathRef.current !== preferredPath) {
-            return;
+            if (requestId !== loadWorkspaceDataRequestIdRef.current || selectedFilePathRef.current !== preferredPath) {
+              return;
+            }
+
+            setFileContent(file.content);
+            setFileContentCache((current) => ({
+              ...current,
+              [file.path]: {
+                content: file.content,
+                updatedAt: preferredUpdatedAt,
+              },
+            }));
+            setSelectedFileUnsupportedMessage(null);
+          } catch (err) {
+            if (requestId !== loadWorkspaceDataRequestIdRef.current || selectedFilePathRef.current !== preferredPath) {
+              return;
+            }
+
+            const unsupportedMessage = getUnsupportedEditorFileMessage(err);
+            if (!unsupportedMessage) {
+              throw err;
+            }
+
+            setFileContent('');
+            setSelectedFileUnsupportedMessage(unsupportedMessage);
           }
-
-          setFileContent(file.content);
-          setFileContentCache((current) => ({
-            ...current,
-            [file.path]: {
-              content: file.content,
-              updatedAt: preferredUpdatedAt,
-            },
-          }));
         }
       } else {
         setFileContent('');
+        setSelectedFileUnsupportedMessage(null);
       }
 
       setFileDirty(false);
@@ -2024,12 +2056,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
       const fetched = await Promise.all(
         staleFiles.map(async (file) => {
-          const loaded = await api.getUserSpaceFile(activeWorkspaceId, file.path);
-          return {
-            path: loaded.path,
-            content: loaded.content,
-            updatedAt: file.updated_at ?? '',
-          };
+          try {
+            const loaded = await api.getUserSpaceFile(activeWorkspaceId, file.path);
+            return {
+              path: loaded.path,
+              content: loaded.content,
+              updatedAt: file.updated_at ?? '',
+            };
+          } catch (err) {
+            if (getUnsupportedEditorFileMessage(err)) {
+              return null;
+            }
+            throw err;
+          }
         })
       );
 
@@ -2044,6 +2083,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         }
 
         for (const file of fetched) {
+          if (!file) {
+            continue;
+          }
           next[file.path] = {
             content: file.content,
             updatedAt: file.updatedAt,
@@ -2229,6 +2271,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       if (cached && cached.updatedAt === selectedUpdatedAt) {
         setFileContent(cached.content);
         setFileDirty(false);
+        setSelectedFileUnsupportedMessage(null);
+        setError(null);
         return;
       }
 
@@ -2242,7 +2286,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         },
       }));
       setFileDirty(false);
+      setSelectedFileUnsupportedMessage(null);
+      setError(null);
     } catch (err) {
+      const unsupportedMessage = getUnsupportedEditorFileMessage(err);
+      if (unsupportedMessage) {
+        setFileContent('');
+        setFileDirty(false);
+        setSelectedFileUnsupportedMessage(unsupportedMessage);
+        setError(null);
+        return;
+      }
+
+      setSelectedFileUnsupportedMessage(null);
       setError(err instanceof Error ? err.message : 'Failed to open file');
     }
   }, [activeWorkspaceId, files]);
@@ -4986,44 +5042,56 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             {/* Code editor */}
             <div className="userspace-code-editor" ref={codeEditorRef}>
               {!canEditWorkspace && <div className="userspace-readonly-badge">Read-only</div>}
-              <CodeMirror
-                value={fileContent}
-                onChange={(value) => {
-                  setFileContent(value);
-                  setFileDirty(true);
-                  setChangedFiles((prev) => {
-                    if (!selectedFilePath) return prev;
-                    if (prev.has(selectedFilePath)) return prev;
-                    const next = new Set(prev);
-                    next.add(selectedFilePath);
-                    return next;
-                  });
-                  setAcknowledgedFiles((prev) => {
-                    if (!selectedFilePath || !prev.has(selectedFilePath)) return prev;
-                    const next = new Set(prev);
-                    next.delete(selectedFilePath);
-                    return next;
-                  });
+              {selectedFileUnsupportedMessage ? (
+                <div className="userspace-nontext-file-placeholder">
+                  <File size={18} />
+                  <div className="userspace-nontext-file-copy">
+                    <strong>{selectedFileDisplayName || 'Selected file'}</strong>
+                    <p className="userspace-muted" style={{ margin: 0, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+                      {selectedFileUnsupportedMessage}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <CodeMirror
+                  value={fileContent}
+                  onChange={(value) => {
+                    setFileContent(value);
+                    setFileDirty(true);
+                    setChangedFiles((prev) => {
+                      if (!selectedFilePath) return prev;
+                      if (prev.has(selectedFilePath)) return prev;
+                      const next = new Set(prev);
+                      next.add(selectedFilePath);
+                      return next;
+                    });
+                    setAcknowledgedFiles((prev) => {
+                      if (!selectedFilePath || !prev.has(selectedFilePath)) return prev;
+                      const next = new Set(prev);
+                      next.delete(selectedFilePath);
+                      return next;
+                    });
 
-                  // Re-check git-backed changed-file state after local edits settle
-                  // so undo/revert transitions are reflected in the tree markers.
-                  if (activeWorkspaceId) {
-                    debouncedLoadChangedFileState(activeWorkspaceId);
-                  }
-                }}
-                extensions={codeMirrorExtensions}
-                editable={canEditWorkspace}
-                readOnly={!canEditWorkspace}
-                placeholder="Create dashboard/report/module source files here"
-                height="100%"
-                theme={(() => {
-                  const stored = localStorage.getItem('ragtime-theme');
-                  if (stored === 'light') return 'light';
-                  if (stored === 'dark' || stored) return 'dark';
-                  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-                })()}
-                basicSetup={USERSPACE_CODEMIRROR_BASIC_SETUP}
-              />
+                    // Re-check git-backed changed-file state after local edits settle
+                    // so undo/revert transitions are reflected in the tree markers.
+                    if (activeWorkspaceId) {
+                      debouncedLoadChangedFileState(activeWorkspaceId);
+                    }
+                  }}
+                  extensions={codeMirrorExtensions}
+                  editable={canEditWorkspace}
+                  readOnly={!canEditWorkspace}
+                  placeholder="Create dashboard/report/module source files here"
+                  height="100%"
+                  theme={(() => {
+                    const stored = localStorage.getItem('ragtime-theme');
+                    if (stored === 'light') return 'light';
+                    if (stored === 'dark' || stored) return 'dark';
+                    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+                  })()}
+                  basicSetup={USERSPACE_CODEMIRROR_BASIC_SETUP}
+                />
+              )}
             </div>
           </div>
           )}

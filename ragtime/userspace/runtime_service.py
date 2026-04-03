@@ -14,10 +14,10 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
@@ -2409,6 +2409,7 @@ class UserSpaceRuntimeService:
         mount_contents_changed = previous is None or previous[-1] != signature[-1]
         self._runtime_watch_signatures[workspace_id] = signature
         if mount_contents_changed:
+            await userspace_service.stage_runtime_mounts_into_sync_cache(workspace_id)
             userspace_service.invalidate_file_list_cache(workspace_id)
         event_type = (
             "runtime_mount_contents"

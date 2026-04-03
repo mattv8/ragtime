@@ -1633,6 +1633,27 @@ textarea:focus {
   overflow: hidden;
 }
 
+.userspace-nontext-file-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  padding: var(--space-xl);
+  color: var(--color-text-secondary);
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--color-primary) 10%, transparent), transparent 45%),
+    var(--color-bg-primary);
+  text-align: left;
+}
+
+.userspace-nontext-file-copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  max-width: min(560px, 100%);
+}
+
 .userspace-readonly-badge {
   position: absolute;
   top: var(--space-xs);
