@@ -10,16 +10,8 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    Form,
-    HTTPException,
-    Query,
-    Request,
-    Response,
-    status,
-)
+from fastapi import (APIRouter, Depends, Form, HTTPException, Query, Request,
+                     Response, status)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from prisma.enums import UserRole
 from prisma.models import User
@@ -27,20 +19,16 @@ from pydantic import BaseModel, Field
 
 from prisma import Json
 from ragtime.config.settings import settings
-from ragtime.core.auth import (
-    authenticate,
-    create_access_token,
-    create_session,
-    discover_ldap_structure,
-    get_ldap_config,
-    invalidate_session,
-    lookup_bind_dn,
-)
+from ragtime.core.auth import (authenticate, create_access_token,
+                               create_session, discover_ldap_structure,
+                               get_ldap_config, invalidate_session,
+                               lookup_bind_dn)
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
-from ragtime.core.security import get_current_user, get_session_token, require_admin
+from ragtime.core.security import (get_current_user, get_session_token,
+                                   require_admin)
 
 logger = get_logger(__name__)
 
@@ -89,21 +77,18 @@ def validate_redirect_uri(redirect_uri: str) -> bool:
         # Allow loopback addresses (RFC 8252 for native apps)
         loopback_hosts = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
-        # Allow trusted IDE redirect domains
+        # Allow trusted IDE redirect domains (exact match only)
         # These are official OAuth redirect endpoints for IDEs
         trusted_domains = {
             "vscode.dev",  # VS Code web/desktop OAuth callback
             "insiders.vscode.dev",  # VS Code Insiders
             "github.dev",  # GitHub Codespaces
-            "jetbrains.com",  # JetBrains IDEs
-            "account.jetbrains.com",
+            "account.jetbrains.com",  # JetBrains OAuth callback
         }
 
-        # Check if it's a loopback or trusted domain
+        # Check if it's a loopback or trusted domain (exact match only)
         is_loopback = hostname in loopback_hosts
-        is_trusted = hostname in trusted_domains or any(
-            hostname.endswith(f".{domain}") for domain in trusted_domains
-        )
+        is_trusted = hostname in trusted_domains
 
         if not is_loopback and not is_trusted:
             logger.warning(
@@ -319,7 +304,7 @@ async def get_auth_status(request: Request):
         local_admin_enabled=bool(settings.local_admin_password),
         debug_mode=settings.debug_mode,
         debug_username=settings.local_admin_user if settings.debug_mode else None,
-        debug_password=settings.local_admin_password if settings.debug_mode else None,
+        debug_password=None,  # Never expose password over API
         cookie_warning=cookie_warning,
         api_key_configured=bool(settings.api_key),
         session_cookie_secure=settings.session_cookie_secure,

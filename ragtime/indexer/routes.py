@@ -25,143 +25,100 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Body,
-    Depends,
-    File,
-    Form,
-    HTTPException,
-    Query,
-    UploadFile,
-)
+from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
+                     Query, UploadFile)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.copilot_auth import (
-    ensure_copilot_token_fresh,
-    exchange_github_token_for_copilot_token,
-    is_copilot_token_refresh_in_progress,
-)
-from ragtime.core.embedding_models import (
-    OPENAI_EMBEDDING_PRIORITY,
-    get_embedding_models,
-)
+from ragtime.core.copilot_auth import (ensure_copilot_token_fresh,
+                                       exchange_github_token_for_copilot_token,
+                                       is_copilot_token_refresh_in_progress)
+from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
+                                           get_embedding_models)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    MODEL_FAMILY_PATTERNS,
-    get_context_limit,
-    get_output_limit,
-    register_model_reasoning_capabilities,
-    register_model_supported_endpoints,
-    supports_function_calling,
-    update_model_function_calling,
-    update_model_limit,
-    update_model_output_limit,
-)
-from ragtime.core.ollama import (
-    extract_effective_context_length,
-    get_model_details,
-    is_embedding_capable,
-    is_reachable,
-)
+from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
+                                       get_context_limit, get_output_limit,
+                                       register_model_reasoning_capabilities,
+                                       register_model_supported_endpoints,
+                                       supports_function_calling,
+                                       update_model_function_calling,
+                                       update_model_limit,
+                                       update_model_output_limit)
+from ragtime.core.ollama import (extract_effective_context_length,
+                                 get_model_details, is_embedding_capable,
+                                 is_reachable)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (
-    MssqlConnectionError,
-    MysqlConnectionError,
-    mssql_connect,
-    mysql_connect,
-    normalize_mssql_error_message,
-)
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    ssh_tunnel_config_from_dict,
-    test_ssh_connection,
-)
+from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
+                                    mssql_connect, mysql_connect,
+                                    normalize_mssql_error_message)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, ssh_tunnel_config_from_dict,
+                              test_ssh_connection)
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
-    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
-)
+    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS)
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    ChatMessage,
-    ChatTaskResponse,
-    ChatTaskStatus,
-    CheckRepoVisibilityRequest,
-    ConfigurationWarning,
-    Conversation,
-    ConversationResponse,
-    CreateConversationRequest,
-    CreateIndexRequest,
-    CreateToolConfigRequest,
-    CreateToolGroupRequest,
-    DatabaseDiscoverOption,
-    EmbeddingStatus,
-    FetchBranchesRequest,
-    FetchBranchesResponse,
-    FilesystemAnalysisJobResponse,
-    FilesystemConnectionConfig,
-    FilesystemIndexJobResponse,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJobResponse,
-    IndexStatus,
-    InfluxdbDiscoverRequest,
-    InfluxdbDiscoverResponse,
-    MssqlDiscoverRequest,
-    MssqlDiscoverResponse,
-    MysqlDiscoverRequest,
-    MysqlDiscoverResponse,
-    OcrMode,
-    PdmDiscoverRequest,
-    PdmDiscoverResponse,
-    PdmIndexJobResponse,
-    PostgresDiscoverRequest,
-    PostgresDiscoverResponse,
-    ProviderPromptDebugListResponse,
-    ProviderPromptDebugRecord,
-    RepoVisibilityResponse,
-    RetryVisualizationRequest,
-    RetryVisualizationResponse,
-    SchemaIndexJobResponse,
-    SendMessageRequest,
-    ToolConfig,
-    ToolGroup,
-    ToolTestRequest,
-    ToolType,
-    TriggerFilesystemIndexRequest,
-    TriggerPdmIndexRequest,
-    TriggerSchemaIndexRequest,
-    UpdateSettingsRequest,
-    UpdateToolConfigRequest,
-    UpdateToolGroupRequest,
-    UserSpacePreviewSettingsResponse,
-    VectorStoreType,
-)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    ChatMessage, ChatTaskResponse,
+                                    ChatTaskStatus, CheckRepoVisibilityRequest,
+                                    ConfigurationWarning, Conversation,
+                                    ConversationResponse,
+                                    CreateConversationRequest,
+                                    CreateIndexRequest,
+                                    CreateToolConfigRequest,
+                                    CreateToolGroupRequest,
+                                    DatabaseDiscoverOption, EmbeddingStatus,
+                                    FetchBranchesRequest,
+                                    FetchBranchesResponse,
+                                    FilesystemAnalysisJobResponse,
+                                    FilesystemConnectionConfig,
+                                    FilesystemIndexJobResponse,
+                                    IndexAnalysisResult, IndexConfig,
+                                    IndexInfo, IndexJobResponse, IndexStatus,
+                                    InfluxdbDiscoverRequest,
+                                    InfluxdbDiscoverResponse,
+                                    MssqlDiscoverRequest,
+                                    MssqlDiscoverResponse,
+                                    MysqlDiscoverRequest,
+                                    MysqlDiscoverResponse, OcrMode,
+                                    PdmDiscoverRequest, PdmDiscoverResponse,
+                                    PdmIndexJobResponse,
+                                    PostgresDiscoverRequest,
+                                    PostgresDiscoverResponse,
+                                    ProviderPromptDebugListResponse,
+                                    ProviderPromptDebugRecord,
+                                    RepoVisibilityResponse,
+                                    RetryVisualizationRequest,
+                                    RetryVisualizationResponse,
+                                    SchemaIndexJobResponse, SendMessageRequest,
+                                    ToolConfig, ToolGroup, ToolTestRequest,
+                                    ToolType, TriggerFilesystemIndexRequest,
+                                    TriggerPdmIndexRequest,
+                                    TriggerSchemaIndexRequest,
+                                    UpdateSettingsRequest,
+                                    UpdateToolConfigRequest,
+                                    UpdateToolGroupRequest,
+                                    UserSpacePreviewSettingsResponse,
+                                    VectorStoreType)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -1896,7 +1853,8 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import \
+                        FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1917,7 +1875,8 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import get_faiss_backend
+                    from ragtime.indexer.vector_backends import \
+                        get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -2583,20 +2542,12 @@ async def discover_mysql_databases(
             # Handle Docker container mode
             if request.container:
                 container = request.container
-                docker_network = request.docker_network
-
-                # Build docker exec command to get credentials from env
-                if docker_network:
-                    exec_prefix = f"docker exec {container}"
-                else:
-                    exec_prefix = f"docker exec {container}"
 
                 # Get credentials from container environment
                 def get_env_var(var_name: str) -> str | None:
                     try:
                         result = subprocess.run(
-                            f"{exec_prefix} printenv {var_name}",
-                            shell=True,
+                            ["docker", "exec", container, "printenv", var_name],
                             capture_output=True,
                             text=True,
                             timeout=10,
@@ -2615,10 +2566,8 @@ async def discover_mysql_databases(
                     password = get_env_var("MYSQL_PASSWORD") or ""
 
                 # Execute mysql command inside container to list databases
-                mysql_cmd = f'{exec_prefix} mysql -u{user} -p"{password}" -N -e "SHOW DATABASES"'
                 result = subprocess.run(
-                    mysql_cmd,
-                    shell=True,
+                    ["docker", "exec", container, "mysql", f"-u{user}", f"-p{password}", "-N", "-e", "SHOW DATABASES"],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -2642,14 +2591,8 @@ async def discover_mysql_databases(
                 ]
                 container_database_options: list[DatabaseDiscoverOption] = []
                 for db in databases:
-                    quoted_db = shlex.quote(db)
-                    check_cmd = (
-                        f'{exec_prefix} mysql -u{user} -p"{password}" '
-                        f'-D {quoted_db} -N -e "SELECT 1"'
-                    )
                     check_result = subprocess.run(
-                        check_cmd,
-                        shell=True,
+                        ["docker", "exec", container, "mysql", f"-u{user}", f"-p{password}", "-D", db, "-N", "-e", "SELECT 1"],
                         capture_output=True,
                         text=True,
                         timeout=10,
@@ -2891,7 +2834,8 @@ async def discover_influxdb_buckets(
 
     def discover_buckets(effective_url: str) -> tuple[bool, list[str], str | None]:
         try:
-            from influxdb_client import InfluxDBClient  # type: ignore[import-untyped]
+            from influxdb_client import \
+                InfluxDBClient  # type: ignore[import-untyped]
         except ImportError:
             return False, [], "influxdb-client package not installed"
 

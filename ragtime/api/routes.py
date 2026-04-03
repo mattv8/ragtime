@@ -3,6 +3,7 @@ API route definitions.
 """
 
 import asyncio
+import hmac
 import json
 import time
 from typing import Optional
@@ -244,7 +245,7 @@ async def verify_api_key(authorization: Optional[str] = Header(None)):
 
         # Support both "Bearer <key>" and raw key
         key = authorization.replace("Bearer ", "").strip()
-        if key != settings.api_key:
+        if not hmac.compare_digest(key, settings.api_key):
             raise HTTPException(status_code=401, detail="Invalid API key")
 
 

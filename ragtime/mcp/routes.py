@@ -16,6 +16,7 @@ Default route supports LDAP group-based tool filtering when OAuth2 auth is enabl
 - Higher priority filters take precedence when user is in multiple groups
 """
 
+import hmac
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -36,13 +37,10 @@ from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.security import require_admin
-from ragtime.mcp.server import (
-    get_custom_route_server,
-    get_default_route_filtered_server,
-    get_mcp_server,
-    notify_tools_changed,
-    register_tools_changed_callback,
-)
+from ragtime.mcp.server import (get_custom_route_server,
+                                get_default_route_filtered_server,
+                                get_mcp_server, notify_tools_changed,
+                                register_tools_changed_callback)
 from ragtime.mcp.tools import mcp_tool_adapter
 
 logger = get_logger(__name__)
@@ -612,7 +610,7 @@ async def _validate_route_password(scope: Scope, encrypted_password: str) -> boo
         logger.warning("Failed to decrypt route password - key may have changed")
         return False
 
-    return provided_password == stored_password
+    return hmac.compare_digest(provided_password, stored_password)
 
 
 async def _check_default_route_auth() -> tuple[bool, str, str | None, str | None]:

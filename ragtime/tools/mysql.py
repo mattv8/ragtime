@@ -386,13 +386,10 @@ async def test_mysql_connection(
         if container:
             import subprocess
 
-            exec_prefix = f"docker exec {container}"
-
             def get_env_var(var_name: str) -> str | None:
                 try:
                     result = subprocess.run(
-                        f"{exec_prefix} printenv {var_name}",
-                        shell=True,
+                        ["docker", "exec", container, "printenv", var_name],
                         capture_output=True,
                         text=True,
                         timeout=10,
@@ -418,11 +415,9 @@ async def test_mysql_connection(
                 )
 
             # Test via docker exec mysql command
-            mysql_cmd = f'{exec_prefix} mysql -u{db_user} -p"{db_password}" -N -e "SELECT VERSION()" {db_name}'
             try:
                 result = subprocess.run(
-                    mysql_cmd,
-                    shell=True,
+                    ["docker", "exec", container, "mysql", f"-u{db_user}", f"-p{db_password}", "-N", "-e", "SELECT VERSION()", db_name],
                     capture_output=True,
                     text=True,
                     timeout=timeout,
