@@ -2201,6 +2201,82 @@ class UserSpaceService:
                         )
                         break
 
+        # Check git status for untracked/staged-only files invisible to git diff
+        if entry is None:
+            async with self._git_status_semaphore:
+                status_result = await self._run_git(
+                    workspace_id,
+                    [
+                        "status",
+                        "--porcelain=1",
+                        "-z",
+                        "--untracked-files=all",
+                        "--",
+                        normalized_path,
+                    ],
+                    check=False,
+                )
+            if status_result.returncode == 0 and status_result.stdout:
+                tokens = status_result.stdout.split("\x00")
+                for token in tokens:
+                    if not token or len(token) < 3:
+                        continue
+                    status_token = token[:2]
+                    candidate_path = token[3:]
+                    np = self._normalize_workspace_relative_path(candidate_path)
+                    if np != normalized_path:
+                        continue
+                    if status_token == "??":
+                        file_path = self._resolve_workspace_file_path(
+                            workspace_id, normalized_path
+                        )
+                        is_binary = False
+                        additions = 0
+                        if file_path.exists() and file_path.is_file():
+                            raw_content = await asyncio.to_thread(
+                                file_path.read_bytes
+                            )
+                            decoded = self._decode_optional_text_content(raw_content)
+                            is_binary = decoded is None
+                            additions = (
+                                0
+                                if decoded is None
+                                else self._count_text_lines(decoded)
+                            )
+                        entry = cast(
+                            _WorkspaceSnapshotFileDiff,
+                            {
+                                "path": normalized_path,
+                                "status": "A",
+                                "old_path": None,
+                                "additions": additions,
+                                "deletions": 0,
+                                "is_binary": is_binary,
+                                "is_untracked_in_current": True,
+                            },
+                        )
+                    else:
+                        derived_status: Literal["A", "D", "M", "R"] = "M"
+                        if "A" in status_token:
+                            derived_status = "A"
+                        elif "D" in status_token:
+                            derived_status = "D"
+                        elif "R" in status_token:
+                            derived_status = "R"
+                        entry = cast(
+                            _WorkspaceSnapshotFileDiff,
+                            {
+                                "path": normalized_path,
+                                "status": derived_status,
+                                "old_path": None,
+                                "additions": 0,
+                                "deletions": 0,
+                                "is_binary": False,
+                                "is_untracked_in_current": False,
+                            },
+                        )
+                    break
+
         # Fallback: try snapshot's own diff (parent -> snapshot)
         if entry is None and snapshot_commit_hash:
             parent_ref = await self._resolve_snapshot_parent_ref(

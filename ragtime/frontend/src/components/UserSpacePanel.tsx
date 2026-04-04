@@ -10,10 +10,9 @@ import { markdown } from '@codemirror/lang-markdown';
 import { xml } from '@codemirror/lang-xml';
 import { yaml } from '@codemirror/lang-yaml';
 import { sql } from '@codemirror/lang-sql';
-import { keymap, Decoration, type DecorationSet, EditorView } from '@codemirror/view';
-import { StateField, type Extension } from '@codemirror/state';
+import { keymap } from '@codemirror/view';
 import { openSearchPanel } from '@codemirror/search';
-import { diffLines } from 'diff';
+
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -28,13 +27,15 @@ import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
+import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
 import { ChatPanel } from './ChatPanel';
 import { LdapGroupSelect } from './LdapGroupSelect';
 import { ResizeHandle } from './ResizeHandle';
 import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
+import { FileDiffOverlay } from './shared/FileDiffOverlay';
 
 interface UserSpacePanelProps {
   currentUser: User;
@@ -243,84 +244,6 @@ function getLanguageExtensionForPath(filePath: string) {
  * Both sides get the same number of lines with blank padding inserted
  * opposite added/deleted hunks so line numbers stay in sync.
  */
-interface AlignedDiffResult {
-  beforeText: string;
-  afterText: string;
-  beforeDeletedLines: Set<number>;
-  afterAddedLines: Set<number>;
-  beforePaddingLines: Set<number>;
-  afterPaddingLines: Set<number>;
-}
-
-function computeAlignedDiff(before: string, after: string): AlignedDiffResult {
-  const changes = diffLines(before, after);
-
-  const beforeArr: string[] = [];
-  const afterArr: string[] = [];
-  const beforeDeletedLines = new Set<number>();
-  const afterAddedLines = new Set<number>();
-  const beforePaddingLines = new Set<number>();
-  const afterPaddingLines = new Set<number>();
-
-  for (const change of changes) {
-    const raw = change.value;
-    const lines = raw.endsWith('\n') ? raw.slice(0, -1).split('\n') : raw.split('\n');
-
-    if (change.removed) {
-      for (const line of lines) {
-        beforeArr.push(line);
-        afterArr.push('');
-        beforeDeletedLines.add(beforeArr.length);
-        afterPaddingLines.add(afterArr.length);
-      }
-    } else if (change.added) {
-      for (const line of lines) {
-        beforeArr.push('');
-        afterArr.push(line);
-        afterAddedLines.add(afterArr.length);
-        beforePaddingLines.add(beforeArr.length);
-      }
-    } else {
-      for (const line of lines) {
-        beforeArr.push(line);
-        afterArr.push(line);
-      }
-    }
-  }
-
-  return {
-    beforeText: beforeArr.join('\n'),
-    afterText: afterArr.join('\n'),
-    beforeDeletedLines,
-    afterAddedLines,
-    beforePaddingLines,
-    afterPaddingLines,
-  };
-}
-
-const diffLineDeletedMark = Decoration.line({ class: 'cm-diff-line-deleted' });
-const diffLineAddedMark = Decoration.line({ class: 'cm-diff-line-added' });
-const diffLinePaddingMark = Decoration.line({ class: 'cm-diff-line-padding' });
-
-/** Build a CM extension that decorates specific 1-indexed lines. */
-function buildDiffHighlightExtension(lineNumbers: Set<number>, decoration: Decoration) {
-  return StateField.define<DecorationSet>({
-    create(state) {
-      const builder: import('@codemirror/state').Range<Decoration>[] = [];
-      for (let i = 1; i <= state.doc.lines; i++) {
-        if (lineNumbers.has(i)) {
-          builder.push(decoration.range(state.doc.line(i).from));
-        }
-      }
-      return Decoration.set(builder);
-    },
-    update(value) {
-      return value;
-    },
-    provide: (field) => EditorView.decorations.from(field),
-  });
-}
-
 const LAST_WORKSPACE_COOKIE_PREFIX = 'userspace_last_workspace_id_';
 const LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 const USERSPACE_LAYOUT_COOKIE_PREFIX = 'userspace_layout_';
@@ -406,19 +329,6 @@ function formatSnapshotTimestamp(value: string): string {
     hour: 'numeric',
     minute: '2-digit',
   });
-}
-
-function formatSnapshotDiffStatus(status: 'A' | 'D' | 'M' | 'R'): string {
-  switch (status) {
-    case 'A':
-      return 'Added';
-    case 'D':
-      return 'Deleted';
-    case 'R':
-      return 'Renamed';
-    default:
-      return 'Modified';
-  }
 }
 
 function getSnapshotDiffFileKey(snapshotId: string, filePath: string): string {
@@ -692,6 +602,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [activeSnapshotFileDiffKey, setActiveSnapshotFileDiffKey] = useState<string | null>(null);
   const [activeSnapshotFileDiffLoading, setActiveSnapshotFileDiffLoading] = useState(false);
   const [activeSnapshotFileDiffError, setActiveSnapshotFileDiffError] = useState<string | null>(null);
+  const [activeSnapshotFileDiffTitle, setActiveSnapshotFileDiffTitle] = useState('Snapshot Diff');
+  const [activeSnapshotFileDiffBeforeLabel, setActiveSnapshotFileDiffBeforeLabel] = useState('Snapshot');
+  const [activeSnapshotFileDiffAfterLabel, setActiveSnapshotFileDiffAfterLabel] = useState('Current Workspace');
 
   const issueWorkspaceCapabilityToken = useCallback(async (workspaceId: string, capabilities: string[]): Promise<string> => {
     const response = await api.issueUserSpaceCapabilityToken(workspaceId, capabilities);
@@ -706,13 +619,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const loadRuntimeStatusRequestIdRef = useRef(0);
   const snapshotDiffSummaryRequestIdsRef = useRef<Record<string, number>>({});
   const snapshotFileDiffRequestIdRef = useRef(0);
-  const snapshotFileDiffHoverTimerRef = useRef<number | null>(null);
-  const snapshotFileDiffDismissTimerRef = useRef<number | null>(null);
-  const snapshotFileDiffPinnedRef = useRef(false);
-  const snapshotFileDiffEnteredOverlayRef = useRef(false);
-  const snapshotDiffBeforeWrapRef = useRef<HTMLDivElement | null>(null);
-  const snapshotDiffAfterWrapRef = useRef<HTMLDivElement | null>(null);
-  const snapshotDiffScrollSyncingRef = useRef(false);
   const fileDirtyRef = useRef(false);
   const changedFileStateInFlightRef = useRef(false);
   const changedFileStateLastStartedAtRef = useRef(0);
@@ -1144,51 +1050,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   }, [snapshotsByBranch]);
 
   const snapshotUiLocked = navigatingSnapshots || restoringSnapshotId !== null;
-
-  const activeSnapshotDiffLanguageExtensions = useMemo(() => {
-    const path = activeSnapshotFileDiff?.path ?? '';
-    const ext = getLanguageExtensionForPath(path);
-    return ext ? [ext] : [];
-  }, [activeSnapshotFileDiff?.path]);
-
-  const snapshotAlignedDiff = useMemo(() => {
-    if (!activeSnapshotFileDiff || activeSnapshotFileDiff.is_binary) return null;
-    return computeAlignedDiff(activeSnapshotFileDiff.before_content, activeSnapshotFileDiff.after_content);
-  }, [activeSnapshotFileDiff]);
-
-  const snapshotDiffBeforeExtensions = useMemo(() => {
-    const exts: Extension[] = [...activeSnapshotDiffLanguageExtensions];
-    if (snapshotAlignedDiff) {
-      if (snapshotAlignedDiff.beforeDeletedLines.size > 0) {
-        exts.push(buildDiffHighlightExtension(snapshotAlignedDiff.beforeDeletedLines, diffLineDeletedMark));
-      }
-      if (snapshotAlignedDiff.beforePaddingLines.size > 0) {
-        exts.push(buildDiffHighlightExtension(snapshotAlignedDiff.beforePaddingLines, diffLinePaddingMark));
-      }
-    }
-    return exts;
-  }, [activeSnapshotDiffLanguageExtensions, snapshotAlignedDiff]);
-
-  const snapshotDiffAfterExtensions = useMemo(() => {
-    const exts: Extension[] = [...activeSnapshotDiffLanguageExtensions];
-    if (snapshotAlignedDiff) {
-      if (snapshotAlignedDiff.afterAddedLines.size > 0) {
-        exts.push(buildDiffHighlightExtension(snapshotAlignedDiff.afterAddedLines, diffLineAddedMark));
-      }
-      if (snapshotAlignedDiff.afterPaddingLines.size > 0) {
-        exts.push(buildDiffHighlightExtension(snapshotAlignedDiff.afterPaddingLines, diffLinePaddingMark));
-      }
-    }
-    return exts;
-  }, [activeSnapshotDiffLanguageExtensions, snapshotAlignedDiff]);
-
-  const snapshotDiffCodeMirrorSetup = useMemo(() => ({
-    ...USERSPACE_CODEMIRROR_BASIC_SETUP,
-    autocompletion: false,
-    closeBrackets: false,
-    foldGutter: false,
-    highlightActiveLine: false,
-  }), []);
 
   const codeMirrorExtensions = useMemo(
     () => [
@@ -1717,7 +1578,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, []);
 
-  const loadSnapshots = useCallback(async (workspaceId: string) => {
+  const loadSnapshots = useCallback(async (workspaceId: string): Promise<UserSpaceSnapshotTimeline | null> => {
     try {
       const result = await api.getUserSpaceSnapshotTimeline(workspaceId);
       setSnapshots(result.snapshots);
@@ -1725,8 +1586,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setCurrentSnapshotId(result.current_snapshot_id ?? null);
       setCurrentSnapshotBranchId(result.current_branch_id ?? null);
       setSnapshotsLoadedForWorkspace(workspaceId);
+      return result;
     } catch {
       // Snapshot list is non-critical; keep UI functional.
+      return null;
     }
   }, []);
 
@@ -1769,103 +1632,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, []);
 
-  const dismissSnapshotFileDiffOverlay = useCallback(() => {
-    snapshotFileDiffPinnedRef.current = false;
-    snapshotFileDiffEnteredOverlayRef.current = false;
-    if (snapshotFileDiffHoverTimerRef.current !== null) {
-      window.clearTimeout(snapshotFileDiffHoverTimerRef.current);
-      snapshotFileDiffHoverTimerRef.current = null;
-    }
-    if (snapshotFileDiffDismissTimerRef.current !== null) {
-      window.clearTimeout(snapshotFileDiffDismissTimerRef.current);
-      snapshotFileDiffDismissTimerRef.current = null;
-    }
+  const clearFileDiffState = useCallback(() => {
     setActiveSnapshotFileDiffLoading(false);
     setActiveSnapshotFileDiffError(null);
     setActiveSnapshotFileDiff(null);
     setActiveSnapshotFileDiffKey(null);
+    setActiveSnapshotFileDiffTitle('Snapshot Diff');
+    setActiveSnapshotFileDiffBeforeLabel('Snapshot');
+    setActiveSnapshotFileDiffAfterLabel('Current Workspace');
   }, []);
 
-  /** Wire up scroll sync between the two diff editors after CodeMirror mounts its scrollers. */
-  useEffect(() => {
-    if (!activeSnapshotFileDiff) return;
-
-    let beforeScroller: HTMLElement | null = null;
-    let afterScroller: HTMLElement | null = null;
-    let rafId: number | null = null;
-    let attempts = 0;
-    let detachScrollListeners: (() => void) | null = null;
-
-    const syncScroll = (src: HTMLElement, dst: HTMLElement) => {
-      if (snapshotDiffScrollSyncingRef.current) return;
-      snapshotDiffScrollSyncingRef.current = true;
-      dst.scrollTop = src.scrollTop;
-      dst.scrollLeft = src.scrollLeft;
-      requestAnimationFrame(() => {
-        snapshotDiffScrollSyncingRef.current = false;
-      });
-    };
-
-    const attachScrollListeners = () => {
-      const beforeWrap = snapshotDiffBeforeWrapRef.current;
-      const afterWrap = snapshotDiffAfterWrapRef.current;
-      if (!beforeWrap || !afterWrap) return false;
-
-      beforeScroller = beforeWrap.querySelector<HTMLElement>('.cm-scroller');
-      afterScroller = afterWrap.querySelector<HTMLElement>('.cm-scroller');
-      if (!beforeScroller || !afterScroller) return false;
-
-      const onBeforeScroll = () => syncScroll(beforeScroller!, afterScroller!);
-      const onAfterScroll = () => syncScroll(afterScroller!, beforeScroller!);
-
-      beforeScroller.addEventListener('scroll', onBeforeScroll, { passive: true });
-      afterScroller.addEventListener('scroll', onAfterScroll, { passive: true });
-      detachScrollListeners = () => {
-        beforeScroller?.removeEventListener('scroll', onBeforeScroll);
-        afterScroller?.removeEventListener('scroll', onAfterScroll);
-      };
-      return true;
-    };
-
-    const wireWhenReady = () => {
-      if (attachScrollListeners()) return;
-      attempts += 1;
-      if (attempts >= 12) return;
-      rafId = window.requestAnimationFrame(wireWhenReady);
-    };
-
-    wireWhenReady();
-
-    return () => {
-      if (rafId !== null) {
-        window.cancelAnimationFrame(rafId);
-      }
-      detachScrollListeners?.();
-      snapshotDiffScrollSyncingRef.current = false;
-    };
-  }, [activeSnapshotFileDiff, activeSnapshotFileDiffKey, snapshotAlignedDiff]);
-
-  const scheduleSnapshotFileDiffDismiss = useCallback(() => {
-    if (snapshotFileDiffPinnedRef.current) return;
-    if (snapshotFileDiffDismissTimerRef.current !== null) {
-      window.clearTimeout(snapshotFileDiffDismissTimerRef.current);
-    }
-    snapshotFileDiffDismissTimerRef.current = window.setTimeout(() => {
-      snapshotFileDiffDismissTimerRef.current = null;
-      setActiveSnapshotFileDiffLoading(false);
-      setActiveSnapshotFileDiffError(null);
-      setActiveSnapshotFileDiff(null);
-      setActiveSnapshotFileDiffKey(null);
-    }, 500);
-  }, []);
+  const diffHover = useDiffHoverTimers({ onDismiss: clearFileDiffState });
 
   const loadSnapshotFileDiff = useCallback(async (workspaceId: string, snapshotId: string, filePath: string) => {
     const cacheKey = getSnapshotDiffFileKey(snapshotId, filePath);
-    if (snapshotFileDiffDismissTimerRef.current !== null) {
-      window.clearTimeout(snapshotFileDiffDismissTimerRef.current);
-      snapshotFileDiffDismissTimerRef.current = null;
-    }
-    snapshotFileDiffEnteredOverlayRef.current = false;
+    diffHover.cancelDismiss();
 
     const cached = snapshotFileDiffCacheRef.current.get(cacheKey);
     setActiveSnapshotFileDiffKey(cacheKey);
@@ -1905,7 +1686,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         setActiveSnapshotFileDiffLoading(false);
       }
     }
-  }, []);
+  }, [diffHover]);
 
   const handleToggleSnapshotExpanded = useCallback((snapshotId: string) => {
     setExpandedSnapshotIds((current) => {
@@ -1924,28 +1705,43 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const handleSnapshotFileHoverStart = useCallback((snapshotId: string, filePath: string) => {
     if (!activeWorkspaceId) return;
-    if (snapshotFileDiffDismissTimerRef.current !== null) {
-      window.clearTimeout(snapshotFileDiffDismissTimerRef.current);
-      snapshotFileDiffDismissTimerRef.current = null;
-    }
-    if (snapshotFileDiffHoverTimerRef.current !== null) {
-      window.clearTimeout(snapshotFileDiffHoverTimerRef.current);
-    }
-    snapshotFileDiffHoverTimerRef.current = window.setTimeout(() => {
-      snapshotFileDiffHoverTimerRef.current = null;
+    diffHover.startHover(() => {
+      setActiveSnapshotFileDiffTitle('Snapshot Diff');
+      setActiveSnapshotFileDiffBeforeLabel('Snapshot');
+      setActiveSnapshotFileDiffAfterLabel('Current Workspace');
       void loadSnapshotFileDiff(activeWorkspaceId, snapshotId, filePath);
-    }, 500);
-  }, [activeWorkspaceId, loadSnapshotFileDiff]);
+    });
+  }, [activeWorkspaceId, diffHover, loadSnapshotFileDiff]);
 
   const handleSnapshotFileHoverEnd = useCallback(() => {
-    if (snapshotFileDiffHoverTimerRef.current !== null) {
-      window.clearTimeout(snapshotFileDiffHoverTimerRef.current);
-      snapshotFileDiffHoverTimerRef.current = null;
-    }
-    if (snapshotFileDiffEnteredOverlayRef.current) {
-      scheduleSnapshotFileDiffDismiss();
-    }
-  }, [scheduleSnapshotFileDiffDismiss]);
+    diffHover.endHover();
+  }, [diffHover]);
+
+  const handleTreeFileHoverStart = useCallback((filePath: string) => {
+    if (!activeWorkspaceId) return;
+    diffHover.startHover(() => {
+      void (async () => {
+        let snapshotId = currentSnapshotId;
+        if (!snapshotId) {
+          const timeline: UserSpaceSnapshotTimeline | null = await loadSnapshots(activeWorkspaceId);
+          if (timeline) {
+            snapshotId = timeline.current_snapshot_id ?? null;
+          }
+        }
+        if (!snapshotId) {
+          return;
+        }
+        setActiveSnapshotFileDiffTitle('Unsaved Changes');
+        setActiveSnapshotFileDiffBeforeLabel('Last Snapshot');
+        setActiveSnapshotFileDiffAfterLabel('Current');
+        await loadSnapshotFileDiff(activeWorkspaceId, snapshotId, filePath);
+      })();
+    });
+  }, [activeWorkspaceId, currentSnapshotId, diffHover, loadSnapshotFileDiff, loadSnapshots]);
+
+  const handleTreeFileHoverEnd = useCallback(() => {
+    diffHover.endHover();
+  }, [diffHover]);
 
   const debouncedLoadWorkspaceData = useCallback((workspaceId: string) => {
     if (loadWorkspaceDataDebounceRef.current !== null) {
@@ -2029,7 +1825,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setLoadingSnapshotDiffSummaryIds({});
     setSnapshotDiffSummaryErrors({});
     snapshotFileDiffCacheRef.current.clear();
-    dismissSnapshotFileDiffOverlay();
+    diffHover.dismiss();
     setChangedFiles(new Set());
     setAcknowledgedFiles(new Set());
     void Promise.all([
@@ -2037,7 +1833,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       loadChangedFileState(activeWorkspaceId),
       api.listWorkspaceMounts(activeWorkspaceId).then(setMounts).catch(() => setMounts([])),
     ]);
-  }, [activeWorkspaceId, dismissSnapshotFileDiffOverlay, loadChangedFileState, loadWorkspaceData]);
+  }, [activeWorkspaceId, diffHover, loadChangedFileState, loadWorkspaceData]);
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
@@ -2068,15 +1864,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       window.clearInterval(timer);
     };
   }, [activeWorkspaceId, refreshWorkspaceFileTree]);
-
-  useEffect(() => () => {
-    if (snapshotFileDiffHoverTimerRef.current !== null) {
-      window.clearTimeout(snapshotFileDiffHoverTimerRef.current);
-    }
-    if (snapshotFileDiffDismissTimerRef.current !== null) {
-      window.clearTimeout(snapshotFileDiffDismissTimerRef.current);
-    }
-  }, []);
 
   useEffect(() => {
     fileContentCacheRef.current = fileContentCache;
@@ -4596,9 +4383,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           key={node.path}
           className={`userspace-file-item userspace-tree-row ${node.path === selectedFilePath ? 'active' : ''}`}
         >
-          <button className="userspace-item-content userspace-tree-content" onClick={() => handleSelectFile(node.path)} style={indentStyle}>
+          <button
+            className="userspace-item-content userspace-tree-content"
+            onClick={() => handleSelectFile(node.path)}
+            onMouseEnter={isFileChanged ? () => handleTreeFileHoverStart(node.path) : undefined}
+            onMouseLeave={isFileChanged ? handleTreeFileHoverEnd : undefined}
+            style={indentStyle}
+          >
             <span className="userspace-tree-file-label">{node.name}</span>
-            {isFileChanged && <span className="userspace-tree-file-changed-dot" title="Changed since last snapshot" />}
+            {isFileChanged && (
+              <span
+                className="userspace-tree-file-changed-dot"
+                title="Changed since last snapshot"
+              />
+            )}
           </button>
           {canEditWorkspace && (
             <div className="userspace-item-actions">
@@ -4636,7 +4434,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         </div>,
       ];
     });
-  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, mountTargetPaths, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath]);
+  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, handleTreeFileHoverEnd, handleTreeFileHoverStart, mountTargetPaths, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath]);
 
   const sqliteLiveDataOnlyMode = activeWorkspace?.sqlite_persistence_mode === 'exclude';
   const sqlitePersistenceModeTitle = sqliteLiveDataOnlyMode
@@ -5612,94 +5410,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         )}
       </div>
 
-      {(activeSnapshotFileDiffLoading || activeSnapshotFileDiffError || activeSnapshotFileDiff) && (
-        <div
-          className="userspace-snapshot-diff-backdrop"
-          onClick={dismissSnapshotFileDiffOverlay}
-        >
-          <div
-            className="userspace-snapshot-diff-overlay"
-            onClick={(event) => {
-              event.stopPropagation();
-              snapshotFileDiffPinnedRef.current = true;
-            }}
-            onMouseEnter={() => {
-              snapshotFileDiffEnteredOverlayRef.current = true;
-              if (snapshotFileDiffDismissTimerRef.current !== null) {
-                window.clearTimeout(snapshotFileDiffDismissTimerRef.current);
-                snapshotFileDiffDismissTimerRef.current = null;
-              }
-            }}
-            onMouseLeave={scheduleSnapshotFileDiffDismiss}
-          >
-            <div className="userspace-snapshot-diff-overlay-header">
-              <div>
-                <div className="userspace-snapshot-diff-overlay-title">Snapshot Diff</div>
-                {activeSnapshotFileDiff && (
-                  <div className="userspace-snapshot-diff-overlay-subtitle">
-                    <span>{activeSnapshotFileDiff.path}</span>
-                    <span>{formatSnapshotDiffStatus(activeSnapshotFileDiff.status)}</span>
-                    <span>+{activeSnapshotFileDiff.additions} -{activeSnapshotFileDiff.deletions}</span>
-                  </div>
-                )}
-              </div>
-              <button type="button" className="modal-close" onClick={dismissSnapshotFileDiffOverlay}>&times;</button>
-            </div>
-
-            {activeSnapshotFileDiffLoading ? (
-              <div className="userspace-snapshot-diff-overlay-body">
-                <div className="userspace-snapshot-expanded-status userspace-snapshot-diff-overlay-loading">
-                  <MiniLoadingSpinner variant="icon" size={14} />
-                  <span>Loading file diff...</span>
-                </div>
-              </div>
-            ) : activeSnapshotFileDiffError ? (
-              <div className="userspace-snapshot-diff-overlay-body">
-                <p className="userspace-muted userspace-error">{formatUserSpaceErrorMessage(activeSnapshotFileDiffError)}</p>
-              </div>
-            ) : activeSnapshotFileDiff ? (
-              activeSnapshotFileDiff.is_binary || activeSnapshotFileDiff.is_truncated ? (
-                <div className="userspace-snapshot-diff-overlay-body">
-                  <p className="userspace-muted">{activeSnapshotFileDiff.message ?? 'Content cannot be rendered.'}</p>
-                </div>
-              ) : (
-                <div className="userspace-snapshot-diff-columns">
-                  <div className="userspace-snapshot-diff-column">
-                    <div className="userspace-snapshot-diff-column-header">
-                      <span>{activeSnapshotFileDiff.is_snapshot_own_diff ? 'Previous' : 'Snapshot'}</span>
-                      <code>{activeSnapshotFileDiff.before_path ?? activeSnapshotFileDiff.path}</code>
-                    </div>
-                    <div className="userspace-snapshot-diff-editor-wrap" ref={snapshotDiffBeforeWrapRef}>
-                      <CodeMirror
-                        value={snapshotAlignedDiff?.beforeText ?? activeSnapshotFileDiff.before_content}
-                        basicSetup={snapshotDiffCodeMirrorSetup}
-                        editable={false}
-                        extensions={snapshotDiffBeforeExtensions}
-                        height="100%"
-                      />
-                    </div>
-                  </div>
-                  <div className="userspace-snapshot-diff-column userspace-snapshot-diff-column-current">
-                    <div className="userspace-snapshot-diff-column-header">
-                      <span>{activeSnapshotFileDiff.is_snapshot_own_diff ? 'Snapshot' : 'Current Workspace'}</span>
-                      <code>{activeSnapshotFileDiff.after_path ?? activeSnapshotFileDiff.path}</code>
-                    </div>
-                    <div className="userspace-snapshot-diff-editor-wrap" ref={snapshotDiffAfterWrapRef}>
-                      <CodeMirror
-                        value={snapshotAlignedDiff?.afterText ?? activeSnapshotFileDiff.after_content}
-                        basicSetup={snapshotDiffCodeMirrorSetup}
-                        editable={false}
-                        extensions={snapshotDiffAfterExtensions}
-                        height="100%"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )
-            ) : null}
-          </div>
-        </div>
-      )}
+      <FileDiffOverlay
+        diff={activeSnapshotFileDiff}
+        diffKey={activeSnapshotFileDiffKey}
+        loading={activeSnapshotFileDiffLoading}
+        error={activeSnapshotFileDiffError}
+        title={activeSnapshotFileDiffTitle}
+        beforeLabel={activeSnapshotFileDiffBeforeLabel}
+        afterLabel={activeSnapshotFileDiffAfterLabel}
+        formatError={formatUserSpaceErrorMessage}
+        onDismiss={diffHover.dismiss}
+        onOverlayClick={diffHover.overlayClick}
+        onOverlayMouseEnter={diffHover.overlayMouseEnter}
+        onOverlayMouseLeave={diffHover.overlayMouseLeave}
+      />
 
       {/* === Env vars modal === */}
       {showEnvVarsModal && activeWorkspaceId && (
