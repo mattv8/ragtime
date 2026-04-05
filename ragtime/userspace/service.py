@@ -2233,9 +2233,7 @@ class UserSpaceService:
                         is_binary = False
                         additions = 0
                         if file_path.exists() and file_path.is_file():
-                            raw_content = await asyncio.to_thread(
-                                file_path.read_bytes
-                            )
+                            raw_content = await asyncio.to_thread(file_path.read_bytes)
                             decoded = self._decode_optional_text_content(raw_content)
                             is_binary = decoded is None
                             additions = (
@@ -4681,6 +4679,7 @@ class UserSpaceService:
 
     async def _preview_workspace_mount_record(
         self,
+        db: Any,
         mount: Any,
         *,
         force_backend_recheck: bool = False,
@@ -4702,31 +4701,51 @@ class UserSpaceService:
         preferred_notice = context["preferred_notice"]
         mount_lock = await self._get_workspace_mount_operation_lock(mount_id)
 
-        async with mount_lock:
-            async with self._workspace_mount_sync_semaphore:
-                await asyncio.to_thread(
-                    self._stage_runtime_mount_into_sync_cache,
-                    workspace_id,
-                    target_path,
-                    cache_dir,
-                )
-                preview = await asyncio.to_thread(
-                    preview_ssh_directory_sync,
-                    ssh_config,
-                    remote_path,
-                    str(cache_dir),
-                    sync_mode=sync_mode,
-                    sample_limit=self._WORKSPACE_MOUNT_SYNC_PREVIEW_SAMPLE_LIMIT,
-                )
+        try:
+            async with mount_lock:
+                async with self._workspace_mount_sync_semaphore:
+                    await asyncio.to_thread(
+                        self._stage_runtime_mount_into_sync_cache,
+                        workspace_id,
+                        target_path,
+                        cache_dir,
+                    )
+                    preview = await asyncio.to_thread(
+                        preview_ssh_directory_sync,
+                        ssh_config,
+                        remote_path,
+                        str(cache_dir),
+                        sync_mode=sync_mode,
+                        sample_limit=self._WORKSPACE_MOUNT_SYNC_PREVIEW_SAMPLE_LIMIT,
+                    )
 
-        if not preview.success:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "; ".join(preview.errors[:5])
-                    or "Failed to preview workspace mount sync"
-                ),
+            if not preview.success:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "; ".join(preview.errors[:5])
+                        or "Failed to preview workspace mount sync"
+                    ),
+                )
+        except Exception as exc:
+            error_detail = self._format_workspace_mount_sync_error_detail(exc)[:500]
+            logger.warning(
+                "Mount sync preview failed for %s/%s: %s",
+                workspace_id,
+                mount_id,
+                error_detail,
             )
+            await self._write_workspace_mount_sync_state(
+                db,
+                mount_id=mount_id,
+                workspace_id=workspace_id,
+                sync_status="error",
+                sync_backend=preferred_backend,
+                sync_notice=preferred_notice,
+                last_sync_error=error_detail,
+                update_last_sync_at=False,
+            )
+            raise
 
         preview_token = secrets.token_urlsafe(24)
         preview_expires_at = _utc_now() + timedelta(
@@ -4815,6 +4834,54 @@ class UserSpaceService:
                 staged_any = True
         return staged_any
 
+    def _format_workspace_mount_sync_error_detail(self, error: Exception) -> str:
+        if isinstance(error, HTTPException):
+            detail = error.detail
+            if isinstance(detail, list):
+                joined = "; ".join(
+                    str(item).strip() for item in detail if str(item).strip()
+                )
+                if joined:
+                    return joined
+            if detail is not None:
+                text = str(detail).strip()
+                if text:
+                    return text
+
+        text = str(error).strip()
+        if text:
+            return text
+        return "Workspace mount sync failed"
+
+    async def _write_workspace_mount_sync_state(
+        self,
+        db: Any,
+        *,
+        mount_id: str,
+        workspace_id: str,
+        sync_status: str,
+        sync_backend: str | None,
+        sync_notice: str | None,
+        last_sync_error: str | None,
+        update_last_sync_at: bool,
+    ) -> None:
+        now = _utc_now()
+        data: dict[str, Any] = {
+            "syncStatus": sync_status,
+            "syncBackend": sync_backend,
+            "syncNotice": sync_notice,
+            "lastSyncError": last_sync_error,
+            "updatedAt": now,
+        }
+        if update_last_sync_at:
+            data["lastSyncAt"] = now
+
+        await db.workspacemount.update(
+            where={"id": mount_id},
+            data=data,
+        )
+        self.invalidate_file_list_cache(workspace_id)
+
     async def _finalize_workspace_mount_sync(
         self,
         db: Any,
@@ -4828,19 +4895,16 @@ class UserSpaceService:
         sync_notice: str | None,
         last_sync_error: str | None,
     ) -> WorkspaceMountSyncResponse:
-        now = _utc_now()
-        await db.workspacemount.update(
-            where={"id": mount_id},
-            data={
-                "syncStatus": sync_status,
-                "syncBackend": sync_backend,
-                "syncNotice": sync_notice,
-                "lastSyncAt": now,
-                "lastSyncError": last_sync_error,
-                "updatedAt": now,
-            },
+        await self._write_workspace_mount_sync_state(
+            db,
+            mount_id=mount_id,
+            workspace_id=workspace_id,
+            sync_status=sync_status,
+            sync_backend=sync_backend,
+            sync_notice=sync_notice,
+            last_sync_error=last_sync_error,
+            update_last_sync_at=True,
         )
-        self.invalidate_file_list_cache(workspace_id)
         return WorkspaceMountSyncResponse(
             mount_id=mount_id,
             sync_mode=sync_mode,
@@ -5873,6 +5937,7 @@ class UserSpaceService:
         if not mount:
             raise HTTPException(status_code=404, detail="Mount not found")
         return await self._preview_workspace_mount_record(
+            db,
             mount,
             force_backend_recheck=True,
             sync_mode_override=request.sync_mode if request else None,

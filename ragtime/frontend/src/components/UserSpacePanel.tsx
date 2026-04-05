@@ -438,6 +438,16 @@ function getUnsupportedEditorFileMessage(error: unknown): string | null {
     ?? 'This file cannot be opened in the text editor.';
 }
 
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError) {
+    return formatUserSpaceErrorMessage(error.detail ?? error.message) ?? fallback;
+  }
+  if (error instanceof Error) {
+    return formatUserSpaceErrorMessage(error.message) ?? fallback;
+  }
+  return fallback;
+}
+
 export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenChange }: UserSpacePanelProps) {
   const previewEntryPath = 'dashboard/main.ts';
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
@@ -873,12 +883,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const mountTargetPaths = useMemo(() => {
     const paths = new Map<
       string,
-      { enabled: boolean; sourceType: WorkspaceMount['source_type']; syncStatus: WorkspaceMount['sync_status']; lastSyncError: string | null; sourceAvailable: boolean }
+      { id: string; enabled: boolean; sourceType: WorkspaceMount['source_type']; syncStatus: WorkspaceMount['sync_status']; lastSyncError: string | null; sourceAvailable: boolean }
     >();
     for (const mount of mounts) {
       const target = mount.target_path?.replace(/^\/workspace\//, '')?.replace(/^\/+|\/+$/g, '');
       if (target) {
         paths.set(target, {
+          id: mount.id,
           enabled: mount.enabled,
           sourceType: mount.source_type,
           syncStatus: mount.sync_status,
@@ -3626,6 +3637,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspaceId, isOwner, loadWorkspaceData]);
 
+  const applyMountSyncFailure = useCallback((mountId: string, err: unknown, fallback: string) => {
+    const message = getApiErrorMessage(err, fallback);
+    setMounts((prev) => prev.map((mount) => (
+      mount.id === mountId
+        ? {
+            ...mount,
+            sync_status: 'error',
+            sync_notice: null,
+            last_sync_error: message,
+          }
+        : mount
+    )));
+    setError(message);
+  }, []);
+
   const handleSyncMount = useCallback(async (mount: WorkspaceMount) => {
     if (!activeWorkspaceId || !isOwner) return;
     if (isDestructiveMountSyncMode(mount.sync_mode)) {
@@ -3638,7 +3664,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         setMountSyncPreviewMount(mount);
         setError(preview.sync_notice || null);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to preview mount sync');
+        applyMountSyncFailure(mount.id, err, 'Failed to preview mount sync');
       } finally {
         setPreviewingMountId(null);
       }
@@ -3658,11 +3684,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       } : m));
       setError(result.last_sync_error || result.sync_notice || null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to sync mount');
+      applyMountSyncFailure(mount.id, err, 'Failed to sync mount');
     } finally {
       setSyncingMountId(null);
     }
-  }, [activeWorkspaceId, isOwner]);
+  }, [activeWorkspaceId, applyMountSyncFailure, isOwner]);
 
   const handleCloseMountSyncPreview = useCallback(() => {
     setMountSyncPreview(null);
@@ -3691,7 +3717,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         setError(result.last_sync_error || result.sync_notice || null);
       } catch (err) {
         handleCloseMountSyncPreview();
-        setError(err instanceof Error ? err.message : 'Failed to sync mount');
+        applyMountSyncFailure(mountSyncPreviewMount.id, err, 'Failed to sync mount');
       } finally {
         setSyncingMountId(null);
       }
@@ -3733,7 +3759,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } finally {
       setSavingMountWatchId(null);
     }
-  }, [activeWorkspaceId, handleCloseMountSyncPreview, isOwner, mountSyncPreview, mountSyncPreviewIntent, mountSyncPreviewMount, mountSyncPreviewNextSyncMode]);
+  }, [activeWorkspaceId, applyMountSyncFailure, handleCloseMountSyncPreview, isOwner, mountSyncPreview, mountSyncPreviewIntent, mountSyncPreviewMount, mountSyncPreviewNextSyncMode]);
 
   const handleToggleMountAutoSync = useCallback(async (mount: WorkspaceMount, enabled: boolean) => {
     if (!activeWorkspaceId || !isOwner) return;
@@ -3749,7 +3775,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       } catch (err) {
         setMountSyncPreviewIntent(null);
         setMountSyncPreviewNextSyncMode(null);
-        setError(err instanceof Error ? err.message : 'Failed to preview auto-sync');
+        applyMountSyncFailure(mount.id, err, 'Failed to preview auto-sync');
       } finally {
         setPreviewingMountId(null);
       }
@@ -3768,7 +3794,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } finally {
       setSavingMountWatchId(null);
     }
-  }, [activeWorkspaceId, isOwner]);
+  }, [activeWorkspaceId, applyMountSyncFailure, isOwner]);
 
   const handleUpdateMountSyncMode = useCallback(async (mount: WorkspaceMount, syncMode: WorkspaceMountSyncMode) => {
     if (!activeWorkspaceId || !isOwner) return;
@@ -3786,7 +3812,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       } catch (err) {
         setMountSyncPreviewIntent(null);
         setMountSyncPreviewNextSyncMode(null);
-        setError(err instanceof Error ? err.message : 'Failed to preview mount sync mode');
+        applyMountSyncFailure(mount.id, err, 'Failed to preview mount sync mode');
       } finally {
         setPreviewingMountId(null);
       }
@@ -3805,7 +3831,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } finally {
       setSavingMountWatchId(null);
     }
-  }, [activeWorkspaceId, isOwner]);
+  }, [activeWorkspaceId, applyMountSyncFailure, isOwner]);
 
   const browseWorkspaceMountTargetPath = useCallback(async (browserPath: string): Promise<BrowseResponse> => {
     const normalizedBrowserPath = normalizeMountBrowserPath(browserPath);
@@ -4279,16 +4305,27 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           const isMountDisabled = isMount && !mountInfo.enabled;
           const isMountDisconnected = isMount && !mountInfo.sourceAvailable;
           const isSshMount = isMount && mountInfo.sourceType === 'ssh';
-          const mountSyncClass = mountInfo?.syncStatus === 'synced'
+          const isMountSyncInProgress = isSshMount && !!mountInfo && (syncingMountId === mountInfo.id || previewingMountId === mountInfo.id);
+          const mountStatusClass = isMountSyncInProgress
+            ? 'userspace-status-pill-warning'
+            : mountInfo?.syncStatus === 'synced'
             ? 'userspace-status-pill-success'
             : mountInfo?.syncStatus === 'pending'
               ? 'userspace-status-pill-info'
               : 'userspace-status-pill-danger';
-          const mountSyncLabel = mountInfo?.syncStatus === 'synced'
-            ? 'Synced'
-            : mountInfo?.syncStatus === 'pending'
-              ? 'Pending'
-              : 'Error';
+          const mountBadgeLabel = isMountDisconnected
+            ? 'disconnected'
+            : isMountDisabled
+              ? 'unmounted'
+              : isSshMount
+                ? isMountSyncInProgress
+                  ? 'in progress'
+                  : mountInfo?.syncStatus === 'synced'
+                    ? 'synced'
+                    : mountInfo?.syncStatus === 'pending'
+                      ? 'pending'
+                      : 'error'
+                : 'live';
           const hasChangedFileDescendant = !isExpanded && collectFilePaths(node).some((p) => changedFilePaths.has(p));
           rows.push(
             <div key={node.path} className={`userspace-file-item userspace-tree-row userspace-tree-folder-row${isMount ? ' userspace-tree-mount-folder' : ''}${isMountDisabled || isMountDisconnected ? ' userspace-tree-mount-disabled' : ''}`}>
@@ -4300,13 +4337,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 {hasChangedFileDescendant && <span className="userspace-tree-folder-changed-file-dot" title="Contains changed files" />}
                 {isMount && (
                   <span
-                    className={`userspace-tree-mount-badge${isMountDisconnected ? ' userspace-tree-mount-badge-disconnected' : isMountDisabled ? ' userspace-tree-mount-badge-disabled' : isSshMount && mountInfo?.syncStatus !== 'synced' ? ` userspace-tree-mount-badge-sync ${mountSyncClass}` : ''}`}
+                    className={`userspace-tree-mount-badge${isMountDisconnected ? ' userspace-tree-mount-badge-disconnected' : isMountDisabled ? ' userspace-tree-mount-badge-disabled' : isSshMount && (isMountSyncInProgress || mountInfo?.syncStatus !== 'synced') ? ` userspace-tree-mount-badge-sync ${mountStatusClass}` : ''}`}
                     role="button"
                     tabIndex={0}
-                    title={isMountDisconnected ? 'Mount source is no longer available' : isSshMount && mountInfo?.syncStatus === 'error' && mountInfo?.lastSyncError ? mountInfo.lastSyncError : 'Manage mounts'}
+                    title={isMountDisconnected ? 'Mount source is no longer available' : isMountSyncInProgress ? 'Mount sync in progress' : isSshMount && mountInfo?.syncStatus === 'error' && mountInfo?.lastSyncError ? mountInfo.lastSyncError : 'Manage mounts'}
                     onClick={(e) => { e.stopPropagation(); void handleOpenMountsModal(); }}
                   >
-                    {isMountDisconnected ? 'disconnected' : isMountDisabled ? 'unmounted' : isSshMount ? mountSyncLabel.toLowerCase() : 'mounted'}
+                    {mountBadgeLabel}
                   </span>
                 )}
               </button>
@@ -4434,7 +4471,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         </div>,
       ];
     });
-  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, handleTreeFileHoverEnd, handleTreeFileHoverStart, mountTargetPaths, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath]);
+  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, handleTreeFileHoverEnd, handleTreeFileHoverStart, mountTargetPaths, previewingMountId, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath, syncingMountId]);
 
   const sqliteLiveDataOnlyMode = activeWorkspace?.sqlite_persistence_mode === 'exclude';
   const sqlitePersistenceModeTitle = sqliteLiveDataOnlyMode
@@ -5673,12 +5710,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               {!mountsLoading && mounts.length === 0 && (
                 <>
                   <p className="userspace-muted" style={{ marginBottom: 0 }}>
-                    Mount remote directories from configured tools into the runtime sandbox.
-                    SSH mounts are synced on demand. Ragtime uses rsync when the remote server has it installed, and automatically falls back to built-in SSH sync otherwise.
+                      Attach folders from your connected tools so apps running in this workspace can use them.
+                      SSH folders update when you sync them, and can stay in sync automatically when auto-sync is enabled. Other mount types are available live while connected.
                   </p>
                   <p className="userspace-muted" style={{ marginBottom: 12, fontSize: 12 }}>
-                    Mounted targets are runtime overlays. Changes made by a running app inside a mounted folder may not be written directly to workspace files and can appear after a sync/refresh cycle.
-                    Mount targets under /workspace are excluded from snapshots by default.
+                      Changes from a running app may appear after a refresh, and SSH-backed folders may need a sync before the latest files show up here.
+                      Mounted paths under /workspace are excluded from snapshots by default.
                   </p>
                 </>
               )}
