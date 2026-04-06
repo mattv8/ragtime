@@ -62,7 +62,6 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [createRepoIfMissing, setCreateRepoIfMissing] = useState(true);
   const [createRepoPrivate, setCreateRepoPrivate] = useState(true);
   const [createRepoDescription, setCreateRepoDescription] = useState(workspace.description || '');
-  const [askedAgent, setAskedAgent] = useState(false);
   const activeScm = result?.scm ?? initialScm ?? null;
   const hasConfiguredRemote = Boolean(activeScm?.connected || activeScm?.git_url);
 
@@ -208,16 +207,8 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
 
   async function handleAskAgent(): Promise<void> {
     if (!result?.suggested_setup_prompt || !onAskAgent) return;
-    setIsLoading(true);
-    try {
-      await onAskAgent(result.suggested_setup_prompt);
-      setAskedAgent(true);
-      setStatus({ type: 'success', message: 'Asked the agent to inspect the imported workspace and prepare it for runtime.' });
-    } catch (error) {
-      setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to ask the agent.' });
-    } finally {
-      setIsLoading(false);
-    }
+    onClose();
+    await onAskAgent(result.suggested_setup_prompt);
   }
 
   return (
@@ -228,12 +219,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
           <button className="modal-close" onClick={onClose}>&times;</button>
         </div>
         <div className="modal-body" style={{ display: 'grid', gap: 16 }}>
-          {hasConfiguredRemote ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <RefreshCcw size={14} />
-              <strong>Sync</strong>
-            </div>
-          ) : (
+          {!hasConfiguredRemote && (
             <div style={{ display: 'flex', gap: 8 }}>
               <button className={`btn btn-sm ${mode === 'import' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setMode('import')} disabled={isLoading}>
                 <ArrowDownToLine size={14} /> Import
@@ -248,36 +234,26 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
             <div style={{ display: 'grid', gap: 14 }}>
               {hasConfiguredRemote && activeScm && (
                 <div style={{ display: 'grid', gap: 10, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg-tertiary)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                    <div style={{ display: 'grid', gap: 6 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <Link2 size={14} />
-                        <strong>Remote configured</strong>
-                        <span className={syncStatusClassName}>
-                          {activeScm.last_sync_status === 'success'
-                            ? `${formatSyncDirection(activeScm.last_sync_direction)} ready`
-                            : activeScm.last_sync_status || 'Connected'}
-                        </span>
-                      </div>
-                      <div className="userspace-muted" style={{ fontSize: 12 }}>{activeScm.git_url || gitUrl}</div>
-                      <div className="userspace-muted" style={{ fontSize: 12 }}>
-                        Branch: {activeScm.git_branch || gitBranch || 'main'}
-                      </div>
-                      {activeScm.last_sync_message && (
-                        <div className="userspace-muted" style={{ fontSize: 12 }}>
-                          {activeScm.last_sync_message}
-                        </div>
-                      )}
-                      {formatSyncTimestamp(activeScm.last_sync_at) && (
-                        <div className="userspace-muted" style={{ fontSize: 12 }}>
-                          Last {formatSyncDirection(activeScm.last_sync_direction).toLowerCase()}: {formatSyncTimestamp(activeScm.last_sync_at)}
-                        </div>
-                      )}
-                      <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4, paddingTop: 8, borderTop: '1px solid var(--color-border-subtle)' }}>
-                        Snapshots from this workspace are automatically synced to the remote.
-                      </div>
-                    </div>
-
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <Link2 size={14} />
+                    <strong style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {activeScm.git_url || gitUrl}
+                    </strong>
+                    <span className={syncStatusClassName}>
+                      {activeScm.last_sync_status === 'success'
+                        ? `${formatSyncDirection(activeScm.last_sync_direction)} ready`
+                        : activeScm.last_sync_status || 'Connected'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12 }} className="userspace-muted">
+                    <span>Branch: {activeScm.git_branch || gitBranch || 'main'}</span>
+                    {activeScm.last_sync_message && <span>{activeScm.last_sync_message}</span>}
+                    {formatSyncTimestamp(activeScm.last_sync_at) && (
+                      <span>Last {formatSyncDirection(activeScm.last_sync_direction).toLowerCase()}: {formatSyncTimestamp(activeScm.last_sync_at)}</span>
+                    )}
+                  </div>
+                  <div className="userspace-muted" style={{ fontSize: 12, paddingTop: 8, borderTop: '1px solid var(--color-border-subtle)' }}>
+                    Snapshots from this workspace are automatically synced to the remote.
                   </div>
                 </div>
               )}
@@ -410,8 +386,8 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                     This keeps bring-up suggestion-only. The agent will inspect the imported repo first, then repair entrypoint and bootstrap configuration only if needed.
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button className="btn btn-primary btn-sm" onClick={() => void handleAskAgent()} disabled={isLoading || askedAgent || !onAskAgent}>
-                      {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : <RefreshCw size={14} />}
+                    <button className="btn btn-primary btn-sm" onClick={() => void handleAskAgent()} disabled={!onAskAgent}>
+                      <RefreshCw size={14} />
                       Ask Agent to Prepare
                     </button>
                     <button className="btn btn-secondary btn-sm" onClick={() => navigator.clipboard.writeText(result.suggested_setup_prompt || '')}>

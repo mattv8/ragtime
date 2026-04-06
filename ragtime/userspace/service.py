@@ -3437,9 +3437,11 @@ class UserSpaceService:
         self,
         workspace_id: str,
         *,
-        git_url: str,
         git_branch: str,
-        git_token: str | None,
+        remote_dir: Path,
+        remote_head_hash: str,
+        branch_id: str,
+        imported_snapshot_id: str,
     ) -> None:
         async with self._workspace_scm_backfill_tasks_lock:
             existing_task = self._workspace_scm_backfill_tasks.get(workspace_id)
@@ -3449,9 +3451,11 @@ class UserSpaceService:
             backfill_task = asyncio.create_task(
                 self._backfill_workspace_scm_remote_commits(
                     workspace_id,
-                    git_url=git_url,
                     git_branch=git_branch,
-                    git_token=git_token,
+                    remote_dir=remote_dir,
+                    remote_head_hash=remote_head_hash,
+                    branch_id=branch_id,
+                    imported_snapshot_id=imported_snapshot_id,
                 ),
                 name=f"userspace-scm-backfill:{workspace_id}",
             )
@@ -3465,98 +3469,238 @@ class UserSpaceService:
         self,
         workspace_id: str,
         *,
-        git_url: str,
         git_branch: str,
-        git_token: str | None,
+        remote_dir: Path,
+        remote_head_hash: str,
+        branch_id: str,
+        imported_snapshot_id: str,
     ) -> None:
-        remote_dir: Path | None = None
-        try:
-            remote_dir, _remote_head, clone_error = (
-                await self._clone_remote_branch_to_tempdir(
-                    git_url,
-                    git_branch,
-                    git_token,
-                    full_history=True,
-                    checkout=False,
-                )
-            )
-            if remote_dir is None:
-                raise RuntimeError(
-                    clone_error
-                    or "Failed to clone remote repository branch for SCM backfill"
-                )
+        """Import the remote branch's full commit history as snapshot records.
 
-            history_result = await self._run_git_in_dir(
+        Each remote commit becomes a restorable snapshot in the timeline.
+        The remote's git objects are fetched into the local workspace repo
+        so that ``git checkout <hash>`` works for any historical commit.
+
+        Takes ownership of *remote_dir* and deletes it when finished.
+        """
+        try:
+            await self._backfill_workspace_scm_remote_commits_inner(
+                workspace_id,
+                git_branch=git_branch,
+                remote_dir=remote_dir,
+                remote_head_hash=remote_head_hash,
+                branch_id=branch_id,
+                imported_snapshot_id=imported_snapshot_id,
+            )
+        finally:
+            shutil.rmtree(remote_dir, ignore_errors=True)
+
+    async def _backfill_workspace_scm_remote_commits_inner(
+        self,
+        workspace_id: str,
+        *,
+        git_branch: str,
+        remote_dir: Path,
+        remote_head_hash: str,
+        branch_id: str,
+        imported_snapshot_id: str,
+    ) -> None:
+        """Import the remote branch's full commit history as snapshot records.
+
+        Each remote commit becomes a restorable snapshot in the timeline.
+        The remote's git objects are fetched into the local workspace repo
+        so that ``git checkout <hash>`` works for any historical commit.
+        """
+        # ------------------------------------------------------------------
+        # 1. Read first-parent history (oldest → newest) from the clone.
+        # ------------------------------------------------------------------
+        log_result = await self._run_git_in_dir(
+            remote_dir,
+            [
+                "log",
+                "--first-parent",
+                "--reverse",
+                "--format=%H%x00%ct%x00%s",
+                "HEAD",
+            ],
+            check=False,
+        )
+        if log_result.returncode != 0 or not log_result.stdout.strip():
+            logger.debug(
+                "No commit history to import for workspace %s from %s",
+                workspace_id,
+                git_branch,
+            )
+            return
+
+        all_commits: list[dict[str, Any]] = []
+        for line in log_result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("\x00", 2)
+            if len(parts) < 3:
+                continue
+            all_commits.append(
+                {
+                    "hash": parts[0],
+                    "timestamp": int(parts[1]),
+                    "message": parts[2][:200],
+                }
+            )
+
+        # HEAD is already represented by the imported snapshot — skip it.
+        history_commits = [c for c in all_commits if c["hash"] != remote_head_hash]
+        if not history_commits:
+            logger.debug(
+                "Remote has only one commit; no additional history for workspace %s",
+                workspace_id,
+            )
+            return
+
+        # ------------------------------------------------------------------
+        # 2. Compute file counts per historical commit.
+        # ------------------------------------------------------------------
+        for commit in history_commits:
+            tree_result = await self._run_git_in_dir(
                 remote_dir,
-                ["rev-list", "HEAD"],
+                ["ls-tree", "-r", "--name-only", commit["hash"]],
                 check=False,
             )
-            if history_result.returncode != 0:
-                raise RuntimeError(
-                    history_result.stderr.strip()
-                    or history_result.stdout.strip()
-                    or "Failed to read remote commit history for SCM backfill"
-                )
-
-            remote_commit_hashes = [
-                line.strip()
-                for line in history_result.stdout.splitlines()
-                if line.strip()
-            ]
-            if not remote_commit_hashes:
-                return
-
-            db = await get_db()
-            updated_snapshot_count = 0
-            chunk_size = 500
-            for start in range(0, len(remote_commit_hashes), chunk_size):
-                chunk = remote_commit_hashes[start : start + chunk_size]
-                in_clause = ", ".join(
-                    self._sql_quote(commit_hash) for commit_hash in chunk
-                )
-                count_rows = await db.query_raw(
-                    f"""
-                    SELECT COUNT(*) AS count
-                    FROM userspace_snapshots
-                    WHERE workspace_id = {self._sql_quote(workspace_id)}
-                      AND remote_commit_hash IS NULL
-                      AND git_commit_hash IN ({in_clause})
-                    """
-                )
-                match_count = int(count_rows[0].get("count") or 0) if count_rows else 0
-                if match_count <= 0:
-                    continue
-
-                await db.execute_raw(
-                    f"""
-                    UPDATE userspace_snapshots
-                    SET remote_commit_hash = git_commit_hash,
-                        updated_at = NOW()
-                    WHERE workspace_id = {self._sql_quote(workspace_id)}
-                      AND remote_commit_hash IS NULL
-                      AND git_commit_hash IN ({in_clause})
-                    """
-                )
-                updated_snapshot_count += match_count
-
-            if updated_snapshot_count > 0:
-                logger.info(
-                    "Backfilled remote commit hashes for %s snapshots in workspace %s from %s (%s commits scanned)",
-                    updated_snapshot_count,
-                    workspace_id,
-                    git_branch,
-                    len(remote_commit_hashes),
+            if tree_result.returncode == 0:
+                commit["file_count"] = sum(
+                    1
+                    for f in tree_result.stdout.splitlines()
+                    if f.strip() and not self._is_reserved_internal_path(f)
                 )
             else:
-                logger.debug(
-                    "No SCM snapshot backfill needed for workspace %s on branch %s (%s commits scanned)",
-                    workspace_id,
-                    git_branch,
-                    len(remote_commit_hashes),
-                )
+                commit["file_count"] = 0
+
+        # ------------------------------------------------------------------
+        # 3. Fetch remote objects into the local workspace git repo so that
+        #    every historical commit is locally restorable.
+        # ------------------------------------------------------------------
+        env = self._git_network_env()
+        await self._run_git(
+            workspace_id,
+            ["remote", "add", "_scm_import", str(remote_dir)],
+            check=False,
+        )
+        try:
+            await self._run_git(
+                workspace_id,
+                ["fetch", "--no-tags", "_scm_import", git_branch],
+                env=env,
+            )
         finally:
-            if remote_dir is not None:
-                shutil.rmtree(remote_dir, ignore_errors=True)
+            await self._run_git(
+                workspace_id,
+                ["remote", "remove", "_scm_import"],
+                check=False,
+            )
+
+        # Persistent ref prevents GC from pruning the fetched objects.
+        await self._run_git(
+            workspace_id,
+            ["update-ref", f"refs/scm-history/{git_branch}", remote_head_hash],
+        )
+
+        # ------------------------------------------------------------------
+        # 4. Determine which commits already have snapshot records.
+        # ------------------------------------------------------------------
+        db = await get_db()
+        all_hashes = [c["hash"] for c in history_commits]
+        in_clause = ", ".join(self._sql_quote(h) for h in all_hashes)
+        existing_rows = await db.query_raw(
+            f"""
+            SELECT git_commit_hash, id
+            FROM userspace_snapshots
+            WHERE workspace_id = {self._sql_quote(workspace_id)}
+              AND branch_id = {self._sql_quote(branch_id)}
+              AND git_commit_hash IN ({in_clause})
+            """
+        )
+        existing_by_hash: dict[str, str] = {
+            str(r["git_commit_hash"]): str(r["id"]) for r in existing_rows
+        }
+
+        # ------------------------------------------------------------------
+        # 5. Create snapshot records (oldest → newest) with parent chain.
+        # ------------------------------------------------------------------
+        created_count = 0
+        prev_snapshot_id: str | None = None
+        for commit in history_commits:
+            if commit["hash"] in existing_by_hash:
+                prev_snapshot_id = existing_by_hash[commit["hash"]]
+                continue
+
+            snapshot_id = str(uuid4())
+            created_at = datetime.fromtimestamp(commit["timestamp"], tz=timezone.utc)
+            await db.execute_raw(
+                f"""
+                INSERT INTO userspace_snapshots
+                    (id, workspace_id, branch_id, git_commit_hash,
+                     remote_commit_hash, message, file_count,
+                     parent_snapshot_id, created_by_user_id,
+                     created_at, updated_at)
+                VALUES (
+                    {self._sql_quote(snapshot_id)},
+                    {self._sql_quote(workspace_id)},
+                    {self._sql_quote(branch_id)},
+                    {self._sql_quote(commit["hash"])},
+                    {self._sql_quote(commit["hash"])},
+                    {self._sql_quote(commit["message"])},
+                    {commit["file_count"]},
+                    {self._sql_quote(prev_snapshot_id)},
+                    NULL,
+                    {self._sql_quote(created_at.isoformat())},
+                    {self._sql_quote(created_at.isoformat())}
+                )
+                """
+            )
+            existing_by_hash[commit["hash"]] = snapshot_id
+            prev_snapshot_id = snapshot_id
+            created_count += 1
+
+        # ------------------------------------------------------------------
+        # 6. Reparent the imported snapshot so the timeline is continuous.
+        # ------------------------------------------------------------------
+        if prev_snapshot_id:
+            await db.execute_raw(
+                f"""
+                UPDATE userspace_snapshots
+                SET parent_snapshot_id = {self._sql_quote(prev_snapshot_id)},
+                    updated_at = NOW()
+                WHERE id = {self._sql_quote(imported_snapshot_id)}
+                """
+            )
+
+        # Also mark any previously-pushed local snapshots whose hashes
+        # happen to match remote commits (original backfill behaviour).
+        updated_count = 0
+        chunk_size = 500
+        full_hash_list = [c["hash"] for c in all_commits]
+        for start in range(0, len(full_hash_list), chunk_size):
+            chunk = full_hash_list[start : start + chunk_size]
+            chunk_clause = ", ".join(self._sql_quote(h) for h in chunk)
+            await db.execute_raw(
+                f"""
+                UPDATE userspace_snapshots
+                SET remote_commit_hash = git_commit_hash,
+                    updated_at = NOW()
+                WHERE workspace_id = {self._sql_quote(workspace_id)}
+                  AND remote_commit_hash IS NULL
+                  AND git_commit_hash IN ({chunk_clause})
+                """
+            )
+
+        logger.info(
+            "Imported %s historical snapshots for workspace %s from %s (%s remote commits)",
+            created_count,
+            workspace_id,
+            git_branch,
+            len(all_commits),
+        )
 
     async def _stage_temp_repo_from_workspace(
         self,
@@ -4210,6 +4354,7 @@ class UserSpaceService:
                 preview.git_url,
                 preview.git_branch,
                 git_token,
+                full_history=True,
             )
         )
         if remote_dir is None or not remote_commit_hash:
@@ -4219,9 +4364,7 @@ class UserSpaceService:
             )
 
         if preview.will_overwrite_local and (
-            preview.local_changed
-            or preview.local_has_uncommitted_changes
-            or preview.current_snapshot_id
+            preview.local_changed or preview.local_has_uncommitted_changes
         ):
             await self.create_snapshot(
                 workspace_id,
@@ -4263,12 +4406,15 @@ class UserSpaceService:
             direction="import",
         )
 
-        shutil.rmtree(remote_dir, ignore_errors=True)
-        await self._schedule_workspace_scm_remote_commit_backfill(
+        # Import full remote commit history as snapshot records inline
+        # so the timeline is complete before returning to the caller.
+        await self._backfill_workspace_scm_remote_commits(
             workspace_id,
-            git_url=preview.git_url,
             git_branch=preview.git_branch,
-            git_token=git_token,
+            remote_dir=remote_dir,
+            remote_head_hash=remote_commit_hash,
+            branch_id=imported_snapshot.branch_id,
+            imported_snapshot_id=imported_snapshot.id,
         )
         return UserSpaceWorkspaceScmSyncResponse(
             workspace_id=workspace_id,
@@ -9257,6 +9403,84 @@ class UserSpaceService:
             await self._activate_branch(workspace_id, branch_id)
             await self._set_current_snapshot_cursor(
                 workspace_id, target_snapshot_id, branch_id
+            )
+
+        await self._touch_workspace(workspace_id)
+        return await self.get_snapshot_timeline(workspace_id, user_id)
+
+    async def create_snapshot_branch(
+        self,
+        workspace_id: str,
+        user_id: str,
+        name: str | None = None,
+    ) -> UserSpaceSnapshotTimelineResponse:
+        """Create a new branch from the current snapshot."""
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+        await self._ensure_snapshot_timeline(workspace_id, user_id)
+        await self._ensure_workspace_git_repo(workspace_id)
+
+        db = await get_db()
+        cursor_rows = await db.query_raw(
+            f"""
+            SELECT current_snapshot_id, current_snapshot_branch_id
+            FROM workspaces
+            WHERE id = {self._sql_quote(workspace_id)}
+            LIMIT 1
+            """
+        )
+        if not cursor_rows:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        current_snapshot_id = (
+            str(cursor_rows[0].get("current_snapshot_id"))
+            if cursor_rows[0].get("current_snapshot_id")
+            else None
+        )
+        if not current_snapshot_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No snapshot to branch from; create a snapshot first",
+            )
+
+        branch_count_rows = await db.query_raw(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM userspace_snapshot_branches
+            WHERE workspace_id = {self._sql_quote(workspace_id)}
+            """
+        )
+        branch_count = (
+            int(branch_count_rows[0].get("count") or 0) if branch_count_rows else 0
+        )
+        branch_name = (name or "").strip() or f"Branch {branch_count + 1}"
+        new_branch_id = str(uuid4())
+        branch_ref_name = self._branch_ref_name(new_branch_id)
+
+        async with self._snapshot_operation_semaphore:
+            await self._run_git(workspace_id, ["checkout", "-b", branch_ref_name])
+            await db.execute_raw(
+                f"""
+                INSERT INTO userspace_snapshot_branches
+                (id, workspace_id, name, git_ref_name, base_snapshot_id,
+                 branched_from_snapshot_id, is_active, created_at, updated_at)
+                VALUES (
+                    {self._sql_quote(new_branch_id)},
+                    {self._sql_quote(workspace_id)},
+                    {self._sql_quote(branch_name)},
+                    {self._sql_quote(branch_ref_name)},
+                    {self._sql_quote(current_snapshot_id)},
+                    {self._sql_quote(current_snapshot_id)},
+                    TRUE,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+            await self._activate_branch(workspace_id, new_branch_id)
+            await self._set_current_snapshot_cursor(
+                workspace_id, current_snapshot_id, new_branch_id
             )
 
         await self._touch_workspace(workspace_id)

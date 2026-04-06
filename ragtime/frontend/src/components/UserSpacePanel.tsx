@@ -2407,16 +2407,29 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const handleAskAgentToPrepareWorkspace = useCallback(async (prompt: string) => {
     if (!activeWorkspaceId) return;
-    let conversationId = activeWorkspaceConversationId;
-    if (!conversationId) {
+    expandChat();
+    setError(null);
+
+    try {
       const conversation = await api.createConversation(undefined, activeWorkspaceId);
-      conversationId = conversation.id;
+
       setActiveWorkspaceConversationId(conversation.id);
+      setActiveWorkspaceChatSnapshot((current) => ({
+        conversations: [
+          conversation,
+          ...(current?.conversations.filter((item) => item.id !== conversation.id) ?? []),
+        ],
+        interrupted_conversation_ids: current?.interrupted_conversation_ids ?? [],
+        selected_conversation_id: conversation.id,
+        active_task: null,
+        interrupted_task: null,
+      }));
+
+      await api.sendMessage(conversation.id, { message: prompt }, activeWorkspaceId);
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'Failed to ask the agent to prepare the workspace'));
     }
-    await api.sendMessage(conversationId, { message: prompt }, activeWorkspaceId);
-    await refreshActiveWorkspaceState();
-    setActiveRightTab('preview');
-  }, [activeWorkspaceConversationId, activeWorkspaceId, refreshActiveWorkspaceState]);
+  }, [activeWorkspaceId, expandChat]);
 
   const handleUserMessageSubmitted = useCallback(async (_message: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
