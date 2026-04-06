@@ -17,6 +17,7 @@ from ragtime import __version__
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
+from ragtime.indexer.background_tasks import rebuild_tool_messages_from_events
 from ragtime.indexer.routes import get_available_chat_models
 from ragtime.models import (ChatChoice, ChatCompletionRequest,
                             ChatCompletionResponse, HealthResponse,
@@ -543,7 +544,10 @@ async def chat_completions(request: ChatCompletionRequest):
                 HumanMessage(content=await rag._convert_message_to_langchain_async(msg))
             )
         elif msg.role == "assistant":
-            if msg.tool_calls:
+            message_events = getattr(msg, "events", None)
+            if message_events:
+                chat_history.extend(rebuild_tool_messages_from_events(message_events, 0))
+            elif msg.tool_calls:
                 # Reconstruct native AIMessage with tool_calls
                 chat_history.append(
                     AIMessage(

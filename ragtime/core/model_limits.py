@@ -247,6 +247,17 @@ def _candidate_lookup_keys(model_id: str) -> list[str]:
     return candidates
 
 
+def _capability_lookup_keys(model_id: str) -> list[str]:
+    """Build exact alias keys for capability/endpoint cache lookups.
+
+    Capability flags such as reasoning support and supported endpoints should
+    not bleed across nearby model IDs like ``claude-haiku-4.5`` and
+    ``claude-haiku-4.5-fast``.  Use only exact semantic aliases derived from
+    normalization, not fuzzy prefix/substring matching.
+    """
+    return _candidate_lookup_keys(model_id)
+
+
 def _best_match_value(cache: dict[str, int], model_id: str) -> int | None:
     """Return best cached value using deterministic ranked matching."""
     if not cache:
@@ -317,6 +328,24 @@ def _best_match_flag(cache: dict[str, bool], model_id: str) -> bool | None:
                 best_value = value
 
     return best_value
+
+
+def _lookup_capability_flag(cache: dict[str, bool], model_id: str) -> bool | None:
+    """Return a cached capability flag using exact normalized alias matching."""
+    if not cache:
+        return None
+
+    for candidate in _capability_lookup_keys(model_id):
+        matched = cache.get(candidate)
+        if isinstance(matched, bool):
+            return matched
+
+        lower_candidate = candidate.lower()
+        for key, value in cache.items():
+            if key.lower() == lower_candidate:
+                return value
+
+    return None
 
 
 async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
@@ -532,7 +561,7 @@ async def supports_reasoning(model_id: str) -> bool:
     """
     await _ensure_cache_loaded()
 
-    matched = _best_match_flag(_provider_supports_reasoning, model_id)
+    matched = _lookup_capability_flag(_provider_supports_reasoning, model_id)
     if matched is not None:
         return matched
 
@@ -548,7 +577,7 @@ async def supports_thinking_budget(model_id: str) -> bool:
     """
     await _ensure_cache_loaded()
 
-    matched = _best_match_flag(_provider_supports_thinking_budget, model_id)
+    matched = _lookup_capability_flag(_provider_supports_thinking_budget, model_id)
     if matched is not None:
         return matched
 
@@ -627,7 +656,7 @@ async def requires_responses_api(model_id: str) -> bool:
     """
     await _ensure_cache_loaded()
 
-    matched = _best_match_flag(_model_requires_responses_api, model_id)
+    matched = _lookup_capability_flag(_model_requires_responses_api, model_id)
     if matched is not None:
         return matched
 
@@ -638,7 +667,7 @@ async def supports_responses_api(model_id: str) -> bool:
     """Check if a model is known to support the Responses API endpoint."""
     await _ensure_cache_loaded()
 
-    matched = _best_match_flag(_model_supports_responses_api, model_id)
+    matched = _lookup_capability_flag(_model_supports_responses_api, model_id)
     if matched is not None:
         return matched
 

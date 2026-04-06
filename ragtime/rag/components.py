@@ -28,22 +28,15 @@ from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_openai.chat_models.base import (
-    _construct_responses_api_payload,
-    _get_last_messages,
-)
+    _construct_responses_api_payload, _get_last_messages)
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
@@ -51,100 +44,70 @@ from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
-from ragtime.core.file_constants import (
-    USERSPACE_MODULE_SOURCE_EXTENSIONS,
-    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-    USERSPACE_THEME_AUDIT_EXTENSIONS,
-    USERSPACE_TYPESCRIPT_EXTENSIONS,
-)
+from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
+                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
+                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    get_context_limit,
-    get_output_limit,
-    register_model_reasoning_capabilities,
-    register_model_supported_endpoints,
-    requires_responses_api,
-    supports_reasoning,
-    supports_responses_api,
-    supports_thinking_budget,
-)
-from ragtime.core.ollama import (
-    DEFAULT_WARMUP_TIMEOUT_SECONDS,
-    KEEP_ALIVE,
-    NUM_GPU,
-    get_model_context_length,
-    get_model_details,
-    has_capability,
-    warmup_embedding_model,
-    warmup_model,
-)
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.model_limits import (get_context_limit, get_output_limit,
+                                       register_model_reasoning_capabilities,
+                                       register_model_supported_endpoints,
+                                       requires_responses_api,
+                                       supports_reasoning,
+                                       supports_responses_api,
+                                       supports_thinking_budget)
+from ragtime.core.ollama import (DEFAULT_WARMUP_TIMEOUT_SECONDS, KEEP_ALIVE,
+                                 NUM_GPU, get_model_context_length,
+                                 get_model_details, has_capability,
+                                 warmup_embedding_model, warmup_model)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
-from ragtime.rag.prompts import (
-    BASE_CHAT_SYSTEM_PROMPT,
-    BASE_USERSPACE_SYSTEM_PROMPT,
-    SQLITE_INCLUDE_MODE_HINT,
-    TOOL_OUTPUT_VISIBILITY_PROMPT,
-    TOOL_USAGE_REMINDER,
-    UI_VISUALIZATION_CHAT_PROMPT,
-    UI_VISUALIZATION_COMMON_PROMPT,
-    UI_VISUALIZATION_USERSPACE_PROMPT,
-    build_index_system_prompt,
-    build_tool_system_prompt,
-    build_userspace_entrypoint_nudge,
-    build_userspace_mode_prompt_addition,
-    build_userspace_mounts_prompt_fragment,
-    build_userspace_turn_reminder,
-    build_userspace_turn_reminder_with_env_vars,
-    build_workspace_continuity_context,
-)
+from ragtime.rag.prompts import (BASE_CHAT_SYSTEM_PROMPT,
+                                 BASE_USERSPACE_SYSTEM_PROMPT,
+                                 SQLITE_INCLUDE_MODE_HINT,
+                                 TOOL_OUTPUT_VISIBILITY_PROMPT,
+                                 TOOL_USAGE_REMINDER,
+                                 UI_VISUALIZATION_CHAT_PROMPT,
+                                 UI_VISUALIZATION_COMMON_PROMPT,
+                                 UI_VISUALIZATION_USERSPACE_PROMPT,
+                                 build_index_system_prompt,
+                                 build_tool_system_prompt,
+                                 build_userspace_entrypoint_nudge,
+                                 build_userspace_mode_prompt_addition,
+                                 build_userspace_mounts_prompt_fragment,
+                                 build_userspace_turn_reminder,
+                                 build_userspace_turn_reminder_with_env_vars,
+                                 build_workspace_continuity_context)
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (
-    ArtifactType,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-)
+from ragtime.userspace.models import (ArtifactType,
+                                      UpsertWorkspaceEnvVarRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -1107,9 +1070,37 @@ class _CopilotChatOpenAI(ChatOpenAI):
                 return True
         return False
 
+    def _request_uses_reasoning_controls(self) -> bool:
+        """Return True when this request shape includes reasoning-specific params.
+
+        Restrict speculative ``invalid_request_body`` -> Responses probing to
+        requests that actually exercise reasoning controls. This avoids routing
+        unrelated request-shape errors for models like Claude Haiku 4.5 onto the
+        Responses API and incorrectly caching that endpoint choice.
+        """
+        reasoning = getattr(self, "reasoning", None)
+        if isinstance(reasoning, dict) and reasoning:
+            return True
+
+        direct_effort = getattr(self, "reasoning_effort", None)
+        if direct_effort:
+            return True
+
+        default_params = getattr(self, "_default_params", None)
+        if isinstance(default_params, dict):
+            if default_params.get("reasoning"):
+                return True
+            if default_params.get("reasoning_effort"):
+                return True
+
+        return False
+
     def _should_probe_responses_fallback(self, exc: Exception) -> bool:
         """Retry on /responses when chat+tools+reasoning fails structurally."""
         if self.use_responses_api:
+            return False
+
+        if not self._request_uses_reasoning_controls():
             return False
 
         body = self._get_error_body(exc)
@@ -1125,11 +1116,17 @@ class _CopilotChatOpenAI(ChatOpenAI):
 
         return False
 
-    def _switch_to_responses_api(self) -> None:
-        """Flip this instance (and cache) to use the Responses API."""
+    def _switch_to_responses_api(self, *, cache_result: bool = True) -> None:
+        """Flip this instance to use the Responses API.
+
+        When the switch is based on a speculative ``invalid_request_body`` probe,
+        do not update the shared capability cache. Only authoritative endpoint
+        signals should be persisted across future requests.
+        """
         self.use_responses_api = True
         self.output_version = "responses/v1"
-        register_model_supported_endpoints(self.model_name, ["/responses"])
+        if cache_result:
+            register_model_supported_endpoints(self.model_name, ["/responses"])
         logger.info(
             "Model %s does not support /chat/completions — "
             "switched to Responses API for this and future requests",
@@ -1192,11 +1189,10 @@ class _CopilotChatOpenAI(ChatOpenAI):
                 **kwargs,
             )
         except Exception as exc:
-            if not self.use_responses_api and (
-                self._is_unsupported_api_error(exc)
-                or self._should_probe_responses_fallback(exc)
-            ):
-                self._switch_to_responses_api()
+            unsupported_api = self._is_unsupported_api_error(exc)
+            probe_responses = self._should_probe_responses_fallback(exc)
+            if not self.use_responses_api and (unsupported_api or probe_responses):
+                self._switch_to_responses_api(cache_result=unsupported_api)
                 return await self._retry_after_reasoning_downgrade(
                     super()._agenerate,
                     messages,
@@ -1216,11 +1212,10 @@ class _CopilotChatOpenAI(ChatOpenAI):
                     yield chunk
                 return
 
-            if not self.use_responses_api and (
-                self._is_unsupported_api_error(exc)
-                or self._should_probe_responses_fallback(exc)
-            ):
-                self._switch_to_responses_api()
+            unsupported_api = self._is_unsupported_api_error(exc)
+            probe_responses = self._should_probe_responses_fallback(exc)
+            if not self.use_responses_api and (unsupported_api or probe_responses):
+                self._switch_to_responses_api(cache_result=unsupported_api)
                 try:
                     async for chunk in super()._astream(*args, **kwargs):
                         yield chunk
@@ -3228,9 +3223,13 @@ class RAGComponents:
             """
 
             def windowed_format(intermediate_steps):
+                grouped_steps = self._group_intermediate_steps_by_message(
+                    intermediate_steps
+                )
                 num_steps = len(intermediate_steps)
+                num_groups = len(grouped_steps)
 
-                if window_size <= 0 or num_steps <= window_size:
+                if window_size <= 0 or num_groups <= window_size:
                     result = self._format_intermediate_steps_for_agent(
                         intermediate_steps
                     )
@@ -3249,24 +3248,30 @@ class RAGComponents:
                     )
                 )
 
-                old_steps = intermediate_steps[:-window_size]
-                recent_steps = intermediate_steps[-window_size:]
+                old_groups = grouped_steps[:-window_size]
+                recent_groups = grouped_steps[-window_size:]
+                old_steps = [step for group in old_groups for step in group]
+                recent_steps = [step for group in recent_groups for step in group]
 
                 compressed_msgs: list[BaseMessage] = []
-                for step in old_steps:
-                    for msg in format_to_tool_messages([step]):
-                        if isinstance(msg, ToolMessage):
-                            content = str(msg.content)
-                            if len(content) > 200:
-                                content = content[:150] + "... [truncated]"
-                            compressed_msgs.append(
-                                ToolMessage(
-                                    content=content,
-                                    tool_call_id=msg.tool_call_id,
-                                )
+                for msg in format_to_tool_messages(old_steps):
+                    if isinstance(msg, ToolMessage):
+                        content = str(msg.content)
+                        if len(content) > 200:
+                            content = content[:150] + "... [truncated]"
+                        compressed_msgs.append(
+                            ToolMessage(
+                                content=content,
+                                tool_call_id=msg.tool_call_id,
+                                additional_kwargs=(
+                                    dict(msg.additional_kwargs)
+                                    if getattr(msg, "additional_kwargs", None)
+                                    else None
+                                ),
                             )
-                        else:
-                            compressed_msgs.append(msg)
+                        )
+                    else:
+                        compressed_msgs.append(msg)
 
                 all_msgs = compressed_msgs + self._format_intermediate_steps_for_agent(
                     recent_steps
@@ -5733,45 +5738,92 @@ except Exception as e:
         if not intermediate_steps:
             return []
 
-        latest_screenshot_index: int | None = None
+        latest_screenshot_tool_call_id: str | None = None
+        latest_screenshot_observation: Any = None
         if include_latest_screenshot_image:
-            for idx, step in enumerate(intermediate_steps):
+            for step in intermediate_steps:
                 action = step[0] if isinstance(step, tuple) and step else None
                 if getattr(action, "tool", "") == "capture_userspace_screenshot":
-                    latest_screenshot_index = idx
+                    latest_screenshot_tool_call_id = str(
+                        getattr(action, "tool_call_id", "") or ""
+                    ) or None
+                    latest_screenshot_observation = (
+                        step[1] if isinstance(step, tuple) and len(step) > 1 else None
+                    )
 
-        formatted_messages: list[BaseMessage] = []
-        for idx, step in enumerate(intermediate_steps):
-            step_messages = format_to_tool_messages([step])
-            if idx == latest_screenshot_index:
-                observation = (
-                    step[1] if isinstance(step, tuple) and len(step) > 1 else None
-                )
-                reference_content = self._build_screenshot_reference_content(
-                    observation
-                )
-                if reference_content is not None:
-                    augmented_messages: list[BaseMessage] = []
-                    for msg in step_messages:
-                        if isinstance(msg, ToolMessage):
-                            tool_text = str(msg.content or "").strip()
-                            content: list[dict[str, Any]] = []
-                            if tool_text:
-                                content.append({"type": "text", "text": tool_text})
-                            content.extend(reference_content)
-                            augmented_messages.append(
-                                ToolMessage(
-                                    content=content,
-                                    tool_call_id=msg.tool_call_id,
-                                )
-                            )
-                        else:
-                            augmented_messages.append(msg)
-                    step_messages = augmented_messages
-
-            formatted_messages.extend(step_messages)
+        formatted_messages = list(format_to_tool_messages(intermediate_steps))
+        reference_content = self._build_screenshot_reference_content(
+            latest_screenshot_observation
+        )
+        if latest_screenshot_tool_call_id and reference_content is not None:
+            augmented_messages: list[BaseMessage] = []
+            for msg in formatted_messages:
+                if (
+                    isinstance(msg, ToolMessage)
+                    and msg.tool_call_id == latest_screenshot_tool_call_id
+                ):
+                    tool_text = str(msg.content or "").strip()
+                    content: list[dict[str, Any]] = []
+                    if tool_text:
+                        content.append({"type": "text", "text": tool_text})
+                    content.extend(reference_content)
+                    augmented_messages.append(
+                        ToolMessage(
+                            content=content,
+                            tool_call_id=msg.tool_call_id,
+                            additional_kwargs=(
+                                dict(msg.additional_kwargs)
+                                if getattr(msg, "additional_kwargs", None)
+                                else None
+                            ),
+                        )
+                    )
+                else:
+                    augmented_messages.append(msg)
+            formatted_messages = augmented_messages
 
         return formatted_messages
+
+    def _group_intermediate_steps_by_message(
+        self,
+        intermediate_steps: list[Any],
+    ) -> list[list[Any]]:
+        """Group tool steps that came from the same assistant tool-call message.
+
+        Anthropic requires that all tool results for a single assistant message
+        appear immediately after that message. Grouping prevents scratchpad
+        compression from splitting a multi-tool assistant turn across the
+        old/recent boundary.
+        """
+        grouped_steps: list[list[Any]] = []
+        last_signature: str | None = None
+
+        for step in intermediate_steps:
+            action = step[0] if isinstance(step, tuple) and step else None
+            message_log = getattr(action, "message_log", None) or []
+            signature_parts: list[str] = []
+            for message in message_log:
+                tool_calls = getattr(message, "tool_calls", None)
+                signature_parts.append(
+                    json.dumps(
+                        {
+                            "type": type(message).__name__,
+                            "content": getattr(message, "content", None),
+                            "tool_calls": tool_calls,
+                        },
+                        default=str,
+                        sort_keys=True,
+                    )
+                )
+            signature = "||".join(signature_parts)
+
+            if grouped_steps and signature == last_signature:
+                grouped_steps[-1].append(step)
+            else:
+                grouped_steps.append([step])
+                last_signature = signature
+
+        return grouped_steps
 
     def _extract_text_from_message(self, message: Any) -> str:
         """
