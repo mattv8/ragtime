@@ -22,7 +22,6 @@ from typing import Any, List, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -45,6 +44,7 @@ from langchain_openai.chat_models.base import (
     _construct_responses_api_payload,
     _get_last_messages,
 )
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
@@ -5827,6 +5827,50 @@ except Exception as e:
 
         return str(content)
 
+    @staticmethod
+    def _extract_text_from_responses_output_items(output_items: Any) -> str:
+        """Extract assistant-visible text from Responses API output items."""
+        if not isinstance(output_items, list):
+            return ""
+
+        text_parts: list[str] = []
+        for item in output_items:
+            if not isinstance(item, dict):
+                continue
+
+            item_type = str(item.get("type", "")).lower()
+
+            if item_type == "message":
+                content_blocks = item.get("content")
+                if not isinstance(content_blocks, list):
+                    continue
+
+                for block in content_blocks:
+                    if not isinstance(block, dict):
+                        continue
+
+                    block_type = str(block.get("type", "")).lower()
+                    if block_type in {"output_text", "text"}:
+                        text = block.get("text")
+                        if text:
+                            text_parts.append(str(text))
+                    elif block_type in {"output_refusal", "refusal"}:
+                        refusal = block.get("refusal") or block.get("text")
+                        if refusal:
+                            text_parts.append(str(refusal))
+                continue
+
+            if item_type in {"output_text", "text"}:
+                text = item.get("text")
+                if text:
+                    text_parts.append(str(text))
+            elif item_type in {"output_refusal", "refusal"}:
+                refusal = item.get("refusal") or item.get("text")
+                if refusal:
+                    text_parts.append(str(refusal))
+
+        return "".join(text_parts)
+
     @classmethod
     def _extract_reasoning_text_from_content_list(cls, content: Any) -> str:
         """Extract reasoning text from content blocks across provider formats."""
@@ -5999,6 +6043,14 @@ except Exception as e:
             return cls._extract_text_from_stream_content(output.content)
 
         if isinstance(output, dict):
+            # Responses API often places final assistant text under output[] items.
+            output_items = output.get("output")
+            text_from_output_items = cls._extract_text_from_responses_output_items(
+                output_items
+            )
+            if text_from_output_items:
+                return text_from_output_items
+
             content = output.get("content")
             if content is not None:
                 return cls._extract_text_from_stream_content(content)

@@ -17,13 +17,11 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    ChatTaskStatus,
-    FilesystemConnectionConfig,
-    SchemaIndexConfig,
-)
+from ragtime.indexer.models import (ChatTaskStatus, FilesystemConnectionConfig,
+                                    SchemaIndexConfig)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 
@@ -966,6 +964,75 @@ class BackgroundTaskService:
                         last_update = now
 
                 # Task completed successfully - save final state
+                if not full_response.strip():
+                    had_tool_activity = bool(tool_calls) or any(
+                        ev.get("type") == "tool" for ev in events
+                    )
+                    had_reasoning_activity = any(
+                        ev.get("type") == "reasoning" for ev in events
+                    )
+
+                    if had_tool_activity or had_reasoning_activity:
+                        last_tool_name = next(
+                            (
+                                str(ev.get("tool"))
+                                for ev in reversed(events)
+                                if ev.get("type") == "tool" and ev.get("tool")
+                            ),
+                            "tool",
+                        )
+                        if hit_max_iterations:
+                            full_response = (
+                                "I finished this run without emitting a final answer text "
+                                "before hitting the iteration limit. "
+                                "Please send Continue so I can resume from the current state."
+                            )
+                        elif had_tool_activity:
+                            full_response = (
+                                "I completed tool activity but did not emit a final answer text "
+                                f"(last tool: {last_tool_name}). "
+                                "Please send Continue and I will finalize the response."
+                            )
+                        else:
+                            full_response = (
+                                "I emitted reasoning but no final answer text in this run. "
+                                "Please send Continue and I will complete the response."
+                            )
+
+                        events.append({"type": "content", "content": full_response})
+                        logger.warning(
+                            "Background task %s ended without assistant text; "
+                            "synthesized fallback response (events=%d, tool_calls=%d, hit_max_iterations=%s)",
+                            task_id,
+                            len(events),
+                            len(tool_calls),
+                            hit_max_iterations,
+                        )
+                    else:
+                        error_message = "Model stream ended without assistant text output"
+                        logger.warning(
+                            "Background task %s ended with no assistant text "
+                            "(events=%d, tool_calls=%d, hit_max_iterations=%s)",
+                            task_id,
+                            len(events),
+                            len(tool_calls),
+                            hit_max_iterations,
+                        )
+                        await repository.update_chat_task_status(
+                            task_id,
+                            ChatTaskStatus.failed,
+                            error_message,
+                        )
+                        await task_event_bus.publish(
+                            task_id,
+                            {
+                                "completed": True,
+                                "status": "failed",
+                                "error": error_message,
+                            },
+                        )
+                        return
+
                 await repository.complete_chat_task(
                     task_id,
                     full_response,
