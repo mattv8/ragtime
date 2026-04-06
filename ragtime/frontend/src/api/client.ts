@@ -1921,6 +1921,15 @@ export const api = {
     return handleResponse<FetchBranchesResponse>(response);
   },
 
+  async previewUserSpaceWorkspaceScmSync(workspaceId: string, request: UserSpaceWorkspaceScmPreviewRequest): Promise<UserSpaceWorkspaceScmPreviewResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/preview-sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<UserSpaceWorkspaceScmPreviewResponse>(response);
+  },
+
   async previewUserSpaceWorkspaceScmImport(workspaceId: string, request: UserSpaceWorkspaceScmPreviewRequest): Promise<UserSpaceWorkspaceScmPreviewResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/preview-import`, {
       method: 'POST',

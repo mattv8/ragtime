@@ -3944,6 +3944,37 @@ class UserSpaceService:
         )
         return preview
 
+    async def preview_workspace_scm_sync(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: UserSpaceWorkspaceScmPreviewRequest,
+    ) -> UserSpaceWorkspaceScmPreviewResponse:
+        """Auto-detect sync direction and return preview.
+
+        Logic:
+        - Only remote changed → import (pull)
+        - Only local changed → export (push)
+        - Both changed → import (destructive, overwrites local)
+        - Neither changed → up-to-date (checked via import preview)
+        """
+        preview, _ = await self._build_workspace_scm_preview(
+            workspace_id,
+            user_id,
+            "import",
+            request,
+            store_preview=True,
+        )
+        if preview.local_changed and not preview.remote_changed:
+            preview, _ = await self._build_workspace_scm_preview(
+                workspace_id,
+                user_id,
+                "export",
+                request,
+                store_preview=True,
+            )
+        return preview
+
     async def import_workspace_from_scm(
         self,
         workspace_id: str,

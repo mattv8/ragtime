@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, ArrowDownToLine, ArrowUpToLine, Check, GitBranch, Link2, RefreshCw, X } from 'lucide-react';
+import { AlertCircle, ArrowDownToLine, ArrowUpToLine, Check, GitBranch, Link2, RefreshCw, RefreshCcw, X } from 'lucide-react';
 
 import { api } from '@/api';
 import type {
@@ -92,11 +92,10 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     return 'userspace-status-pill userspace-status-pill-muted';
   }, [activeScm]);
 
-  const modeActionLabel = hasConfiguredRemote
-    ? (mode === 'import' ? 'Pull' : 'Push')
-    : (mode === 'import' ? 'Import' : 'Export');
+  const setupModeLabel = mode === 'import' ? 'Import' : 'Export';
 
   useEffect(() => {
+    if (hasConfiguredRemote) return;
     if (!gitUrl.trim()) {
       setRepoVisibility(null);
       setBranches([]);
@@ -114,7 +113,9 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
         setRepoVisibility(visibility.visibility);
         setHasStoredToken(visibility.has_stored_token);
         setStoredTokenValid(visibility.has_stored_token && !visibility.needs_token);
-        setStatus({ type: 'info', message: visibility.message || '' });
+        if (!hasConfiguredRemote) {
+          setStatus({ type: 'info', message: visibility.message || '' });
+        }
 
         if (mode === 'import' || visibility.visibility === 'public' || gitToken.trim() || visibility.has_stored_token) {
           const branchResult = await api.fetchUserSpaceWorkspaceScmBranches(workspace.id, {
@@ -141,11 +142,11 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   }, [gitToken, gitUrl, mode, workspace.id]);
 
   async function handlePreview(): Promise<void> {
-    if (!gitUrl.trim()) {
+    if (!hasConfiguredRemote && !gitUrl.trim()) {
       setStatus({ type: 'error', message: 'Repository URL is required.' });
       return;
     }
-    if (tokenRequired && !gitToken.trim() && !storedTokenValid) {
+    if (!hasConfiguredRemote && tokenRequired && !gitToken.trim() && !storedTokenValid) {
       setStatus({ type: 'error', message: 'A personal access token is required for this action.' });
       return;
     }
@@ -154,16 +155,18 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     setStatus({ type: null, message: '' });
     try {
       const payload = {
-        git_url: gitUrl.trim(),
+        git_url: gitUrl.trim() || undefined,
         git_branch: gitBranch.trim() || 'main',
         git_token: gitToken.trim() || undefined,
         create_repo_if_missing: createRepoIfMissing,
         create_repo_private: createRepoPrivate,
         create_repo_description: createRepoDescription.trim() || undefined,
       };
-      const nextPreview = mode === 'import'
-        ? await api.previewUserSpaceWorkspaceScmImport(workspace.id, payload)
-        : await api.previewUserSpaceWorkspaceScmExport(workspace.id, payload);
+      const nextPreview = hasConfiguredRemote
+        ? await api.previewUserSpaceWorkspaceScmSync(workspace.id, payload)
+        : mode === 'import'
+          ? await api.previewUserSpaceWorkspaceScmImport(workspace.id, payload)
+          : await api.previewUserSpaceWorkspaceScmExport(workspace.id, payload);
       setPreview(nextPreview);
       setStep('review');
       setStatus({ type: null, message: '' });
@@ -177,7 +180,8 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   async function handleExecute(): Promise<void> {
     if (!preview) return;
     setIsLoading(true);
-    setStatus({ type: 'info', message: mode === 'import' ? 'Importing workspace from Git...' : 'Exporting workspace to Git...' });
+    const direction = preview.direction;
+    setStatus({ type: 'info', message: direction === 'import' ? 'Pulling from remote...' : 'Pushing to remote...' });
     try {
       const payload = {
         git_url: preview.git_url,
@@ -188,7 +192,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
         create_repo_description: createRepoDescription.trim() || undefined,
         overwrite_preview_token: preview.preview_token || undefined,
       } satisfies UserSpaceWorkspaceScmImportRequest | UserSpaceWorkspaceScmExportRequest;
-      const nextResult = mode === 'import'
+      const nextResult = direction === 'import'
         ? await api.importUserSpaceWorkspaceFromScm(workspace.id, payload as UserSpaceWorkspaceScmImportRequest)
         : await api.exportUserSpaceWorkspaceToScm(workspace.id, payload as UserSpaceWorkspaceScmExportRequest);
       setResult(nextResult);
@@ -223,15 +227,22 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
           <h3>Workspace SCM</h3>
           <button className="modal-close" onClick={onClose}>&times;</button>
         </div>
-        <div className="modal-body" style={{ display: 'grid', gap: 16, maxHeight: '75vh', overflowY: 'auto' }}>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className={`btn btn-sm ${mode === 'import' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setMode('import')} disabled={isLoading}>
-              <ArrowDownToLine size={14} /> {hasConfiguredRemote ? 'Pull' : 'Import'}
-            </button>
-            <button className={`btn btn-sm ${mode === 'export' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setMode('export')} disabled={isLoading}>
-              <ArrowUpToLine size={14} /> {hasConfiguredRemote ? 'Push' : 'Export'}
-            </button>
-          </div>
+        <div className="modal-body" style={{ display: 'grid', gap: 16 }}>
+          {hasConfiguredRemote ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <RefreshCcw size={14} />
+              <strong>Sync</strong>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className={`btn btn-sm ${mode === 'import' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setMode('import')} disabled={isLoading}>
+                <ArrowDownToLine size={14} /> Import
+              </button>
+              <button className={`btn btn-sm ${mode === 'export' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setMode('export')} disabled={isLoading}>
+                <ArrowUpToLine size={14} /> Export
+              </button>
+            </div>
+          )}
 
           {step === 'input' && (
             <div style={{ display: 'grid', gap: 14 }}>
@@ -263,19 +274,19 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                         </div>
                       )}
                     </div>
-                    <div className="userspace-muted" style={{ fontSize: 12 }}>
-                      Choose Pull or Push to sync with this remote.
-                    </div>
+
                   </div>
                 </div>
               )}
 
-              <label className="form-group" style={{ marginBottom: 0, paddingBottom: 0 }}>
-                <span>Repository URL</span>
-                <input type="text" value={gitUrl} onChange={(event) => setGitUrl(event.target.value)} placeholder="https://github.com/owner/repo.git" disabled={isLoading} />
-              </label>
+              {!hasConfiguredRemote && (
+                <label className="form-group" style={{ marginBottom: 0, paddingBottom: 0 }}>
+                  <span>Repository URL</span>
+                  <input type="text" value={gitUrl} onChange={(event) => setGitUrl(event.target.value)} placeholder="https://github.com/owner/repo.git" disabled={isLoading} />
+                </label>
+              )}
 
-              {repoVisibility && (
+              {(!hasConfiguredRemote || !storedTokenValid) && repoVisibility && (
               <div style={{ display: 'grid', gap: 8, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg-tertiary)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Link2 size={14} />
@@ -294,21 +305,23 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
               </div>
               )}
 
-              <label className="form-group">
-                <span>Branch</span>
-                {branches.length > 0 ? (
-                  <select value={gitBranch} onChange={(event) => setGitBranch(event.target.value)} disabled={isLoading}>
-                    {branches.map((branch) => (
-                      <option key={branch} value={branch}>{branch}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input type="text" value={gitBranch} onChange={(event) => setGitBranch(event.target.value)} placeholder="main" disabled={isLoading} />
-                )}
-                {branchError && <span className="userspace-muted" style={{ fontSize: 12 }}>{branchError}</span>}
-              </label>
+              {!hasConfiguredRemote && (
+                <label className="form-group">
+                  <span>Branch</span>
+                  {branches.length > 0 ? (
+                    <select value={gitBranch} onChange={(event) => setGitBranch(event.target.value)} disabled={isLoading}>
+                      {branches.map((branch) => (
+                        <option key={branch} value={branch}>{branch}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input type="text" value={gitBranch} onChange={(event) => setGitBranch(event.target.value)} placeholder="main" disabled={isLoading} />
+                  )}
+                  {branchError && <span className="userspace-muted" style={{ fontSize: 12 }}>{branchError}</span>}
+                </label>
+              )}
 
-              {mode === 'export' && (
+              {mode === 'export' && !hasConfiguredRemote && (
                 <div style={{ display: 'grid', gap: 8, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg-tertiary)' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <input type="checkbox" checked={createRepoIfMissing} onChange={(event) => setCreateRepoIfMissing(event.target.checked)} disabled={isLoading} />
@@ -334,6 +347,9 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                   <GitBranch size={14} />
                   <strong>{preview.git_branch}</strong>
                   <span className="userspace-muted">{preview.git_url}</span>
+                  <span className={`userspace-status-pill ${preview.direction === 'import' ? 'userspace-status-pill-info' : 'userspace-status-pill-success'}`}>
+                    {preview.direction === 'import' ? 'Pull' : 'Push'}
+                  </span>
                 </div>
                 <div>{preview.summary}</div>
                 <div className="userspace-muted" style={{ fontSize: 12, marginTop: 8 }}>
@@ -384,7 +400,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                 </div>
               </div>
 
-              {mode === 'import' && result.suggested_setup_prompt && (
+              {result.direction === 'import' && result.suggested_setup_prompt && (
                 <div style={{ display: 'grid', gap: 8, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
                   <strong>Prepare the imported workspace</strong>
                   <div className="userspace-muted" style={{ fontSize: 12 }}>
@@ -410,10 +426,10 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
             </div>
           )}
         </div>
-        <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '0 20px 20px' }}>
+        <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
           <div>
-            {step !== 'input' && (
-              <button className="btn btn-secondary" onClick={() => setStep(step === 'result' ? 'review' : 'input')} disabled={isLoading}>
+            {step === 'review' && (
+              <button className="btn btn-secondary" onClick={() => setStep('input')} disabled={isLoading}>
                 Back
               </button>
             )}
@@ -424,18 +440,26 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
             </button>
             {step === 'input' && (
               <button className="btn btn-primary" onClick={() => void handlePreview()} disabled={isLoading}>
-                {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : mode === 'import' ? <ArrowDownToLine size={14} /> : <ArrowUpToLine size={14} />}
-                Preview
+                {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : hasConfiguredRemote ? <RefreshCcw size={14} /> : mode === 'import' ? <ArrowDownToLine size={14} /> : <ArrowUpToLine size={14} />}
+                {hasConfiguredRemote ? 'Sync' : `Preview ${setupModeLabel}`}
               </button>
             )}
             {step === 'review' && preview && (
               <button
-                className={`btn ${mode === 'import' && preview.will_overwrite_local ? 'btn-danger' : 'btn-primary'}`}
+                className={`btn ${preview.will_overwrite_local || preview.will_overwrite_remote ? 'btn-danger' : 'btn-primary'}`}
                 onClick={() => void handleExecute()}
                 disabled={isLoading || (!preview.can_proceed_without_force && !preview.preview_token && preview.state !== 'up_to_date')}
               >
-                {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : mode === 'import' ? <ArrowDownToLine size={14} /> : <ArrowUpToLine size={14} />}
-                {mode === 'import' ? (preview.will_overwrite_local ? 'Overwrite' : modeActionLabel) : modeActionLabel}
+                {isLoading
+                  ? <MiniLoadingSpinner variant="icon" size={14} />
+                  : preview.direction === 'import' ? <ArrowDownToLine size={14} /> : <ArrowUpToLine size={14} />
+                }
+                {preview.will_overwrite_local
+                  ? 'Overwrite Local'
+                  : preview.will_overwrite_remote
+                    ? 'Force Push'
+                    : preview.direction === 'import' ? 'Pull' : 'Push'
+                }
               </button>
             )}
           </div>

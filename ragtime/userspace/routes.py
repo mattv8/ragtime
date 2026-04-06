@@ -194,6 +194,22 @@ async def update_workspace_scm_connection(
 
 
 @router.post(
+    "/workspaces/{workspace_id}/scm/preview-sync",
+    response_model=UserSpaceWorkspaceScmPreviewResponse,
+)
+async def preview_workspace_scm_sync(
+    workspace_id: str,
+    request: UserSpaceWorkspaceScmPreviewRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.preview_workspace_scm_sync(
+        workspace_id,
+        user.id,
+        request,
+    )
+
+
+@router.post(
     "/workspaces/{workspace_id}/scm/preview-import",
     response_model=UserSpaceWorkspaceScmPreviewResponse,
 )
