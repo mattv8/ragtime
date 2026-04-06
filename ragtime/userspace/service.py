@@ -9458,6 +9458,25 @@ class UserSpaceService:
         new_branch_id = str(uuid4())
         branch_ref_name = self._branch_ref_name(new_branch_id)
 
+        # Fetch source snapshot details so the new branch has a visible snapshot
+        source_rows = await db.query_raw(
+            f"""
+            SELECT git_commit_hash, remote_commit_hash, message, file_count
+            FROM userspace_snapshots
+            WHERE id = {self._sql_quote(current_snapshot_id)}
+            LIMIT 1
+            """
+        )
+        if not source_rows:
+            raise HTTPException(status_code=404, detail="Source snapshot not found")
+        source = source_rows[0]
+        source_commit = str(source.get("git_commit_hash") or "")
+        source_remote_commit = source.get("remote_commit_hash")
+        source_message = str(source.get("message") or "")
+        source_file_count = int(source.get("file_count") or 0)
+
+        new_snapshot_id = str(uuid4())
+
         async with self._snapshot_operation_semaphore:
             await self._run_git(workspace_id, ["checkout", "-b", branch_ref_name])
             await db.execute_raw(
@@ -9478,9 +9497,36 @@ class UserSpaceService:
                 )
                 """
             )
+            # Create an initial snapshot on the new branch so it appears in the timeline
+            remote_col = (
+                self._sql_quote(str(source_remote_commit))
+                if source_remote_commit
+                else "NULL"
+            )
+            await db.execute_raw(
+                f"""
+                INSERT INTO userspace_snapshots
+                (id, workspace_id, branch_id, git_commit_hash, remote_commit_hash,
+                 message, file_count, parent_snapshot_id, created_by_user_id,
+                 created_at, updated_at)
+                VALUES (
+                    {self._sql_quote(new_snapshot_id)},
+                    {self._sql_quote(workspace_id)},
+                    {self._sql_quote(new_branch_id)},
+                    {self._sql_quote(source_commit)},
+                    {remote_col},
+                    {self._sql_quote(source_message)},
+                    {source_file_count},
+                    NULL,
+                    {self._sql_quote(user_id)},
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
             await self._activate_branch(workspace_id, new_branch_id)
             await self._set_current_snapshot_cursor(
-                workspace_id, current_snapshot_id, new_branch_id
+                workspace_id, new_snapshot_id, new_branch_id
             )
 
         await self._touch_workspace(workspace_id)

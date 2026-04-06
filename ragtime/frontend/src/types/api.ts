@@ -2129,6 +2129,10 @@ export interface SwitchUserSpaceSnapshotBranchRequest {
   branch_id: string;
 }
 
+export interface CreateUserSpaceSnapshotBranchRequest {
+  name?: string | null;
+}
+
 export interface RestoreUserSpaceSnapshotResponse {
   restored_snapshot_id: string;
   file_count: number;

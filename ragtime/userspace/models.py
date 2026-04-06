@@ -438,6 +438,14 @@ class SwitchSnapshotBranchRequest(BaseModel):
     branch_id: str = Field(min_length=1)
 
 
+class CreateSnapshotBranchRequest(BaseModel):
+    name: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Branch name; auto-generated if omitted",
+    )
+
+
 class RestoreSnapshotResponse(BaseModel):
     restored_snapshot_id: str
     file_count: int

@@ -23,6 +23,7 @@ from ragtime.indexer.models import (
 from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
     BrowseUserspaceMountSourceRequest,
+    CreateSnapshotBranchRequest,
     CreateSnapshotRequest,
     CreateUserspaceMountSourceRequest,
     CreateWorkspaceMountRequest,
@@ -1213,6 +1214,22 @@ async def switch_snapshot_branch(
 ):
     result = await userspace_service.switch_snapshot_branch(
         workspace_id, request, user.id
+    )
+    await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
+    return result
+
+
+@router.post(
+    "/workspaces/{workspace_id}/snapshots/create-branch",
+    response_model=UserSpaceSnapshotTimelineResponse,
+)
+async def create_snapshot_branch(
+    workspace_id: str,
+    request: CreateSnapshotBranchRequest,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.create_snapshot_branch(
+        workspace_id, user.id, name=request.name
     )
     await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
     return result

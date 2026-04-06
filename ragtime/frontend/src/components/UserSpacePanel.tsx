@@ -945,8 +945,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         branch,
         snapshots: grouped.get(branch.id) ?? [],
       }))
-      .filter((group) => group.snapshots.length > 0);
-  }, [snapshotBranches, snapshots]);
+      .filter((group) => group.snapshots.length > 0 || group.branch.id === currentSnapshotBranchId);
+  }, [snapshotBranches, snapshots, currentSnapshotBranchId]);
 
   const snapshotTimelineRows = useMemo(() => {
     const sortedSnapshots = [...snapshots].sort((left, right) => {
@@ -2540,6 +2540,22 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setNavigatingSnapshots(false);
     }
   }, [activeWorkspaceId, canEditWorkspace, loadChangedFileState, loadWorkspaceData]);
+
+  const handleCreateSnapshotBranch = useCallback(async () => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setNavigatingSnapshots(true);
+    try {
+      const timeline = await api.createUserSpaceSnapshotBranch(activeWorkspaceId, {});
+      setSnapshots(timeline.snapshots);
+      setSnapshotBranches(timeline.branches);
+      setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
+      setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create branch');
+    } finally {
+      setNavigatingSnapshots(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace]);
 
   const handleStartRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -5304,6 +5320,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                           </button>
                         );
                       })}
+                      <button
+                        type="button"
+                        className="userspace-snapshot-branch-legend"
+                        onClick={() => void handleCreateSnapshotBranch()}
+                        disabled={!canEditWorkspace || snapshotUiLocked || !currentSnapshotId}
+                        title="Create a new branch from the current snapshot"
+                      >
+                        <Plus size={12} />
+                      </button>
                     </div>
 
                     {snapshotTimelineRows.map(({ snapshot, laneIndex, laneStates, forkLinks }) => {
