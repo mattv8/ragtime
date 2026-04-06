@@ -1018,6 +1018,7 @@ model UserSpaceSnapshot {
   workspaceId     String   @map("workspace_id")
   branchId        String   @map("branch_id")
   gitCommitHash   String   @map("git_commit_hash")
+  remoteCommitHash String? @map("remote_commit_hash") // Commit hash on remote when snapshot was created/synced; makes snapshot remote-backed when set
   message         String?  @map("message")
   fileCount       Int      @default(0) @map("file_count")
   parentSnapshotId String? @map("parent_snapshot_id")

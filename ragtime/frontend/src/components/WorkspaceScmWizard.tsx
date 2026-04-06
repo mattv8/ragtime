@@ -273,6 +273,9 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                           Last {formatSyncDirection(activeScm.last_sync_direction).toLowerCase()}: {formatSyncTimestamp(activeScm.last_sync_at)}
                         </div>
                       )}
+                      <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4, paddingTop: 8, borderTop: '1px solid var(--color-border-subtle)' }}>
+                        Snapshots from this workspace are automatically synced to the remote.
+                      </div>
                     </div>
 
                   </div>

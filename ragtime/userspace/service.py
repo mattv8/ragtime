@@ -593,6 +593,8 @@ class UserSpaceService:
         self._workspace_mount_sync_previews_lock = asyncio.Lock()
         self._workspace_scm_previews: dict[str, _WorkspaceScmPreviewRecord] = {}
         self._workspace_scm_previews_lock = asyncio.Lock()
+        self._workspace_scm_backfill_tasks: dict[str, asyncio.Task[None]] = {}
+        self._workspace_scm_backfill_tasks_lock = asyncio.Lock()
         self._workspace_mount_watch_interval_seconds = (
             USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS
         )
@@ -751,6 +753,45 @@ class UserSpaceService:
                     "Run preview again before forcing sync."
                 ),
             )
+
+    def _prune_workspace_scm_backfill_task(
+        self,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._workspace_scm_backfill_tasks.get(workspace_id) is task:
+            self._workspace_scm_backfill_tasks.pop(workspace_id, None)
+
+    def _finalize_workspace_scm_backfill_task(
+        self,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            logger.debug(
+                "Workspace SCM backfill task cancelled for workspace %s",
+                workspace_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Workspace SCM backfill task failed for workspace %s: %s",
+                workspace_id,
+                exc,
+                exc_info=True,
+            )
+        finally:
+            self._prune_workspace_scm_backfill_task(workspace_id, task)
+
+    def _attach_workspace_scm_backfill_task_cleanup(
+        self,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        task.add_done_callback(
+            partial(self._finalize_workspace_scm_backfill_task, workspace_id)
+        )
 
     @staticmethod
     def _has_destructive_auto_sync_approval(
@@ -1833,7 +1874,8 @@ class UserSpaceService:
         rows = await db.query_raw(
             f"""
             SELECT s.id, s.workspace_id, s.branch_id, s.git_commit_hash, s.message,
-                   s.file_count, s.parent_snapshot_id, s.created_at,
+                 s.remote_commit_hash, s.file_count, s.parent_snapshot_id,
+                 s.created_at,
                    b.name AS branch_name
             FROM userspace_snapshots s
             JOIN userspace_snapshot_branches b ON b.id = s.branch_id
@@ -3351,22 +3393,28 @@ class UserSpaceService:
         git_url: str,
         git_branch: str,
         git_token: str | None,
+        *,
+        full_history: bool = False,
+        checkout: bool = True,
     ) -> tuple[Path | None, str | None, str | None]:
         temp_dir = Path(tempfile.mkdtemp(prefix="ragtime-workspace-scm-"))
         auth_url = build_authenticated_git_url(git_url, git_token)
         env = self._git_network_env()
         try:
+            clone_args = [
+                "clone",
+                "--single-branch",
+                "--branch",
+                git_branch,
+            ]
+            if not checkout:
+                clone_args.append("--no-checkout")
+            if not full_history:
+                clone_args.extend(["--depth", "1"])
+            clone_args.extend([auth_url, str(temp_dir)])
             result = await self._run_git_in_dir(
                 temp_dir.parent,
-                [
-                    "clone",
-                    "--depth",
-                    "1",
-                    "--branch",
-                    git_branch,
-                    auth_url,
-                    str(temp_dir),
-                ],
+                clone_args,
                 check=False,
                 env=env,
             )
@@ -3384,6 +3432,131 @@ class UserSpaceService:
         except Exception as exc:
             shutil.rmtree(temp_dir, ignore_errors=True)
             return None, None, str(exc)
+
+    async def _schedule_workspace_scm_remote_commit_backfill(
+        self,
+        workspace_id: str,
+        *,
+        git_url: str,
+        git_branch: str,
+        git_token: str | None,
+    ) -> None:
+        async with self._workspace_scm_backfill_tasks_lock:
+            existing_task = self._workspace_scm_backfill_tasks.get(workspace_id)
+            if existing_task is not None and not existing_task.done():
+                return
+
+            backfill_task = asyncio.create_task(
+                self._backfill_workspace_scm_remote_commits(
+                    workspace_id,
+                    git_url=git_url,
+                    git_branch=git_branch,
+                    git_token=git_token,
+                ),
+                name=f"userspace-scm-backfill:{workspace_id}",
+            )
+            self._attach_workspace_scm_backfill_task_cleanup(
+                workspace_id,
+                backfill_task,
+            )
+            self._workspace_scm_backfill_tasks[workspace_id] = backfill_task
+
+    async def _backfill_workspace_scm_remote_commits(
+        self,
+        workspace_id: str,
+        *,
+        git_url: str,
+        git_branch: str,
+        git_token: str | None,
+    ) -> None:
+        remote_dir: Path | None = None
+        try:
+            remote_dir, _remote_head, clone_error = (
+                await self._clone_remote_branch_to_tempdir(
+                    git_url,
+                    git_branch,
+                    git_token,
+                    full_history=True,
+                    checkout=False,
+                )
+            )
+            if remote_dir is None:
+                raise RuntimeError(
+                    clone_error
+                    or "Failed to clone remote repository branch for SCM backfill"
+                )
+
+            history_result = await self._run_git_in_dir(
+                remote_dir,
+                ["rev-list", "HEAD"],
+                check=False,
+            )
+            if history_result.returncode != 0:
+                raise RuntimeError(
+                    history_result.stderr.strip()
+                    or history_result.stdout.strip()
+                    or "Failed to read remote commit history for SCM backfill"
+                )
+
+            remote_commit_hashes = [
+                line.strip()
+                for line in history_result.stdout.splitlines()
+                if line.strip()
+            ]
+            if not remote_commit_hashes:
+                return
+
+            db = await get_db()
+            updated_snapshot_count = 0
+            chunk_size = 500
+            for start in range(0, len(remote_commit_hashes), chunk_size):
+                chunk = remote_commit_hashes[start : start + chunk_size]
+                in_clause = ", ".join(
+                    self._sql_quote(commit_hash) for commit_hash in chunk
+                )
+                count_rows = await db.query_raw(
+                    f"""
+                    SELECT COUNT(*) AS count
+                    FROM userspace_snapshots
+                    WHERE workspace_id = {self._sql_quote(workspace_id)}
+                      AND remote_commit_hash IS NULL
+                      AND git_commit_hash IN ({in_clause})
+                    """
+                )
+                match_count = int(count_rows[0].get("count") or 0) if count_rows else 0
+                if match_count <= 0:
+                    continue
+
+                await db.execute_raw(
+                    f"""
+                    UPDATE userspace_snapshots
+                    SET remote_commit_hash = git_commit_hash,
+                        updated_at = NOW()
+                    WHERE workspace_id = {self._sql_quote(workspace_id)}
+                      AND remote_commit_hash IS NULL
+                      AND git_commit_hash IN ({in_clause})
+                    """
+                )
+                updated_snapshot_count += match_count
+
+            if updated_snapshot_count > 0:
+                logger.info(
+                    "Backfilled remote commit hashes for %s snapshots in workspace %s from %s (%s commits scanned)",
+                    updated_snapshot_count,
+                    workspace_id,
+                    git_branch,
+                    len(remote_commit_hashes),
+                )
+            else:
+                logger.debug(
+                    "No SCM snapshot backfill needed for workspace %s on branch %s (%s commits scanned)",
+                    workspace_id,
+                    git_branch,
+                    len(remote_commit_hashes),
+                )
+        finally:
+            if remote_dir is not None:
+                shutil.rmtree(remote_dir, ignore_errors=True)
 
     async def _stage_temp_repo_from_workspace(
         self,
@@ -3500,6 +3673,12 @@ class UserSpaceService:
         workspace_id: str,
         snapshot: UserSpaceSnapshot,
     ) -> None:
+        """Auto-push snapshot to remote if SCM is configured.
+
+        When a remote is configured, snapshots are treated as 'commit + push' operations.
+        Local snapshot is always created, but sync status is tracked and reported.
+        If push fails for a configured remote, error is logged prominently.
+        """
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
         if not workspace_record:
@@ -3525,6 +3704,11 @@ class UserSpaceService:
                 status="error",
                 message="Automatic snapshot push skipped because the SCM URL is invalid.",
             )
+            logger.error(
+                "SCM URL is invalid for workspace %s; snapshot push skipped: %s",
+                workspace_id,
+                git_url,
+            )
             return
 
         provider = cast(WorkspaceScmProvider, parsed.provider.value)
@@ -3545,6 +3729,34 @@ class UserSpaceService:
                 ),
                 allow_force=False,
             )
+            db = await get_db()
+            await db.execute_raw(
+                f"""
+                UPDATE userspace_snapshots
+                SET remote_commit_hash = {self._sql_quote(remote_commit_hash)},
+                    updated_at = NOW()
+                WHERE id = {self._sql_quote(snapshot.id)}
+                """
+            )
+            await self._update_workspace_scm_sync_metadata(
+                workspace_id,
+                git_url=git_url,
+                git_branch=git_branch,
+                provider=provider,
+                repo_visibility=(
+                    str(repo_visibility) if repo_visibility is not None else None
+                ),
+                remote_commit_hash=remote_commit_hash,
+                snapshot_id=snapshot.id,
+                status="success",
+                message=f"Snapshot pushed to {git_branch}",
+                direction="export",
+            )
+            logger.info(
+                "Snapshot %s auto-pushed to remote for workspace %s",
+                snapshot.id,
+                workspace_id,
+            )
         except HTTPException as exc:
             detail = (
                 exc.detail if isinstance(exc.detail, str) else "Snapshot push failed"
@@ -3558,30 +3770,16 @@ class UserSpaceService:
                     str(repo_visibility) if repo_visibility is not None else None
                 ),
                 status="error",
-                message=detail,
+                message=f"Failed to push snapshot: {detail}",
                 direction="export",
             )
-            logger.warning(
-                "Automatic SCM snapshot push failed for workspace %s: %s",
+            logger.error(
+                "Automatic snapshot push FAILED for workspace %s (remote %s): %s. "
+                "Snapshot exists locally but is not synced to remote.",
                 workspace_id,
+                git_url,
                 detail,
             )
-            return
-
-        await self._update_workspace_scm_sync_metadata(
-            workspace_id,
-            git_url=git_url,
-            git_branch=git_branch,
-            provider=provider,
-            repo_visibility=(
-                str(repo_visibility) if repo_visibility is not None else None
-            ),
-            remote_commit_hash=remote_commit_hash,
-            snapshot_id=snapshot.id,
-            status="success",
-            message=f"Exported snapshot to {git_branch}",
-            direction="export",
-        )
 
     async def _replace_workspace_sync_scope_from_dir(
         self,
@@ -4040,6 +4238,17 @@ class UserSpaceService:
             auto_sync_to_scm=False,
         )
 
+        db = await get_db()
+        await db.execute_raw(
+            f"""
+            UPDATE userspace_snapshots
+            SET remote_commit_hash = {self._sql_quote(remote_commit_hash)},
+                updated_at = NOW()
+            WHERE id = {self._sql_quote(imported_snapshot.id)}
+            """
+        )
+        imported_snapshot.remote_commit_hash = remote_commit_hash
+
         scm = await self._update_workspace_scm_sync_metadata(
             workspace_id,
             git_url=preview.git_url,
@@ -4055,6 +4264,12 @@ class UserSpaceService:
         )
 
         shutil.rmtree(remote_dir, ignore_errors=True)
+        await self._schedule_workspace_scm_remote_commit_backfill(
+            workspace_id,
+            git_url=preview.git_url,
+            git_branch=preview.git_branch,
+            git_token=git_token,
+        )
         return UserSpaceWorkspaceScmSyncResponse(
             workspace_id=workspace_id,
             direction="import",
@@ -4153,6 +4368,16 @@ class UserSpaceService:
                 remote_commit_hash=preview.remote_commit_hash,
                 allow_force=preview.state == "destructive",
             )
+            db = await get_db()
+            await db.execute_raw(
+                f"""
+                UPDATE userspace_snapshots
+                SET remote_commit_hash = {self._sql_quote(remote_commit_hash)},
+                    updated_at = NOW()
+                WHERE id = {self._sql_quote(exported_snapshot.id)}
+                """
+            )
+            exported_snapshot.remote_commit_hash = remote_commit_hash
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, str) else "Export failed"
             await self._update_workspace_scm_sync_metadata(
@@ -8176,6 +8401,11 @@ class UserSpaceService:
             git_commit_hash=(
                 str(row.get("git_commit_hash")) if row.get("git_commit_hash") else None
             ),
+            remote_commit_hash=(
+                str(row.get("remote_commit_hash"))
+                if row.get("remote_commit_hash")
+                else None
+            ),
             message=(
                 str(row.get("message")) if row.get("message") is not None else None
             ),
@@ -8412,7 +8642,7 @@ class UserSpaceService:
         snapshot_rows = await db.query_raw(
             f"""
             SELECT id, workspace_id, branch_id, git_commit_hash, message,
-                   file_count, parent_snapshot_id, created_at
+                 remote_commit_hash, file_count, parent_snapshot_id, created_at
             FROM userspace_snapshots
             WHERE workspace_id = {self._sql_quote(workspace_id)}
             ORDER BY created_at DESC
@@ -8491,7 +8721,8 @@ class UserSpaceService:
         rows = await db.query_raw(
             f"""
             SELECT s.id, s.workspace_id, s.branch_id, s.git_commit_hash, s.message,
-                   s.file_count, s.parent_snapshot_id, s.created_at,
+                   s.remote_commit_hash, s.file_count, s.parent_snapshot_id,
+                   s.created_at,
                                      b.git_ref_name, b.name AS branch_name,
                                      NOT EXISTS (
                                              SELECT 1
@@ -8563,6 +8794,11 @@ class UserSpaceService:
             is_current=True,
             can_rename=True,
             git_commit_hash=commit_hash,
+            remote_commit_hash=(
+                str(row.get("remote_commit_hash"))
+                if row.get("remote_commit_hash")
+                else None
+            ),
             message=(
                 str(row.get("message")) if row.get("message") is not None else None
             ),
@@ -8586,6 +8822,29 @@ class UserSpaceService:
         *,
         auto_sync_to_scm: bool = True,
     ) -> UserSpaceSnapshot:
+        """Create a snapshot of the workspace.
+
+        When a remote is configured (SCM connected):
+        - Snapshot is created locally
+        - Snapshot is automatically pushed to remote (commit + push)
+        - Sync status is tracked in workspace.scm metadata
+        - If push fails, error is logged and reported in sync metadata
+
+        When no remote is configured:
+        - Snapshot is created locally only
+        - auto_sync_to_scm parameter is ignored
+
+        Args:
+            workspace_id: Workspace ID
+            user_id: User creating the snapshot
+            message: Optional snapshot message
+            auto_sync_to_scm: If True (default) and remote configured, push to remote.
+                              Set to False only for internal operations
+                              (import/export backups, etc.)
+
+        Returns:
+            The created UserSpaceSnapshot object
+        """
         await self._enforce_workspace_access(
             workspace_id, user_id, required_role="editor"
         )
@@ -8772,6 +9031,7 @@ class UserSpaceService:
                 is_current=True,
                 can_rename=True,
                 git_commit_hash=commit_hash,
+                remote_commit_hash=None,
                 message=commit_subject,
                 created_at=created_at,
                 file_count=file_count,

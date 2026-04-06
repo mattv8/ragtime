@@ -360,6 +360,9 @@ class UserSpaceSnapshot(BaseModel):
     is_current: bool = False
     can_rename: bool = True
     git_commit_hash: str | None = None
+    remote_commit_hash: str | None = (
+        None  # When set, snapshot is backed by remote commit (authoritative)
+    )
     message: str | None = None
     created_at: datetime
     file_count: int

@@ -2051,6 +2051,7 @@ export interface UserSpaceSnapshot {
   is_current: boolean;
   can_rename: boolean;
   git_commit_hash?: string | null;
+  remote_commit_hash?: string | null; // When set, snapshot is backed by remote commit (source of truth)
   message?: string | null;
   created_at: string;
   file_count: number;
