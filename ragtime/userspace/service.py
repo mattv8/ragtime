@@ -11,6 +11,7 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time as _time
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
@@ -35,6 +36,7 @@ from ragtime.core.encryption import (
     encrypt_secret,
 )
 from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.git import create_repository, parse_git_url
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import (
     DB_TYPE_POSTGRES,
@@ -57,6 +59,7 @@ from ragtime.core.ssh import (
     ssh_tunnel_config_from_dict,
     sync_ssh_directory,
 )
+from ragtime.indexer.file_utils import build_authenticated_git_url
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
@@ -102,6 +105,14 @@ from ragtime.userspace.models import (
     UserSpaceSnapshotTimelineResponse,
     UserSpaceWorkspace,
     UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspaceScmConnectionRequest,
+    UserSpaceWorkspaceScmConnectionResponse,
+    UserSpaceWorkspaceScmExportRequest,
+    UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest,
+    UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmStatus,
+    UserSpaceWorkspaceScmSyncResponse,
     UserSpaceWorkspaceShareLink,
     UserSpaceWorkspaceShareLinkStatus,
     WorkspaceMember,
@@ -114,6 +125,9 @@ from ragtime.userspace.models import (
     WorkspaceMountSyncPreviewResponse,
     WorkspaceMountSyncRequest,
     WorkspaceMountSyncResponse,
+    WorkspaceScmDirection,
+    WorkspaceScmPreviewState,
+    WorkspaceScmProvider,
     WorkspaceShareSlugAvailabilityResponse,
 )
 
@@ -185,6 +199,33 @@ class _WorkspaceMountSyncPreviewRecord:
         self.expires_at = expires_at
 
 
+class _WorkspaceScmPreviewRecord:
+    """One-time destructive SCM preview token state."""
+
+    __slots__ = (
+        "token",
+        "workspace_id",
+        "direction",
+        "state_fingerprint",
+        "expires_at",
+    )
+
+    def __init__(
+        self,
+        *,
+        token: str,
+        workspace_id: str,
+        direction: WorkspaceScmDirection,
+        state_fingerprint: str,
+        expires_at: datetime,
+    ) -> None:
+        self.token = token
+        self.workspace_id = workspace_id
+        self.direction = direction
+        self.state_fingerprint = state_fingerprint
+        self.expires_at = expires_at
+
+
 class _NonUtf8WorkspaceFileError(Exception):
     __slots__ = ("file_path",)
 
@@ -230,6 +271,8 @@ _PLATFORM_MANAGED_GITIGNORE_PATTERNS = (
 )
 _WORKSPACE_ENV_VAR_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WORKSPACE_ENV_VAR_MAX_COUNT = 200
+_WORKSPACE_SCM_PREVIEW_TTL_SECONDS = 300
+_WORKSPACE_SCM_PREVIEW_SAMPLE_LIMIT = 100
 
 _MODULE_SOURCE_EXTENSIONS = (
     ".ts",
@@ -548,6 +591,8 @@ class UserSpaceService:
             str, _WorkspaceMountSyncPreviewRecord
         ] = {}
         self._workspace_mount_sync_previews_lock = asyncio.Lock()
+        self._workspace_scm_previews: dict[str, _WorkspaceScmPreviewRecord] = {}
+        self._workspace_scm_previews_lock = asyncio.Lock()
         self._workspace_mount_watch_interval_seconds = (
             USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS
         )
@@ -657,6 +702,55 @@ class UserSpaceService:
     async def _invalidate_workspace_mount_sync_preview(self, mount_id: str) -> None:
         async with self._workspace_mount_sync_previews_lock:
             self._workspace_mount_sync_previews.pop(mount_id, None)
+
+    @staticmethod
+    def _workspace_scm_preview_key(
+        workspace_id: str,
+        direction: WorkspaceScmDirection,
+    ) -> str:
+        return f"{workspace_id}:{direction}"
+
+    async def _store_workspace_scm_preview(
+        self,
+        record: _WorkspaceScmPreviewRecord,
+    ) -> None:
+        async with self._workspace_scm_previews_lock:
+            key = self._workspace_scm_preview_key(record.workspace_id, record.direction)
+            self._workspace_scm_previews[key] = record
+
+    async def _pop_workspace_scm_preview(
+        self,
+        workspace_id: str,
+        direction: WorkspaceScmDirection,
+    ) -> _WorkspaceScmPreviewRecord | None:
+        async with self._workspace_scm_previews_lock:
+            key = self._workspace_scm_preview_key(workspace_id, direction)
+            return self._workspace_scm_previews.pop(key, None)
+
+    async def _consume_workspace_scm_preview(
+        self,
+        *,
+        workspace_id: str,
+        direction: WorkspaceScmDirection,
+        preview_token: str | None,
+        state_fingerprint: str,
+    ) -> None:
+        preview_record = await self._pop_workspace_scm_preview(workspace_id, direction)
+        if (
+            preview_record is None
+            or preview_record.token != (preview_token or "")
+            or preview_record.workspace_id != workspace_id
+            or preview_record.direction != direction
+            or preview_record.state_fingerprint != state_fingerprint
+            or preview_record.expires_at <= _utc_now()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "SCM overwrite preview is missing, expired, or stale. "
+                    "Run preview again before forcing sync."
+                ),
+            )
 
     @staticmethod
     def _has_destructive_auto_sync_approval(
@@ -1178,6 +1272,7 @@ class UserSpaceService:
         workspace_id: str,
         args: list[str],
         check: bool = True,
+        env: dict[str, str] | None = None,
     ) -> tuple[int, bytes, bytes]:
         files_dir = self._workspace_files_dir(workspace_id)
         try:
@@ -1185,6 +1280,7 @@ class UserSpaceService:
                 "git",
                 *args,
                 cwd=str(files_dir),
+                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -1208,11 +1304,13 @@ class UserSpaceService:
         workspace_id: str,
         args: list[str],
         check: bool = True,
+        env: dict[str, str] | None = None,
     ) -> _GitCommandResult:
         returncode, stdout_bytes, stderr_bytes = await self._run_git_raw(
             workspace_id,
             args,
             check=check,
+            env=env,
         )
         return _GitCommandResult(
             returncode=returncode,
@@ -1225,8 +1323,59 @@ class UserSpaceService:
         workspace_id: str,
         args: list[str],
         check: bool = True,
+        env: dict[str, str] | None = None,
     ) -> tuple[int, bytes, bytes]:
-        return await self._run_git_raw(workspace_id, args, check=check)
+        return await self._run_git_raw(workspace_id, args, check=check, env=env)
+
+    async def _run_git_in_dir_raw(
+        self,
+        directory: Path,
+        args: list[str],
+        check: bool = True,
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, bytes, bytes]:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                *args,
+                cwd=str(directory),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await process.communicate()
+            returncode = process.returncode if process.returncode is not None else 1
+            if check and returncode != 0:
+                stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Git workspace SCM operation failed: {stderr or 'unknown error'}",
+                )
+            return returncode, stdout_bytes, stderr_bytes
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Git binary not available for workspace SCM operations",
+            ) from exc
+
+    async def _run_git_in_dir(
+        self,
+        directory: Path,
+        args: list[str],
+        check: bool = True,
+        env: dict[str, str] | None = None,
+    ) -> _GitCommandResult:
+        returncode, stdout_bytes, stderr_bytes = await self._run_git_in_dir_raw(
+            directory,
+            args,
+            check=check,
+            env=env,
+        )
+        return _GitCommandResult(
+            returncode=returncode,
+            stdout=stdout_bytes.decode("utf-8", errors="replace"),
+            stderr=stderr_bytes.decode("utf-8", errors="replace"),
+        )
 
     async def _ensure_workspace_git_repo(self, workspace_id: str) -> None:
         files_dir = self._workspace_files_dir(workspace_id)
@@ -3058,6 +3207,26 @@ class UserSpaceService:
             owner_username = getattr(owner_obj, "username", None)
             owner_display_name = getattr(owner_obj, "displayName", None)
 
+        scm_provider = self._normalize_workspace_scm_provider(
+            getattr(record, "scmProvider", None),
+            getattr(record, "scmGitUrl", None),
+        )
+        scm = UserSpaceWorkspaceScmStatus(
+            connected=bool(getattr(record, "scmGitUrl", None)),
+            git_url=getattr(record, "scmGitUrl", None),
+            git_branch=getattr(record, "scmGitBranch", None),
+            provider=scm_provider,
+            repo_visibility=getattr(record, "scmRepoVisibility", None),
+            has_stored_token=bool(getattr(record, "scmToken", None)),
+            connected_at=getattr(record, "scmConnectedAt", None),
+            last_sync_at=getattr(record, "scmLastSyncAt", None),
+            last_sync_direction=getattr(record, "scmLastSyncDirection", None),
+            last_sync_status=getattr(record, "scmLastSyncStatus", None),
+            last_sync_message=getattr(record, "scmLastSyncMessage", None),
+            last_remote_commit_hash=getattr(record, "scmLastRemoteCommitHash", None),
+            last_synced_snapshot_id=getattr(record, "scmLastSyncedSnapshotId", None),
+        )
+
         return UserSpaceWorkspace(
             id=record.id,
             name=record.name,
@@ -3077,8 +3246,930 @@ class UserSpaceService:
             selected_tool_group_ids=selected_tool_group_ids,
             conversation_ids=[],
             members=members,
+            scm=scm,
             created_at=record.createdAt,
             updated_at=record.updatedAt,
+        )
+
+    @staticmethod
+    def _normalize_workspace_scm_provider(
+        provider: str | None,
+        git_url: str | None,
+    ) -> WorkspaceScmProvider | None:
+        normalized = str(provider or "").strip().lower()
+        if normalized in {"github", "gitlab", "generic"}:
+            return cast(WorkspaceScmProvider, normalized)
+        parsed = parse_git_url(str(git_url or "")) if git_url else None
+        if parsed:
+            return cast(WorkspaceScmProvider, parsed.provider.value)
+        return None
+
+    @staticmethod
+    def _normalize_workspace_scm_branch(branch: str | None) -> str:
+        value = str(branch or "").strip()
+        return value or "main"
+
+    @staticmethod
+    def _sync_scope_relative_paths(root: Path) -> dict[str, Path]:
+        results: dict[str, Path] = {}
+        if not root.exists():
+            return results
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root).as_posix()
+            if relative.startswith(".git/") or relative == ".git":
+                continue
+            if relative in _PLATFORM_MANAGED_GITIGNORE_PATTERNS:
+                continue
+            results[relative] = path
+        return results
+
+    @staticmethod
+    def _compute_file_sha256(path: Path) -> str:
+        hasher = hashlib.sha256()
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    def _collect_scm_diff_sample(
+        self,
+        left_root: Path,
+        right_root: Path,
+    ) -> list[str]:
+        left = self._sync_scope_relative_paths(left_root)
+        right = self._sync_scope_relative_paths(right_root)
+        changed: list[str] = []
+        for relative_path in sorted(set(left) | set(right)):
+            left_path = left.get(relative_path)
+            right_path = right.get(relative_path)
+            if left_path is None or right_path is None:
+                changed.append(relative_path)
+            elif self._compute_file_sha256(left_path) != self._compute_file_sha256(
+                right_path
+            ):
+                changed.append(relative_path)
+            if len(changed) >= _WORKSPACE_SCM_PREVIEW_SAMPLE_LIMIT:
+                break
+        return changed
+
+    async def _workspace_has_sync_scope_files(self, workspace_id: str) -> bool:
+        files_dir = self._workspace_files_dir(workspace_id)
+        return bool(await asyncio.to_thread(self._sync_scope_relative_paths, files_dir))
+
+    async def _workspace_has_uncommitted_changes(self, workspace_id: str) -> bool:
+        result = await self._run_git(
+            workspace_id,
+            ["status", "--porcelain", "--untracked-files=all"],
+            check=False,
+        )
+        return bool(result.stdout.strip())
+
+    async def _workspace_current_commit_hash(self, workspace_id: str) -> str | None:
+        result = await self._run_git(
+            workspace_id,
+            ["rev-parse", "HEAD"],
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        value = result.stdout.strip()
+        return value or None
+
+    @staticmethod
+    def _git_network_env() -> dict[str, str]:
+        env = dict(os.environ)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        return env
+
+    async def _clone_remote_branch_to_tempdir(
+        self,
+        git_url: str,
+        git_branch: str,
+        git_token: str | None,
+    ) -> tuple[Path | None, str | None, str | None]:
+        temp_dir = Path(tempfile.mkdtemp(prefix="ragtime-workspace-scm-"))
+        auth_url = build_authenticated_git_url(git_url, git_token)
+        env = self._git_network_env()
+        try:
+            result = await self._run_git_in_dir(
+                temp_dir.parent,
+                [
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--branch",
+                    git_branch,
+                    auth_url,
+                    str(temp_dir),
+                ],
+                check=False,
+                env=env,
+            )
+            if result.returncode != 0:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return (
+                    None,
+                    None,
+                    result.stderr.strip() or result.stdout.strip() or "Clone failed",
+                )
+            head = await self._run_git_in_dir(
+                temp_dir, ["rev-parse", "HEAD"], check=False
+            )
+            return temp_dir, head.stdout.strip() or None, None
+        except Exception as exc:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None, None, str(exc)
+
+    async def _stage_temp_repo_from_workspace(
+        self,
+        workspace_id: str,
+    ) -> Path:
+        files_dir = self._workspace_files_dir(workspace_id)
+        temp_dir = Path(tempfile.mkdtemp(prefix="ragtime-workspace-export-"))
+        staged_files = await asyncio.to_thread(
+            self._sync_scope_relative_paths, files_dir
+        )
+        for relative_path, source_path in staged_files.items():
+            target_path = temp_dir / relative_path
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, target_path)
+        await self._run_git_in_dir(temp_dir, ["init"])
+        await self._run_git_in_dir(
+            temp_dir, ["config", "user.name", "Ragtime Workspace Sync"]
+        )
+        await self._run_git_in_dir(
+            temp_dir, ["config", "user.email", "userspace-sync@ragtime.local"]
+        )
+        await self._run_git_in_dir(temp_dir, ["add", "."])
+        return temp_dir
+
+    async def _update_workspace_scm_sync_metadata(
+        self,
+        workspace_id: str,
+        *,
+        git_url: str | None = None,
+        git_branch: str | None = None,
+        provider: WorkspaceScmProvider | None = None,
+        repo_visibility: str | None = None,
+        git_token: str | None = None,
+        remote_commit_hash: str | None = None,
+        snapshot_id: str | None = None,
+        status: str,
+        message: str,
+        direction: WorkspaceScmDirection = "export",
+    ) -> UserSpaceWorkspaceScmStatus:
+        db = await get_db()
+        current_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not current_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        update_data: dict[str, Any] = {
+            "scmLastSyncAt": _utc_now(),
+            "scmLastSyncDirection": direction,
+            "scmLastSyncStatus": status,
+            "scmLastSyncMessage": message,
+            "scmConnectedAt": getattr(current_record, "scmConnectedAt", None)
+            or _utc_now(),
+        }
+        if git_url is not None:
+            update_data["scmGitUrl"] = git_url
+        if git_branch is not None:
+            update_data["scmGitBranch"] = git_branch
+        if provider is not None:
+            update_data["scmProvider"] = provider
+        if repo_visibility is not None:
+            update_data["scmRepoVisibility"] = repo_visibility
+        if git_token:
+            update_data["scmToken"] = encrypt_secret(git_token.strip())
+        if remote_commit_hash is not None:
+            update_data["scmLastRemoteCommitHash"] = remote_commit_hash
+        if snapshot_id is not None:
+            update_data["scmLastSyncedSnapshotId"] = snapshot_id
+
+        updated = await db.workspace.update(
+            where={"id": workspace_id},
+            data=update_data,
+        )
+        return self._workspace_from_record(updated).scm or UserSpaceWorkspaceScmStatus()
+
+    async def _push_workspace_snapshot_commit(
+        self,
+        workspace_id: str,
+        *,
+        snapshot: UserSpaceSnapshot,
+        git_url: str,
+        git_branch: str,
+        git_token: str | None,
+        remote_commit_hash: str | None = None,
+        allow_force: bool = False,
+    ) -> str:
+        commit_hash = (snapshot.git_commit_hash or "").strip()
+        if not commit_hash:
+            raise HTTPException(
+                status_code=409,
+                detail="Snapshot commit is missing and cannot be pushed",
+            )
+
+        push_args = [
+            "push",
+            build_authenticated_git_url(git_url, git_token),
+            f"{commit_hash}:refs/heads/{git_branch}",
+        ]
+        if allow_force and remote_commit_hash:
+            push_args.insert(
+                1,
+                f"--force-with-lease=refs/heads/{git_branch}:{remote_commit_hash}",
+            )
+        elif allow_force:
+            push_args.insert(1, "--force")
+
+        await self._run_git(
+            workspace_id,
+            push_args,
+            env=self._git_network_env(),
+        )
+        return commit_hash
+
+    async def _maybe_auto_push_snapshot_to_scm(
+        self,
+        workspace_id: str,
+        snapshot: UserSpaceSnapshot,
+    ) -> None:
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            return
+
+        git_url = str(getattr(workspace_record, "scmGitUrl", "") or "").strip()
+        if not git_url:
+            return
+
+        git_branch = self._normalize_workspace_scm_branch(
+            getattr(workspace_record, "scmGitBranch", None)
+        )
+        stored_token_encrypted = getattr(workspace_record, "scmToken", None)
+        git_token = (
+            decrypt_secret(stored_token_encrypted) if stored_token_encrypted else None
+        )
+        parsed = parse_git_url(git_url, git_token)
+        if not parsed:
+            await self._update_workspace_scm_sync_metadata(
+                workspace_id,
+                git_url=git_url,
+                git_branch=git_branch,
+                status="error",
+                message="Automatic snapshot push skipped because the SCM URL is invalid.",
+            )
+            return
+
+        provider = cast(WorkspaceScmProvider, parsed.provider.value)
+        repo_visibility = getattr(workspace_record, "scmRepoVisibility", None)
+        last_remote_commit_hash = getattr(
+            workspace_record, "scmLastRemoteCommitHash", None
+        )
+
+        try:
+            remote_commit_hash = await self._push_workspace_snapshot_commit(
+                workspace_id,
+                snapshot=snapshot,
+                git_url=git_url,
+                git_branch=git_branch,
+                git_token=git_token,
+                remote_commit_hash=(
+                    str(last_remote_commit_hash) if last_remote_commit_hash else None
+                ),
+                allow_force=False,
+            )
+        except HTTPException as exc:
+            detail = (
+                exc.detail if isinstance(exc.detail, str) else "Snapshot push failed"
+            )
+            await self._update_workspace_scm_sync_metadata(
+                workspace_id,
+                git_url=git_url,
+                git_branch=git_branch,
+                provider=provider,
+                repo_visibility=(
+                    str(repo_visibility) if repo_visibility is not None else None
+                ),
+                status="error",
+                message=detail,
+                direction="export",
+            )
+            logger.warning(
+                "Automatic SCM snapshot push failed for workspace %s: %s",
+                workspace_id,
+                detail,
+            )
+            return
+
+        await self._update_workspace_scm_sync_metadata(
+            workspace_id,
+            git_url=git_url,
+            git_branch=git_branch,
+            provider=provider,
+            repo_visibility=(
+                str(repo_visibility) if repo_visibility is not None else None
+            ),
+            remote_commit_hash=remote_commit_hash,
+            snapshot_id=snapshot.id,
+            status="success",
+            message=f"Exported snapshot to {git_branch}",
+            direction="export",
+        )
+
+    async def _replace_workspace_sync_scope_from_dir(
+        self,
+        workspace_id: str,
+        source_root: Path,
+    ) -> None:
+        target_root = self._workspace_files_dir(workspace_id)
+
+        def _sync() -> None:
+            target_files = self._sync_scope_relative_paths(target_root)
+            source_files = self._sync_scope_relative_paths(source_root)
+
+            for relative_path, target_path in target_files.items():
+                if relative_path not in source_files and target_path.exists():
+                    target_path.unlink()
+
+            for relative_path, source_path in source_files.items():
+                destination_path = target_root / relative_path
+                destination_path.parent.mkdir(parents=True, exist_ok=True)
+                if destination_path.exists() and self._compute_file_sha256(
+                    destination_path
+                ) == self._compute_file_sha256(source_path):
+                    continue
+                shutil.copy2(source_path, destination_path)
+
+            for directory in sorted(
+                [path for path in target_root.rglob("*") if path.is_dir()],
+                key=lambda item: len(item.parts),
+                reverse=True,
+            ):
+                if directory == target_root:
+                    continue
+                relative = directory.relative_to(target_root).as_posix()
+                if relative == ".git" or relative.startswith(".git/"):
+                    continue
+                if relative == ".ragtime":
+                    continue
+                try:
+                    next(directory.iterdir())
+                except StopIteration:
+                    directory.rmdir()
+
+        await asyncio.to_thread(_sync)
+        self._seed_runtime_bootstrap_config(workspace_id)
+
+    def _workspace_scm_setup_prompt(
+        self,
+        git_url: str,
+        git_branch: str,
+    ) -> str:
+        return (
+            "Inspect the imported workspace and get it running locally without "
+            "destructive changes. Start by using assay_userspace_code to assess "
+            "the current structure. Then repair or create .ragtime/runtime-entrypoint.json "
+            "if needed, verify .ragtime/runtime-bootstrap.json is still appropriate, "
+            "install only declared dependencies, run validate_userspace_code on every changed "
+            "source file, and create a snapshot when the workspace is in a runnable state. "
+            f"The workspace was imported from {git_url} on branch {git_branch}."
+        )
+
+    async def _resolve_workspace_scm_target(
+        self,
+        workspace_record: Any,
+        request: UserSpaceWorkspaceScmPreviewRequest,
+    ) -> tuple[str, str, str | None, WorkspaceScmProvider, str | None]:
+        git_url = str(
+            request.git_url or getattr(workspace_record, "scmGitUrl", "") or ""
+        ).strip()
+        if not git_url:
+            raise HTTPException(
+                status_code=400, detail="Git repository URL is required"
+            )
+
+        git_branch = self._normalize_workspace_scm_branch(
+            request.git_branch or getattr(workspace_record, "scmGitBranch", None)
+        )
+        provided_token = (request.git_token or "").strip() or None
+        stored_token_encrypted = getattr(workspace_record, "scmToken", None)
+        stored_token = (
+            decrypt_secret(stored_token_encrypted) if stored_token_encrypted else None
+        )
+        git_token = provided_token or stored_token
+        parsed = parse_git_url(git_url, git_token)
+        if not parsed:
+            raise HTTPException(status_code=400, detail="Invalid Git repository URL")
+
+        provider = cast(WorkspaceScmProvider, parsed.provider.value)
+        repo_visibility = str(
+            request.create_repo_private is False
+            and "public"
+            or getattr(workspace_record, "scmRepoVisibility", None)
+            or "private"
+        )
+        return git_url, git_branch, git_token, provider, repo_visibility
+
+    async def _build_workspace_scm_preview(
+        self,
+        workspace_id: str,
+        user_id: str,
+        direction: WorkspaceScmDirection,
+        request: UserSpaceWorkspaceScmPreviewRequest,
+        *,
+        store_preview: bool,
+    ) -> tuple[UserSpaceWorkspaceScmPreviewResponse, str | None]:
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        git_url, git_branch, git_token, provider, repo_visibility = (
+            await self._resolve_workspace_scm_target(workspace_record, request)
+        )
+
+        current_snapshot_id = getattr(workspace_record, "currentSnapshotId", None)
+        last_synced_snapshot_id = getattr(
+            workspace_record, "scmLastSyncedSnapshotId", None
+        )
+        last_remote_commit_hash = getattr(
+            workspace_record, "scmLastRemoteCommitHash", None
+        )
+        local_commit_hash = await self._workspace_current_commit_hash(workspace_id)
+        local_has_uncommitted_changes = await self._workspace_has_uncommitted_changes(
+            workspace_id
+        )
+        local_has_files = await self._workspace_has_sync_scope_files(workspace_id)
+        local_changed = (
+            local_has_uncommitted_changes
+            or bool(
+                current_snapshot_id and current_snapshot_id != last_synced_snapshot_id
+            )
+            or (not current_snapshot_id and local_has_files)
+        )
+
+        remote_dir, remote_commit_hash, clone_error = (
+            await self._clone_remote_branch_to_tempdir(
+                git_url,
+                git_branch,
+                git_token,
+            )
+        )
+
+        remote_exists = remote_commit_hash is not None
+        remote_changed = bool(
+            remote_commit_hash and remote_commit_hash != last_remote_commit_hash
+        )
+
+        state: WorkspaceScmPreviewState
+        summary: str
+        will_overwrite_local = False
+        will_overwrite_remote = False
+        can_proceed_without_force = False
+        changed_files_sample: list[str] = []
+
+        if remote_dir is not None:
+            changed_files_sample = await asyncio.to_thread(
+                self._collect_scm_diff_sample,
+                self._workspace_files_dir(workspace_id),
+                remote_dir,
+            )
+
+        if not remote_exists:
+            if direction == "import":
+                state = "missing_branch"
+                summary = (
+                    f"Branch '{git_branch}' was not found in the remote repository."
+                )
+            else:
+                state = "safe"
+                can_proceed_without_force = True
+                if request.create_repo_if_missing:
+                    summary = (
+                        "Remote repository or branch is missing. Ragtime can create "
+                        "the repository if needed and push this workspace as the first commit."
+                    )
+                else:
+                    summary = f"Branch '{git_branch}' does not exist remotely yet. Export can create it safely."
+        elif direction == "import":
+            if not local_changed and remote_changed:
+                state = "safe"
+                can_proceed_without_force = True
+                summary = "Remote changes are available and the workspace has no unsynced local state."
+            elif not local_changed and not remote_changed:
+                state = "up_to_date"
+                summary = "Workspace and remote repository are already in sync."
+            else:
+                state = "destructive"
+                will_overwrite_local = True
+                summary = "Import would overwrite local workspace state. Preview the changed files and confirm overwrite to continue."
+        else:
+            if local_changed and not remote_changed:
+                state = "safe"
+                can_proceed_without_force = True
+                summary = "Workspace changes are ready to export and the remote has not moved since the last sync."
+            elif not local_changed and not remote_changed:
+                state = "up_to_date"
+                summary = "Workspace and remote repository are already in sync."
+            else:
+                state = "destructive"
+                will_overwrite_remote = True
+                summary = "Export would overwrite newer or unknown remote state. Preview and confirm overwrite to continue."
+
+        state_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "workspace_id": workspace_id,
+                    "direction": direction,
+                    "git_url": git_url,
+                    "git_branch": git_branch,
+                    "current_snapshot_id": current_snapshot_id,
+                    "last_synced_snapshot_id": last_synced_snapshot_id,
+                    "last_remote_commit_hash": last_remote_commit_hash,
+                    "remote_commit_hash": remote_commit_hash,
+                    "local_changed": local_changed,
+                    "remote_changed": remote_changed,
+                    "will_overwrite_local": will_overwrite_local,
+                    "will_overwrite_remote": will_overwrite_remote,
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+
+        preview_token: str | None = None
+        preview_expires_at: datetime | None = None
+        if state == "destructive" and store_preview:
+            preview_token = secrets.token_urlsafe(24)
+            preview_expires_at = _utc_now() + timedelta(
+                seconds=_WORKSPACE_SCM_PREVIEW_TTL_SECONDS
+            )
+            await self._store_workspace_scm_preview(
+                _WorkspaceScmPreviewRecord(
+                    token=preview_token,
+                    workspace_id=workspace_id,
+                    direction=direction,
+                    state_fingerprint=state_fingerprint,
+                    expires_at=preview_expires_at,
+                )
+            )
+
+        if remote_dir is not None:
+            shutil.rmtree(remote_dir, ignore_errors=True)
+
+        if clone_error and not remote_exists and direction == "import":
+            summary = clone_error
+
+        return (
+            UserSpaceWorkspaceScmPreviewResponse(
+                workspace_id=workspace_id,
+                direction=direction,
+                state=state,
+                summary=summary,
+                git_url=git_url,
+                git_branch=git_branch,
+                provider=provider,
+                repo_visibility=repo_visibility,
+                local_changed=local_changed,
+                remote_changed=remote_changed,
+                local_has_uncommitted_changes=local_has_uncommitted_changes,
+                will_overwrite_local=will_overwrite_local,
+                will_overwrite_remote=will_overwrite_remote,
+                can_proceed_without_force=can_proceed_without_force,
+                local_commit_hash=local_commit_hash,
+                remote_commit_hash=remote_commit_hash,
+                current_snapshot_id=current_snapshot_id,
+                changed_files_sample=changed_files_sample,
+                preview_token=preview_token,
+                preview_expires_at=preview_expires_at,
+            ),
+            state_fingerprint,
+        )
+
+    async def get_workspace_scm_connection(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> UserSpaceWorkspaceScmConnectionResponse:
+        await self._enforce_workspace_access(workspace_id, user_id)
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        return UserSpaceWorkspaceScmConnectionResponse(
+            workspace_id=workspace_id,
+            scm=self._workspace_from_record(workspace_record).scm
+            or UserSpaceWorkspaceScmStatus(),
+        )
+
+    async def update_workspace_scm_connection(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: UserSpaceWorkspaceScmConnectionRequest,
+    ) -> UserSpaceWorkspaceScmConnectionResponse:
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        parsed = parse_git_url(request.git_url, request.git_token)
+        if not parsed:
+            raise HTTPException(status_code=400, detail="Invalid Git repository URL")
+
+        update_data: dict[str, Any] = {
+            "scmGitUrl": request.git_url.strip(),
+            "scmGitBranch": self._normalize_workspace_scm_branch(request.git_branch),
+            "scmProvider": parsed.provider.value,
+            "scmRepoVisibility": (
+                request.repo_visibility
+                or getattr(workspace_record, "scmRepoVisibility", None)
+                or "private"
+            ),
+            "scmConnectedAt": getattr(workspace_record, "scmConnectedAt", None)
+            or _utc_now(),
+            "updatedAt": _utc_now(),
+        }
+        if request.git_token:
+            update_data["scmToken"] = encrypt_secret(request.git_token.strip())
+
+        updated = await db.workspace.update(
+            where={"id": workspace_id}, data=update_data
+        )
+        return UserSpaceWorkspaceScmConnectionResponse(
+            workspace_id=workspace_id,
+            scm=self._workspace_from_record(updated).scm
+            or UserSpaceWorkspaceScmStatus(),
+        )
+
+    async def preview_workspace_scm_import(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: UserSpaceWorkspaceScmPreviewRequest,
+    ) -> UserSpaceWorkspaceScmPreviewResponse:
+        preview, _ = await self._build_workspace_scm_preview(
+            workspace_id,
+            user_id,
+            "import",
+            request,
+            store_preview=True,
+        )
+        return preview
+
+    async def preview_workspace_scm_export(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: UserSpaceWorkspaceScmPreviewRequest,
+    ) -> UserSpaceWorkspaceScmPreviewResponse:
+        preview, _ = await self._build_workspace_scm_preview(
+            workspace_id,
+            user_id,
+            "export",
+            request,
+            store_preview=True,
+        )
+        return preview
+
+    async def import_workspace_from_scm(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: UserSpaceWorkspaceScmImportRequest,
+    ) -> UserSpaceWorkspaceScmSyncResponse:
+        preview, state_fingerprint = await self._build_workspace_scm_preview(
+            workspace_id,
+            user_id,
+            "import",
+            request,
+            store_preview=False,
+        )
+        if preview.state == "missing_branch":
+            raise HTTPException(status_code=404, detail=preview.summary)
+        if preview.state == "destructive":
+            await self._consume_workspace_scm_preview(
+                workspace_id=workspace_id,
+                direction="import",
+                preview_token=request.overwrite_preview_token,
+                state_fingerprint=state_fingerprint or "",
+            )
+
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        _, _, git_token, _, _ = await self._resolve_workspace_scm_target(
+            workspace_record,
+            request,
+        )
+
+        remote_dir, remote_commit_hash, clone_error = (
+            await self._clone_remote_branch_to_tempdir(
+                preview.git_url,
+                preview.git_branch,
+                git_token,
+            )
+        )
+        if remote_dir is None or not remote_commit_hash:
+            raise HTTPException(
+                status_code=400,
+                detail=clone_error or "Failed to clone remote repository branch",
+            )
+
+        if preview.will_overwrite_local and (
+            preview.local_changed
+            or preview.local_has_uncommitted_changes
+            or preview.current_snapshot_id
+        ):
+            await self.create_snapshot(
+                workspace_id,
+                user_id,
+                f"SCM backup before import from {preview.git_url} ({preview.git_branch})",
+                auto_sync_to_scm=False,
+            )
+
+        await self._replace_workspace_sync_scope_from_dir(workspace_id, remote_dir)
+        imported_snapshot = await self.create_snapshot(
+            workspace_id,
+            user_id,
+            f"Import from {preview.git_url} ({preview.git_branch})",
+            auto_sync_to_scm=False,
+        )
+
+        scm = await self._update_workspace_scm_sync_metadata(
+            workspace_id,
+            git_url=preview.git_url,
+            git_branch=preview.git_branch,
+            provider=preview.provider,
+            repo_visibility=preview.repo_visibility,
+            git_token=request.git_token,
+            remote_commit_hash=remote_commit_hash,
+            snapshot_id=imported_snapshot.id,
+            status="success",
+            message=f"Imported from {preview.git_branch}",
+            direction="import",
+        )
+
+        shutil.rmtree(remote_dir, ignore_errors=True)
+        return UserSpaceWorkspaceScmSyncResponse(
+            workspace_id=workspace_id,
+            direction="import",
+            state="success",
+            summary="Workspace imported successfully.",
+            scm=scm,
+            snapshot=imported_snapshot,
+            remote_commit_hash=remote_commit_hash,
+            suggested_setup_prompt=self._workspace_scm_setup_prompt(
+                preview.git_url,
+                preview.git_branch,
+            ),
+        )
+
+    async def export_workspace_to_scm(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: UserSpaceWorkspaceScmExportRequest,
+    ) -> UserSpaceWorkspaceScmSyncResponse:
+        preview, state_fingerprint = await self._build_workspace_scm_preview(
+            workspace_id,
+            user_id,
+            "export",
+            request,
+            store_preview=False,
+        )
+        if preview.state == "destructive":
+            await self._consume_workspace_scm_preview(
+                workspace_id=workspace_id,
+                direction="export",
+                preview_token=request.overwrite_preview_token,
+                state_fingerprint=state_fingerprint or "",
+            )
+
+        export_request = request
+        git_url = preview.git_url
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        _, _, git_token, _, _ = await self._resolve_workspace_scm_target(
+            workspace_record,
+            request,
+        )
+
+        if not preview.remote_commit_hash and request.create_repo_if_missing:
+            create_result = await create_repository(
+                git_url,
+                git_token or "",
+                private=request.create_repo_private,
+                description=request.create_repo_description,
+            )
+            if not create_result.success or not create_result.git_url:
+                raise HTTPException(status_code=400, detail=create_result.message)
+            git_url = create_result.git_url
+            default_branch = create_result.default_branch or preview.git_branch
+            if default_branch:
+                preview.git_branch = default_branch
+        elif not preview.remote_commit_hash and not request.create_repo_if_missing:
+            preview.remote_commit_hash = None
+
+        exported_snapshot = cast(UserSpaceSnapshot | None, None)
+        if preview.local_has_uncommitted_changes or not preview.current_snapshot_id:
+            exported_snapshot = await self.create_snapshot(
+                workspace_id,
+                user_id,
+                f"Export to {git_url} ({preview.git_branch})",
+                auto_sync_to_scm=False,
+            )
+        else:
+            timeline = await self.get_snapshot_timeline(workspace_id, user_id)
+            exported_snapshot = next(
+                (
+                    snapshot
+                    for snapshot in timeline.snapshots
+                    if snapshot.id == preview.current_snapshot_id
+                ),
+                None,
+            )
+            if exported_snapshot is None:
+                exported_snapshot = await self.create_snapshot(
+                    workspace_id,
+                    user_id,
+                    f"Export to {git_url} ({preview.git_branch})",
+                    auto_sync_to_scm=False,
+                )
+
+        try:
+            remote_commit_hash = await self._push_workspace_snapshot_commit(
+                workspace_id,
+                snapshot=exported_snapshot,
+                git_url=git_url,
+                git_branch=preview.git_branch,
+                git_token=git_token,
+                remote_commit_hash=preview.remote_commit_hash,
+                allow_force=preview.state == "destructive",
+            )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else "Export failed"
+            await self._update_workspace_scm_sync_metadata(
+                workspace_id,
+                git_url=git_url,
+                git_branch=preview.git_branch,
+                provider=preview.provider,
+                repo_visibility=(
+                    request.create_repo_private
+                    and "private"
+                    or preview.repo_visibility
+                    or "public"
+                ),
+                git_token=export_request.git_token,
+                status="error",
+                message=detail,
+                direction="export",
+            )
+            raise
+
+        scm = await self._update_workspace_scm_sync_metadata(
+            workspace_id,
+            git_url=git_url,
+            git_branch=preview.git_branch,
+            provider=preview.provider,
+            repo_visibility=(
+                request.create_repo_private
+                and "private"
+                or preview.repo_visibility
+                or "public"
+            ),
+            git_token=export_request.git_token,
+            remote_commit_hash=remote_commit_hash,
+            snapshot_id=exported_snapshot.id,
+            status="success",
+            message=f"Exported to {preview.git_branch}",
+            direction="export",
+        )
+
+        return UserSpaceWorkspaceScmSyncResponse(
+            workspace_id=workspace_id,
+            direction="export",
+            state="success",
+            summary="Workspace exported successfully.",
+            scm=scm,
+            snapshot=exported_snapshot,
+            remote_commit_hash=remote_commit_hash,
+            suggested_setup_prompt=None,
         )
 
     @staticmethod
@@ -7461,6 +8552,8 @@ class UserSpaceService:
         workspace_id: str,
         user_id: str,
         message: str | None = None,
+        *,
+        auto_sync_to_scm: bool = True,
     ) -> UserSpaceSnapshot:
         await self._enforce_workspace_access(
             workspace_id, user_id, required_role="editor"
@@ -7638,21 +8731,23 @@ class UserSpaceService:
 
         timeline = await self.get_snapshot_timeline(workspace_id, user_id)
         created = next((s for s in timeline.snapshots if s.id == snapshot_id), None)
-        if created is not None:
-            return created
-        return UserSpaceSnapshot(
-            id=snapshot_id,
-            workspace_id=workspace_id,
-            branch_id=current_branch_id or "",
-            branch_name="Branch",
-            parent_snapshot_id=current_snapshot_id,
-            is_current=True,
-            can_rename=True,
-            git_commit_hash=commit_hash,
-            message=commit_subject,
-            created_at=created_at,
-            file_count=file_count,
-        )
+        if created is None:
+            created = UserSpaceSnapshot(
+                id=snapshot_id,
+                workspace_id=workspace_id,
+                branch_id=current_branch_id or "",
+                branch_name="Branch",
+                parent_snapshot_id=current_snapshot_id,
+                is_current=True,
+                can_rename=True,
+                git_commit_hash=commit_hash,
+                message=commit_subject,
+                created_at=created_at,
+                file_count=file_count,
+            )
+        if auto_sync_to_scm:
+            await self._maybe_auto_push_snapshot_to_scm(workspace_id, created)
+        return created
 
     async def update_snapshot(
         self,
@@ -8070,7 +9165,6 @@ class UserSpaceService:
                 row_count=0,
                 error=str(exc),
             )
-
         response = self._build_execute_component_response(
             component_id=request.component_id,
             raw_output=raw_output,

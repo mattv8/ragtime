@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
+from urllib.parse import quote_plus
 
 import httpx
 
@@ -66,6 +67,18 @@ class RepoCheckResult:
     visibility: RepoVisibility
     has_stored_token: bool = False
     needs_token: bool = False
+    message: str = ""
+
+
+@dataclass
+class RepoCreateResult:
+    """Result of creating a remote repository."""
+
+    success: bool
+    provider: GitProvider
+    git_url: str | None = None
+    default_branch: str | None = None
+    visibility: str | None = None
     message: str = ""
 
 
@@ -212,7 +225,7 @@ async def check_repo_visibility(
                 visibility=RepoVisibility.PRIVATE,
                 has_stored_token=False,
                 needs_token=True,
-                message="Repository is private or not found - token required",
+                message="Repository not found or is private. If private, a token is required.",
             )
 
     except httpx.TimeoutException:
@@ -357,3 +370,269 @@ async def fetch_branches(
     except Exception as e:
         logger.warning(f"Error fetching branches: {url} - {e}")
         return [], "Failed to fetch branches"
+
+
+async def fetch_default_branch(
+    url: str,
+    token: Optional[str] = None,
+    timeout: float = 10.0,
+) -> tuple[Optional[str], Optional[str]]:
+    """Fetch the default branch from a GitHub or GitLab repository."""
+    parsed = parse_git_url(url, token)
+    if not parsed:
+        return None, "Invalid Git URL format"
+    if parsed.provider == GitProvider.GENERIC:
+        return None, "Cannot fetch default branch for generic Git providers"
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await _get_repo_api_response(client, parsed, token)
+            if response.status_code == 404:
+                return None, "Repository not found or is private"
+            if response.status_code == 401:
+                return None, "Invalid or expired token"
+            if response.status_code == 403:
+                return None, "Access forbidden - token may lack required scopes"
+            if response.status_code != 200:
+                return None, f"API error: {response.status_code}"
+
+            data = response.json()
+            default_branch = data.get("default_branch")
+            if isinstance(default_branch, str) and default_branch.strip():
+                return default_branch.strip(), None
+            return None, None
+    except httpx.TimeoutException:
+        return None, "Timeout fetching default branch"
+    except Exception as e:
+        logger.warning(f"Error fetching default branch: {url} - {e}")
+        return None, "Failed to fetch default branch"
+
+
+async def create_repository(
+    url: str,
+    token: str,
+    *,
+    private: bool = True,
+    description: Optional[str] = None,
+    timeout: float = 20.0,
+) -> RepoCreateResult:
+    """Create a repository on GitHub or GitLab from the desired Git URL."""
+    parsed = parse_git_url(url, token)
+    if not parsed:
+        return RepoCreateResult(
+            success=False,
+            provider=GitProvider.GENERIC,
+            message="Invalid Git URL format",
+        )
+
+    if parsed.provider == GitProvider.GENERIC:
+        return RepoCreateResult(
+            success=False,
+            provider=parsed.provider,
+            message="Repository creation is only supported for GitHub and GitLab",
+        )
+
+    if not token:
+        return RepoCreateResult(
+            success=False,
+            provider=parsed.provider,
+            message="A personal access token is required to create a repository",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            if parsed.provider == GitProvider.GITHUB:
+                return await _create_github_repository(
+                    client,
+                    parsed,
+                    token,
+                    private=private,
+                    description=description,
+                )
+            if parsed.provider == GitProvider.GITLAB:
+                return await _create_gitlab_repository(
+                    client,
+                    parsed,
+                    token,
+                    private=private,
+                    description=description,
+                )
+    except httpx.TimeoutException:
+        return RepoCreateResult(
+            success=False,
+            provider=parsed.provider,
+            message="Timeout creating repository",
+        )
+    except Exception as e:
+        logger.warning(f"Error creating repository: {url} - {e}")
+        return RepoCreateResult(
+            success=False,
+            provider=parsed.provider,
+            message="Failed to create repository",
+        )
+
+    return RepoCreateResult(
+        success=False,
+        provider=parsed.provider,
+        message="Unsupported provider",
+    )
+
+
+async def _get_repo_api_response(
+    client: httpx.AsyncClient,
+    parsed: ParsedGitUrl,
+    token: Optional[str] = None,
+) -> httpx.Response:
+    headers: dict[str, str] = {}
+    if parsed.provider == GitProvider.GITHUB:
+        api_url = f"{parsed.api_base_url}/repos/{parsed.owner}/{parsed.repo}"
+        headers["Accept"] = "application/vnd.github.v3+json"
+        if token:
+            headers["Authorization"] = f"token {token}"
+    elif parsed.provider == GitProvider.GITLAB:
+        project_path = quote_plus(f"{parsed.owner}/{parsed.repo}", safe="")
+        api_url = f"{parsed.api_base_url}/projects/{project_path}"
+        if token:
+            headers["PRIVATE-TOKEN"] = token
+    else:
+        raise ValueError("Unsupported provider")
+    return await client.get(api_url, headers=headers)
+
+
+async def _create_github_repository(
+    client: httpx.AsyncClient,
+    parsed: ParsedGitUrl,
+    token: str,
+    *,
+    private: bool,
+    description: Optional[str],
+) -> RepoCreateResult:
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"token {token}",
+    }
+    user_resp = await client.get(f"{parsed.api_base_url}/user", headers=headers)
+    if user_resp.status_code != 200:
+        return RepoCreateResult(
+            success=False,
+            provider=parsed.provider,
+            message="Unable to validate GitHub token for repository creation",
+        )
+
+    login = str(user_resp.json().get("login") or "")
+    payload = {
+        "name": parsed.repo,
+        "private": private,
+        "description": description or "",
+        "auto_init": False,
+    }
+    if parsed.owner == login:
+        create_url = f"{parsed.api_base_url}/user/repos"
+    else:
+        create_url = f"{parsed.api_base_url}/orgs/{parsed.owner}/repos"
+
+    response = await client.post(create_url, headers=headers, json=payload)
+    if response.status_code not in {201, 202}:
+        return RepoCreateResult(
+            success=False,
+            provider=parsed.provider,
+            message=_format_repository_create_error(response),
+        )
+
+    data = response.json()
+    return RepoCreateResult(
+        success=True,
+        provider=parsed.provider,
+        git_url=str(
+            data.get("clone_url")
+            or f"https://{parsed.host}/{parsed.owner}/{parsed.repo}.git"
+        ),
+        default_branch=str(data.get("default_branch") or "main"),
+        visibility="private" if private else "public",
+        message="Repository created",
+    )
+
+
+async def _create_gitlab_repository(
+    client: httpx.AsyncClient,
+    parsed: ParsedGitUrl,
+    token: str,
+    *,
+    private: bool,
+    description: Optional[str],
+) -> RepoCreateResult:
+    headers = {"PRIVATE-TOKEN": token}
+    namespace_id: int | None = None
+
+    namespace_resp = await client.get(
+        f"{parsed.api_base_url}/namespaces?search={quote_plus(parsed.owner)}",
+        headers=headers,
+    )
+    if namespace_resp.status_code == 200:
+        for item in namespace_resp.json():
+            full_path = str(item.get("full_path") or "")
+            path = str(item.get("path") or "")
+            name = str(item.get("name") or "")
+            if parsed.owner in {full_path, path, name}:
+                namespace_id = int(item.get("id"))
+                break
+
+    payload: dict[str, object] = {
+        "name": parsed.repo,
+        "path": parsed.repo,
+        "visibility": "private" if private else "public",
+        "description": description or "",
+        "initialize_with_readme": False,
+    }
+    if namespace_id is not None:
+        payload["namespace_id"] = namespace_id
+
+    response = await client.post(
+        f"{parsed.api_base_url}/projects",
+        headers=headers,
+        json=payload,
+    )
+    if response.status_code not in {201, 202}:
+        return RepoCreateResult(
+            success=False,
+            provider=parsed.provider,
+            message=_format_repository_create_error(response),
+        )
+
+    data = response.json()
+    return RepoCreateResult(
+        success=True,
+        provider=parsed.provider,
+        git_url=str(
+            data.get("http_url_to_repo")
+            or f"https://{parsed.host}/{parsed.owner}/{parsed.repo}.git"
+        ),
+        default_branch=str(data.get("default_branch") or "main"),
+        visibility="private" if private else "public",
+        message="Repository created",
+    )
+
+
+def _format_repository_create_error(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+
+    if response.status_code == 401:
+        return "Invalid or expired token"
+    if response.status_code == 403:
+        return "Access forbidden - token may lack repository write scopes"
+    if response.status_code == 404:
+        return "Target owner or namespace not found"
+    if response.status_code == 409:
+        return "Repository already exists"
+    if response.status_code == 422 and isinstance(payload, dict):
+        errors = payload.get("errors")
+        if errors:
+            return f"Repository creation failed: {errors}"
+    if isinstance(payload, dict):
+        message = payload.get("message") or payload.get("error")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return f"API error: {response.status_code}"

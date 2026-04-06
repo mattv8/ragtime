@@ -27,7 +27,7 @@ import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
 import { ChatPanel } from './ChatPanel';
@@ -36,6 +36,7 @@ import { ResizeHandle } from './ResizeHandle';
 import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
 import { FileDiffOverlay } from './shared/FileDiffOverlay';
+import { WorkspaceScmWizard } from './WorkspaceScmWizard';
 
 interface UserSpacePanelProps {
   currentUser: User;
@@ -570,6 +571,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [confirmDeleteEnvKey, setConfirmDeleteEnvKey] = useState<string | null>(null);
   const [copiedEnvKey, setCopiedEnvKey] = useState<string | null>(null);
   const [showMountsModal, setShowMountsModal] = useState(false);
+  const [showScmWizard, setShowScmWizard] = useState(false);
   const [mounts, setMounts] = useState<WorkspaceMount[]>([]);
   const [mountsLoading, setMountsLoading] = useState(false);
   const [mountableSources, setMountableSources] = useState<MountableSource[]>([]);
@@ -2387,6 +2389,34 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setError(err instanceof Error ? err.message : 'Failed to update SQLite persistence mode');
     }
   }, [activeWorkspace, canEditWorkspace]);
+
+  const handleWorkspaceScmSyncComplete = useCallback(async (response: UserSpaceWorkspaceScmSyncResponse) => {
+    setWorkspaces((current) => current.map((ws) => (
+      ws.id === response.workspace_id
+        ? { ...ws, scm: response.scm as UserSpaceWorkspaceScmStatus }
+        : ws
+    )));
+    if (activeWorkspaceId === response.workspace_id) {
+      await Promise.all([
+        loadWorkspaceData(response.workspace_id),
+        loadChangedFileState(response.workspace_id),
+        loadSnapshots(response.workspace_id),
+      ]);
+    }
+  }, [activeWorkspaceId, loadChangedFileState, loadSnapshots, loadWorkspaceData]);
+
+  const handleAskAgentToPrepareWorkspace = useCallback(async (prompt: string) => {
+    if (!activeWorkspaceId) return;
+    let conversationId = activeWorkspaceConversationId;
+    if (!conversationId) {
+      const conversation = await api.createConversation(undefined, activeWorkspaceId);
+      conversationId = conversation.id;
+      setActiveWorkspaceConversationId(conversation.id);
+    }
+    await api.sendMessage(conversationId, { message: prompt }, activeWorkspaceId);
+    await refreshActiveWorkspaceState();
+    setActiveRightTab('preview');
+  }, [activeWorkspaceConversationId, activeWorkspaceId, refreshActiveWorkspaceState]);
 
   const handleUserMessageSubmitted = useCallback(async (_message: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -4773,6 +4803,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           >
             {creatingWorkspace ? <MiniLoadingSpinner variant="icon" size={14} /> : <Plus size={14} />}
           </button>
+          {canEditWorkspace && activeWorkspaceId && (
+            <button className="btn btn-secondary btn-sm" onClick={() => setShowScmWizard(true)} title="Import or export this workspace with Git">
+              <ArrowLeftRight size={14} />
+            </button>
+          )}
           {isOwner && (
             <>
               <button className="btn btn-secondary btn-sm" onClick={handleOpenMembersModal} title="Manage members">
@@ -4804,6 +4839,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             {activeWorkspace && !isAdminImpersonating && (
               <span className="userspace-status-pill userspace-status-pill-info">
                 {activeWorkspaceRole}{!canEditWorkspace ? ' (read-only)' : ''}
+              </span>
+            )}
+            {activeWorkspace?.scm?.connected && (
+              <span
+                className="userspace-status-pill userspace-status-pill-muted"
+                title={activeWorkspace.scm.git_url || 'Workspace SCM connection'}
+              >
+                git:{activeWorkspace.scm.git_branch || 'main'}
               </span>
             )}
             {isAdminImpersonating && (
@@ -5696,6 +5739,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             </div>
           </div>
         </div>
+      )}
+
+      {showScmWizard && activeWorkspace && (
+        <WorkspaceScmWizard
+          workspace={activeWorkspace}
+          onClose={() => setShowScmWizard(false)}
+          onSyncComplete={handleWorkspaceScmSyncComplete}
+          onAskAgent={handleAskAgentToPrepareWorkspace}
+        />
       )}
 
       {/* === Mounts modal === */}

@@ -17,6 +17,15 @@ ShareAccessMode = Literal[
     "selected_users",
     "ldap_groups",
 ]
+WorkspaceScmProvider = Literal["github", "gitlab", "generic"]
+WorkspaceScmDirection = Literal["import", "export"]
+WorkspaceScmPreviewState = Literal[
+    "missing_remote",
+    "missing_branch",
+    "up_to_date",
+    "safe",
+    "destructive",
+]
 RuntimeSessionState = Literal[
     "starting",
     "running",
@@ -70,6 +79,7 @@ class UserSpaceWorkspace(BaseModel):
     selected_tool_group_ids: list[str] = Field(default_factory=list)
     conversation_ids: list[str] = Field(default_factory=list)
     members: list[WorkspaceMember] = Field(default_factory=list)
+    scm: "UserSpaceWorkspaceScmStatus | None" = None
     created_at: datetime
     updated_at: datetime
 
@@ -100,6 +110,85 @@ class UpdateWorkspaceRequest(BaseModel):
     owner_user_id: str | None = Field(
         default=None, description="Transfer ownership to this user (admin only)"
     )
+
+
+class UserSpaceWorkspaceScmStatus(BaseModel):
+    connected: bool = False
+    git_url: str | None = None
+    git_branch: str | None = None
+    provider: WorkspaceScmProvider | None = None
+    repo_visibility: str | None = None
+    has_stored_token: bool = False
+    connected_at: datetime | None = None
+    last_sync_at: datetime | None = None
+    last_sync_direction: WorkspaceScmDirection | None = None
+    last_sync_status: str | None = None
+    last_sync_message: str | None = None
+    last_remote_commit_hash: str | None = None
+    last_synced_snapshot_id: str | None = None
+
+
+class UserSpaceWorkspaceScmConnectionRequest(BaseModel):
+    git_url: str = Field(min_length=1, max_length=2000)
+    git_branch: str = Field(default="main", min_length=1, max_length=255)
+    git_token: str | None = Field(default=None, max_length=10000)
+    repo_visibility: str | None = Field(default=None, max_length=32)
+
+
+class UserSpaceWorkspaceScmConnectionResponse(BaseModel):
+    workspace_id: str
+    scm: UserSpaceWorkspaceScmStatus
+
+
+class UserSpaceWorkspaceScmPreviewRequest(BaseModel):
+    git_url: str | None = Field(default=None, min_length=1, max_length=2000)
+    git_branch: str | None = Field(default=None, min_length=1, max_length=255)
+    git_token: str | None = Field(default=None, max_length=10000)
+    create_repo_if_missing: bool = False
+    create_repo_private: bool = True
+    create_repo_description: str | None = Field(default=None, max_length=2000)
+
+
+class UserSpaceWorkspaceScmPreviewResponse(BaseModel):
+    workspace_id: str
+    direction: WorkspaceScmDirection
+    state: WorkspaceScmPreviewState
+    summary: str
+    git_url: str
+    git_branch: str
+    provider: WorkspaceScmProvider
+    repo_visibility: str | None = None
+    local_changed: bool = False
+    remote_changed: bool = False
+    local_has_uncommitted_changes: bool = False
+    will_overwrite_local: bool = False
+    will_overwrite_remote: bool = False
+    can_proceed_without_force: bool = False
+    local_commit_hash: str | None = None
+    remote_commit_hash: str | None = None
+    current_snapshot_id: str | None = None
+    changed_files_sample: list[str] = Field(default_factory=list)
+    preview_token: str | None = None
+    preview_expires_at: datetime | None = None
+
+
+class UserSpaceWorkspaceScmImportRequest(UserSpaceWorkspaceScmPreviewRequest):
+    overwrite_preview_token: str | None = Field(default=None, max_length=255)
+
+
+class UserSpaceWorkspaceScmExportRequest(UserSpaceWorkspaceScmPreviewRequest):
+    overwrite_preview_token: str | None = Field(default=None, max_length=255)
+
+
+class UserSpaceWorkspaceScmSyncResponse(BaseModel):
+    workspace_id: str
+    direction: WorkspaceScmDirection
+    state: str
+    summary: str
+    scm: UserSpaceWorkspaceScmStatus
+    snapshot: "UserSpaceSnapshot | None" = None
+    remote_commit_hash: str | None = None
+    suggested_setup_prompt: str | None = None
 
 
 class UserSpaceWorkspaceEnvVar(BaseModel):

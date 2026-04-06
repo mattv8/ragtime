@@ -34,6 +34,17 @@ export interface LoginResponse {
   error?: string;
 }
 
+export type AuthMethodAvailability = 'available' | 'unavailable' | 'not_configured';
+
+export interface AuthMethodStatus {
+  key: string;
+  label: string;
+  configured: boolean;
+  available: boolean;
+  status: AuthMethodAvailability;
+  detail?: string | null;
+}
+
 export interface AuthStatus {
   authenticated: boolean;
   ldap_configured: boolean;
@@ -46,6 +57,7 @@ export interface AuthStatus {
   api_key_configured: boolean;
   session_cookie_secure: boolean;
   allowed_origins_open: boolean;  // True if ALLOWED_ORIGINS=*
+  auth_methods?: AuthMethodStatus[];
 }
 
 // =============================================================================
@@ -1657,6 +1669,26 @@ export interface UserSpaceWorkspaceMember {
   role: WorkspaceRole;
 }
 
+export type UserSpaceWorkspaceScmProvider = 'github' | 'gitlab' | 'generic';
+export type UserSpaceWorkspaceScmDirection = 'import' | 'export';
+export type UserSpaceWorkspaceScmPreviewState = 'missing_remote' | 'missing_branch' | 'up_to_date' | 'safe' | 'destructive';
+
+export interface UserSpaceWorkspaceScmStatus {
+  connected: boolean;
+  git_url?: string | null;
+  git_branch?: string | null;
+  provider?: UserSpaceWorkspaceScmProvider | null;
+  repo_visibility?: RepoVisibility | null;
+  has_stored_token: boolean;
+  connected_at?: string | null;
+  last_sync_at?: string | null;
+  last_sync_direction?: UserSpaceWorkspaceScmDirection | null;
+  last_sync_status?: string | null;
+  last_sync_message?: string | null;
+  last_remote_commit_hash?: string | null;
+  last_synced_snapshot_id?: string | null;
+}
+
 export interface UserSpaceWorkspace {
   id: string;
   name: string;
@@ -1669,8 +1701,72 @@ export interface UserSpaceWorkspace {
   selected_tool_group_ids: string[];
   conversation_ids: string[];
   members: UserSpaceWorkspaceMember[];
+  scm?: UserSpaceWorkspaceScmStatus | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface UserSpaceWorkspaceScmConnectionRequest {
+  git_url: string;
+  git_branch?: string;
+  git_token?: string;
+  repo_visibility?: RepoVisibility;
+}
+
+export interface UserSpaceWorkspaceScmConnectionResponse {
+  workspace_id: string;
+  scm: UserSpaceWorkspaceScmStatus;
+}
+
+export interface UserSpaceWorkspaceScmPreviewRequest {
+  git_url?: string;
+  git_branch?: string;
+  git_token?: string;
+  create_repo_if_missing?: boolean;
+  create_repo_private?: boolean;
+  create_repo_description?: string;
+}
+
+export interface UserSpaceWorkspaceScmPreviewResponse {
+  workspace_id: string;
+  direction: UserSpaceWorkspaceScmDirection;
+  state: UserSpaceWorkspaceScmPreviewState;
+  summary: string;
+  git_url: string;
+  git_branch: string;
+  provider: UserSpaceWorkspaceScmProvider;
+  repo_visibility?: RepoVisibility | null;
+  local_changed: boolean;
+  remote_changed: boolean;
+  local_has_uncommitted_changes: boolean;
+  will_overwrite_local: boolean;
+  will_overwrite_remote: boolean;
+  can_proceed_without_force: boolean;
+  local_commit_hash?: string | null;
+  remote_commit_hash?: string | null;
+  current_snapshot_id?: string | null;
+  changed_files_sample: string[];
+  preview_token?: string | null;
+  preview_expires_at?: string | null;
+}
+
+export interface UserSpaceWorkspaceScmImportRequest extends UserSpaceWorkspaceScmPreviewRequest {
+  overwrite_preview_token?: string;
+}
+
+export interface UserSpaceWorkspaceScmExportRequest extends UserSpaceWorkspaceScmPreviewRequest {
+  overwrite_preview_token?: string;
+}
+
+export interface UserSpaceWorkspaceScmSyncResponse {
+  workspace_id: string;
+  direction: UserSpaceWorkspaceScmDirection;
+  state: string;
+  summary: string;
+  scm: UserSpaceWorkspaceScmStatus;
+  snapshot?: UserSpaceSnapshot | null;
+  remote_commit_hash?: string | null;
+  suggested_setup_prompt?: string | null;
 }
 
 export interface UserSpaceAvailableTool {

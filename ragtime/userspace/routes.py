@@ -2,37 +2,81 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import (APIRouter, Depends, Header, HTTPException, Query, Request,
-                     Response)
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 
+from ragtime.core.database import get_db
+from ragtime.core.encryption import decrypt_secret
+from ragtime.core.git import check_repo_visibility as git_check_visibility
+from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.security import (get_current_user, get_current_user_optional,
-                                   require_admin)
+from ragtime.core.security import (
+    get_current_user,
+    get_current_user_optional,
+    require_admin,
+)
+from ragtime.indexer.models import (
+    CheckRepoVisibilityRequest,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    RepoVisibilityResponse,
+)
 from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
-    BrowseUserspaceMountSourceRequest, CreateSnapshotRequest,
-    CreateUserspaceMountSourceRequest, CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest, DeleteUserspaceMountSourceResponse,
-    DeleteWorkspaceEnvVarResponse, DeleteWorkspaceMountResponse,
-    ExecuteComponentRequest, ExecuteComponentResponse, MountableSource,
-    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
-    RestoreSnapshotResponse, SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest, UpdateUserspaceMountSourceRequest,
-    UpdateWorkspaceMembersRequest, UpdateWorkspaceMountRequest,
-    UpdateWorkspaceRequest, UpdateWorkspaceShareAccessRequest,
-    UpdateWorkspaceShareSlugRequest, UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest, UserSpaceAcknowledgeChangedFilePathRequest,
-    UserSpaceAvailableTool, UserSpaceChangedFileStateResponse,
-    UserSpaceFileInfo, UserSpaceFileResponse, UserspaceMountSource,
-    UserSpaceSharedPreviewResponse, UserSpaceSnapshot,
-    UserSpaceSnapshotDiffSummaryResponse, UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse, UserSpaceWorkspace,
-    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus, WorkspaceMount,
-    WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
-    WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
-    WorkspaceShareSlugAvailabilityResponse)
+    BrowseUserspaceMountSourceRequest,
+    CreateSnapshotRequest,
+    CreateUserspaceMountSourceRequest,
+    CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest,
+    DeleteUserspaceMountSourceResponse,
+    DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    MountableSource,
+    MountSourceAffectedWorkspacesResponse,
+    PaginatedWorkspacesResponse,
+    RestoreSnapshotResponse,
+    SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest,
+    UpdateUserspaceMountSourceRequest,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpdateWorkspaceShareSlugRequest,
+    UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceAcknowledgeChangedFilePathRequest,
+    UserSpaceAvailableTool,
+    UserSpaceChangedFileStateResponse,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserspaceMountSource,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspaceScmConnectionRequest,
+    UserSpaceWorkspaceScmConnectionResponse,
+    UserSpaceWorkspaceScmExportRequest,
+    UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest,
+    UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMount,
+    WorkspaceMountBrowseRequest,
+    WorkspaceMountBrowseResponse,
+    WorkspaceMountSyncPreviewRequest,
+    WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest,
+    WorkspaceMountSyncResponse,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -122,6 +166,103 @@ async def get_workspace(workspace_id: str, user: Any = Depends(get_current_user)
     return await userspace_service.get_workspace(workspace_id, user.id)
 
 
+@router.get(
+    "/workspaces/{workspace_id}/scm",
+    response_model=UserSpaceWorkspaceScmConnectionResponse,
+)
+async def get_workspace_scm_connection(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.get_workspace_scm_connection(workspace_id, user.id)
+
+
+@router.put(
+    "/workspaces/{workspace_id}/scm",
+    response_model=UserSpaceWorkspaceScmConnectionResponse,
+)
+async def update_workspace_scm_connection(
+    workspace_id: str,
+    request: UserSpaceWorkspaceScmConnectionRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.update_workspace_scm_connection(
+        workspace_id,
+        user.id,
+        request,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/scm/preview-import",
+    response_model=UserSpaceWorkspaceScmPreviewResponse,
+)
+async def preview_workspace_scm_import(
+    workspace_id: str,
+    request: UserSpaceWorkspaceScmPreviewRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.preview_workspace_scm_import(
+        workspace_id,
+        user.id,
+        request,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/scm/import",
+    response_model=UserSpaceWorkspaceScmSyncResponse,
+)
+async def import_workspace_from_scm(
+    workspace_id: str,
+    request: UserSpaceWorkspaceScmImportRequest,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.import_workspace_from_scm(
+        workspace_id,
+        user.id,
+        request,
+    )
+    await userspace_runtime_service.invalidate_workspace_runtime_state(workspace_id)
+    return result
+
+
+@router.post(
+    "/workspaces/{workspace_id}/scm/preview-export",
+    response_model=UserSpaceWorkspaceScmPreviewResponse,
+)
+async def preview_workspace_scm_export(
+    workspace_id: str,
+    request: UserSpaceWorkspaceScmPreviewRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.preview_workspace_scm_export(
+        workspace_id,
+        user.id,
+        request,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/scm/export",
+    response_model=UserSpaceWorkspaceScmSyncResponse,
+)
+async def export_workspace_to_scm(
+    workspace_id: str,
+    request: UserSpaceWorkspaceScmExportRequest,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.export_workspace_to_scm(
+        workspace_id,
+        user.id,
+        request,
+    )
+    await userspace_runtime_service.bump_workspace_generation(
+        workspace_id, "scm_export"
+    )
+    return result
+
+
 @router.put("/workspaces/{workspace_id}", response_model=UserSpaceWorkspace)
 async def update_workspace(
     workspace_id: str,
@@ -143,6 +284,72 @@ async def update_workspace(
             result.owner_user_id,
         )
     return result
+
+
+@router.post(
+    "/workspaces/{workspace_id}/scm/check-visibility",
+    response_model=RepoVisibilityResponse,
+)
+async def check_workspace_scm_repo_visibility(
+    workspace_id: str,
+    request: CheckRepoVisibilityRequest,
+    user: Any = Depends(get_current_user),
+):
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "editor")
+    db = await get_db()
+    workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+    stored_token = None
+    encrypted = (
+        getattr(workspace_record, "scmToken", None) if workspace_record else None
+    )
+    if encrypted:
+        stored_token = decrypt_secret(encrypted)
+
+    result = await git_check_visibility(
+        url=request.git_url,
+        stored_token=stored_token,
+    )
+    return RepoVisibilityResponse(
+        visibility=result.visibility.value,
+        has_stored_token=result.has_stored_token,
+        needs_token=result.needs_token,
+        message=result.message,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/scm/fetch-branches",
+    response_model=FetchBranchesResponse,
+)
+async def fetch_workspace_scm_branches(
+    workspace_id: str,
+    request: FetchBranchesRequest,
+    user: Any = Depends(get_current_user),
+):
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "editor")
+    db = await get_db()
+    workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+    token = request.git_token
+    if not token and workspace_record and getattr(workspace_record, "scmToken", None):
+        token = decrypt_secret(getattr(workspace_record, "scmToken"))
+
+    branches, error = await git_fetch_branches(
+        url=request.git_url,
+        token=token,
+    )
+    if error:
+        needs_token = "private" in error.lower() or "token" in error.lower()
+        return FetchBranchesResponse(
+            branches=[],
+            error=error,
+            needs_token=needs_token,
+        )
+
+    return FetchBranchesResponse(
+        branches=branches,
+        error=None,
+        needs_token=False,
+    )
 
 
 @router.delete("/workspaces/{workspace_id}")
