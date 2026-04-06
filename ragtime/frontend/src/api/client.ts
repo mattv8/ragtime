@@ -7,6 +7,35 @@ import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsR
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
 
+type AuthExpiredListener = () => void;
+const authExpiredListeners = new Set<AuthExpiredListener>();
+let authExpiredNotified = false;
+
+function notifyAuthExpired(): void {
+  if (authExpiredNotified) {
+    return;
+  }
+  authExpiredNotified = true;
+  authExpiredListeners.forEach((listener) => {
+    try {
+      listener();
+    } catch {
+      // Ignore listener errors to ensure all callbacks run.
+    }
+  });
+}
+
+function resetAuthExpiredNotification(): void {
+  authExpiredNotified = false;
+}
+
+export function onAuthExpired(listener: AuthExpiredListener): () => void {
+  authExpiredListeners.add(listener);
+  return () => {
+    authExpiredListeners.delete(listener);
+  };
+}
+
 function encodeFilePath(path: string): string {
   return path
     .split('/')
@@ -65,6 +94,9 @@ async function apiFetch(url: string, options: RequestInit = {}): Promise<Respons
 
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
+    if (response.status === 401) {
+      notifyAuthExpired();
+    }
     const data = await response.json().catch(() => ({}));
     throw new ApiError(
       data.detail || `Request failed with status ${response.status}`,
@@ -102,7 +134,9 @@ export const api = {
       body: JSON.stringify(request),
        // Include cookies
     });
-    return handleResponse<LoginResponse>(response);
+    const result = await handleResponse<LoginResponse>(response);
+    resetAuthExpiredNotification();
+    return result;
   },
 
   /**
@@ -122,7 +156,9 @@ export const api = {
     const response = await apiFetch(`${AUTH_BASE}/me`, {
 
     });
-    return handleResponse<User>(response);
+    const user = await handleResponse<User>(response);
+    resetAuthExpiredNotification();
+    return user;
   },
 
   /**

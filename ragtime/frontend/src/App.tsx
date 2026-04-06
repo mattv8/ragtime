@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api } from '@/api';
+import { api, onAuthExpired } from '@/api';
 import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ConfigurationWarning } from '@/types';
@@ -130,6 +130,34 @@ export function App() {
   const [userspaceFullscreen, setUserspaceFullscreen] = useState(false);
   const [chatFullscreen, setChatFullscreen] = useState(false);
 
+  const forceLoginScreen = useCallback(() => {
+    setCurrentUser(null);
+    setAuthStatus((previous) => {
+      if (previous) {
+        return {
+          ...previous,
+          authenticated: false,
+        };
+      }
+      return {
+        authenticated: false,
+        ldap_configured: false,
+        local_admin_enabled: true,
+        debug_mode: false,
+        api_key_configured: false,
+        session_cookie_secure: false,
+        allowed_origins_open: true,
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onAuthExpired(() => {
+      forceLoginScreen();
+    });
+    return unsubscribe;
+  }, [forceLoginScreen]);
+
   // Load server name and embedding dimensions from settings
   useEffect(() => {
     const loadSettings = async () => {
@@ -239,17 +267,17 @@ export function App() {
           // Session invalid or error - user needs to re-login
           console.error('OAuth flow: Session auth failed', data);
           // Clear the user so login page shows
-          setCurrentUser(null);
+          forceLoginScreen();
         }
       } catch (err) {
         console.error('OAuth flow: Failed to complete', err);
         // Clear the user so login page shows
-        setCurrentUser(null);
+        forceLoginScreen();
       }
     };
 
     completeOAuthFlow();
-  }, [oauthParams, currentUser, authLoading]);
+  }, [oauthParams, currentUser, authLoading, forceLoginScreen]);
 
   const handleLogout = async () => {
     try {
@@ -257,7 +285,7 @@ export function App() {
     } catch {
       // Ignore logout errors
     }
-    setCurrentUser(null);
+    forceLoginScreen();
   };
 
   // Check if user is admin
