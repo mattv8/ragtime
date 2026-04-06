@@ -1233,3 +1233,17 @@ async def create_snapshot_branch(
     )
     await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
     return result
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/snapshots/{snapshot_id}",
+    response_model=UserSpaceSnapshotTimelineResponse,
+)
+async def delete_snapshot(
+    workspace_id: str,
+    snapshot_id: str,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.delete_snapshot(workspace_id, snapshot_id, user.id)
+    await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
+    return result

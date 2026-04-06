@@ -474,7 +474,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [renamingSnapshotId, setRenamingSnapshotId] = useState<string | null>(null);
   const [snapshotEditValue, setSnapshotEditValue] = useState('');
   const [savingSnapshotRename, setSavingSnapshotRename] = useState(false);
-  const [navigatingSnapshots, setNavigatingSnapshots] = useState(false);
+    const [deletingSnapshotId, setDeletingSnapshotId] = useState<string | null>(null);
+    const [deleteConfirmSnapshotId, setDeleteConfirmSnapshotId] = useState<string | null>(null);
+    const [navigatingSnapshots, setNavigatingSnapshots] = useState(false);
   const [restoringSnapshotId, setRestoringSnapshotId] = useState<string | null>(null);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
   const [toolGroups, setToolGroups] = useState<ToolGroupInfo[]>([]);
@@ -2557,6 +2559,23 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspaceId, canEditWorkspace]);
 
+  const handleDeleteSnapshot = useCallback(async (snapshotId: string) => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setDeletingSnapshotId(snapshotId);
+    try {
+      const timeline = await api.deleteUserSpaceSnapshot(activeWorkspaceId, snapshotId);
+      setSnapshots(timeline.snapshots);
+      setSnapshotBranches(timeline.branches);
+      setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
+      setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete snapshot');
+    } finally {
+      setDeletingSnapshotId(null);
+      setDeleteConfirmSnapshotId(null);
+    }
+  }, [activeWorkspaceId, canEditWorkspace]);
+
   const handleStartRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
     setRuntimeBusy(true);
@@ -2668,7 +2687,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
     let reconnectEnabled = true;
     const MAX_COLLAB_RECONNECT_ATTEMPTS = 8;
-    const scheduleReconnect = () => {
+        const scheduleReconnect = () => {
       if (!reconnectEnabled || collabReconnectTimerRef.current !== null) {
         return;
       }
@@ -5436,6 +5455,49 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 >
                                   <Pencil size={10} />
                                 </button>
+                              )}
+                              {canEditWorkspace && snapshot.can_delete && !renamingSnapshotId && (
+                                <div className="userspace-snapshot-row-delete">
+                                  {deleteConfirmSnapshotId === snapshot.id ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="userspace-snapshot-delete-confirm-btn"
+                                        disabled={deletingSnapshotId === snapshot.id || snapshotUiLocked}
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          void handleDeleteSnapshot(snapshot.id);
+                                        }}
+                                      >
+                                        {deletingSnapshotId === snapshot.id ? <MiniLoadingSpinner variant="icon" size={10} /> : 'Confirm'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="userspace-snapshot-delete-cancel-btn"
+                                        disabled={deletingSnapshotId === snapshot.id}
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          setDeleteConfirmSnapshotId(null);
+                                        }}
+                                      >
+                                        <X size={10} />
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="userspace-snapshot-delete-btn"
+                                      title="Delete snapshot"
+                                      disabled={snapshotUiLocked}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setDeleteConfirmSnapshotId(snapshot.id);
+                                      }}
+                                    >
+                                      <Trash2 size={10} />
+                                    </button>
+                                  )}
+                                </div>
                               )}
                               <span className="userspace-snapshot-ts">
                                 {formatSnapshotTimestamp(snapshot.created_at)}

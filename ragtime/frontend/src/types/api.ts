@@ -2050,6 +2050,7 @@ export interface UserSpaceSnapshot {
   parent_snapshot_id?: string | null;
   is_current: boolean;
   can_rename: boolean;
+  can_delete: boolean;
   git_commit_hash?: string | null;
   remote_commit_hash?: string | null; // When set, snapshot is backed by remote commit (source of truth)
   message?: string | null;

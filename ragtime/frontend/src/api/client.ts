@@ -2281,6 +2281,13 @@ export const api = {
     return handleResponse<UserSpaceSnapshotTimeline>(response);
   },
 
+  async deleteUserSpaceSnapshot(workspaceId: string, snapshotId: string): Promise<UserSpaceSnapshotTimeline> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/${snapshotId}`, {
+      method: 'DELETE',
+    });
+    return handleResponse<UserSpaceSnapshotTimeline>(response);
+  },
+
   async executeWorkspaceComponent(workspaceId: string, request: ExecuteComponentRequest): Promise<ExecuteComponentResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/execute-component`, {
       method: 'POST',

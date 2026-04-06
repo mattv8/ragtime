@@ -359,6 +359,7 @@ class UserSpaceSnapshot(BaseModel):
     parent_snapshot_id: str | None = None
     is_current: bool = False
     can_rename: bool = True
+    can_delete: bool = False
     git_commit_hash: str | None = None
     remote_commit_hash: str | None = (
         None  # When set, snapshot is backed by remote commit (authoritative)

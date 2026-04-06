@@ -21,9 +21,9 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
+
 from prisma import Json
 from prisma import fields as prisma_fields
-
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -8527,6 +8527,8 @@ class UserSpaceService:
         row: dict[str, Any],
         current_snapshot_id: str | None,
         branch_name_by_id: dict[str, str],
+        *,
+        can_delete: bool = False,
     ) -> UserSpaceSnapshot:
         created_at_raw = row.get("created_at")
         created_at = _coerce_utc_datetime(created_at_raw)
@@ -8544,6 +8546,7 @@ class UserSpaceService:
             ),
             is_current=snapshot_id == current_snapshot_id,
             can_rename=True,
+            can_delete=can_delete,
             git_commit_hash=(
                 str(row.get("git_commit_hash")) if row.get("git_commit_hash") else None
             ),
@@ -8794,11 +8797,18 @@ class UserSpaceService:
             ORDER BY created_at DESC
             """
         )
+        # Compute which snapshots are heads (no other snapshot points to them as parent)
+        child_parent_ids: set[str] = {
+            str(row.get("parent_snapshot_id"))
+            for row in snapshot_rows
+            if row.get("parent_snapshot_id")
+        }
         snapshots = [
             self._snapshot_from_row(
                 row,
                 current_snapshot_id,
                 branch_name_by_id,
+                can_delete=str(row.get("id") or "") not in child_parent_ids,
             )
             for row in snapshot_rows
         ]
@@ -9528,6 +9538,169 @@ class UserSpaceService:
             await self._set_current_snapshot_cursor(
                 workspace_id, new_snapshot_id, new_branch_id
             )
+
+        await self._touch_workspace(workspace_id)
+        return await self.get_snapshot_timeline(workspace_id, user_id)
+
+    async def delete_snapshot(
+        self,
+        workspace_id: str,
+        snapshot_id: str,
+        user_id: str,
+    ) -> UserSpaceSnapshotTimelineResponse:
+        """Delete a snapshot, only allowed at the branch head.
+
+        If the branch becomes empty afterward, the branch record and its git
+        ref are also removed and the workspace switches to the most-recently
+        active remaining branch.
+        """
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+        await self._ensure_snapshot_timeline(workspace_id, user_id)
+        await self._ensure_workspace_git_repo(workspace_id)
+
+        db = await get_db()
+
+        # Load the snapshot and verify it belongs to this workspace.
+        snap_rows = await db.query_raw(
+            f"""
+            SELECT s.id, s.branch_id, s.parent_snapshot_id,
+                   b.git_ref_name, b.name AS branch_name
+            FROM userspace_snapshots s
+            JOIN userspace_snapshot_branches b ON b.id = s.branch_id
+            WHERE s.workspace_id = {self._sql_quote(workspace_id)}
+              AND s.id = {self._sql_quote(snapshot_id)}
+            LIMIT 1
+            """
+        )
+        if not snap_rows:
+            raise HTTPException(status_code=404, detail="Snapshot not found")
+
+        snap = snap_rows[0]
+        branch_id = str(snap.get("branch_id") or "")
+        branch_ref_name = str(snap.get("git_ref_name") or "")
+        parent_snapshot_id = (
+            str(snap.get("parent_snapshot_id"))
+            if snap.get("parent_snapshot_id")
+            else None
+        )
+
+        # Reject if this snapshot has children (not a head).
+        child_rows = await db.query_raw(
+            f"""
+            SELECT id FROM userspace_snapshots
+            WHERE workspace_id = {self._sql_quote(workspace_id)}
+              AND parent_snapshot_id = {self._sql_quote(snapshot_id)}
+            LIMIT 1
+            """
+        )
+        if child_rows:
+            raise HTTPException(
+                status_code=409,
+                detail="Only the branch head may be deleted",
+            )
+
+        # Load workspace cursor so we know if this is the current snapshot.
+        cursor_rows = await db.query_raw(
+            f"""
+            SELECT current_snapshot_id, current_snapshot_branch_id
+            FROM workspaces
+            WHERE id = {self._sql_quote(workspace_id)}
+            LIMIT 1
+            """
+        )
+        cursor = cursor_rows[0] if cursor_rows else {}
+        current_snapshot_id = (
+            str(cursor.get("current_snapshot_id"))
+            if cursor.get("current_snapshot_id")
+            else None
+        )
+
+        async with self._snapshot_operation_semaphore:
+            # Delete the snapshot record.
+            await db.execute_raw(
+                f"""
+                DELETE FROM userspace_snapshots
+                WHERE workspace_id = {self._sql_quote(workspace_id)}
+                  AND id = {self._sql_quote(snapshot_id)}
+                """
+            )
+
+            # Count remaining snapshots on this branch.
+            count_rows = await db.query_raw(
+                f"""
+                SELECT COUNT(*) AS cnt
+                FROM userspace_snapshots
+                WHERE workspace_id = {self._sql_quote(workspace_id)}
+                  AND branch_id = {self._sql_quote(branch_id)}
+                """
+            )
+            remaining_on_branch = int(
+                count_rows[0].get("cnt") or 0 if count_rows else 0
+            )
+
+            if remaining_on_branch == 0:
+                # Branch is now empty — delete it.
+                await db.execute_raw(
+                    f"""
+                    DELETE FROM userspace_snapshot_branches
+                    WHERE workspace_id = {self._sql_quote(workspace_id)}
+                      AND id = {self._sql_quote(branch_id)}
+                    """
+                )
+                # Delete the git branch ref if it exists.
+                if branch_ref_name:
+                    await self._run_git(
+                        workspace_id,
+                        ["branch", "-D", branch_ref_name],
+                        check=False,
+                    )
+
+                # Find another branch to become active.
+                other_rows = await db.query_raw(
+                    f"""
+                    SELECT b.id AS branch_id, b.git_ref_name,
+                           s.id AS head_snapshot_id
+                    FROM userspace_snapshot_branches b
+                    LEFT JOIN LATERAL (
+                        SELECT id FROM userspace_snapshots
+                        WHERE workspace_id = b.workspace_id
+                          AND branch_id = b.id
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT 1
+                    ) s ON TRUE
+                    WHERE b.workspace_id = {self._sql_quote(workspace_id)}
+                    ORDER BY b.created_at ASC
+                    LIMIT 1
+                    """
+                )
+                if other_rows:
+                    new_branch_id = str(other_rows[0].get("branch_id") or "")
+                    new_ref = str(other_rows[0].get("git_ref_name") or "")
+                    new_head = (
+                        str(other_rows[0].get("head_snapshot_id"))
+                        if other_rows[0].get("head_snapshot_id")
+                        else None
+                    )
+                    if new_ref:
+                        await self._run_git(
+                            workspace_id,
+                            ["checkout", new_ref],
+                            check=False,
+                        )
+                    await self._activate_branch(workspace_id, new_branch_id)
+                    await self._set_current_snapshot_cursor(
+                        workspace_id, new_head, new_branch_id
+                    )
+                else:
+                    # No branches remain at all.
+                    await self._set_current_snapshot_cursor(workspace_id, None, None)
+            elif current_snapshot_id == snapshot_id:
+                # Snapshot was current — move cursor back to parent.
+                await self._set_current_snapshot_cursor(
+                    workspace_id, parent_snapshot_id, branch_id
+                )
 
         await self._touch_workspace(workspace_id)
         return await self.get_snapshot_timeline(workspace_id, user_id)
