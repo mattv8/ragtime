@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { api } from '@/api';
-import type { User, AuthStatus } from '@/types';
+import type { User, AuthStatus, AuthMethodStatus } from '@/types';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
 
 interface LoginPageProps {
@@ -9,7 +9,38 @@ interface LoginPageProps {
   serverName?: string;
 }
 
+function resolveAuthMethods(authStatus: AuthStatus): AuthMethodStatus[] {
+  if (authStatus.auth_methods && authStatus.auth_methods.length > 0) {
+    return authStatus.auth_methods;
+  }
+
+  const methods: AuthMethodStatus[] = [];
+  if (authStatus.ldap_configured) {
+    methods.push({
+      key: 'ldap',
+      label: 'LDAP',
+      configured: true,
+      available: true,
+      status: 'available',
+      detail: 'Configured',
+    });
+  }
+
+  methods.push({
+    key: 'local',
+    label: 'Local Admin',
+    configured: authStatus.local_admin_enabled,
+    available: authStatus.local_admin_enabled,
+    status: authStatus.local_admin_enabled ? 'available' : 'not_configured',
+    detail: authStatus.local_admin_enabled ? 'Ready' : 'Not configured',
+  });
+
+  return methods;
+}
+
 export function LoginPage({ authStatus, onLoginSuccess, serverName = 'Ragtime' }: LoginPageProps) {
+  const authMethods = resolveAuthMethods(authStatus);
+  const hasLdapMethod = authMethods.some((method) => method.key === 'ldap' && method.configured);
   const [username, setUsername] = useState(authStatus.debug_username || '');
   const [password, setPassword] = useState(authStatus.debug_password || '');
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +89,7 @@ export function LoginPage({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
         <AuthCredentialsForm
           username={username}
           password={password}
-          usernamePlaceholder={authStatus.ldap_configured ? 'Username' : 'Local admin'}
+          usernamePlaceholder={hasLdapMethod ? 'Username' : 'Local admin'}
           error={error}
           isLoading={isLoading}
           onUsernameChange={setUsername}
@@ -67,21 +98,19 @@ export function LoginPage({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
         />
 
         <div className="login-footer">
-          {authStatus.ldap_configured && (
-            <p className="login-info">
-              Sign in with your LDAP credentials
-            </p>
-          )}
-          {authStatus.local_admin_enabled && !authStatus.ldap_configured && (
-            <p className="login-info">
-              Sign in with the local admin account
-            </p>
-          )}
-          {authStatus.ldap_configured && authStatus.local_admin_enabled && (
-            <p className="login-info">
-              Local admin account is also available
-            </p>
-          )}
+          <p className="login-info">Quick connection check</p>
+          <ul className="login-auth-method-list" aria-live="polite">
+            {authMethods.map((method) => (
+              <li className="login-auth-method-item" key={method.key}>
+                <span
+                  className={`login-auth-dot status-${method.status}`}
+                  aria-hidden="true"
+                />
+                <span className="login-auth-method-label">{method.label}</span>
+                <span className="login-auth-method-detail">{method.detail || method.status}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
     </div>

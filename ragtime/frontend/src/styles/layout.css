@@ -1744,6 +1744,54 @@ body {
   font-size: var(--text-sm);
 }
 
+.login-auth-method-list {
+  list-style: none;
+  margin: var(--space-sm) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.login-auth-method-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  font-size: var(--text-sm);
+}
+
+.login-auth-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.login-auth-dot.status-available {
+  background: var(--color-success);
+  box-shadow: 0 0 0 3px var(--color-success-light);
+}
+
+.login-auth-dot.status-unavailable {
+  background: var(--color-error);
+  box-shadow: 0 0 0 3px var(--color-error-light);
+}
+
+.login-auth-dot.status-not_configured {
+  background: var(--color-text-secondary);
+}
+
+.login-auth-method-label {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.login-auth-method-detail {
+  color: var(--color-text-secondary);
+}
+
 .oauth-client-info {
   background: var(--color-info-light);
   border: 1px solid var(--color-info-border);

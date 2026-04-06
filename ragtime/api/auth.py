@@ -4,22 +4,15 @@ Authentication API routes.
 Endpoints for login, logout, user info, and LDAP configuration.
 """
 
+import asyncio
 import base64
 import hashlib
 import time
 from typing import Optional
 from urllib.parse import urlparse
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    Form,
-    HTTPException,
-    Query,
-    Request,
-    Response,
-    status,
-)
+from fastapi import (APIRouter, Depends, Form, HTTPException, Query, Request,
+                     Response, status)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from prisma.enums import UserRole
 from prisma.models import User
@@ -27,20 +20,16 @@ from pydantic import BaseModel, Field
 
 from prisma import Json
 from ragtime.config.settings import settings
-from ragtime.core.auth import (
-    authenticate,
-    create_access_token,
-    create_session,
-    discover_ldap_structure,
-    get_ldap_config,
-    invalidate_session,
-    lookup_bind_dn,
-)
+from ragtime.core.auth import (authenticate, create_access_token,
+                               create_session, discover_ldap_structure,
+                               get_ldap_config, invalidate_session,
+                               lookup_bind_dn)
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
-from ragtime.core.security import get_current_user, get_session_token, require_admin
+from ragtime.core.security import (get_current_user, get_session_token,
+                                   require_admin)
 
 logger = get_logger(__name__)
 
@@ -256,6 +245,22 @@ class LdapBindDnLookupResponse(BaseModel):
     error: Optional[str] = None
 
 
+class AuthMethodStatus(BaseModel):
+    """Status of an individual authentication method for login UI display."""
+
+    key: str = Field(..., description="Stable auth method key (e.g. ldap, local, oidc)")
+    label: str = Field(..., description="Human-readable auth method label")
+    configured: bool = Field(..., description="Whether this auth method is configured")
+    available: bool = Field(..., description="Whether the method is currently available")
+    status: str = Field(
+        ...,
+        description="Availability status: available, unavailable, or not_configured",
+    )
+    detail: Optional[str] = Field(
+        None, description="Short operator-facing detail for login status UI"
+    )
+
+
 class AuthStatusResponse(BaseModel):
     """Authentication status response."""
 
@@ -270,6 +275,7 @@ class AuthStatusResponse(BaseModel):
     api_key_configured: bool = False
     session_cookie_secure: bool = False
     allowed_origins_open: bool = False  # True if ALLOWED_ORIGINS=*
+    auth_methods: list[AuthMethodStatus] = Field(default_factory=list)
 
 
 # =============================================================================
@@ -304,11 +310,127 @@ def _detect_cookie_mismatch(request: Request) -> Optional[str]:
     return None
 
 
+async def _build_local_auth_method_status() -> AuthMethodStatus:
+    """Build local-admin auth method status for login UI."""
+    is_configured = bool(settings.local_admin_password)
+    if not is_configured:
+        return AuthMethodStatus(
+            key="local",
+            label="Local Admin",
+            configured=False,
+            available=False,
+            status="not_configured",
+            detail="Not configured",
+        )
+
+    return AuthMethodStatus(
+        key="local",
+        label="Local Admin",
+        configured=True,
+        available=True,
+        status="available",
+        detail="Ready",
+    )
+
+
+async def _build_ldap_auth_method_status(ldap_config) -> AuthMethodStatus:
+    """Build LDAP auth method status with a brief reachability check."""
+    if not ldap_config.serverUrl:
+        return AuthMethodStatus(
+            key="ldap",
+            label="LDAP",
+            configured=False,
+            available=False,
+            status="not_configured",
+            detail="Not configured",
+        )
+
+    if not ldap_config.bindDn or not ldap_config.bindPassword:
+        return AuthMethodStatus(
+            key="ldap",
+            label="LDAP",
+            configured=True,
+            available=False,
+            status="unavailable",
+            detail="Configuration incomplete",
+        )
+
+    bind_password = decrypt_secret(ldap_config.bindPassword)
+    if not bind_password:
+        return AuthMethodStatus(
+            key="ldap",
+            label="LDAP",
+            configured=True,
+            available=False,
+            status="unavailable",
+            detail="Bind password unavailable",
+        )
+
+    try:
+        discovery = await asyncio.wait_for(
+            discover_ldap_structure(
+                server_url=ldap_config.serverUrl,
+                bind_dn=ldap_config.bindDn,
+                bind_password=bind_password,
+                allow_self_signed=ldap_config.allowSelfSigned,
+            ),
+            timeout=5.0,
+        )
+    except TimeoutError:
+        return AuthMethodStatus(
+            key="ldap",
+            label="LDAP",
+            configured=True,
+            available=False,
+            status="unavailable",
+            detail="Connection check timed out",
+        )
+    except Exception as e:
+        logger.warning(f"LDAP availability check failed: {e}")
+        return AuthMethodStatus(
+            key="ldap",
+            label="LDAP",
+            configured=True,
+            available=False,
+            status="unavailable",
+            detail="Connection check failed",
+        )
+
+    if discovery.success:
+        return AuthMethodStatus(
+            key="ldap",
+            label="LDAP",
+            configured=True,
+            available=True,
+            status="available",
+            detail="Reachable",
+        )
+
+    return AuthMethodStatus(
+        key="ldap",
+        label="LDAP",
+        configured=True,
+        available=False,
+        status="unavailable",
+        detail="Unreachable",
+    )
+
+
+async def _build_auth_method_statuses(ldap_config) -> list[AuthMethodStatus]:
+    """Build auth method statuses in one place for easier future expansion."""
+    statuses = await asyncio.gather(
+        _build_ldap_auth_method_status(ldap_config),
+        _build_local_auth_method_status(),
+    )
+    return list(statuses)
+
+
 @router.get("/status", response_model=AuthStatusResponse)
 async def get_auth_status(request: Request):
     """Get authentication system status."""
     ldap_config = await get_ldap_config()
     cookie_warning = _detect_cookie_mismatch(request)
+    auth_methods = await _build_auth_method_statuses(ldap_config)
 
     return AuthStatusResponse(
         authenticated=False,  # This endpoint is for unauthenticated users
@@ -322,6 +444,7 @@ async def get_auth_status(request: Request):
         api_key_configured=bool(settings.api_key),
         session_cookie_secure=settings.session_cookie_secure,
         allowed_origins_open=settings.allowed_origins == "*",
+        auth_methods=auth_methods,
     )
 
 
