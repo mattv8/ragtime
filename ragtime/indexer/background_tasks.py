@@ -17,15 +17,82 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (ChatTaskStatus, FilesystemConnectionConfig,
-                                    SchemaIndexConfig)
+from ragtime.indexer.models import (
+    ChatTaskStatus,
+    FilesystemConnectionConfig,
+    SchemaIndexConfig,
+)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 
 logger = get_logger(__name__)
+
+
+def _synthesize_incomplete_response(
+    events: list[dict[str, Any]],
+    tool_calls: list[dict[str, Any]],
+    hit_max_iterations: bool,
+) -> Optional[str]:
+    """Build a visible fallback only when a run ended cleanly without final text."""
+    had_tool_activity = bool(tool_calls) or any(
+        ev.get("type") == "tool" for ev in events
+    )
+    had_reasoning_activity = any(ev.get("type") == "reasoning" for ev in events)
+
+    if not (had_tool_activity or had_reasoning_activity):
+        return None
+
+    last_tool_name = next(
+        (
+            str(ev.get("tool"))
+            for ev in reversed(events)
+            if ev.get("type") == "tool" and ev.get("tool")
+        ),
+        "tool",
+    )
+
+    if hit_max_iterations:
+        return (
+            "I finished this run without emitting a final answer text "
+            "before hitting the iteration limit. "
+            "Please send Continue so I can resume from the current state."
+        )
+
+    if had_tool_activity:
+        return (
+            "I completed tool activity but did not emit a final answer text "
+            f"(last tool: {last_tool_name}). "
+            "Please send Continue and I will finalize the response."
+        )
+
+    return (
+        "I emitted reasoning but no final answer text in this run. "
+        "Please send Continue and I will complete the response."
+    )
+
+
+async def _persist_partial_assistant_message(
+    conversation_id: str,
+    full_response: str,
+    events: list[dict[str, Any]],
+    tool_calls: list[dict[str, Any]],
+) -> bool:
+    """Persist any partial assistant turn that has text or structured events."""
+    has_partial_text = bool(full_response.strip())
+    has_partial_activity = bool(events) or bool(tool_calls)
+    if not has_partial_text and not has_partial_activity:
+        return False
+
+    await repository.add_message(
+        conversation_id,
+        "assistant",
+        full_response,
+        tool_calls=tool_calls if tool_calls else None,
+        events=events if events else None,
+    )
+    return True
 
 
 def parse_message_content(content: str) -> Union[str, List[Dict[str, Any]]]:
@@ -711,6 +778,7 @@ class BackgroundTaskService:
                 full_response = ""
                 events = []
                 tool_calls = []
+                partial_message_persisted = False
                 # Track running tools by run_id -> index in events list
                 running_tool_indices: dict[str, int] = {}
                 hit_max_iterations = False  # Track if we hit the iteration limit
@@ -965,40 +1033,14 @@ class BackgroundTaskService:
 
                 # Task completed successfully - save final state
                 if not full_response.strip():
-                    had_tool_activity = bool(tool_calls) or any(
-                        ev.get("type") == "tool" for ev in events
-                    )
-                    had_reasoning_activity = any(
-                        ev.get("type") == "reasoning" for ev in events
+                    synthesized_response = _synthesize_incomplete_response(
+                        events,
+                        tool_calls,
+                        hit_max_iterations,
                     )
 
-                    if had_tool_activity or had_reasoning_activity:
-                        last_tool_name = next(
-                            (
-                                str(ev.get("tool"))
-                                for ev in reversed(events)
-                                if ev.get("type") == "tool" and ev.get("tool")
-                            ),
-                            "tool",
-                        )
-                        if hit_max_iterations:
-                            full_response = (
-                                "I finished this run without emitting a final answer text "
-                                "before hitting the iteration limit. "
-                                "Please send Continue so I can resume from the current state."
-                            )
-                        elif had_tool_activity:
-                            full_response = (
-                                "I completed tool activity but did not emit a final answer text "
-                                f"(last tool: {last_tool_name}). "
-                                "Please send Continue and I will finalize the response."
-                            )
-                        else:
-                            full_response = (
-                                "I emitted reasoning but no final answer text in this run. "
-                                "Please send Continue and I will complete the response."
-                            )
-
+                    if synthesized_response:
+                        full_response = synthesized_response
                         events.append({"type": "content", "content": full_response})
                         logger.warning(
                             "Background task %s ended without assistant text; "
@@ -1009,7 +1051,9 @@ class BackgroundTaskService:
                             hit_max_iterations,
                         )
                     else:
-                        error_message = "Model stream ended without assistant text output"
+                        error_message = (
+                            "Model stream ended without assistant text output"
+                        )
                         logger.warning(
                             "Background task %s ended with no assistant text "
                             "(events=%d, tool_calls=%d, hit_max_iterations=%s)",
@@ -1050,6 +1094,7 @@ class BackgroundTaskService:
                     tool_calls=tool_calls if tool_calls else None,
                     events=events if events else None,
                 )
+                partial_message_persisted = True
 
                 # Notify completion
                 await task_event_bus.publish(
@@ -1067,16 +1112,20 @@ class BackgroundTaskService:
             except asyncio.CancelledError:
                 # Save partial response before cancelling
                 try:
-                    if full_response.strip():
-                        await repository.add_message(
+                    if (
+                        not partial_message_persisted
+                        and await _persist_partial_assistant_message(
                             conversation_id,
-                            "assistant",
                             full_response,
-                            tool_calls=tool_calls if tool_calls else None,
-                            events=events if events else None,
+                            events,
+                            tool_calls,
                         )
+                    ):
+                        partial_message_persisted = True
                         logger.info(
-                            f"Saved partial response for cancelled task {task_id}"
+                            "Saved partial assistant message for task %s (%s)",
+                            task_id,
+                            "cancelled",
                         )
 
                     # If shutting down (hot-reload/restart), mark as interrupted
@@ -1099,6 +1148,21 @@ class BackgroundTaskService:
             except Exception as e:
                 logger.exception(f"Background task {task_id} failed")
                 try:
+                    if (
+                        not partial_message_persisted
+                        and await _persist_partial_assistant_message(
+                            conversation_id,
+                            full_response,
+                            events,
+                            tool_calls,
+                        )
+                    ):
+                        partial_message_persisted = True
+                        logger.info(
+                            "Saved partial assistant message for task %s (%s)",
+                            task_id,
+                            "failed",
+                        )
                     await repository.update_chat_task_status(
                         task_id, ChatTaskStatus.failed, str(e)
                     )

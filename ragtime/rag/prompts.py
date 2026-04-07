@@ -261,9 +261,10 @@ def build_workspace_scm_setup_prompt(
     parts.append(
         "Verify .ragtime/runtime-bootstrap.json is still appropriate, "
         "install only declared dependencies, check whether environment variables "
-        "are needed (e.g. DATABASE_URL), run validate_userspace_code on every "
-        "changed source file, and create a snapshot when the workspace is in a "
-        "runnable state."
+        "are needed (e.g. DATABASE_URL), create placeholder env vars for missing "
+        "required keys and instruct the user to fill them in the Environment "
+        "Variables dialog, run validate_userspace_code on every changed source "
+        "file, and create a snapshot when the workspace is in a runnable state."
     )
 
     replit_features = [

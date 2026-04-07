@@ -136,6 +136,21 @@ IMAGE_PAYLOAD_LIMITS = {
 # Keep at most this many concurrent image downsampling jobs.
 IMAGE_DOWNSAMPLE_MAX_CONCURRENCY = 2
 
+INTERNAL_AGENT_CONTINUATION_PROMPT = (
+    "Continue the task from the gathered context above. If more verification or "
+    "changes are needed, keep working and call additional tools when necessary. "
+    "Once you have enough information, send the next user-facing assistant "
+    "reply. Do not stop without a user-visible answer."
+)
+INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT = (
+    "Write the next assistant reply for the user using the verified results "
+    "already gathered above. Do not mention internal continuation, hidden "
+    "prompts, tool availability, or that tools are unavailable. Answer the "
+    "user directly. If the task is incomplete, state the verified status and "
+    "the most concrete next step instead of describing internal limitations."
+)
+MAX_INTERNAL_AGENT_CONTINUATIONS = 2
+
 _USERSPACE_LIVE_DATA_BINDING_VALIDATOR_JS_PATH = Path(__file__).with_name(
     "userspace_live_data_binding_validator.js"
 )
@@ -1547,6 +1562,9 @@ class RAGComponents:
             "signature_counts": cast(dict[str, int], {}),
             "blocked_repeat_calls": 0,
             "max_iterations_reached": False,
+            "internal_continue_attempts": 0,
+            "internal_continue_stop_reason": "",
+            "tool_free_synthesis_used": False,
         }
         if mode != "userspace" or not tools:
             return tools, request_state
@@ -1698,6 +1716,15 @@ class RAGComponents:
             metadata["blocked_repeat_calls"] = int(state.get("blocked_repeat_calls", 0))
             metadata["max_iterations_reached"] = bool(
                 state.get("max_iterations_reached", False)
+            )
+            metadata["internal_continue_attempts"] = int(
+                state.get("internal_continue_attempts", 0)
+            )
+            metadata["internal_continue_stop_reason"] = str(
+                state.get("internal_continue_stop_reason", "")
+            )
+            metadata["tool_free_synthesis_used"] = bool(
+                state.get("tool_free_synthesis_used", False)
             )
 
         if mode == "userspace":
@@ -5864,6 +5891,143 @@ except Exception as e:
 
         return grouped_steps
 
+    @staticmethod
+    def _truncate_prompt_preview(text: str, max_chars: int = 320) -> str:
+        """Return a compact single-line preview for internal prompt context."""
+        normalized = " ".join(str(text or "").split())
+        if len(normalized) <= max_chars:
+            return normalized
+        return normalized[: max(0, max_chars - 16)] + "... (truncated)"
+
+    @classmethod
+    def _summarize_tool_output_for_synthesis(
+        cls,
+        output: Any,
+        *,
+        max_chars: int = 800,
+    ) -> str:
+        """Convert raw tool output into synthesis-friendly plain text."""
+        text = sanitize_output(str(output or "")).strip()
+        if not text:
+            return "(no output)"
+
+        parsed = cls._parse_json_object(text)
+        if isinstance(parsed, dict):
+            parts: list[str] = []
+            status = str(parsed.get("status") or "").strip()
+            if status:
+                parts.append(f"status={status}")
+
+            message = str(parsed.get("message") or parsed.get("error") or "").strip()
+            if message:
+                parts.append(message)
+
+            diagnostics = parsed.get("diagnostics")
+            if isinstance(diagnostics, dict) and diagnostics:
+                diagnostic_keys = (
+                    "path",
+                    "error_count",
+                    "contract_error_count",
+                    "total_files",
+                    "inspected_file_count",
+                    "has_dashboard_entry",
+                    "repeat_count",
+                    "signature",
+                )
+                diagnostic_parts = [
+                    f"{key}={diagnostics[key]}"
+                    for key in diagnostic_keys
+                    if key in diagnostics
+                ]
+                if diagnostic_parts:
+                    parts.append("diagnostics: " + ", ".join(diagnostic_parts))
+
+            next_best_tool = str(parsed.get("next_best_tool") or "").strip()
+            if next_best_tool:
+                parts.append(f"next={next_best_tool}")
+
+            summary = " | ".join(part for part in parts if part)
+            if summary:
+                return cls._truncate_prompt_preview(summary, max_chars)
+
+        return cls._truncate_prompt_preview(text, max_chars)
+
+    @classmethod
+    def _build_internal_synthesis_tool_context(
+        cls,
+        *,
+        intermediate_steps: list[Any],
+        replay_messages: list[BaseMessage],
+        max_items: int = 8,
+    ) -> SystemMessage | None:
+        """Build a plain-language context summary for tool-free final synthesis."""
+        lines: list[str] = []
+
+        if intermediate_steps:
+            for step in intermediate_steps[-max_items:]:
+                action = step[0] if isinstance(step, tuple) and step else None
+                observation = step[1] if isinstance(step, tuple) and len(step) > 1 else ""
+                tool_name = str(getattr(action, "tool", "unknown") or "unknown")
+                tool_input = getattr(action, "tool_input", {})
+                args_preview = cls._truncate_prompt_preview(
+                    json.dumps(tool_input, ensure_ascii=True, default=str)
+                    if isinstance(tool_input, dict)
+                    else str(tool_input),
+                    220,
+                )
+                output_summary = cls._summarize_tool_output_for_synthesis(observation)
+                lines.append(
+                    f"- {tool_name} args={args_preview}; result={output_summary}"
+                )
+        elif replay_messages:
+            index = 0
+            while index < len(replay_messages):
+                message = replay_messages[index]
+                if not isinstance(message, AIMessage):
+                    index += 1
+                    continue
+
+                tool_calls = getattr(message, "tool_calls", None) or []
+                if not tool_calls:
+                    index += 1
+                    continue
+
+                tool_call = tool_calls[0]
+                tool_name = str(tool_call.get("name") or "unknown")
+                tool_args = tool_call.get("args") or {}
+                args_preview = cls._truncate_prompt_preview(
+                    json.dumps(tool_args, ensure_ascii=True, default=str)
+                    if isinstance(tool_args, dict)
+                    else str(tool_args),
+                    220,
+                )
+                tool_output = ""
+                if index + 1 < len(replay_messages) and isinstance(
+                    replay_messages[index + 1], ToolMessage
+                ):
+                    tool_output = str(replay_messages[index + 1].content or "")
+                    index += 1
+                output_summary = cls._summarize_tool_output_for_synthesis(tool_output)
+                lines.append(
+                    f"- {tool_name} args={args_preview}; result={output_summary}"
+                )
+                if len(lines) >= max_items:
+                    break
+                index += 1
+
+        if not lines:
+            return None
+
+        return SystemMessage(
+            content=(
+                "Verified tool activity summary for final answer generation. "
+                "Use this as factual context, but do not quote raw tool protocol, "
+                "function-call metadata, or JSON wrappers unless the user explicitly "
+                "asked for them.\n\n"
+                + "\n".join(lines)
+            )
+        )
+
     def _extract_text_from_message(self, message: Any) -> str:
         """
         Extract text content from a message (string or multimodal).
@@ -9433,9 +9597,7 @@ except Exception as e:
                         "command": command,
                         "timeout_seconds": timeout_seconds,
                         "error": f"Terminal command failed: {detail_text}",
-                        "failure_class": self._classify_userspace_failure(
-                            detail_text
-                        ),
+                        "failure_class": self._classify_userspace_failure(detail_text),
                         "action_required": (
                             "Inspect the command, cwd, and runtime state before retrying. "
                             "If you need source diagnostics, prefer validate_userspace_code over shell-based lint or typecheck commands."
@@ -9778,6 +9940,9 @@ except Exception as e:
             "signature_counts": {},
             "blocked_repeat_calls": 0,
             "max_iterations_reached": False,
+            "internal_continue_attempts": 0,
+            "internal_continue_stop_reason": "",
+            "tool_free_synthesis_used": False,
         }
 
         workspace_id = (workspace_context or {}).get("workspace_id", "").strip()
@@ -10863,260 +11028,514 @@ except Exception as e:
                 )
 
                 # Track tool runs to avoid duplicates from nested events
-                active_tool_runs: set[str] = set()
-                streamed_content_by_chat_run: dict[str, str] = {}
-                streamed_reasoning_by_chat_run: dict[str, str] = {}
-                # Track tool call argument generation progress (line count)
-                _generating_tool_lines: dict[str, int] = {}
-                _generating_tool_names: dict[str, str] = {}
-                # Track tool execution wall-clock times for watchdog logging
-                _tool_start_times: dict[str, tuple[float, str]] = (
-                    {}
-                )  # run_id -> (mono_time, tool_name)
+                request_tool_state["internal_continue_attempts"] = 0
+                attempt_chat_history = list(chat_history)
+                attempt_original_input = agent_input
+                attempt_history_has_original_input = False
+                attempt_input = agent_input
+                attempt_number = 0
+                any_tool_activity = False
 
                 try:
-                    async for event in executor.astream_events(
-                        {
-                            "input": agent_input,
-                            "user_input": [HumanMessage(content=agent_input)],
-                            "chat_history": chat_history,
-                        },
-                        version="v2",
-                    ):
-                        kind = event.get("event", "")
-                        run_id = event.get("run_id", "")
+                    while True:
+                        active_tool_runs: set[str] = set()
+                        streamed_content_by_chat_run: dict[str, str] = {}
+                        streamed_reasoning_by_chat_run: dict[str, str] = {}
+                        _generating_tool_lines: dict[str, int] = {}
+                        _generating_tool_names: dict[str, str] = {}
+                        _tool_start_times: dict[str, tuple[float, str]] = {}
+                        _tool_start_payloads: dict[str, dict[str, Any]] = {}
+                        attempt_emitted_content = False
+                        attempt_had_tool_activity = False
+                        attempt_intermediate_steps: list[Any] = []
+                        attempt_replayed_tool_messages: list[BaseMessage] = []
 
-                        # Emit tool start events - only for new tool runs
-                        if kind == "on_tool_start":
-                            # Skip if we've already seen this tool run
-                            if run_id in active_tool_runs:
-                                continue
-                            active_tool_runs.add(run_id)
+                        async for event in executor.astream_events(
+                            {
+                                "input": attempt_input,
+                                "user_input": [HumanMessage(content=attempt_input)],
+                                "chat_history": attempt_chat_history,
+                            },
+                            version="v2",
+                        ):
+                            kind = event.get("event", "")
+                            run_id = event.get("run_id", "")
 
-                            tool_name = event.get("name", "unknown")
-                            tool_input = event.get("data", {}).get("input", {})
-                            connection_meta = self._get_tool_connection_metadata(
-                                tool_name
-                            )
-                            _tool_start_times[run_id] = (time.monotonic(), tool_name)
-                            logger.debug(
-                                f"Tool started: {tool_name} (run_id={run_id[:8]})"
-                            )
-                            yield {
-                                "type": "tool_start",
-                                "tool": tool_name,
-                                "input": tool_input,
-                                "connection": connection_meta,
-                                "run_id": run_id,
-                            }
+                            if kind == "on_tool_start":
+                                if run_id in active_tool_runs:
+                                    continue
+                                active_tool_runs.add(run_id)
+                                attempt_had_tool_activity = True
+                                any_tool_activity = True
 
-                        # Emit tool end events - only for runs we started
-                        elif kind == "on_tool_end":
-                            # Skip if we didn't track this tool run starting
-                            if run_id not in active_tool_runs:
-                                continue
-                            active_tool_runs.discard(run_id)
-
-                            tool_name = event.get("name", "unknown")
-                            tool_output = event.get("data", {}).get("output", "")
-                            connection_meta = self._get_tool_connection_metadata(
-                                tool_name
-                            )
-
-                            # Watchdog: log tool execution duration
-                            start_info = _tool_start_times.pop(run_id, None)
-                            if start_info:
-                                elapsed = time.monotonic() - start_info[0]
-                                if elapsed > 10:
-                                    logger.warning(
-                                        f"Slow tool execution: {tool_name} took {elapsed:.1f}s (run_id={run_id[:8]})"
-                                    )
-                                else:
-                                    logger.debug(
-                                        f"Tool completed: {tool_name} in {elapsed:.1f}s (run_id={run_id[:8]})"
-                                    )
-
-                            # Don't truncate UI visualization tools - their JSON must be complete
-                            # Truncate other long outputs for display
-                            ui_tools = {"create_chart", "create_datatable"}
-                            if (
-                                isinstance(tool_output, str)
-                                and len(tool_output) > 2000
-                                and tool_name not in ui_tools
-                            ):
-                                tool_output = tool_output[:2000] + "... (truncated)"
-                            yield {
-                                "type": "tool_end",
-                                "tool": tool_name,
-                                "output": tool_output,
-                                "connection": connection_meta,
-                                "run_id": run_id,
-                            }
-
-                        # Handle tool errors so the UI never shows a permanently "running" tool card
-                        elif kind == "on_tool_error":
-                            if run_id not in active_tool_runs:
-                                continue
-                            active_tool_runs.discard(run_id)
-
-                            tool_name = event.get("name", "unknown")
-                            error_data = event.get("data", {})
-                            error_output = (
-                                str(error_data.get("error", error_data)).strip()
-                                or "Tool execution failed"
-                            )
-                            connection_meta = self._get_tool_connection_metadata(
-                                tool_name
-                            )
-
-                            # Watchdog: log tool error duration
-                            start_info = _tool_start_times.pop(run_id, None)
-                            if start_info:
-                                elapsed = time.monotonic() - start_info[0]
-                                logger.warning(
-                                    f"Tool error: {tool_name} failed after {elapsed:.1f}s (run_id={run_id[:8]}): {error_output[:200]}"
+                                tool_name = event.get("name", "unknown")
+                                tool_input = event.get("data", {}).get("input", {})
+                                connection_meta = self._get_tool_connection_metadata(
+                                    tool_name
                                 )
-
-                            yield {
-                                "type": "tool_end",
-                                "tool": tool_name,
-                                "output": f"Error: {error_output}",
-                                "connection": connection_meta,
-                                "run_id": run_id,
-                            }
-
-                        # Stream tokens from the chat model
-                        elif kind == "on_chat_model_stream":
-                            chunk = event.get("data", {}).get("chunk")
-                            if chunk:
-                                # Detect tool-call argument streaming (LLM generating
-                                # tool input). Count newlines to report line progress.
-                                tool_call_chunks = getattr(
-                                    chunk, "tool_call_chunks", None
+                                _tool_start_payloads[run_id] = {
+                                    "tool": tool_name,
+                                    "input": tool_input,
+                                }
+                                _tool_start_times[run_id] = (
+                                    time.monotonic(),
+                                    tool_name,
                                 )
-                                if tool_call_chunks:
-                                    for tc_chunk in tool_call_chunks:
-                                        tc_id = (
-                                            tc_chunk.get("id") or tc_chunk.get("index")
-                                            if isinstance(tc_chunk, dict)
-                                            else getattr(tc_chunk, "id", None)
-                                            or getattr(tc_chunk, "index", None)
+                                logger.debug(
+                                    f"Tool started: {tool_name} (run_id={run_id[:8]})"
+                                )
+                                yield {
+                                    "type": "tool_start",
+                                    "tool": tool_name,
+                                    "input": tool_input,
+                                    "connection": connection_meta,
+                                    "run_id": run_id,
+                                }
+
+                            elif kind == "on_tool_end":
+                                if run_id not in active_tool_runs:
+                                    continue
+                                active_tool_runs.discard(run_id)
+
+                                tool_name = event.get("name", "unknown")
+                                tool_output = event.get("data", {}).get("output", "")
+                                connection_meta = self._get_tool_connection_metadata(
+                                    tool_name
+                                )
+                                start_payload = _tool_start_payloads.pop(run_id, None)
+
+                                start_info = _tool_start_times.pop(run_id, None)
+                                if start_info:
+                                    elapsed = time.monotonic() - start_info[0]
+                                    if elapsed > 10:
+                                        logger.warning(
+                                            f"Slow tool execution: {tool_name} took {elapsed:.1f}s (run_id={run_id[:8]})"
                                         )
-                                        tc_name = (
-                                            tc_chunk.get("name")
-                                            if isinstance(tc_chunk, dict)
-                                            else getattr(tc_chunk, "name", None)
+                                    else:
+                                        logger.debug(
+                                            f"Tool completed: {tool_name} in {elapsed:.1f}s (run_id={run_id[:8]})"
                                         )
-                                        tc_args = (
-                                            tc_chunk.get("args", "")
-                                            if isinstance(tc_chunk, dict)
-                                            else getattr(tc_chunk, "args", "")
-                                        ) or ""
-                                        tc_key = (
-                                            str(tc_id) if tc_id is not None else run_id
-                                        )
-                                        if tc_name:
-                                            _generating_tool_names[tc_key] = tc_name
-                                        if tc_args and tc_key:
-                                            prev = _generating_tool_lines.get(tc_key, 0)
-                                            new_lines = tc_args.count("\n")
-                                            if new_lines:
-                                                total = prev + new_lines
-                                                _generating_tool_lines[tc_key] = total
-                                                yield {
-                                                    "type": "tool_generating",
-                                                    "tool": _generating_tool_names.get(
-                                                        tc_key, ""
+
+                                ui_tools = {"create_chart", "create_datatable"}
+                                display_output = tool_output
+                                if (
+                                    isinstance(display_output, str)
+                                    and len(display_output) > 2000
+                                    and tool_name not in ui_tools
+                                ):
+                                    display_output = (
+                                        display_output[:2000] + "... (truncated)"
+                                    )
+                                tool_args = (
+                                    start_payload.get("input") if start_payload else {}
+                                )
+                                if not isinstance(tool_args, dict):
+                                    tool_args = {"input": tool_args}
+                                tool_call_id = (
+                                    run_id
+                                    or f"stream_tool_{len(attempt_replayed_tool_messages)}"
+                                )
+                                attempt_replayed_tool_messages.extend(
+                                    [
+                                        AIMessage(
+                                            content="",
+                                            tool_calls=[
+                                                {
+                                                    "name": (
+                                                        start_payload.get(
+                                                            "tool", tool_name
+                                                        )
+                                                        if start_payload
+                                                        else tool_name
                                                     ),
-                                                    "lines": total,
+                                                    "args": tool_args,
+                                                    "id": tool_call_id,
                                                 }
+                                            ],
+                                        ),
+                                        ToolMessage(
+                                            content=str(tool_output or ""),
+                                            tool_call_id=tool_call_id,
+                                        ),
+                                    ]
+                                )
+                                yield {
+                                    "type": "tool_end",
+                                    "tool": tool_name,
+                                    "output": display_output,
+                                    "connection": connection_meta,
+                                    "run_id": run_id,
+                                }
 
-                                # Check for provider-specific reasoning/thinking tokens.
+                            elif kind == "on_tool_error":
+                                if run_id not in active_tool_runs:
+                                    continue
+                                active_tool_runs.discard(run_id)
+                                attempt_had_tool_activity = True
+                                any_tool_activity = True
+
+                                tool_name = event.get("name", "unknown")
+                                error_data = event.get("data", {})
+                                error_output = (
+                                    str(error_data.get("error", error_data)).strip()
+                                    or "Tool execution failed"
+                                )
+                                connection_meta = self._get_tool_connection_metadata(
+                                    tool_name
+                                )
+                                start_payload = _tool_start_payloads.pop(run_id, None)
+
+                                start_info = _tool_start_times.pop(run_id, None)
+                                if start_info:
+                                    elapsed = time.monotonic() - start_info[0]
+                                    logger.warning(
+                                        f"Tool error: {tool_name} failed after {elapsed:.1f}s (run_id={run_id[:8]}): {error_output[:200]}"
+                                    )
+
+                                tool_args = (
+                                    start_payload.get("input") if start_payload else {}
+                                )
+                                if not isinstance(tool_args, dict):
+                                    tool_args = {"input": tool_args}
+                                tool_call_id = (
+                                    run_id
+                                    or f"stream_tool_{len(attempt_replayed_tool_messages)}"
+                                )
+                                attempt_replayed_tool_messages.extend(
+                                    [
+                                        AIMessage(
+                                            content="",
+                                            tool_calls=[
+                                                {
+                                                    "name": (
+                                                        start_payload.get(
+                                                            "tool", tool_name
+                                                        )
+                                                        if start_payload
+                                                        else tool_name
+                                                    ),
+                                                    "args": tool_args,
+                                                    "id": tool_call_id,
+                                                }
+                                            ],
+                                        ),
+                                        ToolMessage(
+                                            content=f"Error: {error_output}",
+                                            tool_call_id=tool_call_id,
+                                        ),
+                                    ]
+                                )
+
+                                yield {
+                                    "type": "tool_end",
+                                    "tool": tool_name,
+                                    "output": f"Error: {error_output}",
+                                    "connection": connection_meta,
+                                    "run_id": run_id,
+                                }
+
+                            elif kind == "on_chat_model_stream":
+                                chunk = event.get("data", {}).get("chunk")
+                                if chunk:
+                                    tool_call_chunks = getattr(
+                                        chunk, "tool_call_chunks", None
+                                    )
+                                    if tool_call_chunks:
+                                        for tc_chunk in tool_call_chunks:
+                                            tc_id = (
+                                                tc_chunk.get("id")
+                                                or tc_chunk.get("index")
+                                                if isinstance(tc_chunk, dict)
+                                                else getattr(tc_chunk, "id", None)
+                                                or getattr(tc_chunk, "index", None)
+                                            )
+                                            tc_name = (
+                                                tc_chunk.get("name")
+                                                if isinstance(tc_chunk, dict)
+                                                else getattr(tc_chunk, "name", None)
+                                            )
+                                            tc_args = (
+                                                tc_chunk.get("args", "")
+                                                if isinstance(tc_chunk, dict)
+                                                else getattr(tc_chunk, "args", "")
+                                            ) or ""
+                                            tc_key = (
+                                                str(tc_id)
+                                                if tc_id is not None
+                                                else run_id
+                                            )
+                                            if tc_name:
+                                                _generating_tool_names[tc_key] = tc_name
+                                            if tc_args and tc_key:
+                                                prev = _generating_tool_lines.get(
+                                                    tc_key, 0
+                                                )
+                                                new_lines = tc_args.count("\n")
+                                                if new_lines:
+                                                    total = prev + new_lines
+                                                    _generating_tool_lines[tc_key] = (
+                                                        total
+                                                    )
+                                                    yield {
+                                                        "type": "tool_generating",
+                                                        "tool": _generating_tool_names.get(
+                                                            tc_key, ""
+                                                        ),
+                                                        "lines": total,
+                                                    }
+
+                                    reasoning_text = (
+                                        self._extract_reasoning_from_stream_chunk(chunk)
+                                    )
+                                    if reasoning_text:
+                                        if run_id:
+                                            streamed_reasoning_by_chat_run[run_id] = (
+                                                streamed_reasoning_by_chat_run.get(
+                                                    run_id, ""
+                                                )
+                                                + reasoning_text
+                                            )
+                                        yield {
+                                            "type": "reasoning",
+                                            "content": reasoning_text,
+                                        }
+
+                                    if hasattr(chunk, "content") and chunk.content:
+                                        content = (
+                                            self._extract_text_from_stream_content(
+                                                chunk.content
+                                            )
+                                        )
+                                        if content:
+                                            if content.strip():
+                                                attempt_emitted_content = True
+                                            if run_id:
+                                                streamed_content_by_chat_run[run_id] = (
+                                                    streamed_content_by_chat_run.get(
+                                                        run_id, ""
+                                                    )
+                                                    + content
+                                                )
+                                            yield content
+
+                            elif kind == "on_chat_model_end":
+                                output = event.get("data", {}).get("output")
+                                final_reasoning = (
+                                    self._extract_reasoning_from_chat_model_output(
+                                        output
+                                    )
+                                )
+                                emitted_reasoning = streamed_reasoning_by_chat_run.pop(
+                                    run_id, ""
+                                )
+                                if final_reasoning:
+                                    reasoning_suffix = self._compute_missing_suffix(
+                                        emitted_reasoning, final_reasoning
+                                    )
+                                    if reasoning_suffix:
+                                        yield {
+                                            "type": "reasoning",
+                                            "content": reasoning_suffix,
+                                        }
+                                final_text = self._extract_text_from_chat_model_output(
+                                    output
+                                )
+                                emitted_text = streamed_content_by_chat_run.get(
+                                    run_id, ""
+                                )
+                                missing_suffix = self._compute_missing_suffix(
+                                    emitted_text, final_text
+                                )
+                                if missing_suffix:
+                                    if missing_suffix.strip():
+                                        attempt_emitted_content = True
+                                    if run_id:
+                                        streamed_content_by_chat_run[run_id] = (
+                                            emitted_text + missing_suffix
+                                        )
+                                    yield missing_suffix
+
+                            elif kind == "on_chain_end":
+                                output = event.get("data", {}).get("output", {})
+
+                                if isinstance(output, dict):
+                                    intermediate_steps = output.get(
+                                        "intermediate_steps"
+                                    )
+                                    if isinstance(intermediate_steps, list):
+                                        attempt_intermediate_steps = intermediate_steps
+                                        if intermediate_steps:
+                                            attempt_had_tool_activity = True
+                                            any_tool_activity = True
+
+                                    agent_output = output.get("output", "")
+                                    if (
+                                        "iteration limit" in str(agent_output).lower()
+                                        or "max iterations" in str(agent_output).lower()
+                                    ):
+                                        request_tool_state["max_iterations_reached"] = (
+                                            True
+                                        )
+                                        yield {"type": "max_iterations_reached"}
+                                    return_values = output.get("return_values", {})
+                                    if isinstance(return_values, dict):
+                                        rv_output = return_values.get("output", "")
+                                        if "iteration limit" in str(rv_output).lower():
+                                            request_tool_state[
+                                                "max_iterations_reached"
+                                            ] = True
+                                            yield {"type": "max_iterations_reached"}
+
+                        should_internal_continue = (
+                            not request_tool_state.get("max_iterations_reached", False)
+                            and not attempt_emitted_content
+                            and attempt_had_tool_activity
+                            and bool(
+                                attempt_intermediate_steps
+                                or attempt_replayed_tool_messages
+                            )
+                            and attempt_number < MAX_INTERNAL_AGENT_CONTINUATIONS
+                        )
+                        if not should_internal_continue:
+                            stop_reason = ""
+                            if request_tool_state.get("max_iterations_reached", False):
+                                stop_reason = "max_iterations_reached"
+                            elif attempt_emitted_content:
+                                stop_reason = "content_emitted"
+                            elif not attempt_had_tool_activity:
+                                stop_reason = "no_tool_activity_this_attempt"
+                            elif not (
+                                attempt_intermediate_steps
+                                or attempt_replayed_tool_messages
+                            ):
+                                stop_reason = "no_replay_context"
+                            elif attempt_number >= MAX_INTERNAL_AGENT_CONTINUATIONS:
+                                stop_reason = "continuation_limit_reached"
+                            request_tool_state["internal_continue_stop_reason"] = (
+                                stop_reason
+                            )
+                            if not attempt_emitted_content and any_tool_activity:
+                                logger.info(
+                                    "Internal continuation stopped: reason=%s max_iter=%s emitted=%s "
+                                    "this_attempt_tools=%s steps=%d replayed=%d attempt=%d/%d",
+                                    stop_reason,
+                                    request_tool_state.get(
+                                        "max_iterations_reached", False
+                                    ),
+                                    attempt_emitted_content,
+                                    attempt_had_tool_activity,
+                                    len(attempt_intermediate_steps),
+                                    len(attempt_replayed_tool_messages),
+                                    attempt_number,
+                                    MAX_INTERNAL_AGENT_CONTINUATIONS,
+                                )
+                            break
+
+                        attempt_chat_history = list(attempt_chat_history)
+                        if not attempt_history_has_original_input:
+                            attempt_chat_history.append(
+                                HumanMessage(content=attempt_original_input)
+                            )
+                            attempt_history_has_original_input = True
+                        if attempt_intermediate_steps:
+                            attempt_chat_history.extend(
+                                self._format_intermediate_steps_for_agent(
+                                    attempt_intermediate_steps
+                                )
+                            )
+                        else:
+                            attempt_chat_history.extend(attempt_replayed_tool_messages)
+                        attempt_input = INTERNAL_AGENT_CONTINUATION_PROMPT
+                        attempt_number += 1
+                        request_tool_state["internal_continue_attempts"] = (
+                            attempt_number
+                        )
+                        logger.info(
+                            "Agent stream attempt %d ended after tool activity without final text; continuing internally",
+                            attempt_number,
+                        )
+
+                    # ── Tool-free synthesis fallback ──
+                    # If all agent continuation attempts are exhausted and
+                    # we still have no user-visible text, make one final
+                    # direct LLM call WITHOUT tools to guarantee output.
+                    if (
+                        not attempt_emitted_content
+                        and any_tool_activity
+                        and not request_tool_state.get("max_iterations_reached", False)
+                        and request_llm is not None
+                    ):
+                        request_tool_state["tool_free_synthesis_used"] = True
+                        logger.info(
+                            "All %d agent continuation attempt(s) exhausted without "
+                            "final text; falling back to tool-free LLM synthesis",
+                            attempt_number,
+                        )
+                        synthesis_messages: list[BaseMessage] = [
+                            SystemMessage(content=system_prompt + tool_scope_prompt),
+                        ]
+                        synthesis_messages.extend(attempt_chat_history)
+                        if not attempt_history_has_original_input:
+                            synthesis_messages.append(
+                                HumanMessage(content=attempt_original_input)
+                            )
+                        synthesis_tool_context = self._build_internal_synthesis_tool_context(
+                            intermediate_steps=attempt_intermediate_steps,
+                            replay_messages=attempt_replayed_tool_messages,
+                        )
+                        if synthesis_tool_context is not None:
+                            synthesis_messages.append(synthesis_tool_context)
+                        synthesis_messages.append(
+                            SystemMessage(content=INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT)
+                        )
+                        try:
+                            async for chunk in request_llm.astream(synthesis_messages):
                                 reasoning_text = (
                                     self._extract_reasoning_from_stream_chunk(chunk)
                                 )
                                 if reasoning_text:
-                                    if run_id:
-                                        streamed_reasoning_by_chat_run[run_id] = (
-                                            streamed_reasoning_by_chat_run.get(
-                                                run_id, ""
-                                            )
-                                            + reasoning_text
-                                        )
                                     yield {
                                         "type": "reasoning",
                                         "content": reasoning_text,
                                     }
-
                                 if hasattr(chunk, "content") and chunk.content:
                                     content = self._extract_text_from_stream_content(
                                         chunk.content
                                     )
                                     if content:
-                                        if run_id:
-                                            streamed_content_by_chat_run[run_id] = (
-                                                streamed_content_by_chat_run.get(
-                                                    run_id, ""
-                                                )
-                                                + content
-                                            )
+                                        attempt_emitted_content = True
                                         yield content
-
-                        elif kind == "on_chat_model_end":
-                            output = event.get("data", {}).get("output")
-                            # Only emit final reasoning if it wasn't already
-                            # streamed token-by-token (avoids duplicate events).
-                            final_reasoning = (
-                                self._extract_reasoning_from_chat_model_output(output)
+                        except Exception:
+                            logger.warning(
+                                "Tool-free synthesis LLM call failed",
+                                exc_info=True,
                             )
-                            emitted_reasoning = streamed_reasoning_by_chat_run.pop(
-                                run_id, ""
+                        else:
+                            await self._persist_provider_prompt_debug_record(
+                                conversation_id=conversation_id,
+                                user_id=user_id,
+                                chat_task_id=chat_task_id,
+                                provider=provider_name,
+                                model=effective_model,
+                                mode=request_context["mode"],
+                                request_kind="internal_final_synthesis",
+                                system_prompt=system_prompt,
+                                rendered_user_input=INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT,
+                                chat_history=attempt_chat_history,
+                                provider_messages=[
+                                    self._serialize_base_message(message)
+                                    for message in synthesis_messages
+                                ],
+                                tool_scope_prompt=tool_scope_prompt,
+                                prompt_additions=request_context["prompt_additions"],
+                                turn_reminders=turn_system_content,
+                                debug_metadata=self._build_request_debug_metadata(
+                                    mode=request_context["mode"],
+                                    request_tool_state=request_tool_state,
+                                    workspace_id=request_context.get("workspace_id"),
+                                ),
+                                message_index=message_index,
                             )
-                            if final_reasoning:
-                                reasoning_suffix = self._compute_missing_suffix(
-                                    emitted_reasoning, final_reasoning
-                                )
-                                if reasoning_suffix:
-                                    yield {
-                                        "type": "reasoning",
-                                        "content": reasoning_suffix,
-                                    }
-                            final_text = self._extract_text_from_chat_model_output(
-                                output
-                            )
-                            emitted_text = streamed_content_by_chat_run.get(run_id, "")
-                            missing_suffix = self._compute_missing_suffix(
-                                emitted_text, final_text
-                            )
-                            if missing_suffix:
-                                if run_id:
-                                    streamed_content_by_chat_run[run_id] = (
-                                        emitted_text + missing_suffix
-                                    )
-                                yield missing_suffix
-
-                        # Detect when agent executor finishes - check for max iterations
-                        elif kind == "on_chain_end":
-                            # Check if this is the AgentExecutor finishing
-                            output = event.get("data", {}).get("output", {})
-
-                            # AgentExecutor sets "Agent stopped due to iteration limit" in output
-                            if isinstance(output, dict):
-                                agent_output = output.get("output", "")
-                                if (
-                                    "iteration limit" in str(agent_output).lower()
-                                    or "max iterations" in str(agent_output).lower()
-                                ):
-                                    request_tool_state["max_iterations_reached"] = True
-                                    yield {"type": "max_iterations_reached"}
-                                return_values = output.get("return_values", {})
-                                if isinstance(return_values, dict):
-                                    rv_output = return_values.get("output", "")
-                                    if "iteration limit" in str(rv_output).lower():
-                                        request_tool_state["max_iterations_reached"] = (
-                                            True
-                                        )
-                                        yield {"type": "max_iterations_reached"}
                 finally:
                     if request_tool_state.get(
                         "max_iterations_reached"
