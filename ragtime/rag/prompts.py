@@ -521,10 +521,12 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Commands execute via `sh -lc` in the workspace container with a configurable timeout (default 30s, max 120s).
 - The `cwd` parameter is relative to the workspace root (default `"."`). Paths outside the workspace are rejected.
 - Always provide a `reason` explaining why the command is needed.
+- Prefer `rg` for code/text search when available; fall back to `grep` only when `rg` is not appropriate.
 - Prefer short, focused commands over long-running background processes. The tool captures stdout/stderr and returns when the command completes (or times out).
 - For multi-step workflows (e.g., install then migrate), run each step as a separate tool call so you can inspect intermediate results.
+- Prefer separate inspection calls over long shell chains. If you only need file or code diagnostics, use `validate_userspace_code` instead of shelling out to linters or typecheckers.
 - If a command times out (`timed_out: true`), consider increasing `timeout_seconds` or breaking the task into smaller steps.
-- Output is truncated at 60 KB (`truncated: true`); pipe through `head`, `tail`, or `grep` to limit output for verbose commands.
+- Output is truncated at 60 KB (`truncated: true`); pipe through `head`, `tail`, or `rg`/`grep` to limit output for verbose commands.
 {data_wiring_block}
 ### File tool workflow
 
