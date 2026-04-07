@@ -348,6 +348,40 @@ UI_VISUALIZATION_CHAT_PROMPT = """
 """
 
 
+_USERSPACE_DATA_WIRING_BLOCK = """
+### Data wiring rules
+
+- Use real tool outputs as the source of truth for rendered data.
+- In tool-enabled workspaces, do not replace live dashboard data connections with SQLite snapshots or seeded local tables.
+- Persistent User Space dashboards must be live-wired via `context.components[componentId].execute()`.
+- When the workspace has selected tools, hardcoded/mock/sample data in any entrypoint file (including Python server entrypoints like `app.py`) is flagged as a live data contract violation. Use live tool connections to fetch data instead of embedding it in source.
+- For TypeScript dashboard mode, only `dashboard/main.ts` (the entry module) requires `live_data_connections`, `live_data_checks`, and verified `execute()` call sites.
+- Helper components under `dashboard/` (e.g., `dashboard/components/*`, `dashboard/charts/*`) do NOT need live_data_connections. They receive data as parameters from the entry module.
+- Each `live_data_connections` entry must include at least `component_kind=tool_config`, `component_id`, and `request`.
+- Include `live_data_checks` for each connection with `connection_check_passed=true` and `transformation_check_passed=true`.
+- Never invent or guess `component_id` values. Use only IDs from ACTIVE TOOL CONNECTIONS FOR THIS REQUEST.
+- Do not persist `dashboard/main.ts` without connection metadata when workspace has tools. If the file is persisted with contract violations, fix the violations via `patch_userspace_file` rather than regenerating the entire file.
+- Data connections are internal components, abstracted from end users.
+- These components map to admin-configured tools from Settings.
+- Persist the connection request (query/command payload + component reference), then read/fetch through `context.components` at render/runtime.
+{userspace_shared_live_data_guardrails}
+- When creating chart/datatable payloads for reusable artifacts, include `data_connection` as a component reference:
+    - `component_kind`: `tool_config`
+    - `component_id`: admin-configured tool config ID
+    - `component_name`: optional friendly name
+    - `component_type`: optional tool type
+    - `request`: query/command payload used for refresh
+    - `refresh_interval_seconds`: optional refresh cadence
+- Do not expose credentials, hostnames, or connection internals in user-facing narrative.
+
+### Resilient data loading
+
+- Always wrap every `context.components[componentId].execute()` call in a try/catch block.
+- When a data source is offline, timed-out, or returns an error, the dashboard must still render a visible layout with a user-friendly status message (e.g., "Data unavailable - source offline") instead of silently failing or rendering a blank page.
+- Render static layout elements (headers, navigation, empty table/chart placeholders) first, then load data asynchronously inside individual try/catch blocks so one failed source doesn't block the entire dashboard.
+- A single offline component must never prevent the rest of the dashboard from rendering.
+"""
+
 USERSPACE_SHARED_LIVE_DATA_GUARDRAILS = """
 
 - **NEVER embed hardcoded, mock, sample, or static data arrays in entrypoint source files** (including `dashboard/main.ts`, `app.py`, `main.py`, `server.js`, or whatever the runtime entrypoint declares). The system detects hardcoded data patterns in all source file types and flags violations when the workspace has selected tools.
@@ -491,39 +525,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - For multi-step workflows (e.g., install then migrate), run each step as a separate tool call so you can inspect intermediate results.
 - If a command times out (`timed_out: true`), consider increasing `timeout_seconds` or breaking the task into smaller steps.
 - Output is truncated at 60 KB (`truncated: true`); pipe through `head`, `tail`, or `grep` to limit output for verbose commands.
-
-### Data wiring rules
-
-- Use real tool outputs as the source of truth for rendered data.
-- In tool-enabled workspaces, do not replace live dashboard data connections with SQLite snapshots or seeded local tables.
-- Persistent User Space dashboards must be live-wired via `context.components[componentId].execute()`.
-- When the workspace has selected tools, hardcoded/mock/sample data in any entrypoint file (including Python server entrypoints like `app.py`) is flagged as a live data contract violation. Use live tool connections to fetch data instead of embedding it in source.
-- For TypeScript dashboard mode, only `dashboard/main.ts` (the entry module) requires `live_data_connections`, `live_data_checks`, and verified `execute()` call sites.
-- Helper components under `dashboard/` (e.g., `dashboard/components/*`, `dashboard/charts/*`) do NOT need live_data_connections. They receive data as parameters from the entry module.
-- Each `live_data_connections` entry must include at least `component_kind=tool_config`, `component_id`, and `request`.
-- Include `live_data_checks` for each connection with `connection_check_passed=true` and `transformation_check_passed=true`.
-- Never invent or guess `component_id` values. Use only IDs from ACTIVE TOOL CONNECTIONS FOR THIS REQUEST.
-- Do not persist `dashboard/main.ts` without connection metadata when workspace has tools. If the file is persisted with contract violations, fix the violations via `patch_userspace_file` rather than regenerating the entire file.
-- Data connections are internal components, abstracted from end users.
-- These components map to admin-configured tools from Settings.
-- Persist the connection request (query/command payload + component reference), then read/fetch through `context.components` at render/runtime.
-{userspace_shared_live_data_guardrails}
-- When creating chart/datatable payloads for reusable artifacts, include `data_connection` as a component reference:
-    - `component_kind`: `tool_config`
-    - `component_id`: admin-configured tool config ID
-    - `component_name`: optional friendly name
-    - `component_type`: optional tool type
-    - `request`: query/command payload used for refresh
-    - `refresh_interval_seconds`: optional refresh cadence
-- Do not expose credentials, hostnames, or connection internals in user-facing narrative.
-
-### Resilient data loading
-
-- Always wrap every `context.components[componentId].execute()` call in a try/catch block.
-- When a data source is offline, timed-out, or returns an error, the dashboard must still render a visible layout with a user-friendly status message (e.g., "Data unavailable - source offline") instead of silently failing or rendering a blank page.
-- Render static layout elements (headers, navigation, empty table/chart placeholders) first, then load data asynchronously inside individual try/catch blocks so one failed source doesn't block the entire dashboard.
-- A single offline component must never prevent the rest of the dashboard from rendering.
-
+{data_wiring_block}
 ### File tool workflow
 
 - Start by running `assay_userspace_code` to understand current workspace structure and implementation status before editing.
@@ -557,20 +559,31 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 def build_userspace_mode_prompt_addition(
     *,
     include_sqlite_persistence: bool,
+    has_live_data_tools: bool = True,
     workspace_continuity: str = "",
 ) -> str:
     """Build userspace prompt additions with optional SQLite guidance and workspace continuity.
 
     Args:
         include_sqlite_persistence: Whether to include the SQLite persistence block.
+        has_live_data_tools: Whether the workspace has live data tools selected.
+            When False, data wiring rules and resilient data loading sections
+            are omitted.
         workspace_continuity: Conditional continuity context block built by
             ``build_workspace_continuity_context``.
     """
+    if has_live_data_tools:
+        data_wiring_block = _USERSPACE_DATA_WIRING_BLOCK.format(
+            userspace_shared_live_data_guardrails=USERSPACE_SHARED_LIVE_DATA_GUARDRAILS.strip(),
+        )
+    else:
+        data_wiring_block = ""
+
     return _USERSPACE_MODE_PROMPT_TEMPLATE.format(
         sqlite_persistence_block=(
             _USERSPACE_SQLITE_PERSISTENCE_BLOCK if include_sqlite_persistence else ""
         ),
-        userspace_shared_live_data_guardrails=USERSPACE_SHARED_LIVE_DATA_GUARDRAILS.strip(),
+        data_wiring_block=data_wiring_block,
         workspace_continuity=workspace_continuity,
     )
 

@@ -22,7 +22,6 @@ from typing import Any, List, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -45,6 +44,7 @@ from langchain_openai.chat_models.base import (
     _construct_responses_api_payload,
     _get_last_messages,
 )
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
@@ -9920,6 +9920,7 @@ except Exception as e:
                 UI_VISUALIZATION_USERSPACE_PROMPT
                 + build_userspace_mode_prompt_addition(
                     include_sqlite_persistence=include_sqlite_persistence,
+                    has_live_data_tools=bool(allowed_tool_config_ids),
                     workspace_continuity=continuity_ctx,
                 )
             )
