@@ -1561,7 +1561,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string | ContentPart[];  // Support both simple string and multimodal array
   timestamp: string;
-  tool_calls?: ToolCallRecord[];  // Deprecated, for backward compatibility
+  tool_calls?: ToolCallRecord[];  // Compatibility mirror derived from events when available
   events?: MessageEvent[];        // Preferred: chronological events
 }
 

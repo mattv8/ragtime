@@ -51,14 +51,7 @@ export function calculateMessageTokens(msg: ChatMessage): number {
   }
 
   const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-  let tokens = estimateTokens(content || '');
-  if (msg.tool_calls?.length) {
-    for (const toolCall of msg.tool_calls) {
-      tokens += estimateTokensFromObject(toolCall.input);
-      tokens += estimateTokens(toolCall.output || '');
-    }
-  }
-  return tokens;
+  return estimateTokens(content || '');
 }
 
 export function calculateConversationTokens(messages: ChatMessage[]): number {

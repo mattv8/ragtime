@@ -3,7 +3,7 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ToolCallRecord, ProviderModelState, WorkspaceChatStateResponse } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -2239,7 +2239,6 @@ export function ChatPanel({
     if (sourceEvents.length === 0 && !sourceContent.trim()) return null;
 
     const events: MessageEvent[] = [];
-    const toolCalls: ToolCallRecord[] = [];
     let textContent = '';
 
     for (const ev of sourceEvents) {
@@ -2249,19 +2248,12 @@ export function ChatPanel({
       } else if (ev.type === 'reasoning') {
         events.push({ type: 'reasoning', content: ev.content });
       } else if (ev.type === 'tool') {
-        const tc: ToolCallRecord = {
+        events.push({
+          type: 'tool',
           tool: ev.toolCall.tool,
           input: ev.toolCall.input,
           output: ev.toolCall.output,
           connection: ev.toolCall.connection,
-        };
-        toolCalls.push(tc);
-        events.push({
-          type: 'tool',
-          tool: tc.tool,
-          input: tc.input,
-          output: tc.output,
-          connection: tc.connection,
         });
       }
     }
@@ -2274,7 +2266,6 @@ export function ChatPanel({
       content,
       timestamp: new Date().toISOString(),
       events: events.length > 0 ? events : undefined,
-      tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
     };
   }, []);
 
@@ -4335,24 +4326,6 @@ export function ChatPanel({
                               </>
                             ) : (
                               <>
-                                {/* Fallback: Show stored tool calls for assistant messages (old format) */}
-                                {showToolCalls && msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0 && (
-                                  <div className="chat-tool-calls">
-                                    {msg.tool_calls.map((tc, tcIdx) => (
-                                      <ToolCallDisplay
-                                        key={`${tc.tool}-${tcIdx}`}
-                                        toolCall={{
-                                          tool: tc.tool,
-                                          input: tc.input,
-                                          output: tc.output,
-                                          connection: tc.connection,
-                                          status: 'complete'
-                                        }}
-                                        defaultExpanded={false}
-                                      />
-                                    ))}
-                                  </div>
-                                )}
                                 {msg.role === 'user' ? (
                                   <>
                                     {(() => {

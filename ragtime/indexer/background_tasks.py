@@ -77,11 +77,10 @@ async def _persist_partial_assistant_message(
     conversation_id: str,
     full_response: str,
     events: list[dict[str, Any]],
-    tool_calls: list[dict[str, Any]],
 ) -> bool:
     """Persist any partial assistant turn that has text or structured events."""
     has_partial_text = bool(full_response.strip())
-    has_partial_activity = bool(events) or bool(tool_calls)
+    has_partial_activity = bool(events)
     if not has_partial_text and not has_partial_activity:
         return False
 
@@ -89,7 +88,6 @@ async def _persist_partial_assistant_message(
         conversation_id,
         "assistant",
         full_response,
-        tool_calls=tool_calls if tool_calls else None,
         events=events if events else None,
     )
     return True
@@ -1091,7 +1089,6 @@ class BackgroundTaskService:
                     conversation_id,
                     "assistant",
                     full_response,
-                    tool_calls=tool_calls if tool_calls else None,
                     events=events if events else None,
                 )
                 partial_message_persisted = True
@@ -1118,7 +1115,6 @@ class BackgroundTaskService:
                             conversation_id,
                             full_response,
                             events,
-                            tool_calls,
                         )
                     ):
                         partial_message_persisted = True
@@ -1154,7 +1150,6 @@ class BackgroundTaskService:
                             conversation_id,
                             full_response,
                             events,
-                            tool_calls,
                         )
                     ):
                         partial_message_persisted = True

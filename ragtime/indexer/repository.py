@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,6 +22,7 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -78,11 +78,80 @@ def _sanitize_for_postgres(text: str) -> str:
     return text.replace("\x00", "") if text else text
 
 
+def _sanitize_json_for_postgres(value: Any) -> Any:
+    """Recursively sanitize nested JSON-like payloads for PostgreSQL storage."""
+    if isinstance(value, str):
+        return _sanitize_for_postgres(value)
+    if isinstance(value, list):
+        return [_sanitize_json_for_postgres(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_json_for_postgres(item) for item in value]
+    if isinstance(value, dict):
+        sanitized: dict[Any, Any] = {}
+        for key, item in value.items():
+            sanitized_key = _sanitize_for_postgres(key) if isinstance(key, str) else key
+            sanitized[sanitized_key] = _sanitize_json_for_postgres(item)
+        return sanitized
+    return value
+
+
 def _safe_serialize(value: Any) -> str:
     try:
         return json.dumps(value, default=str)
     except Exception:
         return str(value) if value is not None else ""
+
+
+def _extract_tool_calls_from_events(
+    events: list[dict[str, Any]] | None,
+) -> list[ToolCallRecord] | None:
+    """Build compatibility tool-call records from chronological message events."""
+    if not events:
+        return None
+
+    tool_calls: list[ToolCallRecord] = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "tool":
+            continue
+        tool_calls.append(
+            ToolCallRecord(
+                tool=str(event.get("tool", "")),
+                input=event.get("input"),
+                output=event.get("output"),
+                connection=event.get("connection"),
+            )
+        )
+
+    return tool_calls or None
+
+
+def _synthesize_events_from_legacy_message(
+    message: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """Build chronological events for legacy assistant messages that only stored tool_calls."""
+    legacy_tool_calls = message.get("tool_calls")
+    if not isinstance(legacy_tool_calls, list) or not legacy_tool_calls:
+        return None
+
+    events: list[dict[str, Any]] = []
+    for tool_call in legacy_tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        events.append(
+            {
+                "type": "tool",
+                "tool": tool_call.get("tool", ""),
+                "input": tool_call.get("input"),
+                "output": tool_call.get("output"),
+                "connection": tool_call.get("connection"),
+            }
+        )
+
+    content = str(message.get("content", "") or "")
+    if content:
+        events.append({"type": "content", "content": content})
+
+    return events or None
 
 
 def _estimate_text_tokens(text: str) -> int:
@@ -1634,7 +1703,6 @@ class IndexerRepository:
         conversation_id: str,
         role: str,
         content: str,
-        tool_calls: Optional[List[dict]] = None,
         events: Optional[List[dict]] = None,
     ) -> Optional[Conversation]:
         """Add a message to a conversation."""
@@ -1642,6 +1710,9 @@ class IndexerRepository:
 
         # Sanitize content for PostgreSQL storage (remove null bytes)
         content = _sanitize_for_postgres(content)
+        sanitized_events = (
+            cast(List[dict], _sanitize_json_for_postgres(events)) if events else None
+        )
 
         # Get current conversation
         prisma_conv = await db.conversation.find_unique(where={"id": conversation_id})
@@ -1658,12 +1729,9 @@ class IndexerRepository:
             "content": content,
             "timestamp": datetime.utcnow().isoformat(),
         }
-        # Add tool calls if provided (deprecated, for backward compatibility)
-        if tool_calls:
-            new_message["tool_calls"] = tool_calls
-        # Add chronological events if provided (preferred)
-        if events:
-            new_message["events"] = events
+        # Store chronological events only; compatibility tool_calls are derived on read.
+        if sanitized_events:
+            new_message["events"] = sanitized_events
         messages.append(new_message)
 
         # Recompute conversation token total from persisted messages (tiktoken-backed)
@@ -1867,22 +1935,25 @@ class IndexerRepository:
         messages_data = prisma_conv.messages if prisma_conv.messages else []
         messages: List[ChatMessage] = []
         for m in messages_data:
-            # Parse tool_calls if present (deprecated)
-            tool_calls = None
-            if "tool_calls" in m and m["tool_calls"]:
+            # Parse events if present; synthesize them for legacy tool_calls-only messages.
+            events = None
+            if "events" in m and m["events"]:
+                events = m["events"]  # Keep as raw dicts for now
+            else:
+                events = _synthesize_events_from_legacy_message(m)
+
+            # Legacy persisted tool_calls remain readable; new tool_calls are derived from events.
+            tool_calls = _extract_tool_calls_from_events(events)
+            if tool_calls is None and "tool_calls" in m and m["tool_calls"]:
                 tool_calls = [
                     ToolCallRecord(
                         tool=tc.get("tool", ""),
                         input=tc.get("input"),
                         output=tc.get("output"),
+                        connection=tc.get("connection"),
                     )
                     for tc in m["tool_calls"]
                 ]
-
-            # Parse events if present (preferred)
-            events = None
-            if "events" in m and m["events"]:
-                events = m["events"]  # Keep as raw dicts for now
 
             messages.append(
                 ChatMessage(
@@ -2052,7 +2123,7 @@ class IndexerRepository:
             update_data["completedAt"] = datetime.utcnow()
 
         if error_message:
-            update_data["errorMessage"] = error_message
+            update_data["errorMessage"] = _sanitize_for_postgres(error_message)
 
         try:
             prisma_task = await db.chattask.update(
@@ -2095,14 +2166,16 @@ class IndexerRepository:
 
         # Sanitize content for PostgreSQL storage (remove null bytes)
         content = _sanitize_for_postgres(content)
+        sanitized_events = cast(List[dict], _sanitize_json_for_postgres(events))
+        sanitized_tool_calls = cast(List[dict], _sanitize_json_for_postgres(tool_calls))
 
         # Increment version for change detection
         new_version = current_version + 1
 
         streaming_state = {
             "content": content,
-            "events": events,
-            "tool_calls": tool_calls,
+            "events": sanitized_events,
+            "tool_calls": sanitized_tool_calls,
             "hit_max_iterations": hit_max_iterations,
             "version": new_version,
             "content_length": len(content),
@@ -2135,14 +2208,18 @@ class IndexerRepository:
 
         # Sanitize content for PostgreSQL storage (remove null bytes)
         response_content = _sanitize_for_postgres(response_content)
+        sanitized_final_events = cast(
+            List[dict], _sanitize_json_for_postgres(final_events)
+        )
+        sanitized_tool_calls = cast(List[dict], _sanitize_json_for_postgres(tool_calls))
 
         # Final version increment to signal completion
         final_version = current_version + 1
 
         streaming_state = {
             "content": response_content,
-            "events": final_events,
-            "tool_calls": tool_calls,
+            "events": sanitized_final_events,
+            "tool_calls": sanitized_tool_calls,
             "hit_max_iterations": hit_max_iterations,
             "version": final_version,
             "content_length": len(response_content),
@@ -2268,6 +2345,23 @@ class IndexerRepository:
         db = await self._get_db()
 
         try:
+            sanitized_provider_messages = cast(
+                List[dict[str, Any]],
+                _sanitize_json_for_postgres(rendered_provider_messages),
+            )
+            sanitized_chat_history = cast(
+                List[dict[str, Any]],
+                _sanitize_json_for_postgres(rendered_chat_history),
+            )
+            sanitized_debug_metadata = cast(
+                Optional[dict[str, Any]],
+                (
+                    _sanitize_json_for_postgres(debug_metadata)
+                    if debug_metadata is not None
+                    else None
+                ),
+            )
+
             prisma_record = await db.providerpromptdebugrecord.create(
                 data=cast(
                     Any,
@@ -2288,13 +2382,15 @@ class IndexerRepository:
                         "renderedUserInput": _sanitize_for_postgres(
                             rendered_user_input
                         ),
-                        "renderedProviderMessages": Json(rendered_provider_messages),
-                        "renderedChatHistory": Json(rendered_chat_history),
+                        "renderedProviderMessages": Json(sanitized_provider_messages),
+                        "renderedChatHistory": Json(sanitized_chat_history),
                         "toolScopePrompt": _sanitize_for_postgres(tool_scope_prompt),
                         "promptAdditions": _sanitize_for_postgres(prompt_additions),
                         "turnReminders": _sanitize_for_postgres(turn_reminders),
                         "debugMetadata": (
-                            Json(debug_metadata) if debug_metadata is not None else None
+                            Json(sanitized_debug_metadata)
+                            if sanitized_debug_metadata is not None
+                            else None
                         ),
                         "messageIndex": message_index,
                     },
