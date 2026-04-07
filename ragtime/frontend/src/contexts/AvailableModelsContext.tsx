@@ -21,6 +21,16 @@ interface AvailableModelsContextValue {
   meta: Pick<AvailableModelsResponse, 'default_model' | 'current_model' | 'allowed_models'> | null;
   /** Trigger a (re)fetch. Safe to call multiple times; concurrent calls are coalesced. */
   refresh: () => void;
+  /**
+   * Await a settled available-models cycle and return the latest state snapshot.
+   * This allows callers to serialize work after model discovery completes.
+   */
+  awaitReady: () => Promise<{
+    models: AvailableModel[];
+    error: string | null;
+    readiness: AvailableModelsContextValue['readiness'];
+    meta: AvailableModelsContextValue['meta'];
+  }>;
 }
 
 const AvailableModelsContext = createContext<AvailableModelsContextValue | null>(null);
@@ -42,6 +52,41 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
   const pollTimeoutRef = useRef<number | null>(null);
   // Last successful fetch timestamp (used to coalesce rapid manual refresh calls).
   const lastSuccessfulFetchAtRef = useRef<number>(0);
+  const waitersRef = useRef<
+    Array<
+      (value: {
+        models: AvailableModel[];
+        error: string | null;
+        readiness: AvailableModelsContextValue['readiness'];
+        meta: AvailableModelsContextValue['meta'];
+      }) => void
+    >
+  >([]);
+
+  const isSettled = useCallback(() => {
+    return !inflightRef.current
+      && !readiness?.models_loading
+      && !readiness?.copilot_refresh_in_progress;
+  }, [readiness?.copilot_refresh_in_progress, readiness?.models_loading]);
+
+  const resolveWaiters = useCallback(
+    (value: {
+      models: AvailableModel[];
+      error: string | null;
+      readiness: AvailableModelsContextValue['readiness'];
+      meta: AvailableModelsContextValue['meta'];
+    }) => {
+      if (!waitersRef.current.length) {
+        return;
+      }
+      const pending = [...waitersRef.current];
+      waitersRef.current = [];
+      for (const resolve of pending) {
+        resolve(value);
+      }
+    },
+    [],
+  );
 
   const clearPollTimer = useCallback(() => {
     if (pollTimeoutRef.current !== null) {
@@ -122,6 +167,35 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
     void doFetch('manual');
   }, [doFetch]);
 
+  const awaitReady = useCallback(() => {
+    // Fast path: if already settled, resolve immediately.
+    if (isSettled()) {
+      return Promise.resolve({
+        models,
+        error,
+        readiness,
+        meta,
+      });
+    }
+
+    // Otherwise resolve as soon as the in-flight cycle settles.
+    return new Promise<{
+      models: AvailableModel[];
+      error: string | null;
+      readiness: AvailableModelsContextValue['readiness'];
+      meta: AvailableModelsContextValue['meta'];
+    }>((resolve) => {
+      waitersRef.current.push(resolve);
+    });
+  }, [error, isSettled, meta, models, readiness]);
+
+  useEffect(() => {
+    if (!isSettled()) {
+      return;
+    }
+    resolveWaiters({ models, error, readiness, meta });
+  }, [error, isSettled, meta, models, readiness, resolveWaiters]);
+
   useEffect(() => {
     clearPollTimer();
     const shouldPoll = Boolean(
@@ -147,7 +221,7 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
   }, [clearPollTimer]);
 
   return (
-    <AvailableModelsContext.Provider value={{ models, loading, error, readiness, meta, refresh }}>
+    <AvailableModelsContext.Provider value={{ models, loading, error, readiness, meta, refresh, awaitReady }}>
       {children}
     </AvailableModelsContext.Provider>
   );

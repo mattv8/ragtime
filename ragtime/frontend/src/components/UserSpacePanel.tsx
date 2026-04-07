@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, GitBranch, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
@@ -29,6 +29,7 @@ import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
 import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
+import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
 import { ChatPanel } from './ChatPanel';
 import { LdapGroupSelect } from './LdapGroupSelect';
@@ -618,6 +619,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [snapshotDiffSummaries, setSnapshotDiffSummaries] = useState<Record<string, UserSpaceSnapshotDiffSummary>>({});
   const snapshotDiffSummariesRef = useRef(snapshotDiffSummaries);
   snapshotDiffSummariesRef.current = snapshotDiffSummaries;
+
+  const {
+    refresh: refreshAvailableModels,
+    awaitReady: awaitAvailableModelsReady,
+  } = useAvailableModels();
   const [loadingSnapshotDiffSummaryIds, setLoadingSnapshotDiffSummaryIds] = useState<Record<string, boolean>>({});
   const [snapshotDiffSummaryErrors, setSnapshotDiffSummaryErrors] = useState<Record<string, string>>({});
   const snapshotFileDiffCacheRef = useRef<Map<string, UserSpaceSnapshotFileDiff>>(new Map());
@@ -2421,6 +2427,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     expandChat();
     setError(null);
 
+    // Serialize after available-models to avoid a false-positive "no models configured" error.
+    refreshAvailableModels();
+    const readyState = await awaitAvailableModelsReady();
+
+    const hasAnyModel = readyState.models.length > 0;
+    if (!hasAnyModel) {
+      setError('No LLM configured. Please configure an LLM in Settings.');
+      return;
+    }
+
     try {
       const conversation = await api.createConversation(undefined, activeWorkspaceId);
 
@@ -2436,11 +2452,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         interrupted_task: null,
       }));
 
-      await api.sendMessage(conversation.id, { message: prompt }, activeWorkspaceId);
+      await api.sendMessageBackground(conversation.id, prompt, activeWorkspaceId);
     } catch (err) {
       setError(getApiErrorMessage(err, 'Failed to ask the agent to prepare the workspace'));
     }
-  }, [activeWorkspaceId, expandChat]);
+  }, [activeWorkspaceId, awaitAvailableModelsReady, expandChat, refreshAvailableModels]);
 
   const handleUserMessageSubmitted = useCallback(async (_message: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -4900,7 +4916,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           </button>
           {canEditWorkspace && activeWorkspaceId && (
             <button className="btn btn-secondary btn-sm" onClick={() => setShowScmWizard(true)} title="Import or export this workspace with Git">
-              <ArrowLeftRight size={14} />
+              <GitBranch size={14} />
             </button>
           )}
           {isOwner && (
