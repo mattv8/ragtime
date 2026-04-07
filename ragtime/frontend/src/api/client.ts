@@ -226,7 +226,8 @@ export const api = {
     const response = await apiFetch(`${AUTH_BASE}/users`, {
 
     });
-    return handleResponse<User[]>(response);
+    const data = await handleResponse<{ users: User[] } | User[]>(response);
+    return Array.isArray(data) ? data : (data as { users: User[] }).users ?? [];
   },
 
   // ===========================================================================
