@@ -291,6 +291,26 @@ _RUNTIME_BRIDGE_VERSION_TAG = f"@ragtime/bridge v{_RUNTIME_BRIDGE_VERSION}"
 _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS = 310_000  # 300s + 10s buffer
 _USERSPACE_TEMPLATES_DIR = Path(__file__).with_name("templates")
 
+# ---------------------------------------------------------------------------
+# Node framework detection from command strings
+# ---------------------------------------------------------------------------
+
+_NODE_FRAMEWORK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bnext\b"), "next"),
+    (re.compile(r"\bnuxt\b"), "nuxt"),
+    (re.compile(r"\bvite\b"), "vite"),
+    (re.compile(r"\bexpress\b"), "express"),
+]
+
+
+def _guess_node_framework_from_command(command: str) -> str:
+    """Return a framework hint from a shell command string, defaulting to ``node``."""
+    lower = command.lower()
+    for pattern, framework in _NODE_FRAMEWORK_PATTERNS:
+        if pattern.search(lower):
+            return framework
+    return "node"
+
 
 @lru_cache(maxsize=None)
 def _load_userspace_template(template_name: str) -> str:
@@ -1228,6 +1248,138 @@ class UserSpaceService:
             json.dumps(self._default_runtime_entrypoint_config(), indent=2) + "\n",
             encoding="utf-8",
         )
+
+    # ------------------------------------------------------------------
+    # Import-time entrypoint inference
+    # ------------------------------------------------------------------
+
+    def _infer_entrypoint_from_imported_files(
+        self,
+        workspace_id: str,
+    ) -> dict[str, str] | None:
+        """Attempt to infer a runtime entrypoint from imported workspace files.
+
+        Detection is purely file/config-based (no repo-name heuristics).
+        Returns a ``{command, cwd, framework}`` dict on success, or ``None``
+        if no confident inference can be made.
+
+        Checked signals (in priority order):
+        1. ``.replit`` ``run`` field — explicit run command from Replit config.
+        2. ``package.json`` ``scripts.dev`` or ``scripts.start`` — Node/npm
+           convention for dev servers.
+        """
+        files_dir = self._workspace_files_dir(workspace_id)
+
+        # --- Signal 1: .replit run field ---
+        replit_path = files_dir / ".replit"
+        if replit_path.is_file():
+            inferred = self._parse_replit_run_command(replit_path)
+            if inferred:
+                return inferred
+
+        # --- Signal 2: package.json scripts ---
+        pkg_path = files_dir / "package.json"
+        if pkg_path.is_file():
+            inferred = self._parse_package_json_entrypoint(pkg_path)
+            if inferred:
+                return inferred
+
+        return None
+
+    @staticmethod
+    def _parse_replit_run_command(replit_path: Path) -> dict[str, str] | None:
+        """Extract a run command from a ``.replit`` file.
+
+        The ``.replit`` format is TOML-like.  We look for a top-level
+        ``run = "..."`` assignment.  Returns ``None`` when no usable
+        command is found.
+        """
+        try:
+            text = replit_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("run") and "=" in stripped:
+                _, _, value = stripped.partition("=")
+                value = value.strip().strip('"').strip("'").strip()
+                if not value:
+                    continue
+                framework = _guess_node_framework_from_command(value)
+                return {
+                    "command": value,
+                    "cwd": ".",
+                    "framework": framework,
+                }
+        return None
+
+    @staticmethod
+    def _parse_package_json_entrypoint(pkg_path: Path) -> dict[str, str] | None:
+        """Infer a dev-server entrypoint from ``package.json`` scripts.
+
+        Checks ``scripts.dev`` first (common for Vite/Next/Nuxt),
+        then ``scripts.start``.  Returns ``None`` when nothing useful
+        is found.
+        """
+        try:
+            data = json.loads(pkg_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        scripts = data.get("scripts")
+        if not isinstance(scripts, dict):
+            return None
+
+        for key in ("dev", "start"):
+            cmd = scripts.get(key, "").strip()
+            if not cmd:
+                continue
+            npm_cmd = f"npm run {key}"
+            framework = _guess_node_framework_from_command(cmd)
+            return {
+                "command": npm_cmd,
+                "cwd": ".",
+                "framework": framework,
+            }
+        return None
+
+    def _seed_entrypoint_from_import(self, workspace_id: str) -> dict[str, str] | None:
+        """Infer and write an entrypoint for an imported workspace.
+
+        Only writes when the entrypoint is currently missing or is the
+        default static server placeholder (never overwrites a real
+        user/agent-configured entrypoint).
+
+        Returns the inferred config dict that was written, or ``None`` if
+        no inference was made or the entrypoint was already valid.
+        """
+        status = self.get_workspace_entrypoint_status(workspace_id)
+        if status.state == "valid" and not self.is_default_static_entrypoint(
+            workspace_id, status
+        ):
+            return None
+
+        inferred = self._infer_entrypoint_from_imported_files(workspace_id)
+        if not inferred:
+            return None
+
+        files_dir = self._workspace_files_dir(workspace_id)
+        config_path = files_dir / ".ragtime" / "runtime-entrypoint.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(inferred, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self.invalidate_entrypoint_cache(workspace_id)
+        logger.info(
+            "Inferred runtime entrypoint for workspace %s: framework=%s, command=%s",
+            workspace_id,
+            inferred.get("framework"),
+            inferred.get("command"),
+        )
+        return inferred
 
     def get_workspace_entrypoint_status(self, workspace_id: str) -> EntrypointStatus:
         """Return the canonical entrypoint status for *workspace_id*.
@@ -3973,16 +4125,45 @@ class UserSpaceService:
         self,
         git_url: str,
         git_branch: str,
+        inferred_entrypoint: dict[str, str] | None = None,
     ) -> str:
-        return (
+        parts: list[str] = [
             "Inspect the imported workspace and get it running locally without "
             "destructive changes. Start by using assay_userspace_code to assess "
-            "the current structure. Then repair or create .ragtime/runtime-entrypoint.json "
-            "if needed, verify .ragtime/runtime-bootstrap.json is still appropriate, "
-            "install only declared dependencies, run validate_userspace_code on every changed "
-            "source file, and create a snapshot when the workspace is in a runnable state. "
+            "the current structure.",
+        ]
+
+        if inferred_entrypoint:
+            fw = inferred_entrypoint.get("framework", "node")
+            cmd = inferred_entrypoint.get("command", "")
+            parts.append(
+                f"An entrypoint was auto-detected from the repository "
+                f"(framework: {fw}, command: {cmd}). Verify it is correct "
+                f"and adjust .ragtime/runtime-entrypoint.json if needed."
+            )
+        else:
+            parts.append(
+                "No entrypoint could be auto-detected. Repair or create "
+                ".ragtime/runtime-entrypoint.json based on the project structure."
+            )
+
+        parts.append(
+            "Verify .ragtime/runtime-bootstrap.json is still appropriate, "
+            "install only declared dependencies, check whether environment variables "
+            "are needed (e.g. DATABASE_URL), run validate_userspace_code on every "
+            "changed source file, and create a snapshot when the workspace is in a "
+            "runnable state."
+        )
+        parts.append(
+            "For Vite/Node projects, preserve existing HMR behavior unless the user "
+            "explicitly requests disabling it. Do not invent npm scripts (for example "
+            "npm run ci) unless they exist in package.json; bootstrap commands are "
+            "defined in .ragtime/runtime-bootstrap.json."
+        )
+        parts.append(
             f"The workspace was imported from {git_url} on branch {git_branch}."
         )
+        return " ".join(parts)
 
     async def _resolve_workspace_scm_target(
         self,
@@ -4374,6 +4555,11 @@ class UserSpaceService:
             )
 
         await self._replace_workspace_sync_scope_from_dir(workspace_id, remote_dir)
+
+        # Attempt to infer a runtime entrypoint from the imported files
+        # when no valid user-configured entrypoint exists yet.
+        inferred_entrypoint = self._seed_entrypoint_from_import(workspace_id)
+
         imported_snapshot = await self.create_snapshot(
             workspace_id,
             user_id,
@@ -4427,6 +4613,7 @@ class UserSpaceService:
             suggested_setup_prompt=self._workspace_scm_setup_prompt(
                 preview.git_url,
                 preview.git_branch,
+                inferred_entrypoint=inferred_entrypoint,
             ),
         )
 

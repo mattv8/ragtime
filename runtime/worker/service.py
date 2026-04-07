@@ -469,6 +469,30 @@ class WorkerService:
             return None
         return workspace_files / candidate
 
+    @staticmethod
+    def _is_false_negative_npm_ci_failure(
+        *,
+        command_name: str,
+        run: str,
+        output: str,
+        cwd_path: Path,
+    ) -> bool:
+        """Return True for known npm-ci failures that still install deps.
+
+        In some runtime/container combinations npm may print
+        ``Exit handler never called`` and exit non-zero even though
+        ``node_modules`` is present and usable. Treat this as a warning
+        for npm-ci bootstrap commands only.
+        """
+        cmd = (run or "").strip().lower()
+        name = (command_name or "").strip().lower()
+        is_npm_ci = name == "npm_ci" or cmd.startswith("npm ci")
+        if not is_npm_ci:
+            return False
+        if "exit handler never called" not in (output or "").lower():
+            return False
+        return (cwd_path / "node_modules").exists()
+
     async def _run_workspace_bootstrap_if_needed(
         self,
         session: WorkerSession,
@@ -566,6 +590,17 @@ class WorkerService:
                 stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
                 stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
                 output = stderr_text or stdout_text or "unknown error"
+
+                if self._is_false_negative_npm_ci_failure(
+                    command_name=command_name,
+                    run=run,
+                    output=output,
+                    cwd_path=cwd_path,
+                ):
+                    # npm occasionally exits non-zero with "Exit handler never called"
+                    # even after dependencies are installed. Treat as soft-fail.
+                    continue
+
                 return (
                     f"Runtime bootstrap command '{command_name}' failed with code {returncode}: "
                     f"{output[:300]}. {_WORKSPACE_BOOTSTRAP_GUIDANCE}"
@@ -913,6 +948,40 @@ class WorkerService:
                 self._playwright_available_slots.put_nowait(slot_index)
             except asyncio.QueueFull:
                 pass
+
+    @staticmethod
+    def _probe_looks_like_startup_blank(probe: dict[str, Any]) -> bool:
+        """Heuristic: detect transient "app still booting" blank captures.
+
+        During Vite/devserver warm-up, probes can return HTTP 200 but with an
+        almost-empty HTML shell and no title yet. Treat this as retryable
+        startup noise rather than a definitive white-screen failure.
+        """
+        if not isinstance(probe, dict):
+            return False
+        try:
+            status_code = int(probe.get("status_code") or 0)
+        except Exception:
+            status_code = 0
+        try:
+            html_length = int(probe.get("html_length") or 0)
+        except Exception:
+            html_length = 0
+        title = str(probe.get("title") or "").strip()
+        try:
+            element_visible_count = int(probe.get("element_visible_count") or 0)
+        except Exception:
+            element_visible_count = 0
+        console_errors = probe.get("console_errors")
+
+        # Keep this intentionally conservative to avoid masking real regressions.
+        return (
+            status_code == 200
+            and html_length <= 64
+            and not title
+            and element_visible_count == 0
+            and not console_errors
+        )
 
     def _should_retry_bootstrap_after_exit(
         self,
@@ -1792,6 +1861,47 @@ class WorkerService:
             },
             timeout_ms=int(payload.timeout_ms),
         )
+
+        startup_retry_attempted = False
+        startup_blank_detected = False
+        if self._probe_looks_like_startup_blank(probe):
+            startup_blank_detected = True
+            startup_retry_attempted = True
+
+            # One retry with a fresh cache-busted URL and a slightly longer
+            # settle wait helps absorb Vite dependency pre-bundling churn.
+            retry_wait_after_load_ms = min(
+                max(requested_wait_after_load_ms + 2000, 1500),
+                12000,
+            )
+            retry_url = (
+                f"{upstream_url}{'&' if '?' in upstream_url else '?'}"
+                f"_ragtime_screenshot_ts={int(time.time() * 1000)}"
+            )
+            retry_probe = await self._invoke_playwright_broker(
+                {
+                    "type": "screenshot",
+                    "url": retry_url,
+                    "output_path": str(output_path),
+                    "viewport_width": width,
+                    "viewport_height": height,
+                    "capture_full_page": bool(payload.full_page),
+                    "timeout_ms": int(payload.timeout_ms),
+                    "wait_for_selector": wait_selector,
+                    "capture_element": capture_element,
+                    "clip_padding_px": requested_clip_padding_px,
+                    "wait_after_load_ms": retry_wait_after_load_ms,
+                    "refresh_before_capture": bool(payload.refresh_before_capture),
+                    "max_pixels": MAX_USERSPACE_SCREENSHOT_PIXELS,
+                },
+                timeout_ms=int(payload.timeout_ms),
+            )
+            if isinstance(retry_probe, dict):
+                probe = retry_probe
+
+        if isinstance(probe, dict):
+            probe["startup_blank_detected"] = startup_blank_detected
+            probe["startup_retry_attempted"] = startup_retry_attempted
 
         if not output_path.exists() or not output_path.is_file():
             raise HTTPException(

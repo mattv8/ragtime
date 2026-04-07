@@ -364,6 +364,22 @@ def _provision_etc(rootfs: Path) -> None:
     if not hostname.exists():
         hostname.write_text("sandbox\n", encoding="utf-8")
 
+    # /etc/hosts — ensure localhost always resolves inside sandboxed processes.
+    # Some user projects (including Vite middleware/HMR internals and DB clients)
+    # perform explicit DNS lookups for "localhost". If /etc/hosts is missing,
+    # those lookups can fail with ENOTFOUND even though loopback networking works.
+    hosts = etc / "hosts"
+    if not hosts.exists():
+        hosts.write_text(
+            "127.0.0.1 localhost\n"
+            "::1 localhost ip6-localhost ip6-loopback\n"
+            "fe00::0 ip6-localnet\n"
+            "ff00::0 ip6-mcastprefix\n"
+            "ff02::1 ip6-allnodes\n"
+            "ff02::2 ip6-allrouters\n",
+            encoding="utf-8",
+        )
+
     # /etc/resolv.conf — copy from host container
     host_resolv = Path("/etc/resolv.conf")
     sandbox_resolv = etc / "resolv.conf"

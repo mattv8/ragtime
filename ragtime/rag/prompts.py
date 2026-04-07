@@ -102,6 +102,7 @@ _USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
     when the workspace has selected tools; wire live data instead.
 {sqlite_reminder_line}{env_var_reminder_line}- Prefer incremental edits: use patch_userspace_file or targeted upsert_userspace_file calls to extend existing code rather than regenerating entire files.
 - If validation reports TypeScript/runtime/live-data failures, fix those exact failures before adding more feature work.
+- If preview appears blank/white but probe status is 200, first re-check runtime startup state and retry screenshot/content probe after a short settle window before changing app code.
 - After validation passes with no errors, call create_userspace_snapshot with a concise completion message.
 - Never skip validation or snapshot.
 - Finalization sequence: validate -> fix errors -> validate again -> snapshot.
