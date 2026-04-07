@@ -102,6 +102,7 @@ export function App() {
   // App state
   const [activeView, setActiveView] = useState<ViewType>(getInitialView);
   const [highlightSetting, setHighlightSetting] = useState<string | null>(getInitialHighlight);
+  const [highlightToolsSection, setHighlightToolsSection] = useState<string | null>(null);
   const [serverName, setServerName] = useState<string>('Ragtime');
   const [jobs, setJobs] = useState<IndexJob[]>([]);
   const [indexes, setIndexes] = useState<IndexInfo[]>([]);
@@ -660,6 +661,10 @@ export function App() {
             currentUser={currentUser}
             debugMode={Boolean(authStatus?.debug_mode)}
             onFullscreenChange={setUserspaceFullscreen}
+            onNavigateToTools={(section) => {
+              setHighlightToolsSection(section || 'mount-sources');
+              setActiveView('tools');
+            }}
           />
         </div>
       ) : isChatView ? (
@@ -678,7 +683,12 @@ export function App() {
           authStatus={authStatus}
         />
       ) : activeView === 'tools' ? (
-        <ToolsPanel onSchemaJobTriggered={loadSchemaJobs} schemaJobs={schemaJobs} />
+        <ToolsPanel
+          onSchemaJobTriggered={loadSchemaJobs}
+          schemaJobs={schemaJobs}
+          highlightSection={highlightToolsSection}
+          onHighlightComplete={() => setHighlightToolsSection(null)}
+        />
       ) : (
         <>
           {/* Document Indexes (FAISS) */}

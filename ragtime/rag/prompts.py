@@ -191,6 +191,118 @@ def build_userspace_mounts_prompt_fragment(
     return ""
 
 
+def build_userspace_object_storage_prompt_fragment(
+    *,
+    object_storage_enabled: bool,
+    buckets: list[dict[str, str]] | None = None,
+) -> str:
+    """Build a safe workspace object-storage context block for userspace mode."""
+
+    bucket_items = buckets or []
+    if bucket_items:
+        lines: list[str] = []
+        for bucket in bucket_items:
+            name = bucket.get("name", "") or "unnamed"
+            public_root = bucket.get("public_root", "") or "/"
+            private_root = bucket.get("private_root", "") or "/"
+            description = bucket.get("description", "") or ""
+            is_default = bucket.get("is_default", "false") == "true"
+            default_suffix = " [default]" if is_default else ""
+            description_suffix = f" [description: {description}]" if description else ""
+            lines.append(
+                "- Bucket `"
+                + name
+                + "`"
+                + default_suffix
+                + f": public root `{public_root}`, private root `{private_root}`"
+                + description_suffix
+            )
+        return "\n### Workspace object storage buckets\n\n" + "\n".join(lines) + "\n"
+
+    if object_storage_enabled:
+        return (
+            "\n### Workspace object storage buckets\n\n"
+            "- No workspace object-storage buckets are configured. If object storage is needed, ask a workspace owner to create a bucket first.\n"
+        )
+
+    return ""
+
+
+def build_workspace_scm_setup_prompt(
+    *,
+    git_url: str,
+    git_branch: str,
+    inferred_entrypoint: dict[str, str] | None = None,
+    detected_replit_features: list[str] | None = None,
+    has_legacy_replit_object_storage: bool = False,
+) -> str:
+    """Build the post-import setup prompt returned after SCM import."""
+
+    parts: list[str] = [
+        "Inspect the imported workspace and get it running locally without "
+        "destructive changes. Start by using assay_userspace_code to assess "
+        "the current structure."
+    ]
+
+    if inferred_entrypoint:
+        framework = inferred_entrypoint.get("framework", "node") or "node"
+        command = inferred_entrypoint.get("command", "") or ""
+        parts.append(
+            "An entrypoint was auto-detected from the repository "
+            f"(framework: {framework}, command: {command}). Verify it is correct "
+            "and adjust .ragtime/runtime-entrypoint.json if needed."
+        )
+    else:
+        parts.append(
+            "No entrypoint could be auto-detected. Repair or create "
+            ".ragtime/runtime-entrypoint.json based on the project structure."
+        )
+
+    parts.append(
+        "Verify .ragtime/runtime-bootstrap.json is still appropriate, "
+        "install only declared dependencies, check whether environment variables "
+        "are needed (e.g. DATABASE_URL), run validate_userspace_code on every "
+        "changed source file, and create a snapshot when the workspace is in a "
+        "runnable state."
+    )
+
+    replit_features = [
+        item.strip() for item in (detected_replit_features or []) if item
+    ]
+    if replit_features:
+        parts.append(
+            "This import contains deterministic Replit markers: "
+            + ", ".join(replit_features)
+            + ". Treat those as migration work, not just historical trivia."
+        )
+        parts.append(
+            "Preserve the application's intended behavior, but replace any "
+            "Replit-only runtime assumptions with Ragtime-compatible equivalents "
+            "when they would break preview, bootstrapping, or local execution."
+        )
+
+    if has_legacy_replit_object_storage:
+        parts.append(
+            "The import still shows legacy Replit object-storage integration. "
+            "Audit and correct it as part of the import fix-up. In particular, "
+            "replace any paths that still depend on Replit sidecars or Google "
+            "Cloud Storage helpers (for example @google-cloud/storage, "
+            "127.0.0.1:1106, or old signed-object-url flows) with Ragtime's "
+            "current workspace-native object storage compatibility path, including "
+            "preview-safe upload and object fetch routes. Do not stop at getting "
+            "the app to boot if these compatibility shims are still broken."
+        )
+
+    parts.append(
+        "For Vite/Node projects, preserve existing HMR behavior unless the user "
+        "explicitly requests disabling it. Do not invent npm scripts (for example "
+        "npm run ci) unless they exist in package.json; bootstrap commands are "
+        "defined in .ragtime/runtime-bootstrap.json."
+    )
+    parts.append(f"The workspace was imported from {git_url} on branch {git_branch}.")
+    return " ".join(parts)
+
+
 # =============================================================================
 # VISUALIZATION PROMPTS
 # =============================================================================

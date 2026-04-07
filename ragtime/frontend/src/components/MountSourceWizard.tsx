@@ -5,6 +5,8 @@ import { ToolWizard } from './ToolWizard';
 import { X } from 'lucide-react';
 import { api } from '@/api';
 import type {
+  UserSpaceObjectStorageConfig,
+  UserSpaceObjectStorageBucket,
   UserspaceMountSource,
   ToolConfig,
   ToolType,
@@ -714,6 +716,227 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+type WorkspaceObjectStorageWizardStep = 'bucket_details' | 'review';
+
+const WORKSPACE_OBJECT_STORAGE_WIZARD_STEPS: WorkspaceObjectStorageWizardStep[] = ['bucket_details', 'review'];
+
+function getWorkspaceObjectStorageStepTitle(step: WorkspaceObjectStorageWizardStep): string {
+  switch (step) {
+    case 'bucket_details': return 'Bucket Details';
+    case 'review': return 'Review & Save';
+  }
+}
+
+interface WorkspaceObjectStorageWizardProps {
+  workspaceId: string;
+  existingBucket: UserSpaceObjectStorageBucket | null;
+  existingBucketNames?: string[];
+  onClose: () => void;
+  onSaved: (config: UserSpaceObjectStorageConfig) => void;
+  embedded?: boolean;
+}
+
+export function WorkspaceObjectStorageWizard({
+  workspaceId,
+  existingBucket,
+  existingBucketNames = [],
+  onClose,
+  onSaved,
+  embedded = false,
+}: WorkspaceObjectStorageWizardProps) {
+  const isEditing = existingBucket !== null;
+  const progressRef = useRef<HTMLDivElement>(null);
+  const [name, setName] = useState(existingBucket?.name ?? '');
+  const [description, setDescription] = useState(existingBucket?.description ?? '');
+  const [makeDefault, setMakeDefault] = useState(existingBucket?.is_default ?? !existingBucketNames.length);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [currentStep, setCurrentStep] = useState<WorkspaceObjectStorageWizardStep>('bucket_details');
+
+  useEffect(() => {
+    const activeStep = progressRef.current?.querySelector('.wizard-step.active');
+    if (activeStep) {
+      activeStep.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    }
+  }, [currentStep]);
+
+  const normalizedName = name.trim().toLowerCase();
+  const nameConflict = !isEditing && existingBucketNames.some((bucketName) => bucketName.toLowerCase() === normalizedName);
+  const nameValid = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(normalizedName) && normalizedName.length >= 3 && normalizedName.length <= 63;
+  const canProceed = currentStep === 'bucket_details'
+    ? (isEditing || (nameValid && !nameConflict))
+    : true;
+
+  const getCurrentStepIndex = () => WORKSPACE_OBJECT_STORAGE_WIZARD_STEPS.indexOf(currentStep);
+
+  const goToStep = (step: WorkspaceObjectStorageWizardStep) => {
+    const targetIndex = WORKSPACE_OBJECT_STORAGE_WIZARD_STEPS.indexOf(step);
+    if (targetIndex <= getCurrentStepIndex() || (targetIndex === getCurrentStepIndex() + 1 && canProceed)) {
+      setCurrentStep(step);
+      setError(null);
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const saved = isEditing
+        ? await api.updateUserSpaceObjectStorageBucket(workspaceId, existingBucket.name, {
+          description: description.trim() || undefined,
+          make_default: makeDefault,
+        })
+        : await api.createUserSpaceObjectStorageBucket(workspaceId, {
+          name: normalizedName,
+          description: description.trim() || undefined,
+          make_default: makeDefault,
+        });
+      onSaved(saved);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save object storage bucket');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const renderDetails = () => (
+    <div className="wizard-step-content" style={{ display: 'grid', gap: 16 }}>
+      <div style={{ display: 'grid', gap: 8 }}>
+        <label style={{ display: 'grid', gap: 6 }}>
+          <strong>Bucket Name</strong>
+          <input
+            type="text"
+            className="form-input"
+            value={name}
+            disabled={isEditing}
+            onChange={(event) => setName(event.target.value.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase())}
+            placeholder="workspace-assets"
+          />
+        </label>
+        {!isEditing && !nameValid && normalizedName.length > 0 && (
+          <span className="field-help">Use 3-63 lowercase letters, numbers, or hyphens.</span>
+        )}
+        {!isEditing && nameConflict && (
+          <span className="field-help" style={{ color: 'var(--color-error)' }}>A bucket with this name already exists in the workspace.</span>
+        )}
+      </div>
+
+      <label style={{ display: 'grid', gap: 6 }}>
+        <strong>Description</strong>
+        <input
+          type="text"
+          className="form-input"
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+          placeholder="Optional note for this bucket"
+        />
+      </label>
+
+      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+        <input
+          type="checkbox"
+          checked={makeDefault}
+          onChange={(event) => setMakeDefault(event.target.checked)}
+        />
+        <span>Use as the workspace default bucket</span>
+      </label>
+
+      <div style={{ padding: '12px 14px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)', display: 'grid', gap: 6 }}>
+        <strong>Compatibility paths</strong>
+        <span className="muted" style={{ fontSize: '0.85rem' }}>Public objects: <code>/{normalizedName || 'bucket'}/public</code></span>
+        <span className="muted" style={{ fontSize: '0.85rem' }}>Private objects: <code>/{normalizedName || 'bucket'}/private</code></span>
+      </div>
+    </div>
+  );
+
+  const renderReview = () => (
+    <div className="wizard-step-content" style={{ display: 'grid', gap: 16 }}>
+      <table className="review-table">
+        <tbody>
+          <tr>
+            <td className="review-label">Bucket</td>
+            <td>{existingBucket?.name ?? normalizedName}</td>
+          </tr>
+          <tr>
+            <td className="review-label">Description</td>
+            <td>{description.trim() || <span className="muted">(none)</span>}</td>
+          </tr>
+          <tr>
+            <td className="review-label">Default</td>
+            <td>{makeDefault ? 'Yes' : 'No'}</td>
+          </tr>
+          <tr>
+            <td className="review-label">Env Contract</td>
+            <td>
+              <code>RAGTIME_OBJECT_STORAGE_ENDPOINT</code>
+              {' '}
+              <code>RAGTIME_OBJECT_STORAGE_ACCESS_KEY_ID</code>
+              {' '}
+              <code>RAGTIME_OBJECT_STORAGE_SECRET_ACCESS_KEY</code>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      {!embedded && (
+        <div className="modal-header" style={{ borderBottom: 'none' }}>
+          <h3>{isEditing ? 'Edit Object Storage Bucket' : 'New Object Storage Bucket'}</h3>
+          <button type="button" className="modal-close" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+      )}
+
+      <div className="wizard-progress" ref={progressRef} style={{ padding: '0 var(--space-lg)' }}>
+        {WORKSPACE_OBJECT_STORAGE_WIZARD_STEPS.map((step, index) => {
+          const isNavigable = index <= getCurrentStepIndex() || (index === getCurrentStepIndex() + 1 && canProceed);
+          return (
+            <button
+              key={step}
+              type="button"
+              className={`wizard-step ${currentStep === step ? 'active' : ''} ${getCurrentStepIndex() > index ? 'completed' : ''} ${isNavigable ? 'navigable' : ''}`}
+              onClick={() => goToStep(step)}
+              disabled={!isNavigable}
+            >
+              <span className="step-number">{index + 1}</span>
+              <span className="step-title">{getWorkspaceObjectStorageStepTitle(step)}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {error && <div className="error-banner" style={{ margin: '0 var(--space-lg)' }}>{error}</div>}
+
+      <div className="modal-body" style={{ flex: 1 }}>
+        {currentStep === 'bucket_details' ? renderDetails() : renderReview()}
+      </div>
+
+      <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={getCurrentStepIndex() === 0 ? onClose : () => setCurrentStep('bucket_details')}
+        >
+          {getCurrentStepIndex() === 0 ? 'Cancel' : 'Back'}
+        </button>
+        {currentStep === 'review' ? (
+          <button type="button" className="btn" onClick={handleSave} disabled={saving}>
+            {saving ? 'Saving...' : isEditing ? 'Save Bucket' : 'Create Bucket'}
+          </button>
+        ) : (
+          <button type="button" className="btn" onClick={() => setCurrentStep('review')} disabled={!canProceed}>
+            Continue
+          </button>
+        )}
+      </div>
     </div>
   );
 }

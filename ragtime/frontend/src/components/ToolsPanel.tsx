@@ -419,9 +419,11 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
 interface ToolsPanelProps {
   onSchemaJobTriggered?: () => void;
   schemaJobs?: SchemaIndexJob[];
+  highlightSection?: string | null;
+  onHighlightComplete?: () => void;
 }
 
-export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [] }: ToolsPanelProps) {
+export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSection, onHighlightComplete }: ToolsPanelProps) {
   const [tools, setTools] = useState<ToolConfig[]>([]);
   const [groups, setGroups] = useState<ToolGroup[]>([]);
   const [loading, setLoading] = useState(true);
@@ -509,6 +511,22 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [] }: ToolsPanel
   useEffect(() => {
     loadTools();
   }, [loadTools]);
+
+  // Scroll to and highlight section when navigated from another view
+  useEffect(() => {
+    if (highlightSection && !loading) {
+      const element = document.getElementById(`tools-${highlightSection}`);
+      if (element) {
+        element.classList.add('highlight-setting');
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const timer = setTimeout(() => {
+          element.classList.remove('highlight-setting');
+          onHighlightComplete?.();
+        }, 2000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [highlightSection, loading, onHighlightComplete]);
 
   // Load schema stats when tools change
   useEffect(() => {
@@ -1118,7 +1136,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [] }: ToolsPanel
       )}
 
       {/* Mounts section */}
-      <div className="card">
+      <div className="card" id="tools-mount-sources">
         <div className="card-header">
           <h2>Mounts</h2>
           <AnimatedCreateButton

@@ -27,7 +27,7 @@ import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
 import { ChatPanel } from './ChatPanel';
@@ -36,12 +36,14 @@ import { ResizeHandle } from './ResizeHandle';
 import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
 import { FileDiffOverlay } from './shared/FileDiffOverlay';
+import { WorkspaceObjectStorageWizard } from './MountSourceWizard';
 import { WorkspaceScmWizard } from './WorkspaceScmWizard';
 
 interface UserSpacePanelProps {
   currentUser: User;
   debugMode?: boolean;
   onFullscreenChange?: (fullscreen: boolean) => void;
+  onNavigateToTools?: (section?: string) => void;
 }
 
 interface WorkspaceChatState {
@@ -449,13 +451,14 @@ function getApiErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenChange }: UserSpacePanelProps) {
+export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenChange, onNavigateToTools }: UserSpacePanelProps) {
   const previewEntryPath = 'dashboard/main.ts';
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
   const [workspacesTotal, setWorkspacesTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [_success, setSuccess] = useState<string | null>(null);
   const [statusOverlayVisible, setStatusOverlayVisible] = useState(false);
   const [statusOverlayFading, setStatusOverlayFading] = useState(false);
   const [statusOverlayPinned, setStatusOverlayPinned] = useState(false);
@@ -561,6 +564,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [showEnvVarsModal, setShowEnvVarsModal] = useState(false);
   const [envVars, setEnvVars] = useState<UserSpaceWorkspaceEnvVar[]>([]);
   const [envVarsLoading, setEnvVarsLoading] = useState(false);
+  const [objectStorageConfig, setObjectStorageConfig] = useState<UserSpaceObjectStorageConfig | null>(null);
+  const [objectStorageLoading, setObjectStorageLoading] = useState(false);
+  const [showObjectStorageWizard, setShowObjectStorageWizard] = useState(false);
+  const [editingObjectStorageBucket, setEditingObjectStorageBucket] = useState<UserSpaceObjectStorageBucket | null>(null);
+  const [deletingObjectStorageBucket, setDeletingObjectStorageBucket] = useState<string | null>(null);
   const [draftEnvKey, setDraftEnvKey] = useState('');
   const [draftEnvValue, setDraftEnvValue] = useState('');
   const [draftEnvDescription, setDraftEnvDescription] = useState('');
@@ -573,6 +581,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [confirmDeleteEnvKey, setConfirmDeleteEnvKey] = useState<string | null>(null);
   const [copiedEnvKey, setCopiedEnvKey] = useState<string | null>(null);
   const [showMountsModal, setShowMountsModal] = useState(false);
+  const [mountsModalTab, setMountsModalTab] = useState<'mounts' | 'object-storage'>('mounts');
   const [showScmWizard, setShowScmWizard] = useState(false);
   const [mounts, setMounts] = useState<WorkspaceMount[]>([]);
   const [mountsLoading, setMountsLoading] = useState(false);
@@ -3433,6 +3442,36 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspaceId, isOwner]);
 
+  const loadObjectStorageConfig = useCallback(async (workspaceId: string) => {
+    const config = await api.getUserSpaceObjectStorageConfig(workspaceId);
+    setObjectStorageConfig(config);
+    return config;
+  }, []);
+
+  const handleObjectStorageWizardSaved = useCallback((config: UserSpaceObjectStorageConfig) => {
+    setObjectStorageConfig(config);
+    setShowObjectStorageWizard(false);
+    setEditingObjectStorageBucket(null);
+    setSuccess('Object storage updated.');
+    setTimeout(() => setSuccess(null), 3000);
+  }, []);
+
+  const handleDeleteObjectStorageBucket = useCallback(async (bucketName: string) => {
+    if (!activeWorkspaceId || !isOwner) return;
+    setDeletingObjectStorageBucket(bucketName);
+    try {
+      await api.deleteUserSpaceObjectStorageBucket(activeWorkspaceId, bucketName);
+      const next = await loadObjectStorageConfig(activeWorkspaceId);
+      setObjectStorageConfig(next);
+      setSuccess('Bucket deleted.');
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete bucket');
+    } finally {
+      setDeletingObjectStorageBucket(null);
+    }
+  }, [activeWorkspaceId, isOwner, loadObjectStorageConfig]);
+
   const handleSaveEnvVar = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner) return;
     const key = draftEnvKey.trim().toUpperCase();
@@ -3521,6 +3560,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const handleOpenMountsModal = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner) return;
     setShowMountsModal(true);
+    setMountsModalTab('mounts');
     setMountsLoading(true);
     setCreateMountSourceId('');
     setCreateMountSourcePath('');
@@ -3537,10 +3577,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setMountSyncPreviewMount(null);
     setMountSyncPreviewIntent(null);
     setMountSyncPreviewNextSyncMode(null);
+    setShowObjectStorageWizard(false);
+    setEditingObjectStorageBucket(null);
+    setObjectStorageLoading(true);
     try {
       const [mountList, sources] = await Promise.all([
         api.listWorkspaceMounts(activeWorkspaceId),
         api.listMountableSources(activeWorkspaceId),
+        loadObjectStorageConfig(activeWorkspaceId).catch(() => null),
       ]);
       setMounts(mountList);
       setMountableSources(sources);
@@ -3548,8 +3592,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setError(err instanceof Error ? err.message : 'Failed to load mounts');
     } finally {
       setMountsLoading(false);
+      setObjectStorageLoading(false);
     }
-  }, [activeWorkspaceId, isOwner]);
+  }, [activeWorkspaceId, isOwner, loadObjectStorageConfig]);
 
   const handleCloseMountsModal = useCallback(() => {
     setShowMountsModal(false);
@@ -3558,6 +3603,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setMountSyncPreviewMount(null);
     setMountSyncPreviewIntent(null);
     setMountSyncPreviewNextSyncMode(null);
+    setShowObjectStorageWizard(false);
+    setEditingObjectStorageBucket(null);
   }, []);
 
   const createMountEffectiveSourcePath = useMemo(() => {
@@ -5841,6 +5888,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         </div>
       )}
 
+
+
       {showScmWizard && activeWorkspace && (
         <WorkspaceScmWizard
           workspace={activeWorkspace}
@@ -5850,26 +5899,144 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         />
       )}
 
-      {/* === Mounts modal === */}
+      {/* === Mounts + Object Storage modal === */}
       {showMountsModal && activeWorkspaceId && (
         <div className="modal-overlay" onClick={handleCloseMountsModal}>
           <div className="modal-content modal-large" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Filesystem Mounts</h3>
+            <div className="modal-header" style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+              <div style={{ display: 'flex', gap: 0, flex: 1 }}>
+                <button
+                  type="button"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    borderBottom: mountsModalTab === 'mounts' ? '2px solid var(--color-accent)' : '2px solid transparent',
+                    padding: '8px 16px',
+                    cursor: 'pointer',
+                    color: mountsModalTab === 'mounts' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                    fontSize: 14,
+                    fontWeight: 600,
+                    transition: 'color 0.15s, border-color 0.15s',
+                  }}
+                  onClick={() => { setMountsModalTab('mounts'); setShowObjectStorageWizard(false); setEditingObjectStorageBucket(null); }}
+                >
+                  Filesystem Mounts
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    borderBottom: mountsModalTab === 'object-storage' ? '2px solid var(--color-accent)' : '2px solid transparent',
+                    padding: '8px 16px',
+                    cursor: 'pointer',
+                    color: mountsModalTab === 'object-storage' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                    fontSize: 14,
+                    fontWeight: 600,
+                    transition: 'color 0.15s, border-color 0.15s',
+                  }}
+                  onClick={() => setMountsModalTab('object-storage')}
+                >
+                  Object Storage
+                </button>
+              </div>
               <button className="modal-close" onClick={handleCloseMountsModal}>&times;</button>
             </div>
             <div className="modal-body">
-              {!mountsLoading && mounts.length === 0 && (
-                <>
+            {mountsModalTab === 'object-storage' ? (
+              showObjectStorageWizard ? (
+                <WorkspaceObjectStorageWizard
+                  workspaceId={activeWorkspaceId}
+                  existingBucket={editingObjectStorageBucket}
+                  existingBucketNames={objectStorageConfig?.buckets.map((bucket) => bucket.name) ?? []}
+                  onClose={() => {
+                    setShowObjectStorageWizard(false);
+                    setEditingObjectStorageBucket(null);
+                  }}
+                  onSaved={handleObjectStorageWizardSaved}
+                />
+              ) : (
+                <div style={{ display: 'grid', gap: 16 }}>
                   <p className="userspace-muted" style={{ marginBottom: 0 }}>
-                      Attach folders from your connected tools so apps running in this workspace can use them.
-                      SSH folders update when you sync them, and can stay in sync automatically when auto-sync is enabled. Other mount types are available live while connected.
+                    S3-compatible object storage with auto-injected credentials at runtime.
                   </p>
-                  <p className="userspace-muted" style={{ marginBottom: 12, fontSize: 12 }}>
-                      Changes from a running app may appear after a refresh, and SSH-backed folders may need a sync before the latest files show up here.
-                      Mounted paths under /workspace are excluded from snapshots by default.
-                  </p>
-                </>
+                  {objectStorageLoading ? (
+                    <p className="userspace-muted">Loading...</p>
+                  ) : objectStorageConfig ? (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <strong>Buckets</strong>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => {
+                            setEditingObjectStorageBucket(null);
+                            setShowObjectStorageWizard(true);
+                          }}
+                        >
+                          <Plus size={14} />
+                          New Bucket
+                        </button>
+                      </div>
+
+                      <div style={{ display: 'grid', gap: 10 }}>
+                        {objectStorageConfig.buckets.map((bucket) => (
+                          <div key={bucket.name} style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, display: 'grid', gap: 8 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <strong>{bucket.name}</strong>
+                              {bucket.is_default && (
+                                <span className="userspace-muted" style={{ fontSize: 12, padding: '2px 6px', borderRadius: 999, background: 'var(--color-bg-tertiary)' }}>
+                                  Default
+                                </span>
+                              )}
+                              <span style={{ marginLeft: 'auto' }} />
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => {
+                                  setEditingObjectStorageBucket(bucket);
+                                  setShowObjectStorageWizard(true);
+                                }}
+                                title="Edit bucket"
+                              >
+                                <Pencil size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => { void handleDeleteObjectStorageBucket(bucket.name); }}
+                                disabled={objectStorageConfig.buckets.length <= 1 || deletingObjectStorageBucket === bucket.name}
+                                title={objectStorageConfig.buckets.length <= 1 ? 'At least one bucket must remain' : 'Delete bucket'}
+                              >
+                                {deletingObjectStorageBucket === bucket.name ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                              </button>
+                            </div>
+                            <div className="userspace-muted" style={{ fontSize: 12 }}>
+                              {bucket.description || 'No description'}
+                            </div>
+                            <div style={{ display: 'grid', gap: 4 }}>
+                              <span className="userspace-muted" style={{ fontSize: 12 }}>
+                                Public root: <code>/{bucket.name}/{bucket.public_prefix}</code>
+                              </span>
+                              <span className="userspace-muted" style={{ fontSize: 12 }}>
+                                Private root: <code>/{bucket.name}/{bucket.private_prefix}</code>
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="userspace-muted">Object storage is unavailable for this workspace.</p>
+                  )}
+                </div>
+              )
+            ) : (
+              <>
+              {!mountsLoading && mounts.length === 0 && (
+                <p className="userspace-muted" style={{ marginBottom: 12 }}>
+                    Attach folders from your connected tools so apps running in this workspace can read and write to them.
+                </p>
               )}
               {mountsLoading ? (
                 <p className="userspace-muted">Loading...</p>
@@ -6348,11 +6515,24 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                     </div>
                   ) : (
                     <p className="userspace-muted" style={{ marginTop: 12 }}>
-                      No mount sources are configured. Add a source in Settings, then attach it here.
+                      No mount sources are configured.{' '}
+                      {onNavigateToTools ? (
+                        <a
+                          href="#"
+                          onClick={(e) => { e.preventDefault(); handleCloseMountsModal(); onNavigateToTools('mount-sources'); }}
+                          style={{ color: 'var(--color-accent)' }}
+                        >
+                          Add a source in Tools
+                        </a>
+                      ) : (
+                        'Add a mount source in Tools'
+                      )}, then attach it here.
                     </p>
                   )}
                 </>
               )}
+              </>
+            )}
             </div>
           </div>
         </div>

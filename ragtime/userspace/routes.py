@@ -26,9 +26,11 @@ from ragtime.userspace.models import (
     CreateSnapshotBranchRequest,
     CreateSnapshotRequest,
     CreateUserspaceMountSourceRequest,
+    CreateUserSpaceObjectStorageBucketRequest,
     CreateWorkspaceMountRequest,
     CreateWorkspaceRequest,
     DeleteUserspaceMountSourceResponse,
+    DeleteUserSpaceObjectStorageBucketResponse,
     DeleteWorkspaceEnvVarResponse,
     DeleteWorkspaceMountResponse,
     ExecuteComponentRequest,
@@ -40,6 +42,7 @@ from ragtime.userspace.models import (
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
+    UpdateUserSpaceObjectStorageBucketRequest,
     UpdateWorkspaceMembersRequest,
     UpdateWorkspaceMountRequest,
     UpdateWorkspaceRequest,
@@ -53,6 +56,7 @@ from ragtime.userspace.models import (
     UserSpaceFileInfo,
     UserSpaceFileResponse,
     UserspaceMountSource,
+    UserSpaceObjectStorageConfig,
     UserSpaceSharedPreviewResponse,
     UserSpaceSnapshot,
     UserSpaceSnapshotDiffSummaryResponse,
@@ -448,6 +452,76 @@ async def delete_workspace_env_var(
         workspace_id,
         user.id,
         env_key,
+    )
+    await userspace_runtime_service.refresh_runtime_env_vars(workspace_id)
+    return result
+
+
+@router.get(
+    "/workspaces/{workspace_id}/object-storage",
+    response_model=UserSpaceObjectStorageConfig,
+)
+async def get_workspace_object_storage_config(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.get_workspace_object_storage_config(
+        workspace_id,
+        user.id,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/object-storage/buckets",
+    response_model=UserSpaceObjectStorageConfig,
+)
+async def create_workspace_object_storage_bucket(
+    workspace_id: str,
+    request: CreateUserSpaceObjectStorageBucketRequest,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.create_workspace_object_storage_bucket(
+        workspace_id,
+        user.id,
+        request,
+    )
+    await userspace_runtime_service.refresh_runtime_env_vars(workspace_id)
+    return result
+
+
+@router.put(
+    "/workspaces/{workspace_id}/object-storage/buckets/{bucket_name}",
+    response_model=UserSpaceObjectStorageConfig,
+)
+async def update_workspace_object_storage_bucket(
+    workspace_id: str,
+    bucket_name: str,
+    request: UpdateUserSpaceObjectStorageBucketRequest,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.update_workspace_object_storage_bucket(
+        workspace_id,
+        user.id,
+        bucket_name,
+        request,
+    )
+    await userspace_runtime_service.refresh_runtime_env_vars(workspace_id)
+    return result
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/object-storage/buckets/{bucket_name}",
+    response_model=DeleteUserSpaceObjectStorageBucketResponse,
+)
+async def delete_workspace_object_storage_bucket(
+    workspace_id: str,
+    bucket_name: str,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.delete_workspace_object_storage_bucket(
+        workspace_id,
+        user.id,
+        bucket_name,
     )
     await userspace_runtime_service.refresh_runtime_env_vars(workspace_id)
     return result

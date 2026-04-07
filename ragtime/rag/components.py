@@ -22,6 +22,7 @@ from typing import Any, List, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
+from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -44,7 +45,6 @@ from langchain_openai.chat_models.base import (
     _construct_responses_api_payload,
     _get_last_messages,
 )
-from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
@@ -113,6 +113,7 @@ from ragtime.rag.prompts import (
     build_userspace_entrypoint_nudge,
     build_userspace_mode_prompt_addition,
     build_userspace_mounts_prompt_fragment,
+    build_userspace_object_storage_prompt_fragment,
     build_userspace_turn_reminder,
     build_userspace_turn_reminder_with_env_vars,
     build_workspace_continuity_context,
@@ -5177,6 +5178,50 @@ except Exception as e:
         )
 
     @staticmethod
+    def _build_userspace_object_storage_prompt_fragment(
+        object_storage_config: Any | None,
+    ) -> str:
+        """Render workspace object-storage availability for userspace mode."""
+
+        if object_storage_config is None:
+            return ""
+
+        buckets = getattr(object_storage_config, "buckets", None) or []
+        bucket_items: list[dict[str, str]] = []
+        for bucket in buckets:
+            bucket_name = str(getattr(bucket, "name", "") or "").strip()
+            if not bucket_name:
+                continue
+            public_prefix = (
+                str(getattr(bucket, "public_prefix", "") or "public").strip()
+                or "public"
+            )
+            private_prefix = (
+                str(getattr(bucket, "private_prefix", "") or "private").strip()
+                or "private"
+            )
+            bucket_items.append(
+                {
+                    "name": bucket_name,
+                    "public_root": f"/{bucket_name}/{public_prefix}",
+                    "private_root": f"/{bucket_name}/{private_prefix}",
+                    "description": str(
+                        getattr(bucket, "description", "") or ""
+                    ).strip(),
+                    "is_default": (
+                        "true"
+                        if bool(getattr(bucket, "is_default", False))
+                        else "false"
+                    ),
+                }
+            )
+
+        return build_userspace_object_storage_prompt_fragment(
+            object_storage_enabled=True,
+            buckets=bucket_items,
+        )
+
+    @staticmethod
     def _serialize_prompt_content(content: Any) -> Any:
         """Serialize LangChain content to JSON-safe values for prompt debug storage."""
         if content is None:
@@ -9795,15 +9840,22 @@ except Exception as e:
 
             include_sqlite_persistence = workspace.sqlite_persistence_mode == "include"
 
-            env_var_summaries, workspace_mounts, mountable_sources = (
-                await asyncio.gather(
-                    userspace_service.list_workspace_env_var_summaries(
-                        workspace_id,
-                        user_id,
-                    ),
-                    userspace_service.list_workspace_mounts(workspace_id, user_id),
-                    userspace_service.list_mountable_sources(workspace_id, user_id),
-                )
+            (
+                env_var_summaries,
+                workspace_mounts,
+                mountable_sources,
+                object_storage_config,
+            ) = await asyncio.gather(
+                userspace_service.list_workspace_env_var_summaries(
+                    workspace_id,
+                    user_id,
+                ),
+                userspace_service.list_workspace_mounts(workspace_id, user_id),
+                userspace_service.list_mountable_sources(workspace_id, user_id),
+                userspace_service.get_workspace_object_storage_summary(
+                    workspace_id,
+                    user_id,
+                ),
             )
             prompt_additions += self._build_userspace_env_var_prompt_fragment(
                 env_var_summaries
@@ -9811,6 +9863,9 @@ except Exception as e:
             prompt_additions += self._build_userspace_mount_prompt_fragment(
                 mountable_sources,
                 workspace_mounts,
+            )
+            prompt_additions += self._build_userspace_object_storage_prompt_fragment(
+                object_storage_config
             )
             userspace_env_var_turn_hint = self._build_userspace_env_var_turn_hint(
                 env_var_summaries

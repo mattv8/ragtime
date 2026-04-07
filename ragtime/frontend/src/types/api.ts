@@ -1819,6 +1819,45 @@ export interface DeleteUserSpaceWorkspaceEnvVarResponse {
   key: string;
 }
 
+export interface UserSpaceObjectStorageBucket {
+  name: string;
+  description?: string | null;
+  public_prefix: string;
+  private_prefix: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserSpaceObjectStorageConfig {
+  workspace_id: string;
+  region: string;
+  endpoint_env_key: string;
+  access_key_env_key: string;
+  secret_key_env_key: string;
+  default_bucket_name?: string | null;
+  public_object_search_paths: string[];
+  private_object_dir?: string | null;
+  buckets: UserSpaceObjectStorageBucket[];
+}
+
+export interface CreateUserSpaceObjectStorageBucketRequest {
+  name: string;
+  description?: string | null;
+  make_default?: boolean;
+}
+
+export interface UpdateUserSpaceObjectStorageBucketRequest {
+  description?: string | null;
+  make_default?: boolean | null;
+}
+
+export interface DeleteUserSpaceObjectStorageBucketResponse {
+  success: boolean;
+  bucket_name: string;
+  workspace_id: string;
+}
+
 // ── Workspace Mounts ──────────────────────────────────────────────────
 
 export type MountSyncStatus = 'pending' | 'synced' | 'error';

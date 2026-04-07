@@ -229,6 +229,45 @@ class DeleteWorkspaceEnvVarResponse(BaseModel):
     key: str
 
 
+class UserSpaceObjectStorageBucket(BaseModel):
+    name: str = Field(min_length=3, max_length=63)
+    description: str | None = Field(default=None, max_length=1000)
+    public_prefix: str = Field(default="public", min_length=1, max_length=120)
+    private_prefix: str = Field(default="private", min_length=1, max_length=120)
+    is_default: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class UserSpaceObjectStorageConfig(BaseModel):
+    workspace_id: str
+    region: str = "us-east-1"
+    endpoint_env_key: str = "RAGTIME_OBJECT_STORAGE_ENDPOINT"
+    access_key_env_key: str = "RAGTIME_OBJECT_STORAGE_ACCESS_KEY_ID"
+    secret_key_env_key: str = "RAGTIME_OBJECT_STORAGE_SECRET_ACCESS_KEY"
+    default_bucket_name: str | None = None
+    public_object_search_paths: list[str] = Field(default_factory=list)
+    private_object_dir: str | None = None
+    buckets: list[UserSpaceObjectStorageBucket] = Field(default_factory=list)
+
+
+class CreateUserSpaceObjectStorageBucketRequest(BaseModel):
+    name: str = Field(min_length=3, max_length=63)
+    description: str | None = Field(default=None, max_length=1000)
+    make_default: bool = False
+
+
+class UpdateUserSpaceObjectStorageBucketRequest(BaseModel):
+    description: str | None = Field(default=None, max_length=1000)
+    make_default: bool | None = None
+
+
+class DeleteUserSpaceObjectStorageBucketResponse(BaseModel):
+    success: bool = True
+    bucket_name: str
+    workspace_id: str
+
+
 class UpdateWorkspaceMembersRequest(BaseModel):
     members: list[WorkspaceMember] = Field(default_factory=list)
 

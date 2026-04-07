@@ -21,9 +21,9 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
-
 from prisma import Json
 from prisma import fields as prisma_fields
+
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -63,13 +63,16 @@ from ragtime.indexer.file_utils import build_authenticated_git_url
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
+from ragtime.rag.prompts import build_workspace_scm_setup_prompt
 from ragtime.userspace.models import (
     ArtifactType,
     BrowseUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
+    CreateUserSpaceObjectStorageBucketRequest,
     CreateWorkspaceMountRequest,
     CreateWorkspaceRequest,
     DeleteUserspaceMountSourceResponse,
+    DeleteUserSpaceObjectStorageBucketResponse,
     DeleteWorkspaceEnvVarResponse,
     DeleteWorkspaceMountResponse,
     ExecuteComponentRequest,
@@ -83,6 +86,7 @@ from ragtime.userspace.models import (
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
+    UpdateUserSpaceObjectStorageBucketRequest,
     UpdateWorkspaceMembersRequest,
     UpdateWorkspaceMountRequest,
     UpdateWorkspaceRequest,
@@ -96,6 +100,8 @@ from ragtime.userspace.models import (
     UserspaceMountBackend,
     UserspaceMountSource,
     UserspaceMountSourceType,
+    UserSpaceObjectStorageBucket,
+    UserSpaceObjectStorageConfig,
     UserSpaceSharedPreviewResponse,
     UserSpaceSnapshot,
     UserSpaceSnapshotBranch,
@@ -290,6 +296,25 @@ _RUNTIME_BRIDGE_VERSION = 7
 _RUNTIME_BRIDGE_VERSION_TAG = f"@ragtime/bridge v{_RUNTIME_BRIDGE_VERSION}"
 _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS = 310_000  # 300s + 10s buffer
 _USERSPACE_TEMPLATES_DIR = Path(__file__).with_name("templates")
+_WORKSPACE_OBJECT_STORAGE_DIRNAME = "s3"
+_WORKSPACE_OBJECT_STORAGE_CONFIG_NAME = "config.json"
+_WORKSPACE_OBJECT_STORAGE_REGION = "us-east-1"
+_WORKSPACE_OBJECT_STORAGE_PUBLIC_PREFIX = "public"
+_WORKSPACE_OBJECT_STORAGE_PRIVATE_PREFIX = "private"
+_WORKSPACE_OBJECT_STORAGE_ENDPOINT_ENV_KEY = "RAGTIME_OBJECT_STORAGE_ENDPOINT"
+_WORKSPACE_OBJECT_STORAGE_ACCESS_KEY_ENV_KEY = "RAGTIME_OBJECT_STORAGE_ACCESS_KEY_ID"
+_WORKSPACE_OBJECT_STORAGE_SECRET_KEY_ENV_KEY = (
+    "RAGTIME_OBJECT_STORAGE_SECRET_ACCESS_KEY"
+)
+_WORKSPACE_OBJECT_STORAGE_BUCKETS_ENV_KEY = "RAGTIME_OBJECT_STORAGE_BUCKETS_JSON"
+_WORKSPACE_OBJECT_STORAGE_DEFAULT_BUCKET_ENV_KEY = (
+    "RAGTIME_OBJECT_STORAGE_DEFAULT_BUCKET"
+)
+_WORKSPACE_OBJECT_STORAGE_FORCE_PATH_STYLE_ENV_KEY = (
+    "RAGTIME_OBJECT_STORAGE_FORCE_PATH_STYLE"
+)
+_WORKSPACE_OBJECT_STORAGE_REGION_ENV_KEY = "RAGTIME_OBJECT_STORAGE_REGION"
+_WORKSPACE_OBJECT_STORAGE_ENABLED_ENV_KEY = "RAGTIME_OBJECT_STORAGE_ENABLED"
 
 # ---------------------------------------------------------------------------
 # Node framework detection from command strings
@@ -1006,8 +1031,498 @@ class UserSpaceService:
     def _workspace_files_dir(self, workspace_id: str) -> Path:
         return self._workspace_dir(workspace_id) / "files"
 
+    @staticmethod
+    def _read_workspace_text_file(path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    def _detect_imported_replit_features(
+        self, workspace_id: str
+    ) -> tuple[list[str], bool]:
+        """Return deterministic Replit import markers and legacy storage status."""
+
+        files_dir = self._workspace_files_dir(workspace_id)
+        features: list[str] = []
+        has_legacy_object_storage = False
+
+        replit_config_path = files_dir / ".replit"
+        if replit_config_path.is_file():
+            features.append(".replit config")
+
+        replit_nix_path = files_dir / "replit.nix"
+        if replit_nix_path.is_file():
+            features.append("replit.nix")
+
+        replit_integrations_dir = files_dir / "server" / "replit_integrations"
+        if replit_integrations_dir.is_dir():
+            features.append("server/replit_integrations")
+
+        package_json_path = files_dir / "package.json"
+        package_json_text = self._read_workspace_text_file(package_json_path)
+        if '"@google-cloud/storage"' in package_json_text:
+            features.append("@google-cloud/storage dependency")
+            has_legacy_object_storage = True
+
+        object_storage_path = (
+            files_dir
+            / "server"
+            / "replit_integrations"
+            / "object_storage"
+            / "objectStorage.ts"
+        )
+        object_storage_text = self._read_workspace_text_file(object_storage_path)
+        if object_storage_text:
+            features.append("Replit object-storage adapter")
+            legacy_markers = (
+                "REPLIT_SIDECAR_ENDPOINT",
+                "signed-object-url",
+                "@google-cloud/storage",
+                "127.0.0.1:1106",
+            )
+            if any(marker in object_storage_text for marker in legacy_markers):
+                has_legacy_object_storage = True
+                features.append("legacy Replit object-storage flow")
+
+        deduped_features = list(dict.fromkeys(features))
+        return deduped_features, has_legacy_object_storage
+
     def _workspace_rootfs_dir(self, workspace_id: str) -> Path:
         return self._workspace_dir(workspace_id) / "rootfs"
+
+    def _workspace_object_storage_dir(self, workspace_id: str) -> Path:
+        return self._workspace_dir(workspace_id) / _WORKSPACE_OBJECT_STORAGE_DIRNAME
+
+    def _workspace_object_storage_config_path(self, workspace_id: str) -> Path:
+        return (
+            self._workspace_object_storage_dir(workspace_id)
+            / _WORKSPACE_OBJECT_STORAGE_CONFIG_NAME
+        )
+
+    def _workspace_object_storage_buckets_dir(self, workspace_id: str) -> Path:
+        return self._workspace_object_storage_dir(workspace_id) / "buckets"
+
+    @staticmethod
+    def _normalize_object_storage_bucket_name(name: str) -> str:
+        normalized = str(name or "").strip().lower()
+        if not normalized:
+            raise HTTPException(status_code=400, detail="Bucket name is required")
+        if len(normalized) < 3 or len(normalized) > 63:
+            raise HTTPException(
+                status_code=400,
+                detail="Bucket name must be between 3 and 63 characters",
+            )
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*[a-z0-9]", normalized):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Bucket name must use lowercase letters, numbers, and hyphens, "
+                    "and must start and end with a letter or number"
+                ),
+            )
+        return normalized
+
+    @staticmethod
+    def _normalize_object_storage_bucket_description(
+        description: str | None,
+    ) -> str | None:
+        if description is None:
+            return None
+        normalized = description.strip()
+        return normalized or None
+
+    @staticmethod
+    def _default_object_storage_bucket_name(workspace_id: str) -> str:
+        suffix = re.sub(r"[^a-z0-9]", "", workspace_id.lower())[:12] or "default"
+        return f"workspace-{suffix}"
+
+    @staticmethod
+    def _build_object_storage_bucket_record(
+        *,
+        name: str,
+        description: str | None,
+        now: datetime,
+        public_prefix: str = _WORKSPACE_OBJECT_STORAGE_PUBLIC_PREFIX,
+        private_prefix: str = _WORKSPACE_OBJECT_STORAGE_PRIVATE_PREFIX,
+    ) -> dict[str, Any]:
+        timestamp = now.isoformat()
+        return {
+            "name": name,
+            "description": description,
+            "public_prefix": public_prefix,
+            "private_prefix": private_prefix,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+
+    def _default_object_storage_config(self, workspace_id: str) -> dict[str, Any]:
+        now = _utc_now()
+        default_bucket = self._default_object_storage_bucket_name(workspace_id)
+        secret = secrets.token_urlsafe(32)
+        return {
+            "version": 1,
+            "managed_by": "ragtime",
+            "region": _WORKSPACE_OBJECT_STORAGE_REGION,
+            "access_key_id": f"ragtime-{workspace_id[:8]}",
+            "secret_access_key_encrypted": encrypt_secret(secret),
+            "default_bucket_name": default_bucket,
+            "buckets": [
+                self._build_object_storage_bucket_record(
+                    name=default_bucket,
+                    description="Default workspace bucket",
+                    now=now,
+                )
+            ],
+        }
+
+    def _write_object_storage_config(
+        self,
+        workspace_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        storage_dir = self._workspace_object_storage_dir(workspace_id)
+        config_path = self._workspace_object_storage_config_path(workspace_id)
+        buckets_dir = self._workspace_object_storage_buckets_dir(workspace_id)
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        buckets_dir.mkdir(parents=True, exist_ok=True)
+        for bucket in payload.get("buckets") or []:
+            bucket_name = str((bucket or {}).get("name") or "").strip()
+            if bucket_name:
+                (buckets_dir / bucket_name).mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def _ensure_object_storage_config(self, workspace_id: str) -> dict[str, Any]:
+        config_path = self._workspace_object_storage_config_path(workspace_id)
+        if config_path.exists() and config_path.is_file():
+            try:
+                payload = json.loads(config_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Workspace object storage config is invalid",
+                ) from exc
+            if not isinstance(payload, dict):
+                raise HTTPException(
+                    status_code=500,
+                    detail="Workspace object storage config is invalid",
+                )
+            self._write_object_storage_config(workspace_id, payload)
+            return payload
+
+        payload = self._default_object_storage_config(workspace_id)
+        self._write_object_storage_config(workspace_id, payload)
+        return payload
+
+    @staticmethod
+    def _parse_object_storage_datetime(raw_value: Any) -> datetime:
+        if isinstance(raw_value, datetime):
+            return raw_value
+        text = str(raw_value or "").strip()
+        if text:
+            try:
+                return datetime.fromisoformat(text)
+            except Exception:
+                pass
+        return _utc_now()
+
+    @staticmethod
+    def _bucket_public_object_root(bucket: dict[str, Any]) -> str:
+        prefix = str(
+            bucket.get("public_prefix") or _WORKSPACE_OBJECT_STORAGE_PUBLIC_PREFIX
+        )
+        return f"/{bucket['name']}/{prefix.strip('/')}"
+
+    @staticmethod
+    def _bucket_private_object_root(bucket: dict[str, Any]) -> str:
+        prefix = str(
+            bucket.get("private_prefix") or _WORKSPACE_OBJECT_STORAGE_PRIVATE_PREFIX
+        )
+        return f"/{bucket['name']}/{prefix.strip('/')}"
+
+    def _object_storage_bucket_model(
+        self,
+        bucket: dict[str, Any],
+        *,
+        default_bucket_name: str | None,
+    ) -> UserSpaceObjectStorageBucket:
+        bucket_name = str(bucket.get("name") or "").strip()
+        return UserSpaceObjectStorageBucket(
+            name=bucket_name,
+            description=self._normalize_object_storage_bucket_description(
+                cast(str | None, bucket.get("description"))
+            ),
+            public_prefix=str(
+                bucket.get("public_prefix") or _WORKSPACE_OBJECT_STORAGE_PUBLIC_PREFIX
+            ),
+            private_prefix=str(
+                bucket.get("private_prefix") or _WORKSPACE_OBJECT_STORAGE_PRIVATE_PREFIX
+            ),
+            is_default=bucket_name == (default_bucket_name or ""),
+            created_at=self._parse_object_storage_datetime(bucket.get("created_at")),
+            updated_at=self._parse_object_storage_datetime(bucket.get("updated_at")),
+        )
+
+    def _object_storage_config_model(
+        self,
+        workspace_id: str,
+        payload: dict[str, Any],
+    ) -> UserSpaceObjectStorageConfig:
+        raw_buckets = payload.get("buckets")
+        buckets_raw: list[dict[str, Any]] = (
+            [bucket for bucket in raw_buckets if isinstance(bucket, dict)]
+            if isinstance(raw_buckets, list)
+            else []
+        )
+        default_bucket_name = (
+            str(payload.get("default_bucket_name") or "").strip() or None
+        )
+        buckets = [
+            self._object_storage_bucket_model(
+                bucket,
+                default_bucket_name=default_bucket_name,
+            )
+            for bucket in buckets_raw
+            if str(bucket.get("name") or "").strip()
+        ]
+        public_paths = [
+            self._bucket_public_object_root(bucket)
+            for bucket in buckets_raw
+            if str(bucket.get("name") or "").strip()
+        ]
+        private_path = None
+        for bucket in buckets_raw:
+            if str(bucket.get("name") or "").strip() == (default_bucket_name or ""):
+                private_path = self._bucket_private_object_root(bucket)
+                break
+        return UserSpaceObjectStorageConfig(
+            workspace_id=workspace_id,
+            region=str(payload.get("region") or _WORKSPACE_OBJECT_STORAGE_REGION),
+            endpoint_env_key=_WORKSPACE_OBJECT_STORAGE_ENDPOINT_ENV_KEY,
+            access_key_env_key=_WORKSPACE_OBJECT_STORAGE_ACCESS_KEY_ENV_KEY,
+            secret_key_env_key=_WORKSPACE_OBJECT_STORAGE_SECRET_KEY_ENV_KEY,
+            default_bucket_name=default_bucket_name,
+            public_object_search_paths=public_paths,
+            private_object_dir=private_path,
+            buckets=buckets,
+        )
+
+    def _build_object_storage_runtime_env(self, workspace_id: str) -> dict[str, str]:
+        payload = self._ensure_object_storage_config(workspace_id)
+        default_bucket_name = str(payload.get("default_bucket_name") or "").strip()
+        access_key_id = str(payload.get("access_key_id") or "").strip()
+        encrypted_secret = str(payload.get("secret_access_key_encrypted") or "").strip()
+        secret_access_key = decrypt_secret(encrypted_secret) if encrypted_secret else ""
+        config_model = self._object_storage_config_model(workspace_id, payload)
+
+        env: dict[str, str] = {
+            _WORKSPACE_OBJECT_STORAGE_ENABLED_ENV_KEY: "true",
+            _WORKSPACE_OBJECT_STORAGE_REGION_ENV_KEY: config_model.region,
+            _WORKSPACE_OBJECT_STORAGE_FORCE_PATH_STYLE_ENV_KEY: "true",
+            _WORKSPACE_OBJECT_STORAGE_BUCKETS_ENV_KEY: json.dumps(
+                [bucket.model_dump(mode="json") for bucket in config_model.buckets],
+                separators=(",", ":"),
+            ),
+        }
+        if access_key_id:
+            env[_WORKSPACE_OBJECT_STORAGE_ACCESS_KEY_ENV_KEY] = access_key_id
+        if secret_access_key:
+            env[_WORKSPACE_OBJECT_STORAGE_SECRET_KEY_ENV_KEY] = secret_access_key
+        if default_bucket_name:
+            env[_WORKSPACE_OBJECT_STORAGE_DEFAULT_BUCKET_ENV_KEY] = default_bucket_name
+        if config_model.public_object_search_paths:
+            env["PUBLIC_OBJECT_SEARCH_PATHS"] = ",".join(
+                config_model.public_object_search_paths
+            )
+        if config_model.private_object_dir:
+            env["PRIVATE_OBJECT_DIR"] = config_model.private_object_dir
+        return env
+
+    async def get_workspace_object_storage_config(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> UserSpaceObjectStorageConfig:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="owner",
+        )
+        payload = self._ensure_object_storage_config(workspace_id)
+        return self._object_storage_config_model(workspace_id, payload)
+
+    async def get_workspace_object_storage_summary(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> UserSpaceObjectStorageConfig:
+        """Return non-secret workspace object-storage metadata for any member.
+
+        This is safe for prompt context because it only includes bucket names,
+        prefixes, and public env-key names. Credentials are never returned.
+        """
+
+        await self._enforce_workspace_access(workspace_id, user_id)
+        payload = self._ensure_object_storage_config(workspace_id)
+        return self._object_storage_config_model(workspace_id, payload)
+
+    async def create_workspace_object_storage_bucket(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: CreateUserSpaceObjectStorageBucketRequest,
+    ) -> UserSpaceObjectStorageConfig:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="owner",
+        )
+        payload = self._ensure_object_storage_config(workspace_id)
+        raw_buckets = payload.get("buckets")
+        buckets: list[dict[str, Any]] = (
+            [bucket for bucket in raw_buckets if isinstance(bucket, dict)]
+            if isinstance(raw_buckets, list)
+            else []
+        )
+        bucket_name = self._normalize_object_storage_bucket_name(request.name)
+        if any(
+            str((bucket or {}).get("name") or "") == bucket_name for bucket in buckets
+        ):
+            raise HTTPException(status_code=409, detail="Bucket already exists")
+
+        now = _utc_now()
+        buckets.append(
+            self._build_object_storage_bucket_record(
+                name=bucket_name,
+                description=self._normalize_object_storage_bucket_description(
+                    request.description
+                ),
+                now=now,
+            )
+        )
+        payload["buckets"] = buckets
+        if (
+            request.make_default
+            or not str(payload.get("default_bucket_name") or "").strip()
+        ):
+            payload["default_bucket_name"] = bucket_name
+
+        self._write_object_storage_config(workspace_id, payload)
+        db = await get_db()
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={"updatedAt": _utc_now()},
+        )
+        return self._object_storage_config_model(workspace_id, payload)
+
+    async def update_workspace_object_storage_bucket(
+        self,
+        workspace_id: str,
+        user_id: str,
+        bucket_name: str,
+        request: UpdateUserSpaceObjectStorageBucketRequest,
+    ) -> UserSpaceObjectStorageConfig:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="owner",
+        )
+        normalized_name = self._normalize_object_storage_bucket_name(bucket_name)
+        payload = self._ensure_object_storage_config(workspace_id)
+        raw_buckets = payload.get("buckets")
+        buckets: list[dict[str, Any]] = (
+            [bucket for bucket in raw_buckets if isinstance(bucket, dict)]
+            if isinstance(raw_buckets, list)
+            else []
+        )
+        target: dict[str, Any] | None = None
+        for bucket in buckets:
+            if str(bucket.get("name") or "") == normalized_name:
+                target = bucket
+                break
+        if target is None:
+            raise HTTPException(status_code=404, detail="Bucket not found")
+
+        if request.description is not None:
+            target["description"] = self._normalize_object_storage_bucket_description(
+                request.description
+            )
+        target["updated_at"] = _utc_now().isoformat()
+        if request.make_default:
+            payload["default_bucket_name"] = normalized_name
+
+        self._write_object_storage_config(workspace_id, payload)
+        db = await get_db()
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={"updatedAt": _utc_now()},
+        )
+        return self._object_storage_config_model(workspace_id, payload)
+
+    async def delete_workspace_object_storage_bucket(
+        self,
+        workspace_id: str,
+        user_id: str,
+        bucket_name: str,
+    ) -> DeleteUserSpaceObjectStorageBucketResponse:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="owner",
+        )
+        normalized_name = self._normalize_object_storage_bucket_name(bucket_name)
+        payload = self._ensure_object_storage_config(workspace_id)
+        raw_buckets = payload.get("buckets")
+        buckets: list[dict[str, Any]] = (
+            [bucket for bucket in raw_buckets if isinstance(bucket, dict)]
+            if isinstance(raw_buckets, list)
+            else []
+        )
+        remaining = [
+            bucket
+            for bucket in buckets
+            if str(bucket.get("name") or "") != normalized_name
+        ]
+        if len(remaining) == len(buckets):
+            raise HTTPException(status_code=404, detail="Bucket not found")
+        if not remaining:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one workspace bucket must remain configured",
+            )
+
+        payload["buckets"] = remaining
+        if str(payload.get("default_bucket_name") or "") == normalized_name:
+            payload["default_bucket_name"] = str(remaining[0].get("name") or "")
+
+        bucket_dir = (
+            self._workspace_object_storage_buckets_dir(workspace_id) / normalized_name
+        )
+        try:
+            if bucket_dir.exists() and bucket_dir.is_dir():
+                shutil.rmtree(bucket_dir)
+        except Exception as exc:
+            logger.warning(
+                "Failed to remove workspace object storage bucket data for %s/%s: %s",
+                workspace_id,
+                normalized_name,
+                exc,
+            )
+
+        self._write_object_storage_config(workspace_id, payload)
+        db = await get_db()
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={"updatedAt": _utc_now()},
+        )
+        return DeleteUserSpaceObjectStorageBucketResponse(
+            success=True,
+            bucket_name=normalized_name,
+            workspace_id=workspace_id,
+        )
 
     @staticmethod
     def _normalize_workspace_env_var_key(raw_key: str) -> str:
@@ -4123,47 +4638,21 @@ class UserSpaceService:
 
     def _workspace_scm_setup_prompt(
         self,
+        workspace_id: str,
         git_url: str,
         git_branch: str,
         inferred_entrypoint: dict[str, str] | None = None,
     ) -> str:
-        parts: list[str] = [
-            "Inspect the imported workspace and get it running locally without "
-            "destructive changes. Start by using assay_userspace_code to assess "
-            "the current structure.",
-        ]
-
-        if inferred_entrypoint:
-            fw = inferred_entrypoint.get("framework", "node")
-            cmd = inferred_entrypoint.get("command", "")
-            parts.append(
-                f"An entrypoint was auto-detected from the repository "
-                f"(framework: {fw}, command: {cmd}). Verify it is correct "
-                f"and adjust .ragtime/runtime-entrypoint.json if needed."
-            )
-        else:
-            parts.append(
-                "No entrypoint could be auto-detected. Repair or create "
-                ".ragtime/runtime-entrypoint.json based on the project structure."
-            )
-
-        parts.append(
-            "Verify .ragtime/runtime-bootstrap.json is still appropriate, "
-            "install only declared dependencies, check whether environment variables "
-            "are needed (e.g. DATABASE_URL), run validate_userspace_code on every "
-            "changed source file, and create a snapshot when the workspace is in a "
-            "runnable state."
+        detected_replit_features, has_legacy_replit_object_storage = (
+            self._detect_imported_replit_features(workspace_id)
         )
-        parts.append(
-            "For Vite/Node projects, preserve existing HMR behavior unless the user "
-            "explicitly requests disabling it. Do not invent npm scripts (for example "
-            "npm run ci) unless they exist in package.json; bootstrap commands are "
-            "defined in .ragtime/runtime-bootstrap.json."
+        return build_workspace_scm_setup_prompt(
+            git_url=git_url,
+            git_branch=git_branch,
+            inferred_entrypoint=inferred_entrypoint,
+            detected_replit_features=detected_replit_features,
+            has_legacy_replit_object_storage=has_legacy_replit_object_storage,
         )
-        parts.append(
-            f"The workspace was imported from {git_url} on branch {git_branch}."
-        )
-        return " ".join(parts)
 
     async def _resolve_workspace_scm_target(
         self,
@@ -4611,6 +5100,7 @@ class UserSpaceService:
             snapshot=imported_snapshot,
             remote_commit_hash=remote_commit_hash,
             suggested_setup_prompt=self._workspace_scm_setup_prompt(
+                workspace_id,
                 preview.git_url,
                 preview.git_branch,
                 inferred_entrypoint=inferred_entrypoint,
@@ -4960,6 +5450,7 @@ class UserSpaceService:
                 )
 
         self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
+        self._ensure_object_storage_config(workspace_id)
         self._seed_runtime_bootstrap_config(workspace_id)
         self._seed_runtime_entrypoint_config(workspace_id)
         await self._ensure_workspace_git_repo(workspace_id)
@@ -5836,7 +6327,9 @@ class UserSpaceService:
             where={"workspaceId": workspace_id},
             order={"key": "asc"},
         )
-        return self._sanitize_workspace_env_map(list(rows))
+        env_map = self._sanitize_workspace_env_map(list(rows))
+        env_map.update(self._build_object_storage_runtime_env(workspace_id))
+        return env_map
 
     # ------------------------------------------------------------------
     # Workspace Mounts
