@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret
@@ -39,6 +49,7 @@ from ragtime.userspace.models import (
     MountSourceAffectedWorkspacesResponse,
     PaginatedWorkspacesResponse,
     RestoreSnapshotResponse,
+    SqliteImportResponse,
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
@@ -1321,3 +1332,32 @@ async def delete_snapshot(
     result = await userspace_service.delete_snapshot(workspace_id, snapshot_id, user.id)
     await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
     return result
+
+
+@router.post(
+    "/workspaces/{workspace_id}/sqlite-import",
+    response_model=SqliteImportResponse,
+)
+async def import_sql_to_workspace_sqlite(
+    workspace_id: str,
+    file: UploadFile = File(
+        ...,
+        description="SQL dump file (.sql, .dump, .pg, .pgsql)",
+    ),
+    user: Any = Depends(get_current_user),
+):
+    filename = file.filename or "upload.sql"
+    allowed_extensions = {".sql", ".dump", ".pg", ".pgsql", ".mysql"}
+    ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported file extension '{ext}'. "
+                f"Accepted: {', '.join(sorted(allowed_extensions))}"
+            ),
+        )
+    file_bytes = await file.read()
+    return await userspace_service.import_sql_to_workspace_sqlite(
+        workspace_id, user.id, file_bytes, filename
+    )

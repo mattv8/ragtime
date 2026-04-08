@@ -6028,6 +6028,50 @@ except Exception as e:
             )
         )
 
+    @classmethod
+    def _build_synthesis_reasoning_only_fallback(
+        cls,
+        *,
+        intermediate_steps: list[Any],
+        replay_messages: list[BaseMessage],
+        max_tools: int = 6,
+    ) -> str:
+        """Build a minimal progress summary when synthesis produced reasoning but no text.
+
+        This gives the user *something* useful instead of the generic
+        "I completed tool activity but did not emit a final answer" fallback.
+        """
+        tool_names: list[str] = []
+        if intermediate_steps:
+            for step in intermediate_steps[-max_tools:]:
+                action = step[0] if isinstance(step, tuple) and step else None
+                name = str(getattr(action, "tool", "") or "")
+                if name and name not in tool_names:
+                    tool_names.append(name)
+        elif replay_messages:
+            for msg in replay_messages:
+                if isinstance(msg, AIMessage):
+                    for tc in getattr(msg, "tool_calls", None) or []:
+                        name = str(tc.get("name") or "")
+                        if name and name not in tool_names:
+                            tool_names.append(name)
+                        if len(tool_names) >= max_tools:
+                            break
+
+        if tool_names:
+            tools_text = ", ".join(f"`{n}`" for n in tool_names)
+            return (
+                f"I executed tools ({tools_text}) and gathered intermediate results, "
+                "but the synthesis model did not produce a final text summary. "
+                "Please send **Continue** so I can finalize the response."
+            )
+
+        return (
+            "I processed the request and generated internal reasoning, "
+            "but the synthesis model did not produce visible text. "
+            "Please send **Continue** so I can complete the response."
+        )
+
     def _extract_text_from_message(self, message: Any) -> str:
         """
         Extract text content from a message (string or multimodal).
@@ -11471,8 +11515,12 @@ except Exception as e:
                             "final text; falling back to tool-free LLM synthesis",
                             attempt_number,
                         )
+                        # Synthesis uses the base system prompt WITHOUT
+                        # tool_scope_prompt — the LLM has no tool bindings
+                        # here, so listing tools just confuses reasoning
+                        # models into planning calls they cannot make.
                         synthesis_messages: list[BaseMessage] = [
-                            SystemMessage(content=system_prompt + tool_scope_prompt),
+                            SystemMessage(content=system_prompt),
                         ]
                         synthesis_messages.extend(attempt_chat_history)
                         if not attempt_history_has_original_input:
@@ -11489,11 +11537,16 @@ except Exception as e:
                             SystemMessage(content=INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT)
                         )
                         try:
+                            synthesis_chunk_count = 0
+                            synthesis_reasoning_chunks = 0
+                            synthesis_text_chunks = 0
                             async for chunk in request_llm.astream(synthesis_messages):
+                                synthesis_chunk_count += 1
                                 reasoning_text = (
                                     self._extract_reasoning_from_stream_chunk(chunk)
                                 )
                                 if reasoning_text:
+                                    synthesis_reasoning_chunks += 1
                                     yield {
                                         "type": "reasoning",
                                         "content": reasoning_text,
@@ -11503,8 +11556,41 @@ except Exception as e:
                                         chunk.content
                                     )
                                     if content:
+                                        synthesis_text_chunks += 1
                                         attempt_emitted_content = True
                                         yield content
+                                elif synthesis_chunk_count <= 3:
+                                    logger.debug(
+                                        "Synthesis chunk #%d: content=%r, type=%s, kwargs=%s",
+                                        synthesis_chunk_count,
+                                        getattr(chunk, "content", "<no attr>"),
+                                        type(chunk).__name__,
+                                        list((getattr(chunk, "additional_kwargs", {}) or {}).keys()),
+                                    )
+                            logger.info(
+                                "Synthesis stream completed: chunks=%d reasoning=%d text=%d emitted_content=%s",
+                                synthesis_chunk_count,
+                                synthesis_reasoning_chunks,
+                                synthesis_text_chunks,
+                                attempt_emitted_content,
+                            )
+                            # Safety net: if synthesis produced reasoning
+                            # but no visible text (common with reasoning-heavy
+                            # models), generate a minimal progress summary so
+                            # the consumer doesn't see an empty response.
+                            if not attempt_emitted_content and synthesis_reasoning_chunks > 0:
+                                logger.warning(
+                                    "Synthesis produced %d reasoning chunks but no text; "
+                                    "generating progress summary fallback",
+                                    synthesis_reasoning_chunks,
+                                )
+                                fallback_summary = self._build_synthesis_reasoning_only_fallback(
+                                    intermediate_steps=attempt_intermediate_steps,
+                                    replay_messages=attempt_replayed_tool_messages,
+                                )
+                                if fallback_summary:
+                                    attempt_emitted_content = True
+                                    yield fallback_summary
                         except Exception:
                             logger.warning(
                                 "Tool-free synthesis LLM call failed",

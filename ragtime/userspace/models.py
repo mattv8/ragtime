@@ -820,3 +820,14 @@ class WorkspaceMountSyncResponse(BaseModel):
     sync_backend: str | None = None
     sync_notice: str | None = None
     last_sync_error: str | None = None
+
+
+class SqliteImportResponse(BaseModel):
+    success: bool
+    dialect_detected: str
+    tables_created: int = 0
+    rows_inserted: int = 0
+    statements_executed: int = 0
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    message: str

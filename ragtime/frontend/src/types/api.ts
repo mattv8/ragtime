@@ -2544,3 +2544,14 @@ export interface ProviderPromptDebugRecord {
 export interface ProviderPromptDebugListResponse {
   records: ProviderPromptDebugRecord[];
 }
+
+export interface SqliteImportResponse {
+  success: boolean;
+  dialect_detected: string;
+  tables_created: number;
+  rows_inserted: number;
+  statements_executed: number;
+  errors: string[];
+  warnings: string[];
+  message: string;
+}

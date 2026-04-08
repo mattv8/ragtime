@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, ArrowDownToLine, ArrowUpToLine, Check, GitBranch, Link2, RefreshCw, RefreshCcw, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, ArrowDownToLine, ArrowUpToLine, Check, Database, GitBranch, Link2, RefreshCw, RefreshCcw, Upload, X } from 'lucide-react';
 
 import { api } from '@/api';
 import type {
   RepoVisibilityResponse,
+  SqliteImportResponse,
   UserSpaceWorkspace,
   UserSpaceWorkspaceScmExportRequest,
   UserSpaceWorkspaceScmImportRequest,
@@ -12,7 +13,8 @@ import type {
 } from '@/types';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 
-type WizardMode = 'import' | 'export';
+type ModalTab = 'git-source' | 'sql-import';
+type WizardMode = 'import' | 'export' | 'sql-import';
 type WizardStep = 'input' | 'review' | 'result';
 type StatusType = 'info' | 'success' | 'error' | null;
 
@@ -45,6 +47,7 @@ function formatSyncTimestamp(timestamp: string | null | undefined): string | nul
 
 export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAgent }: WorkspaceScmWizardProps) {
   const initialScm = workspace.scm;
+  const [activeTab, setActiveTab] = useState<ModalTab>('git-source');
   const [mode, setMode] = useState<WizardMode>('import');
   const [step, setStep] = useState<WizardStep>('input');
   const [status, setStatus] = useState<{ type: StatusType; message: string }>({ type: null, message: '' });
@@ -62,6 +65,10 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [createRepoIfMissing, setCreateRepoIfMissing] = useState(true);
   const [createRepoPrivate, setCreateRepoPrivate] = useState(true);
   const [createRepoDescription, setCreateRepoDescription] = useState(workspace.description || '');
+  const [sqlFile, setSqlFile] = useState<File | null>(null);
+  const [sqlImportResult, setSqlImportResult] = useState<SqliteImportResponse | null>(null);
+  const [sqlDragOver, setSqlDragOver] = useState(false);
+  const sqlFileInputRef = useRef<HTMLInputElement>(null);
   const activeScm = result?.scm ?? initialScm ?? null;
   const hasConfiguredRemote = Boolean(activeScm?.connected || activeScm?.git_url);
 
@@ -211,26 +218,107 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     await onAskAgent(result.suggested_setup_prompt);
   }
 
+  async function handleSqlImport(): Promise<void> {
+    if (!sqlFile) {
+      setStatus({ type: 'error', message: 'Please select a SQL dump file.' });
+      return;
+    }
+    setIsLoading(true);
+    setStatus({ type: 'info', message: 'Importing SQL dump...' });
+    try {
+      const formData = new FormData();
+      formData.append('file', sqlFile);
+      const importResult = await api.importSqlToWorkspaceSqlite(workspace.id, formData);
+      setSqlImportResult(importResult);
+      setStatus({
+        type: importResult.success ? 'success' : 'error',
+        message: importResult.message,
+      });
+      setStep('result');
+    } catch (error) {
+      setStatus({ type: 'error', message: error instanceof Error ? error.message : 'SQL import failed.' });
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  const sqliteEnabled = workspace.sqlite_persistence_mode === 'include';
+  const SQL_ACCEPT = '.sql,.dump,.pg,.pgsql,.mysql';
+
+  function handleTabSwitch(tab: ModalTab) {
+    if (isLoading) return;
+    setActiveTab(tab);
+    if (tab === 'sql-import') {
+      setMode('sql-import');
+      setStep('input');
+      setSqlImportResult(null);
+      setStatus({ type: null, message: '' });
+    } else {
+      setMode(hasConfiguredRemote ? 'import' : mode === 'sql-import' ? 'import' : mode);
+      setStep('input');
+      setStatus({ type: null, message: '' });
+    }
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content modal-large" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <h3>Workspace SCM</h3>
+        <div className="modal-header" style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+          <div style={{ display: 'flex', gap: 0, flex: 1 }}>
+            <button
+              type="button"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                borderBottom: activeTab === 'git-source' ? '2px solid var(--color-accent)' : '2px solid transparent',
+                padding: '8px 16px',
+                cursor: isLoading ? 'default' : 'pointer',
+                color: activeTab === 'git-source' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                fontSize: 14,
+                fontWeight: 600,
+                transition: 'color 0.15s, border-color 0.15s',
+              }}
+              onClick={() => handleTabSwitch('git-source')}
+              disabled={isLoading}
+            >
+              Git Source
+            </button>
+            <button
+              type="button"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                borderBottom: activeTab === 'sql-import' ? '2px solid var(--color-accent)' : '2px solid transparent',
+                padding: '8px 16px',
+                cursor: isLoading || !sqliteEnabled ? 'default' : 'pointer',
+                color: activeTab === 'sql-import' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                fontSize: 14,
+                fontWeight: 600,
+                opacity: sqliteEnabled ? 1 : 0.4,
+                transition: 'color 0.15s, border-color 0.15s',
+              }}
+              onClick={() => handleTabSwitch('sql-import')}
+              disabled={isLoading || !sqliteEnabled}
+              title={sqliteEnabled ? 'Import a SQL dump into the workspace SQLite database' : 'Enable SQLite persistence mode on this workspace first'}
+            >
+              SQL Import
+            </button>
+          </div>
           <button className="modal-close" onClick={onClose}>&times;</button>
         </div>
         <div className="modal-body" style={{ display: 'grid', gap: 16 }}>
-          {!hasConfiguredRemote && (
+          {activeTab === 'git-source' && !hasConfiguredRemote && (
             <div style={{ display: 'flex', gap: 8 }}>
-              <button className={`btn btn-sm ${mode === 'import' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setMode('import')} disabled={isLoading}>
+              <button className={`btn btn-sm ${mode === 'import' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setMode('import'); setStep('input'); }} disabled={isLoading}>
                 <ArrowDownToLine size={14} /> Import
               </button>
-              <button className={`btn btn-sm ${mode === 'export' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setMode('export')} disabled={isLoading}>
+              <button className={`btn btn-sm ${mode === 'export' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setMode('export'); setStep('input'); }} disabled={isLoading}>
                 <ArrowUpToLine size={14} /> Export
               </button>
             </div>
           )}
 
-          {step === 'input' && (
+          {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && (
             <div style={{ display: 'grid', gap: 14 }}>
               {hasConfiguredRemote && activeScm && (
                 <div style={{ display: 'grid', gap: 10, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg-tertiary)' }}>
@@ -319,7 +407,130 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
             </div>
           )}
 
-          {step === 'review' && preview && (
+          {activeTab === 'sql-import' && step === 'input' && mode === 'sql-import' && (
+            <div style={{ display: 'grid', gap: 14 }}>
+              <div className="userspace-muted" style={{ fontSize: 12 }}>
+                Upload a PostgreSQL (<code>pg_dump --format=plain</code>), MySQL (<code>mysqldump</code>), or generic SQL text dump.
+                It will be converted and imported into the workspace SQLite database at <code>.ragtime/db/app.sqlite3</code>.
+              </div>
+
+              <div
+                style={{
+                  padding: 24,
+                  border: `2px dashed ${sqlDragOver ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                  borderRadius: 8,
+                  textAlign: 'center',
+                  cursor: isLoading ? 'default' : 'pointer',
+                  background: sqlDragOver ? 'rgba(var(--color-primary-rgb, 59, 130, 246), 0.05)' : 'transparent',
+                  transition: 'border-color 0.15s, background 0.15s',
+                }}
+                onClick={() => !isLoading && sqlFileInputRef.current?.click()}
+                onDragOver={(event) => { event.preventDefault(); setSqlDragOver(true); }}
+                onDragLeave={() => setSqlDragOver(false)}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  setSqlDragOver(false);
+                  const droppedFile = event.dataTransfer.files[0];
+                  if (droppedFile) {
+                    setSqlFile(droppedFile);
+                    setSqlImportResult(null);
+                    setStatus({ type: null, message: '' });
+                  }
+                }}
+              >
+                <input
+                  ref={sqlFileInputRef}
+                  type="file"
+                  accept={SQL_ACCEPT}
+                  style={{ display: 'none' }}
+                  onChange={(event) => {
+                    const selectedFile = event.target.files?.[0] || null;
+                    setSqlFile(selectedFile);
+                    setSqlImportResult(null);
+                    setStatus({ type: null, message: '' });
+                  }}
+                  disabled={isLoading}
+                />
+                {sqlFile ? (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                    <Check size={16} style={{ color: 'var(--color-success, #2b7a2b)' }} />
+                    <span>{sqlFile.name}</span>
+                    <span className="userspace-muted" style={{ fontSize: 12 }}>
+                      ({(sqlFile.size / 1024).toFixed(1)} KB)
+                    </span>
+                    <button
+                      className="btn btn-sm btn-secondary"
+                      style={{ marginLeft: 8, padding: '2px 6px' }}
+                      onClick={(event) => { event.stopPropagation(); setSqlFile(null); setSqlImportResult(null); }}
+                      disabled={isLoading}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    <Upload size={24} style={{ marginBottom: 8, opacity: 0.5 }} />
+                    <div>Drop a SQL dump file here or click to browse</div>
+                    <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                      Accepts .sql, .dump, .pg, .pgsql, .mysql (text format only, max 100 MB)
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'sql-import' && step === 'result' && mode === 'sql-import' && sqlImportResult && (
+            <div style={{ display: 'grid', gap: 14 }}>
+              <div style={{
+                display: 'flex', gap: 8, alignItems: 'center', padding: 12, borderRadius: 8,
+                border: `1px solid ${sqlImportResult.success ? 'var(--color-success, #2b7a2b)' : 'var(--color-danger, #c53030)'}`,
+                background: sqlImportResult.success ? 'rgba(43, 122, 43, 0.08)' : 'rgba(197, 48, 48, 0.08)',
+              }}>
+                {sqlImportResult.success ? <Check size={16} /> : <AlertCircle size={16} />}
+                <div>
+                  <strong>{sqlImportResult.message}</strong>
+                </div>
+              </div>
+
+              <div style={{ padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 16px', fontSize: 13 }}>
+                  <span className="userspace-muted">Dialect detected:</span>
+                  <span>{sqlImportResult.dialect_detected}</span>
+                  <span className="userspace-muted">Tables created:</span>
+                  <span>{sqlImportResult.tables_created}</span>
+                  <span className="userspace-muted">Rows inserted:</span>
+                  <span>{sqlImportResult.rows_inserted}</span>
+                  <span className="userspace-muted">Statements executed:</span>
+                  <span>{sqlImportResult.statements_executed}</span>
+                </div>
+              </div>
+
+              {sqlImportResult.warnings.length > 0 && (
+                <div style={{ padding: 12, border: '1px solid var(--color-warning, #d69d2a)', borderRadius: 8 }}>
+                  <strong style={{ fontSize: 13 }}>Warnings ({sqlImportResult.warnings.length})</strong>
+                  <div style={{ maxHeight: 160, overflowY: 'auto', marginTop: 8 }}>
+                    {sqlImportResult.warnings.map((warning, index) => (
+                      <div key={index} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, padding: '2px 0' }}>{warning}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {sqlImportResult.errors.length > 0 && (
+                <div style={{ padding: 12, border: '1px solid var(--color-danger, #c53030)', borderRadius: 8 }}>
+                  <strong style={{ fontSize: 13 }}>Errors ({sqlImportResult.errors.length})</strong>
+                  <div style={{ maxHeight: 200, overflowY: 'auto', marginTop: 8 }}>
+                    {sqlImportResult.errors.map((error, index) => (
+                      <div key={index} style={{ fontFamily: 'var(--font-mono)', fontSize: 11, padding: '2px 0', color: 'var(--color-danger, #c53030)' }}>{error}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'git-source' && step === 'review' && preview && (
             <div style={{ display: 'grid', gap: 14 }}>
               <div style={{ padding: 12, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg-tertiary)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
@@ -367,7 +578,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
             </div>
           )}
 
-          {step === 'result' && result && (
+          {activeTab === 'git-source' && step === 'result' && mode !== 'sql-import' && result && (
             <div style={{ display: 'grid', gap: 14 }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: 12, border: '1px solid var(--color-success, #2b7a2b)', borderRadius: 8, background: 'rgba(43, 122, 43, 0.08)' }}>
                 <Check size={16} />
@@ -407,9 +618,14 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
         </div>
         <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
           <div>
-            {step === 'review' && (
+            {activeTab === 'git-source' && step === 'review' && mode !== 'sql-import' && (
               <button className="btn btn-secondary" onClick={() => setStep('input')} disabled={isLoading}>
                 Back
+              </button>
+            )}
+            {activeTab === 'sql-import' && step === 'result' && mode === 'sql-import' && (
+              <button className="btn btn-secondary" onClick={() => { setStep('input'); setSqlFile(null); setSqlImportResult(null); setStatus({ type: null, message: '' }); }} disabled={isLoading}>
+                Import Another
               </button>
             )}
           </div>
@@ -417,13 +633,19 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
             <button className="btn btn-secondary" onClick={onClose} disabled={isLoading}>
               <X size={14} /> Close
             </button>
-            {step === 'input' && (
+            {activeTab === 'sql-import' && step === 'input' && mode === 'sql-import' && (
+              <button className="btn btn-primary" onClick={() => void handleSqlImport()} disabled={isLoading || !sqlFile}>
+                {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : <Database size={14} />}
+                Import to SQLite
+              </button>
+            )}
+            {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && (
               <button className="btn btn-primary" onClick={() => void handlePreview()} disabled={isLoading}>
                 {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : hasConfiguredRemote ? <RefreshCcw size={14} /> : mode === 'import' ? <ArrowDownToLine size={14} /> : <ArrowUpToLine size={14} />}
                 {hasConfiguredRemote ? 'Sync' : `Preview ${setupModeLabel}`}
               </button>
             )}
-            {step === 'review' && preview && (
+            {activeTab === 'git-source' && step === 'review' && preview && (
               <button
                 className={`btn ${preview.will_overwrite_local || preview.will_overwrite_remote ? 'btn-danger' : 'btn-primary'}`}
                 onClick={() => void handleExecute()}

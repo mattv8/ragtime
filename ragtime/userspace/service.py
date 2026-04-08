@@ -21,9 +21,9 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
+
 from prisma import Json
 from prisma import fields as prisma_fields
-
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -11323,6 +11323,97 @@ class UserSpaceService:
             )
 
         return workspace_files
+
+    # ------------------------------------------------------------------
+    # SQL dump → workspace SQLite import
+    # ------------------------------------------------------------------
+
+    async def import_sql_to_workspace_sqlite(
+        self,
+        workspace_id: str,
+        user_id: str,
+        file_bytes: bytes,
+        filename: str,
+    ) -> "SqliteImportResponse":
+        from ragtime.userspace.models import SqliteImportResponse
+        from ragtime.userspace.sqlite_import import (
+            _MAX_IMPORT_SIZE_BYTES,
+            SqlImportResult,
+            detect_binary_pg_dump,
+            detect_sql_dialect,
+            import_sql_to_sqlite,
+        )
+
+        workspace = await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+
+        if workspace.sqlite_persistence_mode != "include":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "SQLite persistence mode must be enabled (set to 'include') "
+                    "on this workspace before importing a SQL dump."
+                ),
+            )
+
+        if len(file_bytes) > _MAX_IMPORT_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"SQL dump exceeds the {_MAX_IMPORT_SIZE_BYTES // (1024 * 1024)} MB "
+                    "size limit. Consider splitting the dump into smaller files."
+                ),
+            )
+
+        if detect_binary_pg_dump(file_bytes):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Binary PostgreSQL dump format detected. "
+                    "Please re-export using: pg_dump --format=plain"
+                ),
+            )
+
+        # Decode bytes — try UTF-8 first, fall back to Latin-1 (lossless for arbitrary bytes).
+        try:
+            sql_text = file_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            sql_text = file_bytes.decode("latin-1")
+
+        dialect = detect_sql_dialect(sql_text)
+        sqlite_path = (
+            self._workspace_files_dir(workspace_id) / ".ragtime" / "db" / "app.sqlite3"
+        )
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+
+        result: SqlImportResult = import_sql_to_sqlite(sqlite_path, sql_text, dialect)
+
+        if result.success:
+            summary_parts = [
+                f"Imported {result.tables_created} table(s)",
+                f"{result.rows_inserted} row(s)",
+                f"{result.statements_executed} statement(s) executed",
+            ]
+            if result.errors:
+                summary_parts.append(f"{len(result.errors)} non-fatal error(s)")
+            message = "; ".join(summary_parts) + f" (dialect: {dialect})."
+        else:
+            message = (
+                f"Import failed with {len(result.errors)} error(s) "
+                f"after {result.statements_executed} statement(s)."
+            )
+
+        return SqliteImportResponse(
+            success=result.success,
+            dialect_detected=dialect,
+            tables_created=result.tables_created,
+            rows_inserted=result.rows_inserted,
+            statements_executed=result.statements_executed,
+            errors=result.errors,
+            warnings=result.warnings,
+            message=message,
+        )
 
 
 userspace_service = UserSpaceService()
