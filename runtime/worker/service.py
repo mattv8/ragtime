@@ -20,35 +20,23 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
-from runtime.manager.models import (
-    RuntimeContentProbeRequest,
-    RuntimeContentProbeResponse,
-    RuntimeExecResponse,
-    RuntimeFileReadResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    WorkerHealthResponse,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
-from runtime.shared import (
-    RUNTIME_BOOTSTRAP_CONFIG_PATH,
-    RUNTIME_BOOTSTRAP_STAMP_PATH,
-    EntrypointStatus,
-    RuntimeSessionState,
-    normalize_file_path,
-    parse_entrypoint_config,
-)
-from runtime.worker.sandbox import (
-    SANDBOX_WORKSPACE_MOUNT,
-    SandboxSpec,
-    cleanup_sandbox,
-    ensure_sandbox_ready,
-    get_sandbox_spec,
-    materialize_mounts,
-    sandbox_diagnostics,
-    spawn_sandboxed,
-)
+from runtime.manager.models import (RuntimeContentProbeRequest,
+                                    RuntimeContentProbeResponse,
+                                    RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    WorkerHealthResponse,
+                                    WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
+from runtime.shared import (RUNTIME_BOOTSTRAP_CONFIG_PATH,
+                            RUNTIME_BOOTSTRAP_STAMP_PATH, EntrypointStatus,
+                            RuntimeSessionState, normalize_file_path,
+                            parse_entrypoint_config)
+from runtime.worker.sandbox import (SANDBOX_WORKSPACE_MOUNT, SandboxSpec,
+                                    cleanup_sandbox, ensure_sandbox_ready,
+                                    get_sandbox_spec, materialize_mounts,
+                                    sandbox_diagnostics, spawn_sandboxed)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -110,8 +98,10 @@ _RAGTIME_REDACTED_ENV_FILE_VAR = "RAGTIME_REDACTED_ENV_FILE"
 _RAGTIME_REDACTED_ENV_SENTINEL_SET = "__RAGTIME_SECRET_REDACTED__"
 _RAGTIME_REDACTED_ENV_SENTINEL_MISSING = "__RAGTIME_SECRET_MISSING__"
 
-_PLAYWRIGHT_BROKER_JS_PATH = Path(__file__).with_name("playwright_broker.js")
-_S3RVER_RUNNER_JS_PATH = Path(__file__).with_name("s3rver_runner.js")
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+_PLAYWRIGHT_BROKER_JS_PATH = _TEMPLATES_DIR / "playwright_broker.js"
+_S3RVER_RUNNER_JS_PATH = _TEMPLATES_DIR / "s3rver_runner.js"
+_REDACTED_ENV_VIEW_TEMPLATE_PATH = _TEMPLATES_DIR / "redacted_env_view.py"
 
 
 @dataclass
@@ -347,101 +337,7 @@ class WorkerService:
 
         viewer_path = self._agent_shell_host_viewer_path(session.sandbox_spec)
         viewer_path.write_text(
-            "#!/usr/bin/env python3\n"
-            "import json\n"
-            "import os\n"
-            "import sys\n"
-            "\n"
-            "SYSTEM_ENV = '/usr/bin/env'\n"
-            "SYSTEM_PRINTENV = '/usr/bin/printenv'\n"
-            f"INTERNAL_KEYS = {repr(tuple(_AGENT_SHELL_INTERNAL_ENV_KEYS))}\n"
-            f"SET_FALLBACK = {_RAGTIME_REDACTED_ENV_SENTINEL_SET!r}\n"
-            f"MISSING_FALLBACK = {_RAGTIME_REDACTED_ENV_SENTINEL_MISSING!r}\n"
-            "\n"
-            "def load_redacted_items():\n"
-            f"    metadata_path = os.environ.get({_RAGTIME_REDACTED_ENV_FILE_VAR!r}, '')\n"
-            "    if not metadata_path:\n"
-            "        return {}\n"
-            "    try:\n"
-            "        with open(metadata_path, 'r', encoding='utf-8') as handle:\n"
-            "            payload = json.load(handle)\n"
-            "    except Exception:\n"
-            "        return {}\n"
-            "    items = {}\n"
-            "    for item in payload.get('items', []):\n"
-            "        key = str(item.get('key', '') or '').strip()\n"
-            "        if not key:\n"
-            "            continue\n"
-            "        has_value = bool(item.get('has_value', False))\n"
-            "        sentinel = str(item.get('sentinel', '') or '')\n"
-            "        if not sentinel:\n"
-            "            sentinel = SET_FALLBACK if has_value else MISSING_FALLBACK\n"
-            "        items[key] = sentinel\n"
-            "    return items\n"
-            "\n"
-            "def actual_env_items(redacted):\n"
-            "    return {\n"
-            "        key: value\n"
-            "        for key, value in os.environ.items()\n"
-            "        if key not in INTERNAL_KEYS and key not in redacted\n"
-            "    }\n"
-            "\n"
-            "def emit_listing(entries, null_sep=False):\n"
-            "    separator = '\\0' if null_sep else '\\n'\n"
-            "    payload = separator.join(entries)\n"
-            "    if payload:\n"
-            "        sys.stdout.write(payload)\n"
-            "        if not null_sep:\n"
-            "            sys.stdout.write('\\n')\n"
-            "\n"
-            "def run_printenv(args):\n"
-            "    if '--help' in args or '--version' in args:\n"
-            "        os.execv(SYSTEM_PRINTENV, [SYSTEM_PRINTENV, *args])\n"
-            "    null_sep = False\n"
-            "    if args and args[0] in ('-0', '--null'):\n"
-            "        null_sep = True\n"
-            "        args = args[1:]\n"
-            "    redacted = load_redacted_items()\n"
-            "    actual = actual_env_items(redacted)\n"
-            "    if args:\n"
-            "        found_all = True\n"
-            "        outputs = []\n"
-            "        for key in args:\n"
-            "            if key in redacted:\n"
-            "                outputs.append(redacted[key])\n"
-            "                continue\n"
-            "            if key in actual:\n"
-            "                outputs.append(actual[key])\n"
-            "                continue\n"
-            "            found_all = False\n"
-            "        emit_listing(outputs, null_sep=null_sep)\n"
-            "        raise SystemExit(0 if found_all else 1)\n"
-            "    entries = [f'{key}={value}' for key, value in actual.items()]\n"
-            "    for key in sorted(redacted):\n"
-            "        entries.append(f'{key}={redacted[key]}')\n"
-            "    emit_listing(entries, null_sep=null_sep)\n"
-            "\n"
-            "def run_env(args):\n"
-            "    if args and any(arg not in ('-0', '--null') for arg in args):\n"
-            "        os.execv(SYSTEM_ENV, [SYSTEM_ENV, *args])\n"
-            "    null_sep = bool(args and args[0] in ('-0', '--null'))\n"
-            "    redacted = load_redacted_items()\n"
-            "    actual = actual_env_items(redacted)\n"
-            "    entries = [f'{key}={value}' for key, value in actual.items()]\n"
-            "    for key in sorted(redacted):\n"
-            "        entries.append(f'{key}={redacted[key]}')\n"
-            "    emit_listing(entries, null_sep=null_sep)\n"
-            "\n"
-            "def main():\n"
-            "    invoked_as = os.path.basename(sys.argv[0])\n"
-            "    args = sys.argv[1:]\n"
-            "    if invoked_as == 'env':\n"
-            "        run_env(args)\n"
-            "        return\n"
-            "    run_printenv(args)\n"
-            "\n"
-            "if __name__ == '__main__':\n"
-            "    main()\n",
+            _REDACTED_ENV_VIEW_TEMPLATE_PATH.read_text(encoding="utf-8"),
             encoding="utf-8",
         )
         viewer_path.chmod(0o755)

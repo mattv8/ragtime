@@ -109,7 +109,7 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 - `_sync_system_dirs_for_chroot` uses incremental `copytree(dirs_exist_ok=True)` — never `rmtree` on `/workspace` (preserves running process cwd inodes).
 - All sandboxed shell commands (devserver, bootstrap) must include explicit `cd /workspace &&` prefix in the `sh -lc` string — `preexec_fn`'s `os.chdir()` can be lost after exec under certain event-loop contexts.
 - Worker PTY sessions use `pty_access_token` for terminal access authentication.
-- Screenshot capture is available via Playwright (`runtime/worker/screenshot.js`, invoked by `capture_screenshot` in service).
+- Screenshot capture is available via Playwright (`runtime/worker/templates/playwright_broker.js`, invoked by `capture_screenshot` in service).
 
 ### Symlink Safety in sandbox.py (Critical — Read Before Any Change)
 

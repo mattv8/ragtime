@@ -9,42 +9,31 @@ import pty as pty_module
 import struct
 import termios
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import (
-    APIRouter,
-    FastAPI,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (APIRouter, FastAPI, HTTPException, Request, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.responses import Response, StreamingResponse
 
 from runtime.auth import WorkerAuth
-from runtime.manager.models import (
-    RuntimeContentProbeRequest,
-    RuntimeContentProbeResponse,
-    RuntimeExecRequest,
-    RuntimeExecResponse,
-    RuntimeFileReadResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    WorkerHealthResponse,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
-from runtime.worker.sandbox import (
-    SandboxSpec,
-    ensure_sandbox_ready,
-    make_sandbox_preexec,
-    sandbox_env,
-)
+from runtime.manager.models import (RuntimeContentProbeRequest,
+                                    RuntimeContentProbeResponse,
+                                    RuntimeExecRequest, RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    WorkerHealthResponse,
+                                    WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
+from runtime.worker.sandbox import (SandboxSpec, ensure_sandbox_ready,
+                                    make_sandbox_preexec, sandbox_env)
 from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
 
+_SANDBOX_BASHRC_TEMPLATE_PATH = Path(__file__).parent / "templates" / "sandbox_bashrc.sh"
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
 
@@ -159,23 +148,7 @@ def _write_sandbox_init_file(spec: SandboxSpec) -> None:
     init_file = spec.rootfs_path / "tmp" / ".sandbox_bashrc"
     init_file.parent.mkdir(parents=True, exist_ok=True)
     init_file.write_text(
-        r"""__sandbox_update_ps1() {
-  local current="${PWD:-/}"
-
-  if [[ "$current" == "/" ]]; then
-    PS1='\[\e[1;32m\]sandbox\[\e[0m\]:\[\e[1;34m\]/\[\e[0m\]$ '
-  elif [[ "$current" == "/workspace" ]]; then
-    PS1='\[\e[1;32m\]sandbox\[\e[0m\]:\[\e[1;34m\]$workspace\[\e[0m\]$ '
-  elif [[ "$current" == /workspace/* ]]; then
-    local display="${current#/workspace/}"
-    PS1='\[\e[1;32m\]sandbox\[\e[0m\]:\[\e[1;34m\]$workspace/'"$display"'\[\e[0m\]$ '
-  else
-    PS1='\[\e[1;32m\]sandbox\[\e[0m\]:\[\e[1;34m\]'"$current"'\[\e[0m\]$ '
-  fi
-}
-shopt -u promptvars
-PROMPT_COMMAND=__sandbox_update_ps1
-""",
+        _SANDBOX_BASHRC_TEMPLATE_PATH.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
 
