@@ -22,16 +22,18 @@ from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.workspace_state import build_workspace_chat_state
-from ragtime.userspace.models import (RuntimeOperationPhase,
-                                      RuntimeSessionState,
-                                      UserSpaceCapabilityTokenResponse,
-                                      UserSpaceCollabSnapshotResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSession,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse,
-                                      UserSpaceWorkspaceTabStateResponse)
+from ragtime.userspace.models import (
+    RuntimeOperationPhase,
+    RuntimeSessionState,
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceCollabSnapshotResponse,
+    UserSpaceFileResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSession,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+    UserSpaceWorkspaceTabStateResponse,
+)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -474,12 +476,14 @@ class UserSpaceRuntimeService:
     ) -> dict[str, Any]:
         self._require_runtime_manager()
 
-        workspace_env, workspace_env_visibility, workspace_mounts = await asyncio.gather(
-            userspace_service.get_workspace_runtime_environment(workspace_id),
-            userspace_service.get_workspace_runtime_environment_visibility(
-                workspace_id
-            ),
-            userspace_service.resolve_workspace_mounts_for_runtime(workspace_id),
+        workspace_env, workspace_env_visibility, workspace_mounts = (
+            await asyncio.gather(
+                userspace_service.get_workspace_runtime_environment(workspace_id),
+                userspace_service.get_workspace_runtime_environment_visibility(
+                    workspace_id
+                ),
+                userspace_service.resolve_workspace_mounts_for_runtime(workspace_id),
+            )
         )
         payload: dict[str, Any] = {
             "workspace_id": workspace_id,
@@ -1250,9 +1254,7 @@ class UserSpaceRuntimeService:
             active_session = self._to_runtime_session(active)
             workspace_env, workspace_env_visibility, workspace_mounts = (
                 await asyncio.gather(
-                    userspace_service.get_workspace_runtime_environment(
-                        workspace_id
-                    ),
+                    userspace_service.get_workspace_runtime_environment(workspace_id),
                     userspace_service.get_workspace_runtime_environment_visibility(
                         workspace_id
                     ),
@@ -1578,8 +1580,12 @@ class UserSpaceRuntimeService:
                 algorithms=[settings.jwt_algorithm],
             )
         except JWTError as exc:
+            detail = "Invalid workspace authorization token. Refresh the page to reauthorize."
+            if exc.__class__.__name__ == "ExpiredSignatureError":
+                detail = "Your workspace authorization has expired. Refresh the page to reauthorize."
             raise HTTPException(
-                status_code=401, detail="Invalid capability token"
+                status_code=401,
+                detail=detail,
             ) from exc
 
         if str(claims.get("workspace_id") or "") != workspace_id:

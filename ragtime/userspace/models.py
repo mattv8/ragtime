@@ -51,6 +51,7 @@ WorkspaceMountSyncMode = Literal[
     "source_authoritative",
     "target_authoritative",
 ]
+UserSpaceBrowserSurface = Literal["preview", "collab", "runtime_pty"]
 
 
 class WorkspaceMember(BaseModel):
@@ -562,6 +563,20 @@ class UserSpaceCapabilityTokenResponse(BaseModel):
     workspace_id: str
     session_id: str | None = None
     capabilities: list[str] = Field(default_factory=list)
+
+
+class UserSpaceBrowserAuthRequest(BaseModel):
+    surfaces: list[UserSpaceBrowserSurface] = Field(default_factory=list)
+
+
+class UserSpaceBrowserAuthorization(BaseModel):
+    surface: UserSpaceBrowserSurface
+    expires_at: datetime
+
+
+class UserSpaceBrowserAuthResponse(BaseModel):
+    workspace_id: str
+    authorizations: list[UserSpaceBrowserAuthorization] = Field(default_factory=list)
 
 
 class UserSpaceCollabSnapshotResponse(BaseModel):

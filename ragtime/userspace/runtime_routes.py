@@ -6,14 +6,22 @@ import importlib
 import json
 import os
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
-                     WebSocket, WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
@@ -21,14 +29,22 @@ from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (UserSpaceCapabilityTokenResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse,
-                                      UserSpaceWorkspaceTabStateResponse)
-from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
-                                               userspace_runtime_service)
+from ragtime.userspace.models import (
+    UserSpaceBrowserAuthorization,
+    UserSpaceBrowserAuthRequest,
+    UserSpaceBrowserAuthResponse,
+    UserSpaceBrowserSurface,
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceFileResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+    UserSpaceWorkspaceTabStateResponse,
+)
+from ragtime.userspace.runtime_service import (
+    RuntimeVersionConflictError,
+    userspace_runtime_service,
+)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
@@ -36,10 +52,60 @@ router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 _PREVIEW_CAPABILITY_COOKIE = "userspace_preview_capability"
+_COLLAB_CAPABILITY_COOKIE = "userspace_collab_capability"
+_RUNTIME_PTY_CAPABILITY_COOKIE = "userspace_runtime_pty_capability"
 _PROXY_TIMEOUT_FLOOR = 300.0  # seconds — minimum proxy read/write timeout
 _PROXY_TIMEOUT_BUFFER = 20.0  # seconds — headroom above max tool timeout
 _USERSPACE_SURFACE_HEADER = "X-Ragtime-Userspace-Surface"
 _USERSPACE_PREVIEW_PROXY_HEADER = "X-Ragtime-Userspace-Preview-Proxy"
+
+
+def _preview_cookie_path(workspace_id: str) -> str:
+    return f"/indexes/userspace/workspaces/{workspace_id}/preview"
+
+
+def _collab_cookie_path(workspace_id: str) -> str:
+    return f"/indexes/userspace/collab/workspaces/{workspace_id}/files"
+
+
+def _runtime_pty_cookie_path(workspace_id: str) -> str:
+    return f"/indexes/userspace/runtime/workspaces/{workspace_id}/pty"
+
+
+_BROWSER_SURFACE_COOKIE_CONFIG: dict[str, dict[str, Any]] = {
+    "preview": {
+        "cookie_name": _PREVIEW_CAPABILITY_COOKIE,
+        "capabilities": ["userspace.preview_http", "userspace.preview_ws"],
+        "path_builder": _preview_cookie_path,
+    },
+    "collab": {
+        "cookie_name": _COLLAB_CAPABILITY_COOKIE,
+        "capabilities": ["userspace.collab_connect"],
+        "path_builder": _collab_cookie_path,
+    },
+    "runtime_pty": {
+        "cookie_name": _RUNTIME_PTY_CAPABILITY_COOKIE,
+        "capabilities": ["userspace.runtime_pty"],
+        "path_builder": _runtime_pty_cookie_path,
+    },
+}
+
+
+def _default_browser_surfaces() -> list[UserSpaceBrowserSurface]:
+    return ["preview", "collab", "runtime_pty"]
+
+
+def _normalize_browser_surfaces(
+    raw_surfaces: Sequence[UserSpaceBrowserSurface] | None,
+) -> list[UserSpaceBrowserSurface]:
+    surfaces = raw_surfaces or _default_browser_surfaces()
+    ordered: list[UserSpaceBrowserSurface] = []
+    seen: set[UserSpaceBrowserSurface] = set()
+    for surface in surfaces:
+        if surface in _BROWSER_SURFACE_COOKIE_CONFIG and surface not in seen:
+            ordered.append(surface)
+            seen.add(surface)
+    return ordered or _default_browser_surfaces()
 
 
 def _get_max_proxy_timeout() -> float:
@@ -197,6 +263,22 @@ def _extract_capability_token_from_websocket(websocket: WebSocket) -> str | None
         return explicit
     cookie_token = websocket.cookies.get(_PREVIEW_CAPABILITY_COOKIE, "").strip()
     return cookie_token or None
+
+
+def _extract_cookie_token_from_request(
+    request: Request,
+    cookie_name: str,
+) -> str | None:
+    token = request.cookies.get(cookie_name, "").strip()
+    return token or None
+
+
+def _extract_cookie_token_from_websocket(
+    websocket: WebSocket,
+    cookie_name: str,
+) -> str | None:
+    token = websocket.cookies.get(cookie_name, "").strip()
+    return token or None
 
 
 def _require_workspace_capability(
@@ -759,6 +841,55 @@ async def issue_capability_token(
     )
 
 
+@router.post(
+    "/runtime/workspaces/{workspace_id}/browser-auth",
+    response_model=UserSpaceBrowserAuthResponse,
+)
+async def authorize_browser_surfaces(
+    workspace_id: str,
+    payload: UserSpaceBrowserAuthRequest,
+    request: Request,
+    response: Response,
+    user: Any = Depends(get_current_user),
+):
+    surfaces = _normalize_browser_surfaces(payload.surfaces)
+    authorizations: list[UserSpaceBrowserAuthorization] = []
+
+    for surface in surfaces:
+        config = _BROWSER_SURFACE_COOKIE_CONFIG[surface]
+        token_response = await userspace_runtime_service.issue_capability_token(
+            workspace_id,
+            user.id,
+            list(config["capabilities"]),
+        )
+        max_age = max(
+            60,
+            int(
+                (token_response.expires_at - datetime.now(timezone.utc)).total_seconds()
+            ),
+        )
+        response.set_cookie(
+            key=str(config["cookie_name"]),
+            value=token_response.token,
+            max_age=max_age,
+            httponly=True,
+            secure=request.url.scheme == "https",
+            samesite="lax",
+            path=str(config["path_builder"](workspace_id)),
+        )
+        authorizations.append(
+            UserSpaceBrowserAuthorization(
+                surface=surface,
+                expires_at=token_response.expires_at,
+            )
+        )
+
+    return UserSpaceBrowserAuthResponse(
+        workspace_id=workspace_id,
+        authorizations=authorizations,
+    )
+
+
 @router.get(
     "/runtime/workspaces/{workspace_id}/fs/{file_path:path}",
     response_model=UserSpaceFileResponse,
@@ -826,7 +957,10 @@ async def runtime_fs_delete(
 
 @router.websocket("/runtime/workspaces/{workspace_id}/pty")
 async def runtime_pty(workspace_id: str, websocket: WebSocket):
-    token = _extract_capability_token_from_websocket(websocket)
+    token = _extract_cookie_token_from_websocket(
+        websocket,
+        _RUNTIME_PTY_CAPABILITY_COOKIE,
+    )
     try:
         _, user_id = _require_workspace_capability(
             token,
@@ -868,7 +1002,10 @@ async def runtime_pty(workspace_id: str, websocket: WebSocket):
 
 @router.websocket("/collab/workspaces/{workspace_id}/files/{file_path:path}")
 async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSocket):
-    token = _extract_capability_token_from_websocket(websocket)
+    token = _extract_cookie_token_from_websocket(
+        websocket,
+        _COLLAB_CAPABILITY_COOKIE,
+    )
     try:
         _, user_id = _require_workspace_capability(
             token,
@@ -1145,7 +1282,10 @@ async def workspace_preview_proxy(
     request: Request,
     path: str = "",
 ):
-    token = _extract_capability_token_from_request(request)
+    token = _extract_cookie_token_from_request(
+        request,
+        _PREVIEW_CAPABILITY_COOKIE,
+    )
     _, user_id = _require_workspace_capability(
         token,
         workspace_id,
@@ -1251,7 +1391,10 @@ async def workspace_preview_proxy_websocket(
     websocket: WebSocket,
     path: str = "",
 ):
-    token = _extract_capability_token_from_websocket(websocket)
+    token = _extract_cookie_token_from_websocket(
+        websocket,
+        _PREVIEW_CAPABILITY_COOKIE,
+    )
     try:
         _, user_id = _require_workspace_capability(
             token,

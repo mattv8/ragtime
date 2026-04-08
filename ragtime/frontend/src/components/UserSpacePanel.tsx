@@ -27,7 +27,7 @@ import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserAuthorization, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
@@ -265,6 +265,11 @@ const USERSPACE_CODEMIRROR_BASIC_SETUP = {
 const USERSPACE_CHANGED_FILE_STATE_MIN_INTERVAL_MS = 1000;
 const USERSPACE_FILE_TREE_POLL_INTERVAL_MS = 5000;
 const SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES = 20;
+const BROWSER_SURFACE_AUTHORIZATION_SURFACES: UserSpaceBrowserSurface[] = ['preview', 'collab', 'runtime_pty'];
+const BROWSER_SURFACE_AUTH_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+const BROWSER_SURFACE_AUTH_REFRESH_FALLBACK_MS = 10 * 60 * 1000;
+const BROWSER_SURFACE_AUTH_REFRESH_MIN_MS = 30 * 1000;
+const BROWSER_SURFACE_AUTH_REFRESH_RETRY_MS = 60 * 1000;
 
 function getLastWorkspaceCookieName(userId: string): string {
   return `${LAST_WORKSPACE_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
@@ -324,6 +329,40 @@ function parseUtcTimestamp(value: string): Date | null {
 
 function parseUtcTimestampMs(value: string): number {
   return parseUtcTimestamp(value)?.getTime() ?? 0;
+}
+
+function buildBrowserAuthorizationExpiryMap(authorizations: UserSpaceBrowserAuthorization[]): Partial<Record<UserSpaceBrowserSurface, string>> {
+  const next: Partial<Record<UserSpaceBrowserSurface, string>> = {};
+  for (const authorization of authorizations) {
+    next[authorization.surface] = authorization.expires_at;
+  }
+  return next;
+}
+
+function getBrowserAuthorizationRefreshDelay(
+  expiries: Partial<Record<UserSpaceBrowserSurface, string>>,
+  surfaces: UserSpaceBrowserSurface[],
+): number {
+  const expiryValues = surfaces
+    .map((surface) => parseUtcTimestampMs(expiries[surface] ?? ''))
+    .filter((value) => value > 0);
+
+  if (expiryValues.length === 0) {
+    return BROWSER_SURFACE_AUTH_REFRESH_FALLBACK_MS;
+  }
+
+  return Math.max(
+    BROWSER_SURFACE_AUTH_REFRESH_MIN_MS,
+    Math.min(...expiryValues) - Date.now() - BROWSER_SURFACE_AUTH_REFRESH_BUFFER_MS,
+  );
+}
+
+function browserAuthorizationNeedsRefresh(
+  expiries: Partial<Record<UserSpaceBrowserSurface, string>>,
+  surfaces: UserSpaceBrowserSurface[],
+): boolean {
+  const refreshThresholdMs = Date.now() + BROWSER_SURFACE_AUTH_REFRESH_BUFFER_MS;
+  return surfaces.some((surface) => parseUtcTimestampMs(expiries[surface] ?? '') <= refreshThresholdMs);
 }
 
 function formatSnapshotTimestamp(value: string): string {
@@ -507,7 +546,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
   const [previewExecuting, setPreviewExecuting] = useState(false);
   const [previewRefreshCounter, setPreviewRefreshCounter] = useState(0);
-  const [previewCapabilityToken, setPreviewCapabilityToken] = useState<string | null>(null);
+  const [browserAuthorizationReady, setBrowserAuthorizationReady] = useState(false);
+  const [browserAuthorizationExpiries, setBrowserAuthorizationExpiries] = useState<Partial<Record<UserSpaceBrowserSurface, string>>>({});
+  const [browserAuthorizationRefreshNonce, setBrowserAuthorizationRefreshNonce] = useState(0);
   const [runtimeStatus, setRuntimeStatus] = useState<UserSpaceRuntimeStatusResponse | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [activeRightTab, setActiveRightTab] = useState<'preview' | 'console'>('preview');
@@ -648,9 +689,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [activeSnapshotFileDiffBeforeLabel, setActiveSnapshotFileDiffBeforeLabel] = useState('Snapshot');
   const [activeSnapshotFileDiffAfterLabel, setActiveSnapshotFileDiffAfterLabel] = useState('Current Workspace');
 
-  const issueWorkspaceCapabilityToken = useCallback(async (workspaceId: string, capabilities: string[]): Promise<string> => {
-    const response = await api.issueUserSpaceCapabilityToken(workspaceId, capabilities);
-    return response.token;
+  const refreshBrowserAuthorization = useCallback(() => {
+    setBrowserAuthorizationRefreshNonce((value) => value + 1);
   }, []);
   const toolPickerRef = useRef<HTMLDivElement>(null);
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
@@ -683,6 +723,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const terminalFitRef = useRef<FitAddon | null>(null);
   const terminalResizeObserverRef = useRef<ResizeObserver | null>(null);
   const statusOverlayDismissedSignatureRef = useRef<string | null>(null);
+  const browserAuthorizationWorkspaceIdRef = useRef<string | null>(null);
   const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
   const userSpaceLayoutCookieName = useMemo(() => getUserSpaceLayoutCookieName(currentUser.id), [currentUser.id]);
   const userSpaceFullscreenCookieName = useMemo(() => getUserSpaceFullscreenCookieName(currentUser.id), [currentUser.id]);
@@ -2697,30 +2738,69 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   useEffect(() => {
     if (!activeWorkspaceId) {
-      setPreviewCapabilityToken(null);
+      browserAuthorizationWorkspaceIdRef.current = null;
+      setBrowserAuthorizationReady(false);
+      setBrowserAuthorizationExpiries({});
       return;
     }
 
     let cancelled = false;
-    const loadPreviewCapability = async () => {
+    let refreshTimer: number | null = null;
+    let hasAuthorized = browserAuthorizationWorkspaceIdRef.current === activeWorkspaceId && browserAuthorizationReady;
+
+    const clearRefreshTimer = () => {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }
+    };
+
+    const scheduleRefresh = (delayMs: number) => {
+      clearRefreshTimer();
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void authorizeBrowserSurfaces();
+      }, delayMs);
+    };
+
+    const authorizeBrowserSurfaces = async () => {
       try {
-        const token = await issueWorkspaceCapabilityToken(activeWorkspaceId, ['userspace.preview_http', 'userspace.preview_ws']);
+        const response = await api.authorizeUserSpaceBrowserSurfaces(
+          activeWorkspaceId,
+          BROWSER_SURFACE_AUTHORIZATION_SURFACES,
+        );
         if (!cancelled) {
-          setPreviewCapabilityToken(token);
+          hasAuthorized = true;
+          browserAuthorizationWorkspaceIdRef.current = activeWorkspaceId;
+          const nextExpiries = buildBrowserAuthorizationExpiryMap(response.authorizations);
+          setBrowserAuthorizationReady(true);
+          setBrowserAuthorizationExpiries(nextExpiries);
+          scheduleRefresh(
+            getBrowserAuthorizationRefreshDelay(
+              nextExpiries,
+              BROWSER_SURFACE_AUTHORIZATION_SURFACES,
+            ),
+          );
         }
       } catch (err) {
         if (!cancelled) {
-          setPreviewCapabilityToken(null);
-          setError(err instanceof Error ? err.message : 'Failed to authorize preview access');
+          if (!hasAuthorized) {
+            browserAuthorizationWorkspaceIdRef.current = null;
+            setBrowserAuthorizationReady(false);
+            setBrowserAuthorizationExpiries({});
+            setError(err instanceof Error ? err.message : 'Failed to authorize workspace browser access');
+          }
+          scheduleRefresh(BROWSER_SURFACE_AUTH_REFRESH_RETRY_MS);
         }
       }
     };
 
-    void loadPreviewCapability();
+    void authorizeBrowserSurfaces();
     return () => {
       cancelled = true;
+      clearRefreshTimer();
     };
-  }, [activeWorkspaceId, issueWorkspaceCapabilityToken, previewRefreshCounter]);
+  }, [activeWorkspaceId, browserAuthorizationRefreshNonce]);
 
   // Reset reconnect attempts when workspace or file changes (not on reconnect nonce)
   useEffect(() => {
@@ -2740,7 +2820,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setCollabVersion(0);
     setCollabPresenceCount(0);
 
-    if (!activeWorkspaceId || !selectedFilePath) return;
+    if (!activeWorkspaceId || !selectedFilePath || !browserAuthorizationReady) return;
+
+    if (browserAuthorizationNeedsRefresh(browserAuthorizationExpiries, ['collab'])) {
+      refreshBrowserAuthorization();
+      return;
+    }
 
     let reconnectEnabled = true;
     const MAX_COLLAB_RECONNECT_ATTEMPTS = 8;
@@ -2764,12 +2849,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
     const connectCollab = async () => {
       try {
-        const token = await issueWorkspaceCapabilityToken(activeWorkspaceId, ['userspace.collab_connect']);
         if (!reconnectEnabled) {
           return;
         }
 
-        const socketUrl = api.getUserSpaceCollabWebSocketUrl(activeWorkspaceId, selectedFilePath, token);
+        const socketUrl = api.getUserSpaceCollabWebSocketUrl(activeWorkspaceId, selectedFilePath);
         socket = new WebSocket(socketUrl);
         collabSocketRef.current = socket;
 
@@ -2849,6 +2933,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           setCollabConnected(false);
           setCollabPresenceCount(0);
 
+          if (closeEvent.code === 4401) {
+            setBrowserAuthorizationReady(false);
+            setBrowserAuthorizationExpiries({});
+            refreshBrowserAuthorization();
+            scheduleReconnect();
+            return;
+          }
+
           // Do not retry for intentional/auth/path failures.
           if ([1000, 1001, 4401, 4403, 4404].includes(closeEvent.code)) {
             return;
@@ -2883,7 +2975,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         collabSocketRef.current = null;
       }
     };
-  }, [activeWorkspaceId, loadWorkspaceData, selectedFilePath, collabReconnectNonce, issueWorkspaceCapabilityToken]);
+  }, [activeWorkspaceId, browserAuthorizationExpiries, browserAuthorizationReady, collabReconnectNonce, loadWorkspaceData, refreshBrowserAuthorization, selectedFilePath]);
 
   useEffect(() => {
     if (terminalReconnectTimerRef.current !== null) {
@@ -2901,7 +2993,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setTerminalReadOnly(!canEditWorkspace);
     terminalReadOnlyRef.current = !canEditWorkspace;
 
-    if (activeRightTab !== 'console' || !activeWorkspaceId) {
+    if (activeRightTab !== 'console' || !activeWorkspaceId || !browserAuthorizationReady) {
+      return;
+    }
+
+    if (browserAuthorizationNeedsRefresh(browserAuthorizationExpiries, ['runtime_pty'])) {
+      refreshBrowserAuthorization();
       return;
     }
 
@@ -2976,12 +3073,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
     const connectTerminal = async () => {
       try {
-        const token = await issueWorkspaceCapabilityToken(activeWorkspaceId, ['userspace.runtime_pty']);
         if (!reconnectEnabled) {
           return;
         }
 
-        const wsUrl = api.getUserSpaceRuntimePtyWebSocketUrl(activeWorkspaceId, token);
+        const wsUrl = api.getUserSpaceRuntimePtyWebSocketUrl(activeWorkspaceId);
         socket = new WebSocket(wsUrl);
         terminalSocketRef.current = socket;
 
@@ -3023,9 +3119,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           }
         };
 
-        socket.onclose = () => {
+        socket.onclose = (closeEvent) => {
           if (reconnectEnabled) {
             terminal.writeln('\r\n[status] Terminal disconnected. Reconnecting...');
+          }
+          if (closeEvent.code === 4401) {
+            setBrowserAuthorizationReady(false);
+            setBrowserAuthorizationExpiries({});
+            refreshBrowserAuthorization();
           }
           scheduleReconnect();
         };
@@ -3064,7 +3165,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       terminalRef.current?.dispose();
       terminalRef.current = null;
     };
-  }, [activeRightTab, activeWorkspaceId, canEditWorkspace, runtimeSessionActive, terminalReconnectNonce, issueWorkspaceCapabilityToken]);
+  }, [activeRightTab, activeWorkspaceId, browserAuthorizationExpiries, browserAuthorizationReady, canEditWorkspace, refreshBrowserAuthorization, runtimeSessionActive, terminalReconnectNonce]);
 
   useEffect(() => {
     const socket = collabSocketRef.current;
@@ -5343,10 +5444,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 workspaceFiles={previewWorkspaceFiles}
                 liveDataConnections={previewLiveDataConnections}
                 runtimePreviewUrl={
-                  activeWorkspaceId && previewCapabilityToken
-                    ? api.getUserSpaceRuntimePreviewUrl(activeWorkspaceId, '', previewCapabilityToken)
+                  activeWorkspaceId && browserAuthorizationReady
+                    ? api.getUserSpaceRuntimePreviewUrl(activeWorkspaceId, '')
                     : undefined
                 }
+                runtimeAuthorizationPending={Boolean(activeWorkspaceId) && !browserAuthorizationReady}
                 runtimeAvailable={runtimeStatus?.devserver_running ?? false}
                 runtimeError={runtimeStatus?.last_error ?? undefined}
                 previewInstanceKey={`${activeWorkspaceId ?? ''}:${previewRefreshCounter}`}

@@ -2324,6 +2324,22 @@ export interface UserSpaceCapabilityTokenResponse {
   capabilities: string[];
 }
 
+export type UserSpaceBrowserSurface = 'preview' | 'collab' | 'runtime_pty';
+
+export interface UserSpaceBrowserAuthRequest {
+  surfaces: UserSpaceBrowserSurface[];
+}
+
+export interface UserSpaceBrowserAuthorization {
+  surface: UserSpaceBrowserSurface;
+  expires_at: string;
+}
+
+export interface UserSpaceBrowserAuthResponse {
+  workspace_id: string;
+  authorizations: UserSpaceBrowserAuthorization[];
+}
+
 export interface UserSpaceCollabSnapshotMessage {
   type: 'snapshot';
   workspace_id: string;

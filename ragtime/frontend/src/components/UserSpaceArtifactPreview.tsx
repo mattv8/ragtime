@@ -15,6 +15,7 @@ interface UserSpaceArtifactPreviewProps {
   workspaceFiles: Record<string, string>;
   liveDataConnections?: UserSpaceLiveDataConnection[];
   runtimePreviewUrl?: string;
+  runtimeAuthorizationPending?: boolean;
   runtimeAvailable?: boolean;
   runtimeError?: string;
   previewInstanceKey?: string;
@@ -28,6 +29,7 @@ interface UserSpaceArtifactPreviewProps {
 
 export function UserSpaceArtifactPreview({
   runtimePreviewUrl,
+  runtimeAuthorizationPending,
   runtimeAvailable,
   runtimeError,
   previewInstanceKey,
@@ -187,6 +189,15 @@ export function UserSpaceArtifactPreview({
     () => buildUserSpacePreviewSandboxAttribute(sandboxFlags),
     [sandboxFlags],
   );
+
+  if (runtimeAuthorizationPending) {
+    return (
+      <div className="userspace-preview-card">
+        <h4>Loading preview</h4>
+        <p>Authorizing workspace preview access...</p>
+      </div>
+    );
+  }
 
   if (unavailableMessage) {
     return (
