@@ -7,3 +7,10 @@ __pycache__/
 *.pyd
 .venv/
 .data/
+.mypy_cache/
+.pytest_cache/
+
+# Local frontend build artifacts are regenerated in Docker stages.
+ragtime/frontend/node_modules/
+ragtime/frontend/.vite/
+ragtime/frontend/dist/

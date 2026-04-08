@@ -8,6 +8,7 @@ on:
       # Docker build files
       - 'docker/**'
       - 'docker-compose.yml'
+      - '.dockerignore'
       # Application code
       - 'ragtime/**'
       - 'runtime/**'
