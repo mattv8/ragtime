@@ -1140,6 +1140,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     return session_state;
   }, [runtimeStatus]);
 
+  const runtimeSessionActive = runtimeStatus?.session_state === 'running' || runtimeStatus?.session_state === 'starting';
+
   const runtimeCapSysAdminMissing = runtimeStatus?.runtime_has_cap_sys_admin === false;
   const runtimeOperationLabel = useMemo(() => {
     const phase = runtimeStatus?.runtime_operation_phase;
@@ -2903,8 +2905,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       return;
     }
 
-    // Allow terminal retries while runtime is starting to avoid a hard UI stall.
-    if (runtimeDisplayState !== 'running' && runtimeDisplayState !== 'starting') {
+    // Keep the console available while the sandbox session is still active,
+    // even if the derived display state is "error" due to a failed devserver.
+    if (!runtimeSessionActive) {
       return;
     }
 
@@ -3061,7 +3064,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       terminalRef.current?.dispose();
       terminalRef.current = null;
     };
-  }, [activeRightTab, activeWorkspaceId, canEditWorkspace, runtimeDisplayState, terminalReconnectNonce, issueWorkspaceCapabilityToken]);
+  }, [activeRightTab, activeWorkspaceId, canEditWorkspace, runtimeSessionActive, terminalReconnectNonce, issueWorkspaceCapabilityToken]);
 
   useEffect(() => {
     const socket = collabSocketRef.current;

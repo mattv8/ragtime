@@ -395,11 +395,32 @@ class WorkerService:
             redacted_text = redacted_text.replace(secret_value, sentinel)
         return redacted_text
 
-    def workspace_secret_redaction_tail_length(self, session: WorkerSession) -> int:
-        pairs = self._workspace_secret_redaction_pairs(session)
-        if not pairs:
-            return 0
-        return max(len(secret_value) for secret_value, _ in pairs)
+    def split_workspace_secret_output(
+        self,
+        session: WorkerSession,
+        text: str,
+        carry: str = "",
+    ) -> tuple[str, str]:
+        combined = f"{carry}{text}" if carry else text
+        if not combined:
+            return "", ""
+
+        overlap = 0
+        for secret_value, _ in self._workspace_secret_redaction_pairs(session):
+            max_prefix_length = min(len(secret_value) - 1, len(combined))
+            for prefix_length in range(max_prefix_length, 0, -1):
+                if combined.endswith(secret_value[:prefix_length]):
+                    overlap = max(overlap, prefix_length)
+                    break
+
+        if overlap > 0:
+            output_text = combined[:-overlap]
+            next_carry = combined[-overlap:]
+        else:
+            output_text = combined
+            next_carry = ""
+
+        return self.redact_workspace_secret_output(session, output_text), next_carry
 
     @staticmethod
     def _workspace_object_storage_config_path(workspace_root: Path) -> Path:

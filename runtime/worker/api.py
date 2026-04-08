@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import fcntl
 import json
+import logging
 import os
 import pty as pty_module
 import struct
@@ -35,6 +36,7 @@ router = APIRouter(tags=["Runtime Worker"])
 
 _SANDBOX_BASHRC_TEMPLATE_PATH = Path(__file__).parent / "templates" / "sandbox_bashrc.sh"
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+logger = logging.getLogger(__name__)
 
 
 def _preview_request_headers(request: Request) -> dict[str, str]:
@@ -398,6 +400,13 @@ async def pty(worker_session_id: str, websocket: WebSocket):
             preexec_fn=_pty_preexec,
             start_new_session=False,
         )
+        logger.debug(
+            "PTY spawned: worker_session_id=%s workspace_id=%s pid=%s mode=%s",
+            worker_session_id,
+            session.workspace_id,
+            process.pid,
+            sandbox_spec.mode,
+        )
     finally:
         with contextlib.suppress(Exception):
             os.close(slave_fd)
@@ -430,23 +439,33 @@ async def pty(worker_session_id: str, websocket: WebSocket):
         "bash: cannot set terminal process group",
         "bash: no job control in this shell",
     )
-    redaction_tail_length = max(
-        service.workspace_secret_redaction_tail_length(session) - 1,
-        0,
-    )
     redaction_carry = ""
+    buffered_for_redaction_logged = False
 
     async def _pump_stream() -> None:
-        nonlocal redaction_carry
+        nonlocal buffered_for_redaction_logged, redaction_carry
         startup_reads = 4  # only filter the first N reads
         while True:
             try:
                 chunk = await asyncio.to_thread(os.read, master_fd, 1024)
             except asyncio.CancelledError:
                 break
-            except OSError:
+            except OSError as exc:
+                logger.debug(
+                    "PTY stream read failed: worker_session_id=%s errno=%s returncode=%s carry_len=%s",
+                    worker_session_id,
+                    getattr(exc, "errno", None),
+                    process.returncode,
+                    len(redaction_carry),
+                )
                 break
             if not chunk:
+                logger.debug(
+                    "PTY stream EOF: worker_session_id=%s returncode=%s carry_len=%s",
+                    worker_session_id,
+                    process.returncode,
+                    len(redaction_carry),
+                )
                 break
             text = chunk.decode("utf-8", errors="replace")
             if startup_reads > 0:
@@ -460,21 +479,34 @@ async def pty(worker_session_id: str, websocket: WebSocket):
                 text = "".join(lines)
                 if not text:
                     continue
-            if redaction_tail_length > 0:
-                text = redaction_carry + text
-                if len(text) <= redaction_tail_length:
-                    redaction_carry = text
-                    continue
-                output_text = text[:-redaction_tail_length]
-                redaction_carry = text[-redaction_tail_length:]
-            else:
-                output_text = text
-            output_text = service.redact_workspace_secret_output(session, output_text)
+            output_text, redaction_carry = service.split_workspace_secret_output(
+                session,
+                text,
+                carry=redaction_carry,
+            )
+            if (
+                text
+                and not output_text
+                and redaction_carry
+                and not buffered_for_redaction_logged
+            ):
+                buffered_for_redaction_logged = True
+                logger.debug(
+                    "PTY output buffered for redaction overlap: worker_session_id=%s chunk_len=%s carry_len=%s",
+                    worker_session_id,
+                    len(text),
+                    len(redaction_carry),
+                )
             if output_text:
                 await websocket.send_text(
                     json.dumps({"type": "output", "data": output_text})
                 )
         if redaction_carry:
+            logger.debug(
+                "PTY flushing buffered carry on stream end: worker_session_id=%s carry_len=%s",
+                worker_session_id,
+                len(redaction_carry),
+            )
             output_text = service.redact_workspace_secret_output(
                 session,
                 redaction_carry,
