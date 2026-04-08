@@ -21,7 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tini \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g playwright esbuild s3rver \
+RUN npm install -g npm@10 \
+    && npm install -g playwright esbuild s3rver \
     && playwright install --with-deps chromium \
     && npm cache clean --force
 
