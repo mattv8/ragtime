@@ -49,14 +49,6 @@ function withWorkspaceQuery(url: string, workspaceId?: string): string {
   return `${url}${separator}workspace_id=${encodeURIComponent(workspaceId)}`;
 }
 
-function withCapabilityToken(url: string, capabilityToken?: string): string {
-  if (!capabilityToken) {
-    return url;
-  }
-  const separator = url.includes('?') ? '&' : '?';
-  return `${url}${separator}cap_token=${encodeURIComponent(capabilityToken)}`;
-}
-
 class ApiError extends Error {
   constructor(
     message: string,
