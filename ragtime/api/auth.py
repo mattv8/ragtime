@@ -14,12 +14,13 @@ from urllib.parse import urlparse
 from fastapi import (APIRouter, Depends, Form, HTTPException, Query, Request,
                      Response, status)
 from fastapi.responses import HTMLResponse, RedirectResponse
-from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
+from prisma import Json
 from ragtime.config.settings import settings
+from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import (authenticate, create_access_token,
                                create_session, discover_ldap_structure,
                                get_ldap_config, invalidate_session,
@@ -276,6 +277,10 @@ class AuthStatusResponse(BaseModel):
     session_cookie_secure: bool = False
     allowed_origins_open: bool = False  # True if ALLOWED_ORIGINS=*
     auth_methods: list[AuthMethodStatus] = Field(default_factory=list)
+    server_name: str = Field(
+        default="Ragtime",
+        description="Configured server branding name",
+    )
 
 
 # =============================================================================
@@ -431,6 +436,15 @@ async def get_auth_status(request: Request):
     ldap_config = await get_ldap_config()
     cookie_warning = _detect_cookie_mismatch(request)
     auth_methods = await _build_auth_method_statuses(ldap_config)
+    server_name = "Ragtime"
+
+    try:
+        app_settings = await get_app_settings()
+        configured_server_name = str(app_settings.get("server_name") or "").strip()
+        if configured_server_name:
+            server_name = configured_server_name
+    except Exception as exc:
+        logger.debug("Failed to load server branding for auth status: %s", exc)
 
     return AuthStatusResponse(
         authenticated=False,  # This endpoint is for unauthenticated users
@@ -445,6 +459,7 @@ async def get_auth_status(request: Request):
         session_cookie_secure=settings.session_cookie_secure,
         allowed_origins_open=settings.allowed_origins == "*",
         auth_methods=auth_methods,
+        server_name=server_name,
     )
 
 

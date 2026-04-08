@@ -148,9 +148,10 @@ export function App() {
         api_key_configured: false,
         session_cookie_secure: false,
         allowed_origins_open: true,
+        server_name: serverName,
       };
     });
-  }, []);
+  }, [serverName]);
 
   useEffect(() => {
     const unsubscribe = onAuthExpired(() => {
@@ -199,6 +200,11 @@ export function App() {
       try {
         const status = await api.getAuthStatus();
         setAuthStatus(status);
+        const authServerName = (status.server_name || '').trim();
+        if (authServerName) {
+          setServerName(authServerName);
+          document.title = authServerName;
+        }
 
         // Only try to get current user if we might be authenticated
         // This avoids unnecessary 401 errors in the console
@@ -220,6 +226,7 @@ export function App() {
           api_key_configured: false,
           session_cookie_secure: false,
           allowed_origins_open: true,
+          server_name: serverName,
         });
       } finally {
         setAuthLoading(false);

@@ -112,7 +112,7 @@ export const api = {
    * Get authentication status
    */
   async getAuthStatus(): Promise<AuthStatus> {
-    const response = await apiFetch(`${AUTH_BASE}/status`);
+    const response = await apiFetch(`${AUTH_BASE}/status`, { cache: 'no-store' });
     return handleResponse<AuthStatus>(response);
   },
 
@@ -527,7 +527,7 @@ export const api = {
    * Get application settings with configuration warnings
    */
   async getSettings(): Promise<GetSettingsResponse> {
-    const response = await apiFetch(`${API_BASE}/settings`);
+    const response = await apiFetch(`${API_BASE}/settings`, { cache: 'no-store' });
     return handleResponse<GetSettingsResponse>(response);
   },
 

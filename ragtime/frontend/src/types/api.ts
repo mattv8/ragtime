@@ -58,6 +58,7 @@ export interface AuthStatus {
   session_cookie_secure: boolean;
   allowed_origins_open: boolean;  // True if ALLOWED_ORIGINS=*
   auth_methods?: AuthMethodStatus[];
+  server_name?: string;
 }
 
 // =============================================================================
