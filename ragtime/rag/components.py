@@ -11515,6 +11515,19 @@ except Exception as e:
                             "final text; falling back to tool-free LLM synthesis",
                             attempt_number,
                         )
+                        synthesis_chat_history = list(chat_history)
+                        synthesis_has_original_input = bool(
+                            synthesis_chat_history
+                            and isinstance(synthesis_chat_history[-1], HumanMessage)
+                            and self._extract_text_from_message(
+                                synthesis_chat_history[-1]
+                            )
+                            == attempt_original_input
+                        )
+                        if not synthesis_has_original_input:
+                            synthesis_chat_history.append(
+                                HumanMessage(content=attempt_original_input)
+                            )
                         # Synthesis uses the base system prompt WITHOUT
                         # tool_scope_prompt — the LLM has no tool bindings
                         # here, so listing tools just confuses reasoning
@@ -11522,11 +11535,7 @@ except Exception as e:
                         synthesis_messages: list[BaseMessage] = [
                             SystemMessage(content=system_prompt),
                         ]
-                        synthesis_messages.extend(attempt_chat_history)
-                        if not attempt_history_has_original_input:
-                            synthesis_messages.append(
-                                HumanMessage(content=attempt_original_input)
-                            )
+                        synthesis_messages.extend(synthesis_chat_history)
                         synthesis_tool_context = self._build_internal_synthesis_tool_context(
                             intermediate_steps=attempt_intermediate_steps,
                             replay_messages=attempt_replayed_tool_messages,
@@ -11540,6 +11549,8 @@ except Exception as e:
                             synthesis_chunk_count = 0
                             synthesis_reasoning_chunks = 0
                             synthesis_text_chunks = 0
+                            streamed_synthesis_text = ""
+                            streamed_synthesis_reasoning = ""
                             async for chunk in request_llm.astream(synthesis_messages):
                                 synthesis_chunk_count += 1
                                 reasoning_text = (
@@ -11547,6 +11558,7 @@ except Exception as e:
                                 )
                                 if reasoning_text:
                                     synthesis_reasoning_chunks += 1
+                                    streamed_synthesis_reasoning += reasoning_text
                                     yield {
                                         "type": "reasoning",
                                         "content": reasoning_text,
@@ -11557,6 +11569,7 @@ except Exception as e:
                                     )
                                     if content:
                                         synthesis_text_chunks += 1
+                                        streamed_synthesis_text += content
                                         attempt_emitted_content = True
                                         yield content
                                 elif synthesis_chunk_count <= 3:
@@ -11574,14 +11587,46 @@ except Exception as e:
                                 synthesis_text_chunks,
                                 attempt_emitted_content,
                             )
-                            # Safety net: if synthesis produced reasoning
-                            # but no visible text (common with reasoning-heavy
-                            # models), generate a minimal progress summary so
-                            # the consumer doesn't see an empty response.
-                            if not attempt_emitted_content and synthesis_reasoning_chunks > 0:
+                            if not attempt_emitted_content:
+                                synthesis_response = await request_llm.ainvoke(
+                                    synthesis_messages
+                                )
+                                final_reasoning = (
+                                    self._extract_reasoning_from_chat_model_output(
+                                        synthesis_response
+                                    )
+                                )
+                                reasoning_suffix = self._compute_missing_suffix(
+                                    streamed_synthesis_reasoning,
+                                    final_reasoning,
+                                )
+                                if reasoning_suffix:
+                                    yield {
+                                        "type": "reasoning",
+                                        "content": reasoning_suffix,
+                                    }
+                                final_text = self._extract_text_from_chat_model_output(
+                                    synthesis_response
+                                )
+                                text_suffix = self._compute_missing_suffix(
+                                    streamed_synthesis_text,
+                                    final_text,
+                                )
+                                if text_suffix:
+                                    synthesis_text_chunks += 1
+                                    attempt_emitted_content = True
+                                    logger.info(
+                                        "Recovered synthesis text from final response after empty stream"
+                                    )
+                                    yield text_suffix
+                            # Safety net: if synthesis still produced no visible
+                            # text, generate a minimal progress summary so the
+                            # consumer never falls back to the generic
+                            # background-task placeholder.
+                            if not attempt_emitted_content:
                                 logger.warning(
-                                    "Synthesis produced %d reasoning chunks but no text; "
-                                    "generating progress summary fallback",
+                                    "Synthesis produced no visible text after stream/invoke "
+                                    "(reasoning_chunks=%d); generating progress summary fallback",
                                     synthesis_reasoning_chunks,
                                 )
                                 fallback_summary = self._build_synthesis_reasoning_only_fallback(
@@ -11607,7 +11652,7 @@ except Exception as e:
                                 request_kind="internal_final_synthesis",
                                 system_prompt=system_prompt,
                                 rendered_user_input=INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT,
-                                chat_history=attempt_chat_history,
+                                chat_history=synthesis_chat_history,
                                 provider_messages=[
                                     self._serialize_base_message(message)
                                     for message in synthesis_messages
