@@ -5075,10 +5075,13 @@ except Exception as e:
             return (
                 "\n### Configured workspace environment variables\n\n"
                 "- None configured yet. If code needs secrets, create placeholder keys first and ask the user to fill values in the Environment Variables modal.\n"
+                "- PTY and terminal commands only expose a redacted env view through `printenv` and `env`; secret values are never visible there.\n"
             )
 
         max_items = 40
-        lines: list[str] = []
+        lines: list[str] = [
+            "- PTY and terminal commands expose configured keys through redacted `printenv`/`env` output only; app processes still receive the real values at launch.",
+        ]
         for item in env_vars[:max_items]:
             key = str(getattr(item, "key", "") or "").strip()
             if not key:

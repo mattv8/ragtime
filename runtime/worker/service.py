@@ -20,35 +20,23 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
-from runtime.manager.models import (
-    RuntimeContentProbeRequest,
-    RuntimeContentProbeResponse,
-    RuntimeExecResponse,
-    RuntimeFileReadResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    WorkerHealthResponse,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
-from runtime.shared import (
-    RUNTIME_BOOTSTRAP_CONFIG_PATH,
-    RUNTIME_BOOTSTRAP_STAMP_PATH,
-    EntrypointStatus,
-    RuntimeSessionState,
-    normalize_file_path,
-    parse_entrypoint_config,
-)
-from runtime.worker.sandbox import (
-    SANDBOX_WORKSPACE_MOUNT,
-    SandboxSpec,
-    cleanup_sandbox,
-    ensure_sandbox_ready,
-    get_sandbox_spec,
-    materialize_mounts,
-    sandbox_diagnostics,
-    spawn_sandboxed,
-)
+from runtime.manager.models import (RuntimeContentProbeRequest,
+                                    RuntimeContentProbeResponse,
+                                    RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    WorkerHealthResponse,
+                                    WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
+from runtime.shared import (RUNTIME_BOOTSTRAP_CONFIG_PATH,
+                            RUNTIME_BOOTSTRAP_STAMP_PATH, EntrypointStatus,
+                            RuntimeSessionState, normalize_file_path,
+                            parse_entrypoint_config)
+from runtime.worker.sandbox import (SANDBOX_WORKSPACE_MOUNT, SandboxSpec,
+                                    cleanup_sandbox, ensure_sandbox_ready,
+                                    get_sandbox_spec, materialize_mounts,
+                                    sandbox_diagnostics, spawn_sandboxed)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -69,6 +57,9 @@ _WORKSPACE_BOOTSTRAP_GUIDANCE = (
     "Initialize the workspace with required runtime dependencies "
     "(for example a package manager install step) or update "
     ".ragtime/runtime-entrypoint.json to use executables available in this runtime image."
+)
+_NPM_DEBUG_LOG_PATH_RE = re.compile(
+    r"A complete log of this run can be found in:\s*(?P<path>/[^\s]+)"
 )
 
 # Maps runtime-entrypoint framework names to pip packages that should be
@@ -98,6 +89,16 @@ _OBJECT_STORAGE_CONFIG_DIRNAME = "s3"
 _OBJECT_STORAGE_CONFIG_NAME = "config.json"
 _OBJECT_STORAGE_ENDPOINT_ENV_KEY = "RAGTIME_OBJECT_STORAGE_ENDPOINT"
 _OBJECT_STORAGE_PORT_ENV_KEY = "RAGTIME_OBJECT_STORAGE_PORT"
+_AGENT_SHELL_ROOT = Path("/tmp/.ragtime-agent-shell")
+_AGENT_SHELL_BIN_DIR = _AGENT_SHELL_ROOT / "bin"
+_AGENT_SHELL_ENV_METADATA_NAME = "workspace-env.json"
+_AGENT_SHELL_ENV_VIEW_NAME = "redacted_env_view.py"
+_AGENT_SHELL_INTERNAL_ENV_KEYS = (
+    "RAGTIME_REDACTED_ENV_FILE",
+)
+_RAGTIME_REDACTED_ENV_FILE_VAR = "RAGTIME_REDACTED_ENV_FILE"
+_RAGTIME_REDACTED_ENV_SENTINEL_SET = "__RAGTIME_SECRET_REDACTED__"
+_RAGTIME_REDACTED_ENV_SENTINEL_MISSING = "__RAGTIME_SECRET_MISSING__"
 
 _PLAYWRIGHT_BROKER_JS_PATH = Path(__file__).with_name("playwright_broker.js")
 _S3RVER_RUNNER_JS_PATH = Path(__file__).with_name("s3rver_runner.js")
@@ -134,6 +135,7 @@ class WorkerSession:
     sandbox_spec: SandboxSpec
     pty_access_token: str
     workspace_env: dict[str, str]
+    workspace_env_visibility: dict[str, bool]
     workspace_mounts: list[dict[str, Any]]
     mount_targets_to_clear: set[str]
     state: RuntimeSessionState
@@ -262,6 +264,204 @@ class WorkerService:
         if normalized.is_absolute() or any(part == ".." for part in normalized.parts):
             return session.workspace_files_path
         return session.workspace_files_path / normalized
+
+    @staticmethod
+    def _normalize_workspace_env(raw_env: dict[str, Any] | None) -> dict[str, str]:
+        return {
+            str(key): str(value)
+            for key, value in (raw_env or {}).items()
+            if str(key).strip()
+        }
+
+    @staticmethod
+    def _normalize_workspace_env_visibility(
+        raw_visibility: dict[str, Any] | None,
+        workspace_env: dict[str, str],
+    ) -> dict[str, bool]:
+        visibility: dict[str, bool] = {}
+        for key, has_value in (raw_visibility or {}).items():
+            normalized_key = str(key).strip()
+            if not normalized_key:
+                continue
+            visibility[normalized_key] = bool(has_value)
+        for key in workspace_env:
+            visibility.setdefault(key, True)
+        return dict(sorted(visibility.items()))
+
+    @staticmethod
+    def _agent_shell_host_root(spec: SandboxSpec) -> Path:
+        return spec.rootfs_path / _AGENT_SHELL_ROOT.relative_to("/")
+
+    @staticmethod
+    def _agent_shell_host_bin_dir(spec: SandboxSpec) -> Path:
+        return WorkerService._agent_shell_host_root(spec) / "bin"
+
+    @staticmethod
+    def _agent_shell_host_metadata_path(spec: SandboxSpec) -> Path:
+        return (
+            WorkerService._agent_shell_host_root(spec)
+            / _AGENT_SHELL_ENV_METADATA_NAME
+        )
+
+    @staticmethod
+    def _agent_shell_host_viewer_path(spec: SandboxSpec) -> Path:
+        return WorkerService._agent_shell_host_root(spec) / _AGENT_SHELL_ENV_VIEW_NAME
+
+    def _build_agent_shell_metadata(self, session: WorkerSession) -> dict[str, Any]:
+        items: list[dict[str, str | bool]] = []
+        for key, has_value in sorted(session.workspace_env_visibility.items()):
+            items.append(
+                {
+                    "key": key,
+                    "has_value": has_value,
+                    "sentinel": (
+                        _RAGTIME_REDACTED_ENV_SENTINEL_SET
+                        if has_value
+                        else _RAGTIME_REDACTED_ENV_SENTINEL_MISSING
+                    ),
+                }
+            )
+        return {"items": items}
+
+    def _write_agent_shell_artifacts(self, session: WorkerSession) -> None:
+        shell_root = self._agent_shell_host_root(session.sandbox_spec)
+        bin_dir = self._agent_shell_host_bin_dir(session.sandbox_spec)
+        shell_root.mkdir(parents=True, exist_ok=True)
+        bin_dir.mkdir(parents=True, exist_ok=True)
+
+        metadata_path = self._agent_shell_host_metadata_path(session.sandbox_spec)
+        metadata_path.write_text(
+            json.dumps(self._build_agent_shell_metadata(session), indent=2),
+            encoding="utf-8",
+        )
+        metadata_path.chmod(0o600)
+
+        viewer_path = self._agent_shell_host_viewer_path(session.sandbox_spec)
+        viewer_path.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json\n"
+            "import os\n"
+            "import sys\n"
+            "\n"
+            "SYSTEM_ENV = '/usr/bin/env'\n"
+            "SYSTEM_PRINTENV = '/usr/bin/printenv'\n"
+            f"INTERNAL_KEYS = {repr(tuple(_AGENT_SHELL_INTERNAL_ENV_KEYS))}\n"
+            f"SET_FALLBACK = {_RAGTIME_REDACTED_ENV_SENTINEL_SET!r}\n"
+            f"MISSING_FALLBACK = {_RAGTIME_REDACTED_ENV_SENTINEL_MISSING!r}\n"
+            "\n"
+            "def load_redacted_items():\n"
+            f"    metadata_path = os.environ.get({_RAGTIME_REDACTED_ENV_FILE_VAR!r}, '')\n"
+            "    if not metadata_path:\n"
+            "        return {}\n"
+            "    try:\n"
+            "        with open(metadata_path, 'r', encoding='utf-8') as handle:\n"
+            "            payload = json.load(handle)\n"
+            "    except Exception:\n"
+            "        return {}\n"
+            "    items = {}\n"
+            "    for item in payload.get('items', []):\n"
+            "        key = str(item.get('key', '') or '').strip()\n"
+            "        if not key:\n"
+            "            continue\n"
+            "        has_value = bool(item.get('has_value', False))\n"
+            "        sentinel = str(item.get('sentinel', '') or '')\n"
+            "        if not sentinel:\n"
+            "            sentinel = SET_FALLBACK if has_value else MISSING_FALLBACK\n"
+            "        items[key] = sentinel\n"
+            "    return items\n"
+            "\n"
+            "def actual_env_items():\n"
+            "    return {\n"
+            "        key: value\n"
+            "        for key, value in os.environ.items()\n"
+            "        if key not in INTERNAL_KEYS\n"
+            "    }\n"
+            "\n"
+            "def emit_listing(entries, null_sep=False):\n"
+            "    separator = '\\0' if null_sep else '\\n'\n"
+            "    payload = separator.join(entries)\n"
+            "    if payload:\n"
+            "        sys.stdout.write(payload)\n"
+            "        if not null_sep:\n"
+            "            sys.stdout.write('\\n')\n"
+            "\n"
+            "def run_printenv(args):\n"
+            "    if '--help' in args or '--version' in args:\n"
+            "        os.execv(SYSTEM_PRINTENV, [SYSTEM_PRINTENV, *args])\n"
+            "    null_sep = False\n"
+            "    if args and args[0] in ('-0', '--null'):\n"
+            "        null_sep = True\n"
+            "        args = args[1:]\n"
+            "    redacted = load_redacted_items()\n"
+            "    actual = actual_env_items()\n"
+            "    if args:\n"
+            "        found_all = True\n"
+            "        outputs = []\n"
+            "        for key in args:\n"
+            "            if key in actual:\n"
+            "                outputs.append(actual[key])\n"
+            "                continue\n"
+            "            if key in redacted:\n"
+            "                outputs.append(redacted[key])\n"
+            "                continue\n"
+            "            found_all = False\n"
+            "        emit_listing(outputs, null_sep=null_sep)\n"
+            "        raise SystemExit(0 if found_all else 1)\n"
+            "    entries = [f'{key}={value}' for key, value in actual.items()]\n"
+            "    for key in sorted(redacted):\n"
+            "        if key in actual:\n"
+            "            continue\n"
+            "        entries.append(f'{key}={redacted[key]}')\n"
+            "    emit_listing(entries, null_sep=null_sep)\n"
+            "\n"
+            "def run_env(args):\n"
+            "    if args and any(arg not in ('-0', '--null') for arg in args):\n"
+            "        os.execv(SYSTEM_ENV, [SYSTEM_ENV, *args])\n"
+            "    null_sep = bool(args and args[0] in ('-0', '--null'))\n"
+            "    redacted = load_redacted_items()\n"
+            "    actual = actual_env_items()\n"
+            "    entries = [f'{key}={value}' for key, value in actual.items()]\n"
+            "    for key in sorted(redacted):\n"
+            "        if key in actual:\n"
+            "            continue\n"
+            "        entries.append(f'{key}={redacted[key]}')\n"
+            "    emit_listing(entries, null_sep=null_sep)\n"
+            "\n"
+            "def main():\n"
+            "    invoked_as = os.path.basename(sys.argv[0])\n"
+            "    args = sys.argv[1:]\n"
+            "    if invoked_as == 'env':\n"
+            "        run_env(args)\n"
+            "        return\n"
+            "    run_printenv(args)\n"
+            "\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n",
+            encoding="utf-8",
+        )
+        viewer_path.chmod(0o755)
+
+        wrapper_target = _AGENT_SHELL_ROOT / _AGENT_SHELL_ENV_VIEW_NAME
+        for wrapper_name in ("printenv", "env"):
+            wrapper_path = bin_dir / wrapper_name
+            wrapper_path.write_text(
+                "#!/bin/sh\n"
+                f"exec /usr/bin/python3 {wrapper_target} \"$@\"\n",
+                encoding="utf-8",
+            )
+            wrapper_path.chmod(0o755)
+
+    def build_agent_shell_environment(self, session: WorkerSession) -> dict[str, str]:
+        self._write_agent_shell_artifacts(session)
+        return {
+            "PATH": (
+                f"{_AGENT_SHELL_BIN_DIR}:"
+                f"{os.getenv('PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin')}"
+            ),
+            _RAGTIME_REDACTED_ENV_FILE_VAR: str(
+                _AGENT_SHELL_ROOT / _AGENT_SHELL_ENV_METADATA_NAME
+            ),
+        }
 
     @staticmethod
     def _workspace_object_storage_config_path(workspace_root: Path) -> Path:
@@ -667,6 +867,79 @@ class WorkerService:
             return False
         return (cwd_path / "node_modules").exists()
 
+    @staticmethod
+    def _extract_npm_debug_log_path(output: str) -> str | None:
+        match = _NPM_DEBUG_LOG_PATH_RE.search(output or "")
+        if not match:
+            return None
+        return str(match.group("path") or "").strip() or None
+
+    def _read_sandbox_file_tail(
+        self,
+        *,
+        sandbox_root: Path,
+        absolute_path: str,
+        max_chars: int = 4000,
+    ) -> str:
+        normalized = str(absolute_path or "").strip()
+        if not normalized.startswith("/"):
+            return ""
+        try:
+            host_path = (sandbox_root / normalized.lstrip("/")).resolve()
+            resolved_root = sandbox_root.resolve()
+        except Exception:
+            return ""
+        if host_path != resolved_root and resolved_root not in host_path.parents:
+            return ""
+        try:
+            content = host_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        return content[-max_chars:]
+
+    def _extract_bootstrap_failure_detail(
+        self,
+        *,
+        session: WorkerSession,
+        command_name: str,
+        run: str,
+        output: str,
+    ) -> str | None:
+        cmd = (run or "").strip().lower()
+        name = (command_name or "").strip().lower()
+        is_npm_ci = name == "npm_ci" or cmd.startswith("npm ci")
+        if not is_npm_ci:
+            return None
+
+        lowered_output = (output or "").lower()
+        if "invalid comparator:" in lowered_output:
+            marker_index = lowered_output.find("invalid comparator:")
+            return output[marker_index:].splitlines()[0].strip()
+
+        log_path = self._extract_npm_debug_log_path(output)
+        if not log_path:
+            return None
+
+        log_tail = self._read_sandbox_file_tail(
+            sandbox_root=session.sandbox_spec.rootfs_path,
+            absolute_path=log_path,
+        )
+        if not log_tail:
+            return None
+
+        for line in reversed(log_tail.splitlines()):
+            normalized_line = line.strip()
+            lowered_line = normalized_line.lower()
+            if not normalized_line:
+                continue
+            if "invalid comparator:" in lowered_line:
+                marker_index = lowered_line.find("invalid comparator:")
+                return normalized_line[marker_index:].strip()
+            if "loadvirtual typeerror:" in lowered_line:
+                marker_index = lowered_line.find("loadvirtual typeerror:")
+                return normalized_line[marker_index:].strip()
+        return None
+
     async def _run_workspace_bootstrap_if_needed(
         self,
         session: WorkerSession,
@@ -764,6 +1037,12 @@ class WorkerService:
                 stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
                 stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
                 output = stderr_text or stdout_text or "unknown error"
+                detail = self._extract_bootstrap_failure_detail(
+                    session=session,
+                    command_name=command_name,
+                    run=run,
+                    output=output,
+                )
 
                 if self._is_false_negative_npm_ci_failure(
                     command_name=command_name,
@@ -777,7 +1056,7 @@ class WorkerService:
 
                 return (
                     f"Runtime bootstrap command '{command_name}' failed with code {returncode}: "
-                    f"{output[:300]}. {_WORKSPACE_BOOTSTRAP_GUIDANCE}"
+                    f"{(detail or output)[:300]}. {_WORKSPACE_BOOTSTRAP_GUIDANCE}"
                 )
 
         stamp_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1650,11 +1929,15 @@ class WorkerService:
             if existing_session_id and existing_session_id in self._sessions:
                 session = self._sessions[existing_session_id]
                 session.pty_access_token = request.pty_access_token
-                session.workspace_env = {
-                    str(key): str(value)
-                    for key, value in (request.workspace_env or {}).items()
-                    if str(key).strip()
-                }
+                session.workspace_env = self._normalize_workspace_env(
+                    request.workspace_env
+                )
+                session.workspace_env_visibility = (
+                    self._normalize_workspace_env_visibility(
+                        request.workspace_env_visibility,
+                        session.workspace_env,
+                    )
+                )
                 previous_targets = self._mount_target_paths(session.workspace_mounts)
                 session.workspace_mounts = list(request.workspace_mounts or [])
                 session.mount_targets_to_clear = (
@@ -1669,6 +1952,7 @@ class WorkerService:
             workspace_root, workspace_files, sandbox_spec = (
                 self._resolve_workspace_root(request.workspace_id)
             )
+            workspace_env = self._normalize_workspace_env(request.workspace_env)
             session = WorkerSession(
                 id=session_id,
                 workspace_id=request.workspace_id,
@@ -1677,11 +1961,11 @@ class WorkerService:
                 workspace_files_path=workspace_files,
                 sandbox_spec=sandbox_spec,
                 pty_access_token=request.pty_access_token,
-                workspace_env={
-                    str(key): str(value)
-                    for key, value in (request.workspace_env or {}).items()
-                    if str(key).strip()
-                },
+                workspace_env=workspace_env,
+                workspace_env_visibility=self._normalize_workspace_env_visibility(
+                    request.workspace_env_visibility,
+                    workspace_env,
+                ),
                 workspace_mounts=list(request.workspace_mounts or []),
                 mount_targets_to_clear=self._mount_target_paths(
                     list(request.workspace_mounts or [])
@@ -1735,6 +2019,7 @@ class WorkerService:
         self,
         worker_session_id: str,
         workspace_env: dict[str, str] | None = None,
+        workspace_env_visibility: dict[str, bool] | None = None,
         workspace_mounts: list[dict[str, Any]] | None = None,
     ) -> WorkerSessionResponse:
         async with self._lock:
@@ -1742,11 +2027,14 @@ class WorkerService:
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
             if workspace_env is not None:
-                session.workspace_env = {
-                    str(key): str(value)
-                    for key, value in workspace_env.items()
-                    if str(key).strip()
-                }
+                session.workspace_env = self._normalize_workspace_env(workspace_env)
+            if workspace_env is not None or workspace_env_visibility is not None:
+                session.workspace_env_visibility = (
+                    self._normalize_workspace_env_visibility(
+                        workspace_env_visibility,
+                        session.workspace_env,
+                    )
+                )
             await self._terminate_object_storage_locked(session.id)
             previous_targets = self._mount_target_paths(session.workspace_mounts)
             if workspace_mounts is not None:
@@ -1920,6 +2208,7 @@ class WorkerService:
                 sandbox_cwd = SANDBOX_WORKSPACE_MOUNT
 
             sandbox_spec = session.sandbox_spec
+            agent_shell_env = self.build_agent_shell_environment(session)
 
         timeout_seconds = max(1, min(timeout_seconds, 120))
         timed_out = False
@@ -1930,6 +2219,7 @@ class WorkerService:
                 sandbox_spec,
                 ["sh", "-lc", command],
                 cwd=sandbox_cwd,
+                env=agent_shell_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

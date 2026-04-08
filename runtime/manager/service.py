@@ -10,20 +10,16 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from runtime.manager.models import (
-    ManagerSession,
-    RuntimeContentProbeRequest,
-    RuntimeContentProbeResponse,
-    RuntimeExecResponse,
-    RuntimeFileReadResponse,
-    RuntimePtyUrlResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    RuntimeSessionResponse,
-    StartSessionRequest,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
+from runtime.manager.models import (ManagerSession, RuntimeContentProbeRequest,
+                                    RuntimeContentProbeResponse,
+                                    RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimePtyUrlResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    RuntimeSessionResponse,
+                                    StartSessionRequest, WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
 from runtime.worker.service import get_worker_service
 
 
@@ -32,7 +28,7 @@ class SessionManager:
         self._sessions: dict[str, ManagerSession] = {}
         self._workspace_index: dict[str, str] = {}
         self._lock = asyncio.Lock()
-        self._worker_service = get_worker_service()
+        self._worker_service: Any = get_worker_service()
         self._max_sessions = self._get_positive_int_env(
             "RUNTIME_MAX_SESSIONS",
             12,
@@ -248,6 +244,7 @@ class SessionManager:
                         provider_session_id=provider_session_id,
                         pty_access_token=pty_access_token,
                         workspace_env=request.workspace_env,
+                        workspace_env_visibility=request.workspace_env_visibility,
                         workspace_mounts=request.workspace_mounts,
                     )
                     worker_session = await asyncio.wait_for(
@@ -305,6 +302,7 @@ class SessionManager:
         self,
         provider_session_id: str,
         workspace_env: dict[str, str] | None = None,
+        workspace_env_visibility: dict[str, bool] | None = None,
         workspace_mounts: list[dict[str, Any]] | None = None,
     ) -> RuntimeSessionResponse:
         async with self._lock:
@@ -314,8 +312,9 @@ class SessionManager:
             worker_data = await asyncio.wait_for(
                 self._worker_service.restart_session(
                     session.worker_session_id,
-                    workspace_env=workspace_env,
-                    workspace_mounts=workspace_mounts,
+                    workspace_env,
+                    workspace_env_visibility,
+                    workspace_mounts,
                 ),
                 timeout=self._worker_call_timeout,
             )

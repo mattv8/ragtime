@@ -6,22 +6,19 @@ from typing import Any
 from fastapi import FastAPI
 
 from runtime.auth import ManagerAuth
-from runtime.manager.models import (
-    RuntimeContentProbeRequest,
-    RuntimeContentProbeResponse,
-    RuntimeExecRequest,
-    RuntimeExecResponse,
-    RuntimeFileReadResponse,
-    RuntimeFileWriteRequest,
-    RuntimeManagerHealthResponse,
-    RuntimeMountRefreshRequest,
-    RuntimePtyUrlResponse,
-    RuntimeRestartRequest,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    RuntimeSessionResponse,
-    StartSessionRequest,
-)
+from runtime.manager.models import (RuntimeContentProbeRequest,
+                                    RuntimeContentProbeResponse,
+                                    RuntimeExecRequest, RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimeFileWriteRequest,
+                                    RuntimeManagerHealthResponse,
+                                    RuntimeMountRefreshRequest,
+                                    RuntimePtyUrlResponse,
+                                    RuntimeRestartRequest,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    RuntimeSessionResponse,
+                                    StartSessionRequest)
 from runtime.manager.service import SessionManager
 
 
@@ -99,6 +96,9 @@ def create_app() -> FastAPI:
         return await manager.restart_devserver(
             provider_session_id,
             workspace_env=payload.workspace_env if payload else None,
+            workspace_env_visibility=(
+                payload.workspace_env_visibility if payload else None
+            ),
             workspace_mounts=payload.workspace_mounts if payload else None,
         )
 

@@ -14,26 +14,24 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.workspace_state import build_workspace_chat_state
-from ragtime.userspace.models import (
-    RuntimeOperationPhase,
-    RuntimeSessionState,
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceCollabSnapshotResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSession,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-    UserSpaceWorkspaceTabStateResponse,
-)
+from ragtime.userspace.models import (RuntimeOperationPhase,
+                                      RuntimeSessionState,
+                                      UserSpaceCapabilityTokenResponse,
+                                      UserSpaceCollabSnapshotResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSession,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse,
+                                      UserSpaceWorkspaceTabStateResponse)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -476,16 +474,18 @@ class UserSpaceRuntimeService:
     ) -> dict[str, Any]:
         self._require_runtime_manager()
 
-        workspace_env = await userspace_service.get_workspace_runtime_environment(
-            workspace_id
-        )
-        workspace_mounts = await userspace_service.resolve_workspace_mounts_for_runtime(
-            workspace_id
+        workspace_env, workspace_env_visibility, workspace_mounts = await asyncio.gather(
+            userspace_service.get_workspace_runtime_environment(workspace_id),
+            userspace_service.get_workspace_runtime_environment_visibility(
+                workspace_id
+            ),
+            userspace_service.resolve_workspace_mounts_for_runtime(workspace_id),
         )
         payload: dict[str, Any] = {
             "workspace_id": workspace_id,
             "leased_by_user_id": leased_by_user_id,
             "workspace_env": workspace_env,
+            "workspace_env_visibility": workspace_env_visibility,
             "workspace_mounts": workspace_mounts,
         }
         if existing_provider_session_id:
@@ -530,16 +530,23 @@ class UserSpaceRuntimeService:
         self,
         provider_session_id: str | None,
         workspace_env: dict[str, str] | None = None,
+        workspace_env_visibility: dict[str, bool] | None = None,
         workspace_mounts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         if not provider_session_id:
             return None
         self._require_runtime_manager()
         json_payload: dict[str, Any] | None = None
-        if workspace_env is not None or workspace_mounts is not None:
+        if (
+            workspace_env is not None
+            or workspace_env_visibility is not None
+            or workspace_mounts is not None
+        ):
             json_payload = {}
             if workspace_env is not None:
                 json_payload["workspace_env"] = workspace_env
+            if workspace_env_visibility is not None:
+                json_payload["workspace_env_visibility"] = workspace_env_visibility
             if workspace_mounts is not None:
                 json_payload["workspace_mounts"] = workspace_mounts
         return await self._runtime_manager_request(
@@ -1241,17 +1248,23 @@ class UserSpaceRuntimeService:
         start = await self.start_runtime_session(workspace_id, user_id)
         if active:
             active_session = self._to_runtime_session(active)
-            workspace_env = await userspace_service.get_workspace_runtime_environment(
-                workspace_id
-            )
-            workspace_mounts = (
-                await userspace_service.resolve_workspace_mounts_for_runtime(
-                    workspace_id
+            workspace_env, workspace_env_visibility, workspace_mounts = (
+                await asyncio.gather(
+                    userspace_service.get_workspace_runtime_environment(
+                        workspace_id
+                    ),
+                    userspace_service.get_workspace_runtime_environment_visibility(
+                        workspace_id
+                    ),
+                    userspace_service.resolve_workspace_mounts_for_runtime(
+                        workspace_id
+                    ),
                 )
             )
             provider_restart = await self._runtime_provider_restart_devserver(
                 active_session.provider_session_id,
                 workspace_env=workspace_env,
+                workspace_env_visibility=workspace_env_visibility,
                 workspace_mounts=workspace_mounts,
             )
             if provider_restart:
@@ -1318,12 +1331,16 @@ class UserSpaceRuntimeService:
         session = self._to_runtime_session(active)
         if session.state not in {"running", "starting"}:
             return
-        workspace_env = await userspace_service.get_workspace_runtime_environment(
-            workspace_id
+        workspace_env, workspace_env_visibility = await asyncio.gather(
+            userspace_service.get_workspace_runtime_environment(workspace_id),
+            userspace_service.get_workspace_runtime_environment_visibility(
+                workspace_id
+            ),
         )
         await self._runtime_provider_restart_devserver(
             session.provider_session_id,
             workspace_env=workspace_env,
+            workspace_env_visibility=workspace_env_visibility,
         )
 
     async def _persist_runtime_mount_refresh_result(

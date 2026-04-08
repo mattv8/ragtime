@@ -28,114 +28,65 @@ from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.git import create_repository, parse_git_url
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
-    USERSPACE_MOUNT_WATCH_JITTER_SECONDS,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    check_remote_rsync_available,
-    execute_ssh_command,
-    is_rsync_missing_error,
-    preview_ssh_directory_sync,
-    rsync_ssh_directory,
-    ssh_config_from_dict,
-    ssh_tunnel_config_from_dict,
-    sync_ssh_directory,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
+                              USERSPACE_MOUNT_WATCH_JITTER_SECONDS, SSHTunnel,
+                              build_ssh_tunnel_config,
+                              check_remote_rsync_available,
+                              execute_ssh_command, is_rsync_missing_error,
+                              preview_ssh_directory_sync, rsync_ssh_directory,
+                              ssh_config_from_dict,
+                              ssh_tunnel_config_from_dict, sync_ssh_directory)
 from ragtime.indexer.file_utils import build_authenticated_git_url
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
 from ragtime.userspace.models import (
-    ArtifactType,
-    BrowseUserspaceMountSourceRequest,
+    ArtifactType, BrowseUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
-    CreateUserSpaceObjectStorageBucketRequest,
-    CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest,
-    DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse,
-    DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    MountableSource,
-    MountSourceAffectedWorkspace,
-    MountSourceAffectedWorkspacesResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
-    UpdateUserspaceMountSourceRequest,
-    UpdateUserSpaceObjectStorageBucketRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserspaceMountBackend,
-    UserspaceMountSource,
-    UserspaceMountSourceType,
-    UserSpaceObjectStorageBucket,
-    UserSpaceObjectStorageConfig,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotBranch,
-    UserSpaceSnapshotDiffFileSummary,
-    UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceEnvVar,
+    CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest, DeleteUserspaceMountSourceResponse,
+    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse, ExecuteComponentRequest,
+    ExecuteComponentResponse, MountableSource, MountSourceAffectedWorkspace,
+    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
+    ShareAccessMode, SqlitePersistenceMode, SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest, UpdateUserspaceMountSourceRequest,
+    UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest, UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest, UserSpaceFileInfo, UserSpaceFileResponse,
+    UserSpaceLiveDataCheck, UserSpaceLiveDataConnection, UserspaceMountBackend,
+    UserspaceMountSource, UserspaceMountSourceType,
+    UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig,
+    UserSpaceSharedPreviewResponse, UserSpaceSnapshot, UserSpaceSnapshotBranch,
+    UserSpaceSnapshotDiffFileSummary, UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace, UserSpaceWorkspaceEnvVar,
     UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
-    UserSpaceWorkspaceScmExportRequest,
-    UserSpaceWorkspaceScmImportRequest,
-    UserSpaceWorkspaceScmPreviewRequest,
-    UserSpaceWorkspaceScmPreviewResponse,
-    UserSpaceWorkspaceScmStatus,
-    UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceMount,
-    WorkspaceMountBrowseRequest,
-    WorkspaceMountBrowseResponse,
-    WorkspaceMountDirectoryEntry,
-    WorkspaceMountSyncMode,
-    WorkspaceMountSyncPreviewRequest,
-    WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest,
-    WorkspaceMountSyncResponse,
-    WorkspaceScmDirection,
-    WorkspaceScmPreviewState,
-    WorkspaceScmProvider,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+    UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember, WorkspaceMount, WorkspaceMountBrowseRequest,
+    WorkspaceMountBrowseResponse, WorkspaceMountDirectoryEntry,
+    WorkspaceMountSyncMode, WorkspaceMountSyncPreviewRequest,
+    WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest,
+    WorkspaceMountSyncResponse, WorkspaceScmDirection,
+    WorkspaceScmPreviewState, WorkspaceScmProvider,
+    WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -2271,9 +2222,8 @@ class UserSpaceService:
                     ),
                 )
                 try:
-                    from ragtime.userspace.runtime_service import (
-                        userspace_runtime_service,
-                    )
+                    from ragtime.userspace.runtime_service import \
+                        userspace_runtime_service
 
                     await userspace_runtime_service.bump_workspace_generation(
                         workspace_id,
@@ -2299,7 +2249,8 @@ class UserSpaceService:
                 allow_destructive_auto_sync_approval=True,
             )
             try:
-                from ragtime.userspace.runtime_service import userspace_runtime_service
+                from ragtime.userspace.runtime_service import \
+                    userspace_runtime_service
 
                 await userspace_runtime_service.bump_workspace_generation(
                     workspace_id,
@@ -6331,6 +6282,23 @@ class UserSpaceService:
         env_map.update(self._build_object_storage_runtime_env(workspace_id))
         return env_map
 
+    async def get_workspace_runtime_environment_visibility(
+        self,
+        workspace_id: str,
+    ) -> dict[str, bool]:
+        db = await get_db()
+        rows = await self._workspace_env_var_model(db).find_many(
+            where={"workspaceId": workspace_id},
+            order={"key": "asc"},
+        )
+        visibility: dict[str, bool] = {}
+        for row in rows:
+            key = str(getattr(row, "key", "") or "").strip()
+            if not key:
+                continue
+            visibility[key] = bool(str(getattr(row, "value", "") or ""))
+        return visibility
+
     # ------------------------------------------------------------------
     # Workspace Mounts
     # ------------------------------------------------------------------
@@ -6782,7 +6750,8 @@ class UserSpaceService:
         mount_id: str,
     ) -> str | None:
         try:
-            from ragtime.userspace.runtime_service import userspace_runtime_service
+            from ragtime.userspace.runtime_service import \
+                userspace_runtime_service
 
             return await userspace_runtime_service.refresh_workspace_mount_after_sync(
                 workspace_id,
@@ -11336,13 +11305,11 @@ class UserSpaceService:
         filename: str,
     ) -> "SqliteImportResponse":
         from ragtime.userspace.models import SqliteImportResponse
-        from ragtime.userspace.sqlite_import import (
-            _MAX_IMPORT_SIZE_BYTES,
-            SqlImportResult,
-            detect_binary_pg_dump,
-            detect_sql_dialect,
-            import_sql_to_sqlite,
-        )
+        from ragtime.userspace.sqlite_import import (_MAX_IMPORT_SIZE_BYTES,
+                                                     SqlImportResult,
+                                                     detect_binary_pg_dump,
+                                                     detect_sql_dialect,
+                                                     import_sql_to_sqlite)
 
         workspace = await self._enforce_workspace_access(
             workspace_id, user_id, required_role="editor"

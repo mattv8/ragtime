@@ -47,6 +47,13 @@ class StartSessionRequest(BaseModel):
             "Values are injected server-side into devserver runtime only."
         ),
     )
+    workspace_env_visibility: dict[str, bool] = Field(
+        default_factory=dict,
+        description=(
+            "Workspace environment variable visibility map for agent-facing shells. "
+            "Keys are variable names and values indicate whether a secret value exists."
+        ),
+    )
     workspace_mounts: list[dict[str, Any]] = Field(
         default_factory=list,
         description=(
@@ -114,6 +121,12 @@ class WorkerStartSessionRequest(BaseModel):
     workspace_env: dict[str, str] = Field(
         default_factory=dict,
         description="Workspace env map for devserver injection",
+    )
+    workspace_env_visibility: dict[str, bool] = Field(
+        default_factory=dict,
+        description=(
+            "Workspace env visibility map for agent-facing PTY and exec commands"
+        ),
     )
     workspace_mounts: list[dict[str, Any]] = Field(
         default_factory=list,
@@ -232,6 +245,13 @@ class RuntimeRestartRequest(BaseModel):
     workspace_env: dict[str, str] | None = Field(
         default=None,
         description="If provided, update workspace environment variables before restart",
+    )
+    workspace_env_visibility: dict[str, bool] | None = Field(
+        default=None,
+        description=(
+            "If provided, update the redacted workspace environment visibility view "
+            "used by PTY and terminal exec before restart"
+        ),
     )
     workspace_mounts: list[dict[str, Any]] | None = Field(
         default=None,

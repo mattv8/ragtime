@@ -5679,6 +5679,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             <div className="modal-body">
               <p className="userspace-muted" style={{ marginBottom: 12 }}>
                 Variables are encrypted at rest and injected into the devserver at runtime startup.
+                Terminal and PTY sessions only expose redacted `printenv` and `env` output for configured keys.
                 Reference them as <code>process.env.KEY</code> (Node.js) or <code>os.environ[&quot;KEY&quot;]</code> (Python).
               </p>
               {envVarsLoading ? (

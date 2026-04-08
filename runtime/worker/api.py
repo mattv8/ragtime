@@ -12,35 +12,22 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
-from fastapi import (
-    APIRouter,
-    FastAPI,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (APIRouter, FastAPI, HTTPException, Request, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.responses import Response, StreamingResponse
 
 from runtime.auth import WorkerAuth
-from runtime.manager.models import (
-    RuntimeContentProbeRequest,
-    RuntimeContentProbeResponse,
-    RuntimeExecRequest,
-    RuntimeExecResponse,
-    RuntimeFileReadResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    WorkerHealthResponse,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
-from runtime.worker.sandbox import (
-    SandboxSpec,
-    ensure_sandbox_ready,
-    make_sandbox_preexec,
-    sandbox_env,
-)
+from runtime.manager.models import (RuntimeContentProbeRequest,
+                                    RuntimeContentProbeResponse,
+                                    RuntimeExecRequest, RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    WorkerHealthResponse,
+                                    WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
+from runtime.worker.sandbox import (SandboxSpec, ensure_sandbox_ready,
+                                    make_sandbox_preexec, sandbox_env)
 from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
@@ -384,7 +371,8 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     _write_sandbox_init_file(sandbox_spec)
     shell_command = [shell, "--noprofile", "--init-file", "/tmp/.sandbox_bashrc", "-i"]
 
-    environment = sandbox_env(sandbox_spec)
+    environment = get_worker_service().build_agent_shell_environment(session)
+    environment = sandbox_env(sandbox_spec, environment)
     environment["TERM"] = "xterm-256color"
     # PS1 is set by the init file; PROMPT_COMMAND cleared to prevent
     # any inherited prompt logic from overriding it.
