@@ -12,22 +12,35 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
-from fastapi import (APIRouter, FastAPI, HTTPException, Request, WebSocket,
-                     WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import Response, StreamingResponse
 
 from runtime.auth import WorkerAuth
-from runtime.manager.models import (RuntimeContentProbeRequest,
-                                    RuntimeContentProbeResponse,
-                                    RuntimeExecRequest, RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    WorkerHealthResponse,
-                                    WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
-from runtime.worker.sandbox import (SandboxSpec, ensure_sandbox_ready,
-                                    make_sandbox_preexec, sandbox_env)
+from runtime.manager.models import (
+    RuntimeContentProbeRequest,
+    RuntimeContentProbeResponse,
+    RuntimeExecRequest,
+    RuntimeExecResponse,
+    RuntimeFileReadResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    WorkerHealthResponse,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
+from runtime.worker.sandbox import (
+    SandboxSpec,
+    ensure_sandbox_ready,
+    make_sandbox_preexec,
+    sandbox_env,
+)
 from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
@@ -371,7 +384,8 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     _write_sandbox_init_file(sandbox_spec)
     shell_command = [shell, "--noprofile", "--init-file", "/tmp/.sandbox_bashrc", "-i"]
 
-    environment = get_worker_service().build_agent_shell_environment(session)
+    service = get_worker_service()
+    environment = service.build_agent_process_environment(session)
     environment = sandbox_env(sandbox_spec, environment)
     environment["TERM"] = "xterm-256color"
     # PS1 is set by the init file; PROMPT_COMMAND cleared to prevent
@@ -443,8 +457,14 @@ async def pty(worker_session_id: str, websocket: WebSocket):
         "bash: cannot set terminal process group",
         "bash: no job control in this shell",
     )
+    redaction_tail_length = max(
+        service.workspace_secret_redaction_tail_length(session) - 1,
+        0,
+    )
+    redaction_carry = ""
 
     async def _pump_stream() -> None:
+        nonlocal redaction_carry
         startup_reads = 4  # only filter the first N reads
         while True:
             try:
@@ -467,7 +487,29 @@ async def pty(worker_session_id: str, websocket: WebSocket):
                 text = "".join(lines)
                 if not text:
                     continue
-            await websocket.send_text(json.dumps({"type": "output", "data": text}))
+            if redaction_tail_length > 0:
+                text = redaction_carry + text
+                if len(text) <= redaction_tail_length:
+                    redaction_carry = text
+                    continue
+                output_text = text[:-redaction_tail_length]
+                redaction_carry = text[-redaction_tail_length:]
+            else:
+                output_text = text
+            output_text = service.redact_workspace_secret_output(session, output_text)
+            if output_text:
+                await websocket.send_text(
+                    json.dumps({"type": "output", "data": output_text})
+                )
+        if redaction_carry:
+            output_text = service.redact_workspace_secret_output(
+                session,
+                redaction_carry,
+            )
+            if output_text:
+                await websocket.send_text(
+                    json.dumps({"type": "output", "data": output_text})
+                )
 
     stream_task = asyncio.create_task(_pump_stream())
     try:

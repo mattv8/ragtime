@@ -20,23 +20,35 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
-from runtime.manager.models import (RuntimeContentProbeRequest,
-                                    RuntimeContentProbeResponse,
-                                    RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    WorkerHealthResponse,
-                                    WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
-from runtime.shared import (RUNTIME_BOOTSTRAP_CONFIG_PATH,
-                            RUNTIME_BOOTSTRAP_STAMP_PATH, EntrypointStatus,
-                            RuntimeSessionState, normalize_file_path,
-                            parse_entrypoint_config)
-from runtime.worker.sandbox import (SANDBOX_WORKSPACE_MOUNT, SandboxSpec,
-                                    cleanup_sandbox, ensure_sandbox_ready,
-                                    get_sandbox_spec, materialize_mounts,
-                                    sandbox_diagnostics, spawn_sandboxed)
+from runtime.manager.models import (
+    RuntimeContentProbeRequest,
+    RuntimeContentProbeResponse,
+    RuntimeExecResponse,
+    RuntimeFileReadResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    WorkerHealthResponse,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
+from runtime.shared import (
+    RUNTIME_BOOTSTRAP_CONFIG_PATH,
+    RUNTIME_BOOTSTRAP_STAMP_PATH,
+    EntrypointStatus,
+    RuntimeSessionState,
+    normalize_file_path,
+    parse_entrypoint_config,
+)
+from runtime.worker.sandbox import (
+    SANDBOX_WORKSPACE_MOUNT,
+    SandboxSpec,
+    cleanup_sandbox,
+    ensure_sandbox_ready,
+    get_sandbox_spec,
+    materialize_mounts,
+    sandbox_diagnostics,
+    spawn_sandboxed,
+)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -93,9 +105,7 @@ _AGENT_SHELL_ROOT = Path("/tmp/.ragtime-agent-shell")
 _AGENT_SHELL_BIN_DIR = _AGENT_SHELL_ROOT / "bin"
 _AGENT_SHELL_ENV_METADATA_NAME = "workspace-env.json"
 _AGENT_SHELL_ENV_VIEW_NAME = "redacted_env_view.py"
-_AGENT_SHELL_INTERNAL_ENV_KEYS = (
-    "RAGTIME_REDACTED_ENV_FILE",
-)
+_AGENT_SHELL_INTERNAL_ENV_KEYS = ("RAGTIME_REDACTED_ENV_FILE",)
 _RAGTIME_REDACTED_ENV_FILE_VAR = "RAGTIME_REDACTED_ENV_FILE"
 _RAGTIME_REDACTED_ENV_SENTINEL_SET = "__RAGTIME_SECRET_REDACTED__"
 _RAGTIME_REDACTED_ENV_SENTINEL_MISSING = "__RAGTIME_SECRET_MISSING__"
@@ -299,8 +309,7 @@ class WorkerService:
     @staticmethod
     def _agent_shell_host_metadata_path(spec: SandboxSpec) -> Path:
         return (
-            WorkerService._agent_shell_host_root(spec)
-            / _AGENT_SHELL_ENV_METADATA_NAME
+            WorkerService._agent_shell_host_root(spec) / _AGENT_SHELL_ENV_METADATA_NAME
         )
 
     @staticmethod
@@ -370,11 +379,11 @@ class WorkerService:
             "        items[key] = sentinel\n"
             "    return items\n"
             "\n"
-            "def actual_env_items():\n"
+            "def actual_env_items(redacted):\n"
             "    return {\n"
             "        key: value\n"
             "        for key, value in os.environ.items()\n"
-            "        if key not in INTERNAL_KEYS\n"
+            "        if key not in INTERNAL_KEYS and key not in redacted\n"
             "    }\n"
             "\n"
             "def emit_listing(entries, null_sep=False):\n"
@@ -393,24 +402,22 @@ class WorkerService:
             "        null_sep = True\n"
             "        args = args[1:]\n"
             "    redacted = load_redacted_items()\n"
-            "    actual = actual_env_items()\n"
+            "    actual = actual_env_items(redacted)\n"
             "    if args:\n"
             "        found_all = True\n"
             "        outputs = []\n"
             "        for key in args:\n"
-            "            if key in actual:\n"
-            "                outputs.append(actual[key])\n"
-            "                continue\n"
             "            if key in redacted:\n"
             "                outputs.append(redacted[key])\n"
+            "                continue\n"
+            "            if key in actual:\n"
+            "                outputs.append(actual[key])\n"
             "                continue\n"
             "            found_all = False\n"
             "        emit_listing(outputs, null_sep=null_sep)\n"
             "        raise SystemExit(0 if found_all else 1)\n"
             "    entries = [f'{key}={value}' for key, value in actual.items()]\n"
             "    for key in sorted(redacted):\n"
-            "        if key in actual:\n"
-            "            continue\n"
             "        entries.append(f'{key}={redacted[key]}')\n"
             "    emit_listing(entries, null_sep=null_sep)\n"
             "\n"
@@ -419,11 +426,9 @@ class WorkerService:
             "        os.execv(SYSTEM_ENV, [SYSTEM_ENV, *args])\n"
             "    null_sep = bool(args and args[0] in ('-0', '--null'))\n"
             "    redacted = load_redacted_items()\n"
-            "    actual = actual_env_items()\n"
+            "    actual = actual_env_items(redacted)\n"
             "    entries = [f'{key}={value}' for key, value in actual.items()]\n"
             "    for key in sorted(redacted):\n"
-            "        if key in actual:\n"
-            "            continue\n"
             "        entries.append(f'{key}={redacted[key]}')\n"
             "    emit_listing(entries, null_sep=null_sep)\n"
             "\n"
@@ -445,8 +450,7 @@ class WorkerService:
         for wrapper_name in ("printenv", "env"):
             wrapper_path = bin_dir / wrapper_name
             wrapper_path.write_text(
-                "#!/bin/sh\n"
-                f"exec /usr/bin/python3 {wrapper_target} \"$@\"\n",
+                "#!/bin/sh\n" f'exec /usr/bin/python3 {wrapper_target} "$@"\n',
                 encoding="utf-8",
             )
             wrapper_path.chmod(0o755)
@@ -462,6 +466,44 @@ class WorkerService:
                 _AGENT_SHELL_ROOT / _AGENT_SHELL_ENV_METADATA_NAME
             ),
         }
+
+    def build_agent_process_environment(self, session: WorkerSession) -> dict[str, str]:
+        environment = dict(session.workspace_env)
+        environment.update(self._object_storage_env_overrides.get(session.id, {}))
+        environment.update(self.build_agent_shell_environment(session))
+        return environment
+
+    @staticmethod
+    def _workspace_secret_redaction_pairs(
+        session: WorkerSession,
+    ) -> list[tuple[str, str]]:
+        seen_values: set[str] = set()
+        pairs: list[tuple[str, str]] = []
+        for value in session.workspace_env.values():
+            if not value or value in seen_values:
+                continue
+            seen_values.add(value)
+            pairs.append((value, _RAGTIME_REDACTED_ENV_SENTINEL_SET))
+        pairs.sort(key=lambda item: len(item[0]), reverse=True)
+        return pairs
+
+    def redact_workspace_secret_output(
+        self,
+        session: WorkerSession,
+        text: str,
+    ) -> str:
+        if not text:
+            return text
+        redacted_text = text
+        for secret_value, sentinel in self._workspace_secret_redaction_pairs(session):
+            redacted_text = redacted_text.replace(secret_value, sentinel)
+        return redacted_text
+
+    def workspace_secret_redaction_tail_length(self, session: WorkerSession) -> int:
+        pairs = self._workspace_secret_redaction_pairs(session)
+        if not pairs:
+            return 0
+        return max(len(secret_value) for secret_value, _ in pairs)
 
     @staticmethod
     def _workspace_object_storage_config_path(workspace_root: Path) -> Path:
@@ -2208,7 +2250,7 @@ class WorkerService:
                 sandbox_cwd = SANDBOX_WORKSPACE_MOUNT
 
             sandbox_spec = session.sandbox_spec
-            agent_shell_env = self.build_agent_shell_environment(session)
+            agent_process_env = self.build_agent_process_environment(session)
 
         timeout_seconds = max(1, min(timeout_seconds, 120))
         timed_out = False
@@ -2219,7 +2261,7 @@ class WorkerService:
                 sandbox_spec,
                 ["sh", "-lc", command],
                 cwd=sandbox_cwd,
-                env=agent_shell_env,
+                env=agent_process_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -2247,8 +2289,14 @@ class WorkerService:
 
         exit_code = process.returncode if process.returncode is not None else -1
 
-        stdout_text = stdout_bytes.decode("utf-8", errors="replace")
-        stderr_text = stderr_bytes.decode("utf-8", errors="replace")
+        stdout_text = self.redact_workspace_secret_output(
+            session,
+            stdout_bytes.decode("utf-8", errors="replace"),
+        )
+        stderr_text = self.redact_workspace_secret_output(
+            session,
+            stderr_bytes.decode("utf-8", errors="replace"),
+        )
 
         max_out = self._EXEC_MAX_OUTPUT_BYTES
         if len(stdout_text) > max_out or len(stderr_text) > max_out:

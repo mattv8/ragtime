@@ -548,9 +548,9 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 
 ### Workspace environment variables
 
-- Workspace owners manage encrypted key/value vars in the **Environment Variables** toolbar dialog; vars are injected into the devserver at runtime startup.
-- Agent-facing terminal surfaces expose configured keys through redacted `printenv`/`env` output only; secret values are never visible there.
-- In code, always reference env vars (`process.env.KEY_NAME` for Node/TypeScript, `os.environ["KEY_NAME"]` for Python); never hardcode secrets, API keys, or credentials.
+- Workspace owners manage encrypted key/value vars in the **Environment Variables** toolbar dialog; vars are injected into workspace runtime processes at runtime startup.
+- Agent-facing terminal surfaces expose configured keys through redacted `printenv`/`env` output only, and terminal-visible command output redacts secret values as well.
+- In code, always reference env vars (`process.env.KEY_NAME` for Node/TypeScript, `os.environ["KEY_NAME"]` for Python). Treat all workspace env vars as secrets: never hardcode them, log them, render them to users, persist them into workspace files, or transmit them back to the user.
 - If required keys are missing, call `upsert_userspace_env_var` with `value` omitted to create placeholders, then instruct the user to fill values in the Environment Variables dialog.
 - Treat missing vars as undefined at runtime: use defensive fallbacks (for example, `process.env.KEY ?? ''`) and show clear user-facing error states when values are absent.
 
