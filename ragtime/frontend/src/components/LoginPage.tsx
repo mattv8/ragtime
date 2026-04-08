@@ -11,7 +11,7 @@ interface LoginPageProps {
 
 function resolveAuthMethods(authStatus: AuthStatus): AuthMethodStatus[] {
   if (authStatus.auth_methods && authStatus.auth_methods.length > 0) {
-    return authStatus.auth_methods;
+    return authStatus.auth_methods.filter((method) => method.configured && method.key !== 'local');
   }
 
   const methods: AuthMethodStatus[] = [];
@@ -25,15 +25,6 @@ function resolveAuthMethods(authStatus: AuthStatus): AuthMethodStatus[] {
       detail: 'Configured',
     });
   }
-
-  methods.push({
-    key: 'local',
-    label: 'Local Admin',
-    configured: authStatus.local_admin_enabled,
-    available: authStatus.local_admin_enabled,
-    status: authStatus.local_admin_enabled ? 'available' : 'not_configured',
-    detail: authStatus.local_admin_enabled ? 'Ready' : 'Not configured',
-  });
 
   return methods;
 }
@@ -98,7 +89,6 @@ export function LoginPage({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
         />
 
         <div className="login-footer">
-          <p className="login-info">Quick connection check</p>
           <ul className="login-auth-method-list" aria-live="polite">
             {authMethods.map((method) => (
               <li className="login-auth-method-item" key={method.key}>
@@ -107,7 +97,6 @@ export function LoginPage({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
                   aria-hidden="true"
                 />
                 <span className="login-auth-method-label">{method.label}</span>
-                <span className="login-auth-method-detail">{method.detail || method.status}</span>
               </li>
             ))}
           </ul>
