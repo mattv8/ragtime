@@ -266,6 +266,11 @@ def build_workspace_scm_setup_prompt(
         "Variables dialog, run validate_userspace_code on every changed source "
         "file, and create a snapshot when the workspace is in a runnable state."
     )
+    parts.append(
+        "If runtime bootstrap or dependency installation is failing, diagnose and "
+        "stabilize that first before spending time on deeper app-specific feature "
+        "migration. A runnable devserver takes priority over secondary compatibility work."
+    )
 
     replit_features = [
         item.strip() for item in (detected_replit_features or []) if item

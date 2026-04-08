@@ -341,7 +341,9 @@ _SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
 _SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
 
 _HIDDEN_DIRS = frozenset({".git", "node_modules", "__pycache__", ".ragtime", "dist"})
-_AGENT_WRITABLE_RAGTIME_FILES = frozenset({"runtime-entrypoint.json"})
+_AGENT_WRITABLE_RAGTIME_FILES = frozenset(
+    {"runtime-entrypoint.json", "runtime-bootstrap.json"}
+)
 _AGENT_WRITABLE_RAGTIME_PREFIXES = ("db/migrations/",)
 
 
