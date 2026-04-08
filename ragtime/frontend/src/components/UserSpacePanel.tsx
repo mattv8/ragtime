@@ -251,6 +251,7 @@ function getLanguageExtensionForPath(filePath: string) {
 const LAST_WORKSPACE_COOKIE_PREFIX = 'userspace_last_workspace_id_';
 const LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 const USERSPACE_LAYOUT_COOKIE_PREFIX = 'userspace_layout_';
+const USERSPACE_FULLSCREEN_COOKIE_PREFIX = 'userspace_fullscreen_';
 const USERSPACE_CODEMIRROR_BASIC_SETUP = {
   lineNumbers: true,
   foldGutter: true,
@@ -271,6 +272,10 @@ function getLastWorkspaceCookieName(userId: string): string {
 
 function getUserSpaceLayoutCookieName(userId: string): string {
   return `${USERSPACE_LAYOUT_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
+}
+
+function getUserSpaceFullscreenCookieName(userId: string): string {
+  return `${USERSPACE_FULLSCREEN_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
 }
 
 function getCookieValue(name: string): string | null {
@@ -379,6 +384,14 @@ function readStoredUserSpaceLayout(cookieName: string): StoredUserSpaceLayout | 
   } catch {
     return null;
   }
+}
+
+function readStoredUserSpaceFullscreen(cookieName: string): boolean {
+  const raw = getCookieValue(cookieName);
+  if (!raw) return false;
+
+  const normalized = raw.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true';
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -672,6 +685,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const statusOverlayDismissedSignatureRef = useRef<string | null>(null);
   const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
   const userSpaceLayoutCookieName = useMemo(() => getUserSpaceLayoutCookieName(currentUser.id), [currentUser.id]);
+  const userSpaceFullscreenCookieName = useMemo(() => getUserSpaceFullscreenCookieName(currentUser.id), [currentUser.id]);
 
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(180);
@@ -689,6 +703,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const prevLeftPaneFraction = useRef(0.5);
   const prevEditorFraction = useRef(0.6);
   const skipNextLayoutPersistRef = useRef(true);
+  const skipNextFullscreenPersistRef = useRef(true);
 
   const SIDEBAR_COLLAPSE_THRESHOLD = 60;
   const MAIN_COLLAPSE_LEFT_THRESHOLD = 0.08;
@@ -849,6 +864,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     sidebarWidth,
     userSpaceLayoutCookieName,
   ]);
+
+  useEffect(() => {
+    skipNextFullscreenPersistRef.current = true;
+    const stored = readStoredUserSpaceFullscreen(userSpaceFullscreenCookieName);
+    setIsFullscreen(stored);
+    onFullscreenChange?.(stored);
+  }, [onFullscreenChange, userSpaceFullscreenCookieName]);
+
+  useEffect(() => {
+    if (skipNextFullscreenPersistRef.current) {
+      skipNextFullscreenPersistRef.current = false;
+      return;
+    }
+    setSessionCookieValue(userSpaceFullscreenCookieName, isFullscreen ? '1' : '0');
+  }, [isFullscreen, userSpaceFullscreenCookieName]);
   const [editingWorkspaceNameId, setEditingWorkspaceNameId] = useState<string | null>(null);
   const [workspaceNameDraft, setWorkspaceNameDraft] = useState('');
 
