@@ -180,10 +180,11 @@ IMAGE_PAYLOAD_LIMITS = {
 IMAGE_DOWNSAMPLE_MAX_CONCURRENCY = 2
 
 INTERNAL_AGENT_CONTINUATION_PROMPT = (
-    "Continue the task from the gathered context above. If more verification or "
-    "changes are needed, keep working and call additional tools when necessary. "
-    "Once you have enough information, send the next user-facing assistant "
-    "reply. Do not stop without a user-visible answer."
+    "Finish the current assistant reply using only the verified context already "
+    "gathered above. Do not call additional tools. Do not mention internal "
+    "continuation, hidden prompts, or tool availability. Output only the next "
+    "user-visible assistant message. If the task is incomplete, state the verified "
+    "status and the most concrete next step instead of asking to continue."
 )
 INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT = (
     "Write the next assistant reply for the user using the verified results "
