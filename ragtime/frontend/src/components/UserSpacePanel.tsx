@@ -264,6 +264,7 @@ const USERSPACE_CODEMIRROR_BASIC_SETUP = {
 };
 const USERSPACE_CHANGED_FILE_STATE_MIN_INTERVAL_MS = 1000;
 const USERSPACE_FILE_TREE_POLL_INTERVAL_MS = 5000;
+const USERSPACE_BROWSER_AUTH_REFRESH_BUFFER_MS = 60_000;
 const SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES = 20;
 
 function getLastWorkspaceCookieName(userId: string): string {
@@ -507,7 +508,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
   const [previewExecuting, setPreviewExecuting] = useState(false);
   const [previewRefreshCounter, setPreviewRefreshCounter] = useState(0);
-  const [previewCapabilityToken, setPreviewCapabilityToken] = useState<string | null>(null);
+  const [previewAuthorizationReady, setPreviewAuthorizationReady] = useState(false);
+  const [previewAuthorizationPending, setPreviewAuthorizationPending] = useState(false);
   const [runtimeStatus, setRuntimeStatus] = useState<UserSpaceRuntimeStatusResponse | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [activeRightTab, setActiveRightTab] = useState<'preview' | 'console'>('preview');
@@ -648,10 +650,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [activeSnapshotFileDiffBeforeLabel, setActiveSnapshotFileDiffBeforeLabel] = useState('Snapshot');
   const [activeSnapshotFileDiffAfterLabel, setActiveSnapshotFileDiffAfterLabel] = useState('Current Workspace');
 
-  const issueWorkspaceCapabilityToken = useCallback(async (workspaceId: string, capabilities: string[]): Promise<string> => {
-    const response = await api.issueUserSpaceCapabilityToken(workspaceId, capabilities);
-    return response.token;
-  }, []);
+  const previewAuthorizationRefreshTimerRef = useRef<number | null>(null);
   const toolPickerRef = useRef<HTMLDivElement>(null);
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
   const selectedFilePathRef = useRef(selectedFilePath);
@@ -686,6 +685,26 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
   const userSpaceLayoutCookieName = useMemo(() => getUserSpaceLayoutCookieName(currentUser.id), [currentUser.id]);
   const userSpaceFullscreenCookieName = useMemo(() => getUserSpaceFullscreenCookieName(currentUser.id), [currentUser.id]);
+
+  const authorizeBrowserSurfaces = useCallback(async (workspaceId: string, surfaces: Array<'preview' | 'collab' | 'runtime_pty'>) => {
+    return api.authorizeUserSpaceBrowserSurfaces(workspaceId, surfaces);
+  }, []);
+
+  const authorizePreviewSurface = useCallback(async (workspaceId: string): Promise<string | null> => {
+    setPreviewAuthorizationPending(true);
+    try {
+      const response = await authorizeBrowserSurfaces(workspaceId, ['preview']);
+      const previewAuthorization = response.authorizations.find((authorization) => authorization.surface === 'preview');
+      const isAuthorized = Boolean(previewAuthorization);
+      setPreviewAuthorizationReady(isAuthorized);
+      return previewAuthorization?.expires_at ?? null;
+    } catch (err) {
+      setPreviewAuthorizationReady(false);
+      throw err;
+    } finally {
+      setPreviewAuthorizationPending(false);
+    }
+  }, [authorizeBrowserSurfaces]);
 
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(180);
@@ -2695,30 +2714,62 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   useEffect(() => {
     if (!activeWorkspaceId) {
-      setPreviewCapabilityToken(null);
+      setPreviewAuthorizationReady(false);
+      setPreviewAuthorizationPending(false);
+      return;
+    }
+
+    setPreviewAuthorizationReady(false);
+    setPreviewAuthorizationPending(true);
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
+    if (previewAuthorizationRefreshTimerRef.current !== null) {
+      window.clearTimeout(previewAuthorizationRefreshTimerRef.current);
+      previewAuthorizationRefreshTimerRef.current = null;
+    }
+
+    if (!activeWorkspaceId) {
       return;
     }
 
     let cancelled = false;
-    const loadPreviewCapability = async () => {
+    const authorizeAndScheduleRefresh = async () => {
       try {
-        const token = await issueWorkspaceCapabilityToken(activeWorkspaceId, ['userspace.preview_http', 'userspace.preview_ws']);
-        if (!cancelled) {
-          setPreviewCapabilityToken(token);
+        const expiresAt = await authorizePreviewSurface(activeWorkspaceId);
+        if (cancelled || !expiresAt) {
+          return;
         }
+
+        const expiresAtMs = new Date(expiresAt).getTime();
+        if (!Number.isFinite(expiresAtMs)) {
+          return;
+        }
+
+        const refreshDelayMs = Math.max(
+          1_000,
+          expiresAtMs - Date.now() - USERSPACE_BROWSER_AUTH_REFRESH_BUFFER_MS,
+        );
+        previewAuthorizationRefreshTimerRef.current = window.setTimeout(() => {
+          previewAuthorizationRefreshTimerRef.current = null;
+          void authorizeAndScheduleRefresh();
+        }, refreshDelayMs);
       } catch (err) {
         if (!cancelled) {
-          setPreviewCapabilityToken(null);
           setError(err instanceof Error ? err.message : 'Failed to authorize preview access');
         }
       }
     };
 
-    void loadPreviewCapability();
+    void authorizeAndScheduleRefresh();
     return () => {
       cancelled = true;
+      if (previewAuthorizationRefreshTimerRef.current !== null) {
+        window.clearTimeout(previewAuthorizationRefreshTimerRef.current);
+        previewAuthorizationRefreshTimerRef.current = null;
+      }
     };
-  }, [activeWorkspaceId, issueWorkspaceCapabilityToken, previewRefreshCounter]);
+  }, [activeWorkspaceId, authorizePreviewSurface, previewRefreshCounter]);
 
   // Reset reconnect attempts when workspace or file changes (not on reconnect nonce)
   useEffect(() => {
@@ -2762,7 +2813,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
     const connectCollab = async () => {
       try {
-        await issueWorkspaceCapabilityToken(activeWorkspaceId, ['userspace.collab_connect']);
+        await authorizeBrowserSurfaces(activeWorkspaceId, ['collab']);
         if (!reconnectEnabled) {
           return;
         }
@@ -2881,7 +2932,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         collabSocketRef.current = null;
       }
     };
-  }, [activeWorkspaceId, loadWorkspaceData, selectedFilePath, collabReconnectNonce, issueWorkspaceCapabilityToken]);
+  }, [activeWorkspaceId, authorizeBrowserSurfaces, loadWorkspaceData, selectedFilePath, collabReconnectNonce]);
 
   useEffect(() => {
     if (terminalReconnectTimerRef.current !== null) {
@@ -2973,7 +3024,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
     const connectTerminal = async () => {
       try {
-        await issueWorkspaceCapabilityToken(activeWorkspaceId, ['userspace.runtime_pty']);
+        await authorizeBrowserSurfaces(activeWorkspaceId, ['runtime_pty']);
         if (!reconnectEnabled) {
           return;
         }
@@ -3061,7 +3112,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       terminalRef.current?.dispose();
       terminalRef.current = null;
     };
-  }, [activeRightTab, activeWorkspaceId, canEditWorkspace, runtimeDisplayState, terminalReconnectNonce, issueWorkspaceCapabilityToken]);
+  }, [activeRightTab, activeWorkspaceId, authorizeBrowserSurfaces, canEditWorkspace, runtimeDisplayState, terminalReconnectNonce]);
 
   useEffect(() => {
     const socket = collabSocketRef.current;
@@ -5340,10 +5391,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 workspaceFiles={previewWorkspaceFiles}
                 liveDataConnections={previewLiveDataConnections}
                 runtimePreviewUrl={
-                  activeWorkspaceId && previewCapabilityToken
+                  activeWorkspaceId && previewAuthorizationReady
                     ? api.getUserSpaceRuntimePreviewUrl(activeWorkspaceId, '')
                     : undefined
                 }
+                runtimeAuthorizationPending={Boolean(activeWorkspaceId) && previewAuthorizationPending}
                 runtimeAvailable={runtimeStatus?.devserver_running ?? false}
                 runtimeError={runtimeStatus?.last_error ?? undefined}
                 previewInstanceKey={`${activeWorkspaceId ?? ''}:${previewRefreshCounter}`}
