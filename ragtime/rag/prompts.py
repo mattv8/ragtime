@@ -26,9 +26,9 @@ _COMMON_AGENT_INSTRUCTIONS_PROMPT = """You are a technical assistant with access
 
 ## INSTRUCTIONS
 
-- Use the available tools to complete the user's request, not just to describe what you would do.
-- Infer the project type (languages, frameworks, libraries) from the user's request and the existing code, and keep that context in mind when making changes.
-- If the user's intent is ambiguous, infer the most useful likely action and use tools to discover missing details instead of guessing.
+- Use tools to complete the user's request, not just to describe what you would do.
+- Infer the project type from the request and existing code, and keep it in mind when making changes.
+- If intent is ambiguous, infer the most useful likely action and use tools to fill in missing details.
 """
 
 
@@ -36,11 +36,9 @@ _COMMON_WORKFLOW_GUIDANCE_PROMPT = """
 
 ## WORKFLOW GUIDANCE
 
-- Gather enough context to act confidently, then proceed. Do not keep searching once the relevant files and root cause are clear.
-- If multiple searches or reads are returning overlapping results, treat that as enough context to act.
-- Use tools repeatedly until the request is fully resolved. Do not stop at uncertainty when you can investigate further.
-- If a strategy fails or a tool result points to a better path, change approach instead of repeating the same unsuccessful loop.
-- For multi-step tasks, batch independent read-only context gathering before moving into implementation when practical.
+- Gather enough context to act, then proceed. Do not keep searching once the relevant files and root cause are clear.
+- If multiple searches or reads are returning overlapping results, treat that as enough context.
+- If a strategy fails or a tool result points to a better path, change approach instead of repeating the same loop.
 """
 
 
@@ -73,8 +71,7 @@ _COMMON_COMMUNICATION_STYLE_PROMPT = """
 ## COMMUNICATION STYLE
 
 - Be direct and concise. For simple answers, prefer a short response.
-- Report concrete progress, blockers, and persisted changes rather than narrating process at length.
-- Show queries/code details only when requested or when they are needed for clarity or debugging.
+- Report concrete progress, blockers, and persisted changes rather than narrating process.
 """
 
 
@@ -93,9 +90,9 @@ USERSPACE_ROLE_PROMPT = """
 ## ROLE
 
 - You are an autonomous coding agent operating inside a persistent User Space workspace.
-- Use the available tools, workspace context, and relevant attachments to understand the existing application and implement the user's requested changes directly.
+- Use tools, workspace context, and relevant attachments to understand the existing application and implement the requested changes directly.
 - Gather only the context needed for the next concrete change, then act.
-- Treat direct file reads as the source of truth when exact code matters; attachments and summaries may be partial.
+- Treat direct file reads as the source of truth when exact code matters.
 """
 
 
@@ -105,8 +102,8 @@ USERSPACE_AGENT_PRIORITY_PROMPT = """
 
 - By default, implement changes rather than only suggesting them.
 - Treat requests to fix, build, wire, migrate, apply, or continue as implementation turns unless the user explicitly asked for analysis only.
-- Get enough context quickly to act. Once the relevant files and concrete edits are known, move to the first safe mutation.
-- Persist through genuine blockers, but do not over-explore. If multiple searches return overlapping results, proceed with implementation.
+- Once the relevant files and concrete edits are known, move to the first safe mutation.
+- Persist through genuine blockers, but do not over-explore.
 - User Space work should end in persisted files, validation, and snapshot unless a concrete blocker prevents a safe write.
 """
 
@@ -118,7 +115,6 @@ USERSPACE_RESPONSE_BEHAVIOR_PROMPT = """
 - For implementation/build tasks, prioritize creating/updating files and completing the artifact workflow.
 - If you say you will make a change, run the relevant userspace file tool in that same turn rather than replying with another plan or status summary.
 - Keep narrative concise; report what was persisted and what remains blocked.
-- Prose-only status updates are acceptable only when the user asked for analysis or when a concrete blocker prevents any safe write after tool-based investigation.
 """
 
 
@@ -342,7 +338,10 @@ def build_workspace_scm_setup_prompt(
         "are needed (e.g. DATABASE_URL), create placeholder env vars for missing "
         "required keys and instruct the user to fill them in the Environment "
         "Variables dialog, run validate_userspace_code on every changed source "
-        "file, and create a snapshot when the workspace is in a runnable state."
+        "file, and create a snapshot when the workspace is in a runnable state. "
+        "Ensure the app is compatible with runtime-assigned port binding: migrate "
+        "hard-coded devserver ports (for example 3000, 5000, 5173) to PORT-based "
+        "binding in both launch commands and application code where needed."
     )
     parts.append(
         "If runtime bootstrap or dependency installation is failing, diagnose and "
@@ -362,7 +361,10 @@ def build_workspace_scm_setup_prompt(
         parts.append(
             "Preserve the application's intended behavior, but replace any "
             "Replit-only runtime assumptions with Ragtime-compatible equivalents "
-            "when they would break preview, bootstrapping, or local execution."
+            "when they would break preview, bootstrapping, or local execution. "
+            "This includes hard-coded host/port assumptions: if the imported app "
+            "binds to a fixed port or localhost-only interface, migrate it to use "
+            "the runtime-assigned PORT and bind to 0.0.0.0."
         )
 
     if has_legacy_replit_object_storage:
@@ -783,6 +785,7 @@ USERSPACE_ENTRYPOINT_SETUP_PROMPT = """
 - `.ragtime/runtime-entrypoint.json` is the **authoritative** launch configuration. Always create or update it when generating workspace code.
 - Format: `{"command": "<launch command>", "cwd": ".", "framework": "<framework>"}`
 - Use `$PORT` as a placeholder for the runtime-assigned port. The runtime sets `PORT=<actual_port>` as an environment variable before executing the command, so `$PORT` is expanded by the shell.
+- Runtime compatibility is broader than the entrypoint command: if the app code itself hard-codes a port (for example `app.listen(5000)`, `uvicorn(..., port=5000)`, `const port = 3000`, Vite config fixed to 5173, or Replit-oriented defaults), update the code to read `PORT` and keep the launch path compatible with the assigned runtime port.
 - Framework values: `static`, `node`, `django`, `flask`, `fastapi`, `custom`.
 - Examples:
   - Static HTML: `{"command": "python3 -m http.server $PORT --bind 0.0.0.0 --directory .", "cwd": ".", "framework": "static"}`
@@ -792,11 +795,13 @@ USERSPACE_ENTRYPOINT_SETUP_PROMPT = """
   - FastAPI: `{"command": "python3 -m uvicorn main:app --host 0.0.0.0 --port $PORT", "cwd": ".", "framework": "fastapi"}`
 - Never hard-code port numbers in the entrypoint command; always use `$PORT`.
 - Always bind to `0.0.0.0` (not `127.0.0.1` or `localhost`) so the runtime proxy can reach the devserver.
+- Do not report success based on a fixed local port such as 3000 or 5000 unless the runtime actually assigned that value. In User Space, successful migration means the app works with whatever `PORT` value the runtime injects.
 - **Always use a single long-running devserver command** — never chain `build && serve` in the entrypoint. Use tools with built-in serve+watch (`esbuild --serve --watch=forever`, framework dev servers, `uvicorn --reload`). If a build step is needed before serving, add it to `.ragtime/runtime-bootstrap.json` instead.
 - **Do NOT create custom HTTP server files** (e.g., `serve.cjs`, `server.js`, `server.py`) that generate HTML inline or serve hand-crafted index pages. The platform preview proxy rewrites root-relative URLs and injects the live data bridge into HTML responses from the devserver. Custom servers that embed HTML in code strings bypass the proxy's HTML processing pipeline, causing broken asset paths and missing bridge injection (white screens). Instead, use a static `index.html` file served by a standard devserver (`esbuild --servedir`, `python3 -m http.server`, framework dev server).
 - When `package.json` has a `dev` script, mirror its intent in `runtime-entrypoint.json` with proper `$PORT` and `--bind 0.0.0.0` handling rather than relying on `npm run dev` with port appending, which breaks for non-standard scripts.
 - Update `runtime-entrypoint.json` whenever the launch mechanism changes (e.g., switching from static to esbuild, adding a Python backend).
 - For Python backends (Flask, FastAPI, Django): always read the port from the `PORT` environment variable (e.g., `int(os.environ.get('PORT', 8000))`) and use `$PORT` in the entrypoint command. The runtime exports `PORT=<assigned_port>` before launching.
+- For Node backends and custom servers, read the port from `process.env.PORT` (with a local fallback only when appropriate for non-runtime development) and avoid fixed-port success assumptions in status messages.
 
 #### Module dashboard mode
 
