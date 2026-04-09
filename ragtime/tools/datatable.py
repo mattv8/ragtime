@@ -215,6 +215,7 @@ async def create_datatable(
 create_datatable_tool = StructuredTool.from_function(
     coroutine=create_datatable,
     name="create_datatable",
+    handle_validation_error=True,
     description="""Create an interactive data table with sorting, searching, and pagination.
 Use this tool when presenting tabular data that the user might want to explore.
 

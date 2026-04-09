@@ -15,7 +15,7 @@ import json
 from typing import Any, Literal
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ragtime.core.logging import get_logger
 
@@ -71,7 +71,8 @@ class CreateChartInput(BaseModel):
         description=(
             "Array of datasets. Each dataset should have: "
             "'label' (string), 'data' (array of numbers), "
-            "and optionally 'backgroundColor', 'borderColor', 'borderWidth', 'fill', 'tension'"
+            "and optionally 'backgroundColor', 'borderColor', 'borderWidth', 'fill', 'tension'. "
+            "Can also be provided as 'dataset' (single dataset) or 'data' (single-series shorthand)."
         )
     )
     description: str = Field(
@@ -93,6 +94,57 @@ class CreateChartInput(BaseModel):
             "In User Space mode, this should reference admin-configured tool components (for example tool_config IDs)."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_input(cls, values: Any) -> Any:
+        """
+        Normalize common LLM payload variations:
+        - 'dataset' (single dataset object) -> 'datasets'
+        - 'data' shorthand -> 'datasets' for single-series charts
+        - Chart.js-style nested data object: {'data': {'labels': [...], 'datasets': [...]}}
+        """
+        if not isinstance(values, dict):
+            return values
+
+        # Accept singular alias
+        if "datasets" not in values and "dataset" in values:
+            dataset_value = values.pop("dataset")
+            if isinstance(dataset_value, list):
+                values["datasets"] = dataset_value
+            elif isinstance(dataset_value, dict):
+                values["datasets"] = [dataset_value]
+
+        # Accept Chart.js-style nested payload
+        if "datasets" not in values and isinstance(values.get("data"), dict):
+            nested_data = values.get("data") or {}
+            nested_labels = nested_data.get("labels")
+            nested_datasets = nested_data.get("datasets")
+            if "labels" not in values and isinstance(nested_labels, list):
+                values["labels"] = nested_labels
+            if isinstance(nested_datasets, list):
+                values["datasets"] = nested_datasets
+
+        # Accept single-series shorthand payload: 'data': [1, 2, 3]
+        if "datasets" not in values and "data" in values:
+            raw_data = values.get("data")
+            if isinstance(raw_data, list):
+                if raw_data and isinstance(raw_data[0], dict) and "data" in raw_data[0]:
+                    # Already dataset-like payload but under 'data' key
+                    values["datasets"] = raw_data
+                else:
+                    values["datasets"] = [
+                        {
+                            "label": values.get("title") or "Series 1",
+                            "data": raw_data,
+                        }
+                    ]
+
+        # Ensure datasets is always a list if provided as a dict
+        if isinstance(values.get("datasets"), dict):
+            values["datasets"] = [values["datasets"]]
+
+        return values
 
 
 # Default color palettes for charts
@@ -339,6 +391,7 @@ async def create_chart(
 create_chart_tool = StructuredTool.from_function(
     coroutine=create_chart,
     name="create_chart",
+    handle_validation_error=True,
     description="""Create a data visualization chart to display to the user.
 PROACTIVELY use this tool when you retrieve numeric data that could be visualized.
 
