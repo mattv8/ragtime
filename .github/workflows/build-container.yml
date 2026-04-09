@@ -343,6 +343,8 @@ jobs:
           output-file: sbom.spdx.json
 
       - name: Attach SBOM to image for Harbor
+        env:
+          COSIGN_EXPERIMENTAL: "1"
         run: |
           IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-main.outputs.digest }}"
           cosign attach sbom --registry-referrers-mode oci-1-1 --type spdx --sbom sbom.spdx.json "${IMAGE_DIGEST}"
