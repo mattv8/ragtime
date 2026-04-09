@@ -2,7 +2,7 @@ import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Lock, LockOpen, Info, Search, Clipboard, ExternalLink, X } from 'lucide-react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 
@@ -58,6 +58,108 @@ function settingsTextMatchesQuery(text: string | null | undefined, queries: stri
   return queries.some((q) => normalized.includes(q));
 }
 
+function isSettingsSaveControlButton(button: HTMLButtonElement): boolean {
+  return normalizeSettingsSearchText(button.textContent || '').includes('save');
+}
+
+const DEFAULT_OLLAMA_PORT = 11434;
+const DEFAULT_OLLAMA_HOST = 'localhost';
+const DEFAULT_OLLAMA_PROTOCOL = 'http';
+const DEFAULT_OLLAMA_BASE_URL = `${DEFAULT_OLLAMA_PROTOCOL}://${DEFAULT_OLLAMA_HOST}:${DEFAULT_OLLAMA_PORT}`;
+
+const COPILOT_MODEL_FETCH_OPTIONS = {
+  includeDirectoryModels: true,
+  includeAnthropicModels: true,
+  includeGoogleModels: true,
+} as const;
+
+function normalizeLlmProvider(provider: LlmProviderWire | null | undefined): Exclude<LlmProviderWire, 'github_models'> | null | undefined {
+  return provider === 'github_models' ? 'github_copilot' : provider;
+}
+
+function buildOllamaBaseUrl(protocol?: 'http' | 'https' | null, host?: string | null, port?: number | null): string {
+  return `${protocol || 'http'}://${host || 'localhost'}:${port || DEFAULT_OLLAMA_PORT}`;
+}
+
+function isUnsetDefaultOllamaConnection(
+  protocol: string | null | undefined,
+  host: string | null | undefined,
+  port: number | null | undefined,
+  baseUrl: string | null | undefined,
+): boolean {
+  return (host || '').trim() === DEFAULT_OLLAMA_HOST
+    && (protocol || DEFAULT_OLLAMA_PROTOCOL) === DEFAULT_OLLAMA_PROTOCOL
+    && (port || DEFAULT_OLLAMA_PORT) === DEFAULT_OLLAMA_PORT
+    && (baseUrl || DEFAULT_OLLAMA_BASE_URL) === DEFAULT_OLLAMA_BASE_URL;
+}
+
+function sanitizeOllamaDefaults(settings: AppSettings): AppSettings {
+  const sanitized = { ...settings };
+
+  if (isUnsetDefaultOllamaConnection(
+    settings.ollama_protocol,
+    settings.ollama_host,
+    settings.ollama_port,
+    settings.ollama_base_url,
+  )) {
+    sanitized.ollama_host = '';
+  }
+
+  if (isUnsetDefaultOllamaConnection(
+    settings.llm_ollama_protocol,
+    settings.llm_ollama_host,
+    settings.llm_ollama_port,
+    settings.llm_ollama_base_url,
+  )) {
+    sanitized.llm_ollama_host = '';
+  }
+
+  return sanitized;
+}
+
+function parseLdapServerUrl(serverUrl: string | null | undefined): { protocol: 'ldap' | 'ldaps'; host: string; port: number } {
+  const defaults = { protocol: 'ldaps' as const, host: '', port: 636 };
+  if (!serverUrl) {
+    return defaults;
+  }
+
+  const match = serverUrl.match(/^(ldaps?):\/\/([^:]+)(?::(\d+))?$/);
+  if (!match) {
+    return defaults;
+  }
+
+  const protocol = match[1] as 'ldap' | 'ldaps';
+  return {
+    protocol,
+    host: match[2],
+    port: match[3] ? parseInt(match[3], 10) : (protocol === 'ldaps' ? 636 : 389),
+  };
+}
+
+function getScopedModelId(selectionKey: string): string {
+  const delimiter = selectionKey.indexOf('::');
+  return delimiter >= 0 ? selectionKey.slice(delimiter + 2) : selectionKey;
+}
+
+function toggleScopedModelSelection(currentSelection: Set<string>, model: AvailableModel): Set<string> {
+  const selectionKey = toScopedModelIdentifier(model);
+  const nextSelection = new Set(currentSelection);
+
+  if (nextSelection.has(selectionKey)) {
+    nextSelection.delete(selectionKey);
+    return nextSelection;
+  }
+
+  for (const key of Array.from(nextSelection)) {
+    if (getScopedModelId(key) === model.id) {
+      nextSelection.delete(key);
+    }
+  }
+
+  nextSelection.add(selectionKey);
+  return nextSelection;
+}
+
 const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
@@ -65,6 +167,14 @@ const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
   github_copilot: 'GitHub Copilot',
   github_models: 'GitHub Copilot',
 };
+
+const AUTH_PROVIDER_OPTIONS = [
+  {
+    value: 'ldap',
+    label: 'LDAP / Active Directory',
+    description: 'External directory authentication for shared identity and group-based access.',
+  },
+] as const;
 
 function parseScopedModelIdentifier(value: string | null | undefined): { provider: string | null; modelId: string } {
   const raw = (value || '').trim();
@@ -282,6 +392,30 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const hasAutoTestedOllama = useRef(false);
   const hasAutoTestedLlmOllama = useRef(false);
 
+  const resetEmbeddingOllamaState = useCallback(() => {
+    setOllamaConnected(false);
+    setOllamaError(null);
+    setOllamaModels([]);
+  }, []);
+
+  const resetLlmOllamaState = useCallback(() => {
+    setLlmOllamaConnected(false);
+    setLlmOllamaError(null);
+    setLlmOllamaModels([]);
+  }, []);
+
+  const resetLlmModelsState = useCallback(() => {
+    setLlmModels([]);
+    setLlmModelsError(null);
+    setLlmModelsLoaded(false);
+  }, []);
+
+  const resetEmbeddingModelsState = useCallback(() => {
+    setEmbeddingModels([]);
+    setEmbeddingModelsError(null);
+    setEmbeddingModelsLoaded(false);
+  }, []);
+
   // Test Ollama connection (for embeddings)
   const testOllamaConnection = useCallback(async (
     protocol: 'http' | 'https',
@@ -297,7 +431,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       const response = await api.testOllamaConnection({
         protocol: protocol || 'http',
         host: host || 'localhost',
-        port: port || 11434,
+        port: port || DEFAULT_OLLAMA_PORT,
         embeddings_only: true,  // Filter to embedding models only
       });
 
@@ -333,7 +467,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       const response = await api.testOllamaConnection({
         protocol: protocol || 'http',
         host: host || 'localhost',
-        port: port || 11434,
+        port: port || DEFAULT_OLLAMA_PORT,
       });
 
       if (response.success) {
@@ -411,6 +545,13 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     }
   }, []);
 
+  const fetchCopilotModels = useCallback(async () => {
+    await fetchLlmModels('github_copilot', undefined, {
+      authMode: copilotAuthMode,
+      ...COPILOT_MODEL_FETCH_OPTIONS,
+    });
+  }, [copilotAuthMode, fetchLlmModels]);
+
   const refreshCopilotStatus = useCallback(async () => {
     try {
       const status = await api.getCopilotAuthStatus();
@@ -463,12 +604,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           setTimeout(() => setSuccess(null), 3000);
           const selectedProvider = formData.llm_provider || 'openai';
           if (selectedProvider === 'github_copilot') {
-            await fetchLlmModels('github_copilot', undefined, {
-              authMode: copilotAuthMode,
-              includeDirectoryModels: true,
-              includeAnthropicModels: true,
-              includeGoogleModels: true,
-            });
+            await fetchCopilotModels();
           }
           return;
         }
@@ -495,10 +631,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     }, Math.max(delaySeconds, 1) * 1000);
   }, [
     clearCopilotPollTimer,
-    fetchLlmModels,
+    fetchCopilotModels,
     formData.llm_provider,
     refreshCopilotStatus,
-    copilotAuthMode,
   ]);
 
   const startCopilotDeviceFlow = useCallback(async () => {
@@ -543,14 +678,13 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     try {
       await api.clearCopilotAuth();
       await refreshCopilotStatus();
-      setLlmModels([]);
-      setLlmModelsLoaded(false);
+      resetLlmModelsState();
       setSuccess('GitHub Copilot connection removed');
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setLlmModelsError(err instanceof Error ? err.message : 'Failed to clear GitHub Copilot auth');
     }
-  }, [clearCopilotPollTimer, refreshCopilotStatus]);
+  }, [clearCopilotPollTimer, refreshCopilotStatus, resetLlmModelsState]);
 
   const copyCopilotDeviceCode = useCallback(async () => {
     if (!copilotDeviceCode) {
@@ -635,7 +769,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     const response = await api.getAllModels();
     let models: AvailableModel[] = response.models.map((model) => ({
       ...model,
-      provider: model.provider === 'github_models' ? 'github_copilot' : model.provider,
+      provider: normalizeLlmProvider(model.provider) as AvailableModel['provider'],
     }));
 
     const copilotPatToken = (formData.github_models_api_token || settings?.github_models_api_token || '').trim();
@@ -645,9 +779,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       const githubResponse = await api.fetchLLMModels({
         provider: 'github_copilot',
         auth_mode: copilotAuthMode,
-        include_directory_models: true,
-        include_anthropic_models: true,
-        include_google_models: true,
+        include_directory_models: COPILOT_MODEL_FETCH_OPTIONS.includeDirectoryModels,
+        include_anthropic_models: COPILOT_MODEL_FETCH_OPTIONS.includeAnthropicModels,
+        include_google_models: COPILOT_MODEL_FETCH_OPTIONS.includeGoogleModels,
       });
       if (githubResponse.success) {
         const contextLimitById = new Map(models.map((m) => [m.id, m.context_limit]));
@@ -708,24 +842,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   }, [fetchModelsForModal]);
 
   const toggleModel = (model: AvailableModel) => {
-    const selectionKey = `${model.provider}::${model.id}`;
-    setSelectedModels(prev => {
-      const next = new Set(prev);
-      if (next.has(selectionKey)) {
-        next.delete(selectionKey);
-      } else {
-        // Keep one provider binding per model ID so provider priority is explicit.
-        for (const key of Array.from(next)) {
-          const delimiter = key.indexOf('::');
-          const keyModelId = delimiter >= 0 ? key.slice(delimiter + 2) : key;
-          if (keyModelId === model.id) {
-            next.delete(key);
-          }
-        }
-        next.add(selectionKey);
-      }
-      return next;
-    });
+    setSelectedModels((prev) => toggleScopedModelSelection(prev, model));
   };
 
   const selectAllModels = () => {
@@ -771,23 +888,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   }, [fetchModelsForModal]);
 
   const toggleOpenapiModel = (model: AvailableModel) => {
-    const selectionKey = `${model.provider}::${model.id}`;
-    setSelectedOpenapiModels(prev => {
-      const next = new Set(prev);
-      if (next.has(selectionKey)) {
-        next.delete(selectionKey);
-      } else {
-        for (const key of Array.from(next)) {
-          const delimiter = key.indexOf('::');
-          const keyModelId = delimiter >= 0 ? key.slice(delimiter + 2) : key;
-          if (keyModelId === model.id) {
-            next.delete(key);
-          }
-        }
-        next.add(selectionKey);
-      }
-      return next;
-    });
+    setSelectedOpenapiModels((prev) => toggleScopedModelSelection(prev, model));
   };
 
   const selectAllOpenapiModels = () => {
@@ -826,20 +927,21 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const loadSettings = useCallback(async () => {
     try {
       setLoading(true);
-      const [{ settings: data }, previewSettings] = await Promise.all([
+      const [{ settings: rawSettings }, previewSettings] = await Promise.all([
         api.getSettings(),
         api.getUserSpacePreviewSettings(),
       ]);
+      const data = sanitizeOllamaDefaults(rawSettings);
       setSettings(data);
       setUserspacePreviewSettings(previewSettings);
-      const normalizedLlmProvider = data.llm_provider === 'github_models' ? 'github_copilot' : data.llm_provider;
+      const normalizedLlmProvider = normalizeLlmProvider(data.llm_provider);
       setFormData({
         // Server branding
         server_name: data.server_name,
         // Embedding settings
         ...getEmbeddingSettingsFormData(data),
         // LLM settings
-        llm_provider: normalizedLlmProvider,
+        llm_provider: normalizedLlmProvider ?? undefined,
         llm_model: data.llm_model,
         llm_max_tokens: data.llm_max_tokens,
         image_payload_max_width: data.image_payload_max_width,
@@ -887,17 +989,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         openapi_sync_chat_models: data.openapi_sync_chat_models,
       });
       // Reset Ollama connection state (for embeddings)
-      setOllamaConnected(false);
-      setOllamaError(null);
-      setOllamaModels([]);
-      // Reset LLM Ollama connection state
-      setLlmOllamaConnected(false);
-      setLlmOllamaError(null);
-      setLlmOllamaModels([]);
-      // Reset LLM models state
-      setLlmModels([]);
-      setLlmModelsError(null);
-      setLlmModelsLoaded(false);
+      resetEmbeddingOllamaState();
+      resetLlmOllamaState();
+      resetLlmModelsState();
       clearCopilotPollTimer();
       setCopilotConnecting(false);
       setCopilotRequestId(null);
@@ -911,30 +1005,32 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       // Auto-test Ollama if using ollama embedding provider
       if (data.embedding_provider === 'ollama' && !hasAutoTestedOllama.current) {
         hasAutoTestedOllama.current = true;
-        testOllamaConnection(
-          data.ollama_protocol || 'http',
-          data.ollama_host || 'localhost',
-          data.ollama_port || 11434
-        );
+        if (data.ollama_host?.trim()) {
+          testOllamaConnection(
+            data.ollama_protocol || DEFAULT_OLLAMA_PROTOCOL,
+            data.ollama_host,
+            data.ollama_port || DEFAULT_OLLAMA_PORT,
+          );
+        }
       }
 
       // Auto-test LLM Ollama if using ollama LLM provider
       if (data.llm_provider === 'ollama' && !hasAutoTestedLlmOllama.current) {
         hasAutoTestedLlmOllama.current = true;
-        testLlmOllamaConnection(
-          data.llm_ollama_protocol || 'http',
-          data.llm_ollama_host || 'localhost',
-          data.llm_ollama_port || 11434
-        );
+        if (data.llm_ollama_host?.trim()) {
+          testLlmOllamaConnection(
+            data.llm_ollama_protocol || DEFAULT_OLLAMA_PROTOCOL,
+            data.llm_ollama_host,
+            data.llm_ollama_port || DEFAULT_OLLAMA_PORT,
+          );
+        }
       }
 
       if (normalizedLlmProvider === 'github_copilot') {
         if (data.github_models_api_token || copilotStatus?.connected) {
           fetchLlmModels('github_copilot', undefined, {
             authMode: data.github_models_api_token ? 'pat' : 'oauth',
-            includeDirectoryModels: true,
-            includeAnthropicModels: true,
-            includeGoogleModels: true,
+            ...COPILOT_MODEL_FETCH_OPTIONS,
           });
         }
       }
@@ -956,17 +1052,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         setLdapConfig(ldapData);
 
         // Parse server_url into components
-        let protocol: 'ldap' | 'ldaps' = 'ldaps';
-        let host = '';
-        let port = 636;
-        if (ldapData.server_url) {
-          const match = ldapData.server_url.match(/^(ldaps?):\/\/([^:]+)(?::(\d+))?$/);
-          if (match) {
-            protocol = match[1] as 'ldap' | 'ldaps';
-            host = match[2];
-            port = match[3] ? parseInt(match[3], 10) : (protocol === 'ldaps' ? 636 : 389);
-          }
-        }
+        const { protocol, host, port } = parseLdapServerUrl(ldapData.server_url);
 
         setLdapFormData({
           ldap_protocol: protocol,
@@ -1010,6 +1096,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     fetchLlmModels,
     refreshDefaultChatModelPreview,
     refreshCopilotStatus,
+    resetEmbeddingOllamaState,
+    resetLlmModelsState,
+    resetLlmOllamaState,
     testLlmOllamaConnection,
     testOllamaConnection,
   ]);
@@ -1019,7 +1108,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   }, [loadSettings]);
 
   useEffect(() => {
-    const normalizedProvider = formData.llm_provider === 'github_models' ? 'github_copilot' : formData.llm_provider;
+    const normalizedProvider = normalizeLlmProvider(formData.llm_provider);
     if (normalizedProvider !== 'github_copilot') {
       return;
     }
@@ -1032,12 +1121,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       return;
     }
 
-    void fetchLlmModels('github_copilot', undefined, {
-      authMode: copilotAuthMode,
-      includeDirectoryModels: true,
-      includeAnthropicModels: true,
-      includeGoogleModels: true,
-    });
+    void fetchCopilotModels();
 
     if (showModelFilterModal) {
       void openModelFilterModal();
@@ -1045,7 +1129,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   }, [
     copilotAuthMode,
     copilotAuthStatus?.connected,
-    fetchLlmModels,
+    fetchCopilotModels,
     formData.github_models_api_token,
     formData.llm_provider,
     openModelFilterModal,
@@ -1064,7 +1148,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     await testOllamaConnection(
       formData.ollama_protocol || 'http',
       formData.ollama_host || 'localhost',
-      formData.ollama_port || 11434
+      formData.ollama_port || DEFAULT_OLLAMA_PORT
     );
   };
 
@@ -1204,7 +1288,11 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         ollama_protocol: formData.ollama_protocol,
         ollama_host: formData.ollama_host,
         ollama_port: formData.ollama_port,
-        ollama_base_url: `${formData.ollama_protocol || 'http'}://${formData.ollama_host || 'localhost'}:${formData.ollama_port || 11434}`,
+        ollama_base_url: buildOllamaBaseUrl(
+          formData.ollama_protocol,
+          formData.ollama_host,
+          formData.ollama_port,
+        ),
         ollama_embedding_timeout_seconds: formData.ollama_embedding_timeout_seconds,
       };
       const updated = await api.updateSettings(dataToSave);
@@ -1229,7 +1317,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     setError(null);
 
     try {
-      const normalizedProvider = formData.llm_provider === 'github_models' ? 'github_copilot' : formData.llm_provider;
+      const normalizedProvider = normalizeLlmProvider(formData.llm_provider);
       const dataToSave: Record<string, unknown> = {
         llm_provider: normalizedProvider,
         llm_model: formData.llm_model,
@@ -1268,7 +1356,11 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         dataToSave.llm_ollama_protocol = formData.llm_ollama_protocol;
         dataToSave.llm_ollama_host = formData.llm_ollama_host;
         dataToSave.llm_ollama_port = formData.llm_ollama_port;
-        dataToSave.llm_ollama_base_url = `${formData.llm_ollama_protocol || 'http'}://${formData.llm_ollama_host || 'localhost'}:${formData.llm_ollama_port || 11434}`;
+        dataToSave.llm_ollama_base_url = buildOllamaBaseUrl(
+          formData.llm_ollama_protocol,
+          formData.llm_ollama_host,
+          formData.llm_ollama_port,
+        );
       }
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
@@ -1593,6 +1685,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       const legendText = fieldset.querySelector('legend')?.textContent || '';
       const helpText = fieldset.querySelector('.fieldset-help')?.textContent || '';
       const fieldsetTextMatch = settingsTextMatchesQuery(`${legendText} ${helpText}`, queries);
+      const saveActionGroups = Array.from(fieldset.querySelectorAll<HTMLElement>('.form-group')).filter((group) => (
+        Array.from(group.querySelectorAll<HTMLButtonElement>('button')).some(isSettingsSaveControlButton)
+      ));
 
       let visibleFormGroupCount = 0;
       const formGroups = Array.from(fieldset.querySelectorAll<HTMLElement>('.form-group'));
@@ -1606,6 +1701,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         }
       });
 
+      let visibleDetailsCount = 0;
       const detailsElements = Array.from(fieldset.querySelectorAll<HTMLDetailsElement>('details'));
       detailsElements.forEach((details) => {
         const summaryText = details.querySelector('summary')?.textContent || '';
@@ -1613,6 +1709,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         const hasVisibleChild = Array.from(details.querySelectorAll<HTMLElement>('.form-group')).some((group) => group.style.display !== 'none');
         const detailsMatch = fieldsetTextMatch || hasVisibleChild || settingsTextMatchesQuery(`${summaryText} ${detailText}`, queries);
         details.style.display = detailsMatch ? '' : 'none';
+        if (detailsMatch) {
+          visibleDetailsCount += 1;
+        }
         if (detailsMatch && hasVisibleChild && !details.open) {
           details.open = true;
           details.setAttribute('data-filter-opened', 'true');
@@ -1626,11 +1725,16 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       }
 
       const formActions = Array.from(fieldset.querySelectorAll<HTMLElement>('.form-actions'));
+      const showFieldset = fieldsetTextMatch || visibleFormGroupCount > 0 || visibleDetailsCount > 0;
       formActions.forEach((actions) => {
-        actions.style.display = visibleFormGroupCount > 0 || fieldsetTextMatch ? '' : 'none';
+        actions.style.display = showFieldset ? '' : 'none';
       });
 
-      const showFieldset = fieldsetTextMatch || visibleFormGroupCount > 0;
+      // Some sections place Save buttons in .form-group blocks instead of .form-actions.
+      saveActionGroups.forEach((group) => {
+        group.style.display = showFieldset ? '' : 'none';
+      });
+
       fieldset.style.display = showFieldset ? '' : 'none';
       if (showFieldset) {
         hasAnyMatches = true;
@@ -1668,6 +1772,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     (formData.ollama_host ?? settings?.ollama_host)?.trim() &&
     (formData.ollama_port ?? settings?.ollama_port)
   );
+  const activeAuthProvider = AUTH_PROVIDER_OPTIONS[0];
+  const ldapConfigured = Boolean(ldapFormData.ldap_host.trim() || ldapConfig?.server_url?.trim());
   const manualDefaultChatModel = (() => {
     if (formData.default_chat_model !== undefined) {
       return formData.default_chat_model ?? null;
@@ -1943,23 +2049,14 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                         : '',
                 });
                 // Reset LLM models when switching providers
-                setLlmModels([]);
-                setLlmModelsError(null);
-                setLlmModelsLoaded(false);
+                resetLlmModelsState();
                 // Reset LLM Ollama state when switching away from Ollama
                 if (newProvider !== 'ollama') {
-                  setLlmOllamaConnected(false);
-                  setLlmOllamaError(null);
-                  setLlmOllamaModels([]);
+                  resetLlmOllamaState();
                 }
 
                 if (newProvider === 'github_copilot' && ((copilotAuthMode === 'oauth' && (copilotAuthStatus?.connected || settings?.has_github_copilot_auth)) || (copilotAuthMode === 'pat' && hasCopilotPatToken))) {
-                  fetchLlmModels('github_copilot', undefined, {
-                    authMode: copilotAuthMode,
-                    includeDirectoryModels: true,
-                    includeAnthropicModels: true,
-                    includeGoogleModels: true,
-                  });
+                  fetchCopilotModels();
                 }
               }}
             >
@@ -1975,7 +2072,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             <OllamaConnectionForm
               protocol={formData.llm_ollama_protocol || 'http'}
               host={formData.llm_ollama_host || ''}
-              port={formData.llm_ollama_port || 11434}
+              port={formData.llm_ollama_port || DEFAULT_OLLAMA_PORT}
               model={formData.llm_model || ''}
               connected={llmOllamaConnected}
               connecting={llmOllamaConnecting}
@@ -1987,27 +2084,21 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               disconnectedHelpText="Click &quot;Fetch Models&quot; to see available models, or enter manually."
               onProtocolChange={(protocol) => {
                 setFormData({ ...formData, llm_ollama_protocol: protocol });
-                setLlmOllamaConnected(false);
-                setLlmOllamaError(null);
-                setLlmOllamaModels([]);
+                resetLlmOllamaState();
               }}
               onHostChange={(host) => {
                 setFormData({ ...formData, llm_ollama_host: host });
-                setLlmOllamaConnected(false);
-                setLlmOllamaError(null);
-                setLlmOllamaModels([]);
+                resetLlmOllamaState();
               }}
               onPortChange={(port) => {
                 setFormData({ ...formData, llm_ollama_port: port });
-                setLlmOllamaConnected(false);
-                setLlmOllamaError(null);
-                setLlmOllamaModels([]);
+                resetLlmOllamaState();
               }}
               onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
               onFetchModels={() => testLlmOllamaConnection(
                 formData.llm_ollama_protocol || 'http',
                 formData.llm_ollama_host || 'localhost',
-                formData.llm_ollama_port || 11434
+                formData.llm_ollama_port || DEFAULT_OLLAMA_PORT
               )}
             />
           )}
@@ -2023,13 +2114,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                   onChange={(e) => {
                     setFormData({ ...formData, openai_api_key: e.target.value });
                     // Reset models when API key changes
-                    setLlmModels([]);
-                    setLlmModelsError(null);
-                    setLlmModelsLoaded(false);
+                    resetLlmModelsState();
                     // Also reset embedding models since they use the same key
-                    setEmbeddingModels([]);
-                    setEmbeddingModelsError(null);
-                    setEmbeddingModelsLoaded(false);
+                    resetEmbeddingModelsState();
                   }}
                   placeholder="sk-..."
                 />
@@ -2062,9 +2149,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                   onChange={(e) => {
                     setFormData({ ...formData, anthropic_api_key: e.target.value });
                     // Reset models when API key changes
-                    setLlmModels([]);
-                    setLlmModelsError(null);
-                    setLlmModelsLoaded(false);
+                    resetLlmModelsState();
                   }}
                   placeholder="sk-ant-..."
                 />
@@ -2099,9 +2184,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                       onChange={() => {
                         setCopilotAuthMode('oauth');
                         setFormData((prev) => ({ ...prev, github_models_api_token: '' }));
-                        setLlmModels([]);
-                        setLlmModelsError(null);
-                        setLlmModelsLoaded(false);
+                        resetLlmModelsState();
                       }}
                     />
                     OAuth (GitHub device login)
@@ -2118,9 +2201,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                         setCopilotRequestId(null);
                         setCopilotWizardVisible(false);
                         setCopilotWizardStep(1);
-                        setLlmModels([]);
-                        setLlmModelsError(null);
-                        setLlmModelsLoaded(false);
+                        resetLlmModelsState();
                       }}
                     />
                     PAT (Copilot models)
@@ -2134,9 +2215,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                     value={formData.github_models_api_token || ''}
                     onChange={(e) => {
                       setFormData({ ...formData, github_models_api_token: e.target.value });
-                      setLlmModels([]);
-                      setLlmModelsError(null);
-                      setLlmModelsLoaded(false);
+                      resetLlmModelsState();
                     }}
                     placeholder="github_pat_..."
                   />
@@ -2159,12 +2238,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 <button
                   type="button"
                   className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'github_copilot' ? 'btn-connected' : ''}`}
-                  onClick={() => fetchLlmModels('github_copilot', undefined, {
-                    authMode: copilotAuthMode,
-                    includeDirectoryModels: true,
-                    includeAnthropicModels: true,
-                    includeGoogleModels: true,
-                  })}
+                  onClick={() => fetchCopilotModels()}
                   disabled={llmModelsFetching || (copilotAuthMode === 'oauth' ? !copilotConfigured : !hasCopilotPatToken)}
                 >
                   {llmModelsFetching ? 'Fetching...' : llmModelsLoaded && formData.llm_provider === 'github_copilot' ? 'Loaded' : 'Fetch Models'}
@@ -2725,15 +2799,11 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                   });
                   // Reset Ollama connection state when switching providers
                   if (newProvider !== 'ollama') {
-                    setOllamaConnected(false);
-                    setOllamaError(null);
-                    setOllamaModels([]);
+                    resetEmbeddingOllamaState();
                   }
                   // Reset embedding models when switching away from OpenAI
                   if (newProvider !== 'openai') {
-                    setEmbeddingModels([]);
-                    setEmbeddingModelsError(null);
-                    setEmbeddingModelsLoaded(false);
+                    resetEmbeddingModelsState();
                   }
                 }}
               >
@@ -2800,7 +2870,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             <OllamaConnectionForm
               protocol={formData.ollama_protocol || 'http'}
               host={formData.ollama_host || ''}
-              port={formData.ollama_port || 11434}
+              port={formData.ollama_port || DEFAULT_OLLAMA_PORT}
               model={formData.embedding_model || ''}
               connected={ollamaConnected}
               connecting={ollamaConnecting}
@@ -2812,21 +2882,15 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               disconnectedHelpText="Click &quot;Fetch Models&quot; to see available models, or enter manually."
               onProtocolChange={(protocol) => {
                 setFormData({ ...formData, ollama_protocol: protocol });
-                setOllamaConnected(false);
-                setOllamaError(null);
-                setOllamaModels([]);
+                resetEmbeddingOllamaState();
               }}
               onHostChange={(host) => {
                 setFormData({ ...formData, ollama_host: host });
-                setOllamaConnected(false);
-                setOllamaError(null);
-                setOllamaModels([]);
+                resetEmbeddingOllamaState();
               }}
               onPortChange={(port) => {
                 setFormData({ ...formData, ollama_port: port });
-                setOllamaConnected(false);
-                setOllamaError(null);
-                setOllamaModels([]);
+                resetEmbeddingOllamaState();
               }}
               onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
               onFetchModels={handleTestOllamaConnection}
@@ -2958,12 +3022,43 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           </div>
         </fieldset>
 
-        {/* LDAP Authentication Configuration */}
+        {/* Authentication Provider Configuration */}
         <fieldset>
-          <legend>LDAP Authentication</legend>
+          <legend className="legend-with-status">
+            <span>Authentication Provider</span>
+            <span className="legend-divider" aria-hidden="true" />
+            <span className="llm-provider-status-inline" aria-label="Authentication provider configuration status">
+              <span className="llm-provider-status-item" title={ldapConfigured ? `${activeAuthProvider.label} configured` : `${activeAuthProvider.label} not configured`}>
+                <span
+                  className={`llm-provider-status-dot ${ldapConfigured ? 'configured' : ''}`}
+                  aria-label={ldapConfigured ? `${activeAuthProvider.label} configured` : `${activeAuthProvider.label} not configured`}
+                />
+                <span className="llm-provider-status-label">{activeAuthProvider.value.toUpperCase()}</span>
+              </span>
+            </span>
+          </legend>
           <p className="fieldset-help">
-            Configure LDAP/Active Directory authentication. Leave host empty to disable LDAP and use local admin only.
+            Choose and configure how users authenticate. Additional providers can be added here later without restructuring the rest of the settings page.
           </p>
+
+          <div className="form-group">
+            <label>Provider</label>
+            <select value={activeAuthProvider.value} disabled>
+              {AUTH_PROVIDER_OPTIONS.map((provider) => (
+                <option key={provider.value} value={provider.value}>{provider.label}</option>
+              ))}
+            </select>
+            <p className="field-help">
+              {activeAuthProvider.description} LDAP / Active Directory is the only available provider right now; local user database and OIDC can be added here later.
+            </p>
+          </div>
+
+          <div style={{ marginBottom: '16px' }}>
+            <h4 style={{ margin: '0 0 8px' }}>{activeAuthProvider.label} Settings</h4>
+            <p className="field-help" style={{ marginBottom: 0 }}>
+              Configure LDAP/Active Directory authentication. Leave host empty to disable directory auth and use local admin only.
+            </p>
+          </div>
 
           {/* Server Connection */}
           <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr 70px', gap: '12px', marginBottom: '16px' }}>
