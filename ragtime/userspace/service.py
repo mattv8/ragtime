@@ -21,9 +21,9 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
-
 from prisma import Json
 from prisma import fields as prisma_fields
+
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -87,6 +87,12 @@ from ragtime.userspace.models import (
     WorkspaceMountSyncResponse, WorkspaceScmDirection,
     WorkspaceScmPreviewState, WorkspaceScmProvider,
     WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import SqliteImportResponse
+from ragtime.userspace.sqlite_import import (_MAX_IMPORT_SIZE_BYTES,
+                                             SqlImportResult,
+                                             detect_binary_pg_dump,
+                                             detect_sql_dialect,
+                                             import_sql_to_sqlite)
 
 logger = get_logger(__name__)
 
@@ -11306,13 +11312,6 @@ class UserSpaceService:
         file_bytes: bytes,
         filename: str,
     ) -> "SqliteImportResponse":
-        from ragtime.userspace.models import SqliteImportResponse
-        from ragtime.userspace.sqlite_import import (_MAX_IMPORT_SIZE_BYTES,
-                                                     SqlImportResult,
-                                                     detect_binary_pg_dump,
-                                                     detect_sql_dialect,
-                                                     import_sql_to_sqlite)
-
         workspace = await self._enforce_workspace_access(
             workspace_id, user_id, required_role="editor"
         )

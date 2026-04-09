@@ -1615,6 +1615,17 @@ class IndexerRepository:
             include={"user": True},
         )
 
+        enabled_tools = await db.toolconfig.find_many(
+            where={"enabled": True},
+        )
+        for tool in enabled_tools:
+            await db.conversationtoolselection.create(
+                data={
+                    "conversationId": prisma_conv.id,
+                    "toolConfigId": tool.id,
+                }
+            )
+
         return self._prisma_conversation_to_model(prisma_conv)
 
     async def get_conversation(self, conversation_id: str) -> Optional[Conversation]:

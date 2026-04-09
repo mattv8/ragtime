@@ -22,87 +22,130 @@ from typing import Any, List, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
+from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_openai.chat_models.base import (
-    _construct_responses_api_payload, _get_last_messages)
-from PIL import Image, ImageOps, UnidentifiedImageError
+    _construct_responses_api_payload,
+    _get_last_messages,
+)
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
-from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
-                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
-                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
+from ragtime.core.file_constants import (
+    USERSPACE_MODULE_SOURCE_EXTENSIONS,
+    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+    USERSPACE_THEME_AUDIT_EXTENSIONS,
+    USERSPACE_TYPESCRIPT_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (get_context_limit, get_output_limit,
-                                       register_model_reasoning_capabilities,
-                                       register_model_supported_endpoints,
-                                       requires_responses_api,
-                                       supports_reasoning,
-                                       supports_responses_api,
-                                       supports_thinking_budget)
-from ragtime.core.ollama import (DEFAULT_WARMUP_TIMEOUT_SECONDS, KEEP_ALIVE,
-                                 NUM_GPU, get_model_context_length,
-                                 get_model_details, has_capability,
-                                 warmup_embedding_model, warmup_model)
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.model_limits import (
+    get_context_limit,
+    get_output_limit,
+    register_model_reasoning_capabilities,
+    register_model_supported_endpoints,
+    requires_responses_api,
+    supports_reasoning,
+    supports_responses_api,
+    supports_thinking_budget,
+)
+from ragtime.core.ollama import (
+    DEFAULT_WARMUP_TIMEOUT_SECONDS,
+    KEEP_ALIVE,
+    NUM_GPU,
+    get_model_context_length,
+    get_model_details,
+    has_capability,
+    warmup_embedding_model,
+    warmup_model,
+)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.rag.prompts import (
-    BASE_CHAT_SYSTEM_PROMPT, BASE_USERSPACE_SYSTEM_PROMPT,
-    SQLITE_INCLUDE_MODE_HINT, TOOL_OUTPUT_VISIBILITY_PROMPT,
-    TOOL_USAGE_REMINDER, UI_VISUALIZATION_CHAT_PROMPT,
-    UI_VISUALIZATION_COMMON_PROMPT, UI_VISUALIZATION_USERSPACE_PROMPT,
-    build_index_system_prompt, build_tool_system_prompt,
-    build_userspace_entrypoint_nudge, build_userspace_mode_prompt_addition,
+    BASE_CHAT_SYSTEM_PROMPT,
+    BASE_USERSPACE_SYSTEM_PROMPT,
+    SQLITE_INCLUDE_MODE_HINT,
+    TOOL_OUTPUT_VISIBILITY_PROMPT,
+    TOOL_USAGE_REMINDER,
+    UI_VISUALIZATION_CHAT_PROMPT,
+    UI_VISUALIZATION_COMMON_PROMPT,
+    UI_VISUALIZATION_USERSPACE_PROMPT,
+    build_index_system_prompt,
+    build_tool_system_prompt,
+    build_userspace_entrypoint_nudge,
+    build_userspace_mode_prompt_addition,
     build_userspace_mounts_prompt_fragment,
     build_userspace_object_storage_prompt_fragment,
-    build_userspace_turn_reminder, build_userspace_turn_reminder_with_env_vars,
-    build_workspace_continuity_context)
+    build_userspace_turn_reminder,
+    build_userspace_turn_reminder_with_env_vars,
+    build_workspace_continuity_context,
+)
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType,
-                                      UpsertWorkspaceEnvVarRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -5969,13 +6012,17 @@ except Exception as e:
         if intermediate_steps:
             for step in intermediate_steps[-max_items:]:
                 action = step[0] if isinstance(step, tuple) and step else None
-                observation = step[1] if isinstance(step, tuple) and len(step) > 1 else ""
+                observation = (
+                    step[1] if isinstance(step, tuple) and len(step) > 1 else ""
+                )
                 tool_name = str(getattr(action, "tool", "unknown") or "unknown")
                 tool_input = getattr(action, "tool_input", {})
                 args_preview = cls._truncate_prompt_preview(
-                    json.dumps(tool_input, ensure_ascii=True, default=str)
-                    if isinstance(tool_input, dict)
-                    else str(tool_input),
+                    (
+                        json.dumps(tool_input, ensure_ascii=True, default=str)
+                        if isinstance(tool_input, dict)
+                        else str(tool_input)
+                    ),
                     220,
                 )
                 output_summary = cls._summarize_tool_output_for_synthesis(observation)
@@ -5999,9 +6046,11 @@ except Exception as e:
                 tool_name = str(tool_call.get("name") or "unknown")
                 tool_args = tool_call.get("args") or {}
                 args_preview = cls._truncate_prompt_preview(
-                    json.dumps(tool_args, ensure_ascii=True, default=str)
-                    if isinstance(tool_args, dict)
-                    else str(tool_args),
+                    (
+                        json.dumps(tool_args, ensure_ascii=True, default=str)
+                        if isinstance(tool_args, dict)
+                        else str(tool_args)
+                    ),
                     220,
                 )
                 tool_output = ""
@@ -6026,8 +6075,7 @@ except Exception as e:
                 "Verified tool activity summary for final answer generation. "
                 "Use this as factual context, but do not quote raw tool protocol, "
                 "function-call metadata, or JSON wrappers unless the user explicitly "
-                "asked for them.\n\n"
-                + "\n".join(lines)
+                "asked for them.\n\n" + "\n".join(lines)
             )
         )
 
@@ -9891,6 +9939,25 @@ except Exception as e:
 
         return all_config_tool_names - allowed_tool_names
 
+    def _map_blocked_tool_names_to_allowed_tool_config_ids(
+        self, blocked_tool_names: set[str] | None
+    ) -> list[str] | None:
+        """Map a request's blocked tool names back to allowed ToolConfig IDs."""
+        if blocked_tool_names is None:
+            return None
+
+        allowed_tool_config_ids: list[str] = []
+        for config in self._tool_configs or []:
+            tool_names = self._derive_config_tool_names(config)
+            if tool_names and any(
+                name not in blocked_tool_names for name in tool_names
+            ):
+                config_id = (config.get("id") or "").strip()
+                if config_id:
+                    allowed_tool_config_ids.append(config_id)
+
+        return allowed_tool_config_ids
+
     def _map_runtime_tools_to_runnable_tool_config_ids(
         self,
         runtime_tools: list[Any],
@@ -10128,6 +10195,12 @@ except Exception as e:
                 if add_chat_visualization_prompt:
                     prompt_additions += UI_VISUALIZATION_CHAT_PROMPT
 
+            allowed_tool_config_ids = (
+                self._map_blocked_tool_names_to_allowed_tool_config_ids(
+                    blocked_tool_names
+                )
+            )
+
         elapsed_ms = (time.monotonic() - t0) * 1000
         prompt_bytes = len(prompt_additions.encode("utf-8", errors="replace"))
         logger.debug(
@@ -10206,6 +10279,11 @@ except Exception as e:
                 self._app_settings
                 and self._app_settings.get("tool_output_mode", "default") == "auto"
             ),
+            bool(
+                tool_configs
+                and allowed_tool_config_ids is not None
+                and len(allowed_tool_config_ids) == 0
+            ),
         )
         cached_prompt = self._request_prompt_cache.get(cache_key)
         if cached_prompt is not None:
@@ -10215,6 +10293,11 @@ except Exception as e:
         tool_prompt_section = build_tool_system_prompt(
             filtered_tool_configs,
             unavailable_tool_configs=unavailable_tool_configs,
+            no_tools_selected=(
+                bool(tool_configs)
+                and allowed_tool_config_ids is not None
+                and len(allowed_tool_config_ids) == 0
+            ),
         )
 
         base_prompt = (
@@ -11539,9 +11622,11 @@ except Exception as e:
                             SystemMessage(content=system_prompt),
                         ]
                         synthesis_messages.extend(synthesis_chat_history)
-                        synthesis_tool_context = self._build_internal_synthesis_tool_context(
-                            intermediate_steps=attempt_intermediate_steps,
-                            replay_messages=attempt_replayed_tool_messages,
+                        synthesis_tool_context = (
+                            self._build_internal_synthesis_tool_context(
+                                intermediate_steps=attempt_intermediate_steps,
+                                replay_messages=attempt_replayed_tool_messages,
+                            )
                         )
                         if synthesis_tool_context is not None:
                             synthesis_messages.append(synthesis_tool_context)
@@ -11581,7 +11666,12 @@ except Exception as e:
                                         synthesis_chunk_count,
                                         getattr(chunk, "content", "<no attr>"),
                                         type(chunk).__name__,
-                                        list((getattr(chunk, "additional_kwargs", {}) or {}).keys()),
+                                        list(
+                                            (
+                                                getattr(chunk, "additional_kwargs", {})
+                                                or {}
+                                            ).keys()
+                                        ),
                                     )
                             logger.info(
                                 "Synthesis stream completed: chunks=%d reasoning=%d text=%d emitted_content=%s",
@@ -11632,9 +11722,11 @@ except Exception as e:
                                     "(reasoning_chunks=%d); generating progress summary fallback",
                                     synthesis_reasoning_chunks,
                                 )
-                                fallback_summary = self._build_synthesis_reasoning_only_fallback(
-                                    intermediate_steps=attempt_intermediate_steps,
-                                    replay_messages=attempt_replayed_tool_messages,
+                                fallback_summary = (
+                                    self._build_synthesis_reasoning_only_fallback(
+                                        intermediate_steps=attempt_intermediate_steps,
+                                        replay_messages=attempt_replayed_tool_messages,
+                                    )
                                 )
                                 if fallback_summary:
                                     attempt_emitted_content = True

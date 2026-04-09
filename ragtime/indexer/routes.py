@@ -25,105 +25,150 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional
 
 import httpx
-from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
-                     Query, UploadFile)
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
-from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.copilot_auth import (ensure_copilot_token_fresh,
-                                       exchange_github_token_for_copilot_token,
-                                       is_copilot_token_refresh_in_progress)
-from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
-                                           get_embedding_models)
+from ragtime.core.copilot_auth import (
+    ensure_copilot_token_fresh,
+    exchange_github_token_for_copilot_token,
+    is_copilot_token_refresh_in_progress,
+)
+from ragtime.core.embedding_models import (
+    OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
+)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
-                                       get_context_limit, get_output_limit,
-                                       register_model_reasoning_capabilities,
-                                       register_model_supported_endpoints,
-                                       requires_responses_api,
-                                       supports_function_calling,
-                                       supports_responses_api,
-                                       update_model_function_calling,
-                                       update_model_limit,
-                                       update_model_output_limit)
-from ragtime.core.ollama import (extract_capabilities,
-                                 extract_effective_context_length,
-                                 get_model_details, is_embedding_capable,
-                                 is_reachable)
+from ragtime.core.model_limits import (
+    MODEL_FAMILY_PATTERNS,
+    get_context_limit,
+    get_output_limit,
+    register_model_reasoning_capabilities,
+    register_model_supported_endpoints,
+    requires_responses_api,
+    supports_function_calling,
+    supports_responses_api,
+    update_model_function_calling,
+    update_model_limit,
+    update_model_output_limit,
+)
+from ragtime.core.ollama import (
+    extract_capabilities,
+    extract_effective_context_length,
+    get_model_details,
+    is_embedding_capable,
+    is_reachable,
+)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
-                                    mssql_connect, mysql_connect,
-                                    normalize_mssql_error_message)
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, ssh_tunnel_config_from_dict,
-                              test_ssh_connection)
+from ragtime.core.sql_utils import (
+    MssqlConnectionError,
+    MysqlConnectionError,
+    mssql_connect,
+    mysql_connect,
+    normalize_mssql_error_message,
+)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    ssh_tunnel_config_from_dict,
+    test_ssh_connection,
+)
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
-    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS)
+    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
+)
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import (
-    background_task_service, rebuild_tool_messages_from_events)
+    background_task_service,
+    rebuild_tool_messages_from_events,
+)
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    ChatMessage, ChatTaskResponse,
-                                    ChatTaskStatus, CheckRepoVisibilityRequest,
-                                    ConfigurationWarning, Conversation,
-                                    ConversationResponse,
-                                    CreateConversationRequest,
-                                    CreateIndexRequest,
-                                    CreateToolConfigRequest,
-                                    CreateToolGroupRequest,
-                                    DatabaseDiscoverOption, EmbeddingStatus,
-                                    FetchBranchesRequest,
-                                    FetchBranchesResponse,
-                                    FilesystemAnalysisJobResponse,
-                                    FilesystemConnectionConfig,
-                                    FilesystemIndexJobResponse,
-                                    IndexAnalysisResult, IndexConfig,
-                                    IndexInfo, IndexJobResponse, IndexStatus,
-                                    InfluxdbDiscoverRequest,
-                                    InfluxdbDiscoverResponse,
-                                    MssqlDiscoverRequest,
-                                    MssqlDiscoverResponse,
-                                    MysqlDiscoverRequest,
-                                    MysqlDiscoverResponse, OcrMode,
-                                    PdmDiscoverRequest, PdmDiscoverResponse,
-                                    PdmIndexJobResponse,
-                                    PostgresDiscoverRequest,
-                                    PostgresDiscoverResponse,
-                                    ProviderPromptDebugListResponse,
-                                    ProviderPromptDebugRecord,
-                                    RepoVisibilityResponse,
-                                    RetryVisualizationRequest,
-                                    RetryVisualizationResponse,
-                                    SchemaIndexJobResponse, SendMessageRequest,
-                                    ToolConfig, ToolGroup, ToolTestRequest,
-                                    ToolType, TriggerFilesystemIndexRequest,
-                                    TriggerPdmIndexRequest,
-                                    TriggerSchemaIndexRequest,
-                                    UpdateSettingsRequest,
-                                    UpdateToolConfigRequest,
-                                    UpdateToolGroupRequest,
-                                    UserSpacePreviewSettingsResponse,
-                                    VectorStoreType,
-                                    WorkspaceChatStateResponse)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    ChatMessage,
+    ChatTaskResponse,
+    ChatTaskStatus,
+    CheckRepoVisibilityRequest,
+    ConfigurationWarning,
+    Conversation,
+    ConversationResponse,
+    CreateConversationRequest,
+    CreateIndexRequest,
+    CreateToolConfigRequest,
+    CreateToolGroupRequest,
+    DatabaseDiscoverOption,
+    EmbeddingStatus,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    FilesystemAnalysisJobResponse,
+    FilesystemConnectionConfig,
+    FilesystemIndexJobResponse,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJobResponse,
+    IndexStatus,
+    InfluxdbDiscoverRequest,
+    InfluxdbDiscoverResponse,
+    MssqlDiscoverRequest,
+    MssqlDiscoverResponse,
+    MysqlDiscoverRequest,
+    MysqlDiscoverResponse,
+    OcrMode,
+    PdmDiscoverRequest,
+    PdmDiscoverResponse,
+    PdmIndexJobResponse,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
+    ProviderPromptDebugListResponse,
+    ProviderPromptDebugRecord,
+    RepoVisibilityResponse,
+    RetryVisualizationRequest,
+    RetryVisualizationResponse,
+    SchemaIndexJobResponse,
+    SendMessageRequest,
+    ToolConfig,
+    ToolGroup,
+    ToolTestRequest,
+    ToolType,
+    TriggerFilesystemIndexRequest,
+    TriggerPdmIndexRequest,
+    TriggerSchemaIndexRequest,
+    UpdateSettingsRequest,
+    UpdateToolConfigRequest,
+    UpdateToolGroupRequest,
+    UserSpacePreviewSettingsResponse,
+    VectorStoreType,
+    WorkspaceChatStateResponse,
+)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -1859,8 +1904,7 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1881,8 +1925,7 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        get_faiss_backend
+                    from ragtime.indexer.vector_backends import get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -2862,8 +2905,7 @@ async def discover_influxdb_buckets(
 
     def discover_buckets(effective_url: str) -> tuple[bool, list[str], str | None]:
         try:
-            from influxdb_client import \
-                InfluxDBClient  # type: ignore[import-untyped]
+            from influxdb_client import InfluxDBClient  # type: ignore[import-untyped]
         except ImportError:
             return False, [], "influxdb-client package not installed"
 
@@ -8777,22 +8819,33 @@ async def _resolve_workspace_runtime_scope(
 
     effective_workspace_id = requested_workspace_id or conversation_workspace_id
 
-    # Fetch conversation tool selections
+    # Fetch conversation tool and group selections
     db = Prisma()
     await db.connect()
     try:
         conversation_tool_selections = await db.conversationtoolselection.find_many(
             where={"conversationId": conversation.id}
         )
+        conversation_group_selections = (
+            await db.conversationtoolgroupselection.find_many(
+                where={"conversationId": conversation.id}
+            )
+        )
         conversation_selected_tool_ids = [
             s.toolConfigId for s in conversation_tool_selections
+        ]
+        conversation_selected_group_ids = [
+            s.toolGroupId for s in conversation_group_selections
         ]
     finally:
         await db.disconnect()
 
-    selected_tool_ids = (
-        set(conversation_selected_tool_ids) if conversation_selected_tool_ids else set()
-    )
+    selected_tool_ids = set(conversation_selected_tool_ids)
+    if conversation_selected_group_ids:
+        group_tool_ids = await repository.get_tool_ids_for_groups(
+            conversation_selected_group_ids
+        )
+        selected_tool_ids.update(group_tool_ids)
 
     workspace_context = None
     if effective_workspace_id:
@@ -8803,14 +8856,20 @@ async def _resolve_workspace_runtime_scope(
         )
         # Workspace scope enforces strict selected-tool bounds.
         selected_tool_ids = set(workspace.selected_tool_ids)
+        if workspace.selected_tool_group_ids:
+            group_tool_ids = await repository.get_tool_ids_for_groups(
+                workspace.selected_tool_group_ids
+            )
+            selected_tool_ids.update(group_tool_ids)
         workspace_context = {
             "workspace_id": effective_workspace_id,
             "user_id": user.id,
         }
 
-    # If no tools selected at all, return no blocking (all tools available)
+    # An empty selection means no system tools are available for this request.
     if not selected_tool_ids:
-        return effective_workspace_id, None, workspace_context
+        blocked_tool_names = rag.get_blocked_config_tool_names([])
+        return effective_workspace_id, blocked_tool_names, workspace_context
 
     # Get blocked tool names (tools NOT in selected set)
     blocked_tool_names = rag.get_blocked_config_tool_names(list(selected_tool_ids))

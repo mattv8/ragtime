@@ -874,17 +874,28 @@ For broader recall, increase `k`. For full snippets when results are truncated, 
 def build_tool_system_prompt(
     tool_configs: List[dict],
     unavailable_tool_configs: Optional[List[dict]] = None,
+    no_tools_selected: bool = False,
 ) -> str:
     """Build system prompt section describing available system tools.
 
     Args:
         tool_configs: List of tool configuration dictionaries.
+        unavailable_tool_configs: Selected tools that are configured but unavailable.
+        no_tools_selected: Whether tools exist globally but none are selected for this request.
 
     Returns:
         System prompt section with tool descriptions.
     """
     if not tool_configs:
-        prompt = """
+        if no_tools_selected:
+            prompt = """
+
+## SYSTEM TOOLS
+
+No system tools are selected for this request. Do not claim live system access or attempt system-tool calls. Answer from indexed knowledge only unless tools are explicitly selected for this chat/workspace.
+"""
+        else:
+            prompt = """
 
 ## SYSTEM TOOLS
 

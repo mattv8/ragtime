@@ -1402,6 +1402,12 @@ function parseMessageContent(content: string | ContentPart[]): { text: string; a
   return { text, attachments };
 }
 
+function getGroupToolIds(tools: UserSpaceAvailableTool[], groupId: string): string[] {
+  return tools
+    .filter((tool) => tool.group_id === groupId)
+    .map((tool) => tool.id);
+}
+
 // Component to display message attachments
 interface MessageAttachmentsProps {
   attachments: ContentPart[];
@@ -1660,6 +1666,7 @@ export function ChatPanel({
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [savingMembers, setSavingMembers] = useState(false);
   const [savingTools, setSavingTools] = useState(false);
+  const [isConversationListLoading, setIsConversationListLoading] = useState(true);
   const [showPromptDebugModal, setShowPromptDebugModal] = useState(false);
   const [promptDebugRecords, setPromptDebugRecords] = useState<ProviderPromptDebugRecord[]>([]);
   const [promptDebugLoading, setPromptDebugLoading] = useState(false);
@@ -1681,18 +1688,22 @@ export function ChatPanel({
   const effectiveToolIds = useWorkspaceToolSource
     ? (workspaceSelectedToolIds ?? [])
     : conversationToolIds;
-  const availableConversationToolIds = useMemo(
-    () => availableTools.map((tool) => tool.id),
-    [availableTools]
-  );
   const resolvedConversationToolIds = useMemo(
-    () => (conversationToolIds.length > 0 ? conversationToolIds : availableConversationToolIds),
-    [availableConversationToolIds, conversationToolIds]
+    () => conversationToolIds,
+    [conversationToolIds]
   );
-  const resolvedEffectiveToolIds = useMemo(() => {
-    const availableIds = effectiveAvailableTools.map((tool) => tool.id);
-    return effectiveToolIds.length > 0 ? effectiveToolIds : availableIds;
-  }, [effectiveAvailableTools, effectiveToolIds]);
+  const resolvedEffectiveToolIds = useMemo(
+    () => effectiveToolIds,
+    [effectiveToolIds]
+  );
+  const resolvedConversationToolIdSet = useMemo(
+    () => new Set(resolvedConversationToolIds),
+    [resolvedConversationToolIds]
+  );
+  const resolvedEffectiveToolIdSet = useMemo(
+    () => new Set(resolvedEffectiveToolIds),
+    [resolvedEffectiveToolIds]
+  );
   const effectiveSavingTools = useWorkspaceToolSource ? workspaceSavingTools : savingTools;
 
   const effectiveToolGroupIds = useWorkspaceToolSource
@@ -2186,22 +2197,40 @@ export function ChatPanel({
   }, [availableModels]);
 
   const groupedConversations = useMemo(() => {
-    if (!isAdmin) return [] as Array<{ key: string; label: string; conversations: Conversation[] }>;
+    if (!isAdmin) return [] as Array<{ key: string; label: string; conversations: Conversation[]; isCurrentUserGroup: boolean }>;
 
-    const groups = conversations.reduce<Record<string, { label: string; conversations: Conversation[] }>>((acc, conv) => {
+    const groups = conversations.reduce<Record<string, { label: string; conversations: Conversation[]; isCurrentUserGroup: boolean }>>((acc, conv) => {
       const key = getOwnerKey(conv);
       const label = getOwnerLabel(conv);
       const existing = acc[key];
       acc[key] = existing
-        ? { label: existing.label || label, conversations: [...existing.conversations, conv] }
-        : { label, conversations: [conv] };
+        ? {
+            label: existing.label || label,
+            conversations: [...existing.conversations, conv],
+            isCurrentUserGroup: existing.isCurrentUserGroup || conv.user_id === currentUser.id,
+          }
+        : {
+            label,
+            conversations: [conv],
+            isCurrentUserGroup: conv.user_id === currentUser.id,
+          };
       return acc;
     }, {});
 
     return Object.entries(groups)
-      .map(([key, value]) => ({ key, label: value.label, conversations: value.conversations }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [conversations, getOwnerKey, getOwnerLabel, isAdmin]);
+      .map(([key, value]) => ({
+        key,
+        label: value.label,
+        conversations: value.conversations,
+        isCurrentUserGroup: value.isCurrentUserGroup,
+      }))
+      .sort((a, b) => {
+        if (a.isCurrentUserGroup !== b.isCurrentUserGroup) {
+          return a.isCurrentUserGroup ? -1 : 1;
+        }
+        return a.label.localeCompare(b.label);
+      });
+  }, [conversations, currentUser.id, getOwnerKey, getOwnerLabel, isAdmin]);
 
   useEffect(() => {
     if (!isAdmin) {
@@ -2363,13 +2392,24 @@ export function ChatPanel({
     localStorage.setItem('chat-reasoning-visibility', reasoningVisibility);
   }, [reasoningVisibility]);
 
-  // Load conversations and available models on mount
+  // Refresh available models once on mount (stable trigger, independent of model-fetch identity)
   useEffect(() => {
+    refreshModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reset state and load conversations when workspace changes (or on initial mount)
+  useEffect(() => {
+    setConversations([]);
+    setActiveConversation(null);
     if (!workspaceId) {
       loadConversations();
+    } else {
+      // Workspace mode: set loading until applyWorkspaceChatState clears it
+      setIsConversationListLoading(true);
     }
-    refreshModels();
-  }, [workspaceId, refreshModels]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -2441,6 +2481,7 @@ export function ChatPanel({
     if (!selectedConversationId) {
       setActiveTask(null);
       setInterruptedTask(null);
+      setIsConversationListLoading(false);
       return;
     }
 
@@ -2456,14 +2497,26 @@ export function ChatPanel({
     setActiveTask(null);
     setInterruptedTask(interruptedT ?? null);
     syncConversationActiveTaskId(selectedConversationId, null);
+    setIsConversationListLoading(false);
   }, [syncConversationActiveTaskId]);
 
   const loadConversations = async () => {
+    setIsConversationListLoading(true);
     try {
       const workspaceState = workspaceId
         ? (workspaceChatState ?? await api.getWorkspaceChatState(workspaceId, activeConversationRef.current?.id ?? null))
         : null;
-      const data = workspaceState?.conversations ?? await api.listConversations(workspaceId);
+      const [data, workspacePage] = await Promise.all([
+        workspaceState?.conversations
+          ? Promise.resolve(workspaceState.conversations)
+          : api.listConversations(workspaceId),
+        !workspaceId
+          ? api.listUserSpaceWorkspaces(0, 200).catch((workspaceErr) => {
+              console.warn('Failed to load userspace workspaces for conversation filtering:', workspaceErr);
+              return null;
+            })
+          : Promise.resolve(null),
+      ]);
       let userspaceConversationIds = new Set<string>();
 
       const getLinkedWorkspaceId = (conversation: Conversation): string | null => {
@@ -2471,15 +2524,10 @@ export function ChatPanel({
         return conversation.workspace_id ?? camelWorkspaceId ?? null;
       };
 
-      if (!workspaceId) {
-        try {
-          const workspacePage = await api.listUserSpaceWorkspaces(0, 200);
-          userspaceConversationIds = new Set(
-            workspacePage.items.flatMap((workspace) => workspace.conversation_ids || [])
-          );
-        } catch (workspaceErr) {
-          console.warn('Failed to load userspace workspaces for conversation filtering:', workspaceErr);
-        }
+      if (workspacePage) {
+        userspaceConversationIds = new Set(
+          workspacePage.items.flatMap((workspace) => workspace.conversation_ids || [])
+        );
       }
 
       const visibleConversations = data.filter((conversation) => {
@@ -2504,6 +2552,8 @@ export function ChatPanel({
       }
     } catch (err) {
       console.error('Failed to load conversations:', err);
+    } finally {
+      setIsConversationListLoading(false);
     }
   };
 
@@ -2629,6 +2679,28 @@ export function ChatPanel({
     }
   }, [activeConversation, fetchConversationMembers]);
 
+  const persistConversationToolSelection = useCallback(async (
+    nextToolIds: string[],
+    nextGroupIds: string[],
+    fallbackMessage: string,
+  ) => {
+    if (!activeConversation) return;
+
+    setSavingTools(true);
+    try {
+      await api.updateConversationTools(activeConversation.id, {
+        tool_config_ids: nextToolIds,
+        tool_group_ids: nextGroupIds,
+      });
+      setConversationToolIds(nextToolIds);
+      setConversationToolGroupIds(nextGroupIds);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : fallbackMessage);
+    } finally {
+      setSavingTools(false);
+    }
+  }, [activeConversation]);
+
   const handleToggleConversationTool = useCallback(async (toolId: string) => {
     if (!activeConversation || isConversationViewer) return;
     const targetTool = availableTools.find((tool) => tool.id === toolId);
@@ -2637,75 +2709,42 @@ export function ChatPanel({
     if (targetTool?.group_id && currentGroupIds.has(targetTool.group_id)) {
       const nextGroupIds = new Set(currentGroupIds);
       nextGroupIds.delete(targetTool.group_id);
-      const nextSelected = new Set<string>();
-      for (const tool of availableTools) {
-        if (tool.group_id === targetTool.group_id && tool.id !== toolId) {
-          nextSelected.add(tool.id);
-        }
-      }
+      const nextSelected = new Set(
+        getGroupToolIds(availableTools, targetTool.group_id).filter((id) => id !== toolId)
+      );
 
-      setSavingTools(true);
-      try {
-        await api.updateConversationTools(activeConversation.id, {
-          tool_config_ids: Array.from(nextSelected),
-          tool_group_ids: Array.from(nextGroupIds),
-        });
-        setConversationToolIds(Array.from(nextSelected));
-        setConversationToolGroupIds(Array.from(nextGroupIds));
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to update tool selection');
-      } finally {
-        setSavingTools(false);
-      }
+      await persistConversationToolSelection(
+        Array.from(nextSelected),
+        Array.from(nextGroupIds),
+        'Failed to update tool selection',
+      );
       return;
     }
 
-    const nextSelected = conversationToolIds.length > 0
-      ? new Set(conversationToolIds)
-      : new Set(availableConversationToolIds);
+    const nextSelected = new Set(resolvedConversationToolIds);
     if (nextSelected.has(toolId)) {
       nextSelected.delete(toolId);
     } else {
       nextSelected.add(toolId);
     }
 
-    const normalizedSelection = availableConversationToolIds.length > 0
-      && nextSelected.size === availableConversationToolIds.length
-      ? []
-      : Array.from(nextSelected);
-
-    setSavingTools(true);
-    try {
-      await api.updateConversationTools(activeConversation.id, {
-        tool_config_ids: normalizedSelection,
-        tool_group_ids: Array.from(currentGroupIds),
-      });
-      setConversationToolIds(normalizedSelection);
-      setConversationToolGroupIds(Array.from(currentGroupIds));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update tool selection');
-    } finally {
-      setSavingTools(false);
-    }
-  }, [activeConversation, availableConversationToolIds, availableTools, conversationToolIds, conversationToolGroupIds, isConversationViewer]);
+    await persistConversationToolSelection(
+      Array.from(nextSelected),
+      Array.from(currentGroupIds),
+      'Failed to update tool selection',
+    );
+  }, [activeConversation, availableTools, conversationToolGroupIds, isConversationViewer, persistConversationToolSelection, resolvedConversationToolIds]);
 
   const handleToggleConversationToolGroup = useCallback(async (groupId: string) => {
     if (!activeConversation || isConversationViewer) return;
-    const groupToolIds = availableTools
-      .filter((tool) => tool.group_id === groupId)
-      .map((tool) => tool.id);
+    const groupToolIds = getGroupToolIds(availableTools, groupId);
     const nextGroupIds = new Set(conversationToolGroupIds);
     if (nextGroupIds.has(groupId)) {
       nextGroupIds.delete(groupId);
     } else {
       nextGroupIds.add(groupId);
     }
-    const groupArr = Array.from(nextGroupIds);
-
-    const currentToolIds = conversationToolIds.length > 0
-      ? conversationToolIds
-      : availableConversationToolIds;
-    const nextToolIds = new Set(currentToolIds);
+    const nextToolIds = new Set(resolvedConversationToolIds);
 
     if (!nextGroupIds.has(groupId)) {
       for (const toolId of groupToolIds) {
@@ -2713,25 +2752,12 @@ export function ChatPanel({
       }
     }
 
-    const normalizedToolIds = availableConversationToolIds.length > 0
-      && nextToolIds.size === availableConversationToolIds.length
-      ? []
-      : Array.from(nextToolIds);
-
-    setSavingTools(true);
-    try {
-      await api.updateConversationTools(activeConversation.id, {
-        tool_config_ids: normalizedToolIds,
-        tool_group_ids: groupArr,
-      });
-      setConversationToolIds(normalizedToolIds);
-      setConversationToolGroupIds(groupArr);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update tool group selection');
-    } finally {
-      setSavingTools(false);
-    }
-  }, [activeConversation, availableConversationToolIds, availableTools, conversationToolIds, conversationToolGroupIds, isConversationViewer]);
+    await persistConversationToolSelection(
+      Array.from(nextToolIds),
+      Array.from(nextGroupIds),
+      'Failed to update tool group selection',
+    );
+  }, [activeConversation, availableTools, conversationToolGroupIds, isConversationViewer, persistConversationToolSelection, resolvedConversationToolIds]);
 
   const handleToggleInlineTool = useCallback(async (toolId: string) => {
     if (useWorkspaceToolSource && onToggleWorkspaceTool) {
@@ -2876,6 +2902,14 @@ export function ChatPanel({
     return null;
   }, [activeConversation, availableModels, modelsError, modelsLoading, modelsReadiness]);
 
+  const applyNewConversationToolDefaults = useCallback(() => {
+    if (useWorkspaceToolSource || availableTools.length === 0) {
+      return;
+    }
+    setConversationToolIds(availableTools.map((tool) => tool.id));
+    setConversationToolGroupIds([]);
+  }, [availableTools, useWorkspaceToolSource]);
+
   const createNewConversation = async () => {
     if (readOnly) return;
     try {
@@ -2883,6 +2917,7 @@ export function ChatPanel({
       const conversation = await api.createConversation(undefined, workspaceId);
       setConversations(prev => [conversation, ...prev]);
       setActiveConversation(conversation);
+      applyNewConversationToolDefaults();
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create conversation');
@@ -3342,6 +3377,7 @@ export function ChatPanel({
       const conversation = await api.createConversation(undefined, workspaceId);
       setConversations(prev => [conversation, ...prev]);
       setActiveConversation(conversation);
+      applyNewConversationToolDefaults();
       setInterruptedTask(null);
       setHitMaxIterations(false);
       setIsConnectionError(false);
@@ -3825,8 +3861,17 @@ export function ChatPanel({
           </div>
         </div>
 
-        <div className={`chat-conversation-list ${!isAdmin ? 'chat-conversation-list-non-admin' : ''}`}>
-          {conversations.length === 0 ? (
+        <div className={`chat-conversation-list ${!isAdmin ? 'chat-conversation-list-non-admin' : ''}`} aria-busy={isConversationListLoading}>
+          {isConversationListLoading ? (
+            <div className="chat-conversation-skeleton-list" aria-hidden="true">
+              {Array.from({ length: isAdmin ? 6 : 8 }).map((_, index) => (
+                <div key={index} className="chat-conversation-skeleton">
+                  <div className="chat-skeleton-line chat-conversation-skeleton-title"></div>
+                  <div className="chat-skeleton-line chat-conversation-skeleton-meta"></div>
+                </div>
+              ))}
+            </div>
+          ) : conversations.length === 0 ? (
             <div className="chat-empty-state">
               <p>No conversations yet</p>
               <button className="btn" onClick={createNewConversation}>
@@ -3869,7 +3914,16 @@ export function ChatPanel({
 
       {/* Main Chat Area */}
       <div className="chat-main" ref={chatMainRef}>
-        {activeConversation ? (
+        {isConversationListLoading ? (
+          <div className="chat-no-conversation chat-no-conversation-loading" aria-live="polite">
+            <div className="chat-main-skeleton" aria-hidden="true">
+              <div className="chat-skeleton-line chat-main-skeleton-title"></div>
+              <div className="chat-skeleton-line chat-main-skeleton-body"></div>
+              <div className="chat-skeleton-line chat-main-skeleton-body chat-main-skeleton-body-short"></div>
+            </div>
+            <p className="chat-loading-label">Loading conversations...</p>
+          </div>
+        ) : activeConversation ? (
           <>
             {/* Chat Header */}
             <div className={`chat-header ${embedded ? 'chat-header-embedded' : ''}`}>
@@ -4109,7 +4163,7 @@ export function ChatPanel({
                 {!embedded && activeConversation && !isConversationViewer && (
                   <ToolSelectorDropdown
                     availableTools={availableTools}
-                    selectedToolIds={new Set(resolvedConversationToolIds)}
+                    selectedToolIds={resolvedConversationToolIdSet}
                     onToggleTool={handleToggleConversationTool}
                     selectedToolGroupIds={conversationToolGroupIdSet}
                     onToggleToolGroup={handleToggleConversationToolGroup}
@@ -4517,7 +4571,7 @@ export function ChatPanel({
                     {showInlineToolSelector && (
                       <ToolSelectorDropdown
                         availableTools={effectiveAvailableTools}
-                        selectedToolIds={new Set(resolvedEffectiveToolIds)}
+                        selectedToolIds={resolvedEffectiveToolIdSet}
                         onToggleTool={handleToggleInlineTool}
                         selectedToolGroupIds={effectiveToolGroupIdSet}
                         onToggleToolGroup={handleToggleInlineToolGroup}
@@ -4545,7 +4599,7 @@ export function ChatPanel({
                       {showInlineToolSelector && (
                         <ToolSelectorDropdown
                           availableTools={effectiveAvailableTools}
-                          selectedToolIds={new Set(resolvedEffectiveToolIds)}
+                          selectedToolIds={resolvedEffectiveToolIdSet}
                           onToggleTool={handleToggleInlineTool}
                           selectedToolGroupIds={effectiveToolGroupIdSet}
                           onToggleToolGroup={handleToggleInlineToolGroup}
