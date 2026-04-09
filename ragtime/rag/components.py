@@ -22,7 +22,6 @@ from typing import Any, List, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -45,6 +44,7 @@ from langchain_openai.chat_models.base import (
     _construct_responses_api_payload,
     _get_last_messages,
 )
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
@@ -11587,21 +11587,27 @@ except Exception as e:
                         )
 
                     # ── Tool-free synthesis fallback ──
-                    # If all agent continuation attempts are exhausted and
-                    # we still have no user-visible text, make one final
-                    # direct LLM call WITHOUT tools to guarantee output.
+                    # If the agent path ends with no user-visible text,
+                    # make one final direct LLM call WITHOUT tools to
+                    # guarantee output, even when the agent produced no
+                    # tool activity at all.
                     if (
                         not attempt_emitted_content
-                        and any_tool_activity
                         and not request_tool_state.get("max_iterations_reached", False)
                         and request_llm is not None
                     ):
                         request_tool_state["tool_free_synthesis_used"] = True
-                        logger.info(
-                            "All %d agent continuation attempt(s) exhausted without "
-                            "final text; falling back to tool-free LLM synthesis",
-                            attempt_number,
-                        )
+                        if any_tool_activity:
+                            logger.info(
+                                "All %d agent continuation attempt(s) exhausted without "
+                                "final text; falling back to tool-free LLM synthesis",
+                                attempt_number,
+                            )
+                        else:
+                            logger.info(
+                                "Agent run ended without tool activity or final text; "
+                                "falling back to direct LLM recovery"
+                            )
                         synthesis_chat_history = list(chat_history)
                         synthesis_has_original_input = bool(
                             synthesis_chat_history
@@ -11873,5 +11879,4 @@ except Exception as e:
 
 
 # Global RAG components instance
-rag = RAGComponents()
 rag = RAGComponents()

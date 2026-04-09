@@ -3,10 +3,10 @@ Pydantic models for API requests and responses.
 OpenAI API compatible schemas.
 """
 
-
 from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
+
 
 class TextContent(BaseModel):
     """Text content in a multimodal message."""
@@ -229,5 +229,4 @@ class HealthResponse(BaseModel):
     memory: Optional[MemoryStats] = None
     index_details: Optional[List[IndexLoadingDetail]] = None
     sequential_loading: Optional[bool] = None
-    loading_index: Optional[str] = None  # Currently loading index name
     loading_index: Optional[str] = None  # Currently loading index name
