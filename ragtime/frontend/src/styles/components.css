@@ -3651,7 +3651,8 @@ textarea {
   align-items: stretch;
 }
 
-.input-with-button input {
+.input-with-button input,
+.input-with-button select {
   flex: 1;
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
@@ -3670,6 +3671,11 @@ textarea {
 .input-with-button.input-with-actions .btn-test {
   border-top-left-radius: var(--radius-md);
   border-bottom-left-radius: var(--radius-md);
+}
+
+.input-with-button.input-with-actions select {
+  border-top-right-radius: var(--radius-md);
+  border-bottom-right-radius: var(--radius-md);
 }
 
 /* Keep OpenAPI model selector trigger and adjacent settings action button aligned. */

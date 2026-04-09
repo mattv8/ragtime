@@ -2,7 +2,6 @@
 Indexer data models and schemas.
 """
 
-
 import hashlib
 import json
 from datetime import datetime
@@ -20,6 +19,7 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
     normalize_userspace_preview_sandbox_flags,
 )
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -970,6 +970,10 @@ class UpdateSettingsRequest(BaseModel):
         ge=50_000,
         le=5_000_000,
     )
+    llm_ollama_protocol: Optional[str] = None
+    llm_ollama_host: Optional[str] = None
+    llm_ollama_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    llm_ollama_base_url: Optional[str] = None
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     github_models_api_token: Optional[str] = None
@@ -984,6 +988,9 @@ class UpdateSettingsRequest(BaseModel):
     allowed_openapi_models: Optional[List[str]] = None
     openapi_sync_chat_models: Optional[bool] = None
     max_iterations: Optional[int] = Field(default=None, ge=1, le=100)
+    # Token optimization settings
+    max_tool_output_chars: Optional[int] = Field(default=None, ge=0, le=100000)
+    scratchpad_window_size: Optional[int] = Field(default=None, ge=0, le=100)
     # Legacy tool settings (for backward compatibility)
     enabled_tools: Optional[List[str]] = None
     odoo_container: Optional[str] = None

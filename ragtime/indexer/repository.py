@@ -806,6 +806,14 @@ class IndexerRepository:
             image_payload_max_height=getattr(settings, "imagePayloadMaxHeight", 1024),
             image_payload_max_pixels=getattr(settings, "imagePayloadMaxPixels", 786432),
             image_payload_max_bytes=getattr(settings, "imagePayloadMaxBytes", 350000),
+            llm_ollama_protocol=getattr(settings, "llmOllamaProtocol", "http"),
+            llm_ollama_host=getattr(settings, "llmOllamaHost", "localhost"),
+            llm_ollama_port=getattr(settings, "llmOllamaPort", 11434),
+            llm_ollama_base_url=getattr(
+                settings,
+                "llmOllamaBaseUrl",
+                "http://localhost:11434",
+            ),
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
             github_models_api_token=github_models_api_token,
@@ -918,6 +926,10 @@ class IndexerRepository:
             "image_payload_max_height": "imagePayloadMaxHeight",
             "image_payload_max_pixels": "imagePayloadMaxPixels",
             "image_payload_max_bytes": "imagePayloadMaxBytes",
+            "llm_ollama_protocol": "llmOllamaProtocol",
+            "llm_ollama_host": "llmOllamaHost",
+            "llm_ollama_port": "llmOllamaPort",
+            "llm_ollama_base_url": "llmOllamaBaseUrl",
             "openai_api_key": "openaiApiKey",
             "anthropic_api_key": "anthropicApiKey",
             "github_models_api_token": "githubModelsApiToken",
@@ -1018,7 +1030,7 @@ class IndexerRepository:
         # - Empty string clears the group (set to None/empty)
         if "mcp_default_route_allowed_group" in updates:
             group_value = updates["mcp_default_route_allowed_group"]
-            if group_value == "":
+            if group_value in {"", None}:
                 update_data["mcpDefaultRouteAllowedGroup"] = None
             elif group_value is not None:
                 update_data["mcpDefaultRouteAllowedGroup"] = group_value
@@ -1032,6 +1044,19 @@ class IndexerRepository:
             else:
                 normalized_default_chat_model = str(default_chat_model_value).strip()
                 update_data["defaultChatModel"] = normalized_default_chat_model or None
+
+        # Fields that the UI may intentionally clear with an explicit null.
+        if (
+            "embedding_dimensions" in updates
+            and updates["embedding_dimensions"] is None
+        ):
+            update_data["embeddingDimensions"] = None
+
+        if (
+            "default_ocr_vision_model" in updates
+            and updates["default_ocr_vision_model"] is None
+        ):
+            update_data["defaultOcrVisionModel"] = None
 
         # Special handling for GitHub Copilot nullable fields.
         # These may need explicit clearing to NULL.

@@ -2034,6 +2034,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
           <div className="form-group">
             <label>Provider</label>
+            <div className="input-with-button input-with-actions">
             <select
               value={formData.llm_provider || 'openai'}
               onChange={(e) => {
@@ -2065,10 +2066,30 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               <option value="ollama">Ollama</option>
               <option value="github_copilot">GitHub Copilot</option>
             </select>
+            {/* Quick-fill from embedding Ollama when it has a real host */}
+            {formData.llm_provider === 'ollama' && formData.embedding_provider === 'ollama' && formData.ollama_host?.trim() && (
+              <button
+                type="button"
+                className="btn btn-test"
+                onClick={() => {
+                  setFormData({
+                    ...formData,
+                    llm_ollama_protocol: formData.ollama_protocol || DEFAULT_OLLAMA_PROTOCOL,
+                    llm_ollama_host: formData.ollama_host || '',
+                    llm_ollama_port: formData.ollama_port || DEFAULT_OLLAMA_PORT,
+                  });
+                  resetLlmOllamaState();
+                }}
+              >
+                Use Embedding Server
+              </button>
+            )}
+            </div>
           </div>
 
           {/* Ollama LLM Server Connection - only show when Ollama is selected */}
           {formData.llm_provider === 'ollama' && (
+            <>
             <OllamaConnectionForm
               protocol={formData.llm_ollama_protocol || 'http'}
               host={formData.llm_ollama_host || ''}
@@ -2101,6 +2122,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 formData.llm_ollama_port || DEFAULT_OLLAMA_PORT
               )}
             />
+            </>
           )}
 
           {/* API Key - show appropriate one based on provider */}
@@ -2784,6 +2806,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           <div className="form-row">
             <div className="form-group" id="setting-embedding_provider">
               <label>Provider</label>
+              <div className="input-with-button input-with-actions">
               <select
                 value={formData.embedding_provider || 'ollama'}
                 onChange={(e) => {
@@ -2810,6 +2833,25 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 <option value="ollama">Ollama</option>
                 <option value="openai">OpenAI</option>
               </select>
+              {/* Quick-fill from LLM Ollama when it has a real host */}
+              {formData.embedding_provider === 'ollama' && formData.llm_provider === 'ollama' && formData.llm_ollama_host?.trim() && (
+                <button
+                  type="button"
+                  className="btn btn-test"
+                  onClick={() => {
+                    setFormData({
+                      ...formData,
+                      ollama_protocol: formData.llm_ollama_protocol || DEFAULT_OLLAMA_PROTOCOL,
+                      ollama_host: formData.llm_ollama_host || '',
+                      ollama_port: formData.llm_ollama_port || DEFAULT_OLLAMA_PORT,
+                    });
+                    resetEmbeddingOllamaState();
+                  }}
+                >
+                  Use LLM Server
+                </button>
+              )}
+              </div>
               <p className="field-help">
                 Note: Anthropic does not offer embedding models. Use Ollama or OpenAI for document embeddings.
               </p>

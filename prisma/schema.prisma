@@ -154,6 +154,10 @@ model AppSettings {
   imagePayloadMaxHeight Int   @default(1024) @map("image_payload_max_height") // Max height (px) for image attachments
   imagePayloadMaxPixels Int   @default(786432) @map("image_payload_max_pixels") // Max total pixels for image attachments
   imagePayloadMaxBytes  Int   @default(350000) @map("image_payload_max_bytes") // Max compressed bytes for image attachments
+    llmOllamaProtocol String   @default("http") @map("llm_ollama_protocol")
+    llmOllamaHost     String   @default("localhost") @map("llm_ollama_host")
+    llmOllamaPort     Int      @default(11434) @map("llm_ollama_port")
+    llmOllamaBaseUrl  String   @default("http://localhost:11434") @map("llm_ollama_base_url")
   openaiApiKey      String   @default("") @map("openai_api_key")
   anthropicApiKey   String   @default("") @map("anthropic_api_key")
   githubModelsApiToken String @default("") @map("github_models_api_token")

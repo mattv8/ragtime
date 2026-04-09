@@ -198,7 +198,22 @@ class SettingsCache:
                 "embedding_provider": prisma_settings.embeddingProvider,
                 "embedding_model": prisma_settings.embeddingModel,
                 "embedding_dimensions": prisma_settings.embeddingDimensions,
+                "ollama_protocol": prisma_settings.ollamaProtocol,
+                "ollama_host": prisma_settings.ollamaHost,
+                "ollama_port": prisma_settings.ollamaPort,
                 "ollama_base_url": prisma_settings.ollamaBaseUrl,
+                "llm_ollama_protocol": getattr(
+                    prisma_settings, "llmOllamaProtocol", "http"
+                ),
+                "llm_ollama_host": getattr(
+                    prisma_settings, "llmOllamaHost", "localhost"
+                ),
+                "llm_ollama_port": getattr(prisma_settings, "llmOllamaPort", 11434),
+                "llm_ollama_base_url": getattr(
+                    prisma_settings,
+                    "llmOllamaBaseUrl",
+                    "http://localhost:11434",
+                ),
                 # MCP settings
                 "mcp_enabled": prisma_settings.mcpEnabled,
                 "mcp_default_route_auth": prisma_settings.mcpDefaultRouteAuth,
@@ -212,8 +227,14 @@ class SettingsCache:
                 "default_ocr_vision_model": getattr(
                     prisma_settings, "defaultOcrVisionModel", None
                 ),
+                "ocr_concurrency_limit": getattr(
+                    prisma_settings, "ocrConcurrencyLimit", 1
+                ),
                 "ollama_embedding_timeout_seconds": getattr(
                     prisma_settings, "ollamaEmbeddingTimeoutSeconds", 180
+                ),
+                "snapshot_retention_days": getattr(
+                    prisma_settings, "snapshotRetentionDays", 0
                 ),
                 # User Space configuration
                 "userspace_preview_sandbox_flags": userspace_preview_sandbox_flags,
@@ -279,7 +300,15 @@ class SettingsCache:
                 # Embedding settings
                 "embedding_provider": "ollama",
                 "embedding_model": "nomic-embed-text",
+                "embedding_dimensions": None,
+                "ollama_protocol": "http",
+                "ollama_host": "localhost",
+                "ollama_port": 11434,
                 "ollama_base_url": "http://localhost:11434",
+                "llm_ollama_protocol": "http",
+                "llm_ollama_host": "localhost",
+                "llm_ollama_port": 11434,
+                "llm_ollama_base_url": "http://localhost:11434",
                 # MCP settings
                 "mcp_enabled": False,
                 "mcp_default_route_auth": False,
@@ -289,7 +318,9 @@ class SettingsCache:
                 # OCR settings
                 "default_ocr_mode": "disabled",
                 "default_ocr_vision_model": None,
+                "ocr_concurrency_limit": 1,
                 "ollama_embedding_timeout_seconds": 180,
+                "snapshot_retention_days": 0,
                 # User Space configuration
                 "userspace_preview_sandbox_flags": list(
                     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS
