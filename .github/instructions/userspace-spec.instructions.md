@@ -39,7 +39,10 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 - Runtime launch is defined by `.ragtime/runtime-entrypoint.json` (command/cwd/framework) consumed by worker service.
 - `.ragtime/runtime-entrypoint.json` is authoritative. Runtime no longer falls back to `package.json`, Python entrypoint guesses, or `index.html` heuristics.
 - Keep launch commands `$PORT`-aware and bound to `0.0.0.0` for proxy reachability.
-- SQLite migration runner and migration files are agent-managed (created via file tools and executed via terminal tool). They are NOT auto-seeded or auto-bootstrapped. The `sqlite_migrate.py` template has been removed; `dashboard_entrypoint.js` and `runtime_bridge.js` live in `templates/`.
+- SQLite persistence uses `.ragtime/db/migrations/*.sql` as source-of-truth schema history and `.ragtime/scripts/sqlite_migrate.py` as the default runner scaffold.
+- The runtime bootstrap template includes a migration apply command for the default runner and watches both the runner path and migrations directory for digest changes.
+- Agents may update `.ragtime/scripts/sqlite_migrate.py` and `.ragtime/db/migrations/*` via file tools when implementing persistence changes.
+- `dashboard_entrypoint.js`, `runtime_bridge.js`, and `sqlite_migrate.py` templates live in `templates/`.
 
 ## Entrypoint Status + Framework Lock-In
 

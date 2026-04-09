@@ -189,7 +189,8 @@ _USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
 
 _SQLITE_TURN_REMINDER_LINE = (
     "- SQLite local persistence is ON: ensure this delivery includes both live data "
-    "wiring (Lane A) and any needed SQLite migrations under .ragtime/db/migrations/ (Lane B).\n"
+    "wiring (Lane A) and any needed SQLite migrations under .ragtime/db/migrations/ (Lane B). "
+    "Migration creation and upkeep are your responsibility in this mode.\n"
 )
 
 
@@ -547,10 +548,13 @@ This workspace has SQLite local persistence enabled. You must satisfy **both** l
 
 **Lane B -- SQLite local persistence (required for local app state)**
 - Use SQLite at `.ragtime/db/app.sqlite3` for local domain/app state (for example: user preferences, UI state, cache, drafts, operational data, computed aggregations for offline use).
+- You are responsible for persistence lifecycle management in include mode: design schema changes, add migrations, apply them in runtime/bootstrap, and keep migration history forward-only.
 - Every schema change requires a new numbered migration file in `.ragtime/db/migrations/` in lexical order (`0001_init.sql`, `0002_add_table.sql`, ...).
-- Runtime bootstrap runs `.ragtime/scripts/sqlite_migrate.py --db .ragtime/db/app.sqlite3 --migrations .ragtime/db/migrations` when present.
-- `.ragtime/scripts/sqlite_migrate.py` tracks applied migrations in `_ragtime_migrations` with SHA-256 checksums.
+- The workspace includes a runner at `.ragtime/scripts/sqlite_migrate.py`; keep it or replace it with an equivalent migration apply step.
+- Runtime bootstrap should run `.ragtime/scripts/sqlite_migrate.py --db .ragtime/db/app.sqlite3 --migrations .ragtime/db/migrations` so migrations apply on start/restart.
+- The default runner tracks applied migrations in `_ragtime_migrations` with SHA-256 checksums.
 - Never edit a previously applied migration file; always create a new migration.
+- If the project is JavaScript/TypeScript and an ORM is appropriate, Prisma is an optional query/modeling layer with a SQLite datasource; keep workspace persistence migrations in `.ragtime/db/migrations/` as the source of truth.
 - When scaffolding backend code, wire database configuration to `.ragtime/db/app.sqlite3` so local preview/runtime stays deterministic.
 
 **Delivery checklist (both lanes in one pass):**
@@ -566,7 +570,7 @@ SQLITE_INCLUDE_MODE_HINT = (
     "This workspace has SQLite local persistence enabled (include mode). "
     "Live data wiring remains required for dashboard datasets; additionally, "
     "persist local app state in .ragtime/db/app.sqlite3 with numbered SQL "
-    "migration files in .ragtime/db/migrations/."
+    "migration files in .ragtime/db/migrations/. You own creating and maintaining those migrations."
 )
 
 

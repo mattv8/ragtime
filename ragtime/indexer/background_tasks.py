@@ -30,6 +30,11 @@ from ragtime.indexer.utils import safe_tool_name
 logger = get_logger(__name__)
 
 
+DEV_SERVER_INTERRUPT_MESSAGE = (
+    "Chat run interrupted by dev server reload or shutdown before it finished."
+)
+
+
 def _synthesize_incomplete_response(
     events: list[dict[str, Any]],
     tool_calls: list[dict[str, Any]],
@@ -823,7 +828,19 @@ class BackgroundTaskService:
                         ) from exc
 
                     if self._shutdown:
-                        await repository.cancel_chat_task(task_id)
+                        await repository.update_chat_task_status(
+                            task_id,
+                            ChatTaskStatus.interrupted,
+                            error_message=DEV_SERVER_INTERRUPT_MESSAGE,
+                        )
+                        await task_event_bus.publish(
+                            task_id,
+                            {
+                                "completed": True,
+                                "status": "interrupted",
+                                "error": DEV_SERVER_INTERRUPT_MESSAGE,
+                            },
+                        )
                         return
 
                     if isinstance(event, dict):
@@ -1128,7 +1145,17 @@ class BackgroundTaskService:
                     # so user sees "continue?" prompt. Otherwise mark as cancelled.
                     if self._shutdown:
                         await repository.update_chat_task_status(
-                            task_id, ChatTaskStatus.interrupted
+                            task_id,
+                            ChatTaskStatus.interrupted,
+                            error_message=DEV_SERVER_INTERRUPT_MESSAGE,
+                        )
+                        await task_event_bus.publish(
+                            task_id,
+                            {
+                                "completed": True,
+                                "status": "interrupted",
+                                "error": DEV_SERVER_INTERRUPT_MESSAGE,
+                            },
                         )
                         logger.info(f"Task {task_id} interrupted by shutdown")
                     else:
