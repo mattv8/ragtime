@@ -16,6 +16,19 @@ type EditingField = 'name' | 'description' | null;
 // Heartbeat polling interval (15 seconds)
 const HEARTBEAT_INTERVAL = 15000;
 
+function hasSchemaIndexingEnabled(tool: ToolConfig): boolean {
+  return (tool.tool_type === 'postgres' || tool.tool_type === 'mssql' || tool.tool_type === 'mysql') &&
+    (tool.connection_config as { schema_index_enabled?: boolean })?.schema_index_enabled === true;
+}
+
+function getToolWorkingDirectory(tool: ToolConfig): string | null {
+  if (tool.tool_type !== 'ssh_shell' && tool.tool_type !== 'odoo_shell') {
+    return null;
+  }
+
+  return (tool.connection_config as { working_directory?: string })?.working_directory || null;
+}
+
 function formatMountSourceInterval(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) { const m = Math.floor(seconds / 60); const s = seconds % 60; return s > 0 ? `${m}m ${s}s` : `${m}m`; }
@@ -43,6 +56,8 @@ interface ToolCardProps {
 
 function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing, activeSchemaJob, schemaStats, onInlineUpdate }: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
+  const hasSchemaIndexing = hasSchemaIndexingEnabled(tool);
+  const workingDirectory = getToolWorkingDirectory(tool);
 
   // Inline editing state
   const [editingField, setEditingField] = useState<EditingField>(null);
@@ -51,10 +66,6 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
   const [saving, setSaving] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const descTextareaRef = useRef<HTMLTextAreaElement>(null);
-
-  // Check if schema indexing is enabled for this tool
-  const hasSchemaIndexing = (tool.tool_type === 'postgres' || tool.tool_type === 'mssql' || tool.tool_type === 'mysql') &&
-    (tool.connection_config as { schema_index_enabled?: boolean })?.schema_index_enabled === true;
 
   // Format memory size for display
   const formatMemory = (mb: number): string => {
@@ -321,7 +332,7 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         </div>
       )}
 
-      {((tool.allow_write) || ((tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell') && (tool.connection_config as any)?.working_directory) || activeSchemaJob) && (
+      {(tool.allow_write || workingDirectory || activeSchemaJob) && (
         <div className="tool-card-constraints">
           <IndexingPill
             activeJob={activeSchemaJob}
@@ -333,10 +344,10 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
               Write enabled
             </span>
           )}
-          {((tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell') && (tool.connection_config as any)?.working_directory) && (
-            <span className="constrained-path" title={`Constrained to ${(tool.connection_config as any).working_directory}`}>
+          {workingDirectory && (
+            <span className="constrained-path" title={`Constrained to ${workingDirectory}`}>
               <Icon name="folder" size={14} />
-              <span className="path-text">{(tool.connection_config as any).working_directory}</span>
+              <span className="path-text">{workingDirectory}</span>
             </span>
           )}
         </div>
@@ -475,10 +486,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
 
   // Load schema stats for tools with schema indexing enabled
   const loadSchemaStats = useCallback(async (toolList: ToolConfig[]) => {
-    const schemaTools = toolList.filter(t =>
-      (t.tool_type === 'postgres' || t.tool_type === 'mssql' || t.tool_type === 'mysql') &&
-      (t.connection_config as { schema_index_enabled?: boolean })?.schema_index_enabled === true
-    );
+    const schemaTools = toolList.filter(hasSchemaIndexingEnabled);
 
     if (schemaTools.length === 0) return;
 
@@ -745,9 +753,32 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     };
   }, [tools, groups]);
 
+  const activeSchemaJobsByToolId = useMemo(() => {
+    const jobsByToolId: Record<string, SchemaIndexJob> = {};
+
+    for (const job of schemaJobs) {
+      if ((job.status === 'pending' || job.status === 'indexing') && !jobsByToolId[job.tool_config_id]) {
+        jobsByToolId[job.tool_config_id] = job;
+      }
+    }
+
+    return jobsByToolId;
+  }, [schemaJobs]);
+
   // Selected group tab (null = show ungrouped / all)
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const groupContentRef = useRef<HTMLDivElement>(null);
+
+  const selectedGroup = useMemo(() => {
+    if (!selectedGroupId) {
+      return null;
+    }
+
+    return allGroups.find(({ group }) => group.id === selectedGroupId) || null;
+  }, [allGroups, selectedGroupId]);
+
+  const visibleTools = selectedGroup ? selectedGroup.tools : ungroupedTools;
+  const showSelectedGroupEmptyState = Boolean(selectedGroupId) && visibleTools.length === 0;
 
   // Click outside the group content area clears the selected group
   useEffect(() => {
@@ -846,6 +877,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const [dragToolId, setDragToolId] = useState<string | null>(null);
   const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null);
   const [dragOverUngrouped, setDragOverUngrouped] = useState(false);
+  const showUngroupedDropZone = !selectedGroupId && Boolean(dragToolId);
 
   const handleDragStart = useCallback((e: React.DragEvent, toolId: string) => {
     e.dataTransfer.setData('text/plain', toolId);
@@ -903,6 +935,33 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       await handleAssignGroup(toolId, null);
     }
   }, [handleAssignGroup]);
+
+  const renderToolCard = (tool: ToolConfig) => (
+    <div
+      key={tool.id}
+      draggable
+      onDragStart={(e) => handleDragStart(e, tool.id)}
+      onDragEnd={handleDragEnd}
+      className={`tool-card-drag-wrap${dragToolId === tool.id ? ' dragging' : ''}`}
+    >
+      <ToolCard
+        tool={tool}
+        heartbeat={heartbeats[tool.id] || null}
+        onEdit={handleEditTool}
+        onDelete={handleDeleteTool}
+        onToggle={handleToggleTool}
+        onTest={handleTestTool}
+        testing={testingToolId === tool.id}
+        onPdmReindex={handlePdmReindex}
+        pdmIndexing={pdmIndexingToolId === tool.id}
+        onSchemaReindex={handleSchemaReindex}
+        schemaIndexing={schemaIndexingToolId === tool.id}
+        activeSchemaJob={activeSchemaJobsByToolId[tool.id] || null}
+        schemaStats={schemaStats[tool.id] || null}
+        onInlineUpdate={handleInlineUpdate}
+      />
+    </div>
+  );
 
   return (
     <div className="tools-panel">
@@ -1014,96 +1073,28 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
             </div>
 
             {/* Tool cards — filtered by selected group */}
-            {(() => {
-              const selectedGroup = selectedGroupId
-                ? allGroups.find(g => g.group.id === selectedGroupId)
-                : null;
-              const visibleTools = selectedGroup
-                ? selectedGroup.tools
-                : ungroupedTools;
-              const isUngroupedView = !selectedGroupId;
-
-              if (visibleTools.length === 0 && selectedGroupId) {
-                return (
-                  <div className="tool-group-active-panel">
-                    <p className="muted" style={{ textAlign: 'center', margin: 0 }}>No tools in this group yet. Drag tools here to add them.</p>
-                  </div>
-                );
-              }
-
-              return (
-                <>
-                  {selectedGroupId && selectedGroup ? (
-                    <div className="tool-group-active-panel">
-                      <div className="tools-grid">
-                        {visibleTools.map((tool) => (
-                          <div
-                            key={tool.id}
-                            draggable
-                            onDragStart={(e) => handleDragStart(e, tool.id)}
-                            onDragEnd={handleDragEnd}
-                            className={`tool-card-drag-wrap${dragToolId === tool.id ? ' dragging' : ''}`}
-                          >
-                            <ToolCard
-                              tool={tool}
-                              heartbeat={heartbeats[tool.id] || null}
-                              onEdit={handleEditTool}
-                              onDelete={handleDeleteTool}
-                              onToggle={handleToggleTool}
-                              onTest={handleTestTool}
-                              testing={testingToolId === tool.id}
-                              onPdmReindex={handlePdmReindex}
-                              pdmIndexing={pdmIndexingToolId === tool.id}
-                              onSchemaReindex={handleSchemaReindex}
-                              schemaIndexing={schemaIndexingToolId === tool.id}
-                              activeSchemaJob={schemaJobs.find(j => j.tool_config_id === tool.id && (j.status === 'pending' || j.status === 'indexing'))}
-                              schemaStats={schemaStats[tool.id] || null}
-                              onInlineUpdate={handleInlineUpdate}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                  <div
-                    className={`tool-group-section-panel${isUngroupedView && dragToolId ? ' tool-ungrouped-drop-zone' : ''}${isUngroupedView && dragOverUngrouped ? ' drag-over' : ''}`}
-                    onDragOver={isUngroupedView && dragToolId ? handleUngroupedDragOver : undefined}
-                    onDragLeave={isUngroupedView && dragToolId ? handleUngroupedDragLeave : undefined}
-                    onDrop={isUngroupedView && dragToolId ? handleUngroupedDrop : undefined}
-                  >
-                  <div className="tools-grid">
-                    {visibleTools.map((tool) => (
-                      <div
-                        key={tool.id}
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, tool.id)}
-                        onDragEnd={handleDragEnd}
-                        className={`tool-card-drag-wrap${dragToolId === tool.id ? ' dragging' : ''}`}
-                      >
-                        <ToolCard
-                          tool={tool}
-                          heartbeat={heartbeats[tool.id] || null}
-                          onEdit={handleEditTool}
-                          onDelete={handleDeleteTool}
-                          onToggle={handleToggleTool}
-                          onTest={handleTestTool}
-                          testing={testingToolId === tool.id}
-                          onPdmReindex={handlePdmReindex}
-                          pdmIndexing={pdmIndexingToolId === tool.id}
-                          onSchemaReindex={handleSchemaReindex}
-                          schemaIndexing={schemaIndexingToolId === tool.id}
-                          activeSchemaJob={schemaJobs.find(j => j.tool_config_id === tool.id && (j.status === 'pending' || j.status === 'indexing'))}
-                          schemaStats={schemaStats[tool.id] || null}
-                          onInlineUpdate={handleInlineUpdate}
-                        />
-                      </div>
-                    ))}
-                  </div>
+            {showSelectedGroupEmptyState ? (
+              <div className="tool-group-active-panel">
+                <p className="muted" style={{ textAlign: 'center', margin: 0 }}>No tools in this group yet. Drag tools here to add them.</p>
+              </div>
+            ) : selectedGroupId && selectedGroup ? (
+              <div className="tool-group-active-panel">
+                <div className="tools-grid">
+                  {visibleTools.map(renderToolCard)}
                 </div>
-                  )}
-                </>
-              );
-            })()}
+              </div>
+            ) : (
+              <div
+                className={`tool-group-section-panel${showUngroupedDropZone ? ' tool-ungrouped-drop-zone' : ''}${dragOverUngrouped ? ' drag-over' : ''}`}
+                onDragOver={showUngroupedDropZone ? handleUngroupedDragOver : undefined}
+                onDragLeave={showUngroupedDropZone ? handleUngroupedDragLeave : undefined}
+                onDrop={showUngroupedDropZone ? handleUngroupedDrop : undefined}
+              >
+                <div className="tools-grid">
+                  {visibleTools.map(renderToolCard)}
+                </div>
+              </div>
+            )}
             </div>
           </>
         )}
