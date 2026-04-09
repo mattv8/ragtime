@@ -10098,16 +10098,6 @@ except Exception as e:
                     user_id,
                 ),
             )
-            prompt_additions += self._build_userspace_env_var_prompt_fragment(
-                env_var_summaries
-            )
-            prompt_additions += self._build_userspace_mount_prompt_fragment(
-                mountable_sources,
-                workspace_mounts,
-            )
-            prompt_additions += self._build_userspace_object_storage_prompt_fragment(
-                object_storage_config
-            )
             userspace_env_var_turn_hint = self._build_userspace_env_var_turn_hint(
                 env_var_summaries
             )
@@ -10156,14 +10146,12 @@ except Exception as e:
                 is_default_entrypoint=is_default,
             )
 
-            # Build prompt additions: visualization + userspace mode (with continuity context).
-            prompt_additions += (
-                UI_VISUALIZATION_USERSPACE_PROMPT
-                + build_userspace_mode_prompt_addition(
-                    include_sqlite_persistence=include_sqlite_persistence,
-                    has_live_data_tools=bool(allowed_tool_config_ids),
-                    workspace_continuity=continuity_ctx,
-                )
+            # Build prompt additions with userspace operating guidance first,
+            # then runtime/workspace context, then visualization details.
+            prompt_additions += build_userspace_mode_prompt_addition(
+                include_sqlite_persistence=include_sqlite_persistence,
+                has_live_data_tools=bool(allowed_tool_config_ids),
+                workspace_continuity=continuity_ctx,
             )
 
             # Cache nudge fragment by entrypoint state signature.
@@ -10182,6 +10170,17 @@ except Exception as e:
                 )
                 self._request_prompt_cache[nudge_cache_key] = nudge_fragment
             prompt_additions += nudge_fragment
+            prompt_additions += self._build_userspace_env_var_prompt_fragment(
+                env_var_summaries
+            )
+            prompt_additions += self._build_userspace_mount_prompt_fragment(
+                mountable_sources,
+                workspace_mounts,
+            )
+            prompt_additions += self._build_userspace_object_storage_prompt_fragment(
+                object_storage_config
+            )
+            prompt_additions += UI_VISUALIZATION_USERSPACE_PROMPT
         else:
             has_workspace_payload = workspace_context is not None
             has_inline_viz_tools = any(
