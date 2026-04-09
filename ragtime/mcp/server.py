@@ -102,14 +102,18 @@ async def get_mcp_server() -> Server:
     """Get the default MCP server and refresh branding from current settings."""
     app_settings = await get_app_settings()
     configured_name = str(app_settings.get("server_name", "Ragtime") or "Ragtime")
-    server_id = _to_mcp_server_id(configured_name)
+    # Use the slug only for state change detection; the Server() display name uses
+    # the configured value directly so `serverInfo.name` in MCP initialize responses
+    # does not collide with other MCP servers a client may have configured locally.
+    # Compare by display name (not slug) so serverInfo.name is always the full
+    # configured value and the server is recreated whenever branding changes.
     current_server_id = str(_mcp_server_state["id"])
-    if server_id != current_server_id:
-        _mcp_server_state["server"] = _create_server(server_id)
+    if configured_name != current_server_id:
+        _mcp_server_state["server"] = _create_server(configured_name)
         # Keep legacy module-level export in sync for backward compatibility.
         globals()["mcp_server"] = _mcp_server_state["server"]
-        logger.info("Updated MCP server name to %s from Server Branding", server_id)
-        _mcp_server_state["id"] = server_id
+        logger.info("Updated MCP server name to %s from Server Branding", configured_name)
+        _mcp_server_state["id"] = configured_name
     return cast(Server, _mcp_server_state["server"])
 
 
@@ -305,7 +309,7 @@ async def get_custom_route_server(
 
     app_settings = await get_app_settings()
     server_name = app_settings.get("server_name", "Ragtime")
-    route_server_name = _to_mcp_server_id(f"{server_name}-{route_path}")
+    route_server_name = f"{server_name}-{route_path}"
 
     server = Server(route_server_name)
     _register_handlers(server, adapter, route_filter)
@@ -375,7 +379,7 @@ async def get_default_route_filtered_server(
 
     app_settings = await get_app_settings()
     server_name = app_settings.get("server_name", "Ragtime")
-    filter_server_name = _to_mcp_server_id(f"{server_name}-filter-{filter_id[:8]}")
+    filter_server_name = f"{server_name}-filter-{filter_id[:8]}"
 
     server = Server(filter_server_name)
     _register_handlers(server, adapter, route_filter)
