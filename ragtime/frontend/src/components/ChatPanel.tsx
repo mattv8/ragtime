@@ -4224,17 +4224,6 @@ export function ChatPanel({
               ) : (
                 <>
                   {activeConversation.messages.map((msg, idx) => {
-                    // Show separator for ANY "continue" message (continuation prompts)
-                    const isContinuationPrompt = msg.role === 'user' && msg.content === 'continue';
-
-                    if (isContinuationPrompt) {
-                      return (
-                        <div key={idx} className="chat-continuation-separator">
-                          <span>···</span>
-                        </div>
-                      );
-                    }
-
                     return (
                     <div key={idx} className={`chat-message chat-message-${msg.role}`}>
                       <div className="chat-message-content" key={editingMessageIdx === idx ? 'editing' : 'viewing'}>
