@@ -168,6 +168,31 @@ class SessionManager:
         session.updated_at = now
         session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
 
+    async def _sync_session_from_worker_by_provider_id(
+        self,
+        provider_session_id: str,
+    ) -> ManagerSession | None:
+        async with self._lock:
+            session = self._sessions.get(provider_session_id)
+            if not session:
+                return None
+            worker_session_id = session.worker_session_id
+
+        worker_data = await asyncio.wait_for(
+            self._worker_service.get_session(worker_session_id),
+            timeout=self._worker_call_timeout,
+        )
+
+        async with self._lock:
+            session = self._sessions.get(provider_session_id)
+            if not session or session.worker_session_id != worker_session_id:
+                return None
+            self._apply_worker_state(session, worker_data)
+            now = self._utc_now()
+            session.updated_at = now
+            session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
+            return session
+
     async def _cleanup_expired_sessions_locked(self, now: datetime) -> None:
         for provider_session_id, session in list(self._sessions.items()):
             if (
@@ -205,12 +230,22 @@ class SessionManager:
             now = self._utc_now()
             async with self._lock:
                 await self._cleanup_expired_sessions_locked(now)
-                for session in list(self._sessions.values()):
-                    if session.state not in {"starting", "running"}:
-                        continue
-                    try:
-                        await self._sync_session_from_worker(session)
-                    except Exception:
+                active_session_ids = [
+                    session.provider_session_id
+                    for session in self._sessions.values()
+                    if session.state in {"starting", "running"}
+                ]
+
+            for provider_session_id in active_session_ids:
+                try:
+                    await self._sync_session_from_worker_by_provider_id(
+                        provider_session_id
+                    )
+                except Exception:
+                    async with self._lock:
+                        session = self._sessions.get(provider_session_id)
+                        if not session:
+                            continue
                         session.state = "error"
                         session.devserver_running = False
                         session.last_error = "Runtime worker heartbeat failed"
@@ -272,11 +307,15 @@ class SessionManager:
         async with self._lock:
             now = self._utc_now()
             await self._cleanup_expired_sessions_locked(now)
-            session = self._sessions.get(provider_session_id)
-            if not session:
+            if provider_session_id not in self._sessions:
                 raise HTTPException(status_code=404, detail="Runtime session not found")
-            await self._sync_session_from_worker(session)
-            return self._as_response(session)
+
+        session = await self._sync_session_from_worker_by_provider_id(
+            provider_session_id
+        )
+        if session is None:
+            raise HTTPException(status_code=404, detail="Runtime session not found")
+        return self._as_response(session)
 
     async def stop_session(self, provider_session_id: str) -> RuntimeSessionResponse:
         async with self._lock:

@@ -1,15 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, GitBranch, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
-import { javascript } from '@codemirror/lang-javascript';
-import { python } from '@codemirror/lang-python';
-import { json } from '@codemirror/lang-json';
-import { css } from '@codemirror/lang-css';
-import { html } from '@codemirror/lang-html';
-import { markdown } from '@codemirror/lang-markdown';
-import { xml } from '@codemirror/lang-xml';
-import { yaml } from '@codemirror/lang-yaml';
-import { sql } from '@codemirror/lang-sql';
 import { keymap } from '@codemirror/view';
 import { openSearchPanel } from '@codemirror/search';
 
@@ -22,6 +13,7 @@ import {
   clearInterruptDismiss,
   resolveWorkspaceInterruptStateFromSummary,
 } from '@/utils';
+import { useCodeMirrorLanguageExtension } from '@/utils/codemirrorLanguage';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
@@ -227,22 +219,6 @@ function fileEntriesFingerprint(entries: UserSpaceFileInfo[]): string {
   return entries.map((e) => `${e.path}:${e.updated_at ?? ''}`).join('\n');
 }
 
-/** Resolve a CodeMirror language extension based on file path. */
-function getLanguageExtensionForPath(filePath: string) {
-  const lower = filePath.toLowerCase();
-  if (/\.[cm]?tsx?$/i.test(lower)) return javascript({ typescript: true, jsx: /x$/i.test(lower) });
-  if (/\.[cm]?jsx?$/i.test(lower)) return javascript({ typescript: false, jsx: true });
-  if (/\.py$/i.test(lower)) return python();
-  if (/\.json[c5]?$/i.test(lower) || lower.endsWith('.jsonl')) return json();
-  if (/\.css$/i.test(lower) || lower.endsWith('.scss') || lower.endsWith('.less')) return css();
-  if (/\.html?$/i.test(lower) || lower.endsWith('.svelte') || lower.endsWith('.vue')) return html();
-  if (/\.ya?ml$/i.test(lower)) return yaml();
-  if (/\.xml$/i.test(lower) || lower.endsWith('.svg')) return xml();
-  if (/\.sql$/i.test(lower)) return sql();
-  if (/\.mdx?$/i.test(lower) || lower.endsWith('.markdown')) return markdown();
-  return null;
-}
-
 /**
  * Compute an aligned side-by-side diff using LCS-based diffLines.
  * Both sides get the same number of lines with blank padding inserted
@@ -264,6 +240,11 @@ const USERSPACE_CODEMIRROR_BASIC_SETUP = {
 };
 const USERSPACE_CHANGED_FILE_STATE_MIN_INTERVAL_MS = 1000;
 const USERSPACE_FILE_TREE_POLL_INTERVAL_MS = 5000;
+const USERSPACE_FILE_TREE_IDLE_POLL_INTERVAL_MS = 10000;
+const USERSPACE_FILE_TREE_MAX_IDLE_POLL_INTERVAL_MS = 15000;
+const USERSPACE_FILE_TREE_BACKGROUND_POLL_INTERVAL_MS = 20000;
+const USERSPACE_WORKSPACE_BADGE_BACKGROUND_POLL_INTERVAL_MS = 20000;
+const USERSPACE_RUNTIME_BACKGROUND_POLL_INTERVAL_MS = 30000;
 const USERSPACE_BROWSER_AUTH_REFRESH_BUFFER_MS = 60_000;
 const SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES = 20;
 
@@ -521,6 +502,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [workspaceEventsReconnectNonce, setWorkspaceEventsReconnectNonce] = useState(0);
   const [terminalReadOnly, setTerminalReadOnly] = useState(false);
   const [terminalReconnectNonce, setTerminalReconnectNonce] = useState(0);
+  const [isPageVisible, setIsPageVisible] = useState(
+    typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'
+  );
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [creatingWorkspaceStatus, setCreatingWorkspaceStatus] = useState<string | null>(null);
   const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
@@ -1129,19 +1113,25 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   }, [snapshotsByBranch]);
 
   const snapshotUiLocked = navigatingSnapshots || restoringSnapshotId !== null;
+  const codeMirrorLanguageExtension = useCodeMirrorLanguageExtension(selectedFilePath);
 
   const codeMirrorExtensions = useMemo(
-    () => [
-      getLanguageExtensionForPath(selectedFilePath) ?? javascript({ typescript: true, jsx: true }),
-      keymap.of([
-        {
-          key: 'Mod-f',
-          run: openSearchPanel,
-          preventDefault: true,
-        },
-      ]),
-    ],
-    [selectedFilePath]
+    () => {
+      const extensions = [
+        keymap.of([
+          {
+            key: 'Mod-f',
+            run: openSearchPanel,
+            preventDefault: true,
+          },
+        ]),
+      ];
+      if (codeMirrorLanguageExtension) {
+        extensions.unshift(codeMirrorLanguageExtension);
+      }
+      return extensions;
+    },
+    [codeMirrorLanguageExtension]
   );
 
   const selectedFileDisplayName = useMemo(() => {
@@ -1377,17 +1367,31 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       }
     };
 
-    void pollWorkspaceConversationStates();
-    // Non-active workspace badges are secondary indicators; poll at a relaxed cadence
-    const timer = window.setInterval(() => {
-      void pollWorkspaceConversationStates();
-    }, 5000);
+    let timer: number | null = null;
+
+    const scheduleNextPoll = () => {
+      if (cancelled) {
+        return;
+      }
+      timer = window.setTimeout(() => {
+        void pollWorkspaceConversationStates();
+      }, isPageVisible ? 5000 : USERSPACE_WORKSPACE_BADGE_BACKGROUND_POLL_INTERVAL_MS);
+    };
+
+    const runPollingLoop = async () => {
+      await pollWorkspaceConversationStates();
+      scheduleNextPoll();
+    };
+
+    void runPollingLoop();
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
     };
-  }, [workspaces, activeWorkspaceId, currentUser.id]);
+  }, [workspaces, activeWorkspaceId, currentUser.id, isPageVisible]);
 
   const reconcileWorkspaceFileTree = useCallback((nextEntries: UserSpaceFileInfo[]) => {
     const nextFiles = nextEntries.filter((entry) => entry.entry_type !== 'directory');
@@ -1490,8 +1494,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       includeDirs: true,
     });
 
-    reconcileWorkspaceFileTree(nextEntries);
+    const { changed } = reconcileWorkspaceFileTree(nextEntries);
     setError(null);
+    return changed;
   }, [reconcileWorkspaceFileTree]);
 
   const loadWorkspaceData = useCallback(async (
@@ -1847,6 +1852,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   }, [loadWorkspaces]);
 
   useEffect(() => {
+    const handleVisibilityChange = () => {
+      setIsPageVisible(document.visibilityState !== 'hidden');
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!activeWorkspaceId) {
       setPreviewLiveDataConnections([]);
       return;
@@ -1918,31 +1934,57 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     if (!activeWorkspaceId) return;
 
     let cancelled = false;
-    let isPolling = false;
+    let inFlight = false;
+    let idlePollCycles = 0;
+    let timer: number | null = null;
+
+    const getNextDelay = () => {
+      if (!isPageVisible) {
+        return USERSPACE_FILE_TREE_BACKGROUND_POLL_INTERVAL_MS;
+      }
+      if (idlePollCycles >= 3) {
+        return USERSPACE_FILE_TREE_MAX_IDLE_POLL_INTERVAL_MS;
+      }
+      if (idlePollCycles >= 1) {
+        return USERSPACE_FILE_TREE_IDLE_POLL_INTERVAL_MS;
+      }
+      return USERSPACE_FILE_TREE_POLL_INTERVAL_MS;
+    };
+
+    const scheduleNextPoll = () => {
+      if (cancelled) {
+        return;
+      }
+      timer = window.setTimeout(() => {
+        void pollWorkspaceFiles();
+      }, getNextDelay());
+    };
 
     const pollWorkspaceFiles = async () => {
-      if (isPolling) return;
-      isPolling = true;
+      if (inFlight) return;
+      inFlight = true;
       try {
-        await refreshWorkspaceFileTree(activeWorkspaceId);
+        const changed = await refreshWorkspaceFileTree(activeWorkspaceId);
+        idlePollCycles = changed ? 0 : Math.min(idlePollCycles + 1, 4);
       } catch {
         // Ignore polling failures; the next interval will retry.
       } finally {
         if (!cancelled) {
-          isPolling = false;
+          inFlight = false;
+          scheduleNextPoll();
         }
       }
     };
 
-    const timer = window.setInterval(() => {
-      void pollWorkspaceFiles();
-    }, USERSPACE_FILE_TREE_POLL_INTERVAL_MS);
+    void pollWorkspaceFiles();
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
     };
-  }, [activeWorkspaceId, refreshWorkspaceFileTree]);
+  }, [activeWorkspaceId, isPageVisible, refreshWorkspaceFileTree]);
 
   useEffect(() => {
     fileContentCacheRef.current = fileContentCache;
@@ -2700,12 +2742,35 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     if (!activeWorkspaceId) return;
     // Poll faster during transitional states (starting/stopping)
     const isTransitional = runtimeDisplayState === 'starting' || runtimeDisplayState === 'stopping';
-    const interval = isTransitional ? 2000 : 10000;
-    const timer = window.setInterval(() => {
-      void refreshActiveWorkspaceState();
-    }, interval);
-    return () => window.clearInterval(timer);
-  }, [activeWorkspaceId, refreshActiveWorkspaceState, runtimeDisplayState]);
+    const interval = isPageVisible
+      ? (isTransitional ? 2000 : 10000)
+      : USERSPACE_RUNTIME_BACKGROUND_POLL_INTERVAL_MS;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const scheduleNextPoll = () => {
+      if (cancelled) {
+        return;
+      }
+      timer = window.setTimeout(() => {
+        void runPoll();
+      }, interval);
+    };
+
+    const runPoll = async () => {
+      await refreshActiveWorkspaceState();
+      scheduleNextPoll();
+    };
+
+    scheduleNextPoll();
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [activeWorkspaceId, isPageVisible, refreshActiveWorkspaceState, runtimeDisplayState]);
 
   useEffect(() => {
     if (!activeWorkspaceId) return;

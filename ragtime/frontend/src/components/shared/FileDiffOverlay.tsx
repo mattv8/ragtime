@@ -1,18 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
-import { javascript } from '@codemirror/lang-javascript';
-import { python } from '@codemirror/lang-python';
-import { json } from '@codemirror/lang-json';
-import { css } from '@codemirror/lang-css';
-import { html } from '@codemirror/lang-html';
-import { markdown } from '@codemirror/lang-markdown';
-import { xml } from '@codemirror/lang-xml';
-import { yaml } from '@codemirror/lang-yaml';
-import { sql } from '@codemirror/lang-sql';
 import { Decoration, type DecorationSet, EditorView } from '@codemirror/view';
 import { StateField, type Extension } from '@codemirror/state';
 import { diffLines } from 'diff';
 import type { UserSpaceSnapshotFileDiff } from '@/types';
+import { useCodeMirrorLanguageExtension } from '@/utils/codemirrorLanguage';
 import { MiniLoadingSpinner } from './MiniLoadingSpinner';
 
 interface AlignedDiffResult {
@@ -22,21 +14,6 @@ interface AlignedDiffResult {
   afterAddedLines: Set<number>;
   beforePaddingLines: Set<number>;
   afterPaddingLines: Set<number>;
-}
-
-function getLanguageExtensionForPath(filePath: string) {
-  const lower = filePath.toLowerCase();
-  if (/\.[cm]?tsx?$/i.test(lower)) return javascript({ typescript: true, jsx: /x$/i.test(lower) });
-  if (/\.[cm]?jsx?$/i.test(lower)) return javascript({ typescript: false, jsx: true });
-  if (/\.py$/i.test(lower)) return python();
-  if (/\.json[c5]?$/i.test(lower) || lower.endsWith('.jsonl')) return json();
-  if (/\.css$/i.test(lower) || lower.endsWith('.scss') || lower.endsWith('.less')) return css();
-  if (/\.html?$/i.test(lower) || lower.endsWith('.svelte') || lower.endsWith('.vue')) return html();
-  if (/\.ya?ml$/i.test(lower)) return yaml();
-  if (/\.xml$/i.test(lower) || lower.endsWith('.svg')) return xml();
-  if (/\.sql$/i.test(lower)) return sql();
-  if (/\.mdx?$/i.test(lower) || lower.endsWith('.markdown')) return markdown();
-  return null;
 }
 
 function computeAlignedDiff(before: string, after: string): AlignedDiffResult {
@@ -163,12 +140,11 @@ export function FileDiffOverlay({
   const beforeWrapRef = useRef<HTMLDivElement | null>(null);
   const afterWrapRef = useRef<HTMLDivElement | null>(null);
   const scrollSyncingRef = useRef(false);
+  const languageExtension = useCodeMirrorLanguageExtension(diff?.path ?? '');
 
   const languageExtensions = useMemo(() => {
-    const path = diff?.path ?? '';
-    const ext = getLanguageExtensionForPath(path);
-    return ext ? [ext] : [];
-  }, [diff?.path]);
+    return languageExtension ? [languageExtension] : [];
+  }, [languageExtension]);
 
   const alignedDiff = useMemo(() => {
     if (!diff || diff.is_binary) return null;
