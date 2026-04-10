@@ -802,7 +802,14 @@ async def get_runtime_screenshot(
         raise HTTPException(status_code=400, detail="Invalid screenshot filename")
 
     index_data_root = Path(os.getenv("INDEX_DATA_PATH", "/data"))
-    screenshot_dir = (index_data_root / "_tmp" / workspace_id).resolve()
+    screenshot_dir = (
+        index_data_root
+        / "_userspace"
+        / "workspaces"
+        / workspace_id
+        / "runtime-artifacts"
+        / "screenshots"
+    ).resolve()
     screenshot_path = (screenshot_dir / basename).resolve()
 
     try:

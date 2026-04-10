@@ -666,6 +666,14 @@ interface ScreenshotToolOutput {
     height?: number;
     effective_wait_after_load_ms?: number;
   };
+  screenshot?: {
+    preview_image_url?: string;
+    render?: {
+      width?: number;
+      height?: number;
+      effective_wait_after_load_ms?: number;
+    };
+  };
 }
 
 const ToolCallDisplay = memo(function ToolCallDisplay({
@@ -730,11 +738,19 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
     }
     try {
       const parsed = JSON.parse(effectiveOutput) as ScreenshotToolOutput;
-      const url = typeof parsed.preview_image_url === 'string' ? parsed.preview_image_url.trim() : '';
+      const nested = parsed.screenshot && typeof parsed.screenshot === 'object'
+        ? parsed.screenshot
+        : null;
+      const url = typeof parsed.preview_image_url === 'string'
+        ? parsed.preview_image_url.trim()
+        : typeof nested?.preview_image_url === 'string'
+          ? nested.preview_image_url.trim()
+          : '';
       if (!url) return null;
-      const width = Number(parsed.render?.width || 0);
-      const height = Number(parsed.render?.height || 0);
-      const effectiveWait = Number(parsed.render?.effective_wait_after_load_ms || 0);
+      const render = parsed.render ?? nested?.render;
+      const width = Number(render?.width || 0);
+      const height = Number(render?.height || 0);
+      const effectiveWait = Number(render?.effective_wait_after_load_ms || 0);
       return {
         imageUrl: url,
         width: Number.isFinite(width) && width > 0 ? width : null,

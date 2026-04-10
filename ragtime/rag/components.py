@@ -5819,13 +5819,28 @@ except Exception as e:
         if not isinstance(payload, dict):
             return None
 
+        screenshot_payload = payload.get("screenshot")
+        if not isinstance(screenshot_payload, dict):
+            screenshot_payload = {}
+
         image_data_url = self._build_local_image_data_url(
-            str(payload.get("screenshot_path") or "")
+            str(
+                payload.get("screenshot_path")
+                or screenshot_payload.get("screenshot_path")
+                or ""
+            )
         )
         if not image_data_url:
             return None
 
-        preview_path = str(payload.get("preview_path") or "").strip() or "/"
+        preview_path = (
+            str(
+                payload.get("preview_path")
+                or screenshot_payload.get("preview_path")
+                or ""
+            ).strip()
+            or "/"
+        )
         return [
             {
                 "type": "text",
@@ -7407,6 +7422,44 @@ except Exception as e:
                 ),
                 indent=2,
             )
+
+        def _compact_userspace_screenshot_payload(
+            response_payload: dict[str, Any],
+        ) -> dict[str, Any]:
+            compact_payload: dict[str, Any] = {
+                "ok": response_payload.get("ok"),
+                "workspace_id": response_payload.get("workspace_id"),
+                "preview_path": response_payload.get("preview_path"),
+                "screenshot_path": response_payload.get("screenshot_path"),
+                "screenshot_size_bytes": response_payload.get("screenshot_size_bytes"),
+                "preview_image_url": response_payload.get("preview_image_url"),
+                "render": response_payload.get("render"),
+            }
+
+            probe = response_payload.get("probe")
+            if isinstance(probe, dict):
+                compact_probe: dict[str, Any] = {}
+                for key in (
+                    "ok",
+                    "status_code",
+                    "title",
+                    "html_length",
+                    "effective_width",
+                    "effective_height",
+                    "effective_full_page",
+                    "effective_wait_after_load_ms",
+                    "element_selector",
+                    "element_match_count",
+                    "element_visible_count",
+                    "element_clip_used",
+                    "startup_blank_detected",
+                    "startup_retry_attempted",
+                ):
+                    if key in probe:
+                        compact_probe[key] = probe.get(key)
+                compact_payload["probe"] = compact_probe
+
+            return compact_payload
 
         async def list_userspace_files(reason: str = "", **_: Any) -> str:
             del reason
@@ -9649,6 +9702,7 @@ except Exception as e:
                         f"screenshots/{quote(screenshot_name)}"
                     )
                     response_payload["preview_image_url"] = image_url
+            compact_payload = _compact_userspace_screenshot_payload(response_payload)
             return _render_userspace_tool_payload(
                 tool_name="capture_userspace_screenshot",
                 status="captured",
@@ -9657,7 +9711,7 @@ except Exception as e:
                 retryable=True,
                 failure_class="none",
                 next_best_tool="patch_userspace_file",
-                screenshot=response_payload,
+                **compact_payload,
             )
 
         async def run_terminal_command(
@@ -9860,7 +9914,7 @@ except Exception as e:
                 description=(
                     "Capture a rendered screenshot of the live User Space preview using Playwright. "
                     "Waits for load/refresh before capture to reduce race conditions and helps diagnose runtime errors "
-                    "(blank screen, crashes, broken layout). Saves PNG files under ./.data/_tmp/{workspace_id}/."
+                    "(blank screen, crashes, broken layout). Saves PNG files under a dedicated per-workspace runtime artifacts directory."
                 ),
                 args_schema=CaptureUserSpaceScreenshotInput,
             ),

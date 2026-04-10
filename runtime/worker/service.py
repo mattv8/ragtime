@@ -430,6 +430,10 @@ class WorkerService:
             / _OBJECT_STORAGE_CONFIG_NAME
         )
 
+    @staticmethod
+    def _workspace_screenshot_dir(workspace_root: Path) -> Path:
+        return workspace_root / "runtime-artifacts" / "screenshots"
+
     def _read_workspace_object_storage_config(
         self,
         workspace_root: Path,
@@ -2289,8 +2293,7 @@ class WorkerService:
                 f"_ragtime_screenshot_ts={int(time.time() * 1000)}"
             )
 
-            index_data_root = Path(os.getenv("INDEX_DATA_PATH", "/data"))
-            output_dir = index_data_root / "_tmp" / session.workspace_id
+            output_dir = self._workspace_screenshot_dir(session.workspace_root)
             output_dir.mkdir(parents=True, exist_ok=True)
 
             safe_candidate = f"{uuid.uuid4().hex}.png"
