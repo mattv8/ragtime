@@ -15,10 +15,12 @@ import re
 import ssl
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
+from fastapi import Request
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from ldap3 import ALL, AUTO_BIND_TLS_BEFORE_BIND, SUBTREE, Connection, Server, Tls
 from ldap3 import AUTO_BIND_NO_TLS  # type: ignore[import-untyped]
+from ldap3 import ALL, AUTO_BIND_TLS_BEFORE_BIND, SUBTREE, Connection, Server, Tls
 from ldap3.core.exceptions import (  # type: ignore[import-untyped]
     LDAPBindError,
     LDAPException,
@@ -33,6 +35,8 @@ from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+_BROWSER_ORIGIN_HINT_HEADER = "x-ragtime-browser-origin"
 
 # =============================================================================
 # Models
@@ -73,6 +77,84 @@ class LdapDiscoveryResult(BaseModel):
 # =============================================================================
 # JWT Token Management
 # =============================================================================
+
+
+def get_external_origin(request: Request) -> str:
+    """Derive the public-facing origin for the current request."""
+    configured = str(getattr(settings, "external_base_url", "") or "").strip()
+    if configured:
+        return configured.rstrip("/")
+
+    proto = request.headers.get("x-forwarded-proto", "").lower() or request.url.scheme
+    host = request.headers.get("x-forwarded-host", "") or request.headers.get(
+        "host", ""
+    )
+    if host:
+        return f"{proto}://{host}"
+
+    return str(request.base_url).rstrip("/")
+
+
+def _normalize_origin_candidate(origin: str | None) -> str | None:
+    raw = str(origin or "").strip()
+    if not raw:
+        return None
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    return urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
+
+
+def _origin_from_referer(referer: str | None) -> str | None:
+    parsed = urlsplit(str(referer or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    return urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
+
+
+def _format_origin_host(hostname: str, port: int | None, scheme: str) -> str:
+    normalized_host = hostname
+    if ":" in normalized_host and not normalized_host.startswith("["):
+        normalized_host = f"[{normalized_host}]"
+    default_port = (scheme == "https" and port in {None, 443}) or (
+        scheme == "http" and port in {None, 80}
+    )
+    return normalized_host if default_port else f"{normalized_host}:{port}"
+
+
+def get_browser_matched_origin(
+    request: Request,
+    *,
+    browser_origin: str | None = None,
+) -> str:
+    """Derive a public origin that preserves the browser-visible host when proxied.
+
+    When EXTERNAL_BASE_URL is configured, it remains the source of truth.
+    Otherwise, if the request originated from the UI dev server or another proxy,
+    prefer the browser-visible scheme/host while keeping the backend server port.
+    """
+    server_origin = get_external_origin(request)
+    configured = str(getattr(settings, "external_base_url", "") or "").strip()
+    if configured:
+        return configured.rstrip("/")
+
+    browser_candidate = (
+        _normalize_origin_candidate(browser_origin)
+        or _normalize_origin_candidate(request.headers.get(_BROWSER_ORIGIN_HINT_HEADER))
+        or _normalize_origin_candidate(request.headers.get("origin"))
+        or _origin_from_referer(request.headers.get("referer"))
+    )
+    if not browser_candidate:
+        return server_origin
+
+    browser_parts = urlsplit(browser_candidate)
+    server_parts = urlsplit(server_origin)
+    scheme = browser_parts.scheme or server_parts.scheme or request.url.scheme or "http"
+    hostname = browser_parts.hostname or server_parts.hostname
+    if not hostname:
+        return server_origin
+    netloc = _format_origin_host(hostname, server_parts.port, scheme)
+    return urlunsplit((scheme, netloc, "", "", "")).rstrip("/")
 
 
 def create_access_token(user_id: str, username: str, role: str) -> str:

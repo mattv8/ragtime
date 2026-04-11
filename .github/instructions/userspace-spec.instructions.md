@@ -4,7 +4,7 @@ applyTo: 'ragtime/userspace/**, runtime/**'
 
 # User Space Feature Implementation Instructions
 
-Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
+Last updated: 2026-04-10 (codebase-scanned; concise agent-focused)
 
 ## Scope
 
@@ -18,15 +18,18 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 - Data plane runs in runtime manager/worker code (`runtime/manager/**`, `runtime/worker/**`).
 - `runtime/main.py` chooses service mode via `RUNTIME_SERVICE_MODE`; manager mode also mounts worker routes.
 - Workspace runtime files live under `${INDEX_DATA_PATH}/_userspace/workspaces/{workspace_id}/files`.
-- Preview is runtime-only.
+- Preview is runtime-only and now uses dedicated per-workspace preview origins dispatched by `PreviewHostDispatchMiddleware` in `ragtime/userspace/preview_host.py`.
+- Preview launch is an explicit API step: control-plane routes mint short-lived bootstrap grants and the preview host mints a preview session cookie on first load.
+- Browser-auth cookie surfaces are only for `collab` and `runtime_pty`; preview no longer uses capability cookies.
 
 ## Share Routing Split (Critical)
 
 - Public share URLs are top-level routes in `ragtime/main.py`:
   - `/{owner_username}/{share_slug}` (canonical)
-  - `/shared/{share_token}` (redirects to canonical slug route)
-- Internal editor-preview share routes are in `ragtime/userspace/runtime_routes.py` under `/indexes/userspace/shared/.../preview`.
-- Public and internal routes are different paths with different auth contexts; when changing share behavior, update both layers intentionally.
+  - `/shared/{share_token}` (anonymous/token form)
+- Public share routes do not proxy app bytes directly anymore; they validate access, then redirect to a dedicated preview origin bootstrap URL.
+- Internal editor preview APIs are launch endpoints in `ragtime/userspace/runtime_routes.py` under `/indexes/userspace/runtime/workspaces/.../preview-launch`, and shared launches live under `/indexes/userspace/shared/.../preview-launch`.
+- Public and internal routes are still different paths with different auth contexts; when changing share behavior, update both layers intentionally.
 - Public password-protected shares use FastAPI-rendered full-page HTML prompt + scoped cookie (`userspace_share_pw_*`) in `main.py`.
 
 ## Runtime + Bootstrap Conventions
@@ -86,10 +89,10 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 
 ## Live Data Bridge Architecture
 
-- Bridge script is served by `/indexes/userspace/runtime-bridge.js` and rendered by `build_runtime_bridge_content()` in `ragtime/userspace/service.py`. Version tracked via `_RUNTIME_BRIDGE_VERSION`.
+- Bridge script is served on the preview origin at `/__ragtime/bridge.js` and rendered by `build_runtime_bridge_content()` in `ragtime/userspace/service.py`. Version tracked via `_RUNTIME_BRIDGE_VERSION`.
 - Bridge provides `window.__ragtime_context` with a Proxy-based `components[componentId].execute(params)` that sends postMessage (`USERSPACE_EXEC_BRIDGE` channel) to the parent frame.
 - Parent-side handler in `UserSpaceArtifactPreview.tsx` listens for `ragtime-execute` messages, calls `api.executeWorkspaceComponent()`, and sends results back via `ragtime-execute-result` / `ragtime-execute-error`.
-- Proxy auto-injects `<script src="/indexes/userspace/runtime-bridge.js?workspace_id=..."></script>` into HTML responses so workspaces never need to manually include it.
+- Preview responses auto-inject bridge metadata plus `<script src="/__ragtime/bridge.js?workspace_id=..."></script>` into HTML so workspaces never need to manually include it.
 - LLM prompt instructs passing `window.__ragtime_context` as the context argument to `render(container, context)`.
 
 ## Security + Proxy Rules (Do Not Violate)
@@ -97,12 +100,11 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 - Keep role enforcement strict on runtime/collab mutations: viewer is read-only; editor/owner can mutate.
 - Never forward ragtime session credentials to user devservers: preserve blocked header behavior in `_proxy_request_headers`.
 - Keep hop-by-hop header filtering in proxy request/response paths.
-- Preview proxy performs text-content rewrites (no DOM parsing):
-  1. Root-relative URL prefixing — `_rewrite_root_relative_urls` matches *any* quoted root-relative string literal (`"/"`, `'/'`, backtick) in HTML, JavaScript, and CSS responses and rewrites it to the proxy base path. A negative-lookahead prevents double-rewriting of already-proxied paths. This covers HTML attributes, ES module imports, `fetch()`, CSS `url()`, and any other context.
-  2. Live data bridge injection — `_inject_bridge_script` inserts `<script src="/indexes/userspace/runtime-bridge.js?workspace_id=..."></script>` before `</head>` or before the first `<script` tag (skipped if already present). Applied only to `text/html` responses.
-  Both are in `runtime_routes.py`.
+- Preview host responses should be same-origin with the running app, so root-relative assets and client-side routing work without preview-path rewriting.
+- HTML preview responses still inject bridge config and the bridge script from `/__ragtime/bridge.js`; keep that injection in `runtime_routes.py`.
+- Shared and workspace preview auth should remain token-based bootstrap -> preview-session cookie. Do not reintroduce preview capability cookies or `/indexes/userspace/.../preview` proxy routes.
 - Proxy response strips `X-Frame-Options`, `Content-Security-Policy`, and `Content-Security-Policy-Report-Only` headers from devserver responses to prevent iframe-blocking policies from reaching the browser (the iframe `sandbox` attribute is the real security boundary).
-- Root-relative `Location` headers in redirect responses are rewritten to include the proxy base path.
+- Root-relative `Location` headers only need rewriting on routes that still use an explicit proxy base path.
 - Keep path normalization/traversal protections (`normalize_file_path` and reserved-path checks) intact.
 
 ## Sandbox + Process Conventions

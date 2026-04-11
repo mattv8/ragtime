@@ -2,97 +2,53 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    File,
-    Header,
-    HTTPException,
-    Query,
-    Request,
-    Response,
-    UploadFile,
-)
+from fastapi import (APIRouter, Depends, File, Header, HTTPException, Query,
+                     Request, Response, UploadFile)
 
+from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.security import (
-    get_current_user,
-    get_current_user_optional,
-    require_admin,
-)
-from ragtime.indexer.models import (
-    CheckRepoVisibilityRequest,
-    FetchBranchesRequest,
-    FetchBranchesResponse,
-    RepoVisibilityResponse,
-)
+from ragtime.core.security import (get_current_user, get_current_user_optional,
+                                   require_admin)
+from ragtime.indexer.models import (CheckRepoVisibilityRequest,
+                                    FetchBranchesRequest,
+                                    FetchBranchesResponse,
+                                    RepoVisibilityResponse)
 from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
-    BrowseUserspaceMountSourceRequest,
-    CreateSnapshotBranchRequest,
-    CreateSnapshotRequest,
-    CreateUserspaceMountSourceRequest,
-    CreateUserSpaceObjectStorageBucketRequest,
-    CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest,
-    DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse,
-    DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    MountableSource,
-    MountSourceAffectedWorkspacesResponse,
-    PaginatedWorkspacesResponse,
-    RestoreSnapshotResponse,
-    SqliteImportResponse,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
-    UpdateUserspaceMountSourceRequest,
-    UpdateUserSpaceObjectStorageBucketRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpdateWorkspaceShareSlugRequest,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceAcknowledgeChangedFilePathRequest,
-    UserSpaceAvailableTool,
-    UserSpaceChangedFileStateResponse,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserspaceMountSource,
-    UserSpaceObjectStorageConfig,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceEnvVar,
-    UserSpaceWorkspaceScmConnectionRequest,
+    BrowseUserspaceMountSourceRequest, CreateSnapshotBranchRequest,
+    CreateSnapshotRequest, CreateUserspaceMountSourceRequest,
+    CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest, DeleteUserspaceMountSourceResponse,
+    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse, ExecuteComponentRequest,
+    ExecuteComponentResponse, MountableSource,
+    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
+    RestoreSnapshotResponse, SqliteImportResponse, SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest, UpdateUserspaceMountSourceRequest,
+    UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest, UpdateWorkspaceShareSlugRequest,
+    UpsertWorkspaceEnvVarRequest, UpsertWorkspaceFileRequest,
+    UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceAvailableTool,
+    UserSpaceChangedFileStateResponse, UserSpaceFileInfo,
+    UserSpaceFileResponse, UserspaceMountSource, UserSpaceObjectStorageConfig,
+    UserSpaceSharedPreviewResponse, UserSpaceSnapshot,
+    UserSpaceSnapshotDiffSummaryResponse, UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse, UserSpaceWorkspace,
+    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
-    UserSpaceWorkspaceScmExportRequest,
-    UserSpaceWorkspaceScmImportRequest,
-    UserSpaceWorkspaceScmPreviewRequest,
-    UserSpaceWorkspaceScmPreviewResponse,
-    UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMount,
-    WorkspaceMountBrowseRequest,
-    WorkspaceMountBrowseResponse,
-    WorkspaceMountSyncPreviewRequest,
-    WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest,
-    WorkspaceMountSyncResponse,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+    UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmSyncResponse, UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus, WorkspaceMount,
+    WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
+    WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
+    WorkspaceShareSlugAvailabilityResponse)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -102,6 +58,74 @@ router = APIRouter(prefix="/indexes/userspace", tags=["User Space"])
 
 _USERSPACE_SURFACE_HEADER = "X-Ragtime-Userspace-Surface"
 _USERSPACE_TREE_MOUNTS_HEADER = "X-Ragtime-Userspace-Tree-Includes-Mounts"
+
+
+def _subdomain_share_disabled_reason(
+    *,
+    has_share_link: bool,
+    access_mode: str,
+    has_password: bool,
+) -> str | None:
+    if not has_share_link:
+        return "Create a share link first"
+    if access_mode == "token" and not has_password:
+        return None
+    return "Direct subdomain access is only available for public links without password or account protection"
+
+
+def _apply_share_link_variants(
+    payload: Any,
+    *,
+    base_url: str,
+    access_mode: str | None = None,
+    has_share_link: bool | None = None,
+) -> Any:
+    share_token = str(getattr(payload, "share_token", "") or "").strip() or None
+    share_url = str(getattr(payload, "share_url", "") or "").strip() or None
+    workspace_id = str(getattr(payload, "workspace_id", "") or "").strip()
+    resolved_has_password = bool(getattr(payload, "has_password", False))
+    resolved_access_mode = (
+        str(
+            access_mode or getattr(payload, "share_access_mode", "token") or "token"
+        ).strip()
+        or "token"
+    )
+    resolved_has_share_link = (
+        bool(getattr(payload, "has_share_link", True))
+        if has_share_link is None
+        else has_share_link
+    ) and bool(share_token)
+    subdomain_share_enabled = (
+        resolved_has_share_link and resolved_access_mode == "token" and not resolved_has_password
+    )
+    subdomain_share_url = None
+    if subdomain_share_enabled and workspace_id:
+        subdomain_share_url = (
+            userspace_runtime_service.get_preview_origin(
+                workspace_id,
+                control_plane_origin=base_url,
+            ).rstrip("/")
+            + "/"
+        )
+    anonymous_share_url = None
+    if share_token:
+        anonymous_share_url = userspace_service.build_workspace_anonymous_share_url(
+            share_token,
+            base_url=base_url,
+        )
+    return payload.model_copy(
+        update={
+            "share_url": share_url,
+            "anonymous_share_url": anonymous_share_url,
+            "subdomain_share_url": subdomain_share_url,
+            "subdomain_share_enabled": subdomain_share_enabled,
+            "subdomain_share_disabled_reason": _subdomain_share_disabled_reason(
+                has_share_link=resolved_has_share_link,
+                access_mode=resolved_access_mode,
+                has_password=resolved_has_password,
+            ),
+        }
+    )
 
 
 async def _normalize_selected_tool_ids(
@@ -960,12 +984,23 @@ async def create_workspace_share_link(
     rotate_token: bool = Query(default=False),
     user: Any = Depends(get_current_user),
 ):
-    base_url = str(request.base_url).rstrip("/")
-    return await userspace_service.create_workspace_share_link(
+    base_url = get_browser_matched_origin(request)
+    link = await userspace_service.create_workspace_share_link(
         workspace_id,
         user.id,
         base_url=base_url,
         rotate_token=rotate_token,
+    )
+    status = await userspace_service.get_workspace_share_link_status(
+        workspace_id,
+        user.id,
+        base_url=base_url,
+    )
+    return _apply_share_link_variants(
+        link,
+        base_url=base_url,
+        access_mode=status.share_access_mode,
+        has_share_link=status.has_share_link,
     )
 
 
@@ -978,12 +1013,13 @@ async def get_workspace_share_link(
     request: Request,
     user: Any = Depends(get_current_user),
 ):
-    base_url = str(request.base_url).rstrip("/")
-    return await userspace_service.get_workspace_share_link_status(
+    base_url = get_browser_matched_origin(request)
+    status = await userspace_service.get_workspace_share_link_status(
         workspace_id,
         user.id,
         base_url=base_url,
     )
+    return _apply_share_link_variants(status, base_url=base_url)
 
 
 @router.delete(
@@ -994,10 +1030,11 @@ async def revoke_workspace_share_link(
     workspace_id: str,
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_service.revoke_workspace_share_link(
+    status = await userspace_service.revoke_workspace_share_link(
         workspace_id,
         user.id,
     )
+    return _apply_share_link_variants(status, base_url="")
 
 
 @router.put(
@@ -1010,13 +1047,14 @@ async def update_workspace_share_access(
     base_request: Request,
     user: Any = Depends(get_current_user),
 ):
-    base_url = str(base_request.base_url).rstrip("/")
-    return await userspace_service.update_workspace_share_access(
+    base_url = get_browser_matched_origin(base_request)
+    status = await userspace_service.update_workspace_share_access(
         workspace_id,
         request,
         user.id,
         base_url=base_url,
     )
+    return _apply_share_link_variants(status, base_url=base_url)
 
 
 @router.put(
@@ -1029,13 +1067,14 @@ async def update_workspace_share_slug(
     base_request: Request,
     user: Any = Depends(get_current_user),
 ):
-    base_url = str(base_request.base_url).rstrip("/")
-    return await userspace_service.update_workspace_share_slug(
+    base_url = get_browser_matched_origin(base_request)
+    status = await userspace_service.update_workspace_share_slug(
         workspace_id,
         request.slug,
         user.id,
         base_url=base_url,
     )
+    return _apply_share_link_variants(status, base_url=base_url)
 
 
 @router.get(

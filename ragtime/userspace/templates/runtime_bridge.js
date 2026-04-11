@@ -12,6 +12,19 @@
   var DATATABLES_CSS_URL = 'https://cdn.datatables.net/1.13.8/css/dataTables.dataTables.min.css';
   var reportedSandboxBlocks = Object.create(null);
 
+  function getBridgeConfig() {
+    var config = window.__ragtime_preview_bridge;
+    return config && typeof config === 'object' ? config : null;
+  }
+
+  function getParentOrigin() {
+    var config = getBridgeConfig();
+    var origin = config && typeof config.parent_origin === 'string'
+      ? config.parent_origin.trim()
+      : '';
+    return origin || '*';
+  }
+
   function hasDataTables() {
     return !!(window.jQuery && window.jQuery.fn && window.jQuery.fn.DataTable);
   }
@@ -125,7 +138,10 @@
     console.warn('[ragtime bridge] ' + message);
     try {
       if (window.parent && window.parent !== window) {
-        window.parent.postMessage({ bridge: B, type: S, action: action, flag: flag, message: message }, '*');
+        window.parent.postMessage(
+          { bridge: B, type: S, action: action, flag: flag, message: message },
+          getParentOrigin()
+        );
       }
     } catch (error) {
       console.warn('[ragtime bridge] failed to report sandbox block:', error);
@@ -248,50 +264,10 @@
   bootstrapVizLibs();
 
   function getDirectExecuteUrl() {
-    var pathname = window.location && window.location.pathname ? window.location.pathname : '/';
-    var parts = pathname.split('/').filter(Boolean);
-
-    if (parts.length >= 6 &&
-        parts[0] === 'indexes' &&
-        parts[1] === 'userspace' &&
-        parts[2] === 'shared' &&
-        parts[5] === 'preview') {
-      return '/indexes/userspace/shared/' +
-        encodeURIComponent(parts[3]) + '/' +
-        encodeURIComponent(parts[4]) +
-        '/execute-component';
-    }
-
-    if (parts.length >= 5 &&
-        parts[0] === 'indexes' &&
-        parts[1] === 'userspace' &&
-        parts[2] === 'shared' &&
-        parts[4] === 'preview') {
-      return '/indexes/userspace/shared/' +
-        encodeURIComponent(parts[3]) +
-        '/execute-component';
-    }
-
-    var reserved = {
-      auth: true,
-      authorize: true,
-      docs: true,
-      health: true,
-      indexes: true,
-      mcp: true,
-      openapi: true,
-      shared: true,
-      v1: true
-    };
-
-    if (parts.length >= 2 && !reserved[parts[0]]) {
-      return '/indexes/userspace/shared/' +
-        encodeURIComponent(parts[0]) + '/' +
-        encodeURIComponent(parts[1]) +
-        '/execute-component';
-    }
-
-    return null;
+    var config = getBridgeConfig();
+    return config && typeof config.execute_url === 'string'
+      ? config.execute_url
+      : null;
   }
 
   function executeDirect(componentId, request, resolve) {
@@ -346,12 +322,16 @@
           return;
         }
 
+        var parentOrigin = getParentOrigin();
+        var expectedParentOrigin = parentOrigin === '*' ? '' : parentOrigin;
+
         var timer = setTimeout(function () {
           window.removeEventListener('message', handler);
           resolve({ rows: [], columns: [], row_count: 0, error: 'Execute timed out after ' + T_LABEL + '. An admin can increase the tool timeout in Settings > Tools.' });
         }, T);
         function handler(event) {
           if (event.source !== window.parent) return;
+          if (expectedParentOrigin && event.origin !== expectedParentOrigin) return;
           if (
             event.data &&
             event.data.bridge === B &&
@@ -366,7 +346,7 @@
         window.addEventListener('message', handler);
         window.parent.postMessage(
           { bridge: B, type: E, callId: callId, component_id: componentId, request: request || {} },
-          '*'
+          parentOrigin
         );
       });
     };

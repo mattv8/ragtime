@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, onAuthExpired } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, UserSpaceSharedView, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ConfigurationWarning } from '@/types';
 import type { OAuthParams } from '@/components';
@@ -62,6 +62,12 @@ function getUserSpaceSharedRoute(): UserSpaceSharedRoute {
   }
 
   const parts = window.location.pathname.split('/').filter(Boolean);
+  if (parts.length >= 2 && parts[0] === 'shared' && parts[1]) {
+    return {
+      mode: 'token',
+      token: decodeURIComponent(parts[1]),
+    };
+  }
   if (parts.length === 2) {
     const [ownerUsername, shareSlug] = parts;
     if (ownerUsername && shareSlug) {
@@ -74,16 +80,6 @@ function getUserSpaceSharedRoute(): UserSpaceSharedRoute {
   }
 
   return null;
-}
-
-function getUserSpaceSharedProxyUrl(route: UserSpaceSharedRoute): string {
-  if (!route) {
-    return '/';
-  }
-  if (route.mode === 'token') {
-    return `/shared/${encodeURIComponent(route.token)}`;
-  }
-  return `/${encodeURIComponent(route.ownerUsername)}/${encodeURIComponent(route.shareSlug)}`;
 }
 
 export function App() {
@@ -338,19 +334,10 @@ export function App() {
     window.history.replaceState({}, '', newUrl);
   }, [activeView, highlightSetting, oauthParams, isAdmin, userspaceSharedRoute]);
 
-  useEffect(() => {
-    if (!userspaceSharedRoute) {
-      return;
-    }
-    const target = getUserSpaceSharedProxyUrl(userspaceSharedRoute);
-    const current = `${window.location.pathname}${window.location.search}`;
-    if (target !== current) {
-      window.location.replace(target);
-    }
-  }, [userspaceSharedRoute]);
-
   if (userspaceSharedRoute) {
-    return <div className="chat-status-text">Redirecting to shared preview…</div>;
+    return userspaceSharedRoute.mode === 'token'
+      ? <UserSpaceSharedView shareToken={userspaceSharedRoute.token} />
+      : <UserSpaceSharedView ownerUsername={userspaceSharedRoute.ownerUsername} shareSlug={userspaceSharedRoute.shareSlug} />;
   }
 
   const loadJobs = useCallback(async () => {

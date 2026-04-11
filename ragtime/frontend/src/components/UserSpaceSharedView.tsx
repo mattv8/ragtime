@@ -1,9 +1,6 @@
 import { useEffect, useState } from 'react';
 
 import { api } from '@/api';
-import type { UserSpaceSharedPreviewResponse } from '@/types';
-
-import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 
 interface UserSpaceSharedViewProps {
   shareToken?: string;
@@ -12,7 +9,6 @@ interface UserSpaceSharedViewProps {
 }
 
 export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: UserSpaceSharedViewProps) {
-  const [previewData, setPreviewData] = useState<UserSpaceSharedPreviewResponse | null>(null);
   const [sharePasswordDraft, setSharePasswordDraft] = useState('');
   const [submittedSharePassword, setSubmittedSharePassword] = useState<string | undefined>(undefined);
   const [passwordRequired, setPasswordRequired] = useState(false);
@@ -25,18 +21,28 @@ export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: Us
     const load = async () => {
       setLoading(true);
       try {
-        const data = shareToken
-          ? await api.getUserSpaceSharedPreview(shareToken, submittedSharePassword)
-          : await api.getUserSpaceSharedPreviewBySlug(ownerUsername as string, shareSlug as string, submittedSharePassword);
+        const launch = shareToken
+          ? await api.launchUserSpaceSharedPreview(shareToken, {
+            path: '/',
+            parent_origin: window.location.origin,
+            prefer_root_proxy: true,
+          }, submittedSharePassword)
+          : await api.launchUserSpaceSharedPreviewBySlug(ownerUsername as string, shareSlug as string, {
+            path: '/',
+            parent_origin: window.location.origin,
+            prefer_root_proxy: true,
+          }, submittedSharePassword);
         if (cancelled) return;
-        setPreviewData(data);
         setPasswordRequired(false);
         setError(null);
+        window.location.replace(launch.preview_url);
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : 'Failed to load shared preview';
         if (message.toLowerCase().includes('password required') || message.toLowerCase().includes('invalid password')) {
           setPasswordRequired(true);
+        } else {
+          setPasswordRequired(false);
         }
         setError(message);
       } finally {
@@ -53,10 +59,10 @@ export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: Us
   }, [ownerUsername, shareSlug, shareToken, submittedSharePassword]);
 
   if (loading) {
-    return <div className="userspace-shared-status">Loading shared dashboard...</div>;
+    return <div className="userspace-shared-status">Opening shared preview...</div>;
   }
 
-  if (error || !previewData) {
+  if (error) {
     if (passwordRequired) {
       return (
         <div className="userspace-shared-layout">
@@ -88,26 +94,5 @@ export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: Us
     return <div className="userspace-shared-status userspace-error">{error || 'Shared dashboard not found'}</div>;
   }
 
-  return (
-    <div className="userspace-shared-layout">
-      <UserSpaceArtifactPreview
-        entryPath={previewData.entry_path}
-        workspaceFiles={previewData.workspace_files}
-        liveDataConnections={previewData.live_data_connections ?? []}
-        runtimePreviewUrl={
-          shareToken
-            ? api.getUserSpaceSharedTokenPreviewProxyUrl(shareToken)
-            : ownerUsername && shareSlug
-              ? api.getUserSpaceSharedPreviewProxyUrl(ownerUsername, shareSlug)
-              : undefined
-        }
-        previewInstanceKey={shareToken || `${ownerUsername}/${shareSlug}`}
-        workspaceId={previewData.workspace_id}
-        shareToken={shareToken}
-        ownerUsername={ownerUsername}
-        shareSlug={shareSlug}
-        sharePassword={submittedSharePassword}
-      />
-    </div>
-  );
+  return <div className="userspace-shared-status">Opening shared preview...</div>;
 }

@@ -21,129 +21,78 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
+
 from prisma import Json
 from prisma import fields as prisma_fields
-
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.git import create_repository, parse_git_url
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
-    USERSPACE_MOUNT_WATCH_JITTER_SECONDS,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    check_remote_rsync_available,
-    execute_ssh_command,
-    is_rsync_missing_error,
-    preview_ssh_directory_sync,
-    rsync_ssh_directory,
-    ssh_config_from_dict,
-    ssh_tunnel_config_from_dict,
-    sync_ssh_directory,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
+                              USERSPACE_MOUNT_WATCH_JITTER_SECONDS, SSHTunnel,
+                              build_ssh_tunnel_config,
+                              check_remote_rsync_available,
+                              execute_ssh_command, is_rsync_missing_error,
+                              preview_ssh_directory_sync, rsync_ssh_directory,
+                              ssh_config_from_dict,
+                              ssh_tunnel_config_from_dict, sync_ssh_directory)
 from ragtime.indexer.file_utils import build_authenticated_git_url
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
 from ragtime.userspace.models import (
-    ArtifactType,
-    BrowseUserspaceMountSourceRequest,
+    ArtifactType, BrowseUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
-    CreateUserSpaceObjectStorageBucketRequest,
-    CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest,
-    DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse,
-    DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    MountableSource,
-    MountSourceAffectedWorkspace,
-    MountSourceAffectedWorkspacesResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqliteImportResponse,
-    SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
+    CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest, DeleteUserspaceMountSourceResponse,
+    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse, ExecuteComponentRequest,
+    ExecuteComponentResponse, MountableSource, MountSourceAffectedWorkspace,
+    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
+    ShareAccessMode, SqliteImportResponse, SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
-    UpdateUserSpaceObjectStorageBucketRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserspaceMountBackend,
-    UserspaceMountSource,
-    UserspaceMountSourceType,
-    UserSpaceObjectStorageBucket,
-    UserSpaceObjectStorageConfig,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotBranch,
-    UserSpaceSnapshotDiffFileSummary,
-    UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceEnvVar,
+    UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest, UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest, UserSpaceFileInfo, UserSpaceFileResponse,
+    UserSpaceLiveDataCheck, UserSpaceLiveDataConnection, UserspaceMountBackend,
+    UserspaceMountSource, UserspaceMountSourceType,
+    UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig,
+    UserSpaceSharedPreviewResponse, UserSpaceSnapshot, UserSpaceSnapshotBranch,
+    UserSpaceSnapshotDiffFileSummary, UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace, UserSpaceWorkspaceEnvVar,
     UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
-    UserSpaceWorkspaceScmExportRequest,
-    UserSpaceWorkspaceScmImportRequest,
-    UserSpaceWorkspaceScmPreviewRequest,
-    UserSpaceWorkspaceScmPreviewResponse,
-    UserSpaceWorkspaceScmStatus,
-    UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceMount,
-    WorkspaceMountBrowseRequest,
-    WorkspaceMountBrowseResponse,
-    WorkspaceMountDirectoryEntry,
-    WorkspaceMountSyncMode,
-    WorkspaceMountSyncPreviewRequest,
-    WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest,
-    WorkspaceMountSyncResponse,
-    WorkspaceScmDirection,
-    WorkspaceScmPreviewState,
-    WorkspaceScmProvider,
-    WorkspaceShareSlugAvailabilityResponse,
-)
-from ragtime.userspace.sqlite_import import (
-    _MAX_IMPORT_SIZE_BYTES,
-    SqlImportResult,
-    detect_binary_pg_dump,
-    detect_sql_dialect,
-    import_sql_to_sqlite,
-)
+    UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember, WorkspaceMount, WorkspaceMountBrowseRequest,
+    WorkspaceMountBrowseResponse, WorkspaceMountDirectoryEntry,
+    WorkspaceMountSyncMode, WorkspaceMountSyncPreviewRequest,
+    WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest,
+    WorkspaceMountSyncResponse, WorkspaceScmDirection,
+    WorkspaceScmPreviewState, WorkspaceScmProvider,
+    WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.sqlite_import import (_MAX_IMPORT_SIZE_BYTES,
+                                             SqlImportResult,
+                                             detect_binary_pg_dump,
+                                             detect_sql_dialect,
+                                             import_sql_to_sqlite)
 
 logger = get_logger(__name__)
 
@@ -334,6 +283,22 @@ _NODE_FRAMEWORK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bvite\b"), "vite"),
     (re.compile(r"\bexpress\b"), "express"),
 ]
+_REPLIT_SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+_REPLIT_RUNTIME_KEYS = frozenset(
+    {
+        "run",
+        "entrypoint",
+        "localport",
+        "externalport",
+        "waitforport",
+        "ignoreports",
+    }
+)
+_REPLIT_NORMALIZATION_HEADER = [
+    "# Ragtime import normalization:",
+    "# .ragtime/runtime-entrypoint.json is the authoritative runtime config.",
+    "# Ragtime's native preview proxy fronts the app directly, so Replit-only run/proxy/port directives are disabled below.",
+]
 
 
 def _guess_node_framework_from_command(command: str) -> str:
@@ -343,6 +308,10 @@ def _guess_node_framework_from_command(command: str) -> str:
         if pattern.search(lower):
             return framework
     return "node"
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
 
 
 @lru_cache(maxsize=None)
@@ -1890,6 +1859,60 @@ class UserSpaceService:
             }
         return None
 
+    def _normalize_imported_replit_runtime_artifacts(
+        self,
+        workspace_id: str,
+    ) -> list[str]:
+        files_dir = self._workspace_files_dir(workspace_id)
+        replit_path = files_dir / ".replit"
+        if not replit_path.is_file():
+            return []
+
+        original_text = self._read_workspace_text_file(replit_path)
+        if not original_text:
+            return []
+
+        current_section = ""
+        normalized_lines: list[str] = []
+        changed = False
+        actions: list[str] = []
+
+        for line in original_text.splitlines():
+            stripped = line.strip()
+            section_match = _REPLIT_SECTION_RE.match(stripped)
+            if section_match:
+                current_section = section_match.group(1).strip().lower()
+
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.split("=", 1)[0].strip().lower()
+                if key in _REPLIT_RUNTIME_KEYS:
+                    normalized_lines.append(f"# Ragtime normalized: {line}")
+                    actions.append("commented Replit runtime directives in .replit")
+                    changed = True
+                    continue
+                if current_section == "env" and key == "port":
+                    normalized_lines.append(f"# Ragtime normalized: {line}")
+                    actions.append("removed Replit PORT override from .replit")
+                    changed = True
+                    continue
+
+            normalized_lines.append(line)
+
+        if not changed:
+            return []
+
+        normalized_text = "\n".join(normalized_lines)
+        if not normalized_text.startswith(_REPLIT_NORMALIZATION_HEADER[0]):
+            normalized_text = (
+                "\n".join(_REPLIT_NORMALIZATION_HEADER)
+                + "\n\n"
+                + normalized_text
+            )
+        if original_text.endswith("\n"):
+            normalized_text += "\n"
+        replit_path.write_text(normalized_text, encoding="utf-8")
+        return _dedupe_preserve_order(actions)
+
     def _seed_entrypoint_from_import(self, workspace_id: str) -> dict[str, str] | None:
         """Infer and write an entrypoint for an imported workspace.
 
@@ -2301,9 +2324,8 @@ class UserSpaceService:
                     ),
                 )
                 try:
-                    from ragtime.userspace.runtime_service import (
-                        userspace_runtime_service,
-                    )
+                    from ragtime.userspace.runtime_service import \
+                        userspace_runtime_service
 
                     await userspace_runtime_service.bump_workspace_generation(
                         workspace_id,
@@ -2329,7 +2351,8 @@ class UserSpaceService:
                 allow_destructive_auto_sync_approval=True,
             )
             try:
-                from ragtime.userspace.runtime_service import userspace_runtime_service
+                from ragtime.userspace.runtime_service import \
+                    userspace_runtime_service
 
                 await userspace_runtime_service.bump_workspace_generation(
                     workspace_id,
@@ -3363,6 +3386,36 @@ class UserSpaceService:
         slug_segment = quote(share_slug, safe="")
         share_path = f"/{owner_segment}/{slug_segment}"
         return f"{normalized_base}{share_path}" if normalized_base else share_path
+
+    def _build_workspace_anonymous_share_url(
+        self,
+        share_token: str,
+        base_url: str | None = None,
+    ) -> str:
+        normalized_base = (base_url or "").strip().rstrip("/")
+        share_path = f"/shared/{quote(share_token, safe='')}"
+        return f"{normalized_base}{share_path}" if normalized_base else share_path
+
+    def build_workspace_anonymous_share_url(
+        self,
+        share_token: str,
+        base_url: str | None = None,
+    ) -> str:
+        return self._build_workspace_anonymous_share_url(
+            share_token,
+            base_url=base_url,
+        )
+
+    def is_direct_share_subdomain_allowed(self, workspace_record: Any) -> bool:
+        share_token = str(getattr(workspace_record, "shareToken", "") or "").strip()
+        mode, password_encrypted, _, _ = self._extract_share_access_state(workspace_record)
+        return bool(share_token) and mode == "token" and not bool(password_encrypted)
+
+    async def is_public_direct_share_host_enabled(self, workspace_id: str) -> bool:
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            return False
+        return self.is_direct_share_subdomain_allowed(workspace_record)
 
     async def _resolve_workspace_id_from_share_token(self, share_token: str) -> str:
         token = (share_token or "").strip()
@@ -4672,16 +4725,19 @@ class UserSpaceService:
         git_url: str,
         git_branch: str,
         inferred_entrypoint: dict[str, str] | None = None,
+        normalization_actions: list[str] | None = None,
     ) -> str:
         detected_replit_features, has_legacy_replit_object_storage = (
             self._detect_imported_replit_features(workspace_id)
         )
-        return build_workspace_scm_setup_prompt(
+        prompt_builder = cast(Any, build_workspace_scm_setup_prompt)
+        return prompt_builder(  # type: ignore[call-arg]
             git_url=git_url,
             git_branch=git_branch,
             inferred_entrypoint=inferred_entrypoint,
             detected_replit_features=detected_replit_features,
             has_legacy_replit_object_storage=has_legacy_replit_object_storage,
+            normalization_actions=normalization_actions,
         )
 
     async def _resolve_workspace_scm_target(
@@ -5078,6 +5134,9 @@ class UserSpaceService:
         # Attempt to infer a runtime entrypoint from the imported files
         # when no valid user-configured entrypoint exists yet.
         inferred_entrypoint = self._seed_entrypoint_from_import(workspace_id)
+        normalization_actions = _dedupe_preserve_order(
+            self._normalize_imported_replit_runtime_artifacts(workspace_id)
+        )
 
         imported_snapshot = await self.create_snapshot(
             workspace_id,
@@ -5134,6 +5193,7 @@ class UserSpaceService:
                 preview.git_url,
                 preview.git_branch,
                 inferred_entrypoint=inferred_entrypoint,
+                normalization_actions=normalization_actions,
             ),
         )
 
@@ -5803,9 +5863,7 @@ class UserSpaceService:
             if not password:
                 raise HTTPException(status_code=400, detail="Password is required")
             update_data["sharePassword"] = encrypt_secret(password)
-        elif request.password is not None and request.password.strip():
-            update_data["sharePassword"] = encrypt_secret(request.password.strip())
-        elif mode != "password":
+        else:
             update_data["sharePassword"] = None
 
         if mode == "selected_users" and not selected_user_ids:
@@ -6829,7 +6887,8 @@ class UserSpaceService:
         mount_id: str,
     ) -> str | None:
         try:
-            from ragtime.userspace.runtime_service import userspace_runtime_service
+            from ragtime.userspace.runtime_service import \
+                userspace_runtime_service
 
             return await userspace_runtime_service.refresh_workspace_mount_after_sync(
                 workspace_id,
@@ -10549,6 +10608,18 @@ class UserSpaceService:
             request,
             current_user=current_user,
             password=password,
+        )
+
+    async def execute_component_from_authorized_shared_preview(
+        self,
+        workspace_id: str,
+        request: ExecuteComponentRequest,
+    ) -> ExecuteComponentResponse:
+        workspace = await self._load_workspace_for_component_execution(workspace_id)
+        return await self._execute_component_for_workspace(
+            workspace,
+            request,
+            error_log_prefix="Shared component execution failed",
         )
 
     async def _execute_shared_component_for_workspace_id(

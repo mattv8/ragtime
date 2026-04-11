@@ -2208,6 +2208,10 @@ export interface UserSpaceWorkspaceShareLink {
   owner_username: string;
   share_slug: string;
   share_url: string;
+  anonymous_share_url: string | null;
+  subdomain_share_url: string | null;
+  subdomain_share_enabled: boolean;
+  subdomain_share_disabled_reason: string | null;
 }
 
 export interface UserSpaceWorkspaceShareLinkStatus {
@@ -2217,6 +2221,10 @@ export interface UserSpaceWorkspaceShareLinkStatus {
   share_slug: string | null;
   share_token: string | null;
   share_url: string | null;
+  anonymous_share_url: string | null;
+  subdomain_share_url: string | null;
+  subdomain_share_enabled: boolean;
+  subdomain_share_disabled_reason: string | null;
   created_at: string | null;
   share_access_mode: UserSpaceShareAccessMode;
   selected_user_ids: string[];
@@ -2325,7 +2333,20 @@ export interface UserSpaceCapabilityTokenResponse {
   capabilities: string[];
 }
 
-export type UserSpaceBrowserSurface = 'preview' | 'collab' | 'runtime_pty';
+export interface UserSpacePreviewLaunchRequest {
+  path: string;
+  parent_origin?: string | null;
+  prefer_root_proxy?: boolean;
+}
+
+export interface UserSpacePreviewLaunchResponse {
+  workspace_id: string;
+  preview_url: string;
+  preview_origin: string;
+  expires_at: string;
+}
+
+export type UserSpaceBrowserSurface = 'collab' | 'runtime_pty';
 
 export interface UserSpaceBrowserAuthRequest {
   surfaces: UserSpaceBrowserSurface[];

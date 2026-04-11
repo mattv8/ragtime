@@ -15,6 +15,7 @@ interface UserSpaceArtifactPreviewProps {
   workspaceFiles: Record<string, string>;
   liveDataConnections?: UserSpaceLiveDataConnection[];
   runtimePreviewUrl?: string;
+  runtimePreviewOrigin?: string;
   runtimeAuthorizationPending?: boolean;
   runtimeAvailable?: boolean;
   runtimeError?: string;
@@ -29,6 +30,7 @@ interface UserSpaceArtifactPreviewProps {
 
 export function UserSpaceArtifactPreview({
   runtimePreviewUrl,
+  runtimePreviewOrigin,
   runtimeAuthorizationPending,
   runtimeAvailable,
   runtimeError,
@@ -46,13 +48,26 @@ export function UserSpaceArtifactPreview({
   const [sandboxSettingsStatus, setSandboxSettingsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [sandboxBlockedMessage, setSandboxBlockedMessage] = useState<string | null>(null);
 
+  const expectedPreviewOrigin = useMemo(() => {
+    if (runtimePreviewOrigin) {
+      return runtimePreviewOrigin;
+    }
+    if (!runtimePreviewUrl) return null;
+    try {
+      return new URL(runtimePreviewUrl, window.location.origin).origin;
+    } catch {
+      return null;
+    }
+  }, [runtimePreviewOrigin, runtimePreviewUrl]);
+
   const handleIframeMessage = useCallback(
     async (event: MessageEvent) => {
       const frameWindow = iframeRef.current?.contentWindow;
       if (!frameWindow || event.source !== frameWindow) return;
 
       const isExpectedOrigin =
-        event.origin === 'null' || event.origin === window.location.origin;
+        event.origin === 'null'
+        || (expectedPreviewOrigin ? event.origin === expectedPreviewOrigin : false);
       if (!isExpectedOrigin) return;
 
       if (!event.data || event.data.bridge !== USERSPACE_EXEC_BRIDGE) return;
@@ -136,7 +151,7 @@ export function UserSpaceArtifactPreview({
         });
       }
     },
-    [workspaceId, shareToken, ownerUsername, shareSlug, sharePassword],
+    [expectedPreviewOrigin, workspaceId, shareToken, ownerUsername, shareSlug, sharePassword],
   );
 
   useEffect(() => {

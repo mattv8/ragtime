@@ -4,44 +4,51 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import posixpath
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.workspace_state import build_workspace_chat_state
-from ragtime.userspace.models import (
-    RuntimeOperationPhase,
-    RuntimeSessionState,
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceCollabSnapshotResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSession,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-    UserSpaceWorkspaceTabStateResponse,
-)
+from ragtime.userspace.models import (RuntimeOperationPhase,
+                                      RuntimeSessionState,
+                                      UserSpaceCapabilityTokenResponse,
+                                      UserSpaceCollabSnapshotResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpacePreviewLaunchResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSession,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse,
+                                      UserSpaceWorkspaceTabStateResponse)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
 
 _RUNTIME_CAPABILITY_TTL_SECONDS = 900
+_RUNTIME_PREVIEW_BOOTSTRAP_TTL_SECONDS = 300
+_RUNTIME_PREVIEW_SESSION_TTL_SECONDS = 14400
+_RUNTIME_PREVIEW_SESSION_COOKIE_NAME = "userspace_preview_session"
 _RUNTIME_DEVSERVER_PORT = 5173
 _RUNTIME_PREVIEW_DEFAULT_BASE = f"http://127.0.0.1:{_RUNTIME_DEVSERVER_PORT}"
 _RUNTIME_PROVIDER_MANAGER = "microvm_pool_v1"
+_RUNTIME_PREVIEW_GRANT_KIND = "userspace_preview_grant"
+_RUNTIME_PREVIEW_SESSION_KIND = "userspace_preview_session"
+_DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN = "userspace-preview.lvh.me"
 
 
 @dataclass
@@ -90,6 +97,199 @@ class UserSpaceRuntimeService:
     @staticmethod
     def _utc_now() -> datetime:
         return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _control_plane_base_url() -> str:
+        scheme = "https" if bool(getattr(settings, "enable_https", False)) else "http"
+        port = str(os.getenv("PORT", "8000") or "8000").strip() or "8000"
+        return f"{scheme}://127.0.0.1:{port}"
+
+    @staticmethod
+    def _default_public_control_plane_origin() -> str:
+        configured = str(getattr(settings, "external_base_url", "") or "").strip()
+        if configured:
+            parsed = urlsplit(configured)
+            return urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
+
+        scheme = "https" if bool(getattr(settings, "enable_https", False)) else "http"
+        port = int(getattr(settings, "port", 8000) or 8000)
+        host = "localhost"
+        default_port = (scheme == "https" and port == 443) or (
+            scheme == "http" and port == 80
+        )
+        netloc = host if default_port else f"{host}:{port}"
+        return f"{scheme}://{netloc}"
+
+    @staticmethod
+    def _preview_host_label(workspace_id: str) -> str:
+        normalized = re.sub(r"[^a-z0-9-]", "-", str(workspace_id or "").strip().lower())
+        normalized = re.sub(r"-{2,}", "-", normalized).strip("-")
+        if not normalized:
+            digest = hashlib.sha256(
+                f"userspace-preview:{workspace_id}:{settings.encryption_key}".encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            normalized = digest[:20]
+        return normalized[:63].rstrip("-")
+
+    @staticmethod
+    def _is_localhost_like_host(hostname: str | None) -> bool:
+        normalized = str(hostname or "").strip().strip(".").lower()
+        return normalized == "localhost" or normalized.endswith(".localhost")
+
+    def _resolve_preview_base_domain(self, hostname: str | None) -> str:
+        configured = (
+            str(getattr(settings, "userspace_preview_base_domain", "") or "")
+            .strip()
+            .strip(".")
+            .lower()
+        )
+        if not configured:
+            raise HTTPException(
+                status_code=500,
+                detail="USERSPACE_PREVIEW_BASE_DOMAIN is not configured",
+            )
+
+        if (
+            configured == _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN
+            and self._is_localhost_like_host(hostname)
+        ):
+            # Keep preview origins same-site with localhost-based editor sessions so
+            # embedded preview iframes can carry the preview session cookie.
+            return "localhost"
+
+        return configured
+
+    def _build_preview_origin(
+        self,
+        workspace_id: str,
+        *,
+        control_plane_origin: str | None = None,
+    ) -> str:
+        parsed = urlsplit(control_plane_origin or self._default_public_control_plane_origin())
+        if self._is_localhost_like_host(parsed.hostname):
+            # Keep preview hosts on the backend listener in dev so requests hit the
+            # preview dispatcher instead of the Vite UI server, while still staying
+            # same-site with localhost-based editor sessions.
+            parsed = urlsplit(self._default_public_control_plane_origin())
+        base_domain = self._resolve_preview_base_domain(parsed.hostname)
+        host = f"{self._preview_host_label(workspace_id)}.{base_domain}"
+        port = parsed.port
+        use_default_port = (parsed.scheme == "https" and port in {None, 443}) or (
+            parsed.scheme == "http" and port in {None, 80}
+        )
+        netloc = host if use_default_port else f"{host}:{port}"
+        return urlunsplit((parsed.scheme or "http", netloc, "", "", "")).rstrip("/")
+
+    def get_preview_origin(
+        self,
+        workspace_id: str,
+        *,
+        control_plane_origin: str | None = None,
+    ) -> str:
+        return self._build_preview_origin(
+            workspace_id,
+            control_plane_origin=control_plane_origin,
+        )
+
+    def _build_preview_token(
+        self,
+        claims: dict[str, Any],
+        *,
+        ttl_seconds: int,
+    ) -> tuple[str, datetime]:
+        now = self._utc_now()
+        expires_at = now + timedelta(seconds=max(60, min(ttl_seconds, 86400)))
+        payload = {
+            key: value for key, value in claims.items() if value is not None
+        }
+        payload.update(
+            {
+                "iat": int(now.timestamp()),
+                "exp": int(expires_at.timestamp()),
+                "jti": str(uuid4()),
+            }
+        )
+        token = jwt.encode(payload, settings.encryption_key, algorithm=settings.jwt_algorithm)
+        return token, expires_at
+
+    def _sanitize_preview_path(self, path: str | None, query: str | None = None) -> str:
+        normalized = "/" + (path or "").lstrip("/")
+        if normalized.startswith("/__ragtime/"):
+            normalized = "/"
+        if query:
+            normalized = f"{normalized}?{query}"
+        return normalized
+
+    def _build_workspace_preview_launch_response(
+        self,
+        *,
+        workspace_id: str,
+        subject_user_id: str | None,
+        control_plane_origin: str,
+        path: str,
+        parent_origin: str | None,
+        mode: str,
+        share_token: str | None = None,
+        owner_username: str | None = None,
+        share_slug: str | None = None,
+    ) -> UserSpacePreviewLaunchResponse:
+        preview_origin = self._build_preview_origin(
+            workspace_id,
+            control_plane_origin=control_plane_origin,
+        )
+        preview_host = urlsplit(preview_origin).netloc.lower()
+        grant_token, expires_at = self._build_preview_token(
+            {
+                "kind": _RUNTIME_PREVIEW_GRANT_KIND,
+                "sub": subject_user_id,
+                "workspace_id": workspace_id,
+                "preview_mode": mode,
+                "preview_host": preview_host,
+                "parent_origin": (parent_origin or "").strip() or None,
+                "target_path": path,
+                "share_token": share_token,
+                "owner_username": owner_username,
+                "share_slug": share_slug,
+            },
+            ttl_seconds=_RUNTIME_PREVIEW_BOOTSTRAP_TTL_SECONDS,
+        )
+        bootstrap_query = urlencode({"grant": grant_token})
+        return UserSpacePreviewLaunchResponse(
+            workspace_id=workspace_id,
+            preview_origin=preview_origin,
+            preview_url=f"{preview_origin}/__ragtime/bootstrap?{bootstrap_query}",
+            expires_at=expires_at,
+        )
+
+    def build_preview_session_token(self, claims: dict[str, Any]) -> tuple[str, datetime]:
+        payload = dict(claims)
+        payload["kind"] = _RUNTIME_PREVIEW_SESSION_KIND
+        return self._build_preview_token(
+            payload,
+            ttl_seconds=_RUNTIME_PREVIEW_SESSION_TTL_SECONDS,
+        )
+
+    def verify_preview_token(self, token: str, *, expected_kind: str) -> dict[str, Any]:
+        try:
+            claims = cast(
+                dict[str, Any],
+                jwt.decode(
+                    token,
+                    settings.encryption_key,
+                    algorithms=[settings.jwt_algorithm],
+                ),
+            )
+        except JWTError as exc:
+            raise HTTPException(status_code=401, detail="Invalid preview token") from exc
+
+        if str(claims.get("kind") or "").strip() != expected_kind:
+            raise HTTPException(status_code=401, detail="Invalid preview token")
+        workspace_id = str(claims.get("workspace_id") or "").strip()
+        if not workspace_id:
+            raise HTTPException(status_code=401, detail="Invalid preview token")
+        return claims
 
     @staticmethod
     def _optional_int(value: Any) -> int | None:
@@ -348,6 +548,37 @@ class UserSpaceRuntimeService:
                 *(check_candidate(client, c) for c in health_candidates)
             )
             return any(results)
+
+    def _build_capability_token_response(
+        self,
+        workspace_id: str,
+        user_id: str,
+        capabilities: list[str],
+        *,
+        session_id: str | None = None,
+        ttl_seconds: int = _RUNTIME_CAPABILITY_TTL_SECONDS,
+    ) -> UserSpaceCapabilityTokenResponse:
+        now = self._utc_now()
+        expires_at = now + timedelta(seconds=max(60, min(ttl_seconds, 3600)))
+        claims = {
+            "sub": user_id,
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+            "capabilities": sorted({c for c in capabilities if c}),
+            "iat": int(now.timestamp()),
+            "exp": int(expires_at.timestamp()),
+            "jti": str(uuid4()),
+        }
+        token = jwt.encode(
+            claims, settings.encryption_key, algorithm=settings.jwt_algorithm
+        )
+        return UserSpaceCapabilityTokenResponse(
+            token=token,
+            expires_at=expires_at,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            capabilities=cast(list[str], claims["capabilities"]),
+        )
 
     def _runtime_provider_name(self) -> str:
         return _RUNTIME_PROVIDER_MANAGER
@@ -837,6 +1068,51 @@ class UserSpaceRuntimeService:
             raise HTTPException(status_code=500, detail="Workspace owner unavailable")
         return await self._ensure_session_row(workspace_id, owner_user_id)
 
+    async def issue_workspace_preview_launch(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        control_plane_origin: str,
+        path: str = "/",
+        parent_origin: str | None = None,
+    ) -> UserSpacePreviewLaunchResponse:
+        await self.ensure_workspace_preview_session(workspace_id, user_id)
+        return self._build_workspace_preview_launch_response(
+            workspace_id=workspace_id,
+            subject_user_id=user_id,
+            control_plane_origin=control_plane_origin,
+            path=self._sanitize_preview_path(path),
+            parent_origin=parent_origin,
+            mode="workspace",
+        )
+
+    async def issue_shared_preview_launch(
+        self,
+        workspace_id: str,
+        *,
+        control_plane_origin: str,
+        path: str = "/",
+        parent_origin: str | None = None,
+        share_token: str | None = None,
+        owner_username: str | None = None,
+        share_slug: str | None = None,
+        subject_user_id: str | None = None,
+    ) -> UserSpacePreviewLaunchResponse:
+        await self.ensure_shared_preview_session(workspace_id)
+        mode = "share_token" if share_token else "share_slug"
+        return self._build_workspace_preview_launch_response(
+            workspace_id=workspace_id,
+            subject_user_id=subject_user_id,
+            control_plane_origin=control_plane_origin,
+            path=self._sanitize_preview_path(path),
+            parent_origin=parent_origin,
+            mode=mode,
+            share_token=share_token,
+            owner_username=owner_username,
+            share_slug=share_slug,
+        )
+
     async def build_workspace_preview_upstream_url(
         self,
         workspace_id: str,
@@ -1068,7 +1344,7 @@ class UserSpaceRuntimeService:
                 devserver_port=_RUNTIME_DEVSERVER_PORT,
                 runtime_capabilities=None,
                 runtime_has_cap_sys_admin=None,
-                preview_url=f"/indexes/userspace/workspaces/{workspace_id}/preview/",
+                preview_url=self._build_preview_origin(workspace_id),
             )
 
         session = self._to_runtime_session(active)
@@ -1093,7 +1369,7 @@ class UserSpaceRuntimeService:
                     devserver_port=_RUNTIME_DEVSERVER_PORT,
                     runtime_capabilities=None,
                     runtime_has_cap_sys_admin=None,
-                    preview_url=f"/indexes/userspace/workspaces/{workspace_id}/preview/",
+                    preview_url=self._build_preview_origin(workspace_id),
                 )
             logger.warning(
                 "Runtime provider status missing for workspace %s; auto-recovering session",
@@ -1204,7 +1480,7 @@ class UserSpaceRuntimeService:
             launch_cwd=launch_cwd,
             runtime_capabilities=runtime_capabilities,
             runtime_has_cap_sys_admin=runtime_has_cap_sys_admin,
-            preview_url=f"/indexes/userspace/workspaces/{workspace_id}/preview/",
+            preview_url=self._build_preview_origin(workspace_id),
             last_error=last_error,
             runtime_operation_id=runtime_operation_id,
             runtime_operation_phase=runtime_operation_phase,
@@ -1537,35 +1813,21 @@ class UserSpaceRuntimeService:
         ttl_seconds: int = _RUNTIME_CAPABILITY_TTL_SECONDS,
     ) -> UserSpaceCapabilityTokenResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
-
-        now = self._utc_now()
-        expires_at = now + timedelta(seconds=max(60, min(ttl_seconds, 3600)))
-        claims = {
-            "sub": user_id,
-            "workspace_id": workspace_id,
-            "session_id": session_id,
-            "capabilities": sorted({c for c in capabilities if c}),
-            "iat": int(now.timestamp()),
-            "exp": int(expires_at.timestamp()),
-            "jti": str(uuid4()),
-        }
-        token = jwt.encode(
-            claims, settings.encryption_key, algorithm=settings.jwt_algorithm
+        token_response = self._build_capability_token_response(
+            workspace_id,
+            user_id,
+            capabilities,
+            session_id=session_id,
+            ttl_seconds=ttl_seconds,
         )
         await self._audit(
             workspace_id,
             "capability_token_issue",
             user_id=user_id,
             session_id=session_id,
-            payload={"capabilities": claims["capabilities"]},
+            payload={"capabilities": token_response.capabilities},
         )
-        return UserSpaceCapabilityTokenResponse(
-            token=token,
-            expires_at=expires_at,
-            workspace_id=workspace_id,
-            session_id=session_id,
-            capabilities=cast(list[str], claims["capabilities"]),
-        )
+        return token_response
 
     def verify_capability_token(
         self,

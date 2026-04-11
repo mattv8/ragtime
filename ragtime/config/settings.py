@@ -54,6 +54,14 @@ class Settings(BaseSettings):
             "value instead of trusting X-Forwarded-* request headers."
         ),
     )
+    userspace_preview_base_domain: str = Field(
+        default="userspace-preview.lvh.me",
+        alias="USERSPACE_PREVIEW_BASE_DOMAIN",
+        description=(
+            "Wildcard base domain used for per-workspace preview origins "
+            "(for example https://<workspace>.userspace-preview.example.com)."
+        ),
+    )
     enable_https: bool = Field(
         default=False,
         alias="ENABLE_HTTPS",

@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, UserSpaceObjectStorageConfig, CreateUserSpaceObjectStorageBucketRequest, UpdateUserSpaceObjectStorageBucketRequest, DeleteUserSpaceObjectStorageBucketResponse, UserspaceMountSource, CreateUserspaceMountSourceRequest, UpdateUserspaceMountSourceRequest, BrowseUserspaceMountSourceRequest, DeleteUserspaceMountSourceResponse, WorkspaceMount, MountableSource, BrowseWorkspaceMountSourceRequest, WorkspaceMountBrowseResponse, CreateWorkspaceMountRequest, UpdateWorkspaceMountRequest, DeleteWorkspaceMountResponse, WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest, WorkspaceMountSyncResponse, MountSourceAffectedWorkspacesResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, CreateUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceSharedPreviewResponse, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, UserSpaceBrowserAuthResponse, UserSpaceBrowserSurface, UserSpaceWorkspaceTabStateResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState, UserSpacePreviewSettingsResponse, UserSpaceWorkspaceScmConnectionRequest, UserSpaceWorkspaceScmConnectionResponse, UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse, UserSpaceWorkspaceScmImportRequest, UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmSyncResponse, SqliteImportResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, UserSpaceObjectStorageConfig, CreateUserSpaceObjectStorageBucketRequest, UpdateUserSpaceObjectStorageBucketRequest, DeleteUserSpaceObjectStorageBucketResponse, UserspaceMountSource, CreateUserspaceMountSourceRequest, UpdateUserspaceMountSourceRequest, BrowseUserspaceMountSourceRequest, DeleteUserspaceMountSourceResponse, WorkspaceMount, MountableSource, BrowseWorkspaceMountSourceRequest, WorkspaceMountBrowseResponse, CreateWorkspaceMountRequest, UpdateWorkspaceMountRequest, DeleteWorkspaceMountResponse, WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest, WorkspaceMountSyncResponse, MountSourceAffectedWorkspacesResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, CreateUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, UserSpaceBrowserAuthResponse, UserSpaceBrowserSurface, UserSpacePreviewLaunchRequest, UserSpacePreviewLaunchResponse, UserSpaceWorkspaceTabStateResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState, UserSpacePreviewSettingsResponse, UserSpaceWorkspaceScmConnectionRequest, UserSpaceWorkspaceScmConnectionResponse, UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse, UserSpaceWorkspaceScmImportRequest, UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmSyncResponse, SqliteImportResponse } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -78,8 +78,13 @@ class ApiError extends Error {
  * Wrapper for fetch that includes credentials and handles common options
  */
 async function apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(options.headers ?? undefined);
+  if (typeof window !== 'undefined' && window.location.origin) {
+    headers.set('X-Ragtime-Browser-Origin', window.location.origin);
+  }
   return fetch(url, {
     ...options,
+    headers,
     credentials: 'include',
   });
 }
@@ -2383,26 +2388,6 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
   },
 
-  async getUserSpaceSharedPreview(shareToken: string, password?: string): Promise<UserSpaceSharedPreviewResponse> {
-    const headers: HeadersInit | undefined = password
-      ? { 'X-UserSpace-Share-Password': password }
-      : undefined;
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}`, {
-      headers,
-    });
-    return handleResponse<UserSpaceSharedPreviewResponse>(response);
-  },
-
-  async getUserSpaceSharedPreviewBySlug(ownerUsername: string, shareSlug: string, password?: string): Promise<UserSpaceSharedPreviewResponse> {
-    const headers: HeadersInit | undefined = password
-      ? { 'X-UserSpace-Share-Password': password }
-      : undefined;
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}`, {
-      headers,
-    });
-    return handleResponse<UserSpaceSharedPreviewResponse>(response);
-  },
-
   async executeUserSpaceSharedComponent(shareToken: string, request: ExecuteComponentRequest, password?: string): Promise<ExecuteComponentResponse> {
     const headers: HeadersInit = { 'Content-Type': 'application/json' };
     if (password) {
@@ -2461,13 +2446,6 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceTabStateResponse>(response);
   },
 
-  async startUserSpaceRuntimeDevserver(workspaceId: string): Promise<UserSpaceRuntimeActionResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/devserver/start`, {
-      method: 'POST',
-    });
-    return handleResponse<UserSpaceRuntimeActionResponse>(response);
-  },
-
   async restartUserSpaceRuntimeDevserver(workspaceId: string): Promise<UserSpaceRuntimeActionResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/devserver/restart`, {
       method: 'POST',
@@ -2508,6 +2486,41 @@ export const api = {
       body: JSON.stringify({ surfaces }),
     });
     return handleResponse<UserSpaceBrowserAuthResponse>(response);
+  },
+
+  async launchUserSpacePreview(workspaceId: string, request: UserSpacePreviewLaunchRequest): Promise<UserSpacePreviewLaunchResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/preview-launch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<UserSpacePreviewLaunchResponse>(response);
+  },
+
+  async launchUserSpaceSharedPreview(shareToken: string, request: UserSpacePreviewLaunchRequest, password?: string): Promise<UserSpacePreviewLaunchResponse> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (password) {
+      headers['X-UserSpace-Share-Password'] = password;
+    }
+    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/preview-launch`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(request),
+    });
+    return handleResponse<UserSpacePreviewLaunchResponse>(response);
+  },
+
+  async launchUserSpaceSharedPreviewBySlug(ownerUsername: string, shareSlug: string, request: UserSpacePreviewLaunchRequest, password?: string): Promise<UserSpacePreviewLaunchResponse> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (password) {
+      headers['X-UserSpace-Share-Password'] = password;
+    }
+    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/preview-launch`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(request),
+    });
+    return handleResponse<UserSpacePreviewLaunchResponse>(response);
   },
 
   getUserSpaceCollabWebSocketUrl(workspaceId: string, filePath: string): string {
@@ -2560,24 +2573,6 @@ export const api = {
     return handleResponse(response);
   },
 
-  getUserSpaceRuntimePreviewUrl(workspaceId: string, path: string = ''): string {
-    const normalized = path.replace(/^\/+/, '');
-    return normalized
-      ? `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/preview/${encodeFilePath(normalized)}`
-      : `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/preview/`;
-  },
-
-  getUserSpaceSharedPreviewProxyUrl(ownerUsername: string, shareSlug: string, path: string = ''): string {
-    const normalized = path.replace(/^\/+/, '');
-    const base = `${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/preview`;
-    return normalized ? `${base}/${encodeFilePath(normalized)}` : `${base}/`;
-  },
-
-  getUserSpaceSharedTokenPreviewProxyUrl(shareToken: string, path: string = ''): string {
-    const normalized = path.replace(/^\/+/, '');
-    const base = `${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/preview`;
-    return normalized ? `${base}/${encodeFilePath(normalized)}` : `${base}/`;
-  },
 };
 
 // Docker discovery types

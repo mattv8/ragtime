@@ -10,48 +10,37 @@ from collections.abc import AsyncIterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Depends,
-    Header,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings
-from ragtime.core.auth import validate_session
-from ragtime.core.database import get_db
+from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (
-    UserSpaceBrowserAuthorization,
-    UserSpaceBrowserAuthRequest,
-    UserSpaceBrowserAuthResponse,
-    UserSpaceBrowserSurface,
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-    UserSpaceWorkspaceTabStateResponse,
-)
-from ragtime.userspace.runtime_service import (
-    RuntimeVersionConflictError,
-    userspace_runtime_service,
-)
+from ragtime.userspace.models import (UserSpaceBrowserAuthorization,
+                                      UserSpaceBrowserAuthRequest,
+                                      UserSpaceBrowserAuthResponse,
+                                      UserSpaceBrowserSurface,
+                                      UserSpaceCapabilityTokenResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpacePreviewLaunchRequest,
+                                      UserSpacePreviewLaunchResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse,
+                                      UserSpaceWorkspaceTabStateResponse)
+from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
+                                               userspace_runtime_service)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
-_PREVIEW_CAPABILITY_COOKIE = "userspace_preview_capability"
 _COLLAB_CAPABILITY_COOKIE = "userspace_collab_capability"
 _RUNTIME_PTY_CAPABILITY_COOKIE = "userspace_runtime_pty_capability"
 _PROXY_TIMEOUT_FLOOR = 300.0  # seconds — minimum proxy read/write timeout
@@ -60,8 +49,29 @@ _USERSPACE_SURFACE_HEADER = "X-Ragtime-Userspace-Surface"
 _USERSPACE_PREVIEW_PROXY_HEADER = "X-Ragtime-Userspace-Preview-Proxy"
 
 
-def _preview_cookie_path(workspace_id: str) -> str:
-    return f"/indexes/userspace/workspaces/{workspace_id}/preview"
+def _root_share_target_url(base_url: str, share_path: str, target_path: str) -> str:
+    normalized_base = (base_url or "").rstrip("/")
+    normalized_share_path = "/" + share_path.lstrip("/")
+    normalized_target_path = "/" + (target_path or "/").lstrip("/")
+    if normalized_target_path == "/":
+        return f"{normalized_base}{normalized_share_path}"
+    return f"{normalized_base}{normalized_share_path.rstrip('/')}{normalized_target_path}"
+
+
+def _root_share_launch_response(
+    *,
+    workspace_id: str,
+    base_url: str,
+    share_path: str,
+    target_path: str,
+) -> UserSpacePreviewLaunchResponse:
+    preview_origin = (base_url or "").rstrip("/")
+    return UserSpacePreviewLaunchResponse(
+        workspace_id=workspace_id,
+        preview_origin=preview_origin,
+        preview_url=_root_share_target_url(base_url, share_path, target_path),
+        expires_at=datetime.now(timezone.utc),
+    )
 
 
 def _collab_cookie_path(workspace_id: str) -> str:
@@ -73,11 +83,6 @@ def _runtime_pty_cookie_path(workspace_id: str) -> str:
 
 
 _BROWSER_SURFACE_COOKIE_CONFIG: dict[str, dict[str, Any]] = {
-    "preview": {
-        "cookie_name": _PREVIEW_CAPABILITY_COOKIE,
-        "capabilities": ["userspace.preview_http", "userspace.preview_ws"],
-        "path_builder": _preview_cookie_path,
-    },
     "collab": {
         "cookie_name": _COLLAB_CAPABILITY_COOKIE,
         "capabilities": ["userspace.collab_connect"],
@@ -92,7 +97,7 @@ _BROWSER_SURFACE_COOKIE_CONFIG: dict[str, dict[str, Any]] = {
 
 
 def _default_browser_surfaces() -> list[UserSpaceBrowserSurface]:
-    return ["preview", "collab", "runtime_pty"]
+    return ["collab", "runtime_pty"]
 
 
 def _normalize_browser_surfaces(
@@ -105,7 +110,9 @@ def _normalize_browser_surfaces(
         if surface in _BROWSER_SURFACE_COOKIE_CONFIG and surface not in seen:
             ordered.append(surface)
             seen.add(surface)
-    return ordered or _default_browser_surfaces()
+    if raw_surfaces is None:
+        return ordered or _default_browser_surfaces()
+    return ordered
 
 
 def _get_max_proxy_timeout() -> float:
@@ -229,6 +236,9 @@ def _should_rewrite_proxy_content(media_type: str) -> bool:
         for t in (
             "text/html",
             "text/css",
+            "javascript",
+            "ecmascript",
+            "typescript",
         )
     )
 
@@ -245,8 +255,7 @@ def _extract_capability_token_from_request(request: Request) -> str | None:
     query_token = request.query_params.get("cap_token", "").strip()
     if query_token:
         return query_token
-    cookie_token = request.cookies.get(_PREVIEW_CAPABILITY_COOKIE, "").strip()
-    return cookie_token or None
+    return None
 
 
 def _extract_capability_token_from_websocket(websocket: WebSocket) -> str | None:
@@ -261,8 +270,7 @@ def _extract_capability_token_from_websocket(websocket: WebSocket) -> str | None
     explicit = websocket.headers.get("x-userspace-capability-token", "").strip()
     if explicit:
         return explicit
-    cookie_token = websocket.cookies.get(_PREVIEW_CAPABILITY_COOKIE, "").strip()
-    return cookie_token or None
+    return None
 
 
 def _extract_cookie_token_from_request(
@@ -419,6 +427,8 @@ async def _proxy_http_request(
     *,
     proxy_base_path: str | None = None,
     bridge_workspace_id: str | None = None,
+    bridge_context: dict[str, Any] | None = None,
+    bridge_script_src: str | None = None,
 ) -> Response:
     if request.headers.get("upgrade", "").lower() == "websocket":
         raise HTTPException(
@@ -466,16 +476,19 @@ async def _proxy_http_request(
     resp_headers[_USERSPACE_SURFACE_HEADER] = "preview-proxy"
     resp_headers[_USERSPACE_PREVIEW_PROXY_HEADER] = "true"
 
-    rewrite = proxy_base_path and _should_rewrite_proxy_content(media_type)
-    if rewrite:
-        base_path: str = proxy_base_path  # type: ignore[assignment]
+    should_buffer = _is_html_media_type(media_type) or bool(
+        proxy_base_path and _should_rewrite_proxy_content(media_type)
+    )
+    if should_buffer:
         try:
             content = await upstream_response.aread()
         finally:
             await upstream_response.aclose()
             await client.aclose()
 
-        content = _rewrite_root_relative_urls(content, base_path)
+        if proxy_base_path and _should_rewrite_proxy_content(media_type):
+            base_path: str = proxy_base_path  # type: ignore[assignment]
+            content = _rewrite_root_relative_urls(content, base_path)
         if _is_html_media_type(media_type):
             sandbox_flags: list[str] | None = None
             try:
@@ -489,6 +502,8 @@ async def _proxy_http_request(
                 content,
                 sandbox_flags,
                 workspace_id=bridge_workspace_id,
+                bridge_context=bridge_context,
+                bridge_script_src=bridge_script_src,
             )
         # Content length changed after rewriting; drop stale header so
         # Starlette re-calculates it from the actual body.
@@ -518,17 +533,23 @@ async def _proxy_http_request(
 
 
 _BRIDGE_CONFIG_MARKER = b"__ragtime_preview_sandbox_flags"
+_BRIDGE_CONTEXT_MARKER = b"__ragtime_preview_bridge"
 _BRIDGE_DETECT_RE = re.compile(rb"bridge\.js", re.IGNORECASE)
 _HEAD_CLOSE_RE = re.compile(rb"(</head\s*>)", re.IGNORECASE)
 _FIRST_SCRIPT_RE = re.compile(rb"(<script[\s>])", re.IGNORECASE)
 
 
-def _build_bridge_script_tag(workspace_id: str | None = None) -> bytes:
+def _build_bridge_script_tag(
+    workspace_id: str | None = None,
+    *,
+    bridge_script_src: str | None = None,
+) -> bytes:
     params = {"workspace_id": workspace_id} if workspace_id else {}
     query = urlencode(params)
-    src = "/indexes/userspace/runtime-bridge.js"
+    src = (bridge_script_src or "/__ragtime/bridge.js").strip() or "/__ragtime/bridge.js"
     if query:
-        src = f"{src}?{query}"
+        joiner = "&" if "?" in src else "?"
+        src = f"{src}{joiner}{query}"
     return f'<script src="{src}"></script>'.encode("utf-8")
 
 
@@ -544,15 +565,28 @@ def _build_bridge_config_tag(sandbox_flags: list[str]) -> bytes:
     )
 
 
+def _build_bridge_context_tag(bridge_context: dict[str, Any]) -> bytes:
+    serialized_context = json.dumps(bridge_context, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return (
+        b"<script>window.__ragtime_preview_bridge="
+        + serialized_context
+        + b";</script>"
+    )
+
+
 def _inject_bridge_script(
     html: bytes,
     sandbox_flags: list[str] | None = None,
     *,
     workspace_id: str | None = None,
+    bridge_context: dict[str, Any] | None = None,
+    bridge_script_src: str | None = None,
 ) -> bytes:
     """Inject the platform data-bridge script into HTML responses.
 
-    Inserts ``<script src="/indexes/userspace/runtime-bridge.js?...">`` before
+    Inserts ``<script src="/__ragtime/bridge.js?...">`` before
     ``</head>`` or the first ``<script`` tag so ``window.__ragtime_context``
     and platform visualization libraries are available to workspace code.
     Skips injection if bridge.js is already referenced.
@@ -560,8 +594,16 @@ def _inject_bridge_script(
     injected = b""
     if sandbox_flags is not None and _BRIDGE_CONFIG_MARKER not in html:
         injected += _build_bridge_config_tag(sandbox_flags) + b"\n"
+    if bridge_context is not None and _BRIDGE_CONTEXT_MARKER not in html:
+        injected += _build_bridge_context_tag(bridge_context) + b"\n"
     if not _BRIDGE_DETECT_RE.search(html):
-        injected += _build_bridge_script_tag(workspace_id) + b"\n"
+        injected += (
+            _build_bridge_script_tag(
+                workspace_id,
+                bridge_script_src=bridge_script_src,
+            )
+            + b"\n"
+        )
     if not injected:
         return html
     m = _HEAD_CLOSE_RE.search(html)
@@ -571,17 +613,6 @@ def _inject_bridge_script(
     if m:
         return html[: m.start()] + injected + html[m.start() :]
     return injected + html
-
-
-@router.get("/runtime-bridge.js", include_in_schema=False)
-async def runtime_bridge_script(workspace_id: str | None = None) -> Response:
-    return Response(
-        content=await userspace_service.build_runtime_bridge_content(workspace_id),
-        media_type="application/javascript",
-        headers={
-            "Cache-Control": "no-store",
-        },
-    )
 
 
 def _rewrite_root_relative_urls(content: bytes, proxy_base_path: str) -> bytes:
@@ -607,24 +638,6 @@ def _rewrite_root_relative_urls(content: bytes, proxy_base_path: str) -> bytes:
         return m.group(1) + base + m.group(2)
 
     return pattern.sub(_replace, content)
-
-
-async def _websocket_user(websocket: WebSocket) -> Any | None:
-    session_token = websocket.cookies.get("ragtime_session")
-    if not session_token:
-        auth_header = websocket.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
-            session_token = auth_header[7:]
-
-    if not session_token:
-        return None
-
-    token_data = await validate_session(session_token)
-    if not token_data:
-        return None
-
-    db = await get_db()
-    return await db.user.find_unique(where={"id": token_data.user_id})
 
 
 @router.get(
@@ -717,9 +730,15 @@ async def workspace_events_sse(
 )
 async def get_devserver_status(
     workspace_id: str,
+    request: Request,
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_runtime_service.get_devserver_status(workspace_id, user.id)
+    status = await userspace_runtime_service.get_devserver_status(workspace_id, user.id)
+    status.preview_url = userspace_runtime_service.get_preview_origin(
+        workspace_id,
+        control_plane_origin=get_browser_matched_origin(request),
+    )
+    return status
 
 
 @router.get(
@@ -728,28 +747,21 @@ async def get_devserver_status(
 )
 async def get_workspace_tab_state(
     workspace_id: str,
+    request: Request,
     selected_conversation_id: str | None = None,
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_runtime_service.get_workspace_tab_state(
+    tab_state = await userspace_runtime_service.get_workspace_tab_state(
         workspace_id,
         user.id,
         selected_conversation_id=selected_conversation_id,
         is_admin=bool(getattr(user, "role", None) == "admin"),
     )
-
-
-@router.post(
-    "/runtime/workspaces/{workspace_id}/devserver/start",
-    response_model=UserSpaceRuntimeActionResponse,
-    deprecated=True,
-    description="Alias for session/start. Prefer POST .../session/start instead.",
-)
-async def start_devserver(
-    workspace_id: str,
-    user: Any = Depends(get_current_user),
-):
-    return await userspace_runtime_service.start_runtime_session(workspace_id, user.id)
+    tab_state.runtime_status.preview_url = userspace_runtime_service.get_preview_origin(
+        workspace_id,
+        control_plane_origin=get_browser_matched_origin(request),
+    )
+    return tab_state
 
 
 @router.post(
@@ -894,6 +906,113 @@ async def authorize_browser_surfaces(
     return UserSpaceBrowserAuthResponse(
         workspace_id=workspace_id,
         authorizations=authorizations,
+    )
+
+
+@router.post(
+    "/runtime/workspaces/{workspace_id}/preview-launch",
+    response_model=UserSpacePreviewLaunchResponse,
+)
+async def issue_workspace_preview_launch(
+    workspace_id: str,
+    payload: UserSpacePreviewLaunchRequest,
+    request: Request,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_runtime_service.issue_workspace_preview_launch(
+        workspace_id,
+        user.id,
+        control_plane_origin=get_browser_matched_origin(
+            request,
+            browser_origin=payload.parent_origin,
+        ),
+        path=payload.path,
+        parent_origin=payload.parent_origin,
+    )
+
+
+@router.post(
+    "/shared/{share_token}/preview-launch",
+    response_model=UserSpacePreviewLaunchResponse,
+)
+async def issue_shared_preview_launch(
+    share_token: str,
+    payload: UserSpacePreviewLaunchRequest,
+    request: Request,
+    share_password: str | None = Header(
+        default=None,
+        alias="X-UserSpace-Share-Password",
+    ),
+    user: Any | None = Depends(get_current_user_optional),
+):
+    workspace_id = await userspace_service.resolve_shared_workspace_id(
+        share_token,
+        current_user=user,
+        password=share_password,
+    )
+    external_origin = get_browser_matched_origin(
+        request,
+        browser_origin=payload.parent_origin,
+    )
+    if payload.prefer_root_proxy or not await userspace_service.is_public_direct_share_host_enabled(workspace_id):
+        return _root_share_launch_response(
+            workspace_id=workspace_id,
+            base_url=external_origin,
+            share_path=f"/shared/{quote(share_token, safe='')}",
+            target_path=payload.path,
+        )
+    return await userspace_runtime_service.issue_shared_preview_launch(
+        workspace_id,
+        control_plane_origin=external_origin,
+        path=payload.path,
+        parent_origin=payload.parent_origin,
+        share_token=share_token,
+        subject_user_id=str(getattr(user, "id", "") or "") or None,
+    )
+
+
+@router.post(
+    "/shared/{owner_username}/{share_slug}/preview-launch",
+    response_model=UserSpacePreviewLaunchResponse,
+)
+async def issue_shared_preview_launch_by_slug(
+    owner_username: str,
+    share_slug: str,
+    payload: UserSpacePreviewLaunchRequest,
+    request: Request,
+    share_password: str | None = Header(
+        default=None,
+        alias="X-UserSpace-Share-Password",
+    ),
+    user: Any | None = Depends(get_current_user_optional),
+):
+    workspace_id = await userspace_service.resolve_shared_workspace_id_by_slug(
+        owner_username,
+        share_slug,
+        current_user=user,
+        password=share_password,
+    )
+    external_origin = get_browser_matched_origin(
+        request,
+        browser_origin=payload.parent_origin,
+    )
+    if payload.prefer_root_proxy or not await userspace_service.is_public_direct_share_host_enabled(workspace_id):
+        return _root_share_launch_response(
+            workspace_id=workspace_id,
+            base_url=external_origin,
+            share_path=(
+                f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}"
+            ),
+            target_path=payload.path,
+        )
+    return await userspace_runtime_service.issue_shared_preview_launch(
+        workspace_id,
+        control_plane_origin=external_origin,
+        path=payload.path,
+        parent_origin=payload.parent_origin,
+        owner_username=owner_username,
+        share_slug=share_slug,
+        subject_user_id=str(getattr(user, "id", "") or "") or None,
     )
 
 
@@ -1278,208 +1397,3 @@ async def collab_delete_file(
         user_id,
     )
     return result
-
-
-@router.api_route("/workspaces/{workspace_id}/preview", methods=_PROXY_METHODS)
-@router.api_route(
-    "/workspaces/{workspace_id}/preview/{path:path}", methods=_PROXY_METHODS
-)
-async def workspace_preview_proxy(
-    workspace_id: str,
-    request: Request,
-    path: str = "",
-):
-    token = _extract_cookie_token_from_request(
-        request,
-        _PREVIEW_CAPABILITY_COOKIE,
-    )
-    _, user_id = _require_workspace_capability(
-        token,
-        workspace_id,
-        "userspace.preview_http",
-    )
-    capability_token = token or ""
-    upstream_url = await userspace_runtime_service.build_workspace_preview_upstream_url(
-        workspace_id,
-        user_id,
-        path,
-        query=_sanitize_preview_query(request.url.query),
-    )
-    base = f"/indexes/userspace/workspaces/{workspace_id}/preview"
-    response = await _proxy_http_request(
-        request,
-        upstream_url,
-        proxy_base_path=base,
-        bridge_workspace_id=workspace_id,
-    )
-    response.set_cookie(
-        key=_PREVIEW_CAPABILITY_COOKIE,
-        value=capability_token,
-        max_age=900,
-        httponly=True,
-        secure=request.url.scheme == "https",
-        samesite="lax",
-        path=base,
-    )
-    return response
-
-
-@router.api_route(
-    "/shared/{owner_username}/{share_slug}/preview", methods=_PROXY_METHODS
-)
-@router.api_route(
-    "/shared/{owner_username}/{share_slug}/preview/{path:path}",
-    methods=_PROXY_METHODS,
-)
-async def shared_preview_proxy(
-    owner_username: str,
-    share_slug: str,
-    request: Request,
-    path: str = "",
-    share_password: str | None = Header(
-        default=None, alias="X-UserSpace-Share-Password"
-    ),
-    user: Any | None = Depends(get_current_user_optional),
-):
-    workspace_id = await userspace_service.resolve_shared_workspace_id_by_slug(
-        owner_username,
-        share_slug,
-        current_user=user,
-        password=share_password,
-    )
-    upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
-        workspace_id,
-        path,
-        query=request.url.query or None,
-    )
-    base = f"/indexes/userspace/shared/{owner_username}/{share_slug}/preview"
-    return await _proxy_http_request(
-        request,
-        upstream_url,
-        proxy_base_path=base,
-        bridge_workspace_id=workspace_id,
-    )
-
-
-@router.api_route("/shared/{share_token}/preview", methods=_PROXY_METHODS)
-@router.api_route("/shared/{share_token}/preview/{path:path}", methods=_PROXY_METHODS)
-async def shared_token_preview_proxy(
-    share_token: str,
-    request: Request,
-    path: str = "",
-    share_password: str | None = Header(
-        default=None, alias="X-UserSpace-Share-Password"
-    ),
-    user: Any | None = Depends(get_current_user_optional),
-):
-    workspace_id = await userspace_service.resolve_shared_workspace_id(
-        share_token,
-        current_user=user,
-        password=share_password,
-    )
-    upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
-        workspace_id,
-        path,
-        query=request.url.query or None,
-    )
-    base = f"/indexes/userspace/shared/{share_token}/preview"
-    return await _proxy_http_request(
-        request,
-        upstream_url,
-        proxy_base_path=base,
-        bridge_workspace_id=workspace_id,
-    )
-
-
-@router.websocket("/workspaces/{workspace_id}/preview")
-@router.websocket("/workspaces/{workspace_id}/preview/{path:path}")
-async def workspace_preview_proxy_websocket(
-    workspace_id: str,
-    websocket: WebSocket,
-    path: str = "",
-):
-    token = _extract_cookie_token_from_websocket(
-        websocket,
-        _PREVIEW_CAPABILITY_COOKIE,
-    )
-    try:
-        _, user_id = _require_workspace_capability(
-            token,
-            workspace_id,
-            "userspace.preview_ws",
-        )
-    except HTTPException:
-        await websocket.close(code=4401)
-        return
-
-    try:
-        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
-    except HTTPException:
-        await websocket.close(code=4403)
-        return
-
-    upstream_url = await userspace_runtime_service.build_workspace_preview_upstream_url(
-        workspace_id,
-        user_id,
-        path,
-        query=_sanitize_preview_query(websocket.url.query),
-    )
-    await _proxy_websocket_request(websocket, _to_websocket_url(upstream_url))
-
-
-@router.websocket("/shared/{owner_username}/{share_slug}")
-@router.websocket("/shared/{owner_username}/{share_slug}/{path:path}")
-async def shared_preview_proxy_websocket(
-    owner_username: str,
-    share_slug: str,
-    websocket: WebSocket,
-    path: str = "",
-):
-    user = await _websocket_user(websocket)
-    share_password = websocket.headers.get("x-userspace-share-password")
-
-    try:
-        workspace_id = await userspace_service.resolve_shared_workspace_id_by_slug(
-            owner_username,
-            share_slug,
-            current_user=user,
-            password=share_password,
-        )
-    except HTTPException as exc:
-        await websocket.close(code=4403 if exc.status_code == 403 else 4404)
-        return
-
-    upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
-        workspace_id,
-        path,
-        query=websocket.url.query or None,
-    )
-    await _proxy_websocket_request(websocket, _to_websocket_url(upstream_url))
-
-
-@router.websocket("/shared/{share_token}/preview")
-@router.websocket("/shared/{share_token}/preview/{path:path}")
-async def shared_token_preview_proxy_websocket(
-    share_token: str,
-    websocket: WebSocket,
-    path: str = "",
-):
-    user = await _websocket_user(websocket)
-    share_password = websocket.headers.get("x-userspace-share-password")
-
-    try:
-        workspace_id = await userspace_service.resolve_shared_workspace_id(
-            share_token,
-            current_user=user,
-            password=share_password,
-        )
-    except HTTPException as exc:
-        await websocket.close(code=4403 if exc.status_code == 403 else 4404)
-        return
-
-    upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
-        workspace_id,
-        path,
-        query=websocket.url.query or None,
-    )
-    await _proxy_websocket_request(websocket, _to_websocket_url(upstream_url))

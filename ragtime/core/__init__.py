@@ -1,5 +1,6 @@
 """Core utilities module."""
 
+from .auth import get_external_origin
 from .logging import (
     BLUE,
     BOLD_RED,
@@ -12,7 +13,6 @@ from .logging import (
     get_ui_width,
     setup_logging,
 )
-
 from .security import validate_odoo_code, validate_sql_query
 
 __all__ = [
@@ -26,6 +26,7 @@ __all__ = [
     "RED",
     "BOLD_RED",
     "RESET",
+    "get_external_origin",
     "validate_sql_query",
     "validate_odoo_code",
 ]

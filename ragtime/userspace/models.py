@@ -51,7 +51,7 @@ WorkspaceMountSyncMode = Literal[
     "source_authoritative",
     "target_authoritative",
 ]
-UserSpaceBrowserSurface = Literal["preview", "collab", "runtime_pty"]
+UserSpaceBrowserSurface = Literal["collab", "runtime_pty"]
 
 
 class WorkspaceMember(BaseModel):
@@ -351,6 +351,10 @@ class UserSpaceWorkspaceShareLink(BaseModel):
     owner_username: str
     share_slug: str
     share_url: str
+    anonymous_share_url: str | None = None
+    subdomain_share_url: str | None = None
+    subdomain_share_enabled: bool = False
+    subdomain_share_disabled_reason: str | None = None
 
 
 class UserSpaceWorkspaceShareLinkStatus(BaseModel):
@@ -360,6 +364,10 @@ class UserSpaceWorkspaceShareLinkStatus(BaseModel):
     share_slug: str | None = None
     share_token: str | None = None
     share_url: str | None = None
+    anonymous_share_url: str | None = None
+    subdomain_share_url: str | None = None
+    subdomain_share_enabled: bool = False
+    subdomain_share_disabled_reason: str | None = None
     created_at: datetime | None = None
     share_access_mode: ShareAccessMode = "token"
     selected_user_ids: list[str] = Field(default_factory=list)
@@ -563,6 +571,19 @@ class UserSpaceCapabilityTokenResponse(BaseModel):
     workspace_id: str
     session_id: str | None = None
     capabilities: list[str] = Field(default_factory=list)
+
+
+class UserSpacePreviewLaunchRequest(BaseModel):
+    path: str = Field(default="/")
+    parent_origin: str | None = None
+    prefer_root_proxy: bool = False
+
+
+class UserSpacePreviewLaunchResponse(BaseModel):
+    workspace_id: str
+    preview_url: str
+    preview_origin: str
+    expires_at: datetime
 
 
 class UserSpaceBrowserAuthRequest(BaseModel):

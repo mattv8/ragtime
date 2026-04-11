@@ -50,6 +50,8 @@ interface CachedUserSpaceFile {
   artifactType: UserSpaceArtifactType | null;
 }
 
+type ShareLinkType = 'named' | 'anonymous' | 'subdomain';
+
 type MountSyncPreviewIntent = 'sync' | 'enable-auto' | 'update-auto-sync-mode';
 
 const DEFAULT_WORKSPACE_CHAT_STATE: WorkspaceChatState = { hasLive: false, hasInterrupted: false };
@@ -104,6 +106,10 @@ function browserPathToSourcePath(browserPath: string): string {
 function browserPathToWorkspaceMountTargetPath(browserPath: string): string {
   const normalized = normalizeMountBrowserPath(browserPath);
   return normalized === '/' ? '/workspace' : `/workspace${normalized}`;
+}
+
+function getShareLinkTypeStorageKey(workspaceId: string): string {
+  return `userspace-share-link-type:${workspaceId}`;
 }
 
 const WORKSPACE_MOUNT_SYNC_MODE_OPTIONS: Array<{
@@ -245,7 +251,6 @@ const USERSPACE_FILE_TREE_MAX_IDLE_POLL_INTERVAL_MS = 15000;
 const USERSPACE_FILE_TREE_BACKGROUND_POLL_INTERVAL_MS = 20000;
 const USERSPACE_WORKSPACE_BADGE_BACKGROUND_POLL_INTERVAL_MS = 20000;
 const USERSPACE_RUNTIME_BACKGROUND_POLL_INTERVAL_MS = 30000;
-const USERSPACE_BROWSER_AUTH_REFRESH_BUFFER_MS = 60_000;
 const SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES = 20;
 
 function getLastWorkspaceCookieName(userId: string): string {
@@ -489,7 +494,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
   const [previewExecuting, setPreviewExecuting] = useState(false);
   const [previewRefreshCounter, setPreviewRefreshCounter] = useState(0);
-  const [previewAuthorizationReady, setPreviewAuthorizationReady] = useState(false);
+  const [previewFrameUrl, setPreviewFrameUrl] = useState<string | null>(null);
+  const [previewOrigin, setPreviewOrigin] = useState<string | null>(null);
   const [previewAuthorizationPending, setPreviewAuthorizationPending] = useState(false);
   const [runtimeStatus, setRuntimeStatus] = useState<UserSpaceRuntimeStatusResponse | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
@@ -512,7 +518,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [deletingWorkspacePhase, setDeletingWorkspacePhase] = useState<UserSpaceWorkspaceDeletionPhase | null>(null);
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
-  const [shareLinkType, setShareLinkType] = useState<'named' | 'anonymous'>('named');
+  const [shareLinkType, setShareLinkType] = useState<ShareLinkType>('anonymous');
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareLinkStatus, setShareLinkStatus] = useState<UserSpaceWorkspaceShareLinkStatus | null>(null);
   const [loadingShareStatus, setLoadingShareStatus] = useState(false);
@@ -634,7 +640,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [activeSnapshotFileDiffBeforeLabel, setActiveSnapshotFileDiffBeforeLabel] = useState('Snapshot');
   const [activeSnapshotFileDiffAfterLabel, setActiveSnapshotFileDiffAfterLabel] = useState('Current Workspace');
 
-  const previewAuthorizationRefreshTimerRef = useRef<number | null>(null);
   const toolPickerRef = useRef<HTMLDivElement>(null);
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
   const selectedFilePathRef = useRef(selectedFilePath);
@@ -670,25 +675,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const userSpaceLayoutCookieName = useMemo(() => getUserSpaceLayoutCookieName(currentUser.id), [currentUser.id]);
   const userSpaceFullscreenCookieName = useMemo(() => getUserSpaceFullscreenCookieName(currentUser.id), [currentUser.id]);
 
-  const authorizeBrowserSurfaces = useCallback(async (workspaceId: string, surfaces: Array<'preview' | 'collab' | 'runtime_pty'>) => {
+  const authorizeBrowserSurfaces = useCallback(async (workspaceId: string, surfaces: Array<'collab' | 'runtime_pty'>) => {
     return api.authorizeUserSpaceBrowserSurfaces(workspaceId, surfaces);
   }, []);
 
-  const authorizePreviewSurface = useCallback(async (workspaceId: string): Promise<string | null> => {
+  const launchPreviewSurface = useCallback(async (workspaceId: string): Promise<string> => {
     setPreviewAuthorizationPending(true);
     try {
-      const response = await authorizeBrowserSurfaces(workspaceId, ['preview']);
-      const previewAuthorization = response.authorizations.find((authorization) => authorization.surface === 'preview');
-      const isAuthorized = Boolean(previewAuthorization);
-      setPreviewAuthorizationReady(isAuthorized);
-      return previewAuthorization?.expires_at ?? null;
+      const response = await api.launchUserSpacePreview(workspaceId, {
+        path: '/',
+        parent_origin: window.location.origin,
+      });
+      setPreviewFrameUrl(response.preview_url);
+      setPreviewOrigin(response.preview_origin);
+      return response.preview_url;
     } catch (err) {
-      setPreviewAuthorizationReady(false);
+      setPreviewFrameUrl(null);
+      setPreviewOrigin(null);
       throw err;
     } finally {
       setPreviewAuthorizationPending(false);
     }
-  }, [authorizeBrowserSurfaces]);
+  }, []);
 
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(180);
@@ -2779,62 +2787,41 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   useEffect(() => {
     if (!activeWorkspaceId) {
-      setPreviewAuthorizationReady(false);
+      setPreviewFrameUrl(null);
+      setPreviewOrigin(null);
       setPreviewAuthorizationPending(false);
       return;
     }
 
-    setPreviewAuthorizationReady(false);
+    setPreviewFrameUrl(null);
+    setPreviewOrigin(null);
     setPreviewAuthorizationPending(true);
   }, [activeWorkspaceId]);
 
   useEffect(() => {
-    if (previewAuthorizationRefreshTimerRef.current !== null) {
-      window.clearTimeout(previewAuthorizationRefreshTimerRef.current);
-      previewAuthorizationRefreshTimerRef.current = null;
-    }
-
     if (!activeWorkspaceId) {
       return;
     }
 
     let cancelled = false;
-    const authorizeAndScheduleRefresh = async () => {
+    const launchPreview = async () => {
       try {
-        const expiresAt = await authorizePreviewSurface(activeWorkspaceId);
-        if (cancelled || !expiresAt) {
+        const previewUrl = await launchPreviewSurface(activeWorkspaceId);
+        if (cancelled || !previewUrl) {
           return;
         }
-
-        const expiresAtMs = new Date(expiresAt).getTime();
-        if (!Number.isFinite(expiresAtMs)) {
-          return;
-        }
-
-        const refreshDelayMs = Math.max(
-          1_000,
-          expiresAtMs - Date.now() - USERSPACE_BROWSER_AUTH_REFRESH_BUFFER_MS,
-        );
-        previewAuthorizationRefreshTimerRef.current = window.setTimeout(() => {
-          previewAuthorizationRefreshTimerRef.current = null;
-          void authorizeAndScheduleRefresh();
-        }, refreshDelayMs);
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to authorize preview access');
+          setError(err instanceof Error ? err.message : 'Failed to launch preview access');
         }
       }
     };
 
-    void authorizeAndScheduleRefresh();
+    void launchPreview();
     return () => {
       cancelled = true;
-      if (previewAuthorizationRefreshTimerRef.current !== null) {
-        window.clearTimeout(previewAuthorizationRefreshTimerRef.current);
-        previewAuthorizationRefreshTimerRef.current = null;
-      }
     };
-  }, [activeWorkspaceId, authorizePreviewSurface, previewRefreshCounter]);
+  }, [activeWorkspaceId, launchPreviewSurface, previewRefreshCounter]);
 
   // Reset reconnect attempts when workspace or file changes (not on reconnect nonce)
   useEffect(() => {
@@ -3019,8 +3006,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       return;
     }
 
-    // Allow terminal retries while runtime is starting to avoid a hard UI stall.
-    if (runtimeDisplayState !== 'running' && runtimeDisplayState !== 'starting') {
+    // The terminal should remain available whenever the runtime session exists,
+    // even if preview-health checks currently mark the preview surface unhealthy.
+    const runtimeSessionState = runtimeStatus?.session_state;
+    if (runtimeSessionState !== 'running' && runtimeSessionState !== 'starting') {
       return;
     }
 
@@ -3057,6 +3046,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     terminal.open(terminalContainer);
     fitAddon.fit();
     terminal.writeln('$ waiting for terminal output...');
+    const focusTerminal = () => {
+      terminal.focus();
+    };
+    terminalContainer.addEventListener('pointerdown', focusTerminal);
 
     terminalRef.current = terminal;
     terminalFitRef.current = fitAddon;
@@ -3066,6 +3059,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         fitAddon.fit();
       } catch {
         // ignore sizing errors during rapid layout changes
+      }
+      if (socket?.readyState === WebSocket.OPEN) {
+        try {
+          socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+        } catch {
+          // ignore resize send failures during reconnects
+        }
       }
     });
     resizeObserver.observe(terminalContainer);
@@ -3109,6 +3109,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           } catch {
             // ignore
           }
+          try {
+            socket?.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+          } catch {
+            // ignore
+          }
+          terminal.focus();
         };
 
         socket.onmessage = (event) => {
@@ -3119,9 +3125,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               terminalReadOnlyRef.current = isReadOnly;
               setTerminalReadOnly(isReadOnly);
               terminal.options.disableStdin = isReadOnly;
+              terminal.options.cursorBlink = !isReadOnly;
+              if (!isReadOnly) {
+                setTimeout(() => terminal.focus(), 50);
+              }
               const statusMessage = typeof payload.message === 'string' ? payload.message.trim() : '';
               if (statusMessage) {
-                terminal.writeln(`\r\n[status] ${statusMessage}\r\n`);
+                terminal.writeln(`[status] ${statusMessage}`);
               }
               return;
             }
@@ -3136,7 +3146,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           }
         };
 
-        socket.onclose = () => {
+        socket.onclose = (closeEvent) => {
+          if ([1000, 1001].includes(closeEvent.code)) {
+            return;
+          }
+          if ([4401, 4403, 4404].includes(closeEvent.code)) {
+            terminal.writeln('\r\n[status] Terminal access was rejected. Refresh runtime access and try again.');
+            return;
+          }
           if (reconnectEnabled) {
             terminal.writeln('\r\n[status] Terminal disconnected. Reconnecting...');
           }
@@ -3173,11 +3190,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         terminalResizeObserverRef.current.disconnect();
         terminalResizeObserverRef.current = null;
       }
+      terminalContainer.removeEventListener('pointerdown', focusTerminal);
       terminalFitRef.current = null;
       terminalRef.current?.dispose();
       terminalRef.current = null;
     };
-  }, [activeRightTab, activeWorkspaceId, authorizeBrowserSurfaces, canEditWorkspace, runtimeDisplayState, terminalReconnectNonce]);
+  }, [activeRightTab, activeWorkspaceId, authorizeBrowserSurfaces, canEditWorkspace, runtimeStatus?.session_state, terminalReconnectNonce]);
 
   useEffect(() => {
     const socket = collabSocketRef.current;
@@ -4198,13 +4216,39 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     void loadShareLinkStatus();
   }, [loadShareLinkStatus, showShareModal]);
 
+  const activeShareLinkStatus = useMemo(() => {
+    if (!shareLinkStatus || !activeWorkspaceId) {
+      return null;
+    }
+    return shareLinkStatus.workspace_id === activeWorkspaceId ? shareLinkStatus : null;
+  }, [activeWorkspaceId, shareLinkStatus]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!activeWorkspaceId) {
+      setShareLinkType('anonymous');
+      return;
+    }
+    const stored = window.localStorage.getItem(getShareLinkTypeStorageKey(activeWorkspaceId));
+    if (stored === 'named' || stored === 'anonymous' || stored === 'subdomain') {
+      setShareLinkType(stored);
+      return;
+    }
+    setShareLinkType('anonymous');
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !activeWorkspaceId) return;
+    window.localStorage.setItem(getShareLinkTypeStorageKey(activeWorkspaceId), shareLinkType);
+  }, [activeWorkspaceId, shareLinkType]);
+
   const handleOpenShareModal = useCallback(() => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
-    setShareSlugDraft(shareLinkStatus?.share_slug ?? getDefaultShareSlug(activeWorkspace?.name));
+    setShareSlugDraft(activeShareLinkStatus?.share_slug ?? getDefaultShareSlug(activeWorkspace?.name));
     setShareSlugAvailable(null);
-    setShareAccessMode(shareLinkStatus?.share_access_mode ?? 'token');
-    setShareSelectedUserIdsDraft(shareLinkStatus?.selected_user_ids ?? []);
-    setShareSelectedLdapGroupsDraft(shareLinkStatus?.selected_ldap_groups ?? []);
+    setShareAccessMode(activeShareLinkStatus?.share_access_mode ?? 'token');
+    setShareSelectedUserIdsDraft(activeShareLinkStatus?.selected_user_ids ?? []);
+    setShareSelectedLdapGroupsDraft(activeShareLinkStatus?.selected_ldap_groups ?? []);
     setSharePasswordDraft('');
     setShareLdapGroupDraft('');
     setAutoCreateShareLinkAttempted(false);
@@ -4241,11 +4285,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   }, [
     activeWorkspace?.name,
     activeWorkspaceId,
+    activeShareLinkStatus?.selected_ldap_groups,
+    activeShareLinkStatus?.selected_user_ids,
+    activeShareLinkStatus?.share_access_mode,
+    activeShareLinkStatus?.share_slug,
     canEditWorkspace,
-    shareLinkStatus?.share_access_mode,
-    shareLinkStatus?.selected_ldap_groups,
-    shareLinkStatus?.selected_user_ids,
-    shareLinkStatus?.share_slug,
   ]);
 
   const handleEnsureShareLink = useCallback(async (rotateToken = false) => {
@@ -4265,11 +4309,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         share_slug: link.share_slug,
         share_token: link.share_token,
         share_url: link.share_url,
+        anonymous_share_url: link.anonymous_share_url,
+        subdomain_share_url: link.subdomain_share_url,
+        subdomain_share_enabled: link.subdomain_share_enabled,
+        subdomain_share_disabled_reason: link.subdomain_share_disabled_reason,
         created_at: new Date().toISOString(),
-        share_access_mode: shareLinkStatus?.share_access_mode ?? 'token',
-        selected_user_ids: shareLinkStatus?.selected_user_ids ?? [],
-        selected_ldap_groups: shareLinkStatus?.selected_ldap_groups ?? [],
-        has_password: shareLinkStatus?.has_password ?? false,
+        share_access_mode: activeShareLinkStatus?.share_access_mode ?? 'token',
+        selected_user_ids: activeShareLinkStatus?.selected_user_ids ?? [],
+        selected_ldap_groups: activeShareLinkStatus?.selected_ldap_groups ?? [],
+        has_password: activeShareLinkStatus?.has_password ?? false,
       };
       setShareLinkStatus(nextStatus);
       setShareSlugDraft(link.share_slug);
@@ -4285,11 +4333,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [
     activeWorkspaceId,
+    activeShareLinkStatus?.has_password,
+    activeShareLinkStatus?.selected_ldap_groups,
+    activeShareLinkStatus?.selected_user_ids,
+    activeShareLinkStatus?.share_access_mode,
     canEditWorkspace,
-    shareLinkStatus?.has_password,
-    shareLinkStatus?.selected_ldap_groups,
-    shareLinkStatus?.selected_user_ids,
-    shareLinkStatus?.share_access_mode,
   ]);
 
   useEffect(() => {
@@ -4306,26 +4354,36 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     loadingShareStatus,
     sharingWorkspace,
     autoCreateShareLinkAttempted,
-    shareLinkStatus,
+    activeShareLinkStatus,
     handleEnsureShareLink,
   ]);
 
   const resolveShareUrl = useCallback((status: UserSpaceWorkspaceShareLinkStatus | null | undefined): string | null => {
     if (!status?.has_share_link) return null;
-    if (shareLinkType === 'anonymous' && status.share_token) {
-      const base = status.share_url
-        ? new URL(status.share_url, window.location.origin).origin
-        : window.location.origin;
-      return `${base}/shared/${encodeURIComponent(status.share_token)}`;
+    if (shareLinkType === 'subdomain' && status.subdomain_share_enabled && status.subdomain_share_url) {
+      return status.subdomain_share_url;
     }
-    return status.share_url ?? null;
+    if (shareLinkType === 'anonymous' && status.anonymous_share_url) {
+      return status.anonymous_share_url;
+    }
+    return status.share_url;
   }, [shareLinkType]);
 
-  const effectiveShareUrl = useMemo(() => resolveShareUrl(shareLinkStatus), [resolveShareUrl, shareLinkStatus]);
+  const effectiveShareUrl = useMemo(() => resolveShareUrl(activeShareLinkStatus), [activeShareLinkStatus, resolveShareUrl]);
+  const shareSubdomainEnabled = Boolean(activeShareLinkStatus?.subdomain_share_enabled) && shareAccessMode === 'token';
+  const shareSubdomainDisabledReason = shareAccessMode !== 'token'
+    ? 'Direct subdomain access is only available for public links without password or account protection'
+    : (activeShareLinkStatus?.subdomain_share_disabled_reason ?? null);
+
+  useEffect(() => {
+    if (shareLinkType === 'subdomain' && !shareSubdomainEnabled) {
+      setShareLinkType('anonymous');
+    }
+  }, [shareLinkType, shareSubdomainEnabled]);
 
   const handleCopyShareLink = useCallback(async () => {
     let url = effectiveShareUrl;
-    if (!shareLinkStatus?.has_share_link) {
+    if (!activeShareLinkStatus?.has_share_link) {
       const created = await handleEnsureShareLink(false);
       url = resolveShareUrl(created);
     }
@@ -4339,17 +4397,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to copy share link');
     }
-  }, [effectiveShareUrl, handleEnsureShareLink, resolveShareUrl, shareLinkStatus?.has_share_link]);
+  }, [activeShareLinkStatus?.has_share_link, effectiveShareUrl, handleEnsureShareLink, resolveShareUrl]);
 
   const handleOpenFullPreview = useCallback(async () => {
-    let url = effectiveShareUrl;
-    if (!shareLinkStatus?.has_share_link) {
+    let url = resolveShareUrl(activeShareLinkStatus);
+    if (!activeShareLinkStatus?.has_share_link) {
       const created = await handleEnsureShareLink(false);
       url = resolveShareUrl(created);
     }
     if (!url) return;
     window.open(url, '_blank', 'noopener,noreferrer');
-  }, [effectiveShareUrl, handleEnsureShareLink, resolveShareUrl, shareLinkStatus?.has_share_link]);
+  }, [activeShareLinkStatus, handleEnsureShareLink, resolveShareUrl]);
 
   const handleRotateShareLink = useCallback(async () => {
     await handleEnsureShareLink(true);
@@ -4426,7 +4484,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       return;
     }
 
-    let currentStatus = shareLinkStatus;
+    let currentStatus = activeShareLinkStatus;
     if (!currentStatus?.has_share_link) {
       currentStatus = await handleEnsureShareLink(false);
     }
@@ -4479,10 +4537,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [
     activeWorkspaceId,
+    activeShareLinkStatus,
     canEditWorkspace,
     handleEnsureShareLink,
     shareAccessMode,
-    shareLinkStatus,
     sharePasswordDraft,
     shareSlugDraft,
     shareSelectedLdapGroupsDraft,
@@ -4507,19 +4565,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   }, [activeWorkspace, allUsers, currentUser]);
 
   const shareHasUnsavedChanges = useMemo(() => {
-    if (!showShareModal || !shareLinkStatus) {
+    if (!showShareModal || !activeShareLinkStatus) {
       return false;
     }
 
-    const slugChanged = normalizeShareSlugInput(shareSlugDraft) !== normalizeShareSlugInput(shareLinkStatus.share_slug ?? '');
-    const accessModeChanged = shareAccessMode !== shareLinkStatus.share_access_mode;
+    const slugChanged = normalizeShareSlugInput(shareSlugDraft) !== normalizeShareSlugInput(activeShareLinkStatus.share_slug ?? '');
+    const accessModeChanged = shareAccessMode !== activeShareLinkStatus.share_access_mode;
     const selectedUsersChanged = !areSameNormalizedStringArrays(
       shareSelectedUserIdsDraft,
-      shareLinkStatus.selected_user_ids ?? [],
+      activeShareLinkStatus.selected_user_ids ?? [],
     );
     const selectedLdapGroupsChanged = !areSameNormalizedStringArrays(
       shareSelectedLdapGroupsDraft,
-      shareLinkStatus.selected_ldap_groups ?? [],
+      activeShareLinkStatus.selected_ldap_groups ?? [],
     );
     const pendingPasswordChange = shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim());
 
@@ -4529,8 +4587,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       || selectedLdapGroupsChanged
       || pendingPasswordChange;
   }, [
+    activeShareLinkStatus,
     shareAccessMode,
-    shareLinkStatus,
     sharePasswordDraft,
     shareSelectedLdapGroupsDraft,
     shareSelectedUserIdsDraft,
@@ -5192,7 +5250,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               disabled={!activeWorkspaceId || !canEditWorkspace || sharingWorkspace}
               title="Manage share link"
             >
-              {shareCopied ? <Check size={14} /> : <Link2 size={14} />}
+              <Link2 size={14} />
             </button>
             <button
               className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"
@@ -5455,11 +5513,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 entryPath={previewEntryPath}
                 workspaceFiles={previewWorkspaceFiles}
                 liveDataConnections={previewLiveDataConnections}
-                runtimePreviewUrl={
-                  activeWorkspaceId && previewAuthorizationReady
-                    ? api.getUserSpaceRuntimePreviewUrl(activeWorkspaceId, '')
-                    : undefined
-                }
+                runtimePreviewUrl={previewFrameUrl ?? undefined}
+                runtimePreviewOrigin={previewOrigin ?? undefined}
                 runtimeAuthorizationPending={Boolean(activeWorkspaceId) && previewAuthorizationPending}
                 runtimeAvailable={runtimeStatus?.devserver_running ?? false}
                 runtimeError={runtimeStatus?.last_error ?? undefined}
@@ -6917,7 +6972,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                       </div>
                     )}
 
-                    {shareLinkStatus?.has_share_link && (
+                    {activeShareLinkStatus?.has_share_link && (
                       <div className="userspace-share-link-type-toggle">
                         <label className="userspace-share-radio-option">
                           <input
@@ -6939,10 +6994,27 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                           />
                           Anonymous
                         </label>
+                        <label className="userspace-share-radio-option">
+                          <input
+                            type="radio"
+                            name="shareLinkType"
+                            value="subdomain"
+                            checked={shareLinkType === 'subdomain'}
+                            onChange={() => setShareLinkType('subdomain')}
+                            disabled={!shareSubdomainEnabled}
+                          />
+                          Subdomain
+                        </label>
                       </div>
                     )}
 
-                    {shareLinkStatus?.has_share_link && effectiveShareUrl ? (
+                    {activeShareLinkStatus?.has_share_link && !shareSubdomainEnabled && shareSubdomainDisabledReason && (
+                      <div className="userspace-share-meta">
+                        {shareSubdomainDisabledReason}
+                      </div>
+                    )}
+
+                    {activeShareLinkStatus?.has_share_link && effectiveShareUrl ? (
                       <>
                         <label htmlFor="userspace-share-url" className="userspace-share-label">Active share URL</label>
                         <div className="userspace-share-url-copy-wrap">
@@ -6958,7 +7030,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                           </button>
                         </div>
                         <div className="userspace-share-meta">
-                          {shareLinkStatus.created_at ? `Created ${formatSnapshotTimestamp(shareLinkStatus.created_at)}` : 'Share link active'}
+                          {activeShareLinkStatus.created_at ? `Created ${formatSnapshotTimestamp(activeShareLinkStatus.created_at)}` : 'Share link active'}
                         </div>
                       </>
                     ) : (
@@ -6987,14 +7059,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                     {shareAccessMode === 'password' && (
                       <div className="userspace-share-access-row">
                         <label htmlFor="userspace-share-password" className="userspace-share-label">
-                          Share password {shareLinkStatus?.has_password ? '(set)' : '(required)'}
+                          Share password {activeShareLinkStatus?.has_password ? '(set)' : '(required)'}
                         </label>
                         <input
                           id="userspace-share-password"
                           type="password"
                           value={sharePasswordDraft}
                           onChange={(event) => setSharePasswordDraft(event.target.value)}
-                          placeholder={shareLinkStatus?.has_password ? 'Enter new password to update' : 'Enter password'}
+                          placeholder={activeShareLinkStatus?.has_password ? 'Enter new password to update' : 'Enter password'}
                           autoComplete="new-password"
                         />
                       </div>
@@ -7101,7 +7173,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                       <button
                         className="btn btn-secondary"
                         onClick={handleRevokeShareLink}
-                        disabled={revokingShareLink || sharingWorkspace || checkingShareSlug || savingShareAccess || !shareLinkStatus?.has_share_link}
+                        disabled={revokingShareLink || sharingWorkspace || checkingShareSlug || savingShareAccess || !activeShareLinkStatus?.has_share_link}
                       >
                         {revokingShareLink ? 'Revoking...' : 'Revoke Link'}
                       </button>

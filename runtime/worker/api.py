@@ -441,66 +441,127 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     )
     redaction_carry = ""
     buffered_for_redaction_logged = False
+    loop = asyncio.get_running_loop()
+    os.set_blocking(master_fd, False)
+    pty_output_queue: asyncio.Queue[bytes | OSError | None] = asyncio.Queue()
+    startup_reads = 4  # only filter the first N reads
 
-    async def _pump_stream() -> None:
-        nonlocal buffered_for_redaction_logged, redaction_carry
-        startup_reads = 4  # only filter the first N reads
-        while True:
-            try:
-                chunk = await asyncio.to_thread(os.read, master_fd, 1024)
-            except asyncio.CancelledError:
-                break
-            except OSError as exc:
-                logger.debug(
-                    "PTY stream read failed: worker_session_id=%s errno=%s returncode=%s carry_len=%s",
-                    worker_session_id,
-                    getattr(exc, "errno", None),
-                    process.returncode,
-                    len(redaction_carry),
-                )
-                break
-            if not chunk:
-                logger.debug(
-                    "PTY stream EOF: worker_session_id=%s returncode=%s carry_len=%s",
-                    worker_session_id,
-                    process.returncode,
-                    len(redaction_carry),
-                )
-                break
-            text = chunk.decode("utf-8", errors="replace")
-            if startup_reads > 0:
-                startup_reads -= 1
-                lines = text.splitlines(keepends=True)
-                lines = [
-                    ln
-                    for ln in lines
-                    if not any(noise in ln for noise in _STARTUP_NOISE)
-                ]
-                text = "".join(lines)
-                if not text:
-                    continue
-            output_text, redaction_carry = service.split_workspace_secret_output(
-                session,
-                text,
-                carry=redaction_carry,
+    def _queue_pty_output() -> None:
+        try:
+            chunk = os.read(master_fd, 1024)
+        except BlockingIOError:
+            return
+        except OSError as exc:
+            with contextlib.suppress(Exception):
+                pty_output_queue.put_nowait(exc)
+            loop.remove_reader(master_fd)
+            return
+        if not chunk:
+            with contextlib.suppress(Exception):
+                pty_output_queue.put_nowait(None)
+            loop.remove_reader(master_fd)
+            return
+        with contextlib.suppress(Exception):
+            pty_output_queue.put_nowait(chunk)
+
+    async def _flush_output_chunk(chunk: bytes) -> None:
+        nonlocal buffered_for_redaction_logged, redaction_carry, startup_reads
+        text = chunk.decode("utf-8", errors="replace")
+        if startup_reads > 0:
+            startup_reads -= 1
+            lines = text.splitlines(keepends=True)
+            lines = [
+                ln for ln in lines if not any(noise in ln for noise in _STARTUP_NOISE)
+            ]
+            text = "".join(lines)
+            if not text:
+                return
+        output_text, redaction_carry = service.split_workspace_secret_output(
+            session,
+            text,
+            carry=redaction_carry,
+        )
+        if text and not output_text and redaction_carry and not buffered_for_redaction_logged:
+            buffered_for_redaction_logged = True
+            logger.debug(
+                "PTY output buffered for redaction overlap: worker_session_id=%s chunk_len=%s carry_len=%s",
+                worker_session_id,
+                len(text),
+                len(redaction_carry),
             )
-            if (
-                text
-                and not output_text
-                and redaction_carry
-                and not buffered_for_redaction_logged
-            ):
-                buffered_for_redaction_logged = True
-                logger.debug(
-                    "PTY output buffered for redaction overlap: worker_session_id=%s chunk_len=%s carry_len=%s",
-                    worker_session_id,
-                    len(text),
-                    len(redaction_carry),
-                )
-            if output_text:
-                await websocket.send_text(
-                    json.dumps({"type": "output", "data": output_text})
-                )
+        if output_text:
+            await websocket.send_text(json.dumps({"type": "output", "data": output_text}))
+
+    loop.add_reader(master_fd, _queue_pty_output)
+    output_task = asyncio.create_task(pty_output_queue.get())
+    input_task = asyncio.create_task(websocket.receive())
+    try:
+        while True:
+            done, _ = await asyncio.wait(
+                {input_task, output_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if output_task in done:
+                output_result = output_task.result()
+                output_task = asyncio.create_task(pty_output_queue.get())
+                if isinstance(output_result, OSError):
+                    logger.debug(
+                        "PTY stream read failed: worker_session_id=%s errno=%s returncode=%s carry_len=%s",
+                        worker_session_id,
+                        getattr(output_result, "errno", None),
+                        process.returncode,
+                        len(redaction_carry),
+                    )
+                    break
+                if output_result is None:
+                    logger.debug(
+                        "PTY stream EOF: worker_session_id=%s returncode=%s carry_len=%s",
+                        worker_session_id,
+                        process.returncode,
+                        len(redaction_carry),
+                    )
+                    break
+                await _flush_output_chunk(output_result)
+
+            if input_task in done:
+                message = input_task.result()
+                input_task = asyncio.create_task(websocket.receive())
+                if message.get("type") == "websocket.disconnect":
+                    break
+                text_payload = message.get("text")
+                if text_payload is None:
+                    continue
+                try:
+                    payload = json.loads(text_payload)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                msg_type = payload.get("type")
+                if msg_type == "resize":
+                    cols = int(payload.get("cols", 80))
+                    rows = int(payload.get("rows", 24))
+                    _resize_pty(master_fd, cols, rows)
+                    continue
+                if msg_type != "input":
+                    continue
+                line = str(payload.get("data", ""))
+                try:
+                    os.write(master_fd, line.encode("utf-8", errors="ignore"))
+                except OSError:
+                    break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            loop.remove_reader(master_fd)
+        for task in (input_task, output_task):
+            task.cancel()
+        # Unregister from PTY tracker only if this process is still the
+        # registered one (a newer connection may have already replaced it)
+        if _pty_processes.get(worker_session_id) is process:
+            _pty_processes.pop(worker_session_id, None)
+        if _pty_master_fds.get(worker_session_id) == master_fd:
+            _pty_master_fds.pop(worker_session_id, None)
         if redaction_carry:
             logger.debug(
                 "PTY flushing buffered carry on stream end: worker_session_id=%s carry_len=%s",
@@ -512,47 +573,14 @@ async def pty(worker_session_id: str, websocket: WebSocket):
                 redaction_carry,
             )
             if output_text:
-                await websocket.send_text(
-                    json.dumps({"type": "output", "data": output_text})
-                )
-
-    stream_task = asyncio.create_task(_pump_stream())
-    try:
-        while True:
-            payload = await websocket.receive_json()
-            msg_type = payload.get("type")
-            if msg_type == "resize":
-                cols = int(payload.get("cols", 80))
-                rows = int(payload.get("rows", 24))
-                await asyncio.to_thread(_resize_pty, master_fd, cols, rows)
-                continue
-            if msg_type != "input":
-                continue
-            line = str(payload.get("data", ""))
-            try:
-                await asyncio.to_thread(
-                    os.write,
-                    master_fd,
-                    line.encode("utf-8", errors="ignore"),
-                )
-            except OSError:
-                break
-    except WebSocketDisconnect:
-        pass
-    finally:
-        # Unregister from PTY tracker only if this process is still the
-        # registered one (a newer connection may have already replaced it)
-        if _pty_processes.get(worker_session_id) is process:
-            _pty_processes.pop(worker_session_id, None)
-        if _pty_master_fds.get(worker_session_id) == master_fd:
-            _pty_master_fds.pop(worker_session_id, None)
+                with contextlib.suppress(Exception):
+                    await websocket.send_text(
+                        json.dumps({"type": "output", "data": output_text})
+                    )
         if process.returncode is None:
             process.terminate()
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(process.wait(), timeout=2)
-        stream_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await stream_task
         with contextlib.suppress(Exception):
             os.close(master_fd)
 

@@ -95,7 +95,7 @@ _AGENT_SHELL_ENV_METADATA_NAME = "workspace-env.json"
 _AGENT_SHELL_ENV_VIEW_NAME = "redacted_env_view.py"
 _AGENT_SHELL_INTERNAL_ENV_KEYS = ("RAGTIME_REDACTED_ENV_FILE",)
 _RAGTIME_REDACTED_ENV_FILE_VAR = "RAGTIME_REDACTED_ENV_FILE"
-_RAGTIME_REDACTED_ENV_SENTINEL_SET = "__RAGTIME_SECRET_REDACTED__"
+_RAGTIME_REDACTED_ENV_SENTINEL_SET = "*****"
 _RAGTIME_REDACTED_ENV_SENTINEL_MISSING = "__RAGTIME_SECRET_MISSING__"
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -370,18 +370,44 @@ class WorkerService:
         return environment
 
     @staticmethod
-    def _workspace_secret_redaction_pairs(
+    def _workspace_secret_redaction_items(
         session: WorkerSession,
-    ) -> list[tuple[str, str]]:
-        seen_values: set[str] = set()
-        pairs: list[tuple[str, str]] = []
-        for value in session.workspace_env.values():
-            if not value or value in seen_values:
+    ) -> list[tuple[str, str, str]]:
+        items: list[tuple[str, str, str]] = []
+        for key, value in sorted(session.workspace_env.items()):
+            if not key or not value:
                 continue
-            seen_values.add(value)
-            pairs.append((value, _RAGTIME_REDACTED_ENV_SENTINEL_SET))
-        pairs.sort(key=lambda item: len(item[0]), reverse=True)
-        return pairs
+            items.append((key, value, _RAGTIME_REDACTED_ENV_SENTINEL_SET))
+        return items
+
+    @staticmethod
+    def _redact_secret_key_value(
+        text: str,
+        key: str,
+        value: str,
+        sentinel: str,
+    ) -> str:
+        escaped_key = re.escape(key)
+        escaped_value = re.escape(value)
+        patterns = (
+            re.compile(rf"(?m)(\bexport\s+{escaped_key}=){escaped_value}(?=$|\s)"),
+            re.compile(rf"(?m)(\b{escaped_key}=){escaped_value}(?=$|\s)"),
+            re.compile(rf'("{escaped_key}"\s*:\s*")({escaped_value})(")'),
+            re.compile(rf"('{escaped_key}'\s*:\s*')({escaped_value})(')"),
+            re.compile(rf'(\b{escaped_key}\b\s*:\s*")({escaped_value})(")'),
+            re.compile(rf"(\b{escaped_key}\b\s*:\s*')({escaped_value})(')"),
+        )
+        redacted = text
+        for pattern in patterns:
+            redacted = pattern.sub(
+                lambda match: (
+                    f"{match.group(1)}{sentinel}{match.group(3)}"
+                    if (match.lastindex or 0) >= 3
+                    else f"{match.group(1)}{sentinel}"
+                ),
+                redacted,
+            )
+        return redacted
 
     def redact_workspace_secret_output(
         self,
@@ -391,8 +417,15 @@ class WorkerService:
         if not text:
             return text
         redacted_text = text
-        for secret_value, sentinel in self._workspace_secret_redaction_pairs(session):
-            redacted_text = redacted_text.replace(secret_value, sentinel)
+        for key, secret_value, sentinel in self._workspace_secret_redaction_items(
+            session
+        ):
+            redacted_text = self._redact_secret_key_value(
+                redacted_text,
+                key,
+                secret_value,
+                sentinel,
+            )
         return redacted_text
 
     def split_workspace_secret_output(
@@ -406,7 +439,7 @@ class WorkerService:
             return "", ""
 
         overlap = 0
-        for secret_value, _ in self._workspace_secret_redaction_pairs(session):
+        for _, secret_value, _ in self._workspace_secret_redaction_items(session):
             max_prefix_length = min(len(secret_value) - 1, len(combined))
             for prefix_length in range(max_prefix_length, 0, -1):
                 if combined.endswith(secret_value[:prefix_length]):
