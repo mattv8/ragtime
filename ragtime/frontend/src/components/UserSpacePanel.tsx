@@ -4370,10 +4370,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   }, [shareLinkType]);
 
   const effectiveShareUrl = useMemo(() => resolveShareUrl(activeShareLinkStatus), [activeShareLinkStatus, resolveShareUrl]);
-  const shareSubdomainEnabled = Boolean(activeShareLinkStatus?.subdomain_share_enabled) && shareAccessMode === 'token';
-  const shareSubdomainDisabledReason = shareAccessMode !== 'token'
-    ? 'Direct subdomain access is only available for public links without password or account protection'
-    : (activeShareLinkStatus?.subdomain_share_disabled_reason ?? null);
+  const shareSubdomainEnabled = Boolean(activeShareLinkStatus?.subdomain_share_enabled);
+  const shareSubdomainDisabledReason = activeShareLinkStatus?.subdomain_share_disabled_reason ?? null;
+  const showProtectedSubdomainNotice = Boolean(
+    activeShareLinkStatus?.has_share_link
+      && shareLinkType === 'subdomain'
+      && shareAccessMode !== 'token',
+  );
 
   useEffect(() => {
     if (shareLinkType === 'subdomain' && !shareSubdomainEnabled) {
@@ -6953,23 +6956,27 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               ) : (
                 <>
                   <div className="userspace-share-link-pane">
-                    <label htmlFor="userspace-share-slug" className="userspace-share-label">Custom slug</label>
-                    <div className="userspace-share-slug-row">
-                      <input
-                        id="userspace-share-slug"
-                        value={shareSlugDraft}
-                        onChange={(event) => {
-                          setShareSlugDraft(normalizeShareSlugInput(event.target.value));
-                          setShareSlugAvailable(null);
-                        }}
-                        placeholder="custom_slug"
-                        autoComplete="off"
-                      />
-                    </div>
-                    {shareSlugAvailable !== null && (
-                      <div className={`userspace-share-meta ${shareSlugAvailable ? '' : 'userspace-error'}`}>
-                        {shareSlugAvailable ? 'Slug is available' : 'Slug is unavailable'}
-                      </div>
+                    {shareLinkType !== 'subdomain' && (
+                      <>
+                        <label htmlFor="userspace-share-slug" className="userspace-share-label">Custom slug</label>
+                        <div className="userspace-share-slug-row">
+                          <input
+                            id="userspace-share-slug"
+                            value={shareSlugDraft}
+                            onChange={(event) => {
+                              setShareSlugDraft(normalizeShareSlugInput(event.target.value));
+                              setShareSlugAvailable(null);
+                            }}
+                            placeholder="custom_slug"
+                            autoComplete="off"
+                          />
+                        </div>
+                        {shareSlugAvailable !== null && (
+                          <div className={`userspace-share-meta ${shareSlugAvailable ? '' : 'userspace-error'}`}>
+                            {shareSlugAvailable ? 'Slug is available' : 'Slug is unavailable'}
+                          </div>
+                        )}
+                      </>
                     )}
 
                     {activeShareLinkStatus?.has_share_link && (
@@ -7011,6 +7018,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                     {activeShareLinkStatus?.has_share_link && !shareSubdomainEnabled && shareSubdomainDisabledReason && (
                       <div className="userspace-share-meta">
                         {shareSubdomainDisabledReason}
+                      </div>
+                    )}
+
+                    {showProtectedSubdomainNotice && (
+                      <div className="userspace-share-warning-banner" role="alert">
+                        Warning: if this workspace has already been unlocked in this browser, opening the subdomain link again may not prompt you to login. Protection is still enforced for new sessions and other browsers.
                       </div>
                     )}
 

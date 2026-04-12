@@ -5,10 +5,12 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import RedirectResponse
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import JSONResponse
 
 from ragtime.config import settings
 from ragtime.userspace.models import (ExecuteComponentRequest,
@@ -26,13 +28,40 @@ from ragtime.userspace.service import userspace_service
 
 preview_host_app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 
+
+@preview_host_app.exception_handler(HTTPException)
+async def _handle_preview_auth_error(request: StarletteRequest, exc: HTTPException):
+    """Redirect unauthenticated visitors to the share link password/login page
+    instead of showing a raw JSON 401."""
+    if exc.status_code != 401:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    if getattr(request, "scope", {}).get("type") != "http":
+        return JSONResponse(status_code=401, content={"detail": exc.detail})
+    if request.method != "GET" or request.url.path.startswith("/__ragtime/"):
+        return JSONResponse(status_code=401, content={"detail": exc.detail})
+    workspace_id = _workspace_id_from_preview_host(request.headers.get("host"))
+    if workspace_id:
+        share_token = await userspace_service.get_share_token(workspace_id)
+        if share_token:
+            # Derive control-plane origin from the subdomain host header:
+            # strip the workspace label to get "base_domain:port".
+            hostname, port = _split_host(request.headers.get("host"))
+            base_domain = hostname.split(".", 1)[1] if "." in hostname else hostname
+            scheme = request.url.scheme or "http"
+            port_suffix = f":{port}" if port else ""
+            share_url = f"{scheme}://{base_domain}{port_suffix}/shared/{quote(share_token, safe='')}"
+            return RedirectResponse(url=share_url, status_code=302)
+    return JSONResponse(status_code=401, content={"detail": exc.detail})
+
+
 # ---------------------------------------------------------------------------
 # In-memory preview host session registry
 #
-# Cross-site iframes (parent origin != preview subdomain) cannot rely on
-# SameSite=Lax cookies.  The bootstrap endpoint registers the session here
-# so that the proxy handler can look it up by host label when the cookie is
-# absent.  Entries expire together with the preview session JWT.
+# Internal workspace preview surfaces may run in embedded browser contexts
+# where SameSite=Lax cookies are not sent reliably. The bootstrap endpoint
+# registers those sessions here so the preview host can still resolve them by
+# host label when the cookie is absent. Shared-preview auth does not use this
+# fallback anymore; protected shared subdomains are cookie-backed only.
 # ---------------------------------------------------------------------------
 
 _SESSION_REGISTRY_MAX = 500  # prevent unbounded growth
@@ -47,6 +76,15 @@ class _PreviewHostSessionEntry:
 
 _preview_host_sessions: dict[str, _PreviewHostSessionEntry] = {}
 _registry_lock = threading.Lock()
+
+
+def invalidate_preview_sessions_for_workspace(workspace_id: str) -> None:
+    """Remove all in-memory preview session registry entries for *workspace_id*."""
+    label = (workspace_id or "").strip().lower()
+    if not label:
+        return
+    with _registry_lock:
+        _preview_host_sessions.pop(label, None)
 
 
 def _host_label_from_hostname(hostname: str) -> str:
@@ -198,6 +236,7 @@ async def _resolve_public_preview_session(host_header: str | None) -> dict[str, 
     return {
         "workspace_id": workspace_id,
         "preview_mode": "shared_public_host",
+        "share_access_mode": "token",
         "preview_host": str(host_header or "").strip().lower() or None,
         "parent_origin": None,
     }
@@ -209,16 +248,29 @@ async def _enforce_shared_subdomain_allowed(claims: dict[str, Any]) -> None:
         raise HTTPException(status_code=401, detail="Preview session required")
     if _preview_mode(claims) == "workspace":
         return
-    if not await userspace_service.is_public_direct_share_host_enabled(workspace_id):
+    if not await userspace_service.has_active_share_link(workspace_id):
         raise HTTPException(status_code=404, detail="Preview host unavailable")
+    # When the workspace has protection enabled (anything other than plain
+    # "token" mode), the session must carry a matching share_access_mode
+    # proving it was created through the proper auth flow (password entry,
+    # group check, etc.).  Sessions without share_access_mode (legacy or
+    # stale) are rejected so visitors are forced back through the share URL.
+    current_mode = await userspace_service.get_share_access_mode(workspace_id)
+    if current_mode and current_mode != "token":
+        session_access_mode = str(claims.get("share_access_mode") or "").strip()
+        if session_access_mode != current_mode:
+            raise HTTPException(status_code=401, detail="Share access changed \u2014 please use the share link again")
 
 
-async def _resolve_preview_session(host_header: str | None, cookie_token: str | None) -> dict[str, Any]:
+async def _resolve_preview_session(
+    host_header: str | None,
+    cookie_token: str | None,
+) -> dict[str, Any]:
     """Resolve preview session claims from cookie or in-memory registry.
 
-    Tries the cookie first (works for same-site contexts).  Falls back to the
-    host-label registry which the bootstrap endpoint populates, covering the
-    cross-site iframe case where browsers refuse to send SameSite cookies.
+    Tries the cookie first. Falls back to the host-label registry only for
+    internal workspace preview sessions, where embedded browser contexts may
+    suppress SameSite=Lax cookies.
     """
     # 1. Try cookie-based auth
     if cookie_token:
@@ -236,7 +288,7 @@ async def _resolve_preview_session(host_header: str | None, cookie_token: str | 
 
     # 2. Fall back to in-memory host-label registry
     registry_claims = _lookup_preview_session(host_header or "")
-    if registry_claims is not None:
+    if registry_claims is not None and _preview_mode(registry_claims) == "workspace":
         await _enforce_shared_subdomain_allowed(registry_claims)
         _ensure_preview_host_matches_workspace(
             host_header,
@@ -320,6 +372,7 @@ async def preview_bootstrap(request: Request, grant: str):
         "share_token": claims.get("share_token"),
         "owner_username": claims.get("owner_username"),
         "share_slug": claims.get("share_slug"),
+        "share_access_mode": claims.get("share_access_mode"),
     }
     session_token, expires_at = userspace_runtime_service.build_preview_session_token(
         session_claims

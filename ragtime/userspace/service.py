@@ -249,7 +249,7 @@ _MODULE_SOURCE_EXTENSIONS = (
 )
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 6
-_RUNTIME_BRIDGE_VERSION = 7
+_RUNTIME_BRIDGE_VERSION = 8
 _RUNTIME_BRIDGE_VERSION_TAG = f"@ragtime/bridge v{_RUNTIME_BRIDGE_VERSION}"
 _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS = 310_000  # 300s + 10s buffer
 _USERSPACE_TEMPLATES_DIR = Path(__file__).with_name("templates")
@@ -3417,33 +3417,35 @@ class UserSpaceService:
             return False
         return self.is_direct_share_subdomain_allowed(workspace_record)
 
-    async def _resolve_workspace_id_from_share_token(self, share_token: str) -> str:
-        token = (share_token or "").strip()
-        if not token:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
+    async def has_active_share_link(self, workspace_id: str) -> bool:
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            return False
+        return bool(str(getattr(workspace_record, "shareToken", "") or "").strip())
 
-        db = await get_db()
-        workspace = await db.workspace.find_first(
-            where={"shareToken": token},
-            include={
-                "members": True,
-                "toolSelections": True,
-                "toolGroupSelections": True,
-            },
-        )
-        if not workspace:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
-        return str(workspace.id)
+    async def get_share_access_mode(self, workspace_id: str) -> str | None:
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            return None
+        mode, _, _, _ = self._extract_share_access_state(workspace_record)
+        return mode
 
-    async def _resolve_workspace_id_from_share_slug(
-        self,
-        owner_username: str,
-        share_slug: str,
-    ) -> str:
+    async def get_share_token(self, workspace_id: str) -> str | None:
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            return None
+        return str(getattr(workspace_record, "shareToken", "") or "").strip() or None
+
+    def _share_prompt_metadata_from_record(self, workspace_record: Any) -> tuple[str | None, str | None]:
+        workspace_name = str(getattr(workspace_record, "name", "") or "").strip() or None
+        owner_obj = getattr(workspace_record, "owner", None)
+        owner_display_name = str(getattr(owner_obj, "displayName", "") or "").strip() or None
+        return workspace_name, owner_display_name
+
+    async def _resolve_share_owner_ids(self, owner_username: str) -> list[str]:
         normalized_owner = _normalize_owner_username_for_share_path(owner_username)
-        normalized_slug = _normalize_share_slug_for_uniqueness(share_slug)
-        if not normalized_owner or not normalized_slug:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
+        if not normalized_owner:
+            return []
 
         db = await get_db()
         candidate_usernames = [normalized_owner]
@@ -3454,7 +3456,7 @@ class UserSpaceService:
             where={"username": {"in": candidate_usernames, "mode": "insensitive"}},
             take=5,
         )
-        owner_ids = [
+        return [
             str(getattr(user, "id", ""))
             for user in users
             if _normalize_owner_username_for_share_path(
@@ -3462,19 +3464,80 @@ class UserSpaceService:
             )
             == normalized_owner
         ]
-        if not owner_ids:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
 
+    async def get_share_prompt_metadata_by_token(
+        self,
+        share_token: str,
+    ) -> tuple[str | None, str | None]:
+        token = (share_token or "").strip()
+        if not token:
+            return None, None
+
+        db = await get_db()
+        workspace = await db.workspace.find_first(
+            where={"shareToken": token},
+            include={"owner": True},
+        )
+        if not workspace:
+            return None, None
+        return self._share_prompt_metadata_from_record(workspace)
+
+    async def get_share_prompt_metadata_by_slug(
+        self,
+        owner_username: str,
+        share_slug: str,
+    ) -> tuple[str | None, str | None]:
+        normalized_slug = _normalize_share_slug_for_uniqueness(share_slug)
+        if not normalized_slug:
+            return None, None
+
+        owner_ids = await self._resolve_share_owner_ids(owner_username)
+        if not owner_ids:
+            return None, None
+
+        db = await get_db()
         workspace = await db.workspace.find_first(
             where={
                 "ownerUserId": {"in": owner_ids},
                 "shareSlug": normalized_slug,
                 "shareToken": {"not": None},
             },
-            include={
-                "members": True,
-                "toolSelections": True,
-                "toolGroupSelections": True,
+            include={"owner": True},
+        )
+        if not workspace:
+            return None, None
+        return self._share_prompt_metadata_from_record(workspace)
+
+    async def _resolve_workspace_id_from_share_token(self, share_token: str) -> str:
+        token = (share_token or "").strip()
+        if not token:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+        db = await get_db()
+        workspace = await db.workspace.find_first(where={"shareToken": token})
+        if not workspace:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+        return str(workspace.id)
+
+    async def _resolve_workspace_id_from_share_slug(
+        self,
+        owner_username: str,
+        share_slug: str,
+    ) -> str:
+        normalized_slug = _normalize_share_slug_for_uniqueness(share_slug)
+        if not normalized_slug:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+        owner_ids = await self._resolve_share_owner_ids(owner_username)
+        if not owner_ids:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+        db = await get_db()
+        workspace = await db.workspace.find_first(
+            where={
+                "ownerUserId": {"in": owner_ids},
+                "shareSlug": normalized_slug,
+                "shareToken": {"not": None},
             },
         )
         if not workspace:
@@ -3632,6 +3695,13 @@ class UserSpaceService:
             ):
                 raise HTTPException(status_code=401, detail="Invalid password")
             return
+
+        # Owner bypass: workspace owner skips group/user-list checks.
+        # Password mode is handled above and always requires the password.
+        if current_user is not None:
+            owner_id = str(getattr(workspace_record, "ownerUserId", "") or "").strip()
+            if owner_id and owner_id == str(getattr(current_user, "id", "") or "").strip():
+                return
 
         if current_user is None:
             raise HTTPException(status_code=401, detail="Authentication required")
@@ -5853,8 +5923,8 @@ class UserSpaceService:
 
         update_data: dict[str, Any] = {
             "shareAccessMode": mode,
-            "shareSelectedUserIds": selected_user_ids,
-            "shareSelectedLdapGroups": selected_ldap_groups,
+            "shareSelectedUserIds": Json(selected_user_ids),
+            "shareSelectedLdapGroups": Json(selected_ldap_groups),
             "updatedAt": _utc_now(),
         }
 
@@ -5878,10 +5948,12 @@ class UserSpaceService:
             )
 
         db = await get_db()
-        try:
-            await db.workspace.update(where={"id": workspace_id}, data=update_data)
-        except Exception as exc:
-            raise HTTPException(status_code=404, detail="Workspace not found") from exc
+        await db.workspace.update(where={"id": workspace_id}, data=update_data)
+
+        # Invalidate stale preview sessions so visitors must re-authenticate
+        # through the proper share URL with the new access mode.
+        from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
+        invalidate_preview_sessions_for_workspace(workspace_id)
 
         return await self.get_workspace_share_link_status(
             workspace_id,

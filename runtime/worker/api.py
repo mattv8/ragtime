@@ -307,6 +307,105 @@ async def preview(
     return await _proxy_preview_request(request, upstream_url)
 
 
+def _verify_worker_auth_from_websocket(websocket: WebSocket) -> None:
+    """Validate worker Bearer token from the WebSocket handshake headers."""
+    cached_token = os.getenv("RUNTIME_WORKER_AUTH_TOKEN", "").strip()
+    if not cached_token:
+        raise HTTPException(status_code=503, detail="Runtime auth not configured")
+    auth_header = ""
+    for key, value in websocket.scope.get("headers", []):
+        if key == b"authorization":
+            auth_header = value.decode("latin-1")
+            break
+    if not auth_header.startswith("Bearer ") or auth_header[7:] != cached_token:
+        raise HTTPException(status_code=403, detail="Invalid runtime auth token")
+
+
+@router.websocket("/worker/sessions/{worker_session_id}/preview/{path:path}")
+async def preview_websocket(
+    worker_session_id: str,
+    path: str,
+    websocket: WebSocket,
+) -> None:
+    try:
+        _verify_worker_auth_from_websocket(websocket)
+    except HTTPException as exc:
+        logger.warning("WS preview auth rejected for %s: %s", worker_session_id, exc.detail)
+        await websocket.close(code=4403 if exc.status_code == 403 else 4404)
+        return
+
+    try:
+        upstream_url = await get_worker_service().build_preview_upstream_url(
+            worker_session_id,
+            path,
+            query=websocket.url.query or None,
+        )
+    except HTTPException as exc:
+        logger.warning("WS preview upstream lookup failed for %s/%s: %s", worker_session_id, path, exc.detail)
+        await websocket.close(code=4000 + exc.status_code)
+        return
+
+    # Convert http:// to ws://
+    ws_url = upstream_url.replace("http://", "ws://", 1).replace("https://", "wss://", 1)
+
+    requested_subprotocols = [
+        str(p).strip()
+        for p in (websocket.scope.get("subprotocols") or [])
+        if str(p).strip()
+    ]
+
+    try:
+        import websockets as _ws_mod
+
+        async with _ws_mod.connect(
+            ws_url,
+            max_size=None,
+            open_timeout=10,
+            subprotocols=requested_subprotocols or None,
+        ) as upstream:
+            await websocket.accept(
+                subprotocol=getattr(upstream, "subprotocol", None) or None,
+            )
+
+            async def _down_to_up() -> None:
+                while True:
+                    msg = await websocket.receive()
+                    if msg.get("type") == "websocket.disconnect":
+                        break
+                    text = msg.get("text")
+                    data = msg.get("bytes")
+                    if text is not None:
+                        await upstream.send(text)
+                    elif data is not None:
+                        await upstream.send(data)
+
+            async def _up_to_down() -> None:
+                while True:
+                    msg = await upstream.recv()
+                    if isinstance(msg, bytes):
+                        await websocket.send_bytes(msg)
+                    else:
+                        await websocket.send_text(str(msg))
+
+            down_task = asyncio.create_task(_down_to_up())
+            up_task = asyncio.create_task(_up_to_down())
+            done, pending = await asyncio.wait(
+                {down_task, up_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            for t in done:
+                t.result()
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        logger.debug("WS preview proxy error for %s/%s: %s", worker_session_id, path, exc)
+        with contextlib.suppress(Exception):
+            await websocket.close(code=1011)
+        return
+
+
 # ---------------------------------------------------------------------------
 # PTY session tracker – one PTY per worker session at a time
 # ---------------------------------------------------------------------------

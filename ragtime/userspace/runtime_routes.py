@@ -55,7 +55,9 @@ def _root_share_target_url(base_url: str, share_path: str, target_path: str) -> 
     normalized_target_path = "/" + (target_path or "/").lstrip("/")
     if normalized_target_path == "/":
         return f"{normalized_base}{normalized_share_path}"
-    return f"{normalized_base}{normalized_share_path.rstrip('/')}{normalized_target_path}"
+    return (
+        f"{normalized_base}{normalized_share_path.rstrip('/')}{normalized_target_path}"
+    )
 
 
 def _root_share_launch_response(
@@ -191,8 +193,6 @@ def _proxy_request_headers(request: Request) -> dict[str, str]:
 
 def _proxy_response_headers(
     headers: httpx.Headers,
-    *,
-    proxy_base_path: str | None = None,
 ) -> dict[str, str]:
     blocked = {
         "connection",
@@ -214,33 +214,30 @@ def _proxy_response_headers(
         "content-security-policy-report-only",
     }
     out = {key: value for key, value in headers.items() if key.lower() not in blocked}
-    # Rewrite root-relative Location headers so browser redirects stay inside
-    # the proxy chain instead of escaping to the outer Ragtime origin.
-    if proxy_base_path:
-        location = out.get("location") or out.get("Location") or ""
-        if location.startswith("/") and not location.startswith("//"):
-            base = proxy_base_path.rstrip("/")
-            out["location"] = base + location
     return out
+
+
+def _make_proxy_response_uncacheable(
+    headers: dict[str, str],
+    *,
+    clear_site_cache: bool = False,
+) -> None:
+    headers.pop("etag", None)
+    headers.pop("ETag", None)
+    headers.pop("last-modified", None)
+    headers.pop("Last-Modified", None)
+    headers.pop("expires", None)
+    headers.pop("Expires", None)
+    headers.pop("age", None)
+    headers.pop("Age", None)
+    headers["cache-control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    headers["pragma"] = "no-cache"
+    if clear_site_cache:
+        headers["clear-site-data"] = '"cache"'
 
 
 def _is_html_media_type(media_type: str) -> bool:
     return "text/html" in (media_type or "").lower()
-
-
-def _should_rewrite_proxy_content(media_type: str) -> bool:
-    """Return True for response content-types that may contain root-relative URLs."""
-    mt = (media_type or "").lower()
-    return any(
-        t in mt
-        for t in (
-            "text/html",
-            "text/css",
-            "javascript",
-            "ecmascript",
-            "typescript",
-        )
-    )
 
 
 def _extract_capability_token_from_request(request: Request) -> str | None:
@@ -345,25 +342,41 @@ async def _proxy_websocket_request(
         await _safe_close_websocket(websocket, code=1011)
         return
 
-    await websocket.accept()
+    requested_subprotocols = [
+        str(protocol).strip()
+        for protocol in (websocket.scope.get("subprotocols") or [])
+        if str(protocol).strip()
+    ]
 
-    if read_only:
-        await websocket.send_text(
-            json.dumps(
-                {
-                    "type": "status",
-                    "read_only": True,
-                    "message": "Read-only terminal session",
-                }
-            )
-        )
+    # Mirror the worker auth token that _proxy_http_request sends so the
+    # upstream runtime worker accepts the WebSocket connection.
+    extra_headers: dict[str, str] = {}
+    worker_token = getattr(settings, "userspace_runtime_worker_auth_token", "") or ""
+    if worker_token:
+        extra_headers["authorization"] = f"Bearer {worker_token}"
 
     try:
         async with websockets_module.connect(
             upstream_url,
             max_size=None,
             open_timeout=20,
+            subprotocols=requested_subprotocols or None,
+            additional_headers=extra_headers or None,
         ) as upstream:
+            await websocket.accept(
+                subprotocol=getattr(upstream, "subprotocol", None) or None
+            )
+
+            if read_only:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "status",
+                            "read_only": True,
+                            "message": "Read-only terminal session",
+                        }
+                    )
+                )
 
             async def downstream_to_upstream() -> None:
                 while True:
@@ -425,7 +438,6 @@ async def _proxy_http_request(
     request: Request,
     upstream_url: str,
     *,
-    proxy_base_path: str | None = None,
     bridge_workspace_id: str | None = None,
     bridge_context: dict[str, Any] | None = None,
     bridge_script_src: str | None = None,
@@ -438,8 +450,6 @@ async def _proxy_http_request(
 
     body = await request.body()
     headers = _proxy_request_headers(request)
-    if proxy_base_path:
-        headers.setdefault("x-forwarded-prefix", proxy_base_path)
 
     # Inject runtime worker auth token for upstream worker requests
     worker_token = getattr(settings, "userspace_runtime_worker_auth_token", "") or ""
@@ -470,42 +480,37 @@ async def _proxy_http_request(
         ) from exc
 
     media_type = upstream_response.headers.get("content-type", "")
-    resp_headers = _proxy_response_headers(
-        upstream_response.headers, proxy_base_path=proxy_base_path
-    )
+    resp_headers = _proxy_response_headers(upstream_response.headers)
     resp_headers[_USERSPACE_SURFACE_HEADER] = "preview-proxy"
     resp_headers[_USERSPACE_PREVIEW_PROXY_HEADER] = "true"
-
-    should_buffer = _is_html_media_type(media_type) or bool(
-        proxy_base_path and _should_rewrite_proxy_content(media_type)
+    _make_proxy_response_uncacheable(
+        resp_headers,
+        clear_site_cache=_is_html_media_type(media_type),
     )
-    if should_buffer:
+
+    if _is_html_media_type(media_type):
         try:
             content = await upstream_response.aread()
         finally:
             await upstream_response.aclose()
             await client.aclose()
 
-        if proxy_base_path and _should_rewrite_proxy_content(media_type):
-            base_path: str = proxy_base_path  # type: ignore[assignment]
-            content = _rewrite_root_relative_urls(content, base_path)
-        if _is_html_media_type(media_type):
-            sandbox_flags: list[str] | None = None
-            try:
-                app_settings = await get_app_settings()
-                sandbox_flags = list(
-                    app_settings.get("userspace_preview_sandbox_flags") or []
-                )
-            except Exception:
-                sandbox_flags = None
-            content = _inject_bridge_script(
-                content,
-                sandbox_flags,
-                workspace_id=bridge_workspace_id,
-                bridge_context=bridge_context,
-                bridge_script_src=bridge_script_src,
+        sandbox_flags: list[str] | None = None
+        try:
+            app_settings = await get_app_settings()
+            sandbox_flags = list(
+                app_settings.get("userspace_preview_sandbox_flags") or []
             )
-        # Content length changed after rewriting; drop stale header so
+        except Exception:
+            sandbox_flags = None
+        content = _inject_bridge_script(
+            content,
+            sandbox_flags,
+            workspace_id=bridge_workspace_id,
+            bridge_context=bridge_context,
+            bridge_script_src=bridge_script_src,
+        )
+        # Content length changed after injection; drop stale header so
         # Starlette re-calculates it from the actual body.
         resp_headers.pop("content-length", None)
 
@@ -546,7 +551,9 @@ def _build_bridge_script_tag(
 ) -> bytes:
     params = {"workspace_id": workspace_id} if workspace_id else {}
     query = urlencode(params)
-    src = (bridge_script_src or "/__ragtime/bridge.js").strip() or "/__ragtime/bridge.js"
+    src = (
+        bridge_script_src or "/__ragtime/bridge.js"
+    ).strip() or "/__ragtime/bridge.js"
     if query:
         joiner = "&" if "?" in src else "?"
         src = f"{src}{joiner}{query}"
@@ -570,9 +577,7 @@ def _build_bridge_context_tag(bridge_context: dict[str, Any]) -> bytes:
         "utf-8"
     )
     return (
-        b"<script>window.__ragtime_preview_bridge="
-        + serialized_context
-        + b";</script>"
+        b"<script>window.__ragtime_preview_bridge=" + serialized_context + b";</script>"
     )
 
 
@@ -613,31 +618,6 @@ def _inject_bridge_script(
     if m:
         return html[: m.start()] + injected + html[m.start() :]
     return injected + html
-
-
-def _rewrite_root_relative_urls(content: bytes, proxy_base_path: str) -> bytes:
-    """Rewrite root-relative URLs in text content so they route through the
-    preview proxy.
-
-    Matches *any* single-quoted, double-quoted, or backtick-quoted string
-    literal that begins with ``/`` (excluding protocol-relative ``//``).
-    This covers HTML attributes (``src``, ``href``, …), ES module ``import``
-    statements, CSS ``url()`` references, ``fetch()`` calls, and every other
-    context where a root-relative path appears as a string literal.
-
-    A negative-lookahead prevents double-rewriting when the path already
-    starts with the proxy base prefix.
-    """
-    base = proxy_base_path.rstrip("/").encode()
-    base_no_leading_slash = proxy_base_path.lstrip("/").rstrip("/").encode()
-    pattern = re.compile(
-        rb'(["' + rb"'`" + rb"])(/)(?!/)(?!" + re.escape(base_no_leading_slash) + rb")"
-    )
-
-    def _replace(m: re.Match[bytes]) -> bytes:
-        return m.group(1) + base + m.group(2)
-
-    return pattern.sub(_replace, content)
 
 
 @router.get(
@@ -954,7 +934,7 @@ async def issue_shared_preview_launch(
         request,
         browser_origin=payload.parent_origin,
     )
-    if payload.prefer_root_proxy or not await userspace_service.is_public_direct_share_host_enabled(workspace_id):
+    if payload.prefer_root_proxy:
         return _root_share_launch_response(
             workspace_id=workspace_id,
             base_url=external_origin,
@@ -996,7 +976,7 @@ async def issue_shared_preview_launch_by_slug(
         request,
         browser_origin=payload.parent_origin,
     )
-    if payload.prefer_root_proxy or not await userspace_service.is_public_direct_share_host_enabled(workspace_id):
+    if payload.prefer_root_proxy:
         return _root_share_launch_response(
             workspace_id=workspace_id,
             base_url=external_origin,

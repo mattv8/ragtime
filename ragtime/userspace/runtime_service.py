@@ -234,14 +234,14 @@ class UserSpaceRuntimeService:
         share_token: str | None = None,
         owner_username: str | None = None,
         share_slug: str | None = None,
+        share_access_mode: str | None = None,
     ) -> UserSpacePreviewLaunchResponse:
         preview_origin = self._build_preview_origin(
             workspace_id,
             control_plane_origin=control_plane_origin,
         )
         preview_host = urlsplit(preview_origin).netloc.lower()
-        grant_token, expires_at = self._build_preview_token(
-            {
+        grant_payload: dict[str, Any] = {
                 "kind": _RUNTIME_PREVIEW_GRANT_KIND,
                 "sub": subject_user_id,
                 "workspace_id": workspace_id,
@@ -252,7 +252,11 @@ class UserSpaceRuntimeService:
                 "share_token": share_token,
                 "owner_username": owner_username,
                 "share_slug": share_slug,
-            },
+        }
+        if share_access_mode:
+            grant_payload["share_access_mode"] = share_access_mode
+        grant_token, expires_at = self._build_preview_token(
+            grant_payload,
             ttl_seconds=_RUNTIME_PREVIEW_BOOTSTRAP_TTL_SECONDS,
         )
         bootstrap_query = urlencode({"grant": grant_token})
@@ -1098,6 +1102,7 @@ class UserSpaceRuntimeService:
         owner_username: str | None = None,
         share_slug: str | None = None,
         subject_user_id: str | None = None,
+        share_access_mode: str | None = None,
     ) -> UserSpacePreviewLaunchResponse:
         await self.ensure_shared_preview_session(workspace_id)
         mode = "share_token" if share_token else "share_slug"
@@ -1111,6 +1116,7 @@ class UserSpaceRuntimeService:
             share_token=share_token,
             owner_username=owner_username,
             share_slug=share_slug,
+            share_access_mode=share_access_mode,
         )
 
     async def build_workspace_preview_upstream_url(

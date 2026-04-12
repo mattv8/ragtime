@@ -261,7 +261,9 @@
 
   installSandboxGuards();
 
-  bootstrapVizLibs();
+  // Viz libs are loaded lazily on first execute() call, not eagerly on page
+  // load — avoids parser-blocking document.write warnings for cross-site CDN
+  // scripts in proxy/shared contexts where the libs are never needed.
 
   function getDirectExecuteUrl() {
     var config = getBridgeConfig();
@@ -314,6 +316,8 @@
 
   function makeExecute(componentId) {
     return function execute(request) {
+      // Lazily bootstrap viz libs on first execute call.
+      bootstrapVizLibs();
       var hasParentHost = !!(window.parent && window.parent !== window);
       var callId = '__exec_' + Math.random().toString(36).slice(2) + '_' + Date.now();
       return new Promise(function (resolve) {

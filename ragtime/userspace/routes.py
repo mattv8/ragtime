@@ -63,14 +63,10 @@ _USERSPACE_TREE_MOUNTS_HEADER = "X-Ragtime-Userspace-Tree-Includes-Mounts"
 def _subdomain_share_disabled_reason(
     *,
     has_share_link: bool,
-    access_mode: str,
-    has_password: bool,
 ) -> str | None:
     if not has_share_link:
         return "Create a share link first"
-    if access_mode == "token" and not has_password:
-        return None
-    return "Direct subdomain access is only available for public links without password or account protection"
+    return None
 
 
 def _apply_share_link_variants(
@@ -96,7 +92,7 @@ def _apply_share_link_variants(
         else has_share_link
     ) and bool(share_token)
     subdomain_share_enabled = (
-        resolved_has_share_link and resolved_access_mode == "token" and not resolved_has_password
+        resolved_has_share_link
     )
     subdomain_share_url = None
     if subdomain_share_enabled and workspace_id:
@@ -121,8 +117,6 @@ def _apply_share_link_variants(
             "subdomain_share_enabled": subdomain_share_enabled,
             "subdomain_share_disabled_reason": _subdomain_share_disabled_reason(
                 has_share_link=resolved_has_share_link,
-                access_mode=resolved_access_mode,
-                has_password=resolved_has_password,
             ),
         }
     )
