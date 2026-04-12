@@ -3,7 +3,7 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -193,6 +193,32 @@ function inferProviderFromModelId(modelId: string): string | null {
   }
   const maybeProvider = normalizeProviderAlias(raw.slice(0, slashIndex));
   return KNOWN_PROVIDER_KEYS.has(maybeProvider) ? maybeProvider : null;
+}
+
+function toProviderScopedModelKey(provider: string | null | undefined, modelId: string): string {
+  const normalizedProvider = normalizeProviderAlias(provider);
+  return normalizedProvider ? `${normalizedProvider}::${modelId}` : modelId;
+}
+
+function conversationUpdatedAtMs(conversation: Conversation | null | undefined): number {
+  const parsed = Date.parse(conversation?.updated_at || '');
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function mergeConversationFromWorkspaceSnapshot(
+  current: Conversation,
+  incoming: Conversation,
+): Conversation {
+  const incomingIsNewer = conversationUpdatedAtMs(incoming) >= conversationUpdatedAtMs(current);
+
+  return {
+    ...current,
+    ...incoming,
+    model: incomingIsNewer ? (incoming.model || current.model) : (current.model || incoming.model),
+    messages: incomingIsNewer || incoming.messages.length >= current.messages.length
+      ? incoming.messages
+      : current.messages,
+  };
 }
 
 function findProviderState(
@@ -2464,7 +2490,11 @@ export function ChatPanel({
           return conversation;
         }
 
-        if (existing.active_task_id !== conversation.active_task_id || existing.title !== conversation.title) {
+        if (
+          existing.active_task_id !== conversation.active_task_id
+          || existing.title !== conversation.title
+          || existing.model !== conversation.model
+        ) {
           changed = true;
           return { ...existing, ...conversation };
         }
@@ -2481,6 +2511,9 @@ export function ChatPanel({
         return visibleConversations[0] ?? null;
       }
       const matchingConversation = visibleConversations.find((conversation) => conversation.id === targetConversationId);
+      if (current && matchingConversation && current.id === matchingConversation.id) {
+        return mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
+      }
       return matchingConversation ?? visibleConversations[0] ?? null;
     });
 
@@ -3369,12 +3402,26 @@ export function ChatPanel({
     if (!activeConversation || isStreaming) return;
 
     try {
-      const selected = availableModels.find((model) => model.id === newModel);
+      const parsedSelection = parseStoredModelIdentifier(newModel);
+      const requestedModelId = (parsedSelection.modelId || newModel).trim();
+      const requestedProvider = normalizeProviderAlias(parsedSelection.provider);
+      const requestedProviderForApi = KNOWN_PROVIDER_KEYS.has(requestedProvider)
+        ? (requestedProvider as LlmProviderWire)
+        : undefined;
+
+      let selected = availableModels.find((model) => (
+        model.id === requestedModelId
+        && providersEquivalent(model.provider, requestedProvider)
+      ));
+      if (!selected) {
+        selected = availableModels.find((model) => model.id === requestedModelId);
+      }
+
       const updated = await api.updateConversationModel(
         activeConversation.id,
-        newModel,
+        selected?.id || requestedModelId,
         workspaceId,
-        selected?.provider,
+        selected?.provider || requestedProviderForApi,
       );
       setActiveConversation(updated);
       setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
@@ -4207,8 +4254,38 @@ export function ChatPanel({
                 </button>
                 <ModelSelector
                   models={availableModels}
-                  selectedModelId={parseStoredModelIdentifier(activeConversation.model).modelId}
+                  selectedModelId={(() => {
+                    const parsedActiveModel = parseStoredModelIdentifier(activeConversation.model || '');
+                    const explicitProvider = normalizeProviderAlias(parsedActiveModel.provider);
+                    const activeModelId = parsedActiveModel.modelId;
+
+                    let selected = undefined;
+                    if (activeModelId && explicitProvider) {
+                      selected = availableModels.find((model) => (
+                        model.id === activeModelId
+                        && providersEquivalent(model.provider, explicitProvider)
+                      ));
+                    }
+                    if (!selected && activeModelId) {
+                      selected = availableModels.find((model) => model.id === activeModelId);
+                    }
+
+                    if (!selected && activeModelId.includes('/')) {
+                      const slashIndex = activeModelId.indexOf('/');
+                      const inferredProvider = normalizeProviderAlias(activeModelId.slice(0, slashIndex));
+                      const providerModelId = activeModelId.slice(slashIndex + 1);
+                      selected = availableModels.find((model) => (
+                        model.id === providerModelId
+                        && providersEquivalent(model.provider, explicitProvider || inferredProvider)
+                      ));
+                    }
+
+                    return selected
+                      ? toProviderScopedModelKey(selected.provider, selected.id)
+                      : activeModelId;
+                  })()}
                   onModelChange={changeModel}
+                  getModelSelectionKey={(model) => toProviderScopedModelKey(model.provider, model.id)}
                   disabled={isStreaming || modelsLoading}
                   triggerIcon={showWorkspaceConversationSelect ? <Bot size={14} /> : undefined}
                   triggerClassName={showWorkspaceConversationSelect ? 'chat-workspace-model-trigger' : undefined}

@@ -13,6 +13,7 @@ interface ModelSelectorProps<T extends BaseModel> {
   models: T[];
   selectedModelId: string;
   onModelChange: (modelId: string) => void;
+  getModelSelectionKey?: (model: T) => string;
   disabled?: boolean;
   placeholder?: string;
   /** Variant: 'compact' for chat header, 'full' for settings forms */
@@ -53,6 +54,7 @@ function inferCompactFamilyLabel(model: BaseModel): string | null {
 function inferCompactFamilyLabelFromId(modelId: string): string | null {
   const normalizedId = modelId
     .toLowerCase()
+    .replace(/^.*::/, '')
     .replace(/^anthropic\//, '')
     .replace(/^github_copilot\//, '');
   return inferCompactFamilyLabel({
@@ -71,6 +73,7 @@ export function ModelSelector<T extends BaseModel>({
   models,
   selectedModelId,
   onModelChange,
+  getModelSelectionKey,
   disabled,
   placeholder = 'Select model',
   variant = 'compact',
@@ -85,6 +88,10 @@ export function ModelSelector<T extends BaseModel>({
   const expandTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const collapseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const groupRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  const selectionKeyFor = useCallback((model: T): string => {
+    return getModelSelectionKey ? getModelSelectionKey(model) : model.id;
+  }, [getModelSelectionKey]);
 
   // Group models and identify latest in each group
   const groupedModels = useMemo((): GroupedModels<T>[] => {
@@ -123,8 +130,8 @@ export function ModelSelector<T extends BaseModel>({
 
   // Find current selection display
   const selectedModel = useMemo(() => {
-    return models.find(m => m.id === selectedModelId);
-  }, [models, selectedModelId]);
+    return models.find((m) => selectionKeyFor(m) === selectedModelId);
+  }, [models, selectedModelId, selectionKeyFor]);
 
   // Display text for the button
   const displayText = useMemo(() => {
@@ -242,8 +249,8 @@ export function ModelSelector<T extends BaseModel>({
 
   const handleSelectGroup = useCallback((group: GroupedModels<T>) => {
     // Select the latest model of this group
-    handleSelectModel(group.latestModel.id);
-  }, [handleSelectModel]);
+    handleSelectModel(selectionKeyFor(group.latestModel));
+  }, [handleSelectModel, selectionKeyFor]);
 
   const setGroupRef = useCallback((group: string, el: HTMLDivElement | null) => {
     if (el) {
@@ -327,9 +334,9 @@ export function ModelSelector<T extends BaseModel>({
               <button
                 type="button"
                 className={`model-selector-item model-selector-subitem ${
-                  selectedModelId === expandedGroupData.latestModel.id ? 'is-selected' : ''
+                  selectedModelId === selectionKeyFor(expandedGroupData.latestModel) ? 'is-selected' : ''
                 }`}
-                onClick={() => handleSelectModel(expandedGroupData.latestModel.id)}
+                onClick={() => handleSelectModel(selectionKeyFor(expandedGroupData.latestModel))}
               >
                 <span className="model-selector-item-name">{expandedGroupData.latestModel.name}</span>
                 <span className="model-selector-latest-badge">Latest</span>
@@ -338,12 +345,12 @@ export function ModelSelector<T extends BaseModel>({
               {/* Other models in the group */}
               {expandedGroupData.otherModels.map(model => (
                 <button
-                  key={model.id}
+                  key={selectionKeyFor(model)}
                   type="button"
                   className={`model-selector-item model-selector-subitem ${
-                    selectedModelId === model.id ? 'is-selected' : ''
+                    selectedModelId === selectionKeyFor(model) ? 'is-selected' : ''
                   }`}
-                  onClick={() => handleSelectModel(model.id)}
+                  onClick={() => handleSelectModel(selectionKeyFor(model))}
                 >
                   <span className="model-selector-item-name">{model.name}</span>
                 </button>
