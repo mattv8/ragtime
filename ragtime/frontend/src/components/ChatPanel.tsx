@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { diffLines } from 'diff';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff } from 'lucide-react';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
@@ -1243,7 +1243,22 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
     );
   }
 
-  // Determine the status icon
+  // Determine the tool-type icon (always visible)
+  const getToolIcon = () => {
+    const name = toolCall.tool.toLowerCase();
+    if (name.includes('sql') || name.includes('database') || name.includes('db')) return <Database size={14} />;
+    if (name.includes('search') || name.includes('retrieval') || name.includes('index')) return <Search size={14} />;
+    if (name.includes('chart') || name.includes('datatable') || name.includes('visuali')) return <BarChart3 size={14} />;
+    if (name.includes('shell') || name.includes('command') || name.includes('ssh') || name.includes('terminal') || name.includes('exec')) return <Terminal size={14} />;
+    if (name.includes('screenshot') || name.includes('image') || name.includes('preview')) return <ImageIcon size={14} />;
+    if (name.includes('file') || name.includes('read') || name.includes('write') || name.includes('userspace')) return <FileText size={14} />;
+    if (name.includes('web') || name.includes('http') || name.includes('url') || name.includes('fetch') || name.includes('browse')) return <Globe size={14} />;
+    if (name.includes('code') || name.includes('odoo') || name.includes('python')) return <Code size={14} />;
+    if (name.includes('schema') || name.includes('pdm') || name.includes('metadata')) return <FolderSearch size={14} />;
+    return <Wrench size={14} />;
+  };
+
+  // Determine the status icon (overrides tool icon when active)
   const getStatusIcon = () => {
     if (toolCall.status === 'running') {
       return <MiniLoadingSpinner variant="icon" size={14} />;
@@ -1255,6 +1270,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   };
 
   const statusIcon = getStatusIcon();
+  const toolIcon = getToolIcon();
   const userspaceWriteSummary = userspaceWriteResult ? formatUserspaceWriteSummary(userspaceWriteResult) : '';
   const userspaceDiffStatus = userspaceFileDiff ? formatDiffStatus(userspaceFileDiff.status) : null;
 
@@ -1266,7 +1282,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
           className="tool-call-header"
           onClick={() => setExpanded(!expanded)}
         >
-          {statusIcon && <span className="tool-call-icon">{statusIcon}</span>}
+          <span className="tool-call-icon">{statusIcon || toolIcon}</span>
           <span className="tool-call-name">{toolCall.tool}</span>
           {toolCall.status === 'running' && toolCall.generating_lines ? (
             <span className="tool-call-progress">{toolCall.generating_lines} lines</span>

@@ -1452,7 +1452,7 @@
 .chat-tool-calls {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: 2px;
   width: 460px;
   max-width: 100%;
   --tool-call-radius-lg: var(--radius-lg);
@@ -1475,24 +1475,39 @@
   width: 100%;
 }
 .tool-call {
-  border: 1px solid var(--color-border);
+  border: 1px solid transparent;
   border-radius: var(--tool-call-radius-lg);
   overflow: hidden;
+  background: transparent;
+  padding: 0.2rem;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.tool-call:hover,
+.tool-call:has(.tool-call-details) {
+  border-color: var(--color-border);
   background: var(--color-surface);
-  transition: border-color var(--transition-fast);
 }
 .tool-call-running {
+  border-color: transparent;
+}
+.tool-call-running:hover,
+.tool-call-running:has(.tool-call-details) {
   border-color: var(--color-primary-border);
 }
 .tool-call-complete {
+  border-color: transparent;
+}
+.tool-call-complete:hover {
   border-color: var(--color-success-border);
 }
 .tool-call-failed {
+  border-color: transparent;
+  background: transparent;
+}
+.tool-call-failed:hover,
+.tool-call-failed:has(.tool-call-details) {
   border-color: var(--color-error);
   background: color-mix(in srgb, var(--color-error) 5%, var(--color-surface-primary));
-}
-.tool-call-failed .tool-call-icon {
-  color: var(--color-error);
 }
 .tool-call-error-icon {
   color: var(--color-error);
@@ -1551,28 +1566,41 @@
   align-items: center;
   gap: var(--space-sm);
   flex: 1;
-  padding: var(--space-xs) var(--space-sm);
+  padding: var(--space-2xs) var(--space-xs);
   background: transparent;
   border: none;
-  color: var(--color-text-primary);
+  color: var(--color-text-secondary);
   cursor: pointer;
   font-size: var(--tool-call-font-xs);
   text-align: left;
   font-family: inherit;
-}
-.tool-call-header:hover {
-  background: var(--color-surface-hover);
   border-radius: var(--tool-call-radius-sm);
+  transition: color var(--transition-fast);
+}
+.tool-call:hover .tool-call-header,
+.tool-call:has(.tool-call-details) .tool-call-header {
+  color: var(--color-text-primary);
 }
 .tool-call-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+.tool-call-running .tool-call-icon {
+  color: var(--color-primary);
+}
+.tool-call-complete .tool-call-icon {
+  color: var(--color-success);
+}
+.tool-call-failed .tool-call-icon {
+  color: var(--color-error);
 }
 .tool-call-name {
-  font-weight: 500;
+  font-weight: 400;
   flex: 1;
 }
 .tool-call-progress {
@@ -1587,10 +1615,17 @@
   align-items: center;
   justify-content: center;
   color: var(--color-text-muted);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.tool-call:hover .tool-call-toggle,
+.tool-call:has(.tool-call-details) .tool-call-toggle {
+  opacity: 1;
 }
 .tool-call-details {
   padding: 0 var(--space-xs) var(--space-xs);
   border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
 }
 .tool-call-section {
   margin-top: var(--space-sm);
