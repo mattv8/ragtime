@@ -2343,6 +2343,15 @@ export const api = {
     return handleResponse<ExecuteComponentResponse>(response);
   },
 
+  async execWorkspaceCommand(workspaceId: string, command: string, timeoutSeconds = 30, cwd?: string): Promise<Record<string, unknown>> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command, timeout_seconds: timeoutSeconds, cwd }),
+    });
+    return handleResponse<Record<string, unknown>>(response);
+  },
+
   async createUserSpaceWorkspaceShareLink(workspaceId: string, rotateToken = false): Promise<UserSpaceWorkspaceShareLink> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-link?rotate_token=${String(rotateToken)}`, {
       method: 'POST',

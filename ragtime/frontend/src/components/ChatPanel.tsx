@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { diffLines } from 'diff';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon } from 'lucide-react';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
@@ -939,6 +939,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryOutput, setRetryOutput] = useState<string | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [isRerunning, setIsRerunning] = useState(false);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   const [userspaceFileDiff, setUserspaceFileDiff] = useState<UserSpaceSnapshotFileDiff | null>(null);
   const [userspaceFileDiffError, setUserspaceFileDiffError] = useState<string | null>(null);
@@ -1265,6 +1266,37 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
     }
   }, [conversationId, siblingEvents, toolCall.tool, onRetrySuccess]);
 
+  // Handle re-run for terminal commands
+  const handleRerunCommand = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isRerunning || !inputDisplay || !workspaceId) return;
+    setIsRerunning(true);
+    setRetryError(null);
+    try {
+      const result = await api.execWorkspaceCommand(
+        workspaceId,
+        inputDisplay,
+        toolCall.input?.timeout_seconds as number || 30,
+        (toolCall.input?.cwd as string) || undefined,
+      );
+      const payload = {
+        tool: 'run_terminal_command',
+        status: result.timed_out ? 'command_timed_out' : (result.exit_code !== 0 ? 'command_failed' : 'completed'),
+        cwd: result.cwd ?? (toolCall.input?.cwd as string) ?? '.',
+        exit_code: result.exit_code ?? 0,
+        ...(result.stdout ? { stdout: result.stdout } : {}),
+        ...(result.stderr ? { stderr: result.stderr } : {}),
+        ...(result.timed_out ? { timed_out: true } : {}),
+        ...(result.truncated ? { truncated: true } : {}),
+      };
+      setRetryOutput(JSON.stringify(payload, null, 2));
+    } catch (err) {
+      setRetryError(err instanceof Error ? err.message : 'Re-run failed');
+    } finally {
+      setIsRerunning(false);
+    }
+  }, [isRerunning, inputDisplay, workspaceId, toolCall.input]);
+
   // Special rendering for chart tool - show chart inline without collapsible
   if (chartData) {
     return (
@@ -1328,18 +1360,11 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
           <span className="tool-call-icon">{statusIcon || toolIcon}</span>
           {isTerminalCommand ? (
             <span className="tool-call-name tool-call-name-terminal">
-              <span className="tool-call-terminal-prompt-hint">$</span>
-              {' '}
               {inputDisplay || 'run_terminal_command'}
             </span>
           ) : (
             <span className="tool-call-name">{toolCall.tool}</span>
           )}
-          {isTerminalCommand && terminalOutput && toolCall.status !== 'running' ? (
-            <span className={`tool-call-terminal-exit ${terminalOutput.exit_code !== 0 ? 'tool-call-terminal-exit-error' : ''}`}>
-              {terminalOutput.timed_out ? 'timeout' : `exit ${terminalOutput.exit_code}`}
-            </span>
-          ) : null}
           {toolCall.status === 'running' && toolCall.generating_lines ? (
             <span className="tool-call-progress">{toolCall.generating_lines} lines</span>
           ) : null}
@@ -1395,16 +1420,35 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
               <div className="tool-call-terminal-block">
                 <div className="tool-call-terminal-header-bar">
                   <span className="tool-call-terminal-cwd">{terminalOutput.cwd === '.' ? '~' : `~/${terminalOutput.cwd}`}</span>
-                  <button
-                    className="tool-call-copy-btn"
-                    onClick={() => copyToClipboard(
-                      [terminalOutput.stdout, terminalOutput.stderr].filter(Boolean).join('\n') || inputDisplay,
-                      'result'
+                  <div className="tool-call-terminal-header-actions">
+                    <button
+                      className="tool-call-copy-btn"
+                      onClick={() => copyToClipboard(inputDisplay, 'query')}
+                      title="Copy command"
+                    >
+                      {copiedQuery ? <Check size={12} /> : <Terminal size={12} />}
+                    </button>
+                    <button
+                      className="tool-call-copy-btn"
+                      onClick={() => copyToClipboard(
+                        [terminalOutput.stdout, terminalOutput.stderr].filter(Boolean).join('\n') || inputDisplay,
+                        'result'
+                      )}
+                      title="Copy output"
+                    >
+                      {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                    </button>
+                    {workspaceId && (
+                      <button
+                        className="tool-call-copy-btn tool-call-terminal-rerun-btn"
+                        onClick={handleRerunCommand}
+                        title="Re-run command"
+                        disabled={isRerunning}
+                      >
+                        {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                      </button>
                     )}
-                    title="Copy output"
-                  >
-                    {copiedResult ? <Check size={12} /> : <Copy size={12} />}
-                  </button>
+                  </div>
                 </div>
                 <pre className="tool-call-terminal-output">
                   <span className="tool-call-terminal-prompt-line">$ {inputDisplay}</span>
@@ -1432,6 +1476,38 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
                   <span className="tool-call-terminal-prompt-line">$ {inputDisplay}</span>
                   {'\n'}
                   <MiniLoadingSpinner variant="icon" size={12} />
+                </pre>
+              </div>
+            </div>
+          ) : isTerminalCommand ? (
+            <div className="tool-call-section tool-call-terminal-section">
+              <div className="tool-call-terminal-block">
+                <div className="tool-call-terminal-header-bar">
+                  <span className="tool-call-terminal-cwd">~</span>
+                  <div className="tool-call-terminal-header-actions">
+                    <button
+                      className="tool-call-copy-btn"
+                      onClick={() => copyToClipboard(inputDisplay, 'query')}
+                      title="Copy command"
+                    >
+                      {copiedQuery ? <Check size={12} /> : <Terminal size={12} />}
+                    </button>
+                    {workspaceId && (
+                      <button
+                        className="tool-call-copy-btn tool-call-terminal-rerun-btn"
+                        onClick={handleRerunCommand}
+                        title="Re-run command"
+                        disabled={isRerunning}
+                      >
+                        {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <pre className="tool-call-terminal-output">
+                  <span className="tool-call-terminal-prompt-line">$ {inputDisplay}</span>
+                  {'\n'}
+                  <span className="tool-call-terminal-empty">No output</span>
                 </pre>
               </div>
             </div>

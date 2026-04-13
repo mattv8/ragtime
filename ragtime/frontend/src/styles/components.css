@@ -2377,6 +2377,9 @@ textarea:focus {
   overflow: hidden;
   background: var(--color-border);
 }
+.userspace-snapshot-diff-columns-single {
+  grid-template-columns: minmax(0, 1fr);
+}
 
 /* Compact mode (inline chat diff): constrain the single grid row so
    CodeMirror's scroller receives a real height limit.  Without an explicit

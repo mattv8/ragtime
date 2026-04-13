@@ -260,6 +260,37 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
     );
   }
 
+  // Pure addition or deletion: show a single-column view
+  const isPureAdd = !diff.before_content && diff.after_content;
+  const isPureDelete = diff.before_content && !diff.after_content;
+
+  if (isPureAdd || isPureDelete) {
+    const singleContent = isPureAdd ? alignedDiff.afterText : alignedDiff.beforeText;
+    const singleLabel = isPureAdd ? afterLabel : beforeLabel;
+    const singlePath = isPureAdd ? (diff.after_path ?? diff.path) : (diff.before_path ?? diff.path);
+    const singleExtensions = isPureAdd ? afterExtensions : beforeExtensions;
+
+    return (
+      <div className={`userspace-snapshot-diff-columns userspace-snapshot-diff-columns-single${compact ? ' userspace-snapshot-diff-columns-compact' : ''}`}>
+        <div className="userspace-snapshot-diff-column userspace-snapshot-diff-column-current">
+          <div className="userspace-snapshot-diff-column-header">
+            <span>{singleLabel}</span>
+            <code>{singlePath}</code>
+          </div>
+          <div className={`userspace-snapshot-diff-editor-wrap${compact ? ' userspace-snapshot-diff-editor-wrap-compact' : ''}`}>
+            <CodeMirror
+              value={singleContent}
+              basicSetup={DIFF_CODEMIRROR_SETUP}
+              editable={false}
+              extensions={singleExtensions}
+              height="100%"
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`userspace-snapshot-diff-columns${compact ? ' userspace-snapshot-diff-columns-compact' : ''}`}>
       <div className="userspace-snapshot-diff-column">

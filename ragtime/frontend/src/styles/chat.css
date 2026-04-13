@@ -1566,6 +1566,7 @@
   align-items: center;
   gap: var(--space-sm);
   flex: 1;
+  min-width: 0;
   padding: var(--space-2xs) var(--space-xs);
   background: transparent;
   border: none;
@@ -1678,13 +1679,10 @@
 .tool-call-name-terminal {
   font-family: var(--font-mono);
   font-size: var(--tool-call-font-code);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.tool-call-terminal-prompt-hint {
-  color: var(--color-success);
-  font-weight: 600;
 }
 .tool-call-terminal-exit {
   font-family: var(--font-mono);
@@ -1703,11 +1701,10 @@
 
 /* Terminal output block */
 .tool-call-terminal-section {
-  margin-top: var(--space-xs);
+  margin: 0 calc(-1 * var(--space-xs)) calc(-1 * var(--space-xs));
 }
 .tool-call-terminal-block {
   background: #1a1b26;
-  border-radius: var(--tool-call-radius-sm);
   overflow: hidden;
 }
 .tool-call-terminal-header-bar {
@@ -1717,6 +1714,11 @@
   padding: 4px var(--space-sm);
   background: rgba(255, 255, 255, 0.04);
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.tool-call-terminal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 .tool-call-terminal-cwd {
   font-family: var(--font-mono);
@@ -1731,16 +1733,19 @@
   background: rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.7);
 }
+.tool-call-terminal-rerun-btn:hover {
+  color: var(--color-success) !important;
+}
 .tool-call-terminal-output {
   font-family: var(--font-mono);
   font-size: var(--tool-call-font-code);
   color: #c0caf5;
   padding: var(--space-sm);
   margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 300px;
+  white-space: pre;
+  overflow-x: auto;
   overflow-y: auto;
+  max-height: 300px;
   line-height: 1.5;
 }
 .tool-call-terminal-prompt-line {
@@ -1769,6 +1774,10 @@
 }
 .tool-call-terminal-error-banner svg {
   flex-shrink: 0;
+}
+.tool-call-terminal-empty {
+  color: rgba(255, 255, 255, 0.25);
+  font-style: italic;
 }
 
 .tool-call-userspace-write-summary {
