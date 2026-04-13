@@ -797,7 +797,7 @@ USERSPACE_ENTRYPOINT_SETUP_PROMPT = """
 
 #### Dependencies and tooling
 
-- Declare every non-stdlib runtime/build dependency in `package.json` or `requirements.txt` before referencing it in code or `.ragtime/runtime-entrypoint.json`.
+- Declare every non-stdlib runtime/build dependency in the workspace manifest used by its package manager before referencing it in code or `.ragtime/runtime-entrypoint.json` (`package.json` for npm/pnpm/yarn/bun, `requirements.txt`, `pyproject.toml`, or `Pipfile` for Python workflows).
 - Package imports are allowed when the workspace runtime/tooling resolves them. Static validation does not try to prove package-import validity; real browser import failures should come from the preview/runtime probe.
 - Runtime bootstrap installs declared dependencies only; it does not infer tools like `esbuild`, `vite`, or framework CLIs from the entrypoint command.
 - Node workspaces include managed Tailwind tooling bootstrap (`tailwindcss` + `@tailwindcss/cli`) when `package.json` is present, so you may use Tailwind utility classes when they improve implementation speed.

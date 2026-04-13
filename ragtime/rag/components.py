@@ -22,6 +22,7 @@ from typing import Any, List, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
+from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -37,7 +38,6 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_openai.chat_models.base import (
     _construct_responses_api_payload, _get_last_messages)
-from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
@@ -9283,8 +9283,8 @@ except Exception as e:
                 if not runtime_config_command_present:
                     add_runtime_error(runnable_entrypoint_error)
 
-                # Check framework dependencies are declared in the
-                # appropriate manifest (requirements.txt / package.json).
+                # Check framework dependencies are declared in a supported
+                # dependency manifest for the selected framework.
                 if runtime_config_command_present:
                     entrypoint_framework = ""
                     if isinstance(runtime_config_payload, dict):  # type: ignore[possibly-undefined]
@@ -9296,29 +9296,45 @@ except Exception as e:
                     dep_spec = FRAMEWORK_REQUIRED_PACKAGES.get(entrypoint_framework)
                     if dep_spec is not None:
                         manifest_name, required_pkgs = dep_spec
-                        manifest_file = await get_file(manifest_name)
-                        manifest_text = (
-                            (manifest_file.content if manifest_file else None) or ""
-                        ).lower()
+                        manifest_candidates = [manifest_name]
+                        if manifest_name == "requirements.txt":
+                            manifest_candidates.extend(
+                                ["pyproject.toml", "Pipfile"]
+                            )
+
+                        manifest_text_parts: list[str] = []
+                        existing_manifest_names: list[str] = []
+                        for candidate_name in manifest_candidates:
+                            manifest_file = await get_file(candidate_name)
+                            manifest_text = (
+                                (manifest_file.content if manifest_file else None) or ""
+                            ).lower()
+                            if manifest_text:
+                                manifest_text_parts.append(manifest_text)
+                                existing_manifest_names.append(candidate_name)
+
+                        combined_manifest_text = "\n".join(manifest_text_parts)
                         missing = [
                             pkg
                             for pkg in required_pkgs
-                            if pkg.lower() not in manifest_text
+                            if pkg.lower() not in combined_manifest_text
                         ]
                         if missing:
                             missing_list = ", ".join(missing)
-                            if manifest_file is None:
+                            if not existing_manifest_names:
+                                manifest_label = ", ".join(manifest_candidates)
                                 add_runtime_error(
                                     f"Runtime preflight: entrypoint framework '{entrypoint_framework}' "
-                                    f"requires [{missing_list}] but {manifest_name} does not exist. "
-                                    f"Create {manifest_name} listing these dependencies so the "
+                                    f"requires [{missing_list}] but none of {manifest_label} exist. "
+                                    "Create one of those manifests listing these dependencies so the "
                                     "runtime bootstrap can install them."
                                 )
                             else:
+                                manifest_label = ", ".join(existing_manifest_names)
                                 add_runtime_error(
                                     f"Runtime preflight: entrypoint framework '{entrypoint_framework}' "
-                                    f"requires [{missing_list}] but they are not listed in {manifest_name}. "
-                                    f"Add them to {manifest_name} so the runtime bootstrap can install them."
+                                    f"requires [{missing_list}] but they are not listed in {manifest_label}. "
+                                    "Add them to the active dependency manifest so the runtime bootstrap can install them."
                                 )
 
             strict_frontend_candidate = is_userspace_strict_frontend_path(

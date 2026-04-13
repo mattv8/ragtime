@@ -50,9 +50,25 @@ _PORT_REWRITE_PATTERNS = (
     (re.compile(r"(^|\s)PORT=(\d{2,5})(?=\s|$)"), r"\1PORT={port}"),
 )
 _COMMAND_TOKEN_PATTERNS = {
+    "bun": re.compile(r"(?:^|\s)bun(?:\s|$)"),
     "npx": re.compile(r"(?:^|\s)npx(?:\s|$)"),
     "npm": re.compile(r"(?:^|\s)npm(?:\s|$)"),
+    "pipenv": re.compile(r"(?:^|\s)pipenv(?:\s|$)"),
+    "pnpm": re.compile(r"(?:^|\s)pnpm(?:\s|$)"),
+    "poetry": re.compile(r"(?:^|\s)poetry(?:\s|$)"),
+    "uv": re.compile(r"(?:^|\s)uv(?:\s|$)"),
+    "yarn": re.compile(r"(?:^|\s)yarn(?:\s|$)"),
 }
+_ENTRYPOINT_REQUIRED_TOOLS = (
+    "bun",
+    "npx",
+    "npm",
+    "pipenv",
+    "pnpm",
+    "poetry",
+    "uv",
+    "yarn",
+)
 _WORKSPACE_BOOTSTRAP_GUIDANCE = (
     "Initialize the workspace with required runtime dependencies "
     "(for example a package manager install step) or update "
@@ -839,29 +855,71 @@ class WorkerService:
             return None
         return workspace_files / candidate
 
-    @staticmethod
-    def _is_false_negative_npm_ci_failure(
+    def _bootstrap_expected_artifact_exists(
+        self,
         *,
+        session: WorkerSession,
+        cwd_path: Path,
+        cwd_value: str,
+        artifact_relative_path: str,
+    ) -> bool:
+        normalized_artifact = str(artifact_relative_path or "").strip().replace(
+            "\\", "/"
+        )
+        if not normalized_artifact:
+            return False
+        if (cwd_path / normalized_artifact).exists():
+            return True
+
+        rootfs_workspace = (
+            session.sandbox_spec.rootfs_path / SANDBOX_WORKSPACE_MOUNT.lstrip("/")
+        )
+        rootfs_cwd = self._resolve_bootstrap_relative_path(rootfs_workspace, cwd_value)
+        if rootfs_cwd is None:
+            return False
+        return (rootfs_cwd / normalized_artifact).exists()
+
+    def _is_false_negative_npm_failure(
+        self,
+        *,
+        session: WorkerSession,
         command_name: str,
         run: str,
         output: str,
         cwd_path: Path,
+        cwd_value: str,
     ) -> bool:
-        """Return True for known npm-ci failures that still install deps.
+        """Return True when npm exits non-zero after producing the expected artifact.
 
-        In some runtime/container combinations npm may print
-        ``Exit handler never called`` and exit non-zero even though
-        ``node_modules`` is present and usable. Treat this as a warning
-        for npm-ci bootstrap commands only.
+        Some runtime/container combinations print ``Exit handler never called``
+        for successful npm operations. Treat that as a soft failure only when
+        the command's expected artifact is now present in the workspace sandbox.
         """
-        cmd = (run or "").strip().lower()
-        name = (command_name or "").strip().lower()
-        is_npm_ci = name == "npm_ci" or cmd.startswith("npm ci")
-        if not is_npm_ci:
-            return False
         if "exit handler never called" not in (output or "").lower():
             return False
-        return (cwd_path / "node_modules").exists()
+
+        cmd = (run or "").strip().lower()
+        name = (command_name or "").strip().lower()
+        expected_artifact: str | None = None
+
+        if name in {"npm_ci", "npm_install", "node_dependencies"} or cmd.startswith(
+            "npm ci"
+        ) or cmd.startswith("npm install"):
+            expected_artifact = "node_modules"
+        elif name == "node_tailwind_tooling" or (
+            "npm install" in cmd and "tailwindcss" in cmd
+        ):
+            expected_artifact = "node_modules/.bin/tailwindcss"
+
+        if not expected_artifact:
+            return False
+
+        return self._bootstrap_expected_artifact_exists(
+            session=session,
+            cwd_path=cwd_path,
+            cwd_value=cwd_value,
+            artifact_relative_path=expected_artifact,
+        )
 
     @staticmethod
     def _extract_npm_debug_log_path(output: str) -> str | None:
@@ -1040,14 +1098,16 @@ class WorkerService:
                     output=output,
                 )
 
-                if self._is_false_negative_npm_ci_failure(
+                if self._is_false_negative_npm_failure(
+                    session=session,
                     command_name=command_name,
                     run=run,
                     output=output,
                     cwd_path=cwd_path,
+                    cwd_value=cwd_value,
                 ):
                     # npm occasionally exits non-zero with "Exit handler never called"
-                    # even after dependencies are installed. Treat as soft-fail.
+                    # even after bootstrap installs the requested artifact.
                     continue
 
                 return (
@@ -1490,24 +1550,16 @@ class WorkerService:
             effective_port = port
             final_command = self._rewrite_command_port(config_command, effective_port)
 
-            if self._command_uses_tool(config_command, "npx") and not shutil.which(
-                "npx"
-            ):
-                return DevserverResolution(
-                    error=self._missing_tool_error("npx"),
-                    framework=config_framework,
-                    cwd=config_cwd,
-                    port=effective_port,
-                )
-            if self._command_uses_tool(config_command, "npm") and not shutil.which(
-                "npm"
-            ):
-                return DevserverResolution(
-                    error=self._missing_tool_error("npm"),
-                    framework=config_framework,
-                    cwd=config_cwd,
-                    port=effective_port,
-                )
+            for tool in _ENTRYPOINT_REQUIRED_TOOLS:
+                if self._command_uses_tool(config_command, tool) and not shutil.which(
+                    tool
+                ):
+                    return DevserverResolution(
+                        error=self._missing_tool_error(tool),
+                        framework=config_framework,
+                        cwd=config_cwd,
+                        port=effective_port,
+                    )
             # Resolve the sandbox-internal cwd for the command.  We embed
             # an explicit ``cd`` because ``os.chdir`` in preexec_fn can be
             # lost after exec under certain uvicorn/event-loop contexts.
