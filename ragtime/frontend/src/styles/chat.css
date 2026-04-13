@@ -1674,6 +1674,103 @@
   color: var(--color-text-primary);
 }
 
+/* Terminal command header name: show command inline */
+.tool-call-name-terminal {
+  font-family: var(--font-mono);
+  font-size: var(--tool-call-font-code);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-call-terminal-prompt-hint {
+  color: var(--color-success);
+  font-weight: 600;
+}
+.tool-call-terminal-exit {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--color-text-muted);
+  background: var(--color-surface-secondary);
+  border-radius: 3px;
+  padding: 1px 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.tool-call-terminal-exit-error {
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 12%, var(--color-surface-secondary));
+}
+
+/* Terminal output block */
+.tool-call-terminal-section {
+  margin-top: var(--space-xs);
+}
+.tool-call-terminal-block {
+  background: #1a1b26;
+  border-radius: var(--tool-call-radius-sm);
+  overflow: hidden;
+}
+.tool-call-terminal-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px var(--space-sm);
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.tool-call-terminal-cwd {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.35);
+}
+.tool-call-terminal-block .tool-call-copy-btn {
+  border-color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.35);
+}
+.tool-call-terminal-block .tool-call-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+}
+.tool-call-terminal-output {
+  font-family: var(--font-mono);
+  font-size: var(--tool-call-font-code);
+  color: #c0caf5;
+  padding: var(--space-sm);
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+.tool-call-terminal-prompt-line {
+  color: #7aa2f7;
+  font-weight: 500;
+}
+.tool-call-terminal-stderr {
+  color: #f7768e;
+}
+.tool-call-terminal-notice {
+  padding: 2px var(--space-sm) 4px;
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.3);
+  font-style: italic;
+  text-align: right;
+}
+.tool-call-terminal-error-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  background: color-mix(in srgb, #f7768e 12%, #1a1b26);
+  border-top: 1px solid rgba(247, 118, 142, 0.2);
+  color: #f7768e;
+  font-size: var(--tool-call-font-xs);
+}
+.tool-call-terminal-error-banner svg {
+  flex-shrink: 0;
+}
+
 .tool-call-userspace-write-summary {
   display: flex;
   flex-direction: column;

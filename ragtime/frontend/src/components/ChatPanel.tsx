@@ -891,6 +891,39 @@ interface ScreenshotToolOutput {
   };
 }
 
+interface ParsedTerminalOutput {
+  status: string;
+  command?: string;
+  cwd: string;
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  error?: string;
+  timed_out?: boolean;
+  truncated?: boolean;
+}
+
+function parseTerminalOutput(output: string | undefined | null): ParsedTerminalOutput | null {
+  if (!output) return null;
+  try {
+    const parsed = JSON.parse(output) as Record<string, unknown>;
+    if (parsed?.tool !== 'run_terminal_command') return null;
+    return {
+      status: String(parsed.status ?? 'unknown'),
+      command: typeof parsed.command === 'string' ? parsed.command : undefined,
+      cwd: String(parsed.cwd ?? '.'),
+      exit_code: Number(parsed.exit_code ?? 0),
+      stdout: String(parsed.stdout ?? ''),
+      stderr: String(parsed.stderr ?? ''),
+      error: typeof parsed.error === 'string' ? parsed.error : undefined,
+      timed_out: Boolean(parsed.timed_out),
+      truncated: Boolean(parsed.truncated),
+    };
+  } catch {
+    return null;
+  }
+}
+
 const ToolCallDisplay = memo(function ToolCallDisplay({
   toolCall,
   defaultExpanded = false,
@@ -915,6 +948,13 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
 
   // Check if this is a visualization tool that can be retried
   const isVisualizationTool = toolCall.tool === 'create_chart' || toolCall.tool === 'create_datatable';
+  const isTerminalCommand = toolCall.tool === 'run_terminal_command';
+
+  // Parse terminal output for terminal-style rendering
+  const terminalOutput = useMemo(() => {
+    if (!isTerminalCommand) return null;
+    return parseTerminalOutput(retryOutput || toolCall.output);
+  }, [isTerminalCommand, toolCall.output, retryOutput]);
 
   // Check if this tool call failed based on output content
   const hasErrorInOutput = useMemo(() => {
@@ -1266,6 +1306,9 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
     if (isFailed && isVisualizationTool) {
       return <AlertCircle size={14} className="tool-call-error-icon" />;
     }
+    if (isFailed && isTerminalCommand) {
+      return <AlertCircle size={14} className="tool-call-error-icon" />;
+    }
     return null;
   };
 
@@ -1283,7 +1326,20 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
           onClick={() => setExpanded(!expanded)}
         >
           <span className="tool-call-icon">{statusIcon || toolIcon}</span>
-          <span className="tool-call-name">{toolCall.tool}</span>
+          {isTerminalCommand ? (
+            <span className="tool-call-name tool-call-name-terminal">
+              <span className="tool-call-terminal-prompt-hint">$</span>
+              {' '}
+              {inputDisplay || 'run_terminal_command'}
+            </span>
+          ) : (
+            <span className="tool-call-name">{toolCall.tool}</span>
+          )}
+          {isTerminalCommand && terminalOutput && toolCall.status !== 'running' ? (
+            <span className={`tool-call-terminal-exit ${terminalOutput.exit_code !== 0 ? 'tool-call-terminal-exit-error' : ''}`}>
+              {terminalOutput.timed_out ? 'timeout' : `exit ${terminalOutput.exit_code}`}
+            </span>
+          ) : null}
           {toolCall.status === 'running' && toolCall.generating_lines ? (
             <span className="tool-call-progress">{toolCall.generating_lines} lines</span>
           ) : null}
@@ -1319,7 +1375,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
               <pre className="tool-call-code tool-call-error-text">{retryError}</pre>
             </div>
           )}
-          {inputDisplay && !userspaceWriteResult && (
+          {inputDisplay && !userspaceWriteResult && !isTerminalCommand && (
             <div className="tool-call-section">
               <div className="tool-call-section-header">
                 <span className="tool-call-section-label">Query:</span>
@@ -1334,7 +1390,53 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
               <pre className="tool-call-code">{inputDisplay}</pre>
             </div>
           )}
-          {toolCall.output && (
+          {isTerminalCommand && terminalOutput ? (
+            <div className="tool-call-section tool-call-terminal-section">
+              <div className="tool-call-terminal-block">
+                <div className="tool-call-terminal-header-bar">
+                  <span className="tool-call-terminal-cwd">{terminalOutput.cwd === '.' ? '~' : `~/${terminalOutput.cwd}`}</span>
+                  <button
+                    className="tool-call-copy-btn"
+                    onClick={() => copyToClipboard(
+                      [terminalOutput.stdout, terminalOutput.stderr].filter(Boolean).join('\n') || inputDisplay,
+                      'result'
+                    )}
+                    title="Copy output"
+                  >
+                    {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                  </button>
+                </div>
+                <pre className="tool-call-terminal-output">
+                  <span className="tool-call-terminal-prompt-line">$ {inputDisplay}</span>
+                  {'\n'}
+                  {terminalOutput.stdout}
+                  {terminalOutput.stderr ? (
+                    <span className="tool-call-terminal-stderr">{terminalOutput.stderr}</span>
+                  ) : null}
+                </pre>
+                {terminalOutput.truncated && (
+                  <div className="tool-call-terminal-notice">Output truncated</div>
+                )}
+                {terminalOutput.error && terminalOutput.status !== 'completed' && (
+                  <div className="tool-call-terminal-error-banner">
+                    <AlertCircle size={12} />
+                    <span>{terminalOutput.error}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : isTerminalCommand && toolCall.status === 'running' ? (
+            <div className="tool-call-section tool-call-terminal-section">
+              <div className="tool-call-terminal-block">
+                <pre className="tool-call-terminal-output">
+                  <span className="tool-call-terminal-prompt-line">$ {inputDisplay}</span>
+                  {'\n'}
+                  <MiniLoadingSpinner variant="icon" size={12} />
+                </pre>
+              </div>
+            </div>
+          ) : null}
+          {toolCall.output && !isTerminalCommand && (
             screenshotPreview && !hasErrorInOutput ? (
               <div className="tool-call-section">
                 <div className="tool-call-screenshot-meta">

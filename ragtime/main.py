@@ -77,7 +77,7 @@ from ragtime.userspace.runtime_routes import (
     _to_websocket_url,
 )
 from ragtime.userspace.runtime_routes import router as userspace_runtime_router
-from ragtime.userspace.runtime_routes import userspace_runtime_service
+from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 from ragtime.userspace.share_auth import (
     clear_share_auth_cookie,

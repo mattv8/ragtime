@@ -43,11 +43,7 @@ from ragtime.userspace.models import (
     UserSpaceRuntimeStatusResponse,
     UserSpaceWorkspaceTabStateResponse,
 )
-from ragtime.userspace.runtime_service import (
-    RuntimeVersionConflictError,
-    userspace_runtime_service,
-)
-from ragtime.userspace.service import userspace_service
+from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
 from ragtime.userspace.share_auth import (
     set_share_auth_cookie,
     share_auth_token_from_request,
@@ -63,6 +59,20 @@ _PROXY_TIMEOUT_FLOOR = 300.0  # seconds — minimum proxy read/write timeout
 _PROXY_TIMEOUT_BUFFER = 20.0  # seconds — headroom above max tool timeout
 _USERSPACE_SURFACE_HEADER = "X-Ragtime-Userspace-Surface"
 _USERSPACE_PREVIEW_PROXY_HEADER = "X-Ragtime-Userspace-Preview-Proxy"
+
+
+def _runtime_service() -> Any:
+    # Lazy import avoids import cycle: runtime_service -> service -> preview_host -> runtime_routes.
+    from ragtime.userspace.runtime_service import userspace_runtime_service
+
+    return userspace_runtime_service
+
+
+def _userspace_service() -> Any:
+    # Lazy import avoids import cycle: service -> preview_host -> runtime_routes.
+    from ragtime.userspace.service import userspace_service
+
+    return userspace_service
 
 
 def _root_share_target_url(base_url: str, share_path: str, target_path: str) -> str:
@@ -160,9 +170,7 @@ async def _broadcast_collab_message(
     file_path: str,
     message: dict[str, Any],
 ) -> None:
-    clients = await userspace_runtime_service.get_collab_clients(
-        workspace_id, file_path
-    )
+    clients = await _runtime_service().get_collab_clients(workspace_id, file_path)
     payload = json.dumps(message)
     if not clients:
         return
@@ -314,7 +322,7 @@ def _require_workspace_capability(
 ) -> tuple[dict[str, Any], str]:
     if not token:
         raise HTTPException(status_code=401, detail="Capability token required")
-    claims = userspace_runtime_service.verify_capability_token(
+    claims = _runtime_service().verify_capability_token(
         token,
         workspace_id,
         capability,
@@ -649,7 +657,7 @@ async def get_runtime_session(
     workspace_id: str,
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_runtime_service.get_runtime_session(workspace_id, user.id)
+    return await _runtime_service().get_runtime_session(workspace_id, user.id)
 
 
 @router.post(
@@ -660,7 +668,7 @@ async def start_runtime_session(
     workspace_id: str,
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_runtime_service.start_runtime_session(workspace_id, user.id)
+    return await _runtime_service().start_runtime_session(workspace_id, user.id)
 
 
 @router.post(
@@ -671,7 +679,7 @@ async def stop_runtime_session(
     workspace_id: str,
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_runtime_service.stop_runtime_session(workspace_id, user.id)
+    return await _runtime_service().stop_runtime_session(workspace_id, user.id)
 
 
 @router.get(
@@ -684,32 +692,26 @@ async def workspace_events_sse(
 ):
     """SSE stream that emits a message whenever the workspace generation advances."""
 
-    await userspace_runtime_service.track_workspace_runtime_events(workspace_id)
+    await _runtime_service().track_workspace_runtime_events(workspace_id)
 
     async def _stream():
         # Always emit the current generation so the client knows the
         # connection is live and what the baseline is.
-        generation = await userspace_runtime_service.get_workspace_generation(
-            workspace_id
-        )
-        initial_payload = userspace_runtime_service.get_workspace_event_payload(
-            workspace_id
-        )
+        generation = await _runtime_service().get_workspace_generation(workspace_id)
+        initial_payload = _runtime_service().get_workspace_event_payload(workspace_id)
         yield f"data: {json.dumps(initial_payload)}\n\n"
 
         while True:
             if await request.is_disconnected():
                 break
-            new_gen = await userspace_runtime_service.wait_workspace_generation(
+            new_gen = await _runtime_service().wait_workspace_generation(
                 workspace_id, generation, timeout=25.0
             )
             if await request.is_disconnected():
                 break
             if new_gen > generation:
                 generation = new_gen
-                payload = userspace_runtime_service.get_workspace_event_payload(
-                    workspace_id
-                )
+                payload = _runtime_service().get_workspace_event_payload(workspace_id)
                 yield f"data: {json.dumps(payload)}\n\n"
             else:
                 # Keepalive – SSE comment to prevent proxy/browser timeouts
@@ -734,8 +736,8 @@ async def get_devserver_status(
     request: Request,
     user: Any = Depends(get_current_user),
 ):
-    status = await userspace_runtime_service.get_devserver_status(workspace_id, user.id)
-    status.preview_url = userspace_runtime_service.get_preview_origin(
+    status = await _runtime_service().get_devserver_status(workspace_id, user.id)
+    status.preview_url = _runtime_service().get_preview_origin(
         workspace_id,
         control_plane_origin=get_browser_matched_origin(request),
     )
@@ -752,13 +754,13 @@ async def get_workspace_tab_state(
     selected_conversation_id: str | None = None,
     user: Any = Depends(get_current_user),
 ):
-    tab_state = await userspace_runtime_service.get_workspace_tab_state(
+    tab_state = await _runtime_service().get_workspace_tab_state(
         workspace_id,
         user.id,
         selected_conversation_id=selected_conversation_id,
         is_admin=bool(getattr(user, "role", None) == "admin"),
     )
-    tab_state.runtime_status.preview_url = userspace_runtime_service.get_preview_origin(
+    tab_state.runtime_status.preview_url = _runtime_service().get_preview_origin(
         workspace_id,
         control_plane_origin=get_browser_matched_origin(request),
     )
@@ -773,7 +775,7 @@ async def restart_devserver(
     workspace_id: str,
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_runtime_service.restart_devserver(workspace_id, user.id)
+    return await _runtime_service().restart_devserver(workspace_id, user.id)
 
 
 @router.post(
@@ -785,12 +787,12 @@ async def refresh_runtime_mount(
     mount_id: str,
     user: Any = Depends(get_current_user),
 ):
-    result = await userspace_runtime_service.refresh_workspace_mount(
+    result = await _runtime_service().refresh_workspace_mount(
         workspace_id,
         user.id,
         mount_id,
     )
-    await userspace_runtime_service.bump_workspace_generation(
+    await _runtime_service().bump_workspace_generation(
         workspace_id,
         "mount_refresh",
     )
@@ -803,7 +805,7 @@ async def get_runtime_screenshot(
     filename: str,
     user: Any = Depends(get_current_user),
 ):
-    await userspace_service.enforce_workspace_role(workspace_id, user.id, "viewer")
+    await _userspace_service().enforce_workspace_role(workspace_id, user.id, "viewer")
 
     normalized_name = (filename or "").strip().replace("\\", "/")
     basename = Path(normalized_name).name
@@ -853,7 +855,7 @@ async def issue_capability_token(
     if not isinstance(capabilities, list):
         capabilities = []
     session_id = payload.get("session_id") if isinstance(payload, dict) else None
-    return await userspace_runtime_service.issue_capability_token(
+    return await _runtime_service().issue_capability_token(
         workspace_id,
         user.id,
         [str(value) for value in capabilities],
@@ -877,7 +879,7 @@ async def authorize_browser_surfaces(
 
     for surface in surfaces:
         config = _BROWSER_SURFACE_COOKIE_CONFIG[surface]
-        token_response = await userspace_runtime_service.issue_capability_token(
+        token_response = await _runtime_service().issue_capability_token(
             workspace_id,
             user.id,
             list(config["capabilities"]),
@@ -920,7 +922,7 @@ async def issue_workspace_preview_launch(
     request: Request,
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_runtime_service.issue_workspace_preview_launch(
+    return await _runtime_service().issue_workspace_preview_launch(
         workspace_id,
         user.id,
         control_plane_origin=get_browser_matched_origin(
@@ -953,7 +955,7 @@ async def issue_shared_preview_launch(
         request.cookies,
         share_token=share_token,
     )
-    authorization = await userspace_service.authorize_shared_workspace_access(
+    authorization = await _userspace_service().authorize_shared_workspace_access(
         share_token,
         current_user=user,
         password=share_password,
@@ -985,8 +987,8 @@ async def issue_shared_preview_launch(
             share_path=f"/shared/{quote(share_token, safe='')}",
             target_path=payload.path,
         )
-    share_access_mode = await userspace_service.get_share_access_mode(workspace_id)
-    return await userspace_runtime_service.issue_shared_preview_launch(
+    share_access_mode = await _userspace_service().get_share_access_mode(workspace_id)
+    return await _runtime_service().issue_shared_preview_launch(
         workspace_id,
         control_plane_origin=external_origin,
         path=payload.path,
@@ -1020,12 +1022,14 @@ async def issue_shared_preview_launch_by_slug(
         owner_username=owner_username,
         share_slug=share_slug,
     )
-    authorization = await userspace_service.authorize_shared_workspace_access_by_slug(
-        owner_username,
-        share_slug,
-        current_user=user,
-        password=share_password,
-        share_auth_token=share_auth_token,
+    authorization = (
+        await _userspace_service().authorize_shared_workspace_access_by_slug(
+            owner_username,
+            share_slug,
+            current_user=user,
+            password=share_password,
+            share_auth_token=share_auth_token,
+        )
     )
     workspace_id = authorization["workspace_id"]
     expires_at = authorization["expires_at"]
@@ -1056,8 +1060,8 @@ async def issue_shared_preview_launch_by_slug(
             ),
             target_path=payload.path,
         )
-    share_access_mode = await userspace_service.get_share_access_mode(workspace_id)
-    return await userspace_runtime_service.issue_shared_preview_launch(
+    share_access_mode = await _userspace_service().get_share_access_mode(workspace_id)
+    return await _runtime_service().issue_shared_preview_launch(
         workspace_id,
         control_plane_origin=external_origin,
         path=payload.path,
@@ -1084,7 +1088,7 @@ async def runtime_fs_read(
         workspace_id,
         "userspace.runtime_fs_read",
     )
-    return await userspace_runtime_service.runtime_fs_read(
+    return await _runtime_service().runtime_fs_read(
         workspace_id,
         file_path,
         user_id,
@@ -1107,7 +1111,7 @@ async def runtime_fs_write(
         workspace_id,
         "userspace.runtime_fs_write",
     )
-    return await userspace_runtime_service.runtime_fs_write(
+    return await _runtime_service().runtime_fs_write(
         workspace_id,
         file_path,
         str(payload.get("content", "")),
@@ -1127,7 +1131,7 @@ async def runtime_fs_delete(
         workspace_id,
         "userspace.runtime_fs_write",
     )
-    return await userspace_runtime_service.runtime_fs_delete(
+    return await _runtime_service().runtime_fs_delete(
         workspace_id,
         file_path,
         user_id,
@@ -1151,22 +1155,24 @@ async def runtime_pty(workspace_id: str, websocket: WebSocket):
         return
 
     try:
-        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
+        await _userspace_service().enforce_workspace_role(
+            workspace_id, user_id, "viewer"
+        )
     except HTTPException:
         await websocket.close(code=4403)
         return
 
     can_write = True
     try:
-        await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+        await _userspace_service().enforce_workspace_role(
+            workspace_id, user_id, "editor"
+        )
     except HTTPException:
         can_write = False
 
-    upstream_ws_url = (
-        await userspace_runtime_service.build_workspace_pty_upstream_ws_url(
-            workspace_id,
-            user_id,
-        )
+    upstream_ws_url = await _runtime_service().build_workspace_pty_upstream_ws_url(
+        workspace_id,
+        user_id,
     )
     if not can_write:
         await _proxy_websocket_request(
@@ -1196,7 +1202,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
         return
 
     try:
-        snapshot = await userspace_runtime_service.get_collab_snapshot(
+        snapshot = await _runtime_service().get_collab_snapshot(
             workspace_id,
             file_path,
             user_id,
@@ -1208,17 +1214,17 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
     can_edit = not snapshot.read_only
 
     await websocket.accept()
-    await userspace_runtime_service.register_collab_client(
+    await _runtime_service().register_collab_client(
         workspace_id, snapshot.file_path, websocket, user_id
     )
 
     async def _cleanup_collab() -> None:
-        users = await userspace_runtime_service.clear_collab_presence(
+        users = await _runtime_service().clear_collab_presence(
             workspace_id,
             snapshot.file_path,
             user_id,
         )
-        await userspace_runtime_service.unregister_collab_client(
+        await _runtime_service().unregister_collab_client(
             workspace_id,
             snapshot.file_path,
             websocket,
@@ -1247,7 +1253,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
                 }
             )
         )
-        current_presence = await userspace_runtime_service.get_collab_presence(
+        current_presence = await _runtime_service().get_collab_presence(
             workspace_id,
             snapshot.file_path,
         )
@@ -1267,7 +1273,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
             payload = json.loads(data)
             message_type = payload.get("type")
             if message_type == "presence":
-                users = await userspace_runtime_service.update_collab_presence(
+                users = await _runtime_service().update_collab_presence(
                     workspace_id,
                     snapshot.file_path,
                     user_id,
@@ -1304,7 +1310,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
                     if parsed > 0:
                         client_version = parsed
             try:
-                updated = await userspace_runtime_service.apply_collab_update(
+                updated = await _runtime_service().apply_collab_update(
                     workspace_id,
                     snapshot.file_path,
                     content,
@@ -1312,7 +1318,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
                     expected_version=client_version,
                 )
             except RuntimeVersionConflictError as conflict:
-                latest = await userspace_runtime_service.get_collab_snapshot(
+                latest = await _runtime_service().get_collab_snapshot(
                     workspace_id,
                     snapshot.file_path,
                     user_id,
@@ -1374,7 +1380,7 @@ async def collab_create_file(
     )
     file_path = str(payload.get("file_path", "")).strip()
     content = str(payload.get("content", ""))
-    created = await userspace_runtime_service.create_collab_file(
+    created = await _runtime_service().create_collab_file(
         workspace_id,
         file_path,
         user_id,
@@ -1412,7 +1418,7 @@ async def collab_rename_file(
     )
     old_path = str(payload.get("old_path", "")).strip()
     new_path = str(payload.get("new_path", "")).strip()
-    result = await userspace_runtime_service.rename_collab_file(
+    result = await _runtime_service().rename_collab_file(
         workspace_id,
         old_path,
         new_path,
@@ -1444,7 +1450,7 @@ async def collab_delete_file(
         "userspace.collab_mutate",
     )
     file_path = str(payload.get("file_path", "")).strip()
-    result = await userspace_runtime_service.delete_collab_file(
+    result = await _runtime_service().delete_collab_file(
         workspace_id,
         file_path,
         user_id,
@@ -1471,8 +1477,8 @@ async def workspace_preview_path_proxy(
     path: str = "",
     user: Any = Depends(get_current_user),
 ) -> Response:
-    await userspace_service.enforce_workspace_role(workspace_id, user.id, "viewer")
-    upstream_url = await userspace_runtime_service.build_workspace_preview_upstream_url(
+    await _userspace_service().enforce_workspace_role(workspace_id, user.id, "viewer")
+    upstream_url = await _runtime_service().build_workspace_preview_upstream_url(
         workspace_id,
         user.id,
         path,
@@ -1498,13 +1504,13 @@ async def workspace_preview_path_websocket(
         await websocket.close(code=4401)
         return
     try:
-        await userspace_service.enforce_workspace_role(
+        await _userspace_service().enforce_workspace_role(
             workspace_id, token_data.user_id, "viewer"
         )
     except HTTPException:
         await websocket.close(code=4403)
         return
-    upstream_url = await userspace_runtime_service.build_workspace_preview_upstream_url(
+    upstream_url = await _runtime_service().build_workspace_preview_upstream_url(
         workspace_id,
         token_data.user_id,
         path,
@@ -1529,13 +1535,13 @@ async def shared_preview_path_proxy(
         request.cookies,
         share_token=share_token,
     )
-    workspace_id = await userspace_service.resolve_shared_workspace_id(
+    workspace_id = await _userspace_service().resolve_shared_workspace_id(
         share_token,
         current_user=user,
         password=share_password,
         share_auth_token=share_auth_token,
     )
-    upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
+    upstream_url = await _runtime_service().build_shared_preview_upstream_url(
         workspace_id,
         path,
         query=_sanitize_preview_query(request.url.query),

@@ -23,13 +23,25 @@ from ragtime.userspace.runtime_routes import (
     _sanitize_preview_query,
     _to_websocket_url,
 )
-from ragtime.userspace.runtime_service import (
-    _RUNTIME_PREVIEW_GRANT_KIND,
-    _RUNTIME_PREVIEW_SESSION_COOKIE_NAME,
-    _RUNTIME_PREVIEW_SESSION_KIND,
-    userspace_runtime_service,
-)
-from ragtime.userspace.service import userspace_service
+
+_RUNTIME_PREVIEW_GRANT_KIND = "userspace_preview_grant"
+_RUNTIME_PREVIEW_SESSION_KIND = "userspace_preview_session"
+_RUNTIME_PREVIEW_SESSION_COOKIE_NAME = "userspace_preview_session"
+
+
+def _runtime_service() -> Any:
+    # Lazy import avoids import cycle: runtime_service -> service -> preview_host.
+    from ragtime.userspace.runtime_service import userspace_runtime_service
+
+    return userspace_runtime_service
+
+
+def _userspace_service() -> Any:
+    # Lazy import avoids import cycle: service -> preview_host.
+    from ragtime.userspace.service import userspace_service
+
+    return userspace_service
+
 
 preview_host_app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 
@@ -46,7 +58,7 @@ async def _handle_preview_auth_error(request: StarletteRequest, exc: HTTPExcepti
         return JSONResponse(status_code=401, content={"detail": exc.detail})
     workspace_id = _workspace_id_from_preview_host(request.headers.get("host"))
     if workspace_id:
-        share_token = await userspace_service.get_share_token(workspace_id)
+        share_token = await _userspace_service().get_share_token(workspace_id)
         if share_token:
             # Derive control-plane origin from the subdomain host header:
             # strip the workspace label to get "base_domain:port".
@@ -190,7 +202,7 @@ def _split_host(value: str | None) -> tuple[str, str | None]:
 
 def is_preview_host(host_header: str | None) -> bool:
     hostname, _ = _split_host(host_header)
-    base_domains = userspace_runtime_service.get_preview_base_domains()
+    base_domains = _runtime_service().get_preview_base_domains()
     if not hostname or not base_domains:
         return False
     return any(hostname.endswith(f".{base_domain}") for base_domain in base_domains)
@@ -209,7 +221,7 @@ def _is_equivalent_preview_host(actual_host: str, expected_host: str) -> bool:
     if not actual_label or actual_label != expected_label:
         return False
 
-    base_domains = userspace_runtime_service.get_preview_base_domains()
+    base_domains = _runtime_service().get_preview_base_domains()
     return any(
         actual_hostname.endswith(f".{base_domain}") for base_domain in base_domains
     ) and any(
@@ -232,7 +244,7 @@ def _ensure_preview_host_matches_workspace(
     expected = str(expected_host or "").strip().lower()
     if not expected:
         expected = urlsplit(
-            userspace_runtime_service.get_preview_origin(workspace_id)
+            _runtime_service().get_preview_origin(workspace_id)
         ).netloc.lower()
     actual_host = str(host_header or "").strip().lower()
     if actual_host != expected and not _is_equivalent_preview_host(
@@ -252,7 +264,7 @@ def _bridge_context_from_claims(claims: dict[str, Any]) -> dict[str, Any]:
 def _verify_preview_session_token(token: str | None) -> dict[str, Any]:
     if not token:
         raise HTTPException(status_code=401, detail="Preview session required")
-    return userspace_runtime_service.verify_preview_token(
+    return _runtime_service().verify_preview_token(
         token,
         expected_kind=_RUNTIME_PREVIEW_SESSION_KIND,
     )
@@ -264,7 +276,7 @@ async def _resolve_public_preview_session(
     workspace_id = _workspace_id_from_preview_host(host_header)
     if not workspace_id:
         return None
-    if not await userspace_service.is_public_direct_share_host_enabled(workspace_id):
+    if not await _userspace_service().is_public_direct_share_host_enabled(workspace_id):
         return None
     return {
         "workspace_id": workspace_id,
@@ -281,14 +293,14 @@ async def _enforce_shared_subdomain_allowed(claims: dict[str, Any]) -> None:
         raise HTTPException(status_code=401, detail="Preview session required")
     if _preview_mode(claims) == "workspace":
         return
-    if not await userspace_service.has_active_share_link(workspace_id):
+    if not await _userspace_service().has_active_share_link(workspace_id):
         raise HTTPException(status_code=404, detail="Preview host unavailable")
     # When the workspace has protection enabled (anything other than plain
     # "token" mode), the session must carry a matching share_access_mode
     # proving it was created through the proper auth flow (password entry,
     # group check, etc.).  Sessions without share_access_mode (legacy or
     # stale) are rejected so visitors are forced back through the share URL.
-    current_mode = await userspace_service.get_share_access_mode(workspace_id)
+    current_mode = await _userspace_service().get_share_access_mode(workspace_id)
     if current_mode and current_mode != "token":
         session_access_mode = str(claims.get("share_access_mode") or "").strip()
         if session_access_mode != current_mode:
@@ -371,14 +383,14 @@ async def _build_upstream_url(
         user_id = str(claims.get("sub") or "").strip()
         if not user_id:
             raise HTTPException(status_code=401, detail="Preview session missing user")
-        return await userspace_runtime_service.build_workspace_preview_upstream_url(
+        return await _runtime_service().build_workspace_preview_upstream_url(
             workspace_id,
             user_id,
             path,
             query=query,
         )
 
-    return await userspace_runtime_service.build_shared_preview_upstream_url(
+    return await _runtime_service().build_shared_preview_upstream_url(
         workspace_id,
         path,
         query=query,
@@ -387,7 +399,7 @@ async def _build_upstream_url(
 
 @preview_host_app.get("/__ragtime/bootstrap")
 async def preview_bootstrap(request: Request, grant: str):
-    claims = userspace_runtime_service.verify_preview_token(
+    claims = _runtime_service().verify_preview_token(
         grant,
         expected_kind=_RUNTIME_PREVIEW_GRANT_KIND,
     )
@@ -410,7 +422,7 @@ async def preview_bootstrap(request: Request, grant: str):
         "share_slug": claims.get("share_slug"),
         "share_access_mode": claims.get("share_access_mode"),
     }
-    session_token, expires_at = userspace_runtime_service.build_preview_session_token(
+    session_token, expires_at = _runtime_service().build_preview_session_token(
         session_claims
     )
 
@@ -443,7 +455,7 @@ async def preview_bridge_script(request: Request):
     claims = await _verify_preview_session_cookie(request)
     workspace_id = str(claims.get("workspace_id") or "").strip()
     return Response(
-        content=await userspace_service.build_runtime_bridge_content(workspace_id),
+        content=await _userspace_service().build_runtime_bridge_content(workspace_id),
         media_type="application/javascript",
         headers={
             "Cache-Control": "no-store",
@@ -466,9 +478,11 @@ async def preview_execute_component(
         user_id = str(claims.get("sub") or "").strip()
         if not user_id:
             raise HTTPException(status_code=401, detail="Preview session missing user")
-        return await userspace_service.execute_component(workspace_id, payload, user_id)
+        return await _userspace_service().execute_component(
+            workspace_id, payload, user_id
+        )
 
-    return await userspace_service.execute_component_from_authorized_shared_preview(
+    return await _userspace_service().execute_component_from_authorized_shared_preview(
         workspace_id,
         payload,
     )

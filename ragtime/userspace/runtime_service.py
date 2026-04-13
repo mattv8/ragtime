@@ -17,10 +17,10 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
+from prisma import fields as prisma_fields
 from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
-from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
@@ -39,6 +39,7 @@ from ragtime.userspace.models import (
     UserSpaceRuntimeStatusResponse,
     UserSpaceWorkspaceTabStateResponse,
 )
+from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -95,15 +96,6 @@ class _ProviderStatusCacheEntry:
 class _PreviewProbeCacheEntry:
     ok: bool
     checked_at: datetime
-
-
-class RuntimeVersionConflictError(Exception):
-    def __init__(self, expected_version: int, actual_version: int) -> None:
-        self.expected_version = expected_version
-        self.actual_version = actual_version
-        super().__init__(
-            f"Version conflict: expected {expected_version}, current {actual_version}"
-        )
 
 
 class UserSpaceRuntimeService:
@@ -1857,69 +1849,41 @@ class UserSpaceRuntimeService:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
 
         active = await self._get_active_session_row(workspace_id)
-        start = await self.start_runtime_session(workspace_id, user_id)
         if active:
             active_session = self._to_runtime_session(active)
-            workspace_env, workspace_env_visibility, workspace_mounts = (
-                await asyncio.gather(
-                    userspace_service.get_workspace_runtime_environment(workspace_id),
-                    userspace_service.get_workspace_runtime_environment_visibility(
-                        workspace_id
-                    ),
-                    userspace_service.resolve_workspace_mounts_for_runtime(
-                        workspace_id
-                    ),
+            provider_stop_error: str | None = None
+            try:
+                await self._runtime_provider_stop_session(
+                    active_session.provider_session_id
                 )
-            )
-            provider_restart = await self._runtime_provider_restart_devserver(
-                active_session.provider_session_id,
-                workspace_env=workspace_env,
-                workspace_env_visibility=workspace_env_visibility,
-                workspace_mounts=workspace_mounts,
-            )
-            if provider_restart:
-                await self._invalidate_workspace_runtime_caches(
+                await self._drop_provider_status_cache(
+                    active_session.provider_session_id
+                )
+            except HTTPException as exc:
+                provider_stop_error = str(exc.detail)
+                logger.warning(
+                    "Runtime provider stop failed during devserver restart for workspace %s: %s",
                     workspace_id,
-                    invalidate_preview_host=True,
+                    provider_stop_error,
                 )
-                delta = self._merge_provider_status(active_session, provider_restart)
-                delta.update(
-                    {
-                        "state": delta.get(
-                            "state", str(provider_restart.get("state") or "running")
-                        ),
-                        "lastHeartbeatAt": self._utc_now(),
-                    }
-                )
-                db = await get_db()
-                model = self._runtime_session_model(db)
-                await self._runtime_session_update_row(
-                    model,
-                    active_session.id,
-                    delta,
-                )
-                await self._cache_provider_status(
-                    active_session.provider_session_id or "",
-                    provider_restart,
-                )
-                operation_id = provider_restart.get("runtime_operation_id")
-                operation_phase = provider_restart.get("runtime_operation_phase")
-                operation_started_at = provider_restart.get(
-                    "runtime_operation_started_at"
-                )
-                operation_updated_at = provider_restart.get(
-                    "runtime_operation_updated_at"
-                )
-            else:
-                operation_id = None
-                operation_phase = None
-                operation_started_at = None
-                operation_updated_at = None
-        else:
-            operation_id = start.runtime_operation_id
-            operation_phase = start.runtime_operation_phase
-            operation_started_at = start.runtime_operation_started_at
-            operation_updated_at = start.runtime_operation_updated_at
+
+            db = await get_db()
+            model = self._runtime_session_model(db)
+            await self._runtime_session_update_row(
+                model,
+                active_session.id,
+                {
+                    "state": "stopped",
+                    "lastHeartbeatAt": self._utc_now(),
+                    "lastError": provider_stop_error,
+                },
+            )
+            await self._invalidate_workspace_runtime_caches(
+                workspace_id,
+                invalidate_preview_host=True,
+            )
+
+        start = await self.start_runtime_session(workspace_id, user_id)
         await self._audit(
             workspace_id,
             "devserver_restart",
@@ -1931,10 +1895,10 @@ class UserSpaceRuntimeService:
             session_id=start.session_id,
             state=start.state,
             success=True,
-            runtime_operation_id=operation_id,
-            runtime_operation_phase=operation_phase,
-            runtime_operation_started_at=operation_started_at,
-            runtime_operation_updated_at=operation_updated_at,
+            runtime_operation_id=start.runtime_operation_id,
+            runtime_operation_phase=start.runtime_operation_phase,
+            runtime_operation_started_at=start.runtime_operation_started_at,
+            runtime_operation_updated_at=start.runtime_operation_updated_at,
         )
 
     async def refresh_runtime_env_vars(self, workspace_id: str) -> None:
@@ -2921,13 +2885,40 @@ class UserSpaceRuntimeService:
             order={"updatedAt": "desc"},
         )
         now = self._utc_now()
+        provider_stop_errors: dict[str, str | None] = {}
         for session in sessions:
+            raw_provider_session_id = getattr(session, "providerSessionId", None)
+            provider_session_id: str = (
+                str(raw_provider_session_id).strip()
+                if raw_provider_session_id is not None
+                else ""
+            )
+            provider_stop_error = provider_stop_errors.get(provider_session_id)
+            if provider_session_id and provider_session_id not in provider_stop_errors:
+                provider_stop_error = None
+                try:
+                    await self._runtime_provider_stop_session(provider_session_id)
+                    await self._drop_provider_status_cache(provider_session_id)
+                except HTTPException as exc:
+                    provider_stop_error = str(exc.detail)
+                    logger.warning(
+                        "Runtime provider stop failed during invalidation for workspace %s: %s",
+                        workspace_id,
+                        provider_stop_error,
+                    )
+                provider_stop_errors[provider_session_id] = provider_stop_error
+
+            last_error = "Workspace snapshot restore invalidated active runtime state"
+            if provider_stop_error:
+                last_error = (
+                    f"{last_error}. Provider stop failed: {provider_stop_error}"
+                )
             await model.update(
                 where={"id": session.id},
                 data={
                     "state": "stopped",
                     "lastHeartbeatAt": now,
-                    "lastError": "Workspace snapshot restore invalidated active runtime state",
+                    "lastError": last_error,
                 },
             )
 

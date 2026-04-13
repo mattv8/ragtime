@@ -1001,6 +1001,11 @@
     padding: var(--space-sm);
   }
 
+  .tool-call-terminal-output {
+    font-size: 0.7rem;
+    max-height: 200px;
+  }
+
   .tool-call-header {
     padding: var(--space-xs) var(--space-sm);
     font-size: var(--text-xs);

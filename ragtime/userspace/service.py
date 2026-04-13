@@ -22,9 +22,9 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-
 from prisma import Json
 from prisma import fields as prisma_fields
+
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -138,6 +138,7 @@ from ragtime.userspace.models import (
     WorkspaceScmProvider,
     WorkspaceShareSlugAvailabilityResponse,
 )
+from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
 from ragtime.userspace.sqlite_import import (
     _MAX_IMPORT_SIZE_BYTES,
     SqlImportResult,
@@ -6140,12 +6141,9 @@ class UserSpaceService:
 
         # Invalidate stale preview sessions so visitors must re-authenticate
         # through the proper share URL with the new access mode.
-        from ragtime.userspace.preview_host import (
-            invalidate_preview_sessions_for_workspace,
-        )
+        await invalidate_preview_sessions_for_workspace(workspace_id)
         from ragtime.userspace.runtime_service import userspace_runtime_service
 
-        await invalidate_preview_sessions_for_workspace(workspace_id)
         await userspace_runtime_service.invalidate_preview_session_cache(workspace_id)
 
         return await self.get_workspace_share_link_status(

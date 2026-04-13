@@ -9722,9 +9722,6 @@ except Exception as e:
             **_: Any,
         ) -> str:
             del reason
-            await userspace_service.enforce_workspace_role(
-                workspace_id, user_id, "editor"
-            )
             command = (command or "").strip()
             if not command:
                 raise ToolException("command is required and must not be empty.")
@@ -11317,7 +11314,9 @@ except Exception as e:
                                 ):
                                     try:
                                         _parsed_output = json.loads(display_output)
-                                        if isinstance(_parsed_output, dict) and isinstance(
+                                        if isinstance(
+                                            _parsed_output, dict
+                                        ) and isinstance(
                                             _parsed_output.get("file"), dict
                                         ):
                                             _parsed_output["file"].pop("content", None)
