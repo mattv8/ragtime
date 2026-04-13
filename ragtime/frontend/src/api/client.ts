@@ -2388,27 +2388,19 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
   },
 
-  async executeUserSpaceSharedComponent(shareToken: string, request: ExecuteComponentRequest, password?: string): Promise<ExecuteComponentResponse> {
-    const headers: HeadersInit = { 'Content-Type': 'application/json' };
-    if (password) {
-      headers['X-UserSpace-Share-Password'] = password;
-    }
+  async executeUserSpaceSharedComponent(shareToken: string, request: ExecuteComponentRequest): Promise<ExecuteComponentResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/execute-component`, {
       method: 'POST',
-      headers,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     });
     return handleResponse<ExecuteComponentResponse>(response);
   },
 
-  async executeUserSpaceSharedComponentBySlug(ownerUsername: string, shareSlug: string, request: ExecuteComponentRequest, password?: string): Promise<ExecuteComponentResponse> {
-    const headers: HeadersInit = { 'Content-Type': 'application/json' };
-    if (password) {
-      headers['X-UserSpace-Share-Password'] = password;
-    }
+  async executeUserSpaceSharedComponentBySlug(ownerUsername: string, shareSlug: string, request: ExecuteComponentRequest): Promise<ExecuteComponentResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/execute-component`, {
       method: 'POST',
-      headers,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     });
     return handleResponse<ExecuteComponentResponse>(response);

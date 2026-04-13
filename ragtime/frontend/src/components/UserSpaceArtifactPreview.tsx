@@ -24,7 +24,6 @@ interface UserSpaceArtifactPreviewProps {
   shareToken?: string;
   ownerUsername?: string;
   shareSlug?: string;
-  sharePassword?: string;
   onExecutionStateChange?: (isExecuting: boolean) => void;
 }
 
@@ -39,7 +38,6 @@ export function UserSpaceArtifactPreview({
   shareToken,
   ownerUsername,
   shareSlug,
-  sharePassword,
   onExecutionStateChange,
 }: UserSpaceArtifactPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -126,14 +124,12 @@ export function UserSpaceArtifactPreview({
           result = await api.executeUserSpaceSharedComponent(
             shareToken,
             { component_id, request },
-            sharePassword,
           );
         } else if (ownerUsername && shareSlug) {
           result = await api.executeUserSpaceSharedComponentBySlug(
             ownerUsername,
             shareSlug,
             { component_id, request },
-            sharePassword,
           );
         } else {
           result = await api.executeWorkspaceComponent(workspaceId!, {
@@ -151,7 +147,7 @@ export function UserSpaceArtifactPreview({
         });
       }
     },
-    [expectedPreviewOrigin, workspaceId, shareToken, ownerUsername, shareSlug, sharePassword],
+    [expectedPreviewOrigin, workspaceId, shareToken, ownerUsername, shareSlug],
   );
 
   useEffect(() => {

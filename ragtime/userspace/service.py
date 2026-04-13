@@ -21,6 +21,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
+from jose import JWTError, jwt  # type: ignore[import-untyped]
 
 from prisma import Json
 from prisma import fields as prisma_fields
@@ -28,71 +29,122 @@ from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
-                                     decrypt_json_passwords, decrypt_secret,
-                                     encrypt_json_passwords, encrypt_secret)
-from ragtime.core.entrypoint_status import (EntrypointStatus,
-                                            parse_entrypoint_config)
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_json_passwords,
+    encrypt_secret,
+)
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.git import create_repository, parse_git_url
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
-                              USERSPACE_MOUNT_WATCH_JITTER_SECONDS, SSHTunnel,
-                              build_ssh_tunnel_config,
-                              check_remote_rsync_available,
-                              execute_ssh_command, is_rsync_missing_error,
-                              preview_ssh_directory_sync, rsync_ssh_directory,
-                              ssh_config_from_dict,
-                              ssh_tunnel_config_from_dict, sync_ssh_directory)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
+    USERSPACE_MOUNT_WATCH_JITTER_SECONDS,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    check_remote_rsync_available,
+    execute_ssh_command,
+    is_rsync_missing_error,
+    preview_ssh_directory_sync,
+    rsync_ssh_directory,
+    ssh_config_from_dict,
+    ssh_tunnel_config_from_dict,
+    sync_ssh_directory,
+)
 from ragtime.indexer.file_utils import build_authenticated_git_url
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
 from ragtime.userspace.models import (
-    ArtifactType, BrowseUserspaceMountSourceRequest,
+    ArtifactType,
+    BrowseUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
-    CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest, DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse, ExecuteComponentRequest,
-    ExecuteComponentResponse, MountableSource, MountSourceAffectedWorkspace,
-    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
-    ShareAccessMode, SqliteImportResponse, SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
+    CreateUserSpaceObjectStorageBucketRequest,
+    CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest,
+    DeleteUserspaceMountSourceResponse,
+    DeleteUserSpaceObjectStorageBucketResponse,
+    DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    MountableSource,
+    MountSourceAffectedWorkspace,
+    MountSourceAffectedWorkspacesResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqliteImportResponse,
+    SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
-    UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest, UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest, UserSpaceFileInfo, UserSpaceFileResponse,
-    UserSpaceLiveDataCheck, UserSpaceLiveDataConnection, UserspaceMountBackend,
-    UserspaceMountSource, UserspaceMountSourceType,
-    UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig,
-    UserSpaceSharedPreviewResponse, UserSpaceSnapshot, UserSpaceSnapshotBranch,
-    UserSpaceSnapshotDiffFileSummary, UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace, UserSpaceWorkspaceEnvVar,
+    UpdateUserSpaceObjectStorageBucketRequest,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserspaceMountBackend,
+    UserspaceMountSource,
+    UserspaceMountSourceType,
+    UserSpaceObjectStorageBucket,
+    UserSpaceObjectStorageConfig,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceSnapshotBranch,
+    UserSpaceSnapshotDiffFileSummary,
+    UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceEnvVar,
     UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
-    UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
-    UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
-    UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember, WorkspaceMount, WorkspaceMountBrowseRequest,
-    WorkspaceMountBrowseResponse, WorkspaceMountDirectoryEntry,
-    WorkspaceMountSyncMode, WorkspaceMountSyncPreviewRequest,
-    WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest,
-    WorkspaceMountSyncResponse, WorkspaceScmDirection,
-    WorkspaceScmPreviewState, WorkspaceScmProvider,
-    WorkspaceShareSlugAvailabilityResponse)
-from ragtime.userspace.sqlite_import import (_MAX_IMPORT_SIZE_BYTES,
-                                             SqlImportResult,
-                                             detect_binary_pg_dump,
-                                             detect_sql_dialect,
-                                             import_sql_to_sqlite)
+    UserSpaceWorkspaceScmExportRequest,
+    UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest,
+    UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmStatus,
+    UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceMount,
+    WorkspaceMountBrowseRequest,
+    WorkspaceMountBrowseResponse,
+    WorkspaceMountDirectoryEntry,
+    WorkspaceMountSyncMode,
+    WorkspaceMountSyncPreviewRequest,
+    WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest,
+    WorkspaceMountSyncResponse,
+    WorkspaceScmDirection,
+    WorkspaceScmPreviewState,
+    WorkspaceScmProvider,
+    WorkspaceShareSlugAvailabilityResponse,
+)
+from ragtime.userspace.sqlite_import import (
+    _MAX_IMPORT_SIZE_BYTES,
+    SqlImportResult,
+    detect_binary_pg_dump,
+    detect_sql_dialect,
+    import_sql_to_sqlite,
+)
 
 logger = get_logger(__name__)
 
@@ -101,6 +153,8 @@ _ENTRYPOINT_STATUS_CACHE_TTL_SECONDS = 300  # 5-minute TTL for entrypoint status
 _CHANGED_FILE_ACK_MAX_ROWS_PER_WORKSPACE_USER = (
     2000  # Threshold to bound growth of UserSpaceChangedFileAcknowledgement table
 )
+_SHARE_PASSWORD_ACCESS_TOKEN_KIND = "userspace_share_password_access"
+_SHARE_PASSWORD_ACCESS_TTL_SECONDS = 60 * 30
 
 
 class _ExecutionProofRecord:
@@ -119,6 +173,12 @@ class _ExecutionProofRecord:
         self.row_count = row_count
         self.timestamp = timestamp
         self.query_hash = query_hash
+
+
+class _ShareAuthorizationResult(TypedDict):
+    workspace_id: str
+    share_auth_token: str | None
+    expires_at: datetime | None
 
 
 class _GitCommandResult:
@@ -1904,9 +1964,7 @@ class UserSpaceService:
         normalized_text = "\n".join(normalized_lines)
         if not normalized_text.startswith(_REPLIT_NORMALIZATION_HEADER[0]):
             normalized_text = (
-                "\n".join(_REPLIT_NORMALIZATION_HEADER)
-                + "\n\n"
-                + normalized_text
+                "\n".join(_REPLIT_NORMALIZATION_HEADER) + "\n\n" + normalized_text
             )
         if original_text.endswith("\n"):
             normalized_text += "\n"
@@ -2324,8 +2382,9 @@ class UserSpaceService:
                     ),
                 )
                 try:
-                    from ragtime.userspace.runtime_service import \
-                        userspace_runtime_service
+                    from ragtime.userspace.runtime_service import (
+                        userspace_runtime_service,
+                    )
 
                     await userspace_runtime_service.bump_workspace_generation(
                         workspace_id,
@@ -2351,8 +2410,7 @@ class UserSpaceService:
                 allow_destructive_auto_sync_approval=True,
             )
             try:
-                from ragtime.userspace.runtime_service import \
-                    userspace_runtime_service
+                from ragtime.userspace.runtime_service import userspace_runtime_service
 
                 await userspace_runtime_service.bump_workspace_generation(
                     workspace_id,
@@ -3408,7 +3466,9 @@ class UserSpaceService:
 
     def is_direct_share_subdomain_allowed(self, workspace_record: Any) -> bool:
         share_token = str(getattr(workspace_record, "shareToken", "") or "").strip()
-        mode, password_encrypted, _, _ = self._extract_share_access_state(workspace_record)
+        mode, password_encrypted, _, _ = self._extract_share_access_state(
+            workspace_record
+        )
         return bool(share_token) and mode == "token" and not bool(password_encrypted)
 
     async def is_public_direct_share_host_enabled(self, workspace_id: str) -> bool:
@@ -3436,10 +3496,16 @@ class UserSpaceService:
             return None
         return str(getattr(workspace_record, "shareToken", "") or "").strip() or None
 
-    def _share_prompt_metadata_from_record(self, workspace_record: Any) -> tuple[str | None, str | None]:
-        workspace_name = str(getattr(workspace_record, "name", "") or "").strip() or None
+    def _share_prompt_metadata_from_record(
+        self, workspace_record: Any
+    ) -> tuple[str | None, str | None]:
+        workspace_name = (
+            str(getattr(workspace_record, "name", "") or "").strip() or None
+        )
         owner_obj = getattr(workspace_record, "owner", None)
-        owner_display_name = str(getattr(owner_obj, "displayName", "") or "").strip() or None
+        owner_display_name = (
+            str(getattr(owner_obj, "displayName", "") or "").strip() or None
+        )
         return workspace_name, owner_display_name
 
     async def _resolve_share_owner_ids(self, owner_username: str) -> list[str]:
@@ -3700,7 +3766,10 @@ class UserSpaceService:
         # Password mode is handled above and always requires the password.
         if current_user is not None:
             owner_id = str(getattr(workspace_record, "ownerUserId", "") or "").strip()
-            if owner_id and owner_id == str(getattr(current_user, "id", "") or "").strip():
+            if (
+                owner_id
+                and owner_id == str(getattr(current_user, "id", "") or "").strip()
+            ):
                 return
 
         if current_user is None:
@@ -3728,6 +3797,125 @@ class UserSpaceService:
             raise HTTPException(
                 status_code=403, detail="User not in allowed LDAP groups"
             )
+
+    @staticmethod
+    def _share_password_access_proof(workspace_record: Any) -> str | None:
+        password_encrypted = str(getattr(workspace_record, "sharePassword", "") or "")
+        share_token = str(getattr(workspace_record, "shareToken", "") or "")
+        workspace_id = str(getattr(workspace_record, "id", "") or "")
+        if not password_encrypted or not share_token or not workspace_id:
+            return None
+        return hashlib.sha256(
+            f"{workspace_id}:{share_token}:{password_encrypted}".encode("utf-8")
+        ).hexdigest()
+
+    def _build_share_password_access_token(
+        self,
+        workspace_record: Any,
+    ) -> tuple[str, datetime]:
+        workspace_id = str(getattr(workspace_record, "id", "") or "").strip()
+        proof = self._share_password_access_proof(workspace_record)
+        if not workspace_id or not proof:
+            raise HTTPException(status_code=403, detail="Share password not configured")
+
+        now = _utc_now()
+        expires_at = now + timedelta(seconds=_SHARE_PASSWORD_ACCESS_TTL_SECONDS)
+        payload = {
+            "kind": _SHARE_PASSWORD_ACCESS_TOKEN_KIND,
+            "workspace_id": workspace_id,
+            "share_access_mode": "password",
+            "proof": proof,
+            "iat": int(now.timestamp()),
+            "exp": int(expires_at.timestamp()),
+            "jti": str(uuid4()),
+        }
+        token = jwt.encode(
+            payload, settings.encryption_key, algorithm=settings.jwt_algorithm
+        )
+        return token, expires_at
+
+    def _verify_share_password_access_token(
+        self,
+        token: str,
+        workspace_record: Any,
+    ) -> datetime:
+        try:
+            claims = cast(
+                dict[str, Any],
+                jwt.decode(
+                    token,
+                    settings.encryption_key,
+                    algorithms=[settings.jwt_algorithm],
+                ),
+            )
+        except JWTError as exc:
+            raise HTTPException(status_code=401, detail="Password required") from exc
+
+        workspace_id = str(getattr(workspace_record, "id", "") or "").strip()
+        expected_proof = self._share_password_access_proof(workspace_record)
+        if (
+            str(claims.get("kind") or "").strip() != _SHARE_PASSWORD_ACCESS_TOKEN_KIND
+            or str(claims.get("workspace_id") or "").strip() != workspace_id
+            or str(claims.get("share_access_mode") or "").strip() != "password"
+            or not expected_proof
+            or not hmac.compare_digest(str(claims.get("proof") or ""), expected_proof)
+        ):
+            raise HTTPException(status_code=401, detail="Password required")
+
+        exp = claims.get("exp")
+        if not isinstance(exp, (int, float)):
+            raise HTTPException(status_code=401, detail="Password required")
+        return datetime.fromtimestamp(int(exp), tz=timezone.utc)
+
+    async def _authorize_shared_workspace_record(
+        self,
+        workspace_record: Any,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+        share_auth_token: str | None = None,
+    ) -> _ShareAuthorizationResult:
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+        mode, _, _, _ = self._extract_share_access_state(workspace_record)
+        resolved_token: str | None = None
+        expires_at: datetime | None = None
+
+        if mode == "password":
+            candidate_token = str(share_auth_token or "").strip()
+            if candidate_token:
+                try:
+                    expires_at = self._verify_share_password_access_token(
+                        candidate_token,
+                        workspace_record,
+                    )
+                    resolved_token = candidate_token
+                except HTTPException:
+                    if not str(password or "").strip():
+                        raise
+
+            if resolved_token is None:
+                await self._enforce_share_access(
+                    workspace_record,
+                    current_user,
+                    password,
+                )
+                resolved_token, expires_at = self._build_share_password_access_token(
+                    workspace_record
+                )
+        else:
+            await self._enforce_share_access(
+                workspace_record,
+                current_user,
+                password,
+            )
+
+        return {
+            "workspace_id": str(getattr(workspace_record, "id", "") or ""),
+            "share_auth_token": resolved_token,
+            "expires_at": expires_at,
+        }
 
     async def _allocate_next_default_workspace_name(self, user_id: str) -> str:
         db = await get_db()
@@ -5952,7 +6140,10 @@ class UserSpaceService:
 
         # Invalidate stale preview sessions so visitors must re-authenticate
         # through the proper share URL with the new access mode.
-        from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
+        from ragtime.userspace.preview_host import (
+            invalidate_preview_sessions_for_workspace,
+        )
+
         invalidate_preview_sessions_for_workspace(workspace_id)
 
         return await self.get_workspace_share_link_status(
@@ -5966,12 +6157,14 @@ class UserSpaceService:
         share_token: str,
         current_user: Any | None = None,
         password: str | None = None,
+        share_auth_token: str | None = None,
     ) -> UserSpaceSharedPreviewResponse:
         workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
         return await self._build_shared_preview_response(
             workspace_id,
             current_user=current_user,
             password=password,
+            share_auth_token=share_auth_token,
         )
 
     async def _get_authorized_shared_workspace_record(
@@ -5980,26 +6173,52 @@ class UserSpaceService:
         *,
         current_user: Any | None = None,
         password: str | None = None,
+        share_auth_token: str | None = None,
     ) -> Any:
         workspace_record = await self._get_workspace_record(workspace_id)
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
-        await self._enforce_share_access(workspace_record, current_user, password)
+        await self._authorize_shared_workspace_record(
+            workspace_record,
+            current_user=current_user,
+            password=password,
+            share_auth_token=share_auth_token,
+        )
         return workspace_record
+
+    async def authorize_shared_workspace_access(
+        self,
+        share_token: str,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+        share_auth_token: str | None = None,
+    ) -> _ShareAuthorizationResult:
+        workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+        return await self._authorize_shared_workspace_record(
+            workspace_record,
+            current_user=current_user,
+            password=password,
+            share_auth_token=share_auth_token,
+        )
 
     async def resolve_shared_workspace_id(
         self,
         share_token: str,
         current_user: Any | None = None,
         password: str | None = None,
+        share_auth_token: str | None = None,
     ) -> str:
-        workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
-        await self._get_authorized_shared_workspace_record(
-            workspace_id,
+        authorization = await self.authorize_shared_workspace_access(
+            share_token,
             current_user=current_user,
             password=password,
+            share_auth_token=share_auth_token,
         )
-        return workspace_id
+        return authorization["workspace_id"]
 
     async def get_shared_preview_by_slug(
         self,
@@ -6007,6 +6226,7 @@ class UserSpaceService:
         share_slug: str,
         current_user: Any | None = None,
         password: str | None = None,
+        share_auth_token: str | None = None,
     ) -> UserSpaceSharedPreviewResponse:
         workspace_id = await self._resolve_workspace_id_from_share_slug(
             owner_username,
@@ -6016,6 +6236,30 @@ class UserSpaceService:
             workspace_id,
             current_user=current_user,
             password=password,
+            share_auth_token=share_auth_token,
+        )
+
+    async def authorize_shared_workspace_access_by_slug(
+        self,
+        owner_username: str,
+        share_slug: str,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+        share_auth_token: str | None = None,
+    ) -> _ShareAuthorizationResult:
+        workspace_id = await self._resolve_workspace_id_from_share_slug(
+            owner_username,
+            share_slug,
+        )
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+        return await self._authorize_shared_workspace_record(
+            workspace_record,
+            current_user=current_user,
+            password=password,
+            share_auth_token=share_auth_token,
         )
 
     async def resolve_shared_workspace_id_by_slug(
@@ -6024,17 +6268,16 @@ class UserSpaceService:
         share_slug: str,
         current_user: Any | None = None,
         password: str | None = None,
+        share_auth_token: str | None = None,
     ) -> str:
-        workspace_id = await self._resolve_workspace_id_from_share_slug(
+        authorization = await self.authorize_shared_workspace_access_by_slug(
             owner_username,
             share_slug,
-        )
-        await self._get_authorized_shared_workspace_record(
-            workspace_id,
             current_user=current_user,
             password=password,
+            share_auth_token=share_auth_token,
         )
-        return workspace_id
+        return authorization["workspace_id"]
 
     async def _build_shared_preview_response(
         self,
@@ -6042,11 +6285,13 @@ class UserSpaceService:
         *,
         current_user: Any | None = None,
         password: str | None = None,
+        share_auth_token: str | None = None,
     ) -> UserSpaceSharedPreviewResponse:
         workspace_record = await self._get_authorized_shared_workspace_record(
             workspace_id,
             current_user=current_user,
             password=password,
+            share_auth_token=share_auth_token,
         )
 
         files_dir = self._workspace_files_dir(workspace_id)
@@ -6959,8 +7204,7 @@ class UserSpaceService:
         mount_id: str,
     ) -> str | None:
         try:
-            from ragtime.userspace.runtime_service import \
-                userspace_runtime_service
+            from ragtime.userspace.runtime_service import userspace_runtime_service
 
             return await userspace_runtime_service.refresh_workspace_mount_after_sync(
                 workspace_id,
@@ -10654,6 +10898,7 @@ class UserSpaceService:
         request: ExecuteComponentRequest,
         current_user: Any | None = None,
         password: str | None = None,
+        share_auth_token: str | None = None,
     ) -> ExecuteComponentResponse:
         workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
         return await self._execute_shared_component_for_workspace_id(
@@ -10661,6 +10906,7 @@ class UserSpaceService:
             request,
             current_user=current_user,
             password=password,
+            share_auth_token=share_auth_token,
         )
 
     async def execute_shared_component_by_slug(
@@ -10670,6 +10916,7 @@ class UserSpaceService:
         request: ExecuteComponentRequest,
         current_user: Any | None = None,
         password: str | None = None,
+        share_auth_token: str | None = None,
     ) -> ExecuteComponentResponse:
         workspace_id = await self._resolve_workspace_id_from_share_slug(
             owner_username,
@@ -10680,6 +10927,7 @@ class UserSpaceService:
             request,
             current_user=current_user,
             password=password,
+            share_auth_token=share_auth_token,
         )
 
     async def execute_component_from_authorized_shared_preview(
@@ -10701,11 +10949,13 @@ class UserSpaceService:
         *,
         current_user: Any | None = None,
         password: str | None = None,
+        share_auth_token: str | None = None,
     ) -> ExecuteComponentResponse:
         await self._get_authorized_shared_workspace_record(
             workspace_id,
             current_user=current_user,
             password=password,
+            share_auth_token=share_auth_token,
         )
         workspace = await self._load_workspace_for_component_execution(workspace_id)
 
@@ -11597,4 +11847,5 @@ class UserSpaceService:
         )
 
 
+userspace_service = UserSpaceService()
 userspace_service = UserSpaceService()

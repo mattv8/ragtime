@@ -19,3 +19,4 @@ limiter = Limiter(
 
 # Rate limit constants
 LOGIN_RATE_LIMIT = "5/minute"  # 5 login attempts per minute per IP
+SHARE_AUTH_RATE_LIMIT = LOGIN_RATE_LIMIT

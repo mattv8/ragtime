@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import (APIRouter, Depends, File, Header, HTTPException, Query,
-                     Request, Response, UploadFile)
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 
 from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.database import get_db
@@ -11,46 +19,83 @@ from ragtime.core.encryption import decrypt_secret
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.security import (get_current_user, get_current_user_optional,
-                                   require_admin)
-from ragtime.indexer.models import (CheckRepoVisibilityRequest,
-                                    FetchBranchesRequest,
-                                    FetchBranchesResponse,
-                                    RepoVisibilityResponse)
+from ragtime.core.security import (
+    get_current_user,
+    get_current_user_optional,
+    require_admin,
+)
+from ragtime.indexer.models import (
+    CheckRepoVisibilityRequest,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    RepoVisibilityResponse,
+)
 from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
-    BrowseUserspaceMountSourceRequest, CreateSnapshotBranchRequest,
-    CreateSnapshotRequest, CreateUserspaceMountSourceRequest,
-    CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest, DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse, ExecuteComponentRequest,
-    ExecuteComponentResponse, MountableSource,
-    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
-    RestoreSnapshotResponse, SqliteImportResponse, SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest, UpdateUserspaceMountSourceRequest,
-    UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest, UpdateWorkspaceShareSlugRequest,
-    UpsertWorkspaceEnvVarRequest, UpsertWorkspaceFileRequest,
-    UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceAvailableTool,
-    UserSpaceChangedFileStateResponse, UserSpaceFileInfo,
-    UserSpaceFileResponse, UserspaceMountSource, UserSpaceObjectStorageConfig,
-    UserSpaceSharedPreviewResponse, UserSpaceSnapshot,
-    UserSpaceSnapshotDiffSummaryResponse, UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse, UserSpaceWorkspace,
-    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceScmConnectionRequest,
+    BrowseUserspaceMountSourceRequest,
+    CreateSnapshotBranchRequest,
+    CreateSnapshotRequest,
+    CreateUserspaceMountSourceRequest,
+    CreateUserSpaceObjectStorageBucketRequest,
+    CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest,
+    DeleteUserspaceMountSourceResponse,
+    DeleteUserSpaceObjectStorageBucketResponse,
+    DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    MountableSource,
+    MountSourceAffectedWorkspacesResponse,
+    PaginatedWorkspacesResponse,
+    RestoreSnapshotResponse,
+    SqliteImportResponse,
+    SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest,
+    UpdateUserspaceMountSourceRequest,
+    UpdateUserSpaceObjectStorageBucketRequest,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpdateWorkspaceShareSlugRequest,
+    UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceAcknowledgeChangedFilePathRequest,
+    UserSpaceAvailableTool,
+    UserSpaceChangedFileStateResponse,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserspaceMountSource,
+    UserSpaceObjectStorageConfig,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
-    UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
-    UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
-    UserSpaceWorkspaceScmSyncResponse, UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus, WorkspaceMount,
-    WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
-    WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
-    WorkspaceShareSlugAvailabilityResponse)
+    UserSpaceWorkspaceScmExportRequest,
+    UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest,
+    UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMount,
+    WorkspaceMountBrowseRequest,
+    WorkspaceMountBrowseResponse,
+    WorkspaceMountSyncPreviewRequest,
+    WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest,
+    WorkspaceMountSyncResponse,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
+from ragtime.userspace.share_auth import share_auth_token_from_request
 
 logger = get_logger(__name__)
 
@@ -91,9 +136,7 @@ def _apply_share_link_variants(
         if has_share_link is None
         else has_share_link
     ) and bool(share_token)
-    subdomain_share_enabled = (
-        resolved_has_share_link
-    )
+    subdomain_share_enabled = resolved_has_share_link
     subdomain_share_url = None
     if subdomain_share_enabled and workspace_id:
         subdomain_share_url = (
@@ -1093,16 +1136,17 @@ async def check_workspace_share_slug_availability(
 )
 async def get_shared_preview(
     share_token: str,
-    share_password: str | None = Header(
-        default=None,
-        alias="X-UserSpace-Share-Password",
-    ),
+    request: Request,
     user: Any | None = Depends(get_current_user_optional),
 ):
     return await userspace_service.get_shared_preview(
         share_token,
         current_user=user,
-        password=share_password,
+        share_auth_token=share_auth_token_from_request(
+            request.headers,
+            request.cookies,
+            share_token=share_token,
+        ),
     )
 
 
@@ -1113,17 +1157,19 @@ async def get_shared_preview(
 async def get_shared_preview_by_slug(
     owner_username: str,
     share_slug: str,
-    share_password: str | None = Header(
-        default=None,
-        alias="X-UserSpace-Share-Password",
-    ),
+    request: Request,
     user: Any | None = Depends(get_current_user_optional),
 ):
     return await userspace_service.get_shared_preview_by_slug(
         owner_username,
         share_slug,
         current_user=user,
-        password=share_password,
+        share_auth_token=share_auth_token_from_request(
+            request.headers,
+            request.cookies,
+            owner_username=owner_username,
+            share_slug=share_slug,
+        ),
     )
 
 
@@ -1134,17 +1180,18 @@ async def get_shared_preview_by_slug(
 async def execute_shared_component(
     share_token: str,
     request: ExecuteComponentRequest,
-    share_password: str | None = Header(
-        default=None,
-        alias="X-UserSpace-Share-Password",
-    ),
+    http_request: Request,
     user: Any | None = Depends(get_current_user_optional),
 ):
     return await userspace_service.execute_shared_component(
         share_token,
         request,
         current_user=user,
-        password=share_password,
+        share_auth_token=share_auth_token_from_request(
+            http_request.headers,
+            http_request.cookies,
+            share_token=share_token,
+        ),
     )
 
 
@@ -1156,10 +1203,7 @@ async def execute_shared_component_by_slug(
     owner_username: str,
     share_slug: str,
     request: ExecuteComponentRequest,
-    share_password: str | None = Header(
-        default=None,
-        alias="X-UserSpace-Share-Password",
-    ),
+    http_request: Request,
     user: Any | None = Depends(get_current_user_optional),
 ):
     return await userspace_service.execute_shared_component_by_slug(
@@ -1167,7 +1211,12 @@ async def execute_shared_component_by_slug(
         share_slug,
         request,
         current_user=user,
-        password=share_password,
+        share_auth_token=share_auth_token_from_request(
+            http_request.headers,
+            http_request.cookies,
+            owner_username=owner_username,
+            share_slug=share_slug,
+        ),
     )
 
 

@@ -13,29 +13,45 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
-                     WebSocket, WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import get_browser_matched_origin
+from ragtime.core.rate_limit import SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (UserSpaceBrowserAuthorization,
-                                      UserSpaceBrowserAuthRequest,
-                                      UserSpaceBrowserAuthResponse,
-                                      UserSpaceBrowserSurface,
-                                      UserSpaceCapabilityTokenResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpacePreviewLaunchRequest,
-                                      UserSpacePreviewLaunchResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse,
-                                      UserSpaceWorkspaceTabStateResponse)
-from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
-                                               userspace_runtime_service)
+from ragtime.userspace.models import (
+    UserSpaceBrowserAuthorization,
+    UserSpaceBrowserAuthRequest,
+    UserSpaceBrowserAuthResponse,
+    UserSpaceBrowserSurface,
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceFileResponse,
+    UserSpacePreviewLaunchRequest,
+    UserSpacePreviewLaunchResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+    UserSpaceWorkspaceTabStateResponse,
+)
+from ragtime.userspace.runtime_service import (
+    RuntimeVersionConflictError,
+    userspace_runtime_service,
+)
 from ragtime.userspace.service import userspace_service
+from ragtime.userspace.share_auth import (
+    set_share_auth_cookie,
+    share_auth_token_from_request,
+)
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
@@ -915,21 +931,44 @@ async def issue_workspace_preview_launch(
     "/shared/{share_token}/preview-launch",
     response_model=UserSpacePreviewLaunchResponse,
 )
+@limiter.limit(SHARE_AUTH_RATE_LIMIT)
 async def issue_shared_preview_launch(
     share_token: str,
     payload: UserSpacePreviewLaunchRequest,
     request: Request,
+    response: Response,
     share_password: str | None = Header(
         default=None,
         alias="X-UserSpace-Share-Password",
     ),
     user: Any | None = Depends(get_current_user_optional),
 ):
-    workspace_id = await userspace_service.resolve_shared_workspace_id(
+    share_auth_token = share_auth_token_from_request(
+        request.headers,
+        request.cookies,
+        share_token=share_token,
+    )
+    authorization = await userspace_service.authorize_shared_workspace_access(
         share_token,
         current_user=user,
         password=share_password,
+        share_auth_token=share_auth_token,
     )
+    workspace_id = authorization["workspace_id"]
+    expires_at = authorization["expires_at"]
+    if authorization["share_auth_token"] and expires_at is not None:
+        max_age = max(
+            60,
+            int((expires_at - datetime.now(timezone.utc)).total_seconds()),
+        )
+        set_share_auth_cookie(
+            response,
+            authorization["share_auth_token"],
+            max_age=max_age,
+            secure=request.url.scheme == "https"
+            or bool(getattr(settings, "session_cookie_secure", False)),
+            share_token=share_token,
+        )
     external_origin = get_browser_matched_origin(
         request,
         browser_origin=payload.parent_origin,
@@ -955,23 +994,48 @@ async def issue_shared_preview_launch(
     "/shared/{owner_username}/{share_slug}/preview-launch",
     response_model=UserSpacePreviewLaunchResponse,
 )
+@limiter.limit(SHARE_AUTH_RATE_LIMIT)
 async def issue_shared_preview_launch_by_slug(
     owner_username: str,
     share_slug: str,
     payload: UserSpacePreviewLaunchRequest,
     request: Request,
+    response: Response,
     share_password: str | None = Header(
         default=None,
         alias="X-UserSpace-Share-Password",
     ),
     user: Any | None = Depends(get_current_user_optional),
 ):
-    workspace_id = await userspace_service.resolve_shared_workspace_id_by_slug(
+    share_auth_token = share_auth_token_from_request(
+        request.headers,
+        request.cookies,
+        owner_username=owner_username,
+        share_slug=share_slug,
+    )
+    authorization = await userspace_service.authorize_shared_workspace_access_by_slug(
         owner_username,
         share_slug,
         current_user=user,
         password=share_password,
+        share_auth_token=share_auth_token,
     )
+    workspace_id = authorization["workspace_id"]
+    expires_at = authorization["expires_at"]
+    if authorization["share_auth_token"] and expires_at is not None:
+        max_age = max(
+            60,
+            int((expires_at - datetime.now(timezone.utc)).total_seconds()),
+        )
+        set_share_auth_cookie(
+            response,
+            authorization["share_auth_token"],
+            max_age=max_age,
+            secure=request.url.scheme == "https"
+            or bool(getattr(settings, "session_cookie_secure", False)),
+            owner_username=owner_username,
+            share_slug=share_slug,
+        )
     external_origin = get_browser_matched_origin(
         request,
         browser_origin=payload.parent_origin,
@@ -1376,4 +1440,5 @@ async def collab_delete_file(
         file_path,
         user_id,
     )
+    return result
     return result

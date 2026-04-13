@@ -12,7 +12,6 @@ Usage:
 """
 
 import asyncio
-import hashlib
 import html
 import os
 import secrets
@@ -20,20 +19,15 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 from urllib.parse import quote, urlencode
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Query, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import (
-    FileResponse,
-    HTMLResponse,
-    JSONResponse,
-    RedirectResponse,
-    Response,
-)
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -58,7 +52,7 @@ from ragtime.core.auth import (
 )
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import setup_logging
-from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
+from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.ssl import setup_ssl
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.chunking import shutdown_process_pool
@@ -85,6 +79,11 @@ from ragtime.userspace.runtime_routes import (
 from ragtime.userspace.runtime_routes import router as userspace_runtime_router
 from ragtime.userspace.runtime_routes import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
+from ragtime.userspace.share_auth import (
+    clear_share_auth_cookie,
+    set_share_auth_cookie,
+    share_auth_token_from_request,
+)
 
 # Import indexer routes (always available now that it's part of ragtime)
 # Import MCP routes and transport for HTTP API access
@@ -756,25 +755,17 @@ def _share_reserved_roots() -> set[str]:
     }
 
 
-def _share_password_cookie_name(owner_username: str, share_slug: str) -> str:
-    digest = hashlib.sha256(
-        f"{owner_username}:{share_slug}".encode("utf-8")
-    ).hexdigest()[:16]
-    return f"userspace_share_pw_{digest}"
-
-
-def _share_token_password_cookie_name(share_token: str) -> str:
-    digest = hashlib.sha256((share_token or "").encode("utf-8")).hexdigest()[:16]
-    return f"userspace_share_pw_tok_{digest}"
-
-
 def _render_share_unlock_prompt(
     title: str,
+    form_action: str,
     subtitle: str | None = None,
     owner_label: str | None = None,
     error: str | None = None,
+    next_target: str | None = None,
 ) -> str:
     safe_error = html.escape(error) if error else ""
+    safe_form_action = html.escape(form_action, quote=True)
+    safe_next_target = html.escape(next_target, quote=True) if next_target else ""
     safe_title = html.escape(title)
     safe_subtitle = html.escape(subtitle) if subtitle else ""
     safe_owner_label = html.escape(owner_label) if owner_label else ""
@@ -793,12 +784,18 @@ def _render_share_unlock_prompt(
         if safe_error
         else ""
     )
+    next_block = (
+        f"<input type='hidden' name='next' value='{safe_next_target}'>"
+        if safe_next_target
+        else ""
+    )
     return (
         "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>Shared Workspace</title></head><body style='margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif'>"
-        "<form method='post' style='width:min(92vw,360px);padding:20px;border:1px solid #334155;border-radius:12px;background:#111827'>"
+        f"<form method='post' action='{safe_form_action}' style='width:min(92vw,360px);padding:20px;border:1px solid #334155;border-radius:12px;background:#111827'>"
         f"<h1 style='font-size:18px;margin:0 0 10px 0'>{safe_title}</h1>{subtitle_block}{owner_block}"
         f"{error_block}"
+        f"{next_block}"
         "<label for='share_password' style='display:block;margin-bottom:8px;font-size:13px'>Password</label>"
         "<input id='share_password' name='share_password' type='password' required autofocus autocomplete='current-password' style='width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #334155;background:#0b1220;color:#e2e8f0'>"
         "<button type='submit' style='margin-top:12px;width:100%;padding:10px 12px;border-radius:8px;border:1px solid #334155;background:#1d4ed8;color:#fff;cursor:pointer'>Continue</button>"
@@ -808,26 +805,69 @@ def _render_share_unlock_prompt(
 
 def _render_share_password_prompt(
     workspace_name: str | None,
+    form_action: str,
     owner_label: str | None = None,
     error: str | None = None,
+    next_target: str | None = None,
 ) -> str:
     return _render_share_unlock_prompt(
         "Unlock shared workspace",
+        form_action,
         workspace_name or "Shared workspace",
         owner_label,
         error,
+        next_target,
     )
 
 
 def _render_share_token_password_prompt(
     workspace_name: str | None,
+    form_action: str,
     error: str | None = None,
+    next_target: str | None = None,
 ) -> str:
     return _render_share_unlock_prompt(
         "Unlock shared workspace",
+        form_action,
         workspace_name or "Shared workspace",
         error=error,
+        next_target=next_target,
     )
+
+
+def _share_slug_authorize_path(owner_username: str, share_slug: str) -> str:
+    return f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}/authorize"
+
+
+def _share_token_authorize_path(share_token: str) -> str:
+    return f"/shared/{quote(share_token, safe='')}/authorize"
+
+
+def _share_request_target(request: Request) -> str:
+    return request.url.path + (f"?{request.url.query}" if request.url.query else "")
+
+
+def _normalize_share_next_target(next_target: str | None, fallback: str) -> str:
+    candidate = str(next_target or "").strip()
+    if not candidate or not candidate.startswith("/") or candidate.startswith("//"):
+        return fallback
+    return candidate
+
+
+def _share_cookie_max_age(expires_at: datetime | None) -> int:
+    if expires_at is None:
+        return 60 * 30
+    return max(60, int((expires_at - datetime.now(timezone.utc)).total_seconds()))
+
+
+def _share_form_value(form: Any, key: str) -> str:
+    if form is None:
+        return ""
+    try:
+        value = form.get(key, "")
+    except Exception:
+        return ""
+    return str(value or "").strip()
 
 
 async def _share_current_user_from_request(request: Request):
@@ -876,10 +916,12 @@ async def _shared_launch_redirect_by_slug(
         raise HTTPException(status_code=404, detail="Not found")
 
     current_user = await _share_current_user_from_request(request)
-    cookie_name = _share_password_cookie_name(owner_username, share_slug)
-    share_password = request.headers.get(
-        "x-userspace-share-password"
-    ) or request.cookies.get(cookie_name)
+    share_auth_token = share_auth_token_from_request(
+        request.headers,
+        request.cookies,
+        owner_username=owner_username,
+        share_slug=share_slug,
+    )
     workspace_name, owner_display_name = (
         await userspace_service.get_share_prompt_metadata_by_slug(
             owner_username,
@@ -892,7 +934,7 @@ async def _shared_launch_redirect_by_slug(
             owner_username,
             share_slug,
             current_user=current_user,
-            password=share_password,
+            share_auth_token=share_auth_token,
         )
     except HTTPException as exc:
         detail = str(exc.detail).lower() if isinstance(exc.detail, str) else ""
@@ -903,13 +945,16 @@ async def _shared_launch_redirect_by_slug(
             response = HTMLResponse(
                 _render_share_password_prompt(
                     workspace_name,
+                    _share_slug_authorize_path(owner_username, share_slug),
                     owner_display_name or owner_username,
                     "Invalid password" if "invalid password" in detail else None,
+                    _share_request_target(request),
                 )
             )
-            response.delete_cookie(
-                cookie_name,
-                path=f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}",
+            clear_share_auth_cookie(
+                response,
+                owner_username=owner_username,
+                share_slug=share_slug,
             )
             return response
         raise
@@ -937,10 +982,11 @@ async def _shared_launch_redirect_by_token(
     path: str,
 ):
     current_user = await _share_current_user_from_request(request)
-    cookie_name = _share_token_password_cookie_name(share_token)
-    share_password = request.headers.get(
-        "x-userspace-share-password"
-    ) or request.cookies.get(cookie_name)
+    share_auth_token = share_auth_token_from_request(
+        request.headers,
+        request.cookies,
+        share_token=share_token,
+    )
     workspace_name, _ = await userspace_service.get_share_prompt_metadata_by_token(
         share_token,
     )
@@ -949,7 +995,7 @@ async def _shared_launch_redirect_by_token(
         workspace_id = await userspace_service.resolve_shared_workspace_id(
             share_token,
             current_user=current_user,
-            password=share_password,
+            share_auth_token=share_auth_token,
         )
     except HTTPException as exc:
         detail = str(exc.detail).lower() if isinstance(exc.detail, str) else ""
@@ -960,12 +1006,14 @@ async def _shared_launch_redirect_by_token(
             response = HTMLResponse(
                 _render_share_token_password_prompt(
                     workspace_name,
+                    _share_token_authorize_path(share_token),
                     "Invalid password" if "invalid password" in detail else None,
+                    _share_request_target(request),
                 )
             )
-            response.delete_cookie(
-                cookie_name,
-                path=f"/shared/{quote(share_token, safe='')}",
+            clear_share_auth_cookie(
+                response,
+                share_token=share_token,
             )
             return response
         raise
@@ -986,46 +1034,76 @@ async def _shared_launch_redirect_by_token(
     return RedirectResponse(url=launch.preview_url, status_code=302)
 
 
-@app.api_route(
-    "/shared/{share_token}",
-    methods=["GET", "POST"],
+@app.post(
+    "/shared/{share_token}/authorize",
     include_in_schema=False,
 )
-async def userspace_share_token_path(share_token: str, request: Request):
+@limiter.limit(SHARE_AUTH_RATE_LIMIT)
+async def userspace_share_token_authorize(share_token: str, request: Request):
+    current_user = await _share_current_user_from_request(request)
     workspace_name, _ = await userspace_service.get_share_prompt_metadata_by_token(
         share_token,
     )
-    if request.method == "POST":
-        try:
-            form = await request.form()
-        except Exception:
-            form = None
-        if form is not None and "share_password" in form:
-            share_password = str(form.get("share_password", "") or "").strip()
-            if not share_password:
-                return HTMLResponse(
-                    _render_share_token_password_prompt(
-                        workspace_name,
-                        "Password is required",
-                    ),
-                    status_code=400,
-                )
-            response = RedirectResponse(
-                url=request.url.path
-                + (f"?{request.url.query}" if request.url.query else ""),
-                status_code=303,
-            )
-            response.set_cookie(
-                key=_share_token_password_cookie_name(share_token),
-                value=share_password,
-                max_age=60 * 30,
-                httponly=True,
-                secure=settings.session_cookie_secure,
-                samesite="lax",
-                path=f"/shared/{quote(share_token, safe='')}",
-            )
-            return response
+    fallback_target = f"/shared/{quote(share_token, safe='')}"
+    try:
+        form = await request.form()
+    except Exception:
+        form = None
 
+    share_password = _share_form_value(form, "share_password")
+    next_target = _normalize_share_next_target(
+        _share_form_value(form, "next"),
+        fallback_target,
+    )
+    if not share_password:
+        return HTMLResponse(
+            _render_share_token_password_prompt(
+                workspace_name,
+                _share_token_authorize_path(share_token),
+                "Password is required",
+                next_target,
+            ),
+            status_code=400,
+        )
+
+    try:
+        authorization = await userspace_service.authorize_shared_workspace_access(
+            share_token,
+            current_user=current_user,
+            password=share_password,
+        )
+    except HTTPException as exc:
+        detail = str(exc.detail) if isinstance(exc.detail, str) else "Invalid password"
+        error_response = HTMLResponse(
+            _render_share_token_password_prompt(
+                workspace_name,
+                _share_token_authorize_path(share_token),
+                detail,
+                next_target,
+            ),
+            status_code=exc.status_code,
+        )
+        clear_share_auth_cookie(error_response, share_token=share_token)
+        return error_response
+
+    redirect_response = RedirectResponse(url=next_target, status_code=303)
+    if authorization["share_auth_token"]:
+        set_share_auth_cookie(
+            redirect_response,
+            authorization["share_auth_token"],
+            max_age=_share_cookie_max_age(authorization["expires_at"]),
+            secure=settings.session_cookie_secure,
+            share_token=share_token,
+        )
+    return redirect_response
+
+
+@app.api_route(
+    "/shared/{share_token}",
+    methods=["GET"],
+    include_in_schema=False,
+)
+async def userspace_share_token_path(share_token: str, request: Request):
     return await _shared_launch_redirect_by_token(share_token, request, "")
 
 
@@ -1042,55 +1120,98 @@ async def userspace_share_token_path_with_suffix(
     return await _shared_launch_redirect_by_token(share_token, request, path)
 
 
-@app.api_route(
-    "/{owner_username}/{share_slug}",
-    methods=["GET", "POST"],
+@app.post(
+    "/{owner_username}/{share_slug}/authorize",
     include_in_schema=False,
 )
-async def userspace_share_root_proxy(
-    owner_username: str, share_slug: str, request: Request
+@limiter.limit(SHARE_AUTH_RATE_LIMIT)
+async def userspace_share_slug_authorize(
+    owner_username: str,
+    share_slug: str,
+    request: Request,
 ):
+    if owner_username in _share_reserved_roots():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    current_user = await _share_current_user_from_request(request)
     workspace_name, owner_display_name = (
         await userspace_service.get_share_prompt_metadata_by_slug(
             owner_username,
             share_slug,
         )
     )
-    normalized_share_root = (
-        f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}/"
+    fallback_target = f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}"
+    try:
+        form = await request.form()
+    except Exception:
+        form = None
+
+    share_password = _share_form_value(form, "share_password")
+    next_target = _normalize_share_next_target(
+        _share_form_value(form, "next"),
+        fallback_target,
     )
+    if not share_password:
+        return HTMLResponse(
+            _render_share_password_prompt(
+                workspace_name,
+                _share_slug_authorize_path(owner_username, share_slug),
+                owner_display_name or owner_username,
+                "Password is required",
+                next_target,
+            ),
+            status_code=400,
+        )
 
-    if request.method == "POST":
-        try:
-            form = await request.form()
-        except Exception:
-            form = None
-        if form is not None and "share_password" in form:
-            share_password = str(form.get("share_password", "") or "").strip()
-            if not share_password:
-                return HTMLResponse(
-                    _render_share_password_prompt(
-                        workspace_name,
-                        owner_display_name or owner_username,
-                        "Password is required",
-                    ),
-                    status_code=400,
-                )
-            response = RedirectResponse(
-                url=normalized_share_root,
-                status_code=303,
+    try:
+        authorization = (
+            await userspace_service.authorize_shared_workspace_access_by_slug(
+                owner_username,
+                share_slug,
+                current_user=current_user,
+                password=share_password,
             )
-            response.set_cookie(
-                key=_share_password_cookie_name(owner_username, share_slug),
-                value=share_password,
-                max_age=60 * 30,
-                httponly=True,
-                secure=settings.session_cookie_secure,
-                samesite="lax",
-                path=f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}",
-            )
-            return response
+        )
+    except HTTPException as exc:
+        detail = str(exc.detail) if isinstance(exc.detail, str) else "Invalid password"
+        error_response = HTMLResponse(
+            _render_share_password_prompt(
+                workspace_name,
+                _share_slug_authorize_path(owner_username, share_slug),
+                owner_display_name or owner_username,
+                detail,
+                next_target,
+            ),
+            status_code=exc.status_code,
+        )
+        clear_share_auth_cookie(
+            error_response,
+            owner_username=owner_username,
+            share_slug=share_slug,
+        )
+        return error_response
 
+    redirect_response = RedirectResponse(url=next_target, status_code=303)
+    if authorization["share_auth_token"]:
+        set_share_auth_cookie(
+            redirect_response,
+            authorization["share_auth_token"],
+            max_age=_share_cookie_max_age(authorization["expires_at"]),
+            secure=settings.session_cookie_secure,
+            owner_username=owner_username,
+            share_slug=share_slug,
+        )
+    return redirect_response
+
+
+@app.api_route(
+    "/{owner_username}/{share_slug}",
+    methods=["GET"],
+    include_in_schema=False,
+)
+async def userspace_share_root_proxy(
+    owner_username: str, share_slug: str, request: Request
+):
     return await _shared_launch_redirect_by_slug(
         owner_username, share_slug, request, ""
     )
@@ -1117,14 +1238,15 @@ async def userspace_share_path_proxy(
 )
 async def userspace_share_token_websocket_root(share_token: str, websocket: WebSocket):
     current_user = await _share_current_user_from_websocket(websocket)
-    share_password = websocket.cookies.get(
-        _share_token_password_cookie_name(share_token),
-        "",
+    share_auth_token = share_auth_token_from_request(
+        websocket.headers,
+        websocket.cookies,
+        share_token=share_token,
     )
     workspace_id = await userspace_service.resolve_shared_workspace_id(
         share_token,
         current_user=current_user,
-        password=share_password or None,
+        share_auth_token=share_auth_token,
     )
     await _proxy_shared_workspace_websocket(
         websocket,
@@ -1142,14 +1264,15 @@ async def userspace_share_token_websocket_path(
     websocket: WebSocket,
 ):
     current_user = await _share_current_user_from_websocket(websocket)
-    share_password = websocket.cookies.get(
-        _share_token_password_cookie_name(share_token),
-        "",
+    share_auth_token = share_auth_token_from_request(
+        websocket.headers,
+        websocket.cookies,
+        share_token=share_token,
     )
     workspace_id = await userspace_service.resolve_shared_workspace_id(
         share_token,
         current_user=current_user,
-        password=share_password or None,
+        share_auth_token=share_auth_token,
     )
     await _proxy_shared_workspace_websocket(
         websocket,
@@ -1170,15 +1293,17 @@ async def userspace_share_slug_websocket_root(
         await websocket.close(code=4404)
         return
     current_user = await _share_current_user_from_websocket(websocket)
-    share_password = websocket.cookies.get(
-        _share_password_cookie_name(owner_username, share_slug),
-        "",
+    share_auth_token = share_auth_token_from_request(
+        websocket.headers,
+        websocket.cookies,
+        owner_username=owner_username,
+        share_slug=share_slug,
     )
     workspace_id = await userspace_service.resolve_shared_workspace_id_by_slug(
         owner_username,
         share_slug,
         current_user=current_user,
-        password=share_password or None,
+        share_auth_token=share_auth_token,
     )
     await _proxy_shared_workspace_websocket(
         websocket,
@@ -1200,15 +1325,17 @@ async def userspace_share_slug_websocket_path(
         await websocket.close(code=4404)
         return
     current_user = await _share_current_user_from_websocket(websocket)
-    share_password = websocket.cookies.get(
-        _share_password_cookie_name(owner_username, share_slug),
-        "",
+    share_auth_token = share_auth_token_from_request(
+        websocket.headers,
+        websocket.cookies,
+        owner_username=owner_username,
+        share_slug=share_slug,
     )
     workspace_id = await userspace_service.resolve_shared_workspace_id_by_slug(
         owner_username,
         share_slug,
         current_user=current_user,
-        password=share_password or None,
+        share_auth_token=share_auth_token,
     )
     await _proxy_shared_workspace_websocket(
         websocket,
