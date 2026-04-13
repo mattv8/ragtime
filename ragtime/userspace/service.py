@@ -6143,8 +6143,10 @@ class UserSpaceService:
         from ragtime.userspace.preview_host import (
             invalidate_preview_sessions_for_workspace,
         )
+        from ragtime.userspace.runtime_service import userspace_runtime_service
 
-        invalidate_preview_sessions_for_workspace(workspace_id)
+        await invalidate_preview_sessions_for_workspace(workspace_id)
+        await userspace_runtime_service.invalidate_preview_session_cache(workspace_id)
 
         return await self.get_workspace_share_link_status(
             workspace_id,

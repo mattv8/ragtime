@@ -49,6 +49,10 @@ _RUNTIME_PROVIDER_MANAGER = "microvm_pool_v1"
 _RUNTIME_PREVIEW_GRANT_KIND = "userspace_preview_grant"
 _RUNTIME_PREVIEW_SESSION_KIND = "userspace_preview_session"
 _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN = "userspace-preview.lvh.me"
+_RUNTIME_PREVIEW_UPSTREAM_CACHE_TTL_SECONDS = 300
+_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS = 2.0
+_RUNTIME_PROVIDER_STATUS_STALE_FALLBACK_SECONDS = 8.0
+_RUNTIME_PREVIEW_PROBE_CACHE_TTL_SECONDS = 3.0
 
 
 @dataclass
@@ -69,6 +73,26 @@ class _RuntimeManagerRequestConfig:
     retry_base_delay_seconds: float
 
 
+@dataclass(frozen=True)
+class _PreviewUpstreamCacheEntry:
+    provider_session_id: str | None
+    base_url: str
+    cached_at: datetime
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class _ProviderStatusCacheEntry:
+    payload: dict[str, Any]
+    cached_at: datetime
+
+
+@dataclass(frozen=True)
+class _PreviewProbeCacheEntry:
+    ok: bool
+    checked_at: datetime
+
+
 class RuntimeVersionConflictError(Exception):
     def __init__(self, expected_version: int, actual_version: int) -> None:
         self.expected_version = expected_version
@@ -82,12 +106,16 @@ class UserSpaceRuntimeService:
     def __init__(self) -> None:
         self._collab_docs: dict[tuple[str, str], _CollabDocState] = {}
         self._collab_lock = asyncio.Lock()
+        self._runtime_cache_lock = asyncio.Lock()
         self._workspace_generation: dict[str, int] = {}
         self._collab_presence: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         self._workspace_events: dict[str, asyncio.Condition] = {}
         self._workspace_event_payload: dict[str, dict[str, Any]] = {}
         self._runtime_watch_workspaces: set[str] = set()
         self._runtime_watch_signatures: dict[str, tuple[Any, ...]] = {}
+        self._preview_upstream_cache: dict[str, _PreviewUpstreamCacheEntry] = {}
+        self._provider_status_cache: dict[str, _ProviderStatusCacheEntry] = {}
+        self._preview_probe_cache: dict[str, _PreviewProbeCacheEntry] = {}
         self._runtime_watch_task: asyncio.Task[None] | None = None
         self._runtime_watch_task_lock = asyncio.Lock()
         self._runtime_watch_interval_seconds = float(
@@ -532,6 +560,129 @@ class UserSpaceRuntimeService:
             return value.rstrip("/")
         return _RUNTIME_PREVIEW_DEFAULT_BASE
 
+    @staticmethod
+    def _cache_entry_is_fresh(cached_at: datetime, max_age_seconds: float) -> bool:
+        return (
+            datetime.now(timezone.utc) - cached_at
+        ).total_seconds() <= max(0.0, max_age_seconds)
+
+    async def _cache_preview_upstream_session(
+        self,
+        session: UserSpaceRuntimeSession,
+    ) -> None:
+        now = self._utc_now()
+        async with self._runtime_cache_lock:
+            self._preview_upstream_cache[session.workspace_id] = _PreviewUpstreamCacheEntry(
+                provider_session_id=session.provider_session_id,
+                base_url=self._resolve_preview_base_url(session),
+                cached_at=now,
+                expires_at=now
+                + timedelta(seconds=_RUNTIME_PREVIEW_UPSTREAM_CACHE_TTL_SECONDS),
+            )
+
+    async def _get_cached_preview_upstream_base_url(
+        self,
+        workspace_id: str,
+    ) -> str | None:
+        async with self._runtime_cache_lock:
+            entry = self._preview_upstream_cache.get(workspace_id)
+            if entry is None:
+                return None
+            if entry.expires_at <= self._utc_now():
+                self._preview_upstream_cache.pop(workspace_id, None)
+                return None
+            return entry.base_url
+
+    async def _cache_provider_status(
+        self,
+        provider_session_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if not provider_session_id:
+            return
+        async with self._runtime_cache_lock:
+            self._provider_status_cache[provider_session_id] = _ProviderStatusCacheEntry(
+                payload=dict(payload),
+                cached_at=self._utc_now(),
+            )
+
+    async def _get_cached_provider_status(
+        self,
+        provider_session_id: str,
+        *,
+        max_age_seconds: float,
+    ) -> dict[str, Any] | None:
+        async with self._runtime_cache_lock:
+            entry = self._provider_status_cache.get(provider_session_id)
+            if entry is None:
+                return None
+            if not self._cache_entry_is_fresh(entry.cached_at, max_age_seconds):
+                return None
+            return dict(entry.payload)
+
+    async def _drop_provider_status_cache(
+        self,
+        provider_session_id: str | None,
+    ) -> None:
+        if not provider_session_id:
+            return
+        async with self._runtime_cache_lock:
+            self._provider_status_cache.pop(provider_session_id, None)
+
+    async def invalidate_preview_session_cache(self, workspace_id: str) -> None:
+        async with self._runtime_cache_lock:
+            preview_entry = self._preview_upstream_cache.pop(workspace_id, None)
+            self._preview_probe_cache.pop(workspace_id, None)
+            if preview_entry and preview_entry.provider_session_id:
+                self._provider_status_cache.pop(
+                    preview_entry.provider_session_id,
+                    None,
+                )
+
+    async def _invalidate_workspace_runtime_caches(
+        self,
+        workspace_id: str,
+        *,
+        invalidate_preview_host: bool = False,
+    ) -> None:
+        await self.invalidate_preview_session_cache(workspace_id)
+        if invalidate_preview_host:
+            from ragtime.userspace.preview_host import \
+                invalidate_preview_sessions_for_workspace
+
+            await invalidate_preview_sessions_for_workspace(workspace_id)
+
+    async def _get_cached_preview_probe_result(
+        self,
+        workspace_id: str,
+    ) -> bool | None:
+        async with self._runtime_cache_lock:
+            entry = self._preview_probe_cache.get(workspace_id)
+            if entry is None:
+                return None
+            if not self._cache_entry_is_fresh(
+                entry.checked_at,
+                _RUNTIME_PREVIEW_PROBE_CACHE_TTL_SECONDS,
+            ):
+                return None
+            return entry.ok
+
+    async def _probe_preview_base_url_cached(
+        self,
+        workspace_id: str,
+        base_url: str,
+    ) -> bool:
+        cached = await self._get_cached_preview_probe_result(workspace_id)
+        if cached is not None:
+            return cached
+        ok = await self._probe_preview_base_url(base_url)
+        async with self._runtime_cache_lock:
+            self._preview_probe_cache[workspace_id] = _PreviewProbeCacheEntry(
+                ok=ok,
+                checked_at=self._utc_now(),
+            )
+        return ok
+
     async def _probe_preview_base_url(self, base_url: str) -> bool:
         health_candidates = ["/", "/@vite/client"]
         # Reduced timeouts to prevent UI locking during workspace switch
@@ -751,18 +902,38 @@ class UserSpaceRuntimeService:
     async def _runtime_provider_get_status(
         self,
         provider_session_id: str | None,
+        *,
+        max_age_seconds: float | None = None,
+        allow_stale_on_error: bool = False,
     ) -> dict[str, Any] | None:
         if not provider_session_id:
             return None
+        if max_age_seconds is not None:
+            cached = await self._get_cached_provider_status(
+                provider_session_id,
+                max_age_seconds=max_age_seconds,
+            )
+            if cached is not None:
+                return cached
         self._require_runtime_manager()
         try:
-            return await self._runtime_manager_request(
+            response = await self._runtime_manager_request(
                 "GET",
                 f"/sessions/{provider_session_id}",
             )
+            await self._cache_provider_status(provider_session_id, response)
+            return response
         except HTTPException as exc:
             if "(404)" in str(exc.detail):
+                await self._drop_provider_status_cache(provider_session_id)
                 return None
+            if allow_stale_on_error:
+                cached = await self._get_cached_provider_status(
+                    provider_session_id,
+                    max_age_seconds=_RUNTIME_PROVIDER_STATUS_STALE_FALLBACK_SECONDS,
+                )
+                if cached is not None:
+                    return cached
             raise
 
     async def _runtime_provider_restart_devserver(
@@ -936,7 +1107,9 @@ class UserSpaceRuntimeService:
                 and session.runtime_provider == target_provider_name
             ):
                 provider_status = await self._runtime_provider_get_status(
-                    session.provider_session_id
+                    session.provider_session_id,
+                    max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
+                    allow_stale_on_error=True,
                 )
                 if provider_status is not None:
                     delta = self._merge_provider_status(session, provider_status)
@@ -947,7 +1120,10 @@ class UserSpaceRuntimeService:
                             session.id,
                             delta,
                         )
-                        return self._to_runtime_session(current)
+                        refreshed = self._to_runtime_session(current)
+                        await self._cache_preview_upstream_session(refreshed)
+                        return refreshed
+                    await self._cache_preview_upstream_session(session)
                     return session
 
                 logger.warning(
@@ -984,7 +1160,13 @@ class UserSpaceRuntimeService:
                 session.id,
                 delta,
             )
-            return self._to_runtime_session(current)
+            refreshed = self._to_runtime_session(current)
+            await self._cache_provider_status(
+                refreshed.provider_session_id or "",
+                provider_data,
+            )
+            await self._cache_preview_upstream_session(refreshed)
+            return refreshed
 
         if not auto_start:
             latest = await self._get_latest_session_row(workspace_id)
@@ -1048,7 +1230,10 @@ class UserSpaceRuntimeService:
                 workspace_id,
             )
             raise HTTPException(status_code=404, detail="Workspace not found") from exc
-        return self._to_runtime_session(row)
+        session = self._to_runtime_session(row)
+        await self._cache_provider_status(session.provider_session_id or "", provider_data)
+        await self._cache_preview_upstream_session(session)
+        return session
 
     async def ensure_workspace_preview_session(
         self,
@@ -1057,6 +1242,7 @@ class UserSpaceRuntimeService:
     ) -> UserSpaceRuntimeSession:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
         session = await self._ensure_session_row(workspace_id, user_id)
+        await self._cache_preview_upstream_session(session)
         return session
 
     async def ensure_shared_preview_session(
@@ -1070,7 +1256,9 @@ class UserSpaceRuntimeService:
         owner_user_id = str(getattr(workspace, "ownerUserId", "") or "")
         if not owner_user_id:
             raise HTTPException(status_code=500, detail="Workspace owner unavailable")
-        return await self._ensure_session_row(workspace_id, owner_user_id)
+        session = await self._ensure_session_row(workspace_id, owner_user_id)
+        await self._cache_preview_upstream_session(session)
+        return session
 
     async def issue_workspace_preview_launch(
         self,
@@ -1126,8 +1314,10 @@ class UserSpaceRuntimeService:
         path: str,
         query: str | None = None,
     ) -> str:
-        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
-        base_url = self._resolve_preview_base_url(session)
+        base_url = await self._get_cached_preview_upstream_base_url(workspace_id)
+        if not base_url:
+            session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+            base_url = self._resolve_preview_base_url(session)
         normalized_path = quote((path or "").lstrip("/"), safe="/@._-~")
         upstream = (
             f"{base_url}/{normalized_path}" if normalized_path else f"{base_url}/"
@@ -1151,8 +1341,10 @@ class UserSpaceRuntimeService:
         path: str,
         query: str | None = None,
     ) -> str:
-        session = await self.ensure_shared_preview_session(workspace_id)
-        base_url = self._resolve_preview_base_url(session)
+        base_url = await self._get_cached_preview_upstream_base_url(workspace_id)
+        if not base_url:
+            session = await self.ensure_shared_preview_session(workspace_id)
+            base_url = self._resolve_preview_base_url(session)
         normalized_path = quote((path or "").lstrip("/"), safe="/@._-~")
         upstream = (
             f"{base_url}/{normalized_path}" if normalized_path else f"{base_url}/"
@@ -1252,6 +1444,11 @@ class UserSpaceRuntimeService:
             user_id,
             auto_start=True,
         )
+        await self._invalidate_workspace_runtime_caches(
+            workspace_id,
+            invalidate_preview_host=True,
+        )
+        await self._cache_preview_upstream_session(session)
         await self._audit(
             workspace_id,
             "session_start",
@@ -1261,7 +1458,9 @@ class UserSpaceRuntimeService:
         )
 
         provider_status = await self._runtime_provider_get_status(
-            session.provider_session_id
+            session.provider_session_id,
+            max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
+            allow_stale_on_error=True,
         )
         operation_id = None
         operation_phase = None
@@ -1321,6 +1520,10 @@ class UserSpaceRuntimeService:
             },
         )
         session = self._to_runtime_session(row)
+        await self._invalidate_workspace_runtime_caches(
+            workspace_id,
+            invalidate_preview_host=True,
+        )
         await self._audit(
             workspace_id,
             "session_stop",
@@ -1355,7 +1558,9 @@ class UserSpaceRuntimeService:
 
         session = self._to_runtime_session(active)
         provider_status = await self._runtime_provider_get_status(
-            session.provider_session_id
+            session.provider_session_id,
+            max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
+            allow_stale_on_error=True,
         )
 
         if (
@@ -1430,7 +1635,7 @@ class UserSpaceRuntimeService:
             devserver_running = state_for_response in {
                 "starting",
                 "running",
-            } and await self._probe_preview_base_url(base_url)
+            } and await self._probe_preview_base_url_cached(workspace_id, base_url)
 
         devserver_port = launch_port or _RUNTIME_DEVSERVER_PORT
         runtime_capabilities: dict[str, Any] | None = None
@@ -1552,6 +1757,10 @@ class UserSpaceRuntimeService:
                 workspace_mounts=workspace_mounts,
             )
             if provider_restart:
+                await self._invalidate_workspace_runtime_caches(
+                    workspace_id,
+                    invalidate_preview_host=True,
+                )
                 delta = self._merge_provider_status(active_session, provider_restart)
                 delta.update(
                     {
@@ -1567,6 +1776,10 @@ class UserSpaceRuntimeService:
                     model,
                     active_session.id,
                     delta,
+                )
+                await self._cache_provider_status(
+                    active_session.provider_session_id or "",
+                    provider_restart,
                 )
                 operation_id = provider_restart.get("runtime_operation_id")
                 operation_phase = provider_restart.get("runtime_operation_phase")
@@ -2028,19 +2241,22 @@ class UserSpaceRuntimeService:
 
         async with self._collab_lock:
             state = self._collab_docs.get(key)
-            if state is None:
-                content = await self._load_file_content(
-                    workspace_id,
-                    normalized_path,
-                    user_id,
-                )
-                state = _CollabDocState(
-                    workspace_id=workspace_id,
-                    file_path=normalized_path,
-                    content=content,
-                    version=1,
-                )
-                self._collab_docs[key] = state
+        if state is None:
+            content = await self._load_file_content(
+                workspace_id,
+                normalized_path,
+                user_id,
+            )
+            async with self._collab_lock:
+                state = self._collab_docs.get(key)
+                if state is None:
+                    state = _CollabDocState(
+                        workspace_id=workspace_id,
+                        file_path=normalized_path,
+                        content=content,
+                        version=1,
+                    )
+                    self._collab_docs[key] = state
 
         return UserSpaceCollabSnapshotResponse(
             workspace_id=workspace_id,
@@ -2067,20 +2283,29 @@ class UserSpaceRuntimeService:
         key = (workspace_id, normalized_path)
         async with self._collab_lock:
             state = self._collab_docs.get(key)
-            if state is None:
-                content = await self._load_file_content(
-                    workspace_id,
-                    normalized_path,
-                    user_id,
-                )
-                state = _CollabDocState(
-                    workspace_id=workspace_id,
-                    file_path=normalized_path,
-                    content=content,
-                    version=1,
-                )
-                self._collab_docs[key] = state
-            state.clients.add(websocket)
+        if state is None:
+            content = await self._load_file_content(
+                workspace_id,
+                normalized_path,
+                user_id,
+            )
+            async with self._collab_lock:
+                state = self._collab_docs.get(key)
+                if state is None:
+                    state = _CollabDocState(
+                        workspace_id=workspace_id,
+                        file_path=normalized_path,
+                        content=content,
+                        version=1,
+                    )
+                    self._collab_docs[key] = state
+                state.clients.add(websocket)
+        else:
+            async with self._collab_lock:
+                state = self._collab_docs.get(key)
+                if state is None:
+                    raise HTTPException(status_code=409, detail="Collaboration state unavailable")
+                state.clients.add(websocket)
 
         return UserSpaceCollabSnapshotResponse(
             workspace_id=workspace_id,
@@ -2185,20 +2410,27 @@ class UserSpaceRuntimeService:
 
         async with self._collab_lock:
             state = self._collab_docs.get(key)
-            if state is None:
-                existing = await self._load_file_content(
-                    workspace_id,
-                    normalized_path,
-                    user_id,
-                )
-                state = _CollabDocState(
-                    workspace_id=workspace_id,
-                    file_path=normalized_path,
-                    content=existing,
-                    version=1,
-                )
-                self._collab_docs[key] = state
+        if state is None:
+            existing = await self._load_file_content(
+                workspace_id,
+                normalized_path,
+                user_id,
+            )
+            async with self._collab_lock:
+                state = self._collab_docs.get(key)
+                if state is None:
+                    state = _CollabDocState(
+                        workspace_id=workspace_id,
+                        file_path=normalized_path,
+                        content=existing,
+                        version=1,
+                    )
+                    self._collab_docs[key] = state
 
+        async with self._collab_lock:
+            state = self._collab_docs.get(key)
+            if state is None:
+                raise HTTPException(status_code=409, detail="Collaboration state unavailable")
             if expected_version is not None and expected_version != state.version:
                 raise RuntimeVersionConflictError(
                     expected_version=expected_version,
@@ -2239,11 +2471,16 @@ class UserSpaceRuntimeService:
             "version": version,
             "content": content,
         }
-        for client in recipients:
+        payload = json.dumps(message)
+
+        async def _send(client: WebSocket) -> None:
             try:
-                await client.send_text(json.dumps(message))
+                await client.send_text(payload)
             except Exception:
-                continue
+                pass
+
+        if recipients:
+            await asyncio.gather(*(_send(client) for client in recipients))
 
         return UserSpaceCollabSnapshotResponse(
             workspace_id=workspace_id,
@@ -2543,6 +2780,10 @@ class UserSpaceRuntimeService:
             for key in keys_to_drop:
                 self._collab_docs.pop(key, None)
                 self._collab_presence.pop(key, None)
+        await self._invalidate_workspace_runtime_caches(
+            workspace_id,
+            invalidate_preview_host=True,
+        )
         await self.bump_workspace_generation(workspace_id)
 
         db = await get_db()

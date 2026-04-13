@@ -2748,13 +2748,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   useEffect(() => {
     void refreshActiveWorkspaceState();
     if (!activeWorkspaceId) return;
-    // Poll faster during transitional states (starting/stopping)
     const isTransitional = runtimeDisplayState === 'starting' || runtimeDisplayState === 'stopping';
-    const interval = isPageVisible
-      ? (isTransitional ? 2000 : 10000)
-      : USERSPACE_RUNTIME_BACKGROUND_POLL_INTERVAL_MS;
     let cancelled = false;
     let timer: number | null = null;
+    let attempt = 0;
+
+    const nextIntervalMs = () => {
+      if (!isPageVisible) {
+        return USERSPACE_RUNTIME_BACKGROUND_POLL_INTERVAL_MS;
+      }
+      if (!isTransitional) {
+        return 10000;
+      }
+      const transitionalBackoff = [2500, 5000, 8000, 12000];
+      return transitionalBackoff[Math.min(attempt, transitionalBackoff.length - 1)];
+    };
 
     const scheduleNextPoll = () => {
       if (cancelled) {
@@ -2762,11 +2770,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       }
       timer = window.setTimeout(() => {
         void runPoll();
-      }, interval);
+      }, nextIntervalMs());
     };
 
     const runPoll = async () => {
       await refreshActiveWorkspaceState();
+      if (isTransitional && isPageVisible) {
+        attempt += 1;
+      } else {
+        attempt = 0;
+      }
       scheduleNextPoll();
     };
 

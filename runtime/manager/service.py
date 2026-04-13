@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -45,6 +46,8 @@ class SessionManager:
             "RUNTIME_WORKER_CALL_TIMEOUT_SECONDS",
             10,
         )
+        self._workspace_start_locks: dict[str, asyncio.Lock] = {}
+        self._provider_locks: dict[str, asyncio.Lock] = {}
         self._reconcile_task: asyncio.Task[None] | None = None
 
     @staticmethod
@@ -106,6 +109,12 @@ class SessionManager:
                 detail="Runtime capacity exhausted. Retry after an active session stops.",
             )
 
+    def _workspace_start_lock(self, workspace_id: str) -> asyncio.Lock:
+        return self._workspace_start_locks.setdefault(workspace_id, asyncio.Lock())
+
+    def _provider_lock(self, provider_session_id: str) -> asyncio.Lock:
+        return self._provider_locks.setdefault(provider_session_id, asyncio.Lock())
+
     @staticmethod
     def _apply_worker_state(
         session: ManagerSession,
@@ -158,78 +167,93 @@ class SessionManager:
             lease_expires_at=now + timedelta(seconds=self._lease_ttl_seconds),
         )
 
-    async def _sync_session_from_worker(self, session: ManagerSession) -> None:
-        worker_data = await asyncio.wait_for(
-            self._worker_service.get_session(session.worker_session_id),
-            timeout=self._worker_call_timeout,
-        )
-        self._apply_worker_state(session, worker_data)
-        now = self._utc_now()
-        session.updated_at = now
-        session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
-
     async def _sync_session_from_worker_by_provider_id(
         self,
         provider_session_id: str,
     ) -> ManagerSession | None:
-        async with self._lock:
-            session = self._sessions.get(provider_session_id)
-            if not session:
-                return None
-            worker_session_id = session.worker_session_id
+        async with self._provider_lock(provider_session_id):
+            async with self._lock:
+                session = self._sessions.get(provider_session_id)
+                if not session:
+                    return None
+                worker_session_id = session.worker_session_id
 
-        worker_data = await asyncio.wait_for(
-            self._worker_service.get_session(worker_session_id),
-            timeout=self._worker_call_timeout,
-        )
+            worker_data = await asyncio.wait_for(
+                self._worker_service.get_session(worker_session_id),
+                timeout=self._worker_call_timeout,
+            )
 
-        async with self._lock:
-            session = self._sessions.get(provider_session_id)
-            if not session or session.worker_session_id != worker_session_id:
-                return None
-            self._apply_worker_state(session, worker_data)
-            now = self._utc_now()
-            session.updated_at = now
-            session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
-            return session
+            async with self._lock:
+                session = self._sessions.get(provider_session_id)
+                if not session or session.worker_session_id != worker_session_id:
+                    return None
+                self._apply_worker_state(session, worker_data)
+                now = self._utc_now()
+                session.updated_at = now
+                session.lease_expires_at = now + timedelta(
+                    seconds=self._lease_ttl_seconds
+                )
+                return session
 
-    async def _cleanup_expired_sessions_locked(self, now: datetime) -> None:
+    def _purge_terminal_sessions_locked(self, now: datetime) -> None:
         for provider_session_id, session in list(self._sessions.items()):
+            if session.state not in {"stopped", "error"}:
+                continue
             if (
-                session.state in {"starting", "running"}
-                and session.lease_expires_at <= now
+                session.state == "error"
+                and (now - session.updated_at).total_seconds() < 60
             ):
+                continue
+            workspace_provider_session = self._workspace_index.get(session.workspace_id)
+            if workspace_provider_session == provider_session_id:
+                self._workspace_index.pop(session.workspace_id, None)
+            self._sessions.pop(provider_session_id, None)
+
+    async def _cleanup_expired_sessions(self, now: datetime) -> None:
+        async with self._lock:
+            expired_provider_ids = [
+                provider_session_id
+                for provider_session_id, session in self._sessions.items()
+                if session.state in {"starting", "running"}
+                and session.lease_expires_at <= now
+            ]
+
+        for provider_session_id in expired_provider_ids:
+            async with self._provider_lock(provider_session_id):
+                async with self._lock:
+                    session = self._sessions.get(provider_session_id)
+                    if (
+                        not session
+                        or session.state not in {"starting", "running"}
+                        or session.lease_expires_at > now
+                    ):
+                        continue
+                    worker_session_id = session.worker_session_id
+
                 with suppress(Exception):
                     await asyncio.wait_for(
-                        self._worker_service.stop_session(session.worker_session_id),
+                        self._worker_service.stop_session(worker_session_id),
                         timeout=self._worker_call_timeout,
                     )
-                session.state = "stopped"
-                session.devserver_running = False
-                session.last_error = "Lease expired"
-                session.updated_at = now
 
-            if session.state in {"stopped", "error"}:
-                # Keep "error" sessions briefly so the control plane can read
-                # last_error before the session is purged.
-                if (
-                    session.state == "error"
-                    and (now - session.updated_at).total_seconds() < 60
-                ):
-                    continue
-                workspace_provider_session = self._workspace_index.get(
-                    session.workspace_id
-                )
-                if workspace_provider_session == provider_session_id:
-                    self._workspace_index.pop(session.workspace_id, None)
-                self._sessions.pop(provider_session_id, None)
+                async with self._lock:
+                    session = self._sessions.get(provider_session_id)
+                    if not session or session.worker_session_id != worker_session_id:
+                        continue
+                    session.state = "stopped"
+                    session.devserver_running = False
+                    session.last_error = "Lease expired"
+                    session.updated_at = now
+
+        async with self._lock:
+            self._purge_terminal_sessions_locked(now)
 
     async def _reconcile_loop(self) -> None:
         while True:
             await asyncio.sleep(self._reconcile_interval_seconds)
             now = self._utc_now()
+            await self._cleanup_expired_sessions(now)
             async with self._lock:
-                await self._cleanup_expired_sessions_locked(now)
                 active_session_ids = [
                     session.provider_session_id
                     for session in self._sessions.values()
@@ -255,58 +279,106 @@ class SessionManager:
         self,
         request: StartSessionRequest,
     ) -> RuntimeSessionResponse:
-        async with self._lock:
-            now = self._utc_now()
-            await self._cleanup_expired_sessions_locked(now)
+        await self._cleanup_expired_sessions(self._utc_now())
 
-            provider_session_id = request.provider_session_id
-            if provider_session_id and provider_session_id in self._sessions:
-                session = self._sessions[provider_session_id]
-                await self._sync_session_from_worker(session)
-            else:
+        async with self._workspace_start_lock(request.workspace_id):
+            existing_provider_id: str | None = None
+            provider_session_id: str | None = None
+            pty_access_token: str | None = None
+
+            async with self._lock:
+                provider_session_id = request.provider_session_id
+                if provider_session_id and provider_session_id in self._sessions:
+                    existing_provider_id = provider_session_id
+                else:
+                    existing_id = self._workspace_index.get(request.workspace_id)
+                    if existing_id and existing_id in self._sessions:
+                        existing_provider_id = existing_id
+                    else:
+                        self._ensure_capacity_locked()
+                        provider_session_id = provider_session_id or (
+                            f"mgr-{request.workspace_id[:8]}-{uuid4().hex[:8]}"
+                        )
+                        pty_access_token = uuid4().hex
+
+            if existing_provider_id:
+                session = await self._sync_session_from_worker_by_provider_id(
+                    existing_provider_id
+                )
+                if session is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Runtime session not found",
+                    )
+                async with self._lock:
+                    session = self._sessions.get(existing_provider_id)
+                    if not session:
+                        raise HTTPException(
+                            status_code=404,
+                            detail="Runtime session not found",
+                        )
+                    now = self._utc_now()
+                    session.leased_by_user_id = request.leased_by_user_id
+                    session.lease_expires_at = now + timedelta(
+                        seconds=self._lease_ttl_seconds
+                    )
+                    session.updated_at = now
+                    return self._as_response(session)
+
+            if not provider_session_id or pty_access_token is None:
+                raise HTTPException(status_code=500, detail="Runtime session start failed")
+
+            worker_request = WorkerStartSessionRequest(
+                workspace_id=request.workspace_id,
+                provider_session_id=provider_session_id,
+                pty_access_token=pty_access_token,
+                workspace_env=request.workspace_env,
+                workspace_env_visibility=request.workspace_env_visibility,
+                workspace_mounts=request.workspace_mounts,
+            )
+            worker_session = await asyncio.wait_for(
+                self._worker_service.start_session(worker_request),
+                timeout=self._worker_call_timeout,
+            )
+            session = self._create_session(
+                provider_session_id,
+                request.workspace_id,
+                request.leased_by_user_id,
+                worker_session,
+                pty_access_token,
+            )
+
+            duplicate_worker_session_id: str | None = None
+            async with self._lock:
                 existing_id = self._workspace_index.get(request.workspace_id)
                 if existing_id and existing_id in self._sessions:
                     session = self._sessions[existing_id]
-                    await self._sync_session_from_worker(session)
+                    duplicate_worker_session_id = worker_session.worker_session_id
                 else:
-                    self._ensure_capacity_locked()
-                    provider_session_id = provider_session_id or (
-                        f"mgr-{request.workspace_id[:8]}-{uuid4().hex[:8]}"
-                    )
-                    pty_access_token = uuid4().hex
-                    worker_request = WorkerStartSessionRequest(
-                        workspace_id=request.workspace_id,
-                        provider_session_id=provider_session_id,
-                        pty_access_token=pty_access_token,
-                        workspace_env=request.workspace_env,
-                        workspace_env_visibility=request.workspace_env_visibility,
-                        workspace_mounts=request.workspace_mounts,
-                    )
-                    worker_session = await asyncio.wait_for(
-                        self._worker_service.start_session(worker_request),
-                        timeout=self._worker_call_timeout,
-                    )
-                    session = self._create_session(
-                        provider_session_id,
-                        request.workspace_id,
-                        request.leased_by_user_id,
-                        worker_session,
-                        pty_access_token,
-                    )
                     self._sessions[provider_session_id] = session
                     self._workspace_index[session.workspace_id] = (
                         session.provider_session_id
                     )
+                now = self._utc_now()
+                session.leased_by_user_id = request.leased_by_user_id
+                session.lease_expires_at = now + timedelta(
+                    seconds=self._lease_ttl_seconds
+                )
+                session.updated_at = now
+                response = self._as_response(session)
 
-            session.leased_by_user_id = request.leased_by_user_id
-            session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
-            session.updated_at = now
-            return self._as_response(session)
+            if duplicate_worker_session_id:
+                with suppress(Exception):
+                    await asyncio.wait_for(
+                        self._worker_service.stop_session(duplicate_worker_session_id),
+                        timeout=self._worker_call_timeout,
+                    )
+
+            return response
 
     async def get_session(self, provider_session_id: str) -> RuntimeSessionResponse:
+        await self._cleanup_expired_sessions(self._utc_now())
         async with self._lock:
-            now = self._utc_now()
-            await self._cleanup_expired_sessions_locked(now)
             if provider_session_id not in self._sessions:
                 raise HTTPException(status_code=404, detail="Runtime session not found")
 
@@ -318,24 +390,31 @@ class SessionManager:
         return self._as_response(session)
 
     async def stop_session(self, provider_session_id: str) -> RuntimeSessionResponse:
-        async with self._lock:
-            session = self._sessions.get(provider_session_id)
-            if not session:
-                raise HTTPException(status_code=404, detail="Runtime session not found")
+        async with self._provider_lock(provider_session_id):
+            async with self._lock:
+                session = self._sessions.get(provider_session_id)
+                if not session:
+                    raise HTTPException(status_code=404, detail="Runtime session not found")
+                worker_session_id = session.worker_session_id
+                response_session = replace(session)
             try:
                 worker_data = await asyncio.wait_for(
-                    self._worker_service.stop_session(session.worker_session_id),
+                    self._worker_service.stop_session(worker_session_id),
                     timeout=self._worker_call_timeout,
                 )
-                self._apply_worker_state(session, worker_data)
+                self._apply_worker_state(response_session, worker_data)
             except TimeoutError:
-                session.state = "stopped"
-                session.devserver_running = False
-                session.last_error = "Worker stop timed out"
-            session.updated_at = self._utc_now()
-            self._workspace_index.pop(session.workspace_id, None)
-            self._sessions.pop(provider_session_id, None)
-            return self._as_response(session)
+                response_session.state = "stopped"
+                response_session.devserver_running = False
+                response_session.last_error = "Worker stop timed out"
+            response_session.updated_at = self._utc_now()
+
+            async with self._lock:
+                session = self._sessions.get(provider_session_id)
+                if session and session.worker_session_id == worker_session_id:
+                    self._workspace_index.pop(session.workspace_id, None)
+                    self._sessions.pop(provider_session_id, None)
+            return self._as_response(response_session)
 
     async def restart_devserver(
         self,
@@ -344,46 +423,64 @@ class SessionManager:
         workspace_env_visibility: dict[str, bool] | None = None,
         workspace_mounts: list[dict[str, Any]] | None = None,
     ) -> RuntimeSessionResponse:
-        async with self._lock:
-            session = self._sessions.get(provider_session_id)
-            if not session:
-                raise HTTPException(status_code=404, detail="Runtime session not found")
+        async with self._provider_lock(provider_session_id):
+            async with self._lock:
+                session = self._sessions.get(provider_session_id)
+                if not session:
+                    raise HTTPException(status_code=404, detail="Runtime session not found")
+                worker_session_id = session.worker_session_id
             worker_data = await asyncio.wait_for(
                 self._worker_service.restart_session(
-                    session.worker_session_id,
+                    worker_session_id,
                     workspace_env,
                     workspace_env_visibility,
                     workspace_mounts,
                 ),
                 timeout=self._worker_call_timeout,
             )
-            self._apply_worker_state(session, worker_data)
-            now = self._utc_now()
-            session.updated_at = now
-            session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
-            return self._as_response(session)
+
+            async with self._lock:
+                session = self._sessions.get(provider_session_id)
+                if not session or session.worker_session_id != worker_session_id:
+                    raise HTTPException(status_code=404, detail="Runtime session not found")
+                self._apply_worker_state(session, worker_data)
+                now = self._utc_now()
+                session.updated_at = now
+                session.lease_expires_at = now + timedelta(
+                    seconds=self._lease_ttl_seconds
+                )
+                return self._as_response(session)
 
     async def refresh_mounts(
         self,
         provider_session_id: str,
         workspace_mounts: list[dict[str, Any]],
     ) -> RuntimeSessionResponse:
-        async with self._lock:
-            session = self._sessions.get(provider_session_id)
-            if not session:
-                raise HTTPException(status_code=404, detail="Runtime session not found")
+        async with self._provider_lock(provider_session_id):
+            async with self._lock:
+                session = self._sessions.get(provider_session_id)
+                if not session:
+                    raise HTTPException(status_code=404, detail="Runtime session not found")
+                worker_session_id = session.worker_session_id
             worker_data = await asyncio.wait_for(
                 self._worker_service.refresh_mounts(
-                    session.worker_session_id,
+                    worker_session_id,
                     workspace_mounts=workspace_mounts,
                 ),
                 timeout=self._worker_call_timeout,
             )
-            self._apply_worker_state(session, worker_data)
-            now = self._utc_now()
-            session.updated_at = now
-            session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
-            return self._as_response(session)
+
+            async with self._lock:
+                session = self._sessions.get(provider_session_id)
+                if not session or session.worker_session_id != worker_session_id:
+                    raise HTTPException(status_code=404, detail="Runtime session not found")
+                self._apply_worker_state(session, worker_data)
+                now = self._utc_now()
+                session.updated_at = now
+                session.lease_expires_at = now + timedelta(
+                    seconds=self._lease_ttl_seconds
+                )
+                return self._as_response(session)
 
     def _get_session_or_raise(self, provider_session_id: str) -> ManagerSession:
         """Look up a session without acquiring the lock (caller must hold it or accept race)."""

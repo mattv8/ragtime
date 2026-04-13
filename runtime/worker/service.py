@@ -1539,6 +1539,7 @@ class WorkerService:
         )
         probe_url = f"http://127.0.0.1:{port}/"
         timeout = httpx.Timeout(connect=0.5, read=1.0, write=1.0, pool=0.5)
+        sleep_seconds = 0.1
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             while asyncio.get_event_loop().time() < deadline:
                 try:
@@ -1547,7 +1548,8 @@ class WorkerService:
                         return True
                 except Exception:
                     pass
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(sleep_seconds)
+                sleep_seconds = min(0.75, sleep_seconds * 1.5)
         return False
 
     async def _terminate_devserver_locked(self, session_id: str) -> None:

@@ -164,9 +164,14 @@ async def _broadcast_collab_message(
         workspace_id, file_path
     )
     payload = json.dumps(message)
-    for client in clients:
+    if not clients:
+        return
+
+    async def _send(client: WebSocket) -> None:
         with contextlib.suppress(Exception):
             await client.send_text(payload)
+
+    await asyncio.gather(*(_send(client) for client in clients))
 
 
 def _proxy_request_headers(request: Request) -> dict[str, str]:
@@ -980,6 +985,7 @@ async def issue_shared_preview_launch(
             share_path=f"/shared/{quote(share_token, safe='')}",
             target_path=payload.path,
         )
+    share_access_mode = await userspace_service.get_share_access_mode(workspace_id)
     return await userspace_runtime_service.issue_shared_preview_launch(
         workspace_id,
         control_plane_origin=external_origin,
@@ -987,6 +993,7 @@ async def issue_shared_preview_launch(
         parent_origin=payload.parent_origin,
         share_token=share_token,
         subject_user_id=str(getattr(user, "id", "") or "") or None,
+        share_access_mode=share_access_mode,
     )
 
 
@@ -1049,6 +1056,7 @@ async def issue_shared_preview_launch_by_slug(
             ),
             target_path=payload.path,
         )
+    share_access_mode = await userspace_service.get_share_access_mode(workspace_id)
     return await userspace_runtime_service.issue_shared_preview_launch(
         workspace_id,
         control_plane_origin=external_origin,
@@ -1057,6 +1065,7 @@ async def issue_shared_preview_launch_by_slug(
         owner_username=owner_username,
         share_slug=share_slug,
         subject_user_id=str(getattr(user, "id", "") or "") or None,
+        share_access_mode=share_access_mode,
     )
 
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-import threading
+import asyncio
+import heapq
+from collections import OrderedDict
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from itertools import count
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -75,16 +78,38 @@ class _PreviewHostSessionEntry:
 
 
 _preview_host_sessions: dict[str, _PreviewHostSessionEntry] = {}
-_registry_lock = threading.Lock()
+_preview_host_session_order: OrderedDict[str, None] = OrderedDict()
+_preview_host_expiry_heap: list[tuple[float, int, str]] = []
+_registry_lock = asyncio.Lock()
+_registry_sequence = count()
 
 
-def invalidate_preview_sessions_for_workspace(workspace_id: str) -> None:
+def _discard_preview_session_locked(label: str) -> None:
+    _preview_host_sessions.pop(label, None)
+    _preview_host_session_order.pop(label, None)
+
+
+def _evict_preview_sessions_locked(now: datetime) -> None:
+    now_ts = now.timestamp()
+    while _preview_host_expiry_heap and _preview_host_expiry_heap[0][0] <= now_ts:
+        expires_ts, _, label = heapq.heappop(_preview_host_expiry_heap)
+        entry = _preview_host_sessions.get(label)
+        if entry is None or entry.expires_at.timestamp() != expires_ts:
+            continue
+        _discard_preview_session_locked(label)
+
+    while len(_preview_host_sessions) > _SESSION_REGISTRY_MAX:
+        oldest_label, _ = _preview_host_session_order.popitem(last=False)
+        _preview_host_sessions.pop(oldest_label, None)
+
+
+async def invalidate_preview_sessions_for_workspace(workspace_id: str) -> None:
     """Remove all in-memory preview session registry entries for *workspace_id*."""
     label = (workspace_id or "").strip().lower()
     if not label:
         return
-    with _registry_lock:
-        _preview_host_sessions.pop(label, None)
+    async with _registry_lock:
+        _discard_preview_session_locked(label)
 
 
 def _host_label_from_hostname(hostname: str) -> str:
@@ -99,41 +124,45 @@ def _workspace_id_from_preview_host(host_header: str | None) -> str | None:
     return workspace_id or None
 
 
-def _register_preview_session(host_header: str, claims: dict[str, Any], expires_at: datetime) -> None:
+async def _register_preview_session(
+    host_header: str,
+    claims: dict[str, Any],
+    expires_at: datetime,
+) -> None:
     hostname, _ = _split_host(host_header)
     label = _host_label_from_hostname(hostname)
     if not label:
         return
     now = datetime.now(timezone.utc)
-    with _registry_lock:
-        # Lazy eviction of expired entries on every registration
-        expired_keys = [k for k, v in _preview_host_sessions.items() if v.expires_at <= now]
-        for k in expired_keys:
-            _preview_host_sessions.pop(k, None)
-        # Hard cap: if still over limit, drop oldest entries
-        if len(_preview_host_sessions) >= _SESSION_REGISTRY_MAX:
-            oldest = sorted(_preview_host_sessions, key=lambda k: _preview_host_sessions[k].registered_at)
-            for k in oldest[: len(_preview_host_sessions) - _SESSION_REGISTRY_MAX + 1]:
-                _preview_host_sessions.pop(k, None)
+    async with _registry_lock:
         _preview_host_sessions[label] = _PreviewHostSessionEntry(
             claims=claims,
             expires_at=expires_at,
         )
+        _preview_host_session_order.pop(label, None)
+        _preview_host_session_order[label] = None
+        heapq.heappush(
+            _preview_host_expiry_heap,
+            (expires_at.timestamp(), next(_registry_sequence), label),
+        )
+        _evict_preview_sessions_locked(now)
 
 
-def _lookup_preview_session(host_header: str) -> dict[str, Any] | None:
+async def _lookup_preview_session(host_header: str) -> dict[str, Any] | None:
     hostname, _ = _split_host(host_header)
     label = _host_label_from_hostname(hostname)
     if not label:
         return None
-    with _registry_lock:
+    now = datetime.now(timezone.utc)
+    async with _registry_lock:
+        _evict_preview_sessions_locked(now)
         entry = _preview_host_sessions.get(label)
-    if entry is None:
-        return None
-    if entry.expires_at <= datetime.now(timezone.utc):
-        with _registry_lock:
-            _preview_host_sessions.pop(label, None)
-        return None
+        if entry is None:
+            return None
+        if entry.expires_at <= now:
+            _discard_preview_session_locked(label)
+            return None
+        _preview_host_session_order.move_to_end(label)
     return entry.claims
 
 
@@ -287,7 +316,7 @@ async def _resolve_preview_session(
             pass  # fall through to registry
 
     # 2. Fall back to in-memory host-label registry
-    registry_claims = _lookup_preview_session(host_header or "")
+    registry_claims = await _lookup_preview_session(host_header or "")
     if registry_claims is not None and _preview_mode(registry_claims) == "workspace":
         await _enforce_shared_subdomain_allowed(registry_claims)
         _ensure_preview_host_matches_workspace(
@@ -381,7 +410,7 @@ async def preview_bootstrap(request: Request, grant: str):
     # Register session in the in-memory host registry so the proxy handler
     # can authenticate subsequent requests even when the browser refuses to
     # send the SameSite cookie (cross-site iframe context).
-    _register_preview_session(
+    await _register_preview_session(
         request.headers.get("host", ""),
         session_claims,
         expires_at,
