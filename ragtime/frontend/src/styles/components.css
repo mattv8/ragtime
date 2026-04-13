@@ -2343,6 +2343,8 @@ textarea:focus {
   min-height: 0;
   padding: 8px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .userspace-snapshot-diff-empty-state {
