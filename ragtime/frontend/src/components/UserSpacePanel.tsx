@@ -5874,7 +5874,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
       <FileDiffOverlay
         diff={activeSnapshotFileDiff}
-        diffKey={activeSnapshotFileDiffKey}
         loading={activeSnapshotFileDiffLoading}
         error={activeSnapshotFileDiffError}
         title={activeSnapshotFileDiffTitle}

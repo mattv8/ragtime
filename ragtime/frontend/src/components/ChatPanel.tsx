@@ -1471,8 +1471,8 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
     )}
     {showUserspaceDiffOverlay && (
       <FileDiffOverlay
+        key={userspaceFileDiffKey ?? 'userspace-file-diff-overlay'}
         diff={userspaceFileDiff}
-        diffKey={userspaceFileDiffKey}
         loading={userspaceFileDiffLoading}
         error={userspaceFileDiffError}
         title="Userspace File Diff"

@@ -4,7 +4,6 @@ import { UserSpaceFileDiffView, formatDiffStatus } from './UserSpaceFileDiffView
 
 export interface FileDiffOverlayProps {
   diff: UserSpaceSnapshotFileDiff | null;
-  diffKey: string | null;
   loading: boolean;
   error: string | null;
   title: string;
@@ -19,7 +18,6 @@ export interface FileDiffOverlayProps {
 
 export function FileDiffOverlay({
   diff,
-  diffKey,
   loading,
   error,
   title,
