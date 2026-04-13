@@ -145,7 +145,7 @@ _USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
 - If validation reports TypeScript/runtime/live-data failures, fix those exact failures before adding more feature work.
 - If preview appears blank/white but probe status is 200, first re-check runtime startup state and retry screenshot/content probe after a short settle window before changing app code.
 - After validation passes with no errors, call create_userspace_snapshot with a concise completion message.
-- Never skip validation or snapshot.
+- Do not skip validation or snapshot once the turn reaches a stable writeable outcome. If a genuine blocker prevents a safe write or runnable state, state the blocker explicitly instead of forcing finalization.
 - Finalization sequence: validate -> fix errors -> validate again -> snapshot.
 ]
 
@@ -758,7 +758,8 @@ USERSPACE_ENTRYPOINT_SETUP_PROMPT = """
 - Format: `{"command": "<launch command>", "cwd": ".", "framework": "<framework>"}`
 - Use `$PORT` as a placeholder for the runtime-assigned port. The runtime sets `PORT=<actual_port>` as an environment variable before executing the command, so `$PORT` is expanded by the shell.
 - Runtime compatibility is broader than the entrypoint command: if the app code itself hard-codes a port (for example `app.listen(5000)`, `uvicorn(..., port=5000)`, `const port = 3000`, Vite config fixed to 5173, or Replit-oriented defaults), update the code to read `PORT` and keep the launch path compatible with the assigned runtime port.
-- Framework values: `static`, `node`, `django`, `flask`, `fastapi`, `custom`.
+- Recognized framework values: `static`, `node`, `django`, `flask`, `fastapi`, `dash`, `gradio`, `streamlit`, `express`, `next`, `nuxt`, `vite`, `custom`.
+- Preferred defaults for new work: frontend/dashboard -> `node` (esbuild) or `static`; Python API/backend -> `fastapi` or `flask`; preserve an existing framework when the workspace already has one.
 - Examples:
   - Static HTML: `{"command": "python3 -m http.server $PORT --bind 0.0.0.0 --directory .", "cwd": ".", "framework": "static"}`
   - Node/esbuild: `{"command": "npx esbuild dashboard/main.ts --bundle --format=esm --outfile=dist/main.js --servedir=. --serve=0.0.0.0:$PORT --watch=forever", "cwd": ".", "framework": "node"}`
@@ -797,6 +798,7 @@ USERSPACE_ENTRYPOINT_SETUP_PROMPT = """
 #### Dependencies and tooling
 
 - Declare every non-stdlib runtime/build dependency in `package.json` or `requirements.txt` before referencing it in code or `.ragtime/runtime-entrypoint.json`.
+- Package imports are allowed when the workspace runtime/tooling resolves them. Static validation does not try to prove package-import validity; real browser import failures should come from the preview/runtime probe.
 - Runtime bootstrap installs declared dependencies only; it does not infer tools like `esbuild`, `vite`, or framework CLIs from the entrypoint command.
 - Node workspaces include managed Tailwind tooling bootstrap (`tailwindcss` + `@tailwindcss/cli`) when `package.json` is present, so you may use Tailwind utility classes when they improve implementation speed.
 - Tailwind is optional. Keep styling flexible and prompt-driven; use plain CSS tokens when that is a better fit for the request.
@@ -804,7 +806,7 @@ USERSPACE_ENTRYPOINT_SETUP_PROMPT = """
 - Do not inject CDN scripts for runtime dependencies in generated modules.
 - The runtime automatically applies theme-matched text, tick, grid, legend, and title colors to every Chart.js instance. Do NOT set `color`, `ticks.color`, `grid.color`, `labels.color`, or `title.color` in chart options; the runtime handles them. Only set data-specific colors (dataset `backgroundColor`, `borderColor`, etc.).
 - Do not inject DataTables CDN scripts in generated User Space modules.
-- Prefer local workspace modules (`./` or `../`) for internal code organization.
+- Prefer simple local workspace modules for internal organization in new code, but keep existing aliases or package-based structure when the workspace/tooling already uses them.
 - If JSX is used, keep it out of `dashboard/main.ts`; maintain `dashboard/main.ts` as a valid TypeScript render entrypoint.
 """
 

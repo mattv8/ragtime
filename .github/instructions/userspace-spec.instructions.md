@@ -4,7 +4,7 @@ applyTo: 'ragtime/userspace/**, runtime/**'
 
 # User Space Feature Implementation Instructions
 
-Last updated: 2026-04-10 (codebase-scanned; concise agent-focused)
+Last updated: 2026-04-13 (codebase-scanned; concise agent-focused)
 
 ## Scope
 
@@ -46,6 +46,9 @@ Last updated: 2026-04-10 (codebase-scanned; concise agent-focused)
 - The runtime bootstrap template includes a migration apply command for the default runner and watches both the runner path and migrations directory for digest changes.
 - Agents may update `.ragtime/scripts/sqlite_migrate.py` and `.ragtime/db/migrations/*` via file tools when implementing persistence changes.
 - `dashboard_entrypoint.js`, `runtime_bridge.js`, and `sqlite_migrate.py` templates live in `templates/`.
+- Independent preview subdomains affect routing, cookies, and origin isolation only; they do **not** make package/bare imports invalid by themselves.
+- Node/server files and bundled frontend apps can legitimately import dependencies declared in `package.json` (and Node built-ins where applicable). Only browser-served source modules need browser-resolvable specifiers at runtime.
+- Static validation should not try to police package imports heuristically. Keep it focused on deterministic local-import traversal and let runtime/preview probes surface real browser module-resolution failures.
 
 ## Entrypoint Status + Framework Lock-In
 
@@ -160,6 +163,8 @@ Modifying `_sync_usr_for_chroot`, `_sync_system_dirs_for_chroot`, `provision_roo
 - Component `execute()` timeouts can still blank dashboards if generated code lacks try/catch fallback rendering.
 - Prefer prompt/tooling fixes for these issues; do not patch proxy layer beyond the existing bridge injection.
 - `validate_userspace_code` + contract metadata alone are not sufficient for live-data persistence; execution-proof checks can still reject writes until component queries have been executed successfully.
+- Static validation follows workspace-local relative imports when traversing files, but that is not the same as a runtime ban on package imports. Do not describe all bare imports as unsupported; treat them as a problem only when the actual browser-served module fails to resolve them.
+- Prefer minimal platform guidance: let agents build Replit-like apps with whatever devserver/tooling fits the workspace, and reserve validation for constraints the platform can verify robustly.
 
 ## Fast Workflow for User Space Changes
 
