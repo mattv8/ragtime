@@ -644,9 +644,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
   const selectedFilePathRef = useRef(selectedFilePath);
   const fileContentCacheRef = useRef(fileContentCache);
+  const activeWorkspaceIdRef = useRef<string | null>(activeWorkspaceId);
   const loadWorkspaceDataRequestIdRef = useRef(0);
   const loadChangedFileStateRequestIdRef = useRef(0);
   const loadRuntimeStatusRequestIdRef = useRef(0);
+  const previewLaunchRequestIdRef = useRef(0);
   const snapshotDiffSummaryRequestIdsRef = useRef<Record<string, number>>({});
   const snapshotFileDiffRequestIdRef = useRef(0);
   const fileDirtyRef = useRef(false);
@@ -680,21 +682,37 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   }, []);
 
   const launchPreviewSurface = useCallback(async (workspaceId: string): Promise<string> => {
-    setPreviewAuthorizationPending(true);
+    const requestId = ++previewLaunchRequestIdRef.current;
+    const isCurrentRequest = () => (
+      requestId === previewLaunchRequestIdRef.current
+      && activeWorkspaceIdRef.current === workspaceId
+    );
+
+    if (isCurrentRequest()) {
+      setPreviewAuthorizationPending(true);
+    }
+
     try {
       const response = await api.launchUserSpacePreview(workspaceId, {
         path: '/',
         parent_origin: window.location.origin,
       });
+      if (!isCurrentRequest()) {
+        return '';
+      }
       setPreviewFrameUrl(response.preview_url);
       setPreviewOrigin(response.preview_origin);
       return response.preview_url;
     } catch (err) {
-      setPreviewFrameUrl(null);
-      setPreviewOrigin(null);
+      if (isCurrentRequest()) {
+        setPreviewFrameUrl(null);
+        setPreviewOrigin(null);
+      }
       throw err;
     } finally {
-      setPreviewAuthorizationPending(false);
+      if (isCurrentRequest()) {
+        setPreviewAuthorizationPending(false);
+      }
     }
   }, []);
 
@@ -2006,6 +2024,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     fileBrowserEntriesRef.current = fileBrowserEntries;
   }, [fileBrowserEntries]);
 
+  useEffect(() => {
+    activeWorkspaceIdRef.current = activeWorkspaceId;
+  }, [activeWorkspaceId]);
+
   const refreshActiveWorkspaceState = useCallback(async () => {
     if (!activeWorkspaceId) {
       setRuntimeStatus(null);
@@ -2800,12 +2822,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   useEffect(() => {
     if (!activeWorkspaceId) {
+      previewLaunchRequestIdRef.current += 1;
+      setError(null);
+      setRuntimeStatus(null);
+      setActiveWorkspaceChatSnapshot(null);
       setPreviewFrameUrl(null);
       setPreviewOrigin(null);
       setPreviewAuthorizationPending(false);
       return;
     }
 
+    previewLaunchRequestIdRef.current += 1;
+    setError(null);
+    setRuntimeStatus(null);
+    setActiveWorkspaceChatSnapshot(null);
     setPreviewFrameUrl(null);
     setPreviewOrigin(null);
     setPreviewAuthorizationPending(true);
