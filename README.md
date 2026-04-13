@@ -81,6 +81,32 @@ flowchart LR
 - Public sharing uses direct routes (`/{owner}/{slug}` and `/shared/{token}`), with token links redirecting to canonical slug URLs.
 - Password-protected shares are handled server-side with a full-page prompt.
 
+### Preview DNS Setup (Reverse Proxy Deployments)
+
+Userspace previews use per-workspace subdomains. By default, Ragtime derives those preview hosts from its public origin, so a deployment at `https://ragtime.example.com` launches previews under `https://<workspace>.ragtime.example.com`.
+
+If you want previews to use a separate wildcard domain instead, set `USERSPACE_PREVIEW_BASE_DOMAIN` to that domain, for example `example-userspaces.com`. In either setup, wildcard DNS and TLS must route preview hosts back to Ragtime.
+
+1. Decide whether to keep the derived host family or override it explicitly:
+  - Derived default: `https://ragtime.example.com` -> `https://<workspace>.ragtime.example.com`
+  - Explicit override: `USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com` -> `https://<workspace>.example-userspaces.com`
+2. Add a wildcard DNS record for the chosen preview base domain:
+  - `*.ragtime.example.com` or `*.example-userspaces.com` -> your public Ragtime entrypoint (A, AAAA, or CNAME)
+3. Ensure your reverse proxy accepts and routes wildcard hosts for that domain to Ragtime.
+4. Ensure TLS certificates cover the wildcard domain if using HTTPS.
+5. Optionally set these environment variables in `.env`:
+
+```bash
+EXTERNAL_BASE_URL=https://ragtime.example.com
+USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com
+```
+
+Notes:
+- Keep `SESSION_COOKIE_SECURE=true` when traffic is HTTPS at the edge.
+- Forward `Host` and `X-Forwarded-Proto` headers through the proxy.
+- Legacy path-based preview proxy routes still exist for older links, but new preview launches use subdomains.
+- In local development with `DEBUG_MODE=true`, Ragtime uses `userspace-preview.lvh.me` automatically.
+
 ## Vector Store Abstraction
 
 Ragtime uses **two vector backends**: **FAISS** (in-memory, loaded at startup) and **pgvector** (PostgreSQL, persistent). Upload and Git indexes use a unified indexer and can use either backend.

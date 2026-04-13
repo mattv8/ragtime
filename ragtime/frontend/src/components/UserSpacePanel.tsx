@@ -19,7 +19,7 @@ import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
@@ -37,6 +37,7 @@ interface UserSpacePanelProps {
   debugMode?: boolean;
   onFullscreenChange?: (fullscreen: boolean) => void;
   onNavigateToTools?: (section?: string) => void;
+  onPreviewWarningChange?: (warning: UserSpacePreviewWarning | null) => void;
 }
 
 interface WorkspaceChatState {
@@ -452,7 +453,7 @@ function getApiErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenChange, onNavigateToTools }: UserSpacePanelProps) {
+export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenChange, onNavigateToTools, onPreviewWarningChange }: UserSpacePanelProps) {
   const previewEntryPath = 'dashboard/main.ts';
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
   const [workspacesTotal, setWorkspacesTotal] = useState(0);
@@ -702,6 +703,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       }
       setPreviewFrameUrl(response.preview_url);
       setPreviewOrigin(response.preview_origin);
+      onPreviewWarningChange?.(response.preview_warning ?? null);
       return response.preview_url;
     } catch (err) {
       if (isCurrentRequest()) {
@@ -714,7 +716,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         setPreviewAuthorizationPending(false);
       }
     }
-  }, []);
+  }, [onPreviewWarningChange]);
 
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(180);

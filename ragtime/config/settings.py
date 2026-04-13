@@ -55,11 +55,13 @@ class Settings(BaseSettings):
         ),
     )
     userspace_preview_base_domain: str = Field(
-        default="userspace-preview.lvh.me",
+        default="",
         alias="USERSPACE_PREVIEW_BASE_DOMAIN",
         description=(
-            "Wildcard base domain used for per-workspace preview origins "
-            "(for example https://<workspace>.userspace-preview.example.com)."
+            "Optional wildcard base-domain override for per-workspace preview "
+            "origins. Leave unset to derive preview hosts from the active "
+            "Ragtime origin; set it when previews should use a different "
+            "host family such as example-userspaces.com."
         ),
     )
     enable_https: bool = Field(

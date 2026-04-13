@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, onAuthExpired } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, UserSpaceSharedView, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, UserSpaceSharedView, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner, WarningsBanner } from '@/components';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
-import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ConfigurationWarning } from '@/types';
+import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ConfigurationWarning, UserSpacePreviewWarning } from '@/types';
 import type { OAuthParams } from '@/components';
 import '@/styles/global.css';
 
@@ -113,6 +113,7 @@ export function App() {
   const [filesystemJobs, setFilesystemJobs] = useState<FilesystemIndexJob[]>([]);
   const [aggregateSearch, setAggregateSearch] = useState(true);
   const [embeddingDimensions, setEmbeddingDimensions] = useState<number | null>(null);
+  const [previewWarning, setPreviewWarning] = useState<UserSpacePreviewWarning | null>(null);
 
   // Schema indexer state
   const [schemaJobs, setSchemaJobs] = useState<SchemaIndexJob[]>([]);
@@ -647,6 +648,12 @@ export function App() {
           }
         }}
       />
+      <WarningsBanner
+        title={previewWarning?.title || 'Userspace Preview Setup'}
+        warnings={previewWarning?.warnings || []}
+        dismissKey={previewWarning?.dismiss_key}
+        hidden={hideChrome || !isAdmin}
+      />
       <div className="container">
 
       {activeView === 'userspace' ? (
@@ -655,6 +662,7 @@ export function App() {
             currentUser={currentUser}
             debugMode={Boolean(authStatus?.debug_mode)}
             onFullscreenChange={setUserspaceFullscreen}
+            onPreviewWarningChange={setPreviewWarning}
             onNavigateToTools={(section) => {
               setHighlightToolsSection(section || 'mount-sources');
               setActiveView('tools');

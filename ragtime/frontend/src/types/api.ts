@@ -2339,11 +2339,27 @@ export interface UserSpacePreviewLaunchRequest {
   prefer_root_proxy?: boolean;
 }
 
+export type UserSpacePreviewRoutingMode = 'subdomain' | 'root_proxy';
+export type UserSpacePreviewWarningSource = 'configured' | 'derived' | 'debug_default';
+export type UserSpacePreviewWarningCode = 'preview_dns_unresolvable' | 'preview_dev_domain_outside_debug';
+
+export interface UserSpacePreviewWarning {
+  issue_code: UserSpacePreviewWarningCode;
+  title: string;
+  warnings: string[];
+  dismiss_key: string;
+  preview_routing_mode: UserSpacePreviewRoutingMode;
+  resolved_base_domain?: string | null;
+  preview_host?: string | null;
+  source: UserSpacePreviewWarningSource;
+}
+
 export interface UserSpacePreviewLaunchResponse {
   workspace_id: string;
   preview_url: string;
   preview_origin: string;
   expires_at: string;
+  preview_warning?: UserSpacePreviewWarning | null;
 }
 
 export type UserSpaceBrowserSurface = 'collab' | 'runtime_pty';

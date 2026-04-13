@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings
-from ragtime.core.auth import get_browser_matched_origin
+from ragtime.core.auth import decode_access_token, get_browser_matched_origin
 from ragtime.core.rate_limit import SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.security import get_current_user, get_current_user_optional
 from ragtime.userspace.models import (
@@ -1450,4 +1450,98 @@ async def collab_delete_file(
         user_id,
     )
     return result
-    return result
+
+
+# ---------------------------------------------------------------------------
+# Same-origin path-based preview proxy
+#
+# These routes remain available for backwards compatibility with existing
+# preview URLs and explicit root-proxy flows, but preview-launch now prefers
+# dedicated preview subdomains instead of implicitly falling back here.
+# ---------------------------------------------------------------------------
+
+
+@router.api_route("/workspaces/{workspace_id}/preview", methods=_PROXY_METHODS)
+@router.api_route(
+    "/workspaces/{workspace_id}/preview/{path:path}", methods=_PROXY_METHODS
+)
+async def workspace_preview_path_proxy(
+    workspace_id: str,
+    request: Request,
+    path: str = "",
+    user: Any = Depends(get_current_user),
+) -> Response:
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "viewer")
+    upstream_url = await userspace_runtime_service.build_workspace_preview_upstream_url(
+        workspace_id,
+        user.id,
+        path,
+        query=_sanitize_preview_query(request.url.query),
+    )
+    return await _proxy_http_request(
+        request,
+        upstream_url,
+        bridge_workspace_id=workspace_id,
+    )
+
+
+@router.websocket("/workspaces/{workspace_id}/preview")
+@router.websocket("/workspaces/{workspace_id}/preview/{path:path}")
+async def workspace_preview_path_websocket(
+    workspace_id: str,
+    websocket: WebSocket,
+    path: str = "",
+) -> None:
+    session_token = websocket.cookies.get("ragtime_session", "").strip()
+    token_data = decode_access_token(session_token) if session_token else None
+    if not token_data:
+        await websocket.close(code=4401)
+        return
+    try:
+        await userspace_service.enforce_workspace_role(
+            workspace_id, token_data.user_id, "viewer"
+        )
+    except HTTPException:
+        await websocket.close(code=4403)
+        return
+    upstream_url = await userspace_runtime_service.build_workspace_preview_upstream_url(
+        workspace_id,
+        token_data.user_id,
+        path,
+        query=_sanitize_preview_query(websocket.url.query),
+    )
+    await _proxy_websocket_request(websocket, _to_websocket_url(upstream_url))
+
+
+@router.api_route("/shared/{share_token}/preview", methods=_PROXY_METHODS)
+@router.api_route("/shared/{share_token}/preview/{path:path}", methods=_PROXY_METHODS)
+async def shared_preview_path_proxy(
+    share_token: str,
+    request: Request,
+    path: str = "",
+    share_password: str | None = Header(
+        default=None, alias="X-UserSpace-Share-Password"
+    ),
+    user: Any | None = Depends(get_current_user_optional),
+) -> Response:
+    share_auth_token = share_auth_token_from_request(
+        request.headers,
+        request.cookies,
+        share_token=share_token,
+    )
+    workspace_id = await userspace_service.resolve_shared_workspace_id(
+        share_token,
+        current_user=user,
+        password=share_password,
+        share_auth_token=share_auth_token,
+    )
+    upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
+        workspace_id,
+        path,
+        query=_sanitize_preview_query(request.url.query),
+    )
+    return await _proxy_http_request(
+        request,
+        upstream_url,
+        bridge_workspace_id=workspace_id,
+    )

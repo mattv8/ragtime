@@ -52,6 +52,12 @@ WorkspaceMountSyncMode = Literal[
     "target_authoritative",
 ]
 UserSpaceBrowserSurface = Literal["collab", "runtime_pty"]
+UserSpacePreviewRoutingMode = Literal["subdomain", "root_proxy"]
+UserSpacePreviewWarningSource = Literal["configured", "derived", "debug_default"]
+UserSpacePreviewWarningCode = Literal[
+    "preview_dns_unresolvable",
+    "preview_dev_domain_outside_debug",
+]
 
 
 class WorkspaceMember(BaseModel):
@@ -579,11 +585,23 @@ class UserSpacePreviewLaunchRequest(BaseModel):
     prefer_root_proxy: bool = False
 
 
+class UserSpacePreviewWarning(BaseModel):
+    issue_code: UserSpacePreviewWarningCode
+    title: str
+    warnings: list[str] = Field(default_factory=list)
+    dismiss_key: str
+    preview_routing_mode: UserSpacePreviewRoutingMode = "subdomain"
+    resolved_base_domain: str | None = None
+    preview_host: str | None = None
+    source: UserSpacePreviewWarningSource = "derived"
+
+
 class UserSpacePreviewLaunchResponse(BaseModel):
     workspace_id: str
     preview_url: str
     preview_origin: str
     expires_at: datetime
+    preview_warning: UserSpacePreviewWarning | None = None
 
 
 class UserSpaceBrowserAuthRequest(BaseModel):

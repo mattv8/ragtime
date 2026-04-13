@@ -15,18 +15,20 @@ from fastapi.responses import RedirectResponse
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import JSONResponse
 
-from ragtime.config import settings
-from ragtime.userspace.models import (ExecuteComponentRequest,
-                                      ExecuteComponentResponse)
-from ragtime.userspace.runtime_routes import (_PROXY_METHODS,
-                                              _proxy_http_request,
-                                              _proxy_websocket_request,
-                                              _sanitize_preview_query,
-                                              _to_websocket_url)
+from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse
+from ragtime.userspace.runtime_routes import (
+    _PROXY_METHODS,
+    _proxy_http_request,
+    _proxy_websocket_request,
+    _sanitize_preview_query,
+    _to_websocket_url,
+)
 from ragtime.userspace.runtime_service import (
-    _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN, _RUNTIME_PREVIEW_GRANT_KIND,
-    _RUNTIME_PREVIEW_SESSION_COOKIE_NAME, _RUNTIME_PREVIEW_SESSION_KIND,
-    userspace_runtime_service)
+    _RUNTIME_PREVIEW_GRANT_KIND,
+    _RUNTIME_PREVIEW_SESSION_COOKIE_NAME,
+    _RUNTIME_PREVIEW_SESSION_KIND,
+    userspace_runtime_service,
+)
 from ragtime.userspace.service import userspace_service
 
 preview_host_app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
@@ -174,7 +176,9 @@ def _split_host(value: str | None) -> tuple[str, str | None]:
         end = raw.find("]")
         if end != -1:
             host = raw[: end + 1]
-            port = raw[end + 2 :] if len(raw) > end + 2 and raw[end + 1] == ":" else None
+            port = (
+                raw[end + 2 :] if len(raw) > end + 2 and raw[end + 1] == ":" else None
+            )
             return host.lower(), port or None
     if ":" not in raw:
         return raw.lower(), None
@@ -184,17 +188,9 @@ def _split_host(value: str | None) -> tuple[str, str | None]:
     return raw.lower(), None
 
 
-def _preview_base_domains() -> set[str]:
-    base_domain = str(getattr(settings, "userspace_preview_base_domain", "") or "").strip().strip(".").lower()
-    domains = {base_domain} if base_domain else set()
-    if base_domain == _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN:
-        domains.add("localhost")
-    return domains
-
-
 def is_preview_host(host_header: str | None) -> bool:
     hostname, _ = _split_host(host_header)
-    base_domains = _preview_base_domains()
+    base_domains = userspace_runtime_service.get_preview_base_domains()
     if not hostname or not base_domains:
         return False
     return any(hostname.endswith(f".{base_domain}") for base_domain in base_domains)
@@ -213,8 +209,10 @@ def _is_equivalent_preview_host(actual_host: str, expected_host: str) -> bool:
     if not actual_label or actual_label != expected_label:
         return False
 
-    base_domains = _preview_base_domains()
-    return any(actual_hostname.endswith(f".{base_domain}") for base_domain in base_domains) and any(
+    base_domains = userspace_runtime_service.get_preview_base_domains()
+    return any(
+        actual_hostname.endswith(f".{base_domain}") for base_domain in base_domains
+    ) and any(
         expected_hostname.endswith(f".{base_domain}") for base_domain in base_domains
     )
 
@@ -233,9 +231,13 @@ def _ensure_preview_host_matches_workspace(
 ) -> None:
     expected = str(expected_host or "").strip().lower()
     if not expected:
-        expected = urlsplit(userspace_runtime_service.get_preview_origin(workspace_id)).netloc.lower()
+        expected = urlsplit(
+            userspace_runtime_service.get_preview_origin(workspace_id)
+        ).netloc.lower()
     actual_host = str(host_header or "").strip().lower()
-    if actual_host != expected and not _is_equivalent_preview_host(actual_host, expected):
+    if actual_host != expected and not _is_equivalent_preview_host(
+        actual_host, expected
+    ):
         raise HTTPException(status_code=404, detail="Preview host mismatch")
 
 
@@ -256,7 +258,9 @@ def _verify_preview_session_token(token: str | None) -> dict[str, Any]:
     )
 
 
-async def _resolve_public_preview_session(host_header: str | None) -> dict[str, Any] | None:
+async def _resolve_public_preview_session(
+    host_header: str | None,
+) -> dict[str, Any] | None:
     workspace_id = _workspace_id_from_preview_host(host_header)
     if not workspace_id:
         return None
@@ -288,7 +292,10 @@ async def _enforce_shared_subdomain_allowed(claims: dict[str, Any]) -> None:
     if current_mode and current_mode != "token":
         session_access_mode = str(claims.get("share_access_mode") or "").strip()
         if session_access_mode != current_mode:
-            raise HTTPException(status_code=401, detail="Share access changed \u2014 please use the share link again")
+            raise HTTPException(
+                status_code=401,
+                detail="Share access changed \u2014 please use the share link again",
+            )
 
 
 async def _resolve_preview_session(
@@ -500,7 +507,9 @@ class PreviewHostDispatchMiddleware:
     def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(self, scope: MutableMapping[str, Any], receive: Any, send: Any) -> None:
+    async def __call__(
+        self, scope: MutableMapping[str, Any], receive: Any, send: Any
+    ) -> None:
         if scope.get("type") in {"http", "websocket"} and is_preview_host(
             _scope_host(scope)
         ):

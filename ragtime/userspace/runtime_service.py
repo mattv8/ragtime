@@ -7,6 +7,7 @@ import json
 import os
 import posixpath
 import re
+import socket
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
@@ -24,17 +25,20 @@ from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.workspace_state import build_workspace_chat_state
-from ragtime.userspace.models import (RuntimeOperationPhase,
-                                      RuntimeSessionState,
-                                      UserSpaceCapabilityTokenResponse,
-                                      UserSpaceCollabSnapshotResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpacePreviewLaunchResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSession,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse,
-                                      UserSpaceWorkspaceTabStateResponse)
+from ragtime.userspace.models import (
+    RuntimeOperationPhase,
+    RuntimeSessionState,
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceCollabSnapshotResponse,
+    UserSpaceFileResponse,
+    UserSpacePreviewLaunchResponse,
+    UserSpacePreviewWarning,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSession,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+    UserSpaceWorkspaceTabStateResponse,
+)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -113,6 +117,7 @@ class UserSpaceRuntimeService:
         self._workspace_event_payload: dict[str, dict[str, Any]] = {}
         self._runtime_watch_workspaces: set[str] = set()
         self._runtime_watch_signatures: dict[str, tuple[Any, ...]] = {}
+        self._preview_base_domains: set[str] = set()
         self._preview_upstream_cache: dict[str, _PreviewUpstreamCacheEntry] = {}
         self._provider_status_cache: dict[str, _ProviderStatusCacheEntry] = {}
         self._preview_probe_cache: dict[str, _PreviewProbeCacheEntry] = {}
@@ -163,31 +168,127 @@ class UserSpaceRuntimeService:
 
     @staticmethod
     def _is_localhost_like_host(hostname: str | None) -> bool:
-        normalized = str(hostname or "").strip().strip(".").lower()
-        return normalized == "localhost" or normalized.endswith(".localhost")
-
-    def _resolve_preview_base_domain(self, hostname: str | None) -> str:
-        configured = (
-            str(getattr(settings, "userspace_preview_base_domain", "") or "")
-            .strip()
-            .strip(".")
-            .lower()
+        normalized = str(hostname or "").strip().strip(".").lower().strip("[]")
+        return normalized in {"localhost", "127.0.0.1", "::1"} or normalized.endswith(
+            ".localhost"
         )
-        if not configured:
+
+    @staticmethod
+    def _normalize_preview_base_domain_candidate(value: str | None) -> str | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+        candidate = (parsed.hostname or raw).strip().strip(".").lower()
+        if candidate.startswith("*."):
+            candidate = candidate[2:]
+        if not candidate or any(char.isspace() for char in candidate):
+            return None
+        return candidate
+
+    def _configured_preview_base_domain(self) -> str | None:
+        return self._normalize_preview_base_domain_candidate(
+            getattr(settings, "userspace_preview_base_domain", "")
+        )
+
+    def _resolve_preview_base_domain(
+        self,
+        control_plane_origin: str | None,
+    ) -> tuple[str, str]:
+        configured = self._configured_preview_base_domain()
+        if configured:
+            return configured, "configured"
+
+        parsed = urlsplit(str(control_plane_origin or "").strip())
+        hostname = str(parsed.hostname or "").strip().strip(".").lower()
+        if not hostname:
             raise HTTPException(
                 status_code=500,
-                detail="USERSPACE_PREVIEW_BASE_DOMAIN is not configured",
+                detail="Unable to derive userspace preview domain from the current origin",
             )
 
-        if (
-            configured == _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN
-            and self._is_localhost_like_host(hostname)
-        ):
-            # Keep preview origins same-site with localhost-based editor sessions so
-            # embedded preview iframes can carry the preview session cookie.
-            return "localhost"
+        if bool(
+            getattr(settings, "debug_mode", False)
+        ) and self._is_localhost_like_host(hostname):
+            return _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN, "debug_default"
+        if self._is_localhost_like_host(hostname):
+            return "localhost", "derived"
+        return hostname, "derived"
 
-        return configured
+    def _remember_preview_base_domain(self, base_domain: str) -> None:
+        normalized = self._normalize_preview_base_domain_candidate(base_domain)
+        if normalized:
+            self._preview_base_domains.add(normalized)
+
+    def get_preview_base_domains(self) -> set[str]:
+        domains = {
+            domain
+            for domain in self._preview_base_domains
+            if self._normalize_preview_base_domain_candidate(domain)
+        }
+        configured = self._configured_preview_base_domain()
+        if configured:
+            domains.add(configured)
+        if bool(getattr(settings, "debug_mode", False)):
+            domains.add(_DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN)
+        return domains
+
+    def _build_preview_launch_warning(
+        self,
+        *,
+        preview_origin: str,
+        resolved_base_domain: str,
+        source: str,
+    ) -> UserSpacePreviewWarning | None:
+        parsed = urlsplit(preview_origin)
+        preview_host = str(parsed.hostname or "").strip().lower()
+        if not preview_host:
+            return None
+
+        if source == "debug_default":
+            return None
+        if self._is_localhost_like_host(
+            resolved_base_domain
+        ) or resolved_base_domain.endswith(".localhost"):
+            return None
+        if resolved_base_domain == _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN:
+            return UserSpacePreviewWarning(
+                issue_code="preview_dev_domain_outside_debug",
+                title="Userspace preview domain is using the dev-only default",
+                warnings=[
+                    "The preview host currently resolves under userspace-preview.lvh.me, which is intended for DEBUG_MODE localhost development only.",
+                    "Unset USERSPACE_PREVIEW_BASE_DOMAIN to auto-derive preview hosts from your deployed Ragtime origin, or set it to a real wildcard preview domain.",
+                    "Configure wildcard DNS and TLS for the preview host family before relying on subdomain previews remotely.",
+                ],
+                dismiss_key=f"userspace-preview-warning:{resolved_base_domain}:dev-domain",
+                resolved_base_domain=resolved_base_domain,
+                preview_host=preview_host,
+                source=cast(Any, source),
+            )
+
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            socket.getaddrinfo(preview_host, port, type=socket.SOCK_STREAM)
+        except OSError:
+            derived_hint = (
+                "Leave USERSPACE_PREVIEW_BASE_DOMAIN unset to keep deriving preview hosts from the current Ragtime origin."
+                if source == "derived"
+                else f"Verify USERSPACE_PREVIEW_BASE_DOMAIN points at a wildcard-enabled host family such as {resolved_base_domain}."
+            )
+            return UserSpacePreviewWarning(
+                issue_code="preview_dns_unresolvable",
+                title="Userspace preview DNS is not resolving",
+                warnings=[
+                    f"The preview host {preview_host} did not resolve during launch-time checks, so new subdomain previews are likely to fail to load.",
+                    derived_hint,
+                    f"Configure wildcard DNS and TLS for *.{resolved_base_domain} so requests route back to Ragtime.",
+                ],
+                dismiss_key=f"userspace-preview-warning:{resolved_base_domain}:dns",
+                resolved_base_domain=resolved_base_domain,
+                preview_host=preview_host,
+                source=cast(Any, source),
+            )
+        return None
 
     def _build_preview_origin(
         self,
@@ -195,13 +296,13 @@ class UserSpaceRuntimeService:
         *,
         control_plane_origin: str | None = None,
     ) -> str:
-        parsed = urlsplit(control_plane_origin or self._default_public_control_plane_origin())
-        if self._is_localhost_like_host(parsed.hostname):
-            # Keep preview hosts on the backend listener in dev so requests hit the
-            # preview dispatcher instead of the Vite UI server, while still staying
-            # same-site with localhost-based editor sessions.
-            parsed = urlsplit(self._default_public_control_plane_origin())
-        base_domain = self._resolve_preview_base_domain(parsed.hostname)
+        parsed = urlsplit(
+            control_plane_origin or self._default_public_control_plane_origin()
+        )
+        base_domain, _ = self._resolve_preview_base_domain(
+            control_plane_origin or self._default_public_control_plane_origin()
+        )
+        self._remember_preview_base_domain(base_domain)
         host = f"{self._preview_host_label(workspace_id)}.{base_domain}"
         port = parsed.port
         use_default_port = (parsed.scheme == "https" and port in {None, 443}) or (
@@ -229,9 +330,7 @@ class UserSpaceRuntimeService:
     ) -> tuple[str, datetime]:
         now = self._utc_now()
         expires_at = now + timedelta(seconds=max(60, min(ttl_seconds, 86400)))
-        payload = {
-            key: value for key, value in claims.items() if value is not None
-        }
+        payload = {key: value for key, value in claims.items() if value is not None}
         payload.update(
             {
                 "iat": int(now.timestamp()),
@@ -239,7 +338,9 @@ class UserSpaceRuntimeService:
                 "jti": str(uuid4()),
             }
         )
-        token = jwt.encode(payload, settings.encryption_key, algorithm=settings.jwt_algorithm)
+        token = jwt.encode(
+            payload, settings.encryption_key, algorithm=settings.jwt_algorithm
+        )
         return token, expires_at
 
     def _sanitize_preview_path(self, path: str | None, query: str | None = None) -> str:
@@ -264,22 +365,26 @@ class UserSpaceRuntimeService:
         share_slug: str | None = None,
         share_access_mode: str | None = None,
     ) -> UserSpacePreviewLaunchResponse:
+        resolved_base_domain, source = self._resolve_preview_base_domain(
+            control_plane_origin
+        )
+        self._remember_preview_base_domain(resolved_base_domain)
         preview_origin = self._build_preview_origin(
             workspace_id,
             control_plane_origin=control_plane_origin,
         )
         preview_host = urlsplit(preview_origin).netloc.lower()
         grant_payload: dict[str, Any] = {
-                "kind": _RUNTIME_PREVIEW_GRANT_KIND,
-                "sub": subject_user_id,
-                "workspace_id": workspace_id,
-                "preview_mode": mode,
-                "preview_host": preview_host,
-                "parent_origin": (parent_origin or "").strip() or None,
-                "target_path": path,
-                "share_token": share_token,
-                "owner_username": owner_username,
-                "share_slug": share_slug,
+            "kind": _RUNTIME_PREVIEW_GRANT_KIND,
+            "sub": subject_user_id,
+            "workspace_id": workspace_id,
+            "preview_mode": mode,
+            "preview_host": preview_host,
+            "parent_origin": (parent_origin or "").strip() or None,
+            "target_path": path,
+            "share_token": share_token,
+            "owner_username": owner_username,
+            "share_slug": share_slug,
         }
         if share_access_mode:
             grant_payload["share_access_mode"] = share_access_mode
@@ -293,9 +398,16 @@ class UserSpaceRuntimeService:
             preview_origin=preview_origin,
             preview_url=f"{preview_origin}/__ragtime/bootstrap?{bootstrap_query}",
             expires_at=expires_at,
+            preview_warning=self._build_preview_launch_warning(
+                preview_origin=preview_origin,
+                resolved_base_domain=resolved_base_domain,
+                source=source,
+            ),
         )
 
-    def build_preview_session_token(self, claims: dict[str, Any]) -> tuple[str, datetime]:
+    def build_preview_session_token(
+        self, claims: dict[str, Any]
+    ) -> tuple[str, datetime]:
         payload = dict(claims)
         payload["kind"] = _RUNTIME_PREVIEW_SESSION_KIND
         return self._build_preview_token(
@@ -314,7 +426,9 @@ class UserSpaceRuntimeService:
                 ),
             )
         except JWTError as exc:
-            raise HTTPException(status_code=401, detail="Invalid preview token") from exc
+            raise HTTPException(
+                status_code=401, detail="Invalid preview token"
+            ) from exc
 
         if str(claims.get("kind") or "").strip() != expected_kind:
             raise HTTPException(status_code=401, detail="Invalid preview token")
@@ -562,9 +676,9 @@ class UserSpaceRuntimeService:
 
     @staticmethod
     def _cache_entry_is_fresh(cached_at: datetime, max_age_seconds: float) -> bool:
-        return (
-            datetime.now(timezone.utc) - cached_at
-        ).total_seconds() <= max(0.0, max_age_seconds)
+        return (datetime.now(timezone.utc) - cached_at).total_seconds() <= max(
+            0.0, max_age_seconds
+        )
 
     async def _cache_preview_upstream_session(
         self,
@@ -572,12 +686,14 @@ class UserSpaceRuntimeService:
     ) -> None:
         now = self._utc_now()
         async with self._runtime_cache_lock:
-            self._preview_upstream_cache[session.workspace_id] = _PreviewUpstreamCacheEntry(
-                provider_session_id=session.provider_session_id,
-                base_url=self._resolve_preview_base_url(session),
-                cached_at=now,
-                expires_at=now
-                + timedelta(seconds=_RUNTIME_PREVIEW_UPSTREAM_CACHE_TTL_SECONDS),
+            self._preview_upstream_cache[session.workspace_id] = (
+                _PreviewUpstreamCacheEntry(
+                    provider_session_id=session.provider_session_id,
+                    base_url=self._resolve_preview_base_url(session),
+                    cached_at=now,
+                    expires_at=now
+                    + timedelta(seconds=_RUNTIME_PREVIEW_UPSTREAM_CACHE_TTL_SECONDS),
+                )
             )
 
     async def _get_cached_preview_upstream_base_url(
@@ -601,9 +717,11 @@ class UserSpaceRuntimeService:
         if not provider_session_id:
             return
         async with self._runtime_cache_lock:
-            self._provider_status_cache[provider_session_id] = _ProviderStatusCacheEntry(
-                payload=dict(payload),
-                cached_at=self._utc_now(),
+            self._provider_status_cache[provider_session_id] = (
+                _ProviderStatusCacheEntry(
+                    payload=dict(payload),
+                    cached_at=self._utc_now(),
+                )
             )
 
     async def _get_cached_provider_status(
@@ -647,8 +765,9 @@ class UserSpaceRuntimeService:
     ) -> None:
         await self.invalidate_preview_session_cache(workspace_id)
         if invalidate_preview_host:
-            from ragtime.userspace.preview_host import \
-                invalidate_preview_sessions_for_workspace
+            from ragtime.userspace.preview_host import (
+                invalidate_preview_sessions_for_workspace,
+            )
 
             await invalidate_preview_sessions_for_workspace(workspace_id)
 
@@ -1231,7 +1350,9 @@ class UserSpaceRuntimeService:
             )
             raise HTTPException(status_code=404, detail="Workspace not found") from exc
         session = self._to_runtime_session(row)
-        await self._cache_provider_status(session.provider_session_id or "", provider_data)
+        await self._cache_provider_status(
+            session.provider_session_id or "", provider_data
+        )
         await self._cache_preview_upstream_session(session)
         return session
 
@@ -2304,7 +2425,9 @@ class UserSpaceRuntimeService:
             async with self._collab_lock:
                 state = self._collab_docs.get(key)
                 if state is None:
-                    raise HTTPException(status_code=409, detail="Collaboration state unavailable")
+                    raise HTTPException(
+                        status_code=409, detail="Collaboration state unavailable"
+                    )
                 state.clients.add(websocket)
 
         return UserSpaceCollabSnapshotResponse(
@@ -2430,7 +2553,9 @@ class UserSpaceRuntimeService:
         async with self._collab_lock:
             state = self._collab_docs.get(key)
             if state is None:
-                raise HTTPException(status_code=409, detail="Collaboration state unavailable")
+                raise HTTPException(
+                    status_code=409, detail="Collaboration state unavailable"
+                )
             if expected_version is not None and expected_version != state.version:
                 raise RuntimeVersionConflictError(
                     expected_version=expected_version,
