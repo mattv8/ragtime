@@ -11301,7 +11301,31 @@ except Exception as e:
                                         )
 
                                 ui_tools = {"create_chart", "create_datatable"}
+                                # Userspace write tools embed the full file content
+                                # in a `file` key which inflates the output beyond
+                                # the 2000-char display limit. Strip only the bulky
+                                # `content` field so the rest of the payload stays
+                                # intact and JSON-parseable for the chat diff UI.
+                                _userspace_write_tools = {
+                                    "upsert_userspace_file",
+                                    "patch_userspace_file",
+                                }
                                 display_output = tool_output
+                                if (
+                                    isinstance(display_output, str)
+                                    and tool_name in _userspace_write_tools
+                                ):
+                                    try:
+                                        _parsed_output = json.loads(display_output)
+                                        if isinstance(_parsed_output, dict) and isinstance(
+                                            _parsed_output.get("file"), dict
+                                        ):
+                                            _parsed_output["file"].pop("content", None)
+                                            display_output = json.dumps(
+                                                _parsed_output, indent=2
+                                            )
+                                    except (json.JSONDecodeError, TypeError):
+                                        pass
                                 if (
                                     isinstance(display_output, str)
                                     and len(display_output) > 2000

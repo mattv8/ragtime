@@ -5492,6 +5492,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 onUserMessageSubmitted={canEditWorkspace ? handleUserMessageSubmitted : undefined}
                 onConversationStateChange={handleConversationStateChange}
                 onActiveConversationChange={setActiveWorkspaceConversationId}
+                onOpenWorkspaceFile={handleSelectFile}
                 embedded
                 readOnly={!canEditWorkspace}
                 readOnlyMessage="Workspace is read-only for viewers. You can review chat and files, but only owners/editors can send prompts."

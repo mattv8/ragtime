@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
+import { diffLines } from 'diff';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -20,9 +21,11 @@ import {
 } from '@/utils';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 import { ContextUsagePie } from './shared/ContextUsagePie';
+import { FileDiffOverlay } from './shared/FileDiffOverlay';
 import { MemberManagementModal } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
+import { UserSpaceFileDiffView, formatDiffStatus } from './shared/UserSpaceFileDiffView';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 
 interface CodeBlockProps {
@@ -675,14 +678,200 @@ const DataTableDisplay = memo(function DataTableDisplay({ tableData }: { tableDa
   );
 });
 
+interface UserSpaceWriteToolPayload {
+  status?: string;
+  path?: string;
+  message?: string;
+  error?: string;
+  action_required?: string;
+  persisted?: boolean;
+  rejected?: boolean;
+  write_signature?: string;
+  contract_violations?: string[];
+  warnings?: string[];
+  file?: UserSpaceFile;
+}
+
+interface ParsedUserSpaceWriteResult {
+  toolName: 'upsert_userspace_file' | 'patch_userspace_file';
+  status: string;
+  path: string;
+  message: string;
+  error: string | null;
+  actionRequired: string | null;
+  writeSignature: string | null;
+  persisted: boolean;
+  rejected: boolean;
+  noChanges: boolean;
+  file: UserSpaceFile | null;
+  details: string[];
+}
+
+const USERSPACE_WRITE_TOOL_NAMES = new Set(['upsert_userspace_file', 'patch_userspace_file']);
+const USERSPACE_WRITE_DIFF_CACHE_MAX_ENTRIES = 100;
+const userspaceWriteDiffCache = new Map<string, UserSpaceSnapshotFileDiff>();
+
+function trimUserspaceWriteDiffCache(): void {
+  while (userspaceWriteDiffCache.size > USERSPACE_WRITE_DIFF_CACHE_MAX_ENTRIES) {
+    const oldestKey = userspaceWriteDiffCache.keys().next().value;
+    if (oldestKey === undefined) {
+      break;
+    }
+    userspaceWriteDiffCache.delete(oldestKey);
+  }
+}
+
+function parseUserspaceWriteToolResult(toolName: string, output?: string | null): ParsedUserSpaceWriteResult | null {
+  if (!output || !USERSPACE_WRITE_TOOL_NAMES.has(toolName)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(output) as UserSpaceWriteToolPayload;
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+
+    const status = typeof parsed.status === 'string' ? parsed.status : '';
+    const file = parsed.file && typeof parsed.file === 'object' ? parsed.file : null;
+    const path = typeof parsed.path === 'string' && parsed.path.trim()
+      ? parsed.path.trim()
+      : typeof file?.path === 'string' && file.path.trim()
+        ? file.path.trim()
+        : '';
+    if (!path) {
+      return null;
+    }
+
+    return {
+      toolName: toolName as 'upsert_userspace_file' | 'patch_userspace_file',
+      status,
+      path,
+      message: typeof parsed.message === 'string' ? parsed.message.trim() : '',
+      error: typeof parsed.error === 'string' && parsed.error.trim() ? parsed.error.trim() : null,
+      actionRequired: typeof parsed.action_required === 'string' && parsed.action_required.trim()
+        ? parsed.action_required.trim()
+        : null,
+      writeSignature: typeof parsed.write_signature === 'string' && parsed.write_signature.trim()
+        ? parsed.write_signature.trim()
+        : null,
+      persisted: parsed.persisted === true || status.startsWith('persisted'),
+      rejected: parsed.rejected === true || status.includes('rejected'),
+      noChanges: status === 'no_changes',
+      file,
+      details: [
+        ...(Array.isArray(parsed.contract_violations)
+          ? parsed.contract_violations.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          : []),
+        ...(Array.isArray(parsed.warnings)
+          ? parsed.warnings.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          : []),
+      ],
+    };
+  } catch {
+    // JSON.parse failed — output is likely truncated (> 2000 chars).
+    // Extract key fields via regex so the write summary + diff still render.
+    return parseUserspaceWriteToolResultFromTruncated(toolName, output);
+  }
+}
+
+/** Regex fallback for truncated (invalid JSON) tool output. */
+function parseUserspaceWriteToolResultFromTruncated(
+  toolName: string,
+  output: string,
+): ParsedUserSpaceWriteResult | null {
+  const str = (pattern: RegExp): string => {
+    const m = output.match(pattern);
+    return m ? m[1] : '';
+  };
+  const bool = (pattern: RegExp): boolean => pattern.test(output);
+
+  const path = str(/"path"\s*:\s*"([^"]+)"/);
+  if (!path) return null;
+
+  const status = str(/"status"\s*:\s*"([^"]+)"/);
+  return {
+    toolName: toolName as 'upsert_userspace_file' | 'patch_userspace_file',
+    status,
+    path,
+    message: str(/"message"\s*:\s*"([^"]*)"/) || '',
+    error: null,
+    actionRequired: null,
+    writeSignature: str(/"write_signature"\s*:\s*"([^"]+)"/) || null,
+    persisted: bool(/"persisted"\s*:\s*true/) || status.startsWith('persisted'),
+    rejected: bool(/"rejected"\s*:\s*true/) || status.includes('rejected'),
+    noChanges: status === 'no_changes',
+    file: null,
+    details: [],
+  };
+}
+
+function formatUserspaceWriteSummary(result: ParsedUserSpaceWriteResult): string {
+  const lines: string[] = [result.message || `${result.toolName} completed for ${result.path}.`];
+  if (result.error) {
+    lines.push(`Error: ${result.error}`);
+  }
+  if (result.actionRequired) {
+    lines.push(`Action required: ${result.actionRequired}`);
+  }
+  if (result.details.length > 0) {
+    lines.push('', ...result.details.map((detail) => `- ${detail}`));
+  }
+  return lines.filter(Boolean).join('\n');
+}
+
+function buildUserspaceToolDiffCacheKey(snapshotId: string, result: ParsedUserSpaceWriteResult): string {
+  return `${snapshotId}:${result.path}:${result.writeSignature || result.file?.updated_at || result.status}`;
+}
+
+function calculateUserspaceDiffLineCounts(before: string, after: string): { additions: number; deletions: number } {
+  const changes = diffLines(before, after);
+  let additions = 0;
+  let deletions = 0;
+
+  for (const change of changes) {
+    const raw = change.value;
+    const lines = raw.endsWith('\n') ? raw.slice(0, -1).split('\n') : raw.split('\n');
+    if (change.added) {
+      additions += lines.length;
+    } else if (change.removed) {
+      deletions += lines.length;
+    }
+  }
+
+  return { additions, deletions };
+}
+
+function mergeUserspaceWriteDiff(
+  baselineDiff: UserSpaceSnapshotFileDiff,
+  result: ParsedUserSpaceWriteResult,
+): UserSpaceSnapshotFileDiff {
+  const nextAfterContent = result.file?.content ?? baselineDiff.after_content;
+  const nextAfterPath = result.file?.path ?? baselineDiff.after_path ?? result.path;
+  const { additions, deletions } = calculateUserspaceDiffLineCounts(baselineDiff.before_content, nextAfterContent);
+
+  return {
+    ...baselineDiff,
+    path: result.path,
+    after_path: nextAfterPath,
+    after_content: nextAfterContent,
+    additions,
+    deletions,
+    is_deleted_in_current: false,
+    is_untracked_in_current: baselineDiff.status === 'A' || baselineDiff.is_untracked_in_current,
+  };
+}
+
 // Component to display a tool call with collapsible details
 // Memoized to prevent re-renders when tool call data hasn't changed
 interface ToolCallDisplayProps {
   toolCall: ActiveToolCall;
   defaultExpanded?: boolean;
   conversationId?: string;
+  workspaceId?: string;
   siblingEvents?: Array<{ type: string; tool?: string; output?: string }>;
   onRetrySuccess?: (newOutput: string) => void;
+  onOpenWorkspaceFile?: (path: string) => void;
 }
 
 interface ScreenshotToolOutput {
@@ -706,8 +895,10 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   toolCall,
   defaultExpanded = false,
   conversationId,
+  workspaceId,
   siblingEvents,
-  onRetrySuccess
+  onRetrySuccess,
+  onOpenWorkspaceFile,
 }: ToolCallDisplayProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [copiedQuery, setCopiedQuery] = useState(false);
@@ -716,6 +907,11 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   const [retryOutput, setRetryOutput] = useState<string | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
+  const [userspaceFileDiff, setUserspaceFileDiff] = useState<UserSpaceSnapshotFileDiff | null>(null);
+  const [userspaceFileDiffError, setUserspaceFileDiffError] = useState<string | null>(null);
+  const [userspaceFileDiffLoading, setUserspaceFileDiffLoading] = useState(false);
+  const [userspaceFileDiffKey, setUserspaceFileDiffKey] = useState<string | null>(null);
+  const [showUserspaceDiffOverlay, setShowUserspaceDiffOverlay] = useState(false);
 
   // Check if this is a visualization tool that can be retried
   const isVisualizationTool = toolCall.tool === 'create_chart' || toolCall.tool === 'create_datatable';
@@ -757,6 +953,112 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
 
   // Effective output (use retry output if available)
   const effectiveOutput = retryOutput || toolCall.output;
+
+  const userspaceWriteResult = useMemo(() => {
+    if (hasErrorInOutput) {
+      return parseUserspaceWriteToolResult(toolCall.tool, toolCall.output);
+    }
+    return parseUserspaceWriteToolResult(toolCall.tool, effectiveOutput);
+  }, [effectiveOutput, hasErrorInOutput, toolCall.output, toolCall.tool]);
+
+  const userspaceDiffReady = Boolean(
+    userspaceWriteResult
+    && userspaceWriteResult.persisted
+    && !userspaceWriteResult.rejected
+    && !userspaceWriteResult.noChanges
+    && workspaceId,
+  );
+
+  useEffect(() => {
+    if (!expanded || !userspaceDiffReady || !workspaceId || !userspaceWriteResult) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadDiff = async () => {
+      setUserspaceFileDiffError(null);
+      setUserspaceFileDiffLoading(true);
+
+      try {
+        const timeline = await api.getUserSpaceSnapshotTimeline(workspaceId);
+        const snapshotId = timeline.current_snapshot_id ?? null;
+        if (!snapshotId) {
+          throw new Error('No snapshot baseline is available for this workspace yet.');
+        }
+
+        const cacheKey = buildUserspaceToolDiffCacheKey(snapshotId, userspaceWriteResult);
+        if (!cancelled) {
+          setUserspaceFileDiffKey(cacheKey);
+        }
+
+        const cached = userspaceWriteDiffCache.get(cacheKey);
+        if (cached) {
+          if (!cancelled) {
+            setUserspaceFileDiff(cached);
+            setUserspaceFileDiffLoading(false);
+          }
+          return;
+        }
+
+        let finalDiff: UserSpaceSnapshotFileDiff;
+        try {
+          const baselineDiff = await api.getUserSpaceSnapshotFileDiff(workspaceId, snapshotId, userspaceWriteResult.path);
+          // When the tool payload includes file.content, merge it as the
+          // stable "after" side so historical diffs stay accurate even if
+          // the file was edited after this tool call. When file.content is
+          // missing (stripped/truncated events), fall back to the snapshot
+          // API diff which shows snapshot → current workspace state.
+          finalDiff = userspaceWriteResult.file?.content != null
+            ? mergeUserspaceWriteDiff(baselineDiff, userspaceWriteResult)
+            : baselineDiff;
+        } catch {
+          // Snapshot diff returned 404 — the file has no changes relative
+          // to the current snapshot (typically because a snapshot was
+          // created after this tool write captured the change). Fall back
+          // to reading the current file content and showing it as an
+          // "added" diff so the card isn't blank.
+          const currentFile = await api.getUserSpaceFile(workspaceId, userspaceWriteResult.path);
+          const afterContent = userspaceWriteResult.file?.content ?? currentFile.content ?? '';
+          const lines = afterContent.split('\n').length;
+          finalDiff = {
+            workspace_id: workspaceId,
+            snapshot_id: snapshotId,
+            path: userspaceWriteResult.path,
+            status: 'A',
+            before_content: '',
+            after_content: afterContent,
+            additions: lines,
+            deletions: 0,
+            is_binary: false,
+            is_deleted_in_current: false,
+            is_untracked_in_current: false,
+          };
+        }
+        userspaceWriteDiffCache.set(cacheKey, finalDiff);
+        trimUserspaceWriteDiffCache();
+
+        if (!cancelled) {
+          setUserspaceFileDiff(finalDiff);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setUserspaceFileDiff(null);
+          setUserspaceFileDiffError(err instanceof Error ? err.message : 'Failed to load file diff');
+        }
+      } finally {
+        if (!cancelled) {
+          setUserspaceFileDiffLoading(false);
+        }
+      }
+    };
+
+    void loadDiff();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, userspaceDiffReady, workspaceId, userspaceWriteResult]);
 
   const screenshotPreview = useMemo(() => {
     if (toolCall.tool !== 'capture_userspace_screenshot' || !effectiveOutput) {
@@ -953,6 +1255,8 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   };
 
   const statusIcon = getStatusIcon();
+  const userspaceWriteSummary = userspaceWriteResult ? formatUserspaceWriteSummary(userspaceWriteResult) : '';
+  const userspaceDiffStatus = userspaceFileDiff ? formatDiffStatus(userspaceFileDiff.status) : null;
 
   return (
   <>
@@ -999,7 +1303,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
               <pre className="tool-call-code tool-call-error-text">{retryError}</pre>
             </div>
           )}
-          {inputDisplay && (
+          {inputDisplay && !userspaceWriteResult && (
             <div className="tool-call-section">
               <div className="tool-call-section-header">
                 <span className="tool-call-section-label">Query:</span>
@@ -1034,6 +1338,77 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
                   style={{ cursor: 'zoom-in' }}
                 />
               </div>
+            ) : userspaceWriteResult ? (
+              <>
+                <div className="tool-call-section">
+                  <div className="tool-call-section-header">
+                    <span className="tool-call-section-label">Result:</span>
+                    {userspaceFileDiff ? (
+                      <button
+                        type="button"
+                        className="tool-call-retry-btn"
+                        onClick={() => setShowUserspaceDiffOverlay(true)}
+                        title="Open full diff"
+                      >
+                        <Diff size={12} />
+                        <span>Full Diff</span>
+                      </button>
+                    ) : (
+                      <button
+                        className="tool-call-copy-btn"
+                        onClick={() => copyToClipboard(userspaceWriteSummary || displayText || toolCall.output!, 'result')}
+                        title="Copy result"
+                      >
+                        {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                      </button>
+                    )}
+                  </div>
+                  <div className="tool-call-userspace-write-summary">
+                    <div className="tool-call-userspace-write-summary-row">
+                      {onOpenWorkspaceFile ? (
+                        <button
+                          className="tool-call-userspace-write-path tool-call-userspace-write-path-link"
+                          title={userspaceWriteResult.path}
+                          onClick={() => onOpenWorkspaceFile(userspaceWriteResult.path)}
+                        >
+                          {userspaceWriteResult.path}
+                        </button>
+                      ) : (
+                        <span className="tool-call-userspace-write-path" title={userspaceWriteResult.path}>{userspaceWriteResult.path}</span>
+                      )}
+                      <span className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${(userspaceFileDiff?.status ?? 'm').toLowerCase()}`}>
+                        {userspaceFileDiff?.status ?? 'M'}
+                      </span>
+                    </div>
+                    <div className="tool-call-userspace-write-meta">
+                      {userspaceDiffStatus || userspaceWriteResult.message || 'Updated'}
+                      {userspaceFileDiff ? ` | +${userspaceFileDiff.additions} -${userspaceFileDiff.deletions}` : ''}
+                    </div>
+                  </div>
+                  {userspaceFileDiffLoading && (
+                    <div className="tool-call-userspace-diff-loading">
+                      <MiniLoadingSpinner variant="icon" size={14} />
+                      <span>Loading diff from current snapshot...</span>
+                    </div>
+                  )}
+                  {!userspaceFileDiffLoading && !userspaceFileDiff && (
+                    <pre className="tool-call-code">{userspaceWriteSummary || displayText || toolCall.output}</pre>
+                  )}
+                  {userspaceFileDiffError && (
+                    <div className="tool-call-userspace-diff-error">{userspaceFileDiffError}</div>
+                  )}
+                </div>
+                {!userspaceFileDiffLoading && userspaceFileDiff && (
+                  <div className="tool-call-userspace-diff-card">
+                    <UserSpaceFileDiffView
+                      diff={userspaceFileDiff}
+                      beforeLabel="Last Snapshot"
+                      afterLabel="Tool Result"
+                      compact
+                    />
+                  </div>
+                )}
+              </>
             ) : (
               <div className="tool-call-section">
                 <div className="tool-call-section-header">
@@ -1077,6 +1452,21 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
           <img src={zoomedImage!} alt="Screenshot full view" />
         </div>
       </div>
+    )}
+    {showUserspaceDiffOverlay && (
+      <FileDiffOverlay
+        diff={userspaceFileDiff}
+        diffKey={userspaceFileDiffKey}
+        loading={userspaceFileDiffLoading}
+        error={userspaceFileDiffError}
+        title="Userspace File Diff"
+        beforeLabel="Last Snapshot"
+        afterLabel="Tool Result"
+        onDismiss={() => setShowUserspaceDiffOverlay(false)}
+        onOverlayClick={() => {}}
+        onOverlayMouseEnter={() => {}}
+        onOverlayMouseLeave={() => {}}
+      />
     )}
   </>
   );
@@ -1379,10 +1769,16 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
   segment,
   showToolCalls,
   reasoningVisibility,
+  workspaceId,
+  conversationId,
+  onOpenWorkspaceFile,
 }: {
   segment: StreamingSegment;
   showToolCalls: boolean;
   reasoningVisibility: ReasoningVisibility;
+  workspaceId?: string;
+  conversationId?: string;
+  onOpenWorkspaceFile?: (path: string) => void;
 }) {
   if (segment.type === 'reasoning' && segment.content) {
     return (
@@ -1397,7 +1793,13 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
   } else if (segment.type === 'tool' && segment.toolCall && showToolCalls) {
     return (
       <div className="chat-tool-calls">
-        <ToolCallDisplay toolCall={segment.toolCall} defaultExpanded={false} />
+        <ToolCallDisplay
+          toolCall={segment.toolCall}
+          defaultExpanded={false}
+          workspaceId={workspaceId}
+          conversationId={conversationId}
+          onOpenWorkspaceFile={onOpenWorkspaceFile}
+        />
       </div>
     );
   } else if (segment.type === 'content' && segment.content) {
@@ -1535,6 +1937,7 @@ interface ChatPanelProps {
   onConversationStateChange?: (hasLive: boolean, hasInterrupted: boolean) => void;
   onActiveConversationChange?: (conversationId: string | null) => void;
   onFullscreenChange?: (fullscreen: boolean) => void;
+  onOpenWorkspaceFile?: (path: string) => void;
   embedded?: boolean;
   readOnly?: boolean;
   readOnlyMessage?: string;
@@ -1557,6 +1960,7 @@ export function ChatPanel({
   onConversationStateChange,
   onActiveConversationChange,
   onFullscreenChange,
+  onOpenWorkspaceFile,
   embedded = false,
   readOnly = false,
   readOnlyMessage,
@@ -4441,7 +4845,9 @@ export function ChatPanel({
                                               }}
                                               defaultExpanded={false}
                                               conversationId={activeConversation.id}
+                                              workspaceId={workspaceId}
                                               siblingEvents={msg.events}
+                                              onOpenWorkspaceFile={onOpenWorkspaceFile}
                                             />
                                           </div>
                                         );
@@ -4529,6 +4935,9 @@ export function ChatPanel({
                             segment={segment}
                             showToolCalls={showToolCalls}
                             reasoningVisibility={reasoningVisibility}
+                            workspaceId={workspaceId}
+                            conversationId={activeConversation.id}
+                            onOpenWorkspaceFile={onOpenWorkspaceFile}
                           />
                         ))}
                         <div className="chat-message-streaming">

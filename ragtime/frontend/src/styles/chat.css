@@ -1461,7 +1461,8 @@
   --tool-call-font-code: var(--text-xs);
 }
 .chat-tool-calls:has(.tool-call-chart),
-.chat-tool-calls:has(.tool-call-datatable) {
+.chat-tool-calls:has(.tool-call-datatable),
+.chat-tool-calls:has(.tool-call-userspace-diff-card) {
   width: 100%;
 }
 .chat-message-assistant:has(.tool-call-chart),
@@ -1636,6 +1637,72 @@
   max-height: 200px;
   overflow-y: auto;
   color: var(--color-text-primary);
+}
+
+.tool-call-userspace-write-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: var(--space-sm);
+}
+
+.tool-call-userspace-write-summary-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-call-userspace-write-path {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--tool-call-font-xs);
+  color: var(--color-text-primary);
+}
+
+button.tool-call-userspace-write-path-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 2px;
+  transition: text-decoration-color 0.15s ease;
+  text-align: left;
+}
+
+button.tool-call-userspace-write-path-link:hover {
+  text-decoration-color: var(--color-text-primary);
+}
+
+.tool-call-userspace-write-meta {
+  font-size: var(--tool-call-font-xs);
+  color: var(--color-text-muted);
+}
+
+.tool-call-userspace-diff-card {
+  max-width: none;
+  margin: 0 calc(-1 * var(--space-xs)) calc(-1 * var(--space-xs));
+  border-top: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+.tool-call-userspace-diff-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-muted);
+  font-size: var(--tool-call-font-xs);
+}
+
+.tool-call-userspace-diff-error {
+  margin-top: var(--space-xs);
+  color: var(--color-warning);
+  font-size: var(--tool-call-font-xs);
 }
 /* =============================================================================
    TOOL RESULT TABLES
