@@ -72,26 +72,15 @@ class SettingsCache:
             postgres_password = prisma_settings.postgresPassword or ""
             mcp_password = prisma_settings.mcpDefaultRoutePassword
 
-            if openai_key:
-                openai_key = decrypt_secret(openai_key)
-            if anthropic_key:
-                anthropic_key = decrypt_secret(anthropic_key)
-            if github_models_api_token:
-                github_models_api_token = decrypt_secret(github_models_api_token)
-            if github_copilot_access_token:
-                github_copilot_access_token = decrypt_secret(
-                    github_copilot_access_token
-                )
-            if github_copilot_refresh_token:
-                github_copilot_refresh_token = decrypt_secret(
-                    github_copilot_refresh_token
-                )
-            if github_copilot_oauth_refresh_token:
-                github_copilot_oauth_refresh_token = decrypt_secret(
-                    github_copilot_oauth_refresh_token
-                )
-            if postgres_password:
-                postgres_password = decrypt_secret(postgres_password)
+            openai_key = decrypt_secret(openai_key)
+            anthropic_key = decrypt_secret(anthropic_key)
+            github_models_api_token = decrypt_secret(github_models_api_token)
+            github_copilot_access_token = decrypt_secret(github_copilot_access_token)
+            github_copilot_refresh_token = decrypt_secret(github_copilot_refresh_token)
+            github_copilot_oauth_refresh_token = decrypt_secret(
+                github_copilot_oauth_refresh_token
+            )
+            postgres_password = decrypt_secret(postgres_password)
             # Note: mcp_default_route_password stays encrypted for auth verification
             # It's decrypted in the verification function
 

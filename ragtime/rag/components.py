@@ -22,7 +22,6 @@ from typing import Any, List, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -45,6 +44,7 @@ from langchain_openai.chat_models.base import (
     _construct_responses_api_payload,
     _get_last_messages,
 )
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
@@ -1124,6 +1124,57 @@ class _CopilotChatOpenAI(ChatOpenAI):
                 return True
         return False
 
+    @staticmethod
+    def _is_token_expired_auth_error(exc: Exception) -> bool:
+        """Return True when the provider rejected an expired Copilot IDE token."""
+        code = _CopilotChatOpenAI._get_error_code(exc)
+        if code in {"unauthorized", "authentication_error", "invalid_api_key"}:
+            return True
+
+        body = _CopilotChatOpenAI._get_error_body(exc)
+        if isinstance(body, dict):
+            error_obj = body.get("error", {})
+            error_message = str(error_obj.get("message", "") or "").lower()
+            if "token expired" in error_message or "ide token expired" in error_message:
+                return True
+
+        exc_text = str(exc).lower()
+        return "token expired" in exc_text or "ide token expired" in exc_text
+
+    async def _refresh_expired_copilot_token(self) -> bool:
+        """Refresh the Copilot token and update this LLM instance in place."""
+        old_token = str(getattr(self, "api_key", "") or "").strip()
+        fresh_token = await ensure_copilot_token_fresh(mode="blocking")
+        if not fresh_token:
+            return False
+        if fresh_token == old_token:
+            return False
+
+        self.api_key = fresh_token
+
+        root_client = getattr(self, "root_client", None)
+        if root_client is not None:
+            try:
+                root_client.api_key = fresh_token
+            except Exception:
+                logger.debug(
+                    "Failed to update Copilot sync client API key", exc_info=True
+                )
+
+        root_async_client = getattr(self, "root_async_client", None)
+        if root_async_client is not None:
+            try:
+                root_async_client.api_key = fresh_token
+            except Exception:
+                logger.debug(
+                    "Failed to update Copilot async client API key", exc_info=True
+                )
+
+        logger.info(
+            "Recovered from expired Copilot IDE token by refreshing credentials and retrying request"
+        )
+        return True
+
     def _request_uses_reasoning_controls(self) -> bool:
         """Return True when this request shape includes reasoning-specific params.
 
@@ -1254,6 +1305,16 @@ class _CopilotChatOpenAI(ChatOpenAI):
                     run_manager=run_manager,
                     **kwargs,
                 )
+            if self._is_token_expired_auth_error(exc):
+                refreshed = await self._refresh_expired_copilot_token()
+                if refreshed:
+                    return await self._retry_after_reasoning_downgrade(
+                        super()._agenerate,
+                        messages,
+                        stop=stop,
+                        run_manager=run_manager,
+                        **kwargs,
+                    )
             raise
 
     async def _astream(self, *args, **kwargs):
@@ -1281,6 +1342,13 @@ class _CopilotChatOpenAI(ChatOpenAI):
                             yield chunk
                     else:
                         raise
+            elif self._is_token_expired_auth_error(exc):
+                refreshed = await self._refresh_expired_copilot_token()
+                if refreshed:
+                    async for chunk in super()._astream(*args, **kwargs):
+                        yield chunk
+                    return
+                raise
             else:
                 raise
 

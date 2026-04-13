@@ -23,6 +23,82 @@ _background_refresh_task_holder: dict[str, Optional[asyncio.Task]] = {"task": No
 _GITHUB_COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98"
 
 
+def _extract_copilot_token_state(
+    settings: object,
+) -> tuple[str, str, str, Optional[datetime]]:
+    """Extract normalized Copilot token state from settings."""
+    access_token = (getattr(settings, "github_copilot_access_token", "") or "").strip()
+    refresh_token = (
+        getattr(settings, "github_copilot_refresh_token", "") or ""
+    ).strip()
+    oauth_refresh_token = (
+        getattr(settings, "github_copilot_oauth_refresh_token", "") or ""
+    ).strip()
+    expires_at = getattr(settings, "github_copilot_token_expires_at", None)
+    return access_token, refresh_token, oauth_refresh_token, expires_at
+
+
+def _is_token_expiring_soon(expires_at: Optional[datetime]) -> bool:
+    """Return True when a token is at/inside the refresh buffer."""
+    if not isinstance(expires_at, datetime):
+        return False
+    now = datetime.now(timezone.utc)
+    return expires_at <= now + _REFRESH_BUFFER
+
+
+def _is_token_fresh(expires_at: Optional[datetime]) -> bool:
+    """Return True when the token is still usable outside the refresh buffer."""
+    return isinstance(expires_at, datetime) and not _is_token_expiring_soon(expires_at)
+
+
+def _is_token_expired(expires_at: Optional[datetime]) -> bool:
+    """Return True when the token has already expired."""
+    if not isinstance(expires_at, datetime):
+        return False
+    now = datetime.now(timezone.utc)
+    return expires_at <= now
+
+
+def _build_copilot_settings_update(
+    *,
+    access_token: str,
+    expires_at: Optional[datetime],
+    refresh_token: Optional[str] = None,
+    oauth_refresh_token: Optional[str] = None,
+) -> dict[str, object]:
+    """Build a settings update payload for persisted Copilot token state."""
+    updates: dict[str, object] = {
+        "github_copilot_access_token": access_token,
+        "github_copilot_token_expires_at": expires_at,
+    }
+    if refresh_token is not None:
+        updates["github_copilot_refresh_token"] = refresh_token
+    if oauth_refresh_token is not None:
+        updates["github_copilot_oauth_refresh_token"] = oauth_refresh_token
+    return updates
+
+
+async def _persist_copilot_token_state(
+    *,
+    access_token: str,
+    expires_at: Optional[datetime],
+    log_message: str,
+    refresh_token: Optional[str] = None,
+    oauth_refresh_token: Optional[str] = None,
+) -> None:
+    """Persist refreshed Copilot credentials and invalidate cached settings."""
+    await repository.update_settings(
+        _build_copilot_settings_update(
+            access_token=access_token,
+            expires_at=expires_at,
+            refresh_token=refresh_token,
+            oauth_refresh_token=oauth_refresh_token,
+        )
+    )
+    invalidate_settings_cache()
+    logger.info(log_message, expires_at)
+
+
 async def exchange_github_token_for_copilot_token(
     github_token: str,
 ) -> tuple[str, Optional[datetime]]:
@@ -130,19 +206,12 @@ async def _try_oauth_refresh_and_exchange(
         logger.warning("Copilot token exchange failed after OAuth refresh: %s", exc)
         return None
 
-    update_fields: dict = {
-        "github_copilot_access_token": new_hmac,
-        "github_copilot_refresh_token": new_ghu,
-        "github_copilot_token_expires_at": hmac_expires,
-    }
-    if rotated_refresh:
-        update_fields["github_copilot_oauth_refresh_token"] = rotated_refresh
-
-    await repository.update_settings(update_fields)
-    invalidate_settings_cache()
-    logger.info(
-        "Refreshed Copilot credentials via OAuth refresh_token (HMAC expires %s)",
-        hmac_expires,
+    await _persist_copilot_token_state(
+        access_token=new_hmac,
+        refresh_token=new_ghu,
+        oauth_refresh_token=rotated_refresh,
+        expires_at=hmac_expires,
+        log_message="Refreshed Copilot credentials via OAuth refresh_token (HMAC expires %s)",
     )
     return new_hmac
 
@@ -154,12 +223,9 @@ def _should_refresh_in_background(
     expires_at: Optional[datetime],
 ) -> bool:
     """Determine whether a background refresh should be scheduled."""
-    now = datetime.now(timezone.utc)
     if not access_token:
         return bool(refresh_token or oauth_refresh_token)
-    if isinstance(expires_at, datetime):
-        return expires_at <= now + _REFRESH_BUFFER
-    return False
+    return _is_token_expiring_soon(expires_at)
 
 
 async def ensure_copilot_token_fresh(
@@ -171,13 +237,9 @@ async def ensure_copilot_token_fresh(
     `mode="background"` schedules refresh asynchronously and returns quickly.
     """
     settings = await repository.get_settings()
-    access_token = (settings.github_copilot_access_token or "").strip()
-    refresh_token = (settings.github_copilot_refresh_token or "").strip()
-    oauth_refresh_token = (
-        getattr(settings, "github_copilot_oauth_refresh_token", "") or ""
+    access_token, refresh_token, oauth_refresh_token, expires_at = (
+        _extract_copilot_token_state(settings)
     )
-    oauth_refresh_token = oauth_refresh_token.strip()
-    expires_at = settings.github_copilot_token_expires_at
 
     if mode == "background":
         if _should_refresh_in_background(
@@ -196,16 +258,10 @@ async def ensure_copilot_token_fresh(
                 new_token, new_expires = await exchange_github_token_for_copilot_token(
                     refresh_token
                 )
-                await repository.update_settings(
-                    {
-                        "github_copilot_access_token": new_token,
-                        "github_copilot_token_expires_at": new_expires,
-                    }
-                )
-                invalidate_settings_cache()
-                logger.info(
-                    "Exchanged GitHub OAuth token for Copilot token (expires %s)",
-                    new_expires,
+                await _persist_copilot_token_state(
+                    access_token=new_token,
+                    expires_at=new_expires,
+                    log_message="Exchanged GitHub OAuth token for Copilot token (expires %s)",
                 )
                 return new_token
             except Exception as exc:
@@ -224,8 +280,7 @@ async def ensure_copilot_token_fresh(
         # No expiry tracked or no refresh token — use what we have.
         return access_token
 
-    now = datetime.now(timezone.utc)
-    if isinstance(expires_at, datetime) and expires_at > now + _REFRESH_BUFFER:
+    if _is_token_fresh(expires_at):
         return access_token  # Still fresh.
 
     # Token is expired or about to expire — serialize concurrent refresh attempts.
@@ -233,30 +288,22 @@ async def ensure_copilot_token_fresh(
         # Re-read settings after acquiring the lock; another caller may have
         # already completed the refresh while we were waiting.
         settings = await repository.get_settings()
-        access_token = (settings.github_copilot_access_token or "").strip()
-        refresh_token = (settings.github_copilot_refresh_token or "").strip()
-        oauth_refresh_token = (
-            getattr(settings, "github_copilot_oauth_refresh_token", "") or ""
+        access_token, refresh_token, oauth_refresh_token, expires_at = (
+            _extract_copilot_token_state(settings)
         )
-        oauth_refresh_token = oauth_refresh_token.strip()
-        expires_at = settings.github_copilot_token_expires_at
 
-        now = datetime.now(timezone.utc)
-        if isinstance(expires_at, datetime) and expires_at > now + _REFRESH_BUFFER:
+        if _is_token_fresh(expires_at):
             return access_token  # Refreshed by another caller.
 
         try:
             new_token, new_expires = await exchange_github_token_for_copilot_token(
                 refresh_token
             )
-            await repository.update_settings(
-                {
-                    "github_copilot_access_token": new_token,
-                    "github_copilot_token_expires_at": new_expires,
-                }
+            await _persist_copilot_token_state(
+                access_token=new_token,
+                expires_at=new_expires,
+                log_message="Refreshed Copilot HMAC token (expires %s)",
             )
-            invalidate_settings_cache()
-            logger.info("Refreshed Copilot HMAC token (expires %s)", new_expires)
             return new_token
         except Exception as exc:
             logger.warning("Failed to refresh Copilot HMAC token: %s", exc)
@@ -268,7 +315,7 @@ async def ensure_copilot_token_fresh(
                     return result
 
             # Avoid reusing a known-expired token (causes "unauthorized: token expired").
-            if isinstance(expires_at, datetime) and expires_at <= now:
+            if _is_token_expired(expires_at):
                 return None
             # If still valid but within refresh buffer, keep using it temporarily.
             return access_token
