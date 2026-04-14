@@ -102,6 +102,10 @@ interface ActiveToolCall {
   tool: string;
   input?: Record<string, unknown>;
   output?: string;
+  presentation?: {
+    kind?: string;
+    rerun_kind?: string;
+  };
   connection?: {
     tool_config_id: string;
     tool_config_name?: string;
@@ -903,11 +907,48 @@ interface ParsedTerminalOutput {
   truncated?: boolean;
 }
 
+const TERMINAL_TOOL_NAMES = new Set(['run_terminal_command']);
+const TERMINAL_TOOL_CONNECTION_TYPES = new Set(['ssh_shell', 'odoo_shell']);
+const TERMINAL_PRESENTATION_KIND = 'terminal';
+const USERSPACE_EXEC_RERUN_KIND = 'userspace_exec';
+
+function normalizedPresentationValue(value?: string | null): string {
+  return (value || '').trim().toLowerCase();
+}
+
+function isTerminalToolCall(toolCall: ActiveToolCall): boolean {
+  if (normalizedPresentationValue(toolCall.presentation?.kind) === TERMINAL_PRESENTATION_KIND) {
+    return true;
+  }
+
+  if (TERMINAL_TOOL_NAMES.has(toolCall.tool)) return true;
+
+  const toolType = toolCall.connection?.tool_type?.trim().toLowerCase();
+  return Boolean(toolType && TERMINAL_TOOL_CONNECTION_TYPES.has(toolType));
+}
+
+function canRerunToolCall(toolCall: ActiveToolCall): boolean {
+  if (normalizedPresentationValue(toolCall.presentation?.rerun_kind) === USERSPACE_EXEC_RERUN_KIND) {
+    return true;
+  }
+  return toolCall.tool === 'run_terminal_command';
+}
+
 function parseTerminalOutput(output: string | undefined | null): ParsedTerminalOutput | null {
   if (!output) return null;
   try {
     const parsed = JSON.parse(output) as Record<string, unknown>;
-    if (parsed?.tool !== 'run_terminal_command') return null;
+    const exitCodeRaw = parsed.exit_code;
+    const hasTerminalText =
+      typeof parsed.stdout === 'string'
+      || typeof parsed.stderr === 'string'
+      || typeof parsed.error === 'string';
+    const hasValidExitCode =
+      typeof exitCodeRaw === 'number'
+      || (typeof exitCodeRaw === 'string' && /^-?\d+$/.test(exitCodeRaw));
+
+    if (!hasTerminalText || !hasValidExitCode) return null;
+
     return {
       status: String(parsed.status ?? 'unknown'),
       command: typeof parsed.command === 'string' ? parsed.command : undefined,
@@ -949,7 +990,8 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
 
   // Check if this is a visualization tool that can be retried
   const isVisualizationTool = toolCall.tool === 'create_chart' || toolCall.tool === 'create_datatable';
-  const isTerminalCommand = toolCall.tool === 'run_terminal_command';
+  const isTerminalCommand = isTerminalToolCall(toolCall);
+  const canRerun = canRerunToolCall(toolCall);
 
   // Parse terminal output for terminal-style rendering
   const terminalOutput = useMemo(() => {
@@ -1269,7 +1311,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   // Handle re-run for terminal commands
   const handleRerunCommand = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (isRerunning || !inputDisplay || !workspaceId) return;
+    if (!canRerun || isRerunning || !inputDisplay || !workspaceId) return;
     setIsRerunning(true);
     setRetryError(null);
     try {
@@ -1295,7 +1337,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
     } finally {
       setIsRerunning(false);
     }
-  }, [isRerunning, inputDisplay, workspaceId, toolCall.input]);
+  }, [canRerun, isRerunning, inputDisplay, workspaceId, toolCall.input]);
 
   // Special rendering for chart tool - show chart inline without collapsible
   if (chartData) {
@@ -1360,7 +1402,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
           <span className="tool-call-icon">{statusIcon || toolIcon}</span>
           {isTerminalCommand ? (
             <span className="tool-call-name tool-call-name-terminal">
-              {inputDisplay || 'run_terminal_command'}
+              {inputDisplay || toolCall.tool}
             </span>
           ) : (
             <span className="tool-call-name">{toolCall.tool}</span>
@@ -1438,7 +1480,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
                     >
                       {copiedResult ? <Check size={12} /> : <Copy size={12} />}
                     </button>
-                    {workspaceId && (
+                    {canRerun && workspaceId && (
                       <button
                         className="tool-call-copy-btn tool-call-terminal-rerun-btn"
                         onClick={handleRerunCommand}
@@ -1492,7 +1534,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
                     >
                       {copiedQuery ? <Check size={12} /> : <Terminal size={12} />}
                     </button>
-                    {workspaceId && (
+                    {canRerun && workspaceId && (
                       <button
                         className="tool-call-copy-btn tool-call-terminal-rerun-btn"
                         onClick={handleRerunCommand}
@@ -2922,6 +2964,7 @@ export function ChatPanel({
           tool: ev.toolCall.tool,
           input: ev.toolCall.input,
           output: ev.toolCall.output,
+          presentation: ev.toolCall.presentation,
           connection: ev.toolCall.connection,
         });
       }
@@ -3742,6 +3785,7 @@ export function ChatPanel({
                             tool: ev.tool || '',
                             input: ev.input,
                             output: ev.output,
+                            presentation: ev.presentation,
                           connection: ev.connection,
                       status: hasOutput ? 'complete' : 'running',
                       generating_lines: ev.generating_lines,
@@ -5018,6 +5062,7 @@ export function ChatPanel({
                                         tool: ev.tool,
                                         input: ev.input,
                                         output: ev.output,
+                                        presentation: ev.presentation,
                                         connection: ev.connection,
                                         status: 'complete' as const,
                                       };
@@ -5034,6 +5079,7 @@ export function ChatPanel({
                                                 tool: ev.tool,
                                                 input: ev.input,
                                                 output: ev.output,
+                                                presentation: ev.presentation,
                                                 connection: ev.connection,
                                                 status: 'complete'
                                               }}

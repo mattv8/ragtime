@@ -1505,12 +1505,19 @@ export interface ToolCallRecord {
   input?: Record<string, unknown>;
   output?: string;
   connection?: ToolConnectionRef;
+  presentation?: ToolPresentation;
 }
 
 export interface ToolConnectionRef {
   tool_config_id: string;
   tool_config_name?: string;
   tool_type?: string;
+}
+
+export interface ToolPresentation {
+  kind?: string;
+  rerun_kind?: string;
+  [key: string]: string | undefined;
 }
 
 export interface ContentEvent {
@@ -1524,6 +1531,7 @@ export interface ToolCallEvent {
   input?: Record<string, unknown>;
   output?: string;
   connection?: ToolConnectionRef;
+  presentation?: ToolPresentation;
 }
 
 export interface ReasoningEvent {

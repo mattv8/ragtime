@@ -2089,6 +2089,10 @@ class ToolCallRecord(BaseModel):
         default=None,
         description="Optional tool connection reference metadata (tool_config_id/name/type)",
     )
+    presentation: Optional[dict] = Field(
+        default=None,
+        description="Optional UI presentation metadata for deterministic rendering",
+    )
 
 
 class ContentEvent(BaseModel):
@@ -2108,6 +2112,10 @@ class ToolCallEvent(BaseModel):
     connection: Optional[dict] = Field(
         default=None,
         description="Optional tool connection reference metadata (tool_config_id/name/type)",
+    )
+    presentation: Optional[dict] = Field(
+        default=None,
+        description="Optional UI presentation metadata for deterministic rendering",
     )
 
 

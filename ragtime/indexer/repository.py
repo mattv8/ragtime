@@ -56,6 +56,7 @@ from ragtime.indexer.models import (
     ToolType,
     VectorStoreType,
 )
+from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
@@ -119,10 +120,41 @@ def _extract_tool_calls_from_events(
                 input=event.get("input"),
                 output=event.get("output"),
                 connection=event.get("connection"),
+                presentation=normalize_tool_presentation(
+                    str(event.get("tool", "")),
+                    cast(Optional[dict[str, Any]], event.get("connection")),
+                    cast(Optional[dict[str, Any]], event.get("presentation")),
+                ),
             )
         )
 
     return tool_calls or None
+
+
+def _normalize_message_events(
+    events: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    """Normalize additive tool event metadata for backwards compatibility."""
+    if not events:
+        return events
+
+    normalized_events: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "tool":
+            normalized_events.append(event)
+            continue
+
+        normalized_event = dict(event)
+        presentation = normalize_tool_presentation(
+            str(event.get("tool", "")),
+            cast(Optional[dict[str, Any]], event.get("connection")),
+            cast(Optional[dict[str, Any]], event.get("presentation")),
+        )
+        if presentation:
+            normalized_event["presentation"] = presentation
+        normalized_events.append(normalized_event)
+
+    return normalized_events
 
 
 def _synthesize_events_from_legacy_message(
@@ -137,15 +169,21 @@ def _synthesize_events_from_legacy_message(
     for tool_call in legacy_tool_calls:
         if not isinstance(tool_call, dict):
             continue
-        events.append(
-            {
-                "type": "tool",
-                "tool": tool_call.get("tool", ""),
-                "input": tool_call.get("input"),
-                "output": tool_call.get("output"),
-                "connection": tool_call.get("connection"),
-            }
+        event = {
+            "type": "tool",
+            "tool": tool_call.get("tool", ""),
+            "input": tool_call.get("input"),
+            "output": tool_call.get("output"),
+            "connection": tool_call.get("connection"),
+        }
+        presentation = normalize_tool_presentation(
+            str(tool_call.get("tool", "")),
+            cast(Optional[dict[str, Any]], tool_call.get("connection")),
+            cast(Optional[dict[str, Any]], tool_call.get("presentation")),
         )
+        if presentation:
+            event["presentation"] = presentation
+        events.append(event)
 
     content = str(message.get("content", "") or "")
     if content:
@@ -1974,7 +2012,7 @@ class IndexerRepository:
             # Parse events if present; synthesize them for legacy tool_calls-only messages.
             events = None
             if "events" in m and m["events"]:
-                events = m["events"]  # Keep as raw dicts for now
+                events = _normalize_message_events(m["events"])
             else:
                 events = _synthesize_events_from_legacy_message(m)
 
@@ -1987,6 +2025,11 @@ class IndexerRepository:
                         input=tc.get("input"),
                         output=tc.get("output"),
                         connection=tc.get("connection"),
+                        presentation=normalize_tool_presentation(
+                            str(tc.get("tool", "")),
+                            cast(Optional[dict[str, Any]], tc.get("connection")),
+                            cast(Optional[dict[str, Any]], tc.get("presentation")),
+                        ),
                     )
                     for tc in m["tool_calls"]
                 ]

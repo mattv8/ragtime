@@ -71,6 +71,7 @@ from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
+from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.rag.prompts import (
     BASE_CHAT_SYSTEM_PROMPT, BASE_USERSPACE_SYSTEM_PROMPT,
@@ -4743,20 +4744,39 @@ except Exception as e:
                         None, lambda: execute_ssh_command(ssh_config, remote_command)
                     )
 
-                    if not result.success and "ODOO_ERROR" not in result.output:
-                        return f"Error (exit {result.exit_code}): {result.stderr or result.stdout}"
+                    exit_code = result.exit_code
+                    command_failed = not result.success and "ODOO_ERROR" not in result.output
 
                     # For SSH, filter with ssh_mode=True to strip STDERR section
                     filtered = filter_odoo_output(result.output, ssh_mode=True)
-                    return (
-                        sanitize_output(filtered)
-                        if filtered
-                        else "Query executed successfully (no output)"
-                    )
+                    stdout_out = sanitize_output(filtered) if filtered else ""
+                    stderr_out = sanitize_output(result.stderr.strip()) if result.stderr.strip() else ""
+
+                    terminal_payload: dict[str, Any] = {
+                        "tool": f"odoo_{tool_name}",
+                        "status": "command_failed" if command_failed else "completed",
+                        "exit_code": exit_code,
+                    }
+                    if stdout_out:
+                        terminal_payload["stdout"] = stdout_out
+                    if stderr_out:
+                        terminal_payload["stderr"] = stderr_out
+                    if command_failed:
+                        terminal_payload["error"] = f"Odoo SSH command failed (exit {exit_code})"
+
+                    return json.dumps(terminal_payload, indent=2)
 
                 except Exception as e:
                     logger.exception(f"Odoo SSH error: {e}")
-                    return f"Error: {str(e)}"
+                    return json.dumps(
+                        {
+                            "tool": f"odoo_{tool_name}",
+                            "status": "command_failed",
+                            "exit_code": -1,
+                            "error": str(e),
+                        },
+                        indent=2,
+                    )
 
             else:  # docker mode
                 container = conn_config.get("container", "")
@@ -4818,7 +4838,15 @@ except Exception as e:
             """Execute SSH command using this tool's configuration."""
             # Validate required fields
             if not command or not command.strip():
-                return "Error: 'command' parameter is required. Provide a shell command to execute."
+                return json.dumps(
+                    {
+                        "tool": f"ssh_{tool_name}",
+                        "status": "command_failed",
+                        "exit_code": -1,
+                        "error": "'command' parameter is required. Provide a shell command to execute.",
+                    },
+                    indent=2,
+                )
             if not reason:
                 reason = "SSH command"
 
@@ -4832,7 +4860,15 @@ except Exception as e:
             command_prefix = conn_config.get("command_prefix", "")
 
             if not host or not user:
-                return "Error: Host and user are required"
+                return json.dumps(
+                    {
+                        "tool": f"ssh_{tool_name}",
+                        "status": "command_failed",
+                        "exit_code": -1,
+                        "error": "Host and user are required",
+                    },
+                    indent=2,
+                )
 
             effective_timeout = resolve_effective_timeout(timeout, timeout_max_seconds)
 
@@ -4859,7 +4895,15 @@ except Exception as e:
                         None, lambda: expand_env_vars_via_ssh(ssh_config, command)
                     )
                     if expand_error:
-                        return f"Error: {expand_error}"
+                        return json.dumps(
+                            {
+                                "tool": f"ssh_{tool_name}",
+                                "status": "command_failed",
+                                "exit_code": -1,
+                                "error": expand_error,
+                            },
+                            indent=2,
+                        )
 
             # Validate command for dangerous patterns
             is_safe, validation_reason = validate_ssh_command(
@@ -4869,7 +4913,15 @@ except Exception as e:
                 expanded_command=expanded_command,
             )
             if not is_safe:
-                return f"Error: {validation_reason}"
+                return json.dumps(
+                    {
+                        "tool": f"ssh_{tool_name}",
+                        "status": "rejected",
+                        "exit_code": -1,
+                        "error": validation_reason,
+                    },
+                    indent=2,
+                )
 
             logger.info(f"[{tool_name}] SSH: {reason}")
 
@@ -4882,18 +4934,35 @@ except Exception as e:
                     None, lambda: execute_ssh_command(ssh_config, full_command)
                 )
 
-                if not result.success:
-                    return f"Error (exit {result.exit_code}): {result.stderr or result.stdout}"
+                exit_code = result.exit_code
+                stdout_raw = result.stdout.strip()
+                stderr_raw = result.stderr.strip()
+                command_failed = not result.success
 
-                output = result.output.strip()
-                return (
-                    sanitize_output(output)
-                    if output
-                    else "Command executed successfully (no output)"
-                )
+                terminal_payload: dict[str, Any] = {
+                    "tool": f"ssh_{tool_name}",
+                    "status": "command_failed" if command_failed else "completed",
+                    "exit_code": exit_code,
+                }
+                if stdout_raw:
+                    terminal_payload["stdout"] = sanitize_output(stdout_raw)
+                if stderr_raw:
+                    terminal_payload["stderr"] = sanitize_output(stderr_raw)
+                if command_failed:
+                    terminal_payload["error"] = f"SSH command failed (exit {exit_code})"
+
+                return json.dumps(terminal_payload, indent=2)
 
             except Exception as e:
-                return f"Error: {str(e)}"
+                return json.dumps(
+                    {
+                        "tool": f"ssh_{tool_name}",
+                        "status": "command_failed",
+                        "exit_code": -1,
+                        "error": str(e),
+                    },
+                    indent=2,
+                )
 
         tool_description = (
             f"Execute shell commands on {config.get('name', 'remote server')} via SSH."
@@ -11291,6 +11360,9 @@ except Exception as e:
                                 connection_meta = self._get_tool_connection_metadata(
                                     tool_name
                                 )
+                                presentation_meta = normalize_tool_presentation(
+                                    tool_name, connection_meta
+                                )
                                 _tool_start_payloads[run_id] = {
                                     "tool": tool_name,
                                     "input": tool_input,
@@ -11302,13 +11374,16 @@ except Exception as e:
                                 logger.debug(
                                     f"Tool started: {tool_name} (run_id={run_id[:8]})"
                                 )
-                                yield {
+                                tool_event = {
                                     "type": "tool_start",
                                     "tool": tool_name,
                                     "input": tool_input,
                                     "connection": connection_meta,
                                     "run_id": run_id,
                                 }
+                                if presentation_meta:
+                                    tool_event["presentation"] = presentation_meta
+                                yield tool_event
 
                             elif kind == "on_tool_end":
                                 if run_id not in active_tool_runs:
@@ -11319,6 +11394,9 @@ except Exception as e:
                                 tool_output = event.get("data", {}).get("output", "")
                                 connection_meta = self._get_tool_connection_metadata(
                                     tool_name
+                                )
+                                presentation_meta = normalize_tool_presentation(
+                                    tool_name, connection_meta
                                 )
                                 start_payload = _tool_start_payloads.pop(run_id, None)
 
@@ -11403,13 +11481,16 @@ except Exception as e:
                                         ),
                                     ]
                                 )
-                                yield {
+                                tool_event = {
                                     "type": "tool_end",
                                     "tool": tool_name,
                                     "output": display_output,
                                     "connection": connection_meta,
                                     "run_id": run_id,
                                 }
+                                if presentation_meta:
+                                    tool_event["presentation"] = presentation_meta
+                                yield tool_event
 
                             elif kind == "on_tool_error":
                                 if run_id not in active_tool_runs:
@@ -11426,6 +11507,9 @@ except Exception as e:
                                 )
                                 connection_meta = self._get_tool_connection_metadata(
                                     tool_name
+                                )
+                                presentation_meta = normalize_tool_presentation(
+                                    tool_name, connection_meta
                                 )
                                 start_payload = _tool_start_payloads.pop(run_id, None)
 
@@ -11470,13 +11554,16 @@ except Exception as e:
                                     ]
                                 )
 
-                                yield {
+                                tool_event = {
                                     "type": "tool_end",
                                     "tool": tool_name,
                                     "output": f"Error: {error_output}",
                                     "connection": connection_meta,
                                     "run_id": run_id,
                                 }
+                                if presentation_meta:
+                                    tool_event["presentation"] = presentation_meta
+                                yield tool_event
 
                             elif kind == "on_chat_model_stream":
                                 chunk = event.get("data", {}).get("chunk")
@@ -11520,13 +11607,23 @@ except Exception as e:
                                                     _generating_tool_lines[tc_key] = (
                                                         total
                                                     )
-                                                    yield {
+                                                    generating_event = {
                                                         "type": "tool_generating",
                                                         "tool": _generating_tool_names.get(
                                                             tc_key, ""
                                                         ),
                                                         "lines": total,
                                                     }
+                                                    presentation_meta = normalize_tool_presentation(
+                                                        _generating_tool_names.get(
+                                                            tc_key, ""
+                                                        )
+                                                    )
+                                                    if presentation_meta:
+                                                        generating_event[
+                                                            "presentation"
+                                                        ] = presentation_meta
+                                                    yield generating_event
 
                                     reasoning_text = (
                                         self._extract_reasoning_from_stream_chunk(chunk)
