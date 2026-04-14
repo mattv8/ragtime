@@ -5206,10 +5206,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             )}
             {activeWorkspace?.scm?.connected && (
               <span
-                className="userspace-status-pill userspace-status-pill-muted"
-                title={activeWorkspace.scm.git_url || 'Workspace SCM connection'}
+                className={`userspace-status-pill ${activeWorkspace.scm.sync_paused ? 'userspace-status-pill-warning' : 'userspace-status-pill-muted'}`}
+                title={
+                  activeWorkspace.scm.sync_paused
+                    ? `Sync paused: ${activeWorkspace.scm.sync_paused_reason || 'conflict detected'}`
+                    : activeWorkspace.scm.remote_role === 'upstream'
+                      ? `Upstream: ${activeWorkspace.scm.git_url || ''} (${activeWorkspace.scm.auto_sync_policy === 'auto_push' ? 'auto-push' : 'manual push'})`
+                      : activeWorkspace.scm.git_url || 'Workspace SCM connection'
+                }
               >
-                git:{activeWorkspace.scm.git_branch || 'main'}
+                {activeWorkspace.scm.sync_paused
+                  ? `git:${activeWorkspace.scm.git_branch || 'main'} (paused)`
+                  : activeWorkspace.scm.remote_role === 'upstream'
+                    ? `upstream:${activeWorkspace.scm.git_branch || 'main'}`
+                    : `git:${activeWorkspace.scm.git_branch || 'main'}`}
               </span>
             )}
             {isAdminImpersonating && (

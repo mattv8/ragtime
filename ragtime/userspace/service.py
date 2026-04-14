@@ -22,9 +22,9 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
+
 from prisma import Json
 from prisma import fields as prisma_fields
-
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -4221,6 +4221,16 @@ class UserSpaceService:
             provider=scm_provider,
             repo_visibility=getattr(record, "scmRepoVisibility", None),
             has_stored_token=bool(getattr(record, "scmToken", None)),
+            remote_role=self._normalize_scm_enum(
+                getattr(record, "scmRemoteRole", None),
+                ("upstream", "publish"),
+            ),
+            auto_sync_policy=self._normalize_scm_enum(
+                getattr(record, "scmAutoSyncPolicy", None),
+                ("manual", "auto_push"),
+            ),
+            sync_paused=bool(getattr(record, "scmSyncPaused", False)),
+            sync_paused_reason=getattr(record, "scmSyncPausedReason", None),
             connected_at=getattr(record, "scmConnectedAt", None),
             last_sync_at=getattr(record, "scmLastSyncAt", None),
             last_sync_direction=getattr(record, "scmLastSyncDirection", None),
@@ -4266,6 +4276,19 @@ class UserSpaceService:
         if parsed:
             return cast(WorkspaceScmProvider, parsed.provider.value)
         return None
+
+    @staticmethod
+    def _normalize_scm_enum(
+        value: Any,
+        allowed: tuple[str, ...],
+    ) -> str | None:
+        """Normalize a Prisma enum value to its string form, or None."""
+        raw = (
+            str(getattr(value, "value", value) if value is not None else "")
+            .strip()
+            .lower()
+        )
+        return raw if raw in allowed else None
 
     @staticmethod
     def _normalize_workspace_scm_branch(branch: str | None) -> str:
@@ -4735,6 +4758,60 @@ class UserSpaceService:
         )
         return self._workspace_from_record(updated).scm or UserSpaceWorkspaceScmStatus()
 
+    async def _pause_workspace_scm_sync(
+        self,
+        workspace_id: str,
+        reason: str,
+    ) -> None:
+        """Mark workspace SCM sync as paused due to divergence / conflict."""
+        db = await get_db()
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={
+                "scmSyncPaused": True,
+                "scmSyncPausedReason": reason[:2000],
+            },
+        )
+        logger.warning(
+            "SCM sync paused for workspace %s: %s",
+            workspace_id,
+            reason,
+        )
+
+    async def update_workspace_scm_settings(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: "UserSpaceWorkspaceScmSettingsRequest",
+    ) -> UserSpaceWorkspaceScmStatus:
+        """Update SCM relationship / policy settings without touching connection fields."""
+        from ragtime.userspace.models import \
+            UserSpaceWorkspaceScmSettingsRequest as _Req  # noqa: F811
+
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="owner"
+        )
+        db = await get_db()
+        update_data: dict[str, Any] = {}
+        if request.remote_role is not None:
+            update_data["scmRemoteRole"] = request.remote_role
+        if request.auto_sync_policy is not None:
+            update_data["scmAutoSyncPolicy"] = request.auto_sync_policy
+        if request.clear_sync_paused:
+            update_data["scmSyncPaused"] = False
+            update_data["scmSyncPausedReason"] = None
+        if not update_data:
+            ws = await db.workspace.find_unique(where={"id": workspace_id})
+            if not ws:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+            return self._workspace_from_record(ws).scm or UserSpaceWorkspaceScmStatus()
+
+        updated = await db.workspace.update(
+            where={"id": workspace_id},
+            data=update_data,
+        )
+        return self._workspace_from_record(updated).scm or UserSpaceWorkspaceScmStatus()
+
     async def _push_workspace_snapshot_commit(
         self,
         workspace_id: str,
@@ -4778,11 +4855,15 @@ class UserSpaceService:
         workspace_id: str,
         snapshot: UserSpaceSnapshot,
     ) -> None:
-        """Auto-push snapshot to remote if SCM is configured.
+        """Auto-push snapshot to remote when auto_sync_policy allows it.
 
-        When a remote is configured, snapshots are treated as 'commit + push' operations.
-        Local snapshot is always created, but sync status is tracked and reported.
-        If push fails for a configured remote, error is logged prominently.
+        Skips silently when:
+        - No SCM URL configured
+        - auto_sync_policy is 'manual' (or NULL / missing)
+        - sync is paused (conflict or prior divergence)
+
+        On non-fast-forward rejection the workspace is transitioned to a
+        paused state so subsequent snapshots do not keep failing.
         """
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
@@ -4792,6 +4873,22 @@ class UserSpaceService:
         git_url = str(getattr(workspace_record, "scmGitUrl", "") or "").strip()
         if not git_url:
             return
+
+        # --- policy gate ---------------------------------------------------
+        raw_policy = self._normalize_scm_enum(
+            getattr(workspace_record, "scmAutoSyncPolicy", None),
+            ("manual", "auto_push"),
+        )
+        if raw_policy != "auto_push":
+            return
+
+        if getattr(workspace_record, "scmSyncPaused", False):
+            logger.debug(
+                "Skipping auto-push for workspace %s: sync is paused",
+                workspace_id,
+            )
+            return
+        # -------------------------------------------------------------------
 
         git_branch = self._normalize_workspace_scm_branch(
             getattr(workspace_record, "scmGitBranch", None)
@@ -4866,6 +4963,21 @@ class UserSpaceService:
             detail = (
                 exc.detail if isinstance(exc.detail, str) else "Snapshot push failed"
             )
+
+            # Detect non-fast-forward / divergence and pause auto-sync
+            is_divergence = any(
+                marker in detail.lower()
+                for marker in ("non-fast-forward", "fetch first", "failed to push")
+            )
+            if is_divergence:
+                await self._pause_workspace_scm_sync(
+                    workspace_id,
+                    reason=(
+                        "Remote branch has diverged. "
+                        "Pull the latest changes or resolve the conflict before pushing."
+                    ),
+                )
+
             await self._update_workspace_scm_sync_metadata(
                 workspace_id,
                 git_url=git_url,
@@ -4929,6 +5041,104 @@ class UserSpaceService:
 
         await asyncio.to_thread(_sync)
         self._seed_runtime_bootstrap_config(workspace_id)
+
+    async def _merge_workspace_from_upstream_dir(
+        self,
+        workspace_id: str,
+        source_root: Path,
+        base_commit_hash: str,
+        head_commit_hash: str,
+    ) -> list[str]:
+        """Merge only the files that changed between *base_commit_hash* and
+        *head_commit_hash* from the cloned *source_root* into the workspace,
+        preserving local-only files.  Returns a list of affected relative paths.
+        """
+        target_root = self._workspace_files_dir(workspace_id)
+
+        def _merge() -> list[str]:
+            import subprocess
+
+            # Ask Git for the list of changed files between base..head
+            try:
+                diff_output = subprocess.run(
+                    [
+                        "git",
+                        "diff",
+                        "--name-status",
+                        "--no-renames",
+                        base_commit_hash,
+                        head_commit_hash,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    cwd=str(source_root),
+                    timeout=30,
+                )
+                diff_lines = diff_output.stdout.strip().splitlines()
+            except Exception:
+                # If git-diff fails (e.g. base commit was garbage-collected),
+                # fall back to full replace so the pull doesn't silently skip.
+                diff_lines = None
+
+            if not diff_lines:
+                # Fallback: treat every remote file as changed (safe but noisier)
+                affected: list[str] = []
+                for rel, src in self._sync_scope_relative_paths(source_root).items():
+                    dest = target_root / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if dest.exists() and self._compute_file_sha256(dest) == self._compute_file_sha256(src):
+                        continue
+                    shutil.copy2(src, dest)
+                    affected.append(rel)
+                return affected
+
+            affected = []
+            for line in diff_lines:
+                parts = line.split("\t", 1)
+                if len(parts) != 2:
+                    continue
+                status_char, rel_path = parts[0].strip(), parts[1].strip()
+                if rel_path.startswith(".git/") or rel_path == ".git":
+                    continue
+
+                dest = target_root / rel_path
+                if status_char == "D":
+                    # File deleted upstream → remove locally
+                    if dest.exists():
+                        dest.unlink()
+                        affected.append(rel_path)
+                else:
+                    # Added or modified upstream → copy into workspace
+                    src = source_root / rel_path
+                    if src.exists():
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        if dest.exists() and self._compute_file_sha256(dest) == self._compute_file_sha256(src):
+                            continue
+                        shutil.copy2(src, dest)
+                        affected.append(rel_path)
+
+            # Clean up empty dirs left behind by deletions
+            for directory in sorted(
+                [p for p in target_root.rglob("*") if p.is_dir()],
+                key=lambda item: len(item.parts),
+                reverse=True,
+            ):
+                if directory == target_root:
+                    continue
+                relative = directory.relative_to(target_root).as_posix()
+                if relative == ".git" or relative.startswith(".git/"):
+                    continue
+                if relative == ".ragtime":
+                    continue
+                try:
+                    next(directory.iterdir())
+                except StopIteration:
+                    directory.rmdir()
+
+            return affected
+
+        affected = await asyncio.to_thread(_merge)
+        return affected
 
     def _workspace_scm_setup_prompt(
         self,
@@ -5054,6 +5264,12 @@ class UserSpaceService:
                 remote_dir,
             )
 
+        # Detect upstream workspace with a prior sync (subsequent pull vs first import).
+        is_upstream_with_prior_sync = (
+            getattr(workspace_record, "scmRemoteRole", None) == "upstream"
+            and bool(last_remote_commit_hash)
+        )
+
         if not remote_exists:
             if direction == "import":
                 state = "missing_branch"
@@ -5071,7 +5287,20 @@ class UserSpaceService:
                 else:
                     summary = f"Branch '{git_branch}' does not exist remotely yet. Export can create it safely."
         elif direction == "import":
-            if not local_changed and remote_changed:
+            if is_upstream_with_prior_sync and not request.force_overwrite:
+                # Upstream pull: always merge (safe). Overwrite is a separate user action.
+                if not remote_changed:
+                    state = "up_to_date"
+                    summary = "Upstream has no new changes since the last pull."
+                else:
+                    state = "safe"
+                    can_proceed_without_force = True
+                    summary = (
+                        "Upstream has new commits. Pull will merge remote changes into your workspace without overwriting local work."
+                        if local_changed
+                        else "Remote changes are available and the workspace has no unsynced local state."
+                    )
+            elif not local_changed and remote_changed:
                 state = "safe"
                 can_proceed_without_force = True
                 summary = "Remote changes are available and the workspace has no unsynced local state."
@@ -5261,12 +5490,19 @@ class UserSpaceService:
     ) -> UserSpaceWorkspaceScmPreviewResponse:
         """Auto-detect sync direction and return preview.
 
-        Logic:
+        Logic for publish workspaces (legacy):
         - Only remote changed → import (pull)
         - Only local changed → export (push)
         - Both changed → import (destructive, overwrites local)
         - Neither changed → up-to-date (checked via import preview)
+
+        For upstream workspaces the default is always import (pull).
+        The user must explicitly push via the dedicated export endpoint.
         """
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        is_upstream = getattr(workspace_record, "scmRemoteRole", None) == "upstream"
+
         preview, _ = await self._build_workspace_scm_preview(
             workspace_id,
             user_id,
@@ -5274,7 +5510,7 @@ class UserSpaceService:
             request,
             store_preview=True,
         )
-        if preview.local_changed and not preview.remote_changed:
+        if not is_upstream and preview.local_changed and not preview.remote_changed:
             preview, _ = await self._build_workspace_scm_preview(
                 workspace_id,
                 user_id,
@@ -5340,19 +5576,45 @@ class UserSpaceService:
                 auto_sync_to_scm=False,
             )
 
-        await self._replace_workspace_sync_scope_from_dir(workspace_id, remote_dir)
+        # Upstream workspaces always merge; destructive full-replace only when
+        # the user explicitly confirmed overwrite via preview token.
+        is_upstream = getattr(workspace_record, "scmRemoteRole", None) == "upstream"
+        last_remote_hash = getattr(workspace_record, "scmLastRemoteCommitHash", None)
+        is_first_import = not is_upstream and not last_remote_hash
 
-        # Attempt to infer a runtime entrypoint from the imported files
-        # when no valid user-configured entrypoint exists yet.
-        inferred_entrypoint = self._seed_entrypoint_from_import(workspace_id)
-        normalization_actions = _dedupe_preserve_order(
-            self._normalize_imported_replit_runtime_artifacts(workspace_id)
+        if preview.will_overwrite_local:
+            # User confirmed destructive overwrite.
+            await self._replace_workspace_sync_scope_from_dir(workspace_id, remote_dir)
+        elif is_upstream and last_remote_hash:
+            # Upstream merge: apply only remote-changed files.
+            await self._merge_workspace_from_upstream_dir(
+                workspace_id,
+                remote_dir,
+                base_commit_hash=last_remote_hash,
+                head_commit_hash=remote_commit_hash,
+            )
+        else:
+            # First import or no prior sync: full replace.
+            await self._replace_workspace_sync_scope_from_dir(workspace_id, remote_dir)
+
+        # Entrypoint inference and Replit normalization only on first import.
+        inferred_entrypoint: dict[str, str] | None = None
+        normalization_actions: list[str] | None = None
+        if is_first_import:
+            inferred_entrypoint = self._seed_entrypoint_from_import(workspace_id)
+            normalization_actions = _dedupe_preserve_order(
+                self._normalize_imported_replit_runtime_artifacts(workspace_id)
+            )
+
+        snapshot_message = (
+            f"Pull from {preview.git_url} ({preview.git_branch})"
+            if is_upstream
+            else f"Import from {preview.git_url} ({preview.git_branch})"
         )
-
         imported_snapshot = await self.create_snapshot(
             workspace_id,
             user_id,
-            f"Import from {preview.git_url} ({preview.git_branch})",
+            snapshot_message,
             auto_sync_to_scm=False,
         )
 
@@ -5367,6 +5629,11 @@ class UserSpaceService:
         )
         imported_snapshot.remote_commit_hash = remote_commit_hash
 
+        sync_message = (
+            f"Pulled from {preview.git_branch}"
+            if is_upstream
+            else f"Imported from {preview.git_branch}"
+        )
         scm = await self._update_workspace_scm_sync_metadata(
             workspace_id,
             git_url=preview.git_url,
@@ -5377,25 +5644,55 @@ class UserSpaceService:
             remote_commit_hash=remote_commit_hash,
             snapshot_id=imported_snapshot.id,
             status="success",
-            message=f"Imported from {preview.git_branch}",
+            message=sync_message,
             direction="import",
         )
 
-        # Import full remote commit history as snapshot records inline
-        # so the timeline is complete before returning to the caller.
-        await self._backfill_workspace_scm_remote_commits(
-            workspace_id,
-            git_branch=preview.git_branch,
-            remote_dir=remote_dir,
-            remote_head_hash=remote_commit_hash,
-            branch_id=imported_snapshot.branch_id,
-            imported_snapshot_id=imported_snapshot.id,
+        if is_first_import:
+            # Mark as upstream / manual-push so snapshots stay local by default.
+            db = await get_db()
+            updated_ws = await db.workspace.update(
+                where={"id": workspace_id},
+                data={
+                    "scmRemoteRole": "upstream",
+                    "scmAutoSyncPolicy": "manual",
+                    "scmSyncPaused": False,
+                    "scmSyncPausedReason": None,
+                },
+            )
+            scm = self._workspace_from_record(updated_ws).scm or scm
+
+            # Import full remote commit history as snapshot records inline
+            # so the timeline is complete before returning to the caller.
+            await self._backfill_workspace_scm_remote_commits(
+                workspace_id,
+                git_branch=preview.git_branch,
+                remote_dir=remote_dir,
+                remote_head_hash=remote_commit_hash,
+                branch_id=imported_snapshot.branch_id,
+                imported_snapshot_id=imported_snapshot.id,
+            )
+        else:
+            # Clear any paused state on successful pull/import.
+            db = await get_db()
+            await db.workspace.update(
+                where={"id": workspace_id},
+                data={
+                    "scmSyncPaused": False,
+                    "scmSyncPausedReason": None,
+                },
+            )
+
+        summary = (
+            "Upstream changes pulled successfully."
+            if is_upstream and not is_first_import
+            else "Workspace imported successfully."
         )
         return UserSpaceWorkspaceScmSyncResponse(
             workspace_id=workspace_id,
             direction="import",
             state="success",
-            summary="Workspace imported successfully.",
+            summary=summary,
             scm=scm,
             snapshot=imported_snapshot,
             remote_commit_hash=remote_commit_hash,
@@ -5405,7 +5702,7 @@ class UserSpaceService:
                 preview.git_branch,
                 inferred_entrypoint=inferred_entrypoint,
                 normalization_actions=normalization_actions,
-            ),
+            ) if is_first_import else None,
         )
 
     async def export_workspace_to_scm(
@@ -11800,5 +12097,6 @@ class UserSpaceService:
         )
 
 
+userspace_service = UserSpaceService()
 userspace_service = UserSpaceService()
 userspace_service = UserSpaceService()

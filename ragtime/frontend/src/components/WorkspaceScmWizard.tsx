@@ -11,6 +11,7 @@ import type {
   UserSpaceWorkspaceScmPreviewResponse,
   UserSpaceWorkspaceScmSyncResponse,
 } from '@/types';
+import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 
 type ModalTab = 'git-source' | 'sql-import';
@@ -68,6 +69,8 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [sqlFile, setSqlFile] = useState<File | null>(null);
   const [sqlImportResult, setSqlImportResult] = useState<SqliteImportResponse | null>(null);
   const [sqlDragOver, setSqlDragOver] = useState(false);
+  const [loadingAction, setLoadingAction] = useState<'pull' | 'push' | 'overwrite' | 'sync' | 'preview' | 'execute' | null>(null);
+  const [showOverwriteMenu, setShowOverwriteMenu] = useState(false);
   const sqlFileInputRef = useRef<HTMLInputElement>(null);
   const activeScm = result?.scm ?? initialScm ?? null;
   const hasConfiguredRemote = Boolean(activeScm?.connected || activeScm?.git_url);
@@ -147,7 +150,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     };
   }, [gitToken, gitUrl, mode, workspace.id]);
 
-  async function handlePreview(): Promise<void> {
+  async function handlePreview(explicitDirection?: 'import' | 'export', options?: { forceOverwrite?: boolean }): Promise<void> {
     if (!hasConfiguredRemote && !gitUrl.trim()) {
       setStatus({ type: 'error', message: 'Repository URL is required.' });
       return;
@@ -157,7 +160,9 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
       return;
     }
 
+    const action = options?.forceOverwrite ? 'overwrite' : explicitDirection === 'export' ? 'push' : explicitDirection === 'import' ? 'pull' : hasConfiguredRemote ? 'sync' : 'preview';
     setIsLoading(true);
+    setLoadingAction(action);
     setStatus({ type: null, message: '' });
     try {
       const payload = {
@@ -167,12 +172,20 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
         create_repo_if_missing: createRepoIfMissing,
         create_repo_private: createRepoPrivate,
         create_repo_description: createRepoDescription.trim() || undefined,
+        force_overwrite: options?.forceOverwrite || undefined,
       };
-      const nextPreview = hasConfiguredRemote
-        ? await api.previewUserSpaceWorkspaceScmSync(workspace.id, payload)
-        : mode === 'import'
-          ? await api.previewUserSpaceWorkspaceScmImport(workspace.id, payload)
-          : await api.previewUserSpaceWorkspaceScmExport(workspace.id, payload);
+      let nextPreview: UserSpaceWorkspaceScmPreviewResponse;
+      if (explicitDirection === 'import') {
+        nextPreview = await api.previewUserSpaceWorkspaceScmImport(workspace.id, payload);
+      } else if (explicitDirection === 'export') {
+        nextPreview = await api.previewUserSpaceWorkspaceScmExport(workspace.id, payload);
+      } else if (hasConfiguredRemote) {
+        nextPreview = await api.previewUserSpaceWorkspaceScmSync(workspace.id, payload);
+      } else if (mode === 'import') {
+        nextPreview = await api.previewUserSpaceWorkspaceScmImport(workspace.id, payload);
+      } else {
+        nextPreview = await api.previewUserSpaceWorkspaceScmExport(workspace.id, payload);
+      }
       setPreview(nextPreview);
       setStep('review');
       setStatus({ type: null, message: '' });
@@ -180,12 +193,14 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
       setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to preview sync.' });
     } finally {
       setIsLoading(false);
+      setLoadingAction(null);
     }
   }
 
   async function handleExecute(): Promise<void> {
     if (!preview) return;
     setIsLoading(true);
+    setLoadingAction('execute');
     const direction = preview.direction;
     setStatus({ type: 'info', message: direction === 'import' ? 'Pulling from remote...' : 'Pushing to remote...' });
     try {
@@ -209,6 +224,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
       setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Sync failed.' });
     } finally {
       setIsLoading(false);
+      setLoadingAction(null);
     }
   }
 
@@ -328,20 +344,77 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                       {activeScm.git_url || gitUrl}
                     </strong>
                     <span className={syncStatusClassName}>
-                      {activeScm.last_sync_status === 'success'
-                        ? `${formatSyncDirection(activeScm.last_sync_direction)} ready`
-                        : activeScm.last_sync_status || 'Connected'}
+                      {activeScm.sync_paused
+                        ? 'Paused'
+                        : activeScm.last_sync_status === 'success'
+                          ? `${formatSyncDirection(activeScm.last_sync_direction)} ready`
+                          : activeScm.last_sync_status || 'Connected'}
                     </span>
+                    {activeScm.remote_role === 'upstream' && (
+                      <span className="userspace-status-pill userspace-status-pill-muted" style={{ fontSize: 11 }}>upstream</span>
+                    )}
                   </div>
                   <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12 }} className="userspace-muted">
                     <span>Branch: {activeScm.git_branch || gitBranch || 'main'}</span>
-                    {activeScm.last_sync_message && <span>{activeScm.last_sync_message}</span>}
+                    {activeScm.last_sync_message && !activeScm.sync_paused && <span>{activeScm.last_sync_message}</span>}
                     {formatSyncTimestamp(activeScm.last_sync_at) && (
                       <span>Last {formatSyncDirection(activeScm.last_sync_direction).toLowerCase()}: {formatSyncTimestamp(activeScm.last_sync_at)}</span>
                     )}
                   </div>
-                  <div className="userspace-muted" style={{ fontSize: 12, paddingTop: 8, borderTop: '1px solid var(--color-border-subtle)' }}>
-                    Snapshots from this workspace are automatically synced to the remote.
+
+                  {activeScm.sync_paused && activeScm.sync_paused_reason && (
+                    <div style={{ fontSize: 12, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-warning, #d69d2a)', background: 'rgba(214, 157, 42, 0.08)' }}>
+                      <AlertCircle size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                      {activeScm.sync_paused_reason}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', paddingTop: 8, borderTop: '1px solid var(--color-border-subtle)', flexWrap: 'wrap' }}>
+                    <span className="userspace-muted" style={{ fontSize: 12, flex: 1 }}>
+                      {activeScm.remote_role === 'upstream'
+                        ? activeScm.auto_sync_policy === 'auto_push'
+                          ? 'Snapshots are automatically pushed to the upstream remote.'
+                          : 'Snapshots stay local. Use Pull to fetch upstream changes, Push to send local changes.'
+                        : 'Snapshots from this workspace are automatically synced to the remote.'}
+                    </span>
+                    {activeScm.remote_role === 'upstream' && (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={activeScm.auto_sync_policy === 'auto_push'}
+                          onChange={async (event) => {
+                            try {
+                              const nextPolicy = event.target.checked ? 'auto_push' : 'manual';
+                              const resp = await api.updateUserSpaceWorkspaceScmSettings(workspace.id, {
+                                auto_sync_policy: nextPolicy,
+                                clear_sync_paused: nextPolicy === 'auto_push' ? true : undefined,
+                              });
+                              await onSyncComplete({ workspace_id: workspace.id, direction: 'export', state: 'settings_updated', summary: `Auto-push ${nextPolicy === 'auto_push' ? 'enabled' : 'disabled'}`, scm: resp.scm });
+                            } catch (error) {
+                              setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update setting' });
+                            }
+                          }}
+                          disabled={isLoading}
+                        />
+                        Auto-push
+                      </label>
+                    )}
+                    {activeScm.sync_paused && (
+                      <button
+                        className="btn btn-sm btn-secondary"
+                        disabled={isLoading}
+                        onClick={async () => {
+                          try {
+                            const resp = await api.updateUserSpaceWorkspaceScmSettings(workspace.id, { clear_sync_paused: true });
+                            await onSyncComplete({ workspace_id: workspace.id, direction: 'export', state: 'resumed', summary: 'Sync resumed', scm: resp.scm });
+                          } catch (error) {
+                            setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to resume sync' });
+                          }
+                        }}
+                      >
+                        <RefreshCcw size={12} /> Resume sync
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -639,10 +712,53 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                 Import to SQLite
               </button>
             )}
-            {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && (
+            {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && !hasConfiguredRemote && (
               <button className="btn btn-primary" onClick={() => void handlePreview()} disabled={isLoading}>
-                {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : hasConfiguredRemote ? <RefreshCcw size={14} /> : mode === 'import' ? <ArrowDownToLine size={14} /> : <ArrowUpToLine size={14} />}
-                {hasConfiguredRemote ? 'Sync' : `Preview ${setupModeLabel}`}
+                {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : mode === 'import' ? <ArrowDownToLine size={14} /> : <ArrowUpToLine size={14} />}
+                {`Preview ${setupModeLabel}`}
+              </button>
+            )}
+            {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && hasConfiguredRemote && activeScm?.remote_role === 'upstream' && (
+              <>
+                <button className="btn btn-primary" onClick={() => void handlePreview('import')} disabled={isLoading}>
+                  {loadingAction === 'pull' ? <MiniLoadingSpinner variant="icon" size={14} /> : <ArrowDownToLine size={14} />}
+                  Pull
+                </button>
+                <button className="btn btn-secondary" onClick={() => void handlePreview('export')} disabled={isLoading}>
+                  {loadingAction === 'push' ? <MiniLoadingSpinner variant="icon" size={14} /> : <ArrowUpToLine size={14} />}
+                  Push
+                </button>
+                <div style={{ position: 'relative', alignSelf: 'stretch' }}>
+                  <button className="btn btn-secondary" onClick={() => setShowOverwriteMenu(prev => !prev)} disabled={isLoading}
+                    title="More options" style={{ padding: '6px 8px', minWidth: 0, height: '100%' }}>
+                    &#8230;
+                  </button>
+                  {showOverwriteMenu && (
+                    <div style={{
+                      position: 'absolute', bottom: 'calc(100% + 6px)', right: 0, minWidth: 200,
+                      padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-border)',
+                      background: 'var(--color-bg-secondary)', boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+                      display: 'grid', gap: 8, zIndex: 10,
+                    }}>
+                      <div style={{ fontSize: 11 }} className="userspace-muted">
+                        Replaces all local files with the remote state. Local-only changes will be lost.
+                      </div>
+                      <DeleteConfirmButton
+                        onDelete={() => { setShowOverwriteMenu(false); void handlePreview('import', { forceOverwrite: true }); }}
+                        disabled={isLoading}
+                        className="btn btn-sm btn-danger"
+                        title="Overwrite local files with remote state"
+                        buttonText="Overwrite local"
+                      />
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+            {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && hasConfiguredRemote && activeScm?.remote_role !== 'upstream' && (
+              <button className="btn btn-primary" onClick={() => void handlePreview()} disabled={isLoading}>
+                {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : <RefreshCcw size={14} />}
+                Sync
               </button>
             )}
             {activeTab === 'git-source' && step === 'review' && preview && (

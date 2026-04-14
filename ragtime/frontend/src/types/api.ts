@@ -1681,6 +1681,8 @@ export interface UserSpaceWorkspaceMember {
 
 export type UserSpaceWorkspaceScmProvider = 'github' | 'gitlab' | 'generic';
 export type UserSpaceWorkspaceScmDirection = 'import' | 'export';
+export type UserSpaceWorkspaceScmRemoteRole = 'upstream' | 'publish';
+export type UserSpaceWorkspaceScmAutoSyncPolicy = 'manual' | 'auto_push';
 export type UserSpaceWorkspaceScmPreviewState = 'missing_remote' | 'missing_branch' | 'up_to_date' | 'safe' | 'destructive';
 
 export interface UserSpaceWorkspaceScmStatus {
@@ -1690,6 +1692,10 @@ export interface UserSpaceWorkspaceScmStatus {
   provider?: UserSpaceWorkspaceScmProvider | null;
   repo_visibility?: RepoVisibility | null;
   has_stored_token: boolean;
+  remote_role?: UserSpaceWorkspaceScmRemoteRole | null;
+  auto_sync_policy?: UserSpaceWorkspaceScmAutoSyncPolicy | null;
+  sync_paused?: boolean;
+  sync_paused_reason?: string | null;
   connected_at?: string | null;
   last_sync_at?: string | null;
   last_sync_direction?: UserSpaceWorkspaceScmDirection | null;
@@ -1735,6 +1741,7 @@ export interface UserSpaceWorkspaceScmPreviewRequest {
   create_repo_if_missing?: boolean;
   create_repo_private?: boolean;
   create_repo_description?: string;
+  force_overwrite?: boolean;
 }
 
 export interface UserSpaceWorkspaceScmPreviewResponse {
@@ -1777,6 +1784,12 @@ export interface UserSpaceWorkspaceScmSyncResponse {
   snapshot?: UserSpaceSnapshot | null;
   remote_commit_hash?: string | null;
   suggested_setup_prompt?: string | null;
+}
+
+export interface UserSpaceWorkspaceScmSettingsRequest {
+  remote_role?: UserSpaceWorkspaceScmRemoteRole;
+  auto_sync_policy?: UserSpaceWorkspaceScmAutoSyncPolicy;
+  clear_sync_paused?: boolean;
 }
 
 export interface UserSpaceAvailableTool {

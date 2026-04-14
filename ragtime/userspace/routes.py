@@ -81,6 +81,7 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceScmImportRequest,
     UserSpaceWorkspaceScmPreviewRequest,
     UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmSettingsRequest,
     UserSpaceWorkspaceScmSyncResponse,
     UserSpaceWorkspaceShareLink,
     UserSpaceWorkspaceShareLinkStatus,
@@ -267,6 +268,26 @@ async def update_workspace_scm_connection(
         workspace_id,
         user.id,
         request,
+    )
+
+
+@router.patch(
+    "/workspaces/{workspace_id}/scm/settings",
+    response_model=UserSpaceWorkspaceScmConnectionResponse,
+)
+async def update_workspace_scm_settings(
+    workspace_id: str,
+    request: UserSpaceWorkspaceScmSettingsRequest,
+    user: Any = Depends(get_current_user),
+):
+    scm = await userspace_service.update_workspace_scm_settings(
+        workspace_id,
+        user.id,
+        request,
+    )
+    return UserSpaceWorkspaceScmConnectionResponse(
+        workspace_id=workspace_id,
+        scm=scm,
     )
 
 

@@ -19,6 +19,8 @@ ShareAccessMode = Literal[
 ]
 WorkspaceScmProvider = Literal["github", "gitlab", "generic"]
 WorkspaceScmDirection = Literal["import", "export"]
+WorkspaceScmRemoteRole = Literal["upstream", "publish"]
+WorkspaceScmAutoSyncPolicy = Literal["manual", "auto_push"]
 WorkspaceScmPreviewState = Literal[
     "missing_remote",
     "missing_branch",
@@ -126,6 +128,10 @@ class UserSpaceWorkspaceScmStatus(BaseModel):
     provider: WorkspaceScmProvider | None = None
     repo_visibility: str | None = None
     has_stored_token: bool = False
+    remote_role: WorkspaceScmRemoteRole | None = None
+    auto_sync_policy: WorkspaceScmAutoSyncPolicy | None = None
+    sync_paused: bool = False
+    sync_paused_reason: str | None = None
     connected_at: datetime | None = None
     last_sync_at: datetime | None = None
     last_sync_direction: WorkspaceScmDirection | None = None
@@ -154,6 +160,7 @@ class UserSpaceWorkspaceScmPreviewRequest(BaseModel):
     create_repo_if_missing: bool = False
     create_repo_private: bool = True
     create_repo_description: str | None = Field(default=None, max_length=2000)
+    force_overwrite: bool = False
 
 
 class UserSpaceWorkspaceScmPreviewResponse(BaseModel):
@@ -196,6 +203,21 @@ class UserSpaceWorkspaceScmSyncResponse(BaseModel):
     snapshot: "UserSpaceSnapshot | None" = None
     remote_commit_hash: str | None = None
     suggested_setup_prompt: str | None = None
+
+
+class UserSpaceWorkspaceScmSettingsRequest(BaseModel):
+    remote_role: WorkspaceScmRemoteRole | None = Field(
+        default=None,
+        description="Relationship to the remote: 'upstream' (imported) or 'publish' (owned).",
+    )
+    auto_sync_policy: WorkspaceScmAutoSyncPolicy | None = Field(
+        default=None,
+        description="Push policy: 'manual' or 'auto_push'.",
+    )
+    clear_sync_paused: bool = Field(
+        default=False,
+        description="Clear the paused/conflict state and resume auto-sync.",
+    )
 
 
 class UserSpaceWorkspaceEnvVar(BaseModel):
