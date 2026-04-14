@@ -22,6 +22,7 @@ from typing import Any, List, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
+from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -37,7 +38,6 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_openai.chat_models.base import (
     _construct_responses_api_payload, _get_last_messages)
-from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from ragtime.config import settings

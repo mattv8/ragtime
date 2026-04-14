@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,39 +22,24 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
-    normalize_userspace_preview_sandbox_flags,
-)
-from ragtime.indexer.models import (
-    SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
-    AppSettings,
-    ChatMessage,
-    ChatTask,
-    ChatTaskStatus,
-    ChatTaskStreamingState,
-    Conversation,
-    IndexConfig,
-    IndexJob,
-    IndexStatus,
-    ProviderPromptDebugRecord,
-    ToolCallRecord,
-    ToolConfig,
-    ToolGroup,
-    ToolOutputMode,
-    ToolType,
-    VectorStoreType,
-)
+    normalize_userspace_preview_sandbox_flags)
+from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
+                                    AppSettings, ChatMessage, ChatTask,
+                                    ChatTaskStatus, ChatTaskStreamingState,
+                                    Conversation, IndexConfig, IndexJob,
+                                    IndexStatus, ProviderPromptDebugRecord,
+                                    ToolCallRecord, ToolConfig, ToolGroup,
+                                    ToolOutputMode, ToolType, VectorStoreType)
+from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
@@ -1651,6 +1635,52 @@ class IndexerRepository:
         )
         return [t.id for t in tools]
 
+    async def list_healthy_enabled_tool_ids(self) -> list[str]:
+        """Return enabled tool config IDs that currently pass heartbeat checks."""
+        tool_configs = await self.list_tool_configs(enabled_only=True)
+        if not tool_configs:
+            return []
+
+        try:
+            from ragtime.indexer.routes import _heartbeat_check
+        except Exception as exc:
+            logger.warning(
+                "Heartbeat helper unavailable for default tool selection; "
+                "falling back to enabled tools: %s",
+                exc,
+            )
+            return [tool.id for tool in tool_configs if tool.id]
+
+        async def check_single_tool(tool: ToolConfig) -> tuple[str | None, bool]:
+            tool_id = tool.id
+            if not tool_id:
+                return None, False
+
+            connection_config = tool.connection_config or {}
+            heartbeat_timeout = get_heartbeat_timeout_seconds(connection_config)
+
+            try:
+                result = await asyncio.wait_for(
+                    _heartbeat_check(tool.tool_type, connection_config),
+                    timeout=heartbeat_timeout,
+                )
+                return tool_id, bool(result.success)
+            except asyncio.TimeoutError:
+                return tool_id, False
+            except Exception:
+                logger.debug(
+                    "Default tool heartbeat check failed for %s",
+                    tool.name,
+                    exc_info=True,
+                )
+                return tool_id, False
+
+        results = await asyncio.gather(
+            *(check_single_tool(tool) for tool in tool_configs)
+        )
+
+        return [tool_id for tool_id, is_healthy in results if tool_id and is_healthy]
+
     # -------------------------------------------------------------------------
     # Conversation Operations
     # -------------------------------------------------------------------------
@@ -1678,14 +1708,12 @@ class IndexerRepository:
             include={"user": True},
         )
 
-        enabled_tools = await db.toolconfig.find_many(
-            where={"enabled": True},
-        )
-        for tool in enabled_tools:
+        default_tool_ids = await self.list_healthy_enabled_tool_ids()
+        for tool_id in default_tool_ids:
             await db.conversationtoolselection.create(
                 data={
                     "conversationId": prisma_conv.id,
-                    "toolConfigId": tool.id,
+                    "toolConfigId": tool_id,
                 }
             )
 

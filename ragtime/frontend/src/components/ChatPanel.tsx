@@ -3624,22 +3624,19 @@ export function ChatPanel({
     return null;
   }, [activeConversation, availableModels, modelsError, modelsLoading, modelsReadiness]);
 
-  const applyNewConversationToolDefaults = useCallback(() => {
-    if (useWorkspaceToolSource || availableTools.length === 0) {
-      return;
-    }
-    setConversationToolIds(availableTools.map((tool) => tool.id));
+  const applyCreatedConversation = useCallback((conversation: Conversation) => {
+    setConversations(prev => [conversation, ...prev]);
+    setActiveConversation(conversation);
+    setConversationToolIds([]);
     setConversationToolGroupIds([]);
-  }, [availableTools, useWorkspaceToolSource]);
+  }, []);
 
   const createNewConversation = async () => {
     if (readOnly) return;
     try {
       shouldAutoScrollRef.current = true;
       const conversation = await api.createConversation(undefined, workspaceId);
-      setConversations(prev => [conversation, ...prev]);
-      setActiveConversation(conversation);
-      applyNewConversationToolDefaults();
+      applyCreatedConversation(conversation);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create conversation');
@@ -4126,9 +4123,7 @@ export function ChatPanel({
     try {
       clearActiveStreamingUi();
       const conversation = await api.createConversation(undefined, workspaceId);
-      setConversations(prev => [conversation, ...prev]);
-      setActiveConversation(conversation);
-      applyNewConversationToolDefaults();
+      applyCreatedConversation(conversation);
       setInterruptedTask(null);
       setHitMaxIterations(false);
       setIsConnectionError(false);

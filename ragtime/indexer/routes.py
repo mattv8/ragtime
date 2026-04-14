@@ -128,6 +128,7 @@ from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
                                             schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
+from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 from ragtime.indexer.vector_utils import ensure_pgvector_extension
@@ -1740,12 +1741,13 @@ async def check_tool_heartbeats(_user: User = Depends(require_admin)):
         """Check heartbeat for a single tool with timeout."""
         start_time = asyncio.get_event_loop().time()
         checked_at = datetime.now(timezone.utc).isoformat()
+        heartbeat_timeout = get_heartbeat_timeout_seconds(tool.connection_config)
 
         try:
             # Quick ping-style check with short timeout
             result = await asyncio.wait_for(
                 _heartbeat_check(tool.tool_type, tool.connection_config),
-                timeout=5.0,  # Short timeout for heartbeat
+                timeout=heartbeat_timeout,
             )
             latency = (asyncio.get_event_loop().time() - start_time) * 1000
 
@@ -1761,7 +1763,7 @@ async def check_tool_heartbeats(_user: User = Depends(require_admin)):
                 tool_id=tool.id,
                 alive=False,
                 latency_ms=None,
-                error="Heartbeat timeout (5s)",
+                error=f"Heartbeat timeout ({int(heartbeat_timeout)}s)",
                 checked_at=checked_at,
             )
         except Exception as e:

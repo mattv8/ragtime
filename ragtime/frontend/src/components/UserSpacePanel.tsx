@@ -936,10 +936,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     return modules;
   }, [fileContent, fileContentCache, files, selectedFilePath]);
 
-  const availableToolIds = useMemo(
-    () => availableTools.map((tool) => tool.id),
-    [availableTools]
-  );
   const resolvedSelectedToolIds = useMemo(
     () => activeWorkspace?.selected_tool_ids ?? [],
     [activeWorkspace?.selected_tool_ids]
@@ -2299,9 +2295,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setFileDirty(false);
 
     try {
-      const created = await api.createUserSpaceWorkspace({
-        selected_tool_ids: availableToolIds,
-      });
+      const created = await api.createUserSpaceWorkspace({});
 
       setWorkspaces((current) => (
         current.some((workspace) => workspace.id === created.id)
@@ -2328,7 +2322,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setCreatingWorkspaceStatus(null);
       setCreatingWorkspace(false);
     }
-  }, [availableToolIds, loadWorkspaceData, loadWorkspaces, previewEntryPath]);
+  }, [loadWorkspaceData, loadWorkspaces, previewEntryPath]);
 
   const handleSelectFile = useCallback(async (path: string) => {
     if (!activeWorkspaceId) return;

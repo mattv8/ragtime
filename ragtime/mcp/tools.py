@@ -21,6 +21,7 @@ from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
 from ragtime.indexer.schema_service import search_schema_index
+from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.rag import rag
 from ragtime.rag.components import RAGComponents
 from ragtime.tools.git_history import search_git_history
@@ -613,10 +614,7 @@ class MCPToolAdapter:
             tool_type = config.get("tool_type", "")
             conn_config = config.get("connection_config", {})
             start_time = asyncio.get_event_loop().time()
-
-            # SSH tunnel connections need more time to authenticate and establish
-            has_ssh_tunnel = conn_config.get("ssh_tunnel_enabled", False)
-            heartbeat_timeout = 15.0 if has_ssh_tunnel else 5.0
+            heartbeat_timeout = get_heartbeat_timeout_seconds(conn_config)
 
             try:
                 result = await asyncio.wait_for(

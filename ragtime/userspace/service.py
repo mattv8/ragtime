@@ -5965,6 +5965,60 @@ class UserSpaceService:
             limit=limit,
         )
 
+    async def _persist_workspace_tool_selections(
+        self,
+        db: Any,
+        workspace_id: str,
+        tool_ids: list[str] | None,
+        *,
+        replace_existing: bool = False,
+    ) -> None:
+        if tool_ids is None:
+            return
+
+        if replace_existing:
+            await db.workspacetoolselection.delete_many(
+                where={"workspaceId": workspace_id}
+            )
+
+        for tool_id in tool_ids:
+            tool = await db.toolconfig.find_unique(where={"id": tool_id})
+            if not tool or not tool.enabled:
+                continue
+            await db.workspacetoolselection.create(
+                data={
+                    "workspaceId": workspace_id,
+                    "toolConfigId": tool_id,
+                }
+            )
+
+    async def _persist_workspace_tool_group_selections(
+        self,
+        db: Any,
+        workspace_id: str,
+        group_ids: list[str] | None,
+        *,
+        replace_existing: bool = False,
+    ) -> None:
+        if group_ids is None:
+            return
+
+        if replace_existing:
+            await db.workspacetoolgroupselection.delete_many(
+                where={"workspaceId": workspace_id}
+            )
+
+        for group_id in group_ids:
+            grp = await db.toolgroup.find_unique(where={"id": group_id})
+            if not grp:
+                continue
+            await db.workspacetoolgroupselection.create(
+                data={
+                    "workspaceId": workspace_id,
+                    "toolGroupId": group_id,
+                }
+            )
+
     async def create_workspace(
         self, request: CreateWorkspaceRequest, user_id: str
     ) -> UserSpaceWorkspace:
@@ -6021,31 +6075,19 @@ class UserSpaceService:
 
         requested_tool_ids = request.selected_tool_ids
         if requested_tool_ids is None:
-            enabled_tools = await db.toolconfig.find_many(where={"enabled": True})
-            requested_tool_ids = [str(tool.id) for tool in enabled_tools if tool.id]
+            requested_tool_ids = await repository.list_healthy_enabled_tool_ids()
 
-        for tool_id in requested_tool_ids:
-            tool = await db.toolconfig.find_unique(where={"id": tool_id})
-            if not tool or not tool.enabled:
-                continue
-            await db.workspacetoolselection.create(
-                data={
-                    "workspaceId": workspace_id,
-                    "toolConfigId": tool_id,
-                }
-            )
+        await self._persist_workspace_tool_selections(
+            db,
+            workspace_id,
+            requested_tool_ids,
+        )
 
-        if request.selected_tool_group_ids:
-            for group_id in request.selected_tool_group_ids:
-                grp = await db.toolgroup.find_unique(where={"id": group_id})
-                if not grp:
-                    continue
-                await db.workspacetoolgroupselection.create(
-                    data={
-                        "workspaceId": workspace_id,
-                        "toolGroupId": group_id,
-                    }
-                )
+        await self._persist_workspace_tool_group_selections(
+            db,
+            workspace_id,
+            request.selected_tool_group_ids,
+        )
 
         self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
         self._ensure_object_storage_config(workspace_id)
@@ -6676,34 +6718,20 @@ class UserSpaceService:
             raise
 
         if request.selected_tool_ids is not None:
-            await db.workspacetoolselection.delete_many(
-                where={"workspaceId": workspace_id}
+            await self._persist_workspace_tool_selections(
+                db,
+                workspace_id,
+                request.selected_tool_ids,
+                replace_existing=True,
             )
-            for tool_id in request.selected_tool_ids:
-                tool = await db.toolconfig.find_unique(where={"id": tool_id})
-                if not tool or not tool.enabled:
-                    continue
-                await db.workspacetoolselection.create(
-                    data={
-                        "workspaceId": workspace_id,
-                        "toolConfigId": tool_id,
-                    }
-                )
 
         if request.selected_tool_group_ids is not None:
-            await db.workspacetoolgroupselection.delete_many(
-                where={"workspaceId": workspace_id}
+            await self._persist_workspace_tool_group_selections(
+                db,
+                workspace_id,
+                request.selected_tool_group_ids,
+                replace_existing=True,
             )
-            for group_id in request.selected_tool_group_ids:
-                grp = await db.toolgroup.find_unique(where={"id": group_id})
-                if not grp:
-                    continue
-                await db.workspacetoolgroupselection.create(
-                    data={
-                        "workspaceId": workspace_id,
-                        "toolGroupId": group_id,
-                    }
-                )
 
         refreshed = await db.workspace.find_unique(
             where={"id": workspace_id},
@@ -12097,6 +12125,4 @@ class UserSpaceService:
         )
 
 
-userspace_service = UserSpaceService()
-userspace_service = UserSpaceService()
 userspace_service = UserSpaceService()
