@@ -38,7 +38,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_openai.chat_models.base import (
     _construct_responses_api_payload, _get_last_messages)
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
@@ -1097,14 +1097,15 @@ class _CopilotChatOpenAI(ChatOpenAI):
 
     async def _refresh_expired_copilot_token(self) -> bool:
         """Refresh the Copilot token and update this LLM instance in place."""
-        old_token = str(getattr(self, "api_key", "") or "").strip()
+        old_secret = getattr(self, "openai_api_key", None)
+        old_token = (old_secret.get_secret_value() if old_secret else "").strip()
         fresh_token = await ensure_copilot_token_fresh(mode="blocking")
         if not fresh_token:
             return False
         if fresh_token == old_token:
             return False
 
-        self.api_key = fresh_token
+        self.openai_api_key = SecretStr(fresh_token)
 
         root_client = getattr(self, "root_client", None)
         if root_client is not None:
