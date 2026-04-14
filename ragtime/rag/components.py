@@ -3458,6 +3458,61 @@ class RAGComponents:
         else:
             self.agent_executor_ui = None
 
+    def _normalize_runtime_tool_type(self, tool_type: Any) -> str:
+        raw_tool_type = getattr(tool_type, "value", tool_type)
+        if isinstance(raw_tool_type, str):
+            return raw_tool_type.strip().lower()
+        return str(raw_tool_type or "").strip().lower()
+
+    def _get_runtime_tool_builder(self, tool_type: Any):
+        sql_tool_types = {"postgres", "mssql", "mysql"}
+        tool_builders = {
+            "postgres": self._create_postgres_tool,
+            "mssql": self._create_mssql_tool,
+            "mysql": self._create_mysql_tool,
+            "influxdb": self._create_influxdb_tool,
+            "odoo_shell": self._create_odoo_tool,
+            "ssh_shell": self._create_ssh_tool,
+            "filesystem_indexer": self._create_filesystem_tool,
+            "solidworks_pdm": self._create_pdm_search_tool,
+        }
+
+        normalized_tool_type = self._normalize_runtime_tool_type(tool_type)
+        return tool_builders.get(normalized_tool_type), sql_tool_types, normalized_tool_type
+
+    async def build_tools_from_runtime_config(self, config: dict) -> List[Any]:
+        """Build the runnable tools produced by a single ToolConfig entry."""
+        tool_type = config.get("tool_type")
+        raw_name = (config.get("name", "") or "").strip()
+        tool_name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
+        tool_id = config.get("id") or ""
+        result_tools = []
+
+        builder, sql_tool_types, normalized_tool_type = self._get_runtime_tool_builder(tool_type)
+        if not builder:
+            logger.warning(f"Unknown tool type: {tool_type}")
+            return []
+
+        tool = await builder(config, tool_name, tool_id)
+
+        if normalized_tool_type in sql_tool_types:
+            schema_tool = await self._create_schema_search_tool(
+                config,
+                tool_name,
+                tool_id,
+            )
+            if schema_tool:
+                result_tools.append(schema_tool)
+
+        if tool:
+            result_tools.insert(0, tool)
+        return result_tools
+
+    async def build_primary_runtime_tool_from_config(self, config: dict) -> Any | None:
+        """Build the primary runnable tool for a single ToolConfig entry."""
+        tools = await self.build_tools_from_runtime_config(config)
+        return tools[0] if tools else None
+
     async def _build_tools_from_configs(
         self, skip_knowledge_tool: bool = False
     ) -> List[Any]:
@@ -3479,46 +3534,13 @@ class RAGComponents:
             # Also add file access tools
             tools.extend(self._create_file_access_tools())
 
-        sql_tool_types = {"postgres", "mssql", "mysql"}
-        tool_builders = {
-            "postgres": self._create_postgres_tool,
-            "mssql": self._create_mssql_tool,
-            "mysql": self._create_mysql_tool,
-            "influxdb": self._create_influxdb_tool,
-            "odoo_shell": self._create_odoo_tool,
-            "ssh_shell": self._create_ssh_tool,
-            "filesystem_indexer": self._create_filesystem_tool,
-            "solidworks_pdm": self._create_pdm_search_tool,
-        }
-
         async def _build_single_tool(config: dict) -> List[Any]:
             """Build tool(s) from a single config entry with timeout."""
             tool_type = config.get("tool_type")
             raw_name = (config.get("name", "") or "").strip()
-            tool_name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
-            tool_id = config.get("id") or ""
-            result_tools = []
 
             try:
-                builder = tool_builders.get(str(tool_type))
-                if not builder:
-                    logger.warning(f"Unknown tool type: {tool_type}")
-                    return []
-
-                tool = await builder(config, tool_name, tool_id)
-
-                if str(tool_type) in sql_tool_types:
-                    schema_tool = await self._create_schema_search_tool(
-                        config,
-                        tool_name,
-                        tool_id,
-                    )
-                    if schema_tool:
-                        result_tools.append(schema_tool)
-
-                if tool:
-                    result_tools.insert(0, tool)
-                return result_tools
+                return await self.build_tools_from_runtime_config(config)
 
             except Exception as e:
                 logger.warning(f"Failed to build {tool_type} tool '{raw_name}': {e}")
@@ -6714,10 +6736,14 @@ except Exception as e:
                     return None
                 timeout = config.get("timeout") or 30
                 timeout_max = config.get("timeout_max_seconds") or 300
+                connection_mode = (
+                    (config.get("connection_config") or {}).get("mode") or ""
+                )
                 return {
                     "tool_config_id": tool_id,
                     "tool_config_name": tool_name,
                     "tool_type": tool_type,
+                    "connection_mode": str(connection_mode),
                     "timeout": str(timeout),
                     "timeout_max_seconds": str(timeout_max),
                 }

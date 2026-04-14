@@ -1512,6 +1512,7 @@ export interface ToolConnectionRef {
   tool_config_id: string;
   tool_config_name?: string;
   tool_type?: string;
+  connection_mode?: string;
 }
 
 export interface ToolPresentation {
@@ -2464,6 +2465,17 @@ export interface RetryVisualizationRequest {
 }
 
 export interface RetryVisualizationResponse {
+  success: boolean;
+  output?: string;
+  error?: string;
+}
+
+export interface RetryTerminalToolRequest {
+  tool_config_id: string;
+  input: Record<string, unknown>;
+}
+
+export interface RetryTerminalToolResponse {
   success: boolean;
   output?: string;
   error?: string;

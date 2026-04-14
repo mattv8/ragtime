@@ -2352,6 +2352,20 @@ export const api = {
     return handleResponse<Record<string, unknown>>(response);
   },
 
+  async retryTerminalToolCall(
+    conversationId: string,
+    request: import('@/types').RetryTerminalToolRequest,
+    workspaceId?: string,
+  ): Promise<import('@/types').RetryTerminalToolResponse> {
+    const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/retry-terminal-tool${suffix}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<import('@/types').RetryTerminalToolResponse>(response);
+  },
+
   async createUserSpaceWorkspaceShareLink(workspaceId: string, rotateToken = false): Promise<UserSpaceWorkspaceShareLink> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-link?rotate_token=${String(rotateToken)}`, {
       method: 'POST',

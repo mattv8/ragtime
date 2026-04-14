@@ -8798,12 +8798,12 @@ async def _assert_workspace_access(
     )
 
 
-async def _resolve_workspace_runtime_scope(
+async def _resolve_selected_tool_ids_for_request(
     conversation: Conversation,
     user: User,
     workspace_id: Optional[str],
     required_role: str,
-) -> tuple[Optional[str], Optional[set[str]], Optional[dict[str, str]]]:
+) -> tuple[Optional[str], set[str], Optional[dict[str, str]]]:
     requested_workspace_id = (workspace_id or "").strip() or None
     conversation_workspace_id = (conversation.workspace_id or "").strip() or None
 
@@ -8819,7 +8819,6 @@ async def _resolve_workspace_runtime_scope(
 
     effective_workspace_id = requested_workspace_id or conversation_workspace_id
 
-    # Fetch conversation tool and group selections
     db = Prisma()
     await db.connect()
     try:
@@ -8865,6 +8864,24 @@ async def _resolve_workspace_runtime_scope(
             "workspace_id": effective_workspace_id,
             "user_id": user.id,
         }
+
+    return effective_workspace_id, selected_tool_ids, workspace_context
+
+
+async def _resolve_workspace_runtime_scope(
+    conversation: Conversation,
+    user: User,
+    workspace_id: Optional[str],
+    required_role: str,
+) -> tuple[Optional[str], Optional[set[str]], Optional[dict[str, str]]]:
+    effective_workspace_id, selected_tool_ids, workspace_context = (
+        await _resolve_selected_tool_ids_for_request(
+            conversation,
+            user,
+            workspace_id,
+            required_role,
+        )
+    )
 
     # An empty selection means no system tools are available for this request.
     if not selected_tool_ids:
@@ -9666,6 +9683,20 @@ async def send_message_stream(
 # =============================================================================
 
 
+class RetryTerminalToolRequest(BaseModel):
+    tool_config_id: str = Field(min_length=1, description="Tool config ID to replay")
+    input: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Captured tool input to replay through the configured tool",
+    )
+
+
+class RetryTerminalToolResponse(BaseModel):
+    success: bool
+    output: Optional[str] = None
+    error: Optional[str] = None
+
+
 @router.post("/conversations/{conversation_id}/retry-visualization")
 async def retry_visualization(
     conversation_id: str,
@@ -9749,6 +9780,66 @@ async def retry_visualization(
     except Exception as e:
         logger.exception(f"Error retrying visualization: {e}")
         return RetryVisualizationResponse(success=False, error=str(e))
+
+
+@router.post(
+    "/conversations/{conversation_id}/retry-terminal-tool",
+    response_model=RetryTerminalToolResponse,
+)
+async def retry_terminal_tool(
+    conversation_id: str,
+    request: RetryTerminalToolRequest,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Replay a terminal-classified runtime tool with its captured input."""
+    await _assert_workspace_access(workspace_id, user, "editor")
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if not rag.is_ready:
+        raise HTTPException(
+            status_code=503, detail="RAG service initializing, please retry"
+        )
+
+    conversation = await repository.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    _, selected_tool_ids, _ = await _resolve_selected_tool_ids_for_request(
+        conversation,
+        user,
+        workspace_id,
+        "editor",
+    )
+    if request.tool_config_id not in selected_tool_ids:
+        raise HTTPException(status_code=404, detail="Tool not available")
+
+    tool_config = await repository.get_tool_config(request.tool_config_id)
+    if not tool_config or not tool_config.enabled:
+        raise HTTPException(status_code=404, detail="Tool not found")
+
+    if tool_config.tool_type not in {"ssh_shell", "odoo_shell"}:
+        raise HTTPException(status_code=400, detail="Tool is not terminal-rerunnable")
+
+    try:
+        tool = await rag.build_primary_runtime_tool_from_config(tool_config.model_dump())
+        if tool is None:
+            raise HTTPException(status_code=500, detail="Failed to build tool")
+
+        output = await tool.ainvoke(request.input)
+        return RetryTerminalToolResponse(success=True, output=str(output))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error retrying terminal tool: {e}")
+        return RetryTerminalToolResponse(success=False, error=str(e))
 
 
 # =============================================================================
