@@ -25,150 +25,107 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Body,
-    Depends,
-    File,
-    Form,
-    HTTPException,
-    Query,
-    UploadFile,
-)
+from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
+                     Query, UploadFile)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.copilot_auth import (
-    ensure_copilot_token_fresh,
-    exchange_github_token_for_copilot_token,
-    is_copilot_token_refresh_in_progress,
-)
-from ragtime.core.embedding_models import (
-    OPENAI_EMBEDDING_PRIORITY,
-    get_embedding_models,
-)
+from ragtime.core.copilot_api import (COPILOT_DEFAULT_BASE_URL,
+                                      build_copilot_headers)
+from ragtime.core.copilot_auth import (ensure_copilot_token_fresh,
+                                       exchange_github_token_for_copilot_token,
+                                       is_copilot_token_refresh_in_progress)
+from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
+                                           get_embedding_models)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    MODEL_FAMILY_PATTERNS,
-    get_context_limit,
-    get_output_limit,
-    register_model_reasoning_capabilities,
-    register_model_supported_endpoints,
-    requires_responses_api,
-    supports_function_calling,
-    supports_responses_api,
-    update_model_function_calling,
-    update_model_limit,
-    update_model_output_limit,
-)
-from ragtime.core.ollama import (
-    extract_capabilities,
-    extract_effective_context_length,
-    get_model_details,
-    is_embedding_capable,
-    is_reachable,
-)
+from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
+                                       get_context_limit, get_output_limit,
+                                       register_model_reasoning_capabilities,
+                                       register_model_supported_endpoints,
+                                       requires_responses_api,
+                                       supports_function_calling,
+                                       supports_responses_api,
+                                       update_model_function_calling,
+                                       update_model_limit,
+                                       update_model_output_limit)
+from ragtime.core.ollama import (extract_capabilities,
+                                 extract_effective_context_length,
+                                 get_model_details, is_embedding_capable,
+                                 is_reachable)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (
-    MssqlConnectionError,
-    MysqlConnectionError,
-    mssql_connect,
-    mysql_connect,
-    normalize_mssql_error_message,
-)
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    ssh_tunnel_config_from_dict,
-    test_ssh_connection,
-)
+from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
+                                    mssql_connect, mysql_connect,
+                                    normalize_mssql_error_message)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, ssh_tunnel_config_from_dict,
+                              test_ssh_connection)
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
-    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
-)
+    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS)
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import (
-    background_task_service,
-    rebuild_tool_messages_from_events,
-)
+    background_task_service, rebuild_tool_messages_from_events)
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    ChatMessage,
-    ChatTaskResponse,
-    ChatTaskStatus,
-    CheckRepoVisibilityRequest,
-    ConfigurationWarning,
-    Conversation,
-    ConversationResponse,
-    CreateConversationRequest,
-    CreateIndexRequest,
-    CreateToolConfigRequest,
-    CreateToolGroupRequest,
-    DatabaseDiscoverOption,
-    EmbeddingStatus,
-    FetchBranchesRequest,
-    FetchBranchesResponse,
-    FilesystemAnalysisJobResponse,
-    FilesystemConnectionConfig,
-    FilesystemIndexJobResponse,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJobResponse,
-    IndexStatus,
-    InfluxdbDiscoverRequest,
-    InfluxdbDiscoverResponse,
-    MssqlDiscoverRequest,
-    MssqlDiscoverResponse,
-    MysqlDiscoverRequest,
-    MysqlDiscoverResponse,
-    OcrMode,
-    PdmDiscoverRequest,
-    PdmDiscoverResponse,
-    PdmIndexJobResponse,
-    PostgresDiscoverRequest,
-    PostgresDiscoverResponse,
-    ProviderPromptDebugListResponse,
-    ProviderPromptDebugRecord,
-    RepoVisibilityResponse,
-    RetryVisualizationRequest,
-    RetryVisualizationResponse,
-    SchemaIndexJobResponse,
-    SendMessageRequest,
-    ToolConfig,
-    ToolGroup,
-    ToolTestRequest,
-    ToolType,
-    TriggerFilesystemIndexRequest,
-    TriggerPdmIndexRequest,
-    TriggerSchemaIndexRequest,
-    UpdateSettingsRequest,
-    UpdateToolConfigRequest,
-    UpdateToolGroupRequest,
-    UserSpacePreviewSettingsResponse,
-    VectorStoreType,
-    WorkspaceChatStateResponse,
-)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    ChatMessage, ChatTaskResponse,
+                                    ChatTaskStatus, CheckRepoVisibilityRequest,
+                                    ConfigurationWarning, Conversation,
+                                    ConversationResponse,
+                                    CreateConversationRequest,
+                                    CreateIndexRequest,
+                                    CreateToolConfigRequest,
+                                    CreateToolGroupRequest,
+                                    DatabaseDiscoverOption, EmbeddingStatus,
+                                    FetchBranchesRequest,
+                                    FetchBranchesResponse,
+                                    FilesystemAnalysisJobResponse,
+                                    FilesystemConnectionConfig,
+                                    FilesystemIndexJobResponse,
+                                    IndexAnalysisResult, IndexConfig,
+                                    IndexInfo, IndexJobResponse, IndexStatus,
+                                    InfluxdbDiscoverRequest,
+                                    InfluxdbDiscoverResponse,
+                                    MssqlDiscoverRequest,
+                                    MssqlDiscoverResponse,
+                                    MysqlDiscoverRequest,
+                                    MysqlDiscoverResponse, OcrMode,
+                                    PdmDiscoverRequest, PdmDiscoverResponse,
+                                    PdmIndexJobResponse,
+                                    PostgresDiscoverRequest,
+                                    PostgresDiscoverResponse,
+                                    ProviderPromptDebugListResponse,
+                                    ProviderPromptDebugRecord,
+                                    RepoVisibilityResponse,
+                                    RetryVisualizationRequest,
+                                    RetryVisualizationResponse,
+                                    SchemaIndexJobResponse, SendMessageRequest,
+                                    ToolConfig, ToolGroup, ToolTestRequest,
+                                    ToolType, TriggerFilesystemIndexRequest,
+                                    TriggerPdmIndexRequest,
+                                    TriggerSchemaIndexRequest,
+                                    UpdateSettingsRequest,
+                                    UpdateToolConfigRequest,
+                                    UpdateToolGroupRequest,
+                                    UserSpacePreviewSettingsResponse,
+                                    VectorStoreType,
+                                    WorkspaceChatStateResponse)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -192,13 +149,9 @@ logger = get_logger(__name__)
 # GitHub Copilot OAuth device flow
 # We must use VSCode's Client ID to get user subscribed models
 GITHUB_COPILOT_CLIENT_ID = os.getenv("GITHUB_COPILOT_CLIENT_ID", "Iv1.b507a08c87ecfe98")
-COPILOT_DEFAULT_BASE_URL = "https://api.githubcopilot.com"
 GITHUB_MODELS_CATALOG_URL = "https://models.github.ai/catalog/models"
 MODELS_DEV_API_URL = "https://models.dev/api.json"
 OAUTH_POLLING_SAFETY_MARGIN_SECONDS = 3
-COPILOT_EDITOR_VERSION = "Ragtime/1.0"
-COPILOT_PLUGIN_VERSION = "Ragtime/1.0"
-COPILOT_INTEGRATION_ID = "vscode-chat"
 
 # In-memory pending OAuth device requests (request_id -> request state)
 _copilot_device_requests: dict[str, dict[str, Any]] = {}
@@ -264,12 +217,14 @@ def _copilot_token_fingerprint(token: str) -> str:
 async def _get_or_fetch_model_discovery(
     cache_key: str,
     fetcher: Callable[[], Awaitable["LLMModelsResponse"]],
+    *,
+    force_refresh: bool = False,
 ) -> "LLMModelsResponse":
     """Return cached model discovery result or dedupe concurrent refreshes."""
     now = time.monotonic()
 
     async with _model_discovery_lock:
-        cached = _model_discovery_cache.get(cache_key)
+        cached = None if force_refresh else _model_discovery_cache.get(cache_key)
         if cached and (now - cached[0]) < _MODEL_DISCOVERY_CACHE_TTL_SECONDS:
             return cached[1].model_copy(deep=True)
 
@@ -1904,7 +1859,8 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import \
+                        FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1925,7 +1881,8 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import get_faiss_backend
+                    from ragtime.indexer.vector_backends import \
+                        get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -2905,7 +2862,8 @@ async def discover_influxdb_buckets(
 
     def discover_buckets(effective_url: str) -> tuple[bool, list[str], str | None]:
         try:
-            from influxdb_client import InfluxDBClient  # type: ignore[import-untyped]
+            from influxdb_client import \
+                InfluxDBClient  # type: ignore[import-untyped]
         except ImportError:
             return False, [], "influxdb-client package not installed"
 
@@ -6614,6 +6572,199 @@ def _find_available_model_for_identifier(
     return None
 
 
+def _find_discovered_model(models: List[LLMModel], model_id: str) -> Optional[LLMModel]:
+    """Find a discovered model by exact id, tolerating normalized GitHub prefixes."""
+    requested = str(model_id or "").strip().lstrip("/")
+    if not requested:
+        return None
+
+    for model in models:
+        candidate = str(model.id or "").strip().lstrip("/")
+        if candidate == requested:
+            return model
+        if "/" in candidate and candidate.split("/", 1)[1] == requested:
+            return model
+
+    return None
+
+
+def _resolve_ollama_chat_base_url(settings: AppSettings) -> str:
+    """Resolve the effective Ollama base URL used for chat model discovery."""
+    base_url = str(getattr(settings, "llm_ollama_base_url", "") or "").strip()
+    if not base_url or base_url == "http://localhost:11434":
+        base_url = str(getattr(settings, "ollama_base_url", "") or "").strip()
+    return base_url
+
+
+async def _fetch_github_provider_models(
+    *,
+    provider: str,
+    settings: AppSettings,
+    api_key: str = "",
+    auth_mode: Optional[str] = None,
+    include_directory_models: bool = False,
+    include_anthropic_models: bool = False,
+    include_google_models: bool = False,
+    force_refresh: bool = False,
+) -> LLMModelsResponse:
+    """Fetch GitHub-backed models using the same PAT/OAuth flow across routes."""
+    normalized_provider = provider.strip().lower()
+    resolved_auth_mode, auth_error = _resolve_github_auth_mode(settings, auth_mode)
+    if auth_error:
+        return LLMModelsResponse(success=False, message=auth_error)
+    assert resolved_auth_mode is not None
+
+    token_override = str(api_key or "").strip()
+    result: LLMModelsResponse
+
+    if resolved_auth_mode == "pat":
+        token = token_override or str(settings.github_models_api_token or "").strip()
+        if not token:
+            return LLMModelsResponse(
+                success=False,
+                message="GitHub Copilot PAT mode requires a token. Paste a fine-grained PAT with Models:read.",
+            )
+        result = await _fetch_github_models_catalog(token)
+    else:
+        token = token_override
+        base_url = COPILOT_DEFAULT_BASE_URL
+        refresh_token = ""
+        if not token:
+            token = str(settings.github_copilot_access_token or "").strip()
+            base_url = settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL
+            refresh_token = str(settings.github_copilot_refresh_token or "").strip()
+        if not token:
+            return LLMModelsResponse(
+                success=False,
+                message="GitHub Copilot is not connected. Use OAuth connect in LLM settings first.",
+            )
+
+        if not token_override:
+            refreshed = await ensure_copilot_token_fresh()
+            if refreshed:
+                token = refreshed
+
+        result = await _fetch_github_copilot_models(
+            token,
+            base_url,
+            force_refresh=force_refresh,
+        )
+        if not result.success:
+            auth_failed = "authorization failed" in (result.message or "").lower()
+            if refresh_token and auth_failed and not token_override:
+                try:
+                    exchanged_token, exchanged_expires_at = (
+                        await exchange_github_token_for_copilot_token(refresh_token)
+                    )
+                    await repository.update_settings(
+                        {
+                            "github_copilot_access_token": exchanged_token,
+                            "github_copilot_token_expires_at": exchanged_expires_at,
+                        }
+                    )
+                    invalidate_settings_cache()
+                    result = await _fetch_github_copilot_models(
+                        exchanged_token,
+                        base_url,
+                        force_refresh=force_refresh,
+                    )
+                except Exception as exchange_error:
+                    logger.warning(
+                        "Failed to refresh Copilot bearer token from OAuth token: %s",
+                        exchange_error,
+                    )
+
+    if include_directory_models and normalized_provider in {
+        "github_copilot",
+        "github_models",
+    }:
+        directory_result = await _fetch_copilot_directory_models(
+            include_anthropic=include_anthropic_models,
+            include_google=include_google_models,
+        )
+        result = _merge_llm_model_results(result, directory_result)
+
+    return result
+
+
+async def _validate_conversation_model_selection(
+    *,
+    provider: str,
+    model_id: str,
+    include_directory_models: bool = False,
+    force_refresh: bool = False,
+) -> None:
+    """Force-refresh provider discovery before accepting a picker model change."""
+    settings = await repository.get_settings()
+    if not settings:
+        raise HTTPException(
+            status_code=503,
+            detail="Application settings are unavailable",
+        )
+
+    normalized_provider = provider.strip().lower()
+    normalized_model = model_id.strip().lstrip("/")
+    result: Optional[LLMModelsResponse] = None
+
+    if normalized_provider == "openai":
+        api_key = str(settings.openai_api_key or "").strip()
+        if not api_key:
+            raise HTTPException(status_code=400, detail="OpenAI is not configured")
+        result = await _fetch_openai_models(api_key)
+    elif normalized_provider == "anthropic":
+        api_key = str(settings.anthropic_api_key or "").strip()
+        if not api_key:
+            raise HTTPException(status_code=400, detail="Anthropic is not configured")
+        result = await _fetch_anthropic_models(api_key)
+    elif normalized_provider == "ollama":
+        base_url = _resolve_ollama_chat_base_url(settings)
+        if not base_url:
+            raise HTTPException(status_code=400, detail="Ollama is not configured")
+        result = await _fetch_ollama_llm_models(base_url)
+    elif normalized_provider in {"github_models", "github_copilot"}:
+        result = await _fetch_github_provider_models(
+            provider=normalized_provider,
+            settings=settings,
+            include_directory_models=include_directory_models,
+            include_anthropic_models=True,
+            include_google_models=True,
+            force_refresh=force_refresh,
+        )
+
+    if result is None:
+        return
+
+    if not result.success:
+        raise HTTPException(
+            status_code=503,
+            detail=result.message or "Failed to refresh provider models",
+        )
+
+    if _find_discovered_model(result.models, normalized_model) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected model is no longer available from the configured provider.",
+        )
+
+
+async def _validate_conversation_model_before_send(stored_model: str) -> None:
+    """Verify the current conversation model still exists in the live provider catalog."""
+    provider, model_id = _parse_model_identifier(stored_model)
+    if not model_id:
+        return
+
+    if not provider:
+        settings = await repository.get_settings()
+        provider = str(getattr(settings, "llm_provider", "openai") or "openai").strip().lower()
+
+    await _validate_conversation_model_selection(
+        provider=provider,
+        model_id=model_id,
+        include_directory_models=False,
+        force_refresh=(provider == "github_copilot"),
+    )
+
+
 def _identifier_in_allowed_models(identifier: str, allowed_models: List[str]) -> bool:
     """Check whether a candidate identifier matches any allowed model entry."""
     if not identifier:
@@ -7148,77 +7299,15 @@ async def fetch_llm_models(
         return await _fetch_anthropic_models(request.api_key)
     elif request.provider in {"github_copilot", "github_models"}:
         settings = await repository.get_settings()
-        auth_mode, auth_error = _resolve_github_auth_mode(settings, request.auth_mode)
-        if auth_error:
-            return LLMModelsResponse(success=False, message=auth_error)
-        assert auth_mode is not None
-
-        if auth_mode == "pat":
-            token = request.api_key or settings.github_models_api_token or ""
-            if not token:
-                return LLMModelsResponse(
-                    success=False,
-                    message="GitHub Copilot PAT mode requires a token. Paste a fine-grained PAT with Models:read.",
-                )
-            result = await _fetch_github_models_catalog(token)
-        else:
-            token = request.api_key
-            base_url = COPILOT_DEFAULT_BASE_URL
-            refresh_token = ""
-            if not token:
-                token = settings.github_copilot_access_token
-                base_url = settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL
-                refresh_token = settings.github_copilot_refresh_token or ""
-            if not token:
-                return LLMModelsResponse(
-                    success=False,
-                    message="GitHub Copilot is not connected. Use OAuth connect in LLM settings first.",
-                )
-
-            # Proactively refresh HMAC token if near expiry.
-            if not request.api_key:
-                refreshed = await ensure_copilot_token_fresh()
-                if refreshed:
-                    token = refreshed
-
-            result = await _fetch_github_copilot_models(
-                token,
-                base_url,
-            )
-            if not result.success:
-                # If the stored access token is stale or low-privilege, try exchanging
-                # the saved OAuth token for a fresh Copilot bearer token and retry once.
-                auth_failed = "authorization failed" in (result.message or "").lower()
-                if refresh_token and auth_failed and not request.api_key:
-                    try:
-                        exchanged_token, exchanged_expires_at = (
-                            await exchange_github_token_for_copilot_token(refresh_token)
-                        )
-                        await repository.update_settings(
-                            {
-                                "github_copilot_access_token": exchanged_token,
-                                "github_copilot_token_expires_at": exchanged_expires_at,
-                            }
-                        )
-                        invalidate_settings_cache()
-                        result = await _fetch_github_copilot_models(
-                            exchanged_token,
-                            base_url,
-                        )
-                    except Exception as exchange_error:
-                        logger.warning(
-                            "Failed to refresh Copilot bearer token from OAuth token: %s",
-                            exchange_error,
-                        )
-
-        if request.include_directory_models:
-            directory_result = await _fetch_copilot_directory_models(
-                include_anthropic=request.include_anthropic_models,
-                include_google=request.include_google_models,
-            )
-            result = _merge_llm_model_results(result, directory_result)
-
-        return result
+        return await _fetch_github_provider_models(
+            provider=request.provider,
+            settings=settings,
+            api_key=request.api_key,
+            auth_mode=request.auth_mode,
+            include_directory_models=request.include_directory_models,
+            include_anthropic_models=request.include_anthropic_models,
+            include_google_models=request.include_google_models,
+        )
     else:
         return LLMModelsResponse(
             success=False,
@@ -7812,6 +7901,8 @@ def _extract_provider_capability_metadata(
 async def _fetch_github_copilot_models(
     access_token: str,
     base_url: str = COPILOT_DEFAULT_BASE_URL,
+    *,
+    force_refresh: bool = False,
 ) -> LLMModelsResponse:
     """Fetch available models from GitHub Copilot API."""
     normalized_base = (base_url or COPILOT_DEFAULT_BASE_URL).rstrip("/")
@@ -7847,29 +7938,7 @@ async def _fetch_github_copilot_models(
         endpoint_specs: list[tuple[str, dict[str, str]]] = [
             (
                 f"{normalized_base}/models",
-                {
-                    "Authorization": f"Bearer {access_token}",
-                    "Accept": "application/json",
-                    "User-Agent": "ragtime",
-                    "Openai-Intent": "conversation-edits",
-                    # Matching common Copilot editor headers tends to return
-                    # the same model catalog users see in IDE integrations.
-                    "Editor-Version": COPILOT_EDITOR_VERSION,
-                    "Editor-Plugin-Version": COPILOT_PLUGIN_VERSION,
-                    "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
-                },
-            ),
-            (
-                f"{normalized_base}/v1/models",
-                {
-                    "Authorization": f"Bearer {access_token}",
-                    "Accept": "application/json",
-                    "User-Agent": "ragtime",
-                    "Openai-Intent": "conversation-edits",
-                    "Editor-Version": COPILOT_EDITOR_VERSION,
-                    "Editor-Plugin-Version": COPILOT_PLUGIN_VERSION,
-                    "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
-                },
+                build_copilot_headers(access_token=access_token),
             ),
         ]
 
@@ -8009,7 +8078,11 @@ async def _fetch_github_copilot_models(
             message=f"Failed to fetch GitHub Copilot models: {last_error or 'unknown error'}",
         )
 
-    return await _get_or_fetch_model_discovery(cache_key, _fetch_uncached)
+    return await _get_or_fetch_model_discovery(
+        cache_key,
+        _fetch_uncached,
+        force_refresh=force_refresh,
+    )
 
 
 async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
@@ -8217,12 +8290,6 @@ async def get_available_chat_models():
     ) -> tuple[str, LLMModelsResponse]:
         try:
             result = await _fetch_github_models_catalog(token)
-            if result.success and provider_name == "github_copilot":
-                directory_result = await _fetch_copilot_directory_models(
-                    include_anthropic=True,
-                    include_google=True,
-                )
-                result = _merge_llm_model_results(result, directory_result)
             return ("github_copilot", result)
         except Exception as e:
             logger.warning(f"Failed to fetch GitHub models: {e}")
@@ -8239,12 +8306,6 @@ async def get_available_chat_models():
     ) -> tuple[str, LLMModelsResponse]:
         try:
             result = await _fetch_github_copilot_models(token, base_url)
-            if result.success:
-                directory_result = await _fetch_copilot_directory_models(
-                    include_anthropic=True,
-                    include_google=True,
-                )
-                result = _merge_llm_model_results(result, directory_result)
             return ("github_copilot", result)
         except Exception as e:
             logger.warning(f"Failed to fetch GitHub models: {e}")
@@ -9224,6 +9285,14 @@ async def update_conversation_model(
 
     stored_model = f"{provider}::{model}" if provider else model
 
+    if provider:
+        await _validate_conversation_model_selection(
+            provider=provider,
+            model_id=model,
+            include_directory_models=False,
+            force_refresh=(provider == "github_copilot"),
+        )
+
     conv = await repository.update_conversation_model(conversation_id, stored_model)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -9336,6 +9405,8 @@ async def send_message(
             status_code=503, detail="RAG service initializing, please retry"
         )
 
+    await _validate_conversation_model_before_send(conv.model)
+
     user_message = request.message.strip()
     if not user_message:
         raise HTTPException(status_code=400, detail="Message is required")
@@ -9429,6 +9500,8 @@ async def send_message_stream(
         raise HTTPException(
             status_code=503, detail="RAG service initializing, please retry"
         )
+
+    await _validate_conversation_model_before_send(conv.model)
 
     user_message = request.message.strip()
     if not user_message:
@@ -9889,6 +9962,8 @@ async def send_message_background(
         raise HTTPException(
             status_code=503, detail="RAG service initializing, please retry"
         )
+
+    await _validate_conversation_model_before_send(conv.model)
 
     user_message = request.message.strip()
     if not user_message:

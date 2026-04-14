@@ -1,7 +1,7 @@
+
 from __future__ import annotations
 
 from typing import Any, Mapping
-
 
 TERMINAL_PRESENTATION_KIND = "terminal"
 USERSPACE_EXEC_RERUN_KIND = "userspace_exec"

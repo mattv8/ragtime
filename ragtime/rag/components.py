@@ -22,7 +22,6 @@ from typing import Any, List, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -38,10 +37,13 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_openai.chat_models.base import (
     _construct_responses_api_payload, _get_last_messages)
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
+from ragtime.core.copilot_api import (COPILOT_DEFAULT_BASE_URL,
+                                      build_copilot_headers)
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
 from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
@@ -915,6 +917,16 @@ class _CopilotChatOpenAI(ChatOpenAI):
         return result
 
     @staticmethod
+    def _looks_like_responses_api_rejection(text: str) -> bool:
+        """Return True when provider text says the model cannot use Responses API."""
+        return bool(
+            re.search(
+                r"not supported (?:via|by|through) (?:the )?responses api",
+                text.lower(),
+            )
+        )
+
+    @staticmethod
     def _message_content_to_text(content: Any) -> str:
         if isinstance(content, str):
             return content
@@ -988,6 +1000,38 @@ class _CopilotChatOpenAI(ChatOpenAI):
 
         return _construct_responses_api_payload(remaining_messages, payload)
 
+    def _use_responses_api(self, payload: dict) -> bool:
+        """Respect explicit chat-completions fallback overrides.
+
+        Some OpenAI-compatible backends cause LangChain to auto-route requests
+        to Responses whenever reasoning controls are present, even when
+        ``use_responses_api`` was never set on the instance. Preserve a local
+        escape hatch so runtime fallback can force subsequent retries through
+        ``/chat/completions``.
+        """
+        if getattr(self, "_force_chat_completions_api", False):
+            return False
+        return bool(super()._use_responses_api(payload))
+
+    def _request_targets_responses_api(self, **kwargs) -> bool:
+        """Return True when the current request shape routes to Responses API."""
+        payload = dict(getattr(self, "_default_params", {}) or {})
+        payload.update(kwargs)
+        return self._use_responses_api(payload)
+
+    def _refresh_copilot_request_headers(self) -> None:
+        """Refresh Copilot session headers so each request gets a fresh interaction id."""
+        headers = dict(getattr(self, "default_headers", {}) or {})
+        if "Copilot-Integration-Id" not in headers:
+            return
+
+        refreshed_headers = build_copilot_headers(
+            intent=str(headers.get("Openai-Intent") or "conversation-agent"),
+            accept=str(headers.get("Accept") or "application/json"),
+        )
+        headers.update(refreshed_headers)
+        self.default_headers = headers
+
     @staticmethod
     def _get_error_body(exc: Exception) -> dict[str, Any] | None:
         body = getattr(exc, "body", None)
@@ -1019,36 +1063,65 @@ class _CopilotChatOpenAI(ChatOpenAI):
         return ""
 
     @staticmethod
+    def _get_supported_endpoints(exc: Exception) -> set[str]:
+        """Extract structured supported endpoint hints from provider errors."""
+        body = _CopilotChatOpenAI._get_error_body(exc)
+        if not isinstance(body, dict):
+            return set()
+
+        error_obj = body.get("error", {})
+        endpoint_candidates: list[Any] = []
+        if isinstance(error_obj, dict):
+            endpoint_candidates.append(error_obj.get("supported_endpoints"))
+            details = error_obj.get("details")
+            if isinstance(details, dict):
+                endpoint_candidates.append(details.get("supported_endpoints"))
+
+        for candidate in endpoint_candidates:
+            if isinstance(candidate, list):
+                return {str(item).lower() for item in candidate if item}
+
+        return set()
+
+    @staticmethod
     def _is_unsupported_api_error(exc: Exception) -> bool:
         """Return True if *exc* is an OpenAI ``unsupported_api_for_model`` error."""
         code = _CopilotChatOpenAI._get_error_code(exc)
         if code == "unsupported_api_for_model":
             return True
 
-        body = _CopilotChatOpenAI._get_error_body(exc)
-        if isinstance(body, dict):
-            error_obj = body.get("error", {})
-
-            # Prefer structured endpoint capability hints when providers include
-            # them in error payloads.
-            supported_endpoints = error_obj.get("supported_endpoints")
-            if isinstance(supported_endpoints, list):
-                endpoints = {str(item).lower() for item in supported_endpoints}
-                if "/responses" in endpoints and "/chat/completions" not in endpoints:
-                    return True
-
-            details = error_obj.get("details")
-            if isinstance(details, dict):
-                detail_endpoints = details.get("supported_endpoints")
-                if isinstance(detail_endpoints, list):
-                    endpoints = {str(item).lower() for item in detail_endpoints}
-                    if (
-                        "/responses" in endpoints
-                        and "/chat/completions" not in endpoints
-                    ):
-                        return True
+        endpoints = _CopilotChatOpenAI._get_supported_endpoints(exc)
+        if "/responses" in endpoints and "/chat/completions" not in endpoints:
+            return True
 
         return False
+
+    @staticmethod
+    def _is_chat_completions_only_error(exc: Exception) -> bool:
+        """Return True when a Responses request should be retried via chat completions."""
+        endpoints = _CopilotChatOpenAI._get_supported_endpoints(exc)
+        if "/chat/completions" in endpoints and "/responses" not in endpoints:
+            return True
+
+        if _CopilotChatOpenAI._looks_like_responses_api_rejection(str(exc)):
+            return True
+
+        if _CopilotChatOpenAI._get_error_code(exc) != "unsupported_api_for_model":
+            return False
+
+        body = _CopilotChatOpenAI._get_error_body(exc)
+        if not isinstance(body, dict):
+            return False
+
+        error_obj = body.get("error", {})
+        if not isinstance(error_obj, dict):
+            return False
+
+        message = str(error_obj.get("message", "") or "")
+        if _CopilotChatOpenAI._looks_like_responses_api_rejection(message):
+            return True
+        lowered_message = message.lower()
+        return "/chat/completions" in lowered_message and "/responses" in lowered_message
 
     @staticmethod
     def _looks_like_summary_error(exc: Exception) -> bool:
@@ -1183,6 +1256,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
         do not update the shared capability cache. Only authoritative endpoint
         signals should be persisted across future requests.
         """
+        self._force_chat_completions_api = False
         self.use_responses_api = True
         self.output_version = "responses/v1"
         if cache_result:
@@ -1190,6 +1264,27 @@ class _CopilotChatOpenAI(ChatOpenAI):
         logger.info(
             "Model %s does not support /chat/completions — "
             "switched to Responses API for this and future requests",
+            self.model_name,
+        )
+
+    def _switch_to_chat_completions_api(self, *, cache_result: bool = True) -> None:
+        """Flip this instance back to Chat Completions after a Responses rejection."""
+        self._force_chat_completions_api = True
+        self.use_responses_api = False
+        self.output_version = "v0"
+
+        reasoning = getattr(self, "reasoning", None)
+        if isinstance(reasoning, dict):
+            effort = str(reasoning.get("effort", "") or "").strip()
+            if effort and not getattr(self, "reasoning_effort", None):
+                self.reasoning_effort = effort
+            self.reasoning = None
+
+        if cache_result:
+            register_model_supported_endpoints(self.model_name, ["/chat/completions"])
+
+        logger.info(
+            "Model %s rejected Responses API — retried via /chat/completions",
             self.model_name,
         )
 
@@ -1232,14 +1327,20 @@ class _CopilotChatOpenAI(ChatOpenAI):
         *args,
         **kwargs,
     ):
+        request_targets_responses = self._request_targets_responses_api(**kwargs)
         try:
             return await call(*args, **kwargs)
         except Exception as exc:
-            if self.use_responses_api and self._downgrade_reasoning_parameters(exc):
+            if request_targets_responses and self._downgrade_reasoning_parameters(exc):
                 return await call(*args, **kwargs)
             raise
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        self._refresh_copilot_request_headers()
+        request_targets_responses = self._request_targets_responses_api(
+            stop=stop,
+            **kwargs,
+        )
         try:
             return await self._retry_after_reasoning_downgrade(
                 super()._agenerate,
@@ -1249,9 +1350,19 @@ class _CopilotChatOpenAI(ChatOpenAI):
                 **kwargs,
             )
         except Exception as exc:
+            if request_targets_responses and self._is_chat_completions_only_error(exc):
+                self._switch_to_chat_completions_api()
+                return await self._retry_after_reasoning_downgrade(
+                    super()._agenerate,
+                    messages,
+                    stop=stop,
+                    run_manager=run_manager,
+                    **kwargs,
+                )
+
             unsupported_api = self._is_unsupported_api_error(exc)
             probe_responses = self._should_probe_responses_fallback(exc)
-            if not self.use_responses_api and (unsupported_api or probe_responses):
+            if not request_targets_responses and (unsupported_api or probe_responses):
                 self._switch_to_responses_api(cache_result=unsupported_api)
                 return await self._retry_after_reasoning_downgrade(
                     super()._agenerate,
@@ -1273,18 +1384,26 @@ class _CopilotChatOpenAI(ChatOpenAI):
             raise
 
     async def _astream(self, *args, **kwargs):
+        self._refresh_copilot_request_headers()
+        request_targets_responses = self._request_targets_responses_api(**kwargs)
         try:
             async for chunk in super()._astream(*args, **kwargs):
                 yield chunk
         except Exception as exc:
-            if self.use_responses_api and self._downgrade_reasoning_parameters(exc):
+            if request_targets_responses and self._is_chat_completions_only_error(exc):
+                self._switch_to_chat_completions_api()
+                async for chunk in super()._astream(*args, **kwargs):
+                    yield chunk
+                return
+
+            if request_targets_responses and self._downgrade_reasoning_parameters(exc):
                 async for chunk in super()._astream(*args, **kwargs):
                     yield chunk
                 return
 
             unsupported_api = self._is_unsupported_api_error(exc)
             probe_responses = self._should_probe_responses_fallback(exc)
-            if not self.use_responses_api and (unsupported_api or probe_responses):
+            if not request_targets_responses and (unsupported_api or probe_responses):
                 self._switch_to_responses_api(cache_result=unsupported_api)
                 try:
                     async for chunk in super()._astream(*args, **kwargs):
@@ -2331,9 +2450,13 @@ class RAGComponents:
                                 )
 
                             capabilities = row.get("capabilities")
-                            if isinstance(capabilities, dict):
+                            supports_flags: list[str] = []
+                            if isinstance(capabilities, list):
+                                supports_flags = [
+                                    str(flag).lower() for flag in capabilities if flag
+                                ]
+                            elif isinstance(capabilities, dict):
                                 supports_obj = capabilities.get("supports")
-                                supports_flags: list[str] = []
                                 if isinstance(supports_obj, list):
                                     supports_flags = [
                                         str(flag).lower() for flag in supports_obj
@@ -2345,18 +2468,18 @@ class RAGComponents:
                                         if enabled
                                     ]
 
-                                if supports_flags:
-                                    register_model_reasoning_capabilities(
-                                        normalized_row_id,
-                                        reasoning_supported=(
-                                            "reasoning_effort" in supports_flags
-                                            or "reasoning" in supports_flags
-                                        ),
-                                        thinking_budget_supported=(
-                                            "thinking_budget" in supports_flags
-                                            or "max_thinking_budget" in supports_flags
-                                        ),
-                                    )
+                            if supports_flags:
+                                register_model_reasoning_capabilities(
+                                    normalized_row_id,
+                                    reasoning_supported=(
+                                        "reasoning_effort" in supports_flags
+                                        or "reasoning" in supports_flags
+                                    ),
+                                    thinking_budget_supported=(
+                                        "thinking_budget" in supports_flags
+                                        or "max_thinking_budget" in supports_flags
+                                    ),
+                                )
 
                             return
             except Exception:
@@ -2430,26 +2553,15 @@ class RAGComponents:
             self._copilot_llm_token = token
 
             base_url = self._app_settings.get(
-                "github_copilot_base_url", "https://api.githubcopilot.com"
+                "github_copilot_base_url", COPILOT_DEFAULT_BASE_URL
             )
-            base_url = str(base_url or "https://api.githubcopilot.com").rstrip("/")
+            base_url = str(base_url or COPILOT_DEFAULT_BASE_URL).rstrip("/")
 
-            copilot_headers = {
-                "Openai-Intent": "conversation-panel",
-                "Copilot-Integration-Id": "vscode-chat",
-                "Editor-Version": "vscode/1.99.0",
-                "Editor-Plugin-Version": "copilot-chat/0.26.3",
-                "User-Agent": "GitHubCopilotChat/0.26.3",
-                "Accept": "application/json",
-            }
-
-            copilot_metadata_headers = {
-                **copilot_headers,
-                "Authorization": f"Bearer {token}",
-            }
+            copilot_headers = build_copilot_headers(intent="conversation-panel")
+            copilot_metadata_headers = build_copilot_headers(access_token=token)
 
             await _hydrate_openai_compatible_capabilities(
-                metadata_urls=[f"{base_url}/models", f"{base_url}/v1/models"],
+                metadata_urls=[f"{base_url}/models"],
                 headers=copilot_metadata_headers,
                 requested_model=model,
             )
@@ -2472,11 +2584,12 @@ class RAGComponents:
             model_supports_responses = await supports_responses_api(model)
             model_requires_responses = await requires_responses_api(model)
 
-            # Prefer Responses API for reasoning-capable models when supported.
-            # This improves reasoning quality and unlocks summary deltas.
-            use_responses_api = model_requires_responses or (
-                model_supports_reasoning and model_supports_responses
-            )
+            # Copilot frequently omits supported_endpoints metadata for GPT-5.x
+            # and other reasoning-capable models even though `/responses` is the
+            # only path that surfaces visible reasoning summaries reliably.
+            # Prefer Responses API whenever reasoning is supported and fall back
+            # to chat completions automatically if the provider rejects it.
+            use_responses_api = model_requires_responses or model_supports_reasoning
 
             if use_responses_api:
                 copilot_kwargs["use_responses_api"] = True
@@ -2493,8 +2606,13 @@ class RAGComponents:
                     logger.info("Model %s requires Responses API (pre-detected)", model)
                 else:
                     logger.info(
-                        "Model %s supports Responses API; preferring it for reasoning",
+                        "Model %s is reasoning-capable; preferring Responses API%s",
                         model,
+                        (
+                            " (endpoint metadata unavailable)"
+                            if not model_supports_responses
+                            else ""
+                        ),
                     )
             else:
                 if model_supports_reasoning:
@@ -3478,7 +3596,11 @@ class RAGComponents:
         }
 
         normalized_tool_type = self._normalize_runtime_tool_type(tool_type)
-        return tool_builders.get(normalized_tool_type), sql_tool_types, normalized_tool_type
+        return (
+            tool_builders.get(normalized_tool_type),
+            sql_tool_types,
+            normalized_tool_type,
+        )
 
     async def build_tools_from_runtime_config(self, config: dict) -> List[Any]:
         """Build the runnable tools produced by a single ToolConfig entry."""
@@ -3488,7 +3610,9 @@ class RAGComponents:
         tool_id = config.get("id") or ""
         result_tools = []
 
-        builder, sql_tool_types, normalized_tool_type = self._get_runtime_tool_builder(tool_type)
+        builder, sql_tool_types, normalized_tool_type = self._get_runtime_tool_builder(
+            tool_type
+        )
         if not builder:
             logger.warning(f"Unknown tool type: {tool_type}")
             return []
@@ -4768,12 +4892,18 @@ except Exception as e:
                     )
 
                     exit_code = result.exit_code
-                    command_failed = not result.success and "ODOO_ERROR" not in result.output
+                    command_failed = (
+                        not result.success and "ODOO_ERROR" not in result.output
+                    )
 
                     # For SSH, filter with ssh_mode=True to strip STDERR section
                     filtered = filter_odoo_output(result.output, ssh_mode=True)
                     stdout_out = sanitize_output(filtered) if filtered else ""
-                    stderr_out = sanitize_output(result.stderr.strip()) if result.stderr.strip() else ""
+                    stderr_out = (
+                        sanitize_output(result.stderr.strip())
+                        if result.stderr.strip()
+                        else ""
+                    )
 
                     terminal_payload: dict[str, Any] = {
                         "tool": f"odoo_{tool_name}",
@@ -4785,7 +4915,9 @@ except Exception as e:
                     if stderr_out:
                         terminal_payload["stderr"] = stderr_out
                     if command_failed:
-                        terminal_payload["error"] = f"Odoo SSH command failed (exit {exit_code})"
+                        terminal_payload["error"] = (
+                            f"Odoo SSH command failed (exit {exit_code})"
+                        )
 
                     return json.dumps(terminal_payload, indent=2)
 
@@ -6736,9 +6868,9 @@ except Exception as e:
                     return None
                 timeout = config.get("timeout") or 30
                 timeout_max = config.get("timeout_max_seconds") or 300
-                connection_mode = (
-                    (config.get("connection_config") or {}).get("mode") or ""
-                )
+                connection_mode = (config.get("connection_config") or {}).get(
+                    "mode"
+                ) or ""
                 return {
                     "tool_config_id": tool_id,
                     "tool_config_name": tool_name,
@@ -9394,9 +9526,7 @@ except Exception as e:
                         manifest_name, required_pkgs = dep_spec
                         manifest_candidates = [manifest_name]
                         if manifest_name == "requirements.txt":
-                            manifest_candidates.extend(
-                                ["pyproject.toml", "Pipfile"]
-                            )
+                            manifest_candidates.extend(["pyproject.toml", "Pipfile"])
 
                         manifest_text_parts: list[str] = []
                         existing_manifest_names: list[str] = []
@@ -11641,9 +11771,11 @@ except Exception as e:
                                                         ),
                                                         "lines": total,
                                                     }
-                                                    presentation_meta = normalize_tool_presentation(
-                                                        _generating_tool_names.get(
-                                                            tc_key, ""
+                                                    presentation_meta = (
+                                                        normalize_tool_presentation(
+                                                            _generating_tool_names.get(
+                                                                tc_key, ""
+                                                            )
                                                         )
                                                     )
                                                     if presentation_meta:

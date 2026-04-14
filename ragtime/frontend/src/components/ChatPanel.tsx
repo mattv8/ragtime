@@ -217,13 +217,19 @@ function mergeConversationFromWorkspaceSnapshot(
   current: Conversation,
   incoming: Conversation,
 ): Conversation {
-  const incomingIsNewer = conversationUpdatedAtMs(incoming) >= conversationUpdatedAtMs(current);
+  const incomingUpdatedAt = conversationUpdatedAtMs(incoming);
+  const currentUpdatedAt = conversationUpdatedAtMs(current);
+  const incomingIsNewer = incomingUpdatedAt > currentUpdatedAt;
+  const shouldUseIncomingMessages = incomingIsNewer
+    || incoming.messages.length > current.messages.length
+    || (incoming.messages.length === current.messages.length && incomingUpdatedAt >= currentUpdatedAt);
 
   return {
     ...current,
     ...incoming,
     model: incomingIsNewer ? (incoming.model || current.model) : (current.model || incoming.model),
-    messages: incomingIsNewer || incoming.messages.length >= current.messages.length
+    // Preserve optimistic local messages when the workspace snapshot has the same timestamp.
+    messages: shouldUseIncomingMessages
       ? incoming.messages
       : current.messages,
   };
@@ -1978,7 +1984,7 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
   // Summary: first meaningful line for compact header
   const summaryLine = useMemo(() => {
     const lines = cleanedContent.split('\n').map(l => l.trim()).filter(l => l.length > 10);
-    const first = lines[0] || '';
+    const first = (lines[0] || '').replace(/^\*\*(.+)\*\*$/, '$1');
     return first.length > 120 ? first.slice(0, 117) + '...' : first;
   }, [cleanedContent]);
 
@@ -1996,6 +2002,22 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
       console.error('Failed to copy reasoning:', err);
     }
   }, [content]);
+
+  // Convert standalone **title** lines in reasoning text to ### markdown headers
+  // so the model's section headings are visually distinct rather than showing raw asterisks.
+  const formatReasoningText = useCallback((text: string) => {
+    let result = text.replace(/\r\n?/g, '\n');
+    // Some streamed reasoning chunks place the next **Heading** immediately after
+    // the previous sentence with no newline at all. Split those into their own block first.
+    result = result.replace(/([^\n])(\*\*([A-Z][^*\n]{2,})\*\*)/g, '$1\n\n$2');
+    result = result.replace(/(\*\*([A-Z][^*\n]{2,})\*\*)([^\n])/g, '$1\n\n$3');
+    result = result.replace(/^\*\*([^*\n]+)\*\*\s*$/gm, (_, title) => `### ${title}`);
+    // Ensure a blank line before and after headings so markdown always treats them as blocks.
+    result = result.replace(/([^\n])\n(#{1,6} )/g, '$1\n\n$2');
+    result = result.replace(/(#{1,6} [^\n]+)\n([^\n#])/g, '$1\n\n$2');
+    result = result.replace(/\n{3,}/g, '\n\n');
+    return result;
+  }, []);
 
   // Keep this after all hooks so hook order remains stable across renders.
   if (visibility === 'hidden' && isComplete) return null;
@@ -2040,7 +2062,11 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
         <div className="reasoning-content-inner" ref={contentRef}>
           {hasToolCalls ? renderedParts.map((part, i) => {
             if (part.type === 'text') {
-              return <span key={i}>{part.text}</span>;
+              return (
+                <div key={i} className="markdown-content">
+                  <MemoizedMarkdown content={formatReasoningText(part.text ?? '')} />
+                </div>
+              );
             }
             if (!part.toolCall) return null;
             return (
@@ -2051,7 +2077,11 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
                 executedTool={part.toolCall}
               />
             );
-          }) : cleanedContent}
+          }) : (
+            <div className="markdown-content">
+              <MemoizedMarkdown content={formatReasoningText(cleanedContent)} />
+            </div>
+          )}
         </div>
         {isExpanded && isComplete && (
           <div className="reasoning-actions">
@@ -3785,6 +3815,14 @@ export function ChatPanel({
     lastSeenVersionRef.current = 0;
   }, []);
 
+  const clearActiveStreamingUi = useCallback(() => {
+    stopTaskStreaming();
+    setActiveTask(null);
+    setIsStreaming(false);
+    setStreamingContent('');
+    setStreamingEvents([]);
+  }, [stopTaskStreaming]);
+
   const connectTaskStream = useCallback(async (taskId: string) => {
     // Prevent duplicate connection for same task
     if (processingTaskRef.current === taskId) return;
@@ -3902,6 +3940,10 @@ export function ChatPanel({
   }, [applyFallbackAssistantIfNeeded, onTaskComplete, syncConversationActiveTaskId, workspaceId]);
 
   const startTaskAndStream = useCallback(async (conversationId: string, message: string) => {
+    const previousConversation = activeConversation?.id === conversationId
+      ? activeConversation
+      : null;
+
     // 1. Optimistic update (User message)
     let content: string | ContentPart[] = message;
     try {
@@ -3928,9 +3970,11 @@ export function ChatPanel({
       setConversations(prev => prev.map(c => c.id === conversationId ? updatedWithUser : c));
     }
 
+    let startedTaskId: string | null = null;
     try {
         // 2. Start background task
         const task = await api.sendMessageBackground(conversationId, message, workspaceId);
+        startedTaskId = task.id;
         setActiveTask(task);
         setInterruptedTask(null);
       syncConversationActiveTaskId(conversationId, task.id);
@@ -3939,10 +3983,15 @@ export function ChatPanel({
         await connectTaskStream(task.id);
     } catch (err: any) {
        console.error(err);
+       if (!startedTaskId && previousConversation) {
+         setActiveConversation(previousConversation);
+         setConversations(prev => prev.map(c => c.id === conversationId ? previousConversation : c));
+         syncConversationActiveTaskId(conversationId, previousConversation.active_task_id ?? null);
+       }
        setError(err.message || 'Failed to start task');
-       setIsStreaming(false);
+       clearActiveStreamingUi();
     }
-  }, [activeConversation, connectTaskStream, workspaceId]);
+  }, [activeConversation, clearActiveStreamingUi, connectTaskStream, syncConversationActiveTaskId, workspaceId]);
 
   // Keep task streaming in sync when workspace aggregate state sets activeTask.
   useEffect(() => {
@@ -4034,11 +4083,7 @@ export function ChatPanel({
       }
       shouldAutoScrollRef.current = true;
       // Stop any current streaming when switching
-      stopTaskStreaming();
-      setActiveTask(null);
-      setIsStreaming(false);
-      setStreamingContent('');
-      setStreamingEvents([]);
+      clearActiveStreamingUi();
 
       // Refresh the conversation to get latest messages
       const fresh = await api.getConversation(conversation.id, workspaceId);
@@ -4139,11 +4184,10 @@ export function ChatPanel({
 
   const startFreshConversation = async () => {
     if (readOnly) return;
-    // Start a fresh conversation (same behavior as New button)
-    // This replaces the old clearConversation which wiped messages
-    if (isStreaming) return;
+    // Start a fresh conversation and detach from any currently streaming one.
     shouldAutoScrollRef.current = true;
     try {
+      clearActiveStreamingUi();
       const conversation = await api.createConversation(undefined, workspaceId);
       setConversations(prev => [conversation, ...prev]);
       setActiveConversation(conversation);
