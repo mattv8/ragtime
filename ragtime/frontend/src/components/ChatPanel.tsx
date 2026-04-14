@@ -1802,93 +1802,24 @@ interface ReasoningPart {
   toolCall?: ActiveToolCall;
 }
 
-// Inline expandable tool call within reasoning
-const ReasoningToolCallCard = memo(function ReasoningToolCallCard({
-  toolName,
-  params,
-  executedTool,
-}: {
-  toolName: string;
-  params: Record<string, string>;
-  executedTool?: ActiveToolCall;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const hasOutput = executedTool?.output != null;
-  const isRunning = executedTool?.status === 'running';
-  const paramEntries = Object.entries(params);
-
-  // Use executed tool input if available, otherwise fall back to parsed params
-  const inputDisplay = useMemo(() => {
-    if (executedTool?.input) {
-      const queryFields = ['query', 'sql', 'code', 'command', 'python_code'];
-      for (const field of queryFields) {
-        if (executedTool.input[field] && typeof executedTool.input[field] === 'string') {
-          return executedTool.input[field] as string;
-        }
-      }
-      return JSON.stringify(executedTool.input, null, 2);
-    }
-    if (paramEntries.length === 1) return paramEntries[0][1];
-    if (paramEntries.length > 1) return paramEntries.map(([k, v]) => `${k}: ${v}`).join('\n');
-    return '';
-  }, [executedTool?.input, paramEntries]);
-
-  return (
-    <div className={`reasoning-tool-call ${isRunning ? 'reasoning-tool-call-running' : hasOutput ? 'reasoning-tool-call-complete' : ''}`}>
-      <button
-        className="reasoning-tool-call-header"
-        onClick={() => setExpanded(!expanded)}
-      >
-        {isRunning ? (
-          <MiniLoadingSpinner variant="icon" size={12} className="reasoning-tool-call-status" />
-        ) : hasOutput ? (
-          <ChevronRight size={12} className={`reasoning-tool-call-chevron ${expanded ? 'expanded' : ''}`} />
-        ) : null}
-        <span className="reasoning-tool-call-name">{toolName}</span>
-        {isRunning && executedTool?.generating_lines ? (
-          <span className="tool-call-progress">{executedTool.generating_lines} lines</span>
-        ) : null}
-      </button>
-      {expanded && hasOutput && (
-        <div className="reasoning-tool-call-details">
-          {inputDisplay && (
-            <div className="reasoning-tool-call-section">
-              <div className="reasoning-tool-call-section-label">Query:</div>
-              <pre className="reasoning-tool-call-code">{inputDisplay}</pre>
-            </div>
-          )}
-          <div className="reasoning-tool-call-section">
-            <div className="reasoning-tool-call-section-label">Result:</div>
-            <pre className="reasoning-tool-call-code">{executedTool!.output}</pre>
-          </div>
-        </div>
-      )}
-      {!expanded && !hasOutput && paramEntries.length > 0 && (
-        <div className="reasoning-tool-call-params">
-          {paramEntries.map(([k, v]) => (
-            <div key={k} className="reasoning-tool-call-param">
-              <span className="reasoning-tool-call-param-key">{k}:</span>{' '}
-              <span className="reasoning-tool-call-param-value">{v}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-});
-
 const ReasoningDisplay = memo(function ReasoningDisplay({
   content,
   isComplete,
   parts,
   toolCalls,
   visibility = 'compact',
+  workspaceId,
+  conversationId,
+  onOpenWorkspaceFile,
 }: {
   content: string;
   isComplete: boolean;
   parts?: ReasoningPart[];
   toolCalls?: ActiveToolCall[];
   visibility?: ReasoningVisibility;
+  workspaceId?: string;
+  conversationId?: string;
+  onOpenWorkspaceFile?: (path: string) => void;
 }) {
   const [isExpanded, setIsExpanded] = useState(() => {
     if (visibility === 'expanded') return true;
@@ -2070,12 +2001,15 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
             }
             if (!part.toolCall) return null;
             return (
-              <ReasoningToolCallCard
-                key={i}
-                toolName={part.toolCall.tool}
-                params={{}}
-                executedTool={part.toolCall}
-              />
+              <div key={i} className="chat-tool-calls reasoning-embedded-tool">
+                <ToolCallDisplay
+                  toolCall={part.toolCall}
+                  defaultExpanded={false}
+                  workspaceId={workspaceId}
+                  conversationId={conversationId}
+                  onOpenWorkspaceFile={onOpenWorkspaceFile}
+                />
+              </div>
             );
           }) : (
             <div className="markdown-content">
@@ -2119,6 +2053,9 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
         parts={segment.reasoningParts}
         toolCalls={segment.embeddedToolCalls}
         visibility={reasoningVisibility}
+        workspaceId={workspaceId}
+        conversationId={conversationId}
+        onOpenWorkspaceFile={onOpenWorkspaceFile}
       />
     );
   } else if (segment.type === 'tool' && segment.toolCall && showToolCalls) {
@@ -5147,6 +5084,9 @@ export function ChatPanel({
                                         parts={pendingReasoningParts.length > 0 ? pendingReasoningParts : undefined}
                                         toolCalls={pendingReasoningTools.length > 0 ? pendingReasoningTools : undefined}
                                         visibility={reasoningVisibility}
+                                        workspaceId={workspaceId}
+                                        conversationId={activeConversation.id}
+                                        onOpenWorkspaceFile={onOpenWorkspaceFile}
                                       />
                                     );
                                     pendingReasoning = '';
