@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { ReactNode } from 'react';
+import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 
 // Generic model interface that both AvailableModel and LLMModel satisfy
 interface BaseModel {
@@ -15,6 +16,7 @@ interface ModelSelectorProps<T extends BaseModel> {
   onModelChange: (modelId: string) => void;
   getModelSelectionKey?: (model: T) => string;
   disabled?: boolean;
+  loading?: boolean;
   placeholder?: string;
   /** Variant: 'compact' for chat header, 'full' for settings forms */
   variant?: 'compact' | 'full';
@@ -75,6 +77,7 @@ export function ModelSelector<T extends BaseModel>({
   onModelChange,
   getModelSelectionKey,
   disabled,
+  loading,
   placeholder = 'Select model',
   variant = 'compact',
   triggerIcon,
@@ -261,8 +264,27 @@ export function ModelSelector<T extends BaseModel>({
   }, []);
 
   if (models.length === 0) {
+    const emptyTriggerClassName = variant === 'full'
+      ? 'model-selector-trigger model-selector-trigger-full'
+      : 'model-selector-trigger';
+    const emptyTriggerClasses = `${emptyTriggerClassName}${triggerClassName ? ` ${triggerClassName}` : ''}`;
     return (
-      <span className="chat-model-badge">{selectedModelId || placeholder}</span>
+      <div className={`model-selector is-disabled ${variant === 'full' ? 'model-selector-full' : ''}`}>
+        <button
+          type="button"
+          className={emptyTriggerClasses}
+          disabled
+          title={loading ? 'Loading models...' : placeholder}
+        >
+          {triggerIcon ? <span className="model-selector-icon" aria-hidden="true">{triggerIcon}</span> : null}
+          <span className="model-selector-text">
+            {loading
+              ? <><MiniLoadingSpinner variant="icon" size={12} title="Loading models..." />{' '}Loading...</>
+              : (selectedModelId || placeholder)}
+          </span>
+          <span className="model-selector-arrow">▾</span>
+        </button>
+      </div>
     );
   }
 

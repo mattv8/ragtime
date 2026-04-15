@@ -1325,36 +1325,6 @@
   color: var(--color-text-primary);
   border-color: var(--color-text-secondary);
 }
-/* Reasoning visibility toggle in header */
-.reasoning-visibility-toggle {
-  position: relative;
-  transition: color var(--transition-fast), border-color var(--transition-fast);
-}
-/* Compact: default / subtle */
-.reasoning-visibility-compact {
-  color: var(--color-text-secondary);
-}
-/* Expanded: highlighted primary color */
-.reasoning-visibility-expanded {
-  color: var(--color-primary);
-  border-color: var(--color-primary-border);
-}
-/* Hidden: dimmed with a strike-through slash */
-.reasoning-visibility-hidden {
-  opacity: 0.5;
-  color: var(--color-text-tertiary);
-}
-.reasoning-visibility-hidden::after {
-  content: '';
-  position: absolute;
-  top: 15%;
-  left: 50%;
-  width: 1.5px;
-  height: 70%;
-  background: currentColor;
-  transform: translateX(-50%) rotate(-45deg);
-  pointer-events: none;
-}
 /* Tool calls rendered inline within reasoning/thinking blocks —
    uses the same ToolCallDisplay component as standalone tool calls,
    wrapped in .reasoning-embedded-tool for spacing/whitespace reset. */

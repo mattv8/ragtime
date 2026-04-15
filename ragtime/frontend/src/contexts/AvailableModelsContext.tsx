@@ -37,7 +37,7 @@ const AvailableModelsContext = createContext<AvailableModelsContextValue | null>
 
 export function AvailableModelsProvider({ children }: { children: ReactNode }) {
   const [models, setModels] = useState<AvailableModel[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<AvailableModelsContextValue['readiness']>(null);
   const [meta, setMeta] = useState<AvailableModelsContextValue['meta']>(null);

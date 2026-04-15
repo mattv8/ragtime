@@ -4,9 +4,10 @@ interface ContextUsagePieProps {
   currentTokens: number;
   totalTokens: number;
   contextLimit: number;
+  loading?: boolean;
 }
 
-export function ContextUsagePie({ currentTokens, totalTokens, contextLimit }: ContextUsagePieProps) {
+export function ContextUsagePie({ currentTokens, totalTokens, contextLimit, loading }: ContextUsagePieProps) {
   const { percentage, color } = useMemo(() => {
     const pct = contextLimit > 0 ? Math.round((totalTokens / contextLimit) * 100) : 0;
 
@@ -29,6 +30,62 @@ export function ContextUsagePie({ currentTokens, totalTokens, contextLimit }: Co
   const usedArc = (Math.min(percentage, 100) / 100) * circumference;
   const remainingArc = circumference - usedArc;
   const center = size / 2;
+
+  if (loading) {
+    const loadingArc = circumference * 0.25;
+    const loadingGap = circumference - loadingArc;
+    return (
+      <div
+        className="context-usage-pie"
+        title="Loading context info..."
+        style={{
+          position: 'relative',
+          width: `${size}px`,
+          height: `${size}px`,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+        }}
+      >
+        <svg
+          width={size}
+          height={size}
+          viewBox={`0 0 ${size} ${size}`}
+        >
+          <circle
+            cx={center}
+            cy={center}
+            r={radius}
+            fill="none"
+            stroke="var(--color-border)"
+            strokeWidth={strokeWidth}
+            opacity="0.2"
+          />
+          <circle
+            cx={center}
+            cy={center}
+            r={radius}
+            fill="none"
+            stroke="var(--color-text-muted)"
+            strokeWidth={strokeWidth}
+            strokeDasharray={`${loadingArc} ${loadingGap}`}
+            strokeLinecap="round"
+            opacity="0.8"
+          >
+            <animateTransform
+              attributeName="transform"
+              type="rotate"
+              from={`0 ${center} ${center}`}
+              to={`360 ${center} ${center}`}
+              dur="1s"
+              repeatCount="indefinite"
+            />
+          </circle>
+        </svg>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -55,7 +112,7 @@ export function ContextUsagePie({ currentTokens, totalTokens, contextLimit }: Co
           cy={center}
           r={radius}
           fill="none"
-          stroke="var(--border-color)"
+          stroke="var(--color-border)"
           strokeWidth={strokeWidth}
           opacity="0.2"
         />

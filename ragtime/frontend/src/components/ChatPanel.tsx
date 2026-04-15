@@ -4890,13 +4890,12 @@ export function ChatPanel({
                 )}
               </div>
               <div className="chat-header-actions">
-                {!modelsLoading && (
-                  <ContextUsagePie
-                    currentTokens={contextUsage.currentTokens}
-                    totalTokens={contextUsage.totalTokens}
-                    contextLimit={contextUsage.contextLimit}
-                  />
-                )}
+                <ContextUsagePie
+                  currentTokens={contextUsage.currentTokens}
+                  totalTokens={contextUsage.totalTokens}
+                  contextLimit={contextUsage.contextLimit}
+                  loading={modelsLoading}
+                />
                 {!embedded && activeConversation && isConversationOwner && (
                   <button
                     className="btn btn-secondary btn-sm btn-icon"
@@ -4970,6 +4969,7 @@ export function ChatPanel({
                   onModelChange={changeModel}
                   getModelSelectionKey={(model) => toProviderScopedModelKey(model.provider, model.id)}
                   disabled={isStreaming || modelsLoading}
+                  loading={modelsLoading}
                   triggerIcon={showWorkspaceConversationSelect ? <Bot size={14} /> : undefined}
                   triggerClassName={showWorkspaceConversationSelect ? 'chat-workspace-model-trigger' : undefined}
                 />
