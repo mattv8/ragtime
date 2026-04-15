@@ -1448,7 +1448,8 @@ class UserSpaceRuntimeService:
             env=env,
         )
         try:
-            returncode = int(payload.get("returncode", 1) or 1)
+            raw_rc = payload.get("returncode")
+            returncode = int(raw_rc) if raw_rc is not None else 1
         except Exception:
             returncode = 1
         stdout_bytes = base64.b64decode(str(payload.get("stdout_b64", "") or ""))
