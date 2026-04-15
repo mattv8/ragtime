@@ -2056,28 +2056,41 @@ textarea:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: none;
-  background: transparent;
   color: var(--color-text-muted);
   cursor: pointer;
-  padding: 2px;
+  padding: 1px;
   border-radius: var(--radius-sm);
-  opacity: 0;
-  transition: opacity 0.15s;
+  margin-left: 2px;
+  opacity: 0.45;
+  transition: opacity 0.15s, color 0.15s;
 }
 
-span:hover > .userspace-snapshot-branch-promote {
-  opacity: 1;
+.userspace-snapshot-branch-legend:hover .userspace-snapshot-branch-promote {
+  opacity: 0.8;
 }
 
 .userspace-snapshot-branch-promote:hover {
-  background: var(--color-surface-hover);
-  color: var(--color-text-primary);
+  opacity: 1;
+  color: var(--color-warning, #f59e0b);
 }
 
-.userspace-snapshot-branch-promote:disabled {
-  opacity: 0;
-  cursor: wait;
+.userspace-snapshot-branch-legend:disabled .userspace-snapshot-branch-promote {
+  display: none;
+}
+
+.userspace-snapshot-branch-legend.stale-toggle {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  gap: 2px;
+}
+
+.userspace-snapshot-branch-legend.stale {
+  opacity: 0.55;
+  font-style: italic;
+}
+
+.userspace-snapshot-branch-legend.stale .userspace-snapshot-branch-legend-count {
+  font-style: normal;
 }
 
 .userspace-snapshot-graph-row {

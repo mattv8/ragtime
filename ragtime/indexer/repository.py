@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,22 +22,40 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
-                                     decrypt_json_passwords, decrypt_secret,
-                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_json_passwords,
+    encrypt_secret,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
-    normalize_userspace_preview_sandbox_flags)
-from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
-                                    AppSettings, ChatMessage, ChatTask,
-                                    ChatTaskStatus, ChatTaskStreamingState,
-                                    Conversation, IndexConfig, IndexJob,
-                                    IndexStatus, ProviderPromptDebugRecord,
-                                    ToolCallRecord, ToolConfig, ToolGroup,
-                                    ToolOutputMode, ToolType, VectorStoreType)
+    normalize_userspace_preview_sandbox_flags,
+)
+from ragtime.indexer.models import (
+    SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
+    AppSettings,
+    ChatMessage,
+    ChatTask,
+    ChatTaskStatus,
+    ChatTaskStreamingState,
+    Conversation,
+    IndexConfig,
+    IndexJob,
+    IndexStatus,
+    ProviderPromptDebugRecord,
+    ToolCallRecord,
+    ToolConfig,
+    ToolGroup,
+    ToolOutputMode,
+    ToolType,
+    VectorStoreType,
+)
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.utils import safe_tool_name
@@ -920,7 +937,9 @@ class IndexerRepository:
             ),
             # User Space configuration
             snapshot_retention_days=getattr(settings, "snapshotRetentionDays", 0),
-            snapshot_stale_branch_threshold=getattr(settings, "snapshotStaleBranchThreshold", 20),
+            snapshot_stale_branch_threshold=getattr(
+                settings, "snapshotStaleBranchThreshold", 50
+            ),
             userspace_preview_sandbox_flags=userspace_preview_sandbox_flags,
             updated_at=settings.updatedAt,
         )

@@ -5,6 +5,7 @@ import { api } from '@/api';
 import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
+import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import {
@@ -239,6 +240,9 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
   | 'ollama_port'
   | 'ollama_base_url'
   | 'ollama_embedding_timeout_seconds'
+  | 'default_ocr_mode'
+  | 'default_ocr_vision_model'
+  | 'ocr_concurrency_limit'
 > {
   return {
     embedding_provider: data.embedding_provider,
@@ -249,6 +253,9 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
     ollama_port: data.ollama_port,
     ollama_base_url: data.ollama_base_url,
     ollama_embedding_timeout_seconds: data.ollama_embedding_timeout_seconds,
+    default_ocr_mode: data.default_ocr_mode,
+    default_ocr_vision_model: data.default_ocr_vision_model,
+    ocr_concurrency_limit: data.ocr_concurrency_limit,
   };
 }
 
@@ -352,6 +359,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [modelFilterText, setModelFilterText] = useState('');
   const [filteredChatModels, setFilteredChatModels] = useState<AvailableModel[]>([]);
   const [automaticDefaultChatModel, setAutomaticDefaultChatModel] = useState<string | null>(null);
+  const [chatModelsLoading, setChatModelsLoading] = useState(false);
 
   // OpenAPI model filter modal state
   const [showOpenapiModelModal, setShowOpenapiModelModal] = useState(false);
@@ -914,6 +922,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   };
 
   const refreshDefaultChatModelPreview = useCallback(async () => {
+    setChatModelsLoading(true);
     try {
       const response = await api.getAvailableModels();
       setFilteredChatModels(response.models || []);
@@ -921,6 +930,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     } catch {
       setFilteredChatModels([]);
       setAutomaticDefaultChatModel(null);
+    } finally {
+      setChatModelsLoading(false);
     }
   }, []);
 
@@ -1000,7 +1011,22 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setError(null);
       setCopilotAuthMode(data.github_models_api_token ? 'pat' : 'oauth');
 
-      const copilotStatus = await refreshCopilotStatus();
+      // Form is ready — show the page immediately; remaining fetches are lazy.
+      setLoading(false);
+
+      // --- Lazy background fetches (non-blocking) ---
+
+      // Copilot auth status + model list
+      refreshCopilotStatus().then((copilotStatus) => {
+        if (normalizedLlmProvider === 'github_copilot') {
+          if (data.github_models_api_token || copilotStatus?.connected) {
+            fetchLlmModels('github_copilot', undefined, {
+              authMode: data.github_models_api_token ? 'pat' : 'oauth',
+              ...COPILOT_MODEL_FETCH_OPTIONS,
+            });
+          }
+        }
+      }).catch(() => { /* copilot status is best-effort */ });
 
       // Auto-test Ollama if using ollama embedding provider
       if (data.embedding_provider === 'ollama' && !hasAutoTestedOllama.current) {
@@ -1026,69 +1052,55 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         }
       }
 
-      if (normalizedLlmProvider === 'github_copilot') {
-        if (data.github_models_api_token || copilotStatus?.connected) {
-          fetchLlmModels('github_copilot', undefined, {
-            authMode: data.github_models_api_token ? 'pat' : 'oauth',
-            ...COPILOT_MODEL_FETCH_OPTIONS,
+      // Chat model preview (available-models)
+      refreshDefaultChatModelPreview();
+
+      // MCP routes (for summary display)
+      api.listMcpRoutes()
+        .then((routesRes) => setMcpRoutes(routesRes.routes))
+        .catch(() => setMcpRoutes([]));
+
+      // LDAP configuration
+      api.getLdapConfig()
+        .then((ldapData) => {
+          setLdapConfig(ldapData);
+
+          const { protocol, host, port } = parseLdapServerUrl(ldapData.server_url);
+
+          setLdapFormData({
+            ldap_protocol: protocol,
+            ldap_host: host,
+            ldap_port: port,
+            allow_self_signed: ldapData.allow_self_signed || false,
+            bind_dn: ldapData.bind_dn || '',
+            bind_password: '', // Never returned from server
+            user_search_base: ldapData.user_search_base || '',
+            user_search_filter: ldapData.user_search_filter || '(uid={username})',
+            admin_group_dn: ldapData.admin_group_dn || '',
+            user_group_dn: ldapData.user_group_dn || '',
           });
-        }
-      }
 
-      await refreshDefaultChatModelPreview();
-
-      // Load MCP routes (for summary display)
-      try {
-        const routesRes = await api.listMcpRoutes();
-        setMcpRoutes(routesRes.routes);
-      } catch {
-        // MCP routes may fail silently
-        setMcpRoutes([]);
-      }
-
-      // Load LDAP configuration (non-blocking - don't await discovery)
-      try {
-        const ldapData = await api.getLdapConfig();
-        setLdapConfig(ldapData);
-
-        // Parse server_url into components
-        const { protocol, host, port } = parseLdapServerUrl(ldapData.server_url);
-
-        setLdapFormData({
-          ldap_protocol: protocol,
-          ldap_host: host,
-          ldap_port: port,
-          allow_self_signed: ldapData.allow_self_signed || false,
-          bind_dn: ldapData.bind_dn || '',
-          bind_password: '', // Never returned from server
-          user_search_base: ldapData.user_search_base || '',
-          user_search_filter: ldapData.user_search_filter || '(uid={username})',
-          admin_group_dn: ldapData.admin_group_dn || '',
-          user_group_dn: ldapData.user_group_dn || '',
+          // Auto-discover LDAP structure in background
+          if (ldapData.server_url && ldapData.bind_dn) {
+            api.discoverLdapWithStoredCredentials()
+              .then((discovery) => {
+                if (discovery.success) {
+                  setLdapDiscoveredOus(discovery.user_ous);
+                  setLdapDiscoveredGroups(discovery.groups);
+                  setLdapTestResult({ success: true, message: `Connected. Found ${discovery.user_ous.length} OUs and ${discovery.groups.length} groups.` });
+                }
+              })
+              .catch(() => {
+                // Silent fail - user can still test connection manually
+              });
+          }
+        })
+        .catch(() => {
+          // LDAP config may not exist yet, that's OK
+          setLdapConfig(null);
         });
-
-        // Auto-discover LDAP structure in background (non-blocking)
-        if (ldapData.server_url && ldapData.bind_dn) {
-          // Don't await - let it run async
-          api.discoverLdapWithStoredCredentials()
-            .then((discovery) => {
-              if (discovery.success) {
-                setLdapDiscoveredOus(discovery.user_ous);
-                setLdapDiscoveredGroups(discovery.groups);
-                setLdapTestResult({ success: true, message: `Connected. Found ${discovery.user_ous.length} OUs and ${discovery.groups.length} groups.` });
-              }
-            })
-            .catch(() => {
-              // Silent fail - user can still test connection manually
-            });
-        }
-      } catch {
-        // LDAP config may not exist yet, that's OK
-        setLdapConfig(null);
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load settings');
-    } finally {
       setLoading(false);
     }
   }, [
@@ -1294,6 +1306,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           formData.ollama_port,
         ),
         ollama_embedding_timeout_seconds: formData.ollama_embedding_timeout_seconds,
+        sequential_index_loading: formData.sequential_index_loading,
+        default_ocr_mode: formData.default_ocr_mode,
+        default_ocr_vision_model: formData.default_ocr_vision_model,
+        ocr_concurrency_limit: formData.ocr_concurrency_limit,
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
@@ -1340,6 +1356,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         max_tool_output_chars: formData.max_tool_output_chars,
         scratchpad_window_size: formData.scratchpad_window_size,
         context_token_budget: formData.context_token_budget,
+        // API output settings
+        tool_output_mode: formData.tool_output_mode,
       };
 
       if (normalizedProvider === 'github_copilot') {
@@ -1452,34 +1470,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     }
   };
 
-  // Save Performance Configuration
-  const [performanceSaving, setPerformanceSaving] = useState(false);
-  const handleSavePerformance = async () => {
-    setPerformanceSaving(true);
-    setSuccess(null);
-    setError(null);
 
-    try {
-      const dataToSave: UpdateSettingsRequest = {
-        sequential_index_loading: formData.sequential_index_loading,
-      };
-      const updated = await api.updateSettings(dataToSave);
-      setSettings(updated);
-      setFormData(prev => ({
-        ...prev,
-        sequential_index_loading: updated.sequential_index_loading,
-      }));
-      setSuccess('Performance settings saved. Changes take effect on next server restart.');
-      setTimeout(() => setSuccess(null), 5000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save performance settings');
-    } finally {
-      setPerformanceSaving(false);
-    }
-  };
 
   // OCR Configuration
-  const [ocrSaving, setOcrSaving] = useState(false);
   const [userspaceSaving, setUserspaceSaving] = useState(false);
   const [showSandboxModal, setShowSandboxModal] = useState(false);
 
@@ -1527,33 +1520,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     }
   }, [formData.default_ocr_mode, fetchVisionModels, visionModels.length, visionModelsLoading]);
 
-  const handleSaveOcr = async () => {
-    setOcrSaving(true);
-    setSuccess(null);
-    setError(null);
 
-    try {
-      const dataToSave: UpdateSettingsRequest = {
-        default_ocr_mode: formData.default_ocr_mode,
-        default_ocr_vision_model: formData.default_ocr_vision_model,
-        ocr_concurrency_limit: formData.ocr_concurrency_limit,
-      };
-      const updated = await api.updateSettings(dataToSave);
-      setSettings(updated);
-      setFormData(prev => ({
-        ...prev,
-        default_ocr_mode: updated.default_ocr_mode,
-        default_ocr_vision_model: updated.default_ocr_vision_model,
-        ocr_concurrency_limit: updated.ocr_concurrency_limit,
-      }));
-      setSuccess('OCR settings saved.');
-      setTimeout(() => setSuccess(null), 5000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save OCR settings');
-    } finally {
-      setOcrSaving(false);
-    }
-  };
 
   const effectiveUserSpacePreviewSandboxFlags = useMemo(
     () => {
@@ -1643,7 +1610,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         ...prev,
         snapshot_stale_branch_threshold: updated.snapshot_stale_branch_threshold,
       }));
-      setSuccess('Stale branch threshold saved.');
+      setSuccess('User Space settings saved.');
       setTimeout(() => setSuccess(null), 5000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save stale branch threshold');
@@ -2423,7 +2390,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
             {/* Default Chat Model configuration */}
             <div className="form-group">
-              <label>Default Chat Model</label>
+              <label>Default Chat Model{chatModelsLoading && <>{' '}<MiniLoadingSpinner variant="icon" size={12} title="Loading models..." /></>}</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <select
                   style={{ flex: 1 }}
@@ -2435,7 +2402,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                       default_chat_model: selectedValue || null,
                     });
                   }}
-                  disabled={filteredChatModels.length === 0}
+                  disabled={chatModelsLoading || filteredChatModels.length === 0}
                 >
                   {defaultChatModelOptions.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
@@ -2787,6 +2754,35 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 Lower values reduce input token usage; higher values give the model more knowledge to draw from.
               </p>
             </div>
+
+            {/* API Output Configuration */}
+            <div style={{ marginTop: '1rem' }}>
+              <h4 style={{ margin: '0 0 4px' }}>API Output</h4>
+              <p className="field-help" style={{ marginBottom: '12px' }}>
+                Configure how tool call output is handled in OpenAI-compatible API responses (e.g., when using OpenWebUI or other clients).
+                This does not affect MCP or the built-in chat interface.
+              </p>
+
+              <div className="form-row">
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>Tool Output Visibility</label>
+                  <select
+                    value={(formData.tool_output_mode ?? settings?.tool_output_mode) === 'default' ? 'show' : (formData.tool_output_mode ?? settings?.tool_output_mode ?? 'show')}
+                    onChange={(e) =>
+                      setFormData({ ...formData, tool_output_mode: e.target.value as any })
+                    }
+                  >
+                    <option value="show">Show (Always include output)</option>
+                    <option value="hide">Hide (Suppress output)</option>
+                    <option value="auto">Auto (AI decides)</option>
+                  </select>
+                  <p className="field-help">
+                    Controls whether tool execution details (inputs/outputs) are included in the streaming response.
+                    <strong>Hide</strong> is useful for cleaner output in clients that don't support tool visualization.
+                  </p>
+                </div>
+              </div>
+            </div>
           </details>
 
           <div className="form-group" style={{ marginTop: '1rem' }}>
@@ -3047,32 +3043,211 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           <details style={{ marginBottom: '16px' }} id="setting-embedding_advanced">
             <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Settings</summary>
 
-            <div className="form-group">
-              <label>Ollama Embedding Timeout (seconds)</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <input
-                  type="range"
-                  min="30"
-                  max="600"
-                  step="10"
-                  style={{ flex: 1 }}
-                  value={formData.ollama_embedding_timeout_seconds ?? settings?.ollama_embedding_timeout_seconds ?? 180}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      ollama_embedding_timeout_seconds: parseInt(e.target.value, 10),
-                    })
-                  }
-                />
-                <span style={{ minWidth: '48px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-                  {formData.ollama_embedding_timeout_seconds ?? settings?.ollama_embedding_timeout_seconds ?? 180}s
-                </span>
+            <div className="form-row">
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Ollama Embedding Timeout (seconds)</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="range"
+                    min="30"
+                    max="600"
+                    step="10"
+                    style={{ flex: 1 }}
+                    value={formData.ollama_embedding_timeout_seconds ?? settings?.ollama_embedding_timeout_seconds ?? 180}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        ollama_embedding_timeout_seconds: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '48px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {formData.ollama_embedding_timeout_seconds ?? settings?.ollama_embedding_timeout_seconds ?? 180}s
+                  </span>
+                </div>
+                <p className="field-help">
+                  Maximum time allowed per embedding sub-batch when using Ollama.
+                  If a batch times out, it is automatically retried with a smaller batch size.
+                  Increase for slow hardware or large embedding models.
+                </p>
               </div>
-              <p className="field-help">
-                Maximum time allowed per embedding sub-batch when using Ollama.
-                If a batch times out, it is automatically retried with a smaller batch size.
-                Increase for slow hardware or large embedding models.
+
+              <div className="form-group" style={{ flex: 1 }} id="setting-sequential_index_loading">
+                <label className="chat-toggle-control" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      checked={formData.sequential_index_loading ?? settings?.sequential_index_loading ?? false}
+                      onChange={(e) =>
+                        setFormData({ ...formData, sequential_index_loading: e.target.checked })
+                      }
+                    />
+                    <span className="toggle-slider"></span>
+                  </label>
+                  <span>{(formData.sequential_index_loading ?? settings?.sequential_index_loading ?? false) ? 'Sequential Index Loading' : 'Parallel Index Loading'}</span>
+                </label>
+                <p className="field-help">
+                  <strong>Parallel (default):</strong> All indexes load simultaneously for faster startup,
+                  but peak RAM is ~1.8x total index size during deserialization.
+                </p>
+                <p className="field-help">
+                  <strong>Sequential:</strong> Indexes load one at a time (smallest first), reducing peak
+                  memory to ~1.8x the largest index. Useful when RAM is limited or OOM errors occur on startup.
+                </p>
+              </div>
+            </div>
+
+            {/* OCR Settings */}
+            <div id="setting-ocr" style={{ marginTop: '1rem' }}>
+              <h4 style={{ margin: '0 0 4px' }}>OCR Settings</h4>
+              <p className="field-help" style={{ marginBottom: '12px' }}>
+                Configure default OCR (Optical Character Recognition) mode for extracting text from images during indexing.
               </p>
+
+              <div className="form-row" style={formData.default_ocr_mode === 'ollama' ? { display: 'flex', flexWrap: 'nowrap', gap: 'var(--space-md)' } : undefined}>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>Default OCR Mode</label>
+                  <select
+                    value={formData.default_ocr_mode || 'disabled'}
+                    onChange={(e) => {
+                      const newMode = e.target.value as 'disabled' | 'tesseract' | 'ollama';
+                      setFormData({ ...formData, default_ocr_mode: newMode });
+                      // Clear vision model error when changing mode
+                      if (newMode !== 'ollama') {
+                        setVisionModelsError(null);
+                      }
+                    }}
+                  >
+                    <option value="disabled">Disabled (skip images)</option>
+                    <option value="tesseract">Tesseract (fast, traditional OCR)</option>
+                    <option value="ollama">Ollama Vision (semantic OCR with AI)</option>
+                  </select>
+                  <p className="field-help">
+                    {formData.default_ocr_mode === 'disabled' && (
+                      <>Image files will be skipped during indexing.</>
+                    )}
+                    {formData.default_ocr_mode === 'tesseract' && (
+                      <>Fast traditional OCR using Tesseract. Good for screenshots and scanned documents with clear text.</>
+                    )}
+                    {formData.default_ocr_mode === 'ollama' && (
+                      <>
+                        Semantic OCR using Ollama vision models. Better at understanding complex layouts, handwriting, and context.
+                      </>
+                    )}
+                  </p>
+                </div>
+
+                {formData.default_ocr_mode === 'ollama' && (
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Vision Model</label>
+                    {visionModelsLoading ? (
+                      <p className="muted">Loading vision models...</p>
+                    ) : visionModelsError ? (
+                      <div>
+                        <p className="error-text" style={{ marginBottom: '8px' }}>{visionModelsError}</p>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={fetchVisionModels}
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    ) : visionModels.length > 0 ? (
+                      <select
+                        value={formData.default_ocr_vision_model || ''}
+                        onChange={(e) => setFormData({ ...formData, default_ocr_vision_model: e.target.value || null })}
+                      >
+                        <option value="">Select a vision model</option>
+                        {visionModels.map((model) => (
+                          <option key={model.name} value={model.name}>
+                            {model.name}
+                            {model.parameter_size && ` (${model.parameter_size})`}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div>
+                        <p className="muted">No vision models loaded.</p>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={fetchVisionModels}
+                        >
+                          Load Vision Models
+                        </button>
+                      </div>
+                    )}
+                    <p className="field-help">
+                      Select an Ollama vision model for semantic OCR.
+                    </p>
+                  </div>
+                )}
+
+                {formData.default_ocr_mode === 'ollama' && (
+                  <div className="form-group" style={{ flex: '0 0 120px' }}>
+                    <label>Concurrency</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={formData.ocr_concurrency_limit ?? 1}
+                      onChange={(e) => setFormData({ ...formData, ocr_concurrency_limit: Math.max(1, Math.min(10, parseInt(e.target.value) || 1)) })}
+                      style={{ width: '80px' }}
+                    />
+                    <p className="field-help">
+                      Parallel OCR requests. Higher values use more VRAM.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {formData.default_ocr_mode === 'ollama' && (
+                <div className="form-group" style={{ marginTop: '-0.5rem', marginBottom: '1rem' }}>
+                  <p className="field-help">
+                    <span style={{ color: 'var(--warning-color, #b58900)' }}>
+                      <strong>Performance note:</strong> Vision models are 3-15x slower than Tesseract depending on model size.
+                      <button
+                        type="button"
+                        onClick={() => setShowOcrRecommendations(!showOcrRecommendations)}
+                        title="View model recommendations"
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          marginLeft: '4px',
+                          padding: 0,
+                          color: 'inherit',
+                          verticalAlign: 'middle',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Info size="1em" />
+                      </button>
+                    </span>
+                    {showOcrRecommendations && (
+                      <div style={{
+                        marginTop: '12px',
+                        padding: '12px',
+                        backgroundColor: 'var(--input-bg, var(--bg-secondary, #f5f5f5))',
+                        border: '1px solid var(--border-color, #ddd)',
+                        borderRadius: '6px',
+                        fontSize: '0.9em',
+                        color: 'var(--text-color, inherit)',
+                      }}>
+                        <strong>Recommended:</strong> <code>llama3.2-vision</code> (10.7B)<br />
+                        Best balance of speed and accuracy, ~6x slower than Tesseract.
+                        <br /><br />
+                        <strong>Other options:</strong><br />
+                        <code>qwen3-vl</code> (8.8B) - Highest accuracy, cleanest output, but ~14x slower.<br />
+                        <code>llava</code> (7B) - Fastest (~2x slower), but may hallucinate on document OCR.
+                      </div>
+                    )}
+                  </p>
+                </div>
+              )}
+
             </div>
           </details>
 
@@ -3498,56 +3673,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           </div>
         </fieldset>
 
-        {/* API Output Configuration */}
-        <fieldset>
-          <legend>API Output Configuration</legend>
-          <p className="fieldset-help">
-            Configure how tool call output is handled in OpenAI-compatible API responses (e.g., when using OpenWebUI or other clients).
-            This does not affect MCP or the built-in chat interface.
-          </p>
-
-          <div className="form-group">
-            <label>Tool Output Visibility</label>
-            <select
-              value={(formData.tool_output_mode ?? settings?.tool_output_mode) === 'default' ? 'show' : (formData.tool_output_mode ?? settings?.tool_output_mode ?? 'show')}
-              onChange={(e) =>
-                setFormData({ ...formData, tool_output_mode: e.target.value as any })
-              }
-            >
-              <option value="show">Show (Always include output)</option>
-              <option value="hide">Hide (Suppress output)</option>
-              <option value="auto">Auto (AI decides)</option>
-            </select>
-            <p className="field-help">
-              Controls whether tool execution details (inputs/outputs) are included in the streaming response.
-              <strong>Hide</strong> is useful for cleaner output in clients that don't support tool visualization.
-            </p>
-          </div>
-
-          <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0 }}>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={async () => {
-                try {
-                  const updated = await api.updateSettings({
-                    tool_output_mode: formData.tool_output_mode,
-                  });
-                  setFormData((prev) => ({
-                    ...prev,
-                    tool_output_mode: updated.tool_output_mode,
-                  }));
-                  setSuccess('API output settings saved.');
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : 'Failed to save settings');
-                }
-              }}
-            >
-              Save API Output Settings
-            </button>
-          </div>
-        </fieldset>
-
         {/* MCP Configuration */}
         <fieldset>
           <legend>MCP Configuration</legend>
@@ -3744,262 +3869,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           </div>
         </fieldset>
 
-        {/* Performance Configuration */}
-        <fieldset
-          id="setting-sequential_index_loading"
-          className={highlightSetting === 'sequential_index_loading' ? 'highlight-setting' : ''}
-        >
-          <legend>Performance</legend>
-          <p className="fieldset-help">
-            Configure memory and loading behavior for FAISS indexes.
-          </p>
 
-          <div className="form-group">
-            <label className="chat-toggle-control" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <label className="toggle-switch">
-                <input
-                  type="checkbox"
-                  checked={formData.sequential_index_loading ?? settings?.sequential_index_loading ?? false}
-                  onChange={(e) =>
-                    setFormData({ ...formData, sequential_index_loading: e.target.checked })
-                  }
-                />
-                <span className="toggle-slider"></span>
-              </label>
-              <span>Sequential Index Loading</span>
-            </label>
-            <p className="field-help">
-              <strong>Parallel (default):</strong> All indexes load simultaneously for faster startup,
-              but peak RAM is ~1.8x total index size during deserialization.
-            </p>
-            <p className="field-help">
-              <strong>Sequential:</strong> Indexes load one at a time (smallest first), reducing peak
-              memory to ~1.8x the largest index. Useful when RAM is limited or OOM errors occur on startup.
-            </p>
-          </div>
-
-          <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0 }}>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={handleSavePerformance}
-              disabled={performanceSaving}
-            >
-              {performanceSaving ? 'Saving...' : 'Save Performance Settings'}
-            </button>
-          </div>
-        </fieldset>
-
-        {/* OCR Configuration */}
-        <fieldset id="setting-ocr">
-          <legend>OCR Settings</legend>
-          <p className="fieldset-help">
-            Configure default OCR (Optical Character Recognition) mode for extracting text from images during indexing.
-          </p>
-
-          <div className="form-row" style={formData.default_ocr_mode === 'ollama' ? { display: 'flex', flexWrap: 'nowrap', gap: 'var(--space-md)' } : undefined}>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Default OCR Mode</label>
-              <select
-                value={formData.default_ocr_mode || 'disabled'}
-                onChange={(e) => {
-                  const newMode = e.target.value as 'disabled' | 'tesseract' | 'ollama';
-                  setFormData({ ...formData, default_ocr_mode: newMode });
-                  // Clear vision model error when changing mode
-                  if (newMode !== 'ollama') {
-                    setVisionModelsError(null);
-                  }
-                }}
-              >
-                <option value="disabled">Disabled (skip images)</option>
-                <option value="tesseract">Tesseract (fast, traditional OCR)</option>
-                <option value="ollama">Ollama Vision (semantic OCR with AI)</option>
-              </select>
-              <p className="field-help">
-                {formData.default_ocr_mode === 'disabled' && (
-                  <>Image files will be skipped during indexing.</>
-                )}
-                {formData.default_ocr_mode === 'tesseract' && (
-                  <>Fast traditional OCR using Tesseract. Good for screenshots and scanned documents with clear text.</>
-                )}
-                {formData.default_ocr_mode === 'ollama' && (
-                  <>
-                    Semantic OCR using Ollama vision models. Better at understanding complex layouts, handwriting, and context.
-                  </>
-                )}
-              </p>
-            </div>
-
-            {formData.default_ocr_mode === 'ollama' && (
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Vision Model</label>
-                {visionModelsLoading ? (
-                  <p className="muted">Loading vision models...</p>
-                ) : visionModelsError ? (
-                  <div>
-                    <p className="error-text" style={{ marginBottom: '8px' }}>{visionModelsError}</p>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={fetchVisionModels}
-                    >
-                      Retry
-                    </button>
-                  </div>
-                ) : visionModels.length > 0 ? (
-                  <select
-                    value={formData.default_ocr_vision_model || ''}
-                    onChange={(e) => setFormData({ ...formData, default_ocr_vision_model: e.target.value || null })}
-                  >
-                    <option value="">Select a vision model</option>
-                    {visionModels.map((model) => (
-                      <option key={model.name} value={model.name}>
-                        {model.name}
-                        {model.parameter_size && ` (${model.parameter_size})`}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <div>
-                    <p className="muted">No vision models loaded.</p>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={fetchVisionModels}
-                    >
-                      Load Vision Models
-                    </button>
-                  </div>
-                )}
-                <p className="field-help">
-                  Select an Ollama vision model for semantic OCR.
-                </p>
-              </div>
-            )}
-
-            {formData.default_ocr_mode === 'ollama' && (
-              <div className="form-group" style={{ flex: '0 0 120px' }}>
-                <label>Concurrency</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={formData.ocr_concurrency_limit ?? 1}
-                  onChange={(e) => setFormData({ ...formData, ocr_concurrency_limit: Math.max(1, Math.min(10, parseInt(e.target.value) || 1)) })}
-                  style={{ width: '80px' }}
-                />
-                <p className="field-help">
-                  Parallel OCR requests. Higher values use more VRAM.
-                </p>
-              </div>
-            )}
-          </div>
-
-          {formData.default_ocr_mode === 'ollama' && (
-            <div className="form-group" style={{ marginTop: '-0.5rem', marginBottom: '1rem' }}>
-              <p className="field-help">
-                <span style={{ color: 'var(--warning-color, #b58900)' }}>
-                  <strong>Performance note:</strong> Vision models are 3-15x slower than Tesseract depending on model size.
-                  <button
-                    type="button"
-                    onClick={() => setShowOcrRecommendations(!showOcrRecommendations)}
-                    title="View model recommendations"
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      cursor: 'pointer',
-                      marginLeft: '4px',
-                      padding: 0,
-                      color: 'inherit',
-                      verticalAlign: 'middle',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                    }}
-                  >
-                    <Info size="1em" />
-                  </button>
-                </span>
-                {showOcrRecommendations && (
-                  <div style={{
-                    marginTop: '12px',
-                    padding: '12px',
-                    backgroundColor: 'var(--input-bg, var(--bg-secondary, #f5f5f5))',
-                    border: '1px solid var(--border-color, #ddd)',
-                    borderRadius: '6px',
-                    fontSize: '0.9em',
-                    color: 'var(--text-color, inherit)',
-                  }}>
-                    <strong>Recommended:</strong> <code>llama3.2-vision</code> (10.7B)<br />
-                    Best balance of speed and accuracy, ~6x slower than Tesseract.
-                    <br /><br />
-                    <strong>Other options:</strong><br />
-                    <code>qwen3-vl</code> (8.8B) - Highest accuracy, cleanest output, but ~14x slower.<br />
-                    <code>llava</code> (7B) - Fastest (~2x slower), but may hallucinate on document OCR.
-                  </div>
-                )}
-              </p>
-            </div>
-          )}
-
-          <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0 }}>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={handleSaveOcr}
-              disabled={ocrSaving || (formData.default_ocr_mode === 'ollama' && !formData.default_ocr_vision_model)}
-            >
-              {ocrSaving ? 'Saving...' : 'Save OCR Settings'}
-            </button>
-            {formData.default_ocr_mode === 'ollama' && !formData.default_ocr_vision_model && (
-              <span className="muted" style={{ marginLeft: '1rem' }}>
-                Select a vision model to save
-              </span>
-            )}
-          </div>
-        </fieldset>
 
         <fieldset id="setting-userspace">
           <legend>User Space</legend>
-
-          <div>
-            <h4 style={{ margin: '0 0 8px' }}>Stale Branch Threshold</h4>
-            <p className="fieldset-help" style={{ marginBottom: 12 }}>
-              Branches that fall behind the active head by this many snapshots are hidden from the timeline.
-            </p>
-            <div className="form-group">
-              <label>Hide branches after N snapshots behind</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <input
-                  type="range"
-                  min="1"
-                  max="50"
-                  step="1"
-                  style={{ flex: 1 }}
-                  value={formData.snapshot_stale_branch_threshold ?? 20}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      snapshot_stale_branch_threshold: parseInt(e.target.value, 10),
-                    })
-                  }
-                />
-                <span style={{ minWidth: '30px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-                  {formData.snapshot_stale_branch_threshold ?? 20}
-                </span>
-              </div>
-              <p className="field-help">
-                Default: 20. Branches whose fork point is more than this many snapshots behind the current head will be hidden.
-              </p>
-              <button
-                type="button"
-                className="btn"
-                onClick={handleSaveStaleBranchThreshold}
-                disabled={staleBranchSaving}
-              >
-                {staleBranchSaving ? 'Saving...' : 'Save'}
-              </button>
-            </div>
-          </div>
 
           <div>
             <h4 style={{ margin: '0 0 8px' }}>Preview Sandbox</h4>
@@ -4020,6 +3893,70 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 Configure Sandbox Flags
               </button>
             </div>
+          </div>
+
+          <details style={{ marginBottom: '16px' }} id="setting-userspace_advanced">
+            <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Settings</summary>
+
+            <div className="form-group">
+              <label>Stale Branch Threshold</label>
+              <p className="field-help" style={{ marginTop: 0 }}>
+                Branches that fall behind the active head by this many snapshots are hidden from the timeline.
+              </p>
+              {(() => {
+                const sliderMin = 10;
+                const sliderMax = 500;
+                const currentVal = formData.snapshot_stale_branch_threshold ?? 50;
+                const isAll = currentVal === 0;
+
+                return (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        style={{ flex: 1 }}
+                        value={(() => {
+                          if (isAll) return 100;
+                          const scale = Math.log(sliderMax / sliderMin);
+                          return Math.max(0, Math.min(99, Math.round((Math.log(currentVal / sliderMin) / scale) * 99)));
+                        })()}
+                        onChange={(e) => {
+                          const slider = parseInt(e.target.value, 10);
+                          let val: number;
+                          if (slider >= 100) {
+                            val = 0; // "All" sentinel
+                          } else {
+                            const scale = Math.log(sliderMax / sliderMin);
+                            val = Math.max(sliderMin, Math.round(sliderMin * Math.exp((slider / 99) * scale)));
+                          }
+                          setFormData({ ...formData, snapshot_stale_branch_threshold: val });
+                        }}
+                      />
+                      <span style={{ minWidth: '48px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                        {isAll ? 'All' : currentVal}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Default: 50. Set to "All" to show every branch regardless of age.
+                    </p>
+                  </>
+                );
+              })()}
+            </div>
+          </details>
+
+          <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0 }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={handleSaveStaleBranchThreshold}
+              disabled={staleBranchSaving}
+            >
+              {staleBranchSaving ? 'Saving...' : 'Save User Space Settings'}
+            </button>
           </div>
         </fieldset>
 

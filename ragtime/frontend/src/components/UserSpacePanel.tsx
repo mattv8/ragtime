@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, GitBranch, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Crown, Database, ExternalLink, File, GitBranch, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { keymap } from '@codemirror/view';
 import { openSearchPanel } from '@codemirror/search';
@@ -620,6 +620,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [savingMountDescriptionId, setSavingMountDescriptionId] = useState<string | null>(null);
   const [showToolPicker, setShowToolPicker] = useState(false);
   const [showSnapshots, setShowSnapshots] = useState(false);
+  const [showStaleBranches, setShowStaleBranches] = useState(false);
   const [snapshotsLoadedForWorkspace, setSnapshotsLoadedForWorkspace] = useState<string | null>(null);
   const [expandedSnapshotIds, setExpandedSnapshotIds] = useState<Set<string>>(new Set());
   const [snapshotDiffSummaries, setSnapshotDiffSummaries] = useState<Record<string, UserSpaceSnapshotDiffSummary>>({});
@@ -1020,15 +1021,30 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         snapshots: grouped.get(branch.id) ?? [],
       }))
       .filter((group) => {
+        // Always keep Main visible
+        if (group.branch.name === 'Main') return true;
         // Always keep the current active branch
         if (group.branch.id === currentSnapshotBranchId) return true;
         // Hide empty branches
         if (group.snapshots.length === 0) return false;
-        // Hide stale branches
+        // Hide stale branches (shown separately in collapsed section)
         if (group.branch.is_stale) return false;
         return true;
+      })
+      .sort((a, b) => {
+        // Main always first
+        if (a.branch.name === 'Main') return -1;
+        if (b.branch.name === 'Main') return 1;
+        return 0;
       });
   }, [snapshotBranches, snapshots, currentSnapshotBranchId]);
+
+  const staleBranches = useMemo(() => {
+    const visibleIds = new Set(snapshotsByBranch.map(({ branch }) => branch.id));
+    return snapshotBranches.filter(
+      (branch) => branch.is_stale && !visibleIds.has(branch.id)
+    );
+  }, [snapshotBranches, snapshotsByBranch]);
 
   const snapshotTimelineRows = useMemo(() => {
     const sortedSnapshots = [...snapshots].sort((left, right) => {
@@ -5663,8 +5679,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                         const branchColor = snapshotBranchColorById.get(branch.id);
                         const isMainBranch = branch.name === 'Main';
                         return (
-                          <span key={`legend-wrap-${branch.id}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}>
-                            <button
+                          <button
                               key={`legend-${branch.id}`}
                               type="button"
                               className={`userspace-snapshot-branch-legend ${currentSnapshotBranchId === branch.id ? 'active' : ''}`}
@@ -5680,19 +5695,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                   from {branch.branched_from_snapshot_id.slice(0, 8)}
                                 </span>
                               )}
+                              {!isMainBranch && canEditWorkspace && (
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  className="userspace-snapshot-branch-promote"
+                                  onClick={(e) => { e.stopPropagation(); handlePromoteBranchToMain(branch.id); }}
+                                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); handlePromoteBranchToMain(branch.id); } }}
+                                  title="Promote this branch to Main"
+                                >
+                                  <Crown size={10} />
+                                </span>
+                              )}
                             </button>
-                            {!isMainBranch && canEditWorkspace && (
-                              <button
-                                type="button"
-                                className="userspace-snapshot-branch-promote"
-                                onClick={() => handlePromoteBranchToMain(branch.id)}
-                                disabled={snapshotUiLocked}
-                                title="Promote this branch to Main"
-                              >
-                                <ArrowRight size={10} />
-                              </button>
-                            )}
-                          </span>
                         );
                       })}
                       <button
@@ -5704,6 +5719,42 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                       >
                         <Plus size={12} />
                       </button>
+                      {staleBranches.length > 0 && (
+                        <button
+                          type="button"
+                          className="userspace-snapshot-branch-legend stale-toggle"
+                          onClick={() => setShowStaleBranches((prev) => !prev)}
+                          title={showStaleBranches ? 'Hide stale branches' : 'Show stale branches'}
+                        >
+                          {showStaleBranches ? `Hide ${staleBranches.length} stale` : `${staleBranches.length} stale`}
+                          <ChevronDown size={10} className={showStaleBranches ? '' : 'rotated'} />
+                        </button>
+                      )}
+                      {showStaleBranches && staleBranches.map((branch) => (
+                        <button
+                            key={`stale-legend-${branch.id}`}
+                            type="button"
+                            className="userspace-snapshot-branch-legend stale"
+                            onClick={() => handleSwitchSnapshotBranch(branch.id)}
+                            disabled={!canEditWorkspace || snapshotUiLocked}
+                            title={`${branch.git_ref_name} (${branch.commits_behind ?? 0} commits behind)`}
+                          >
+                            <span className="userspace-snapshot-branch-legend-name">{branch.name}</span>
+                            <span className="userspace-snapshot-branch-legend-count">{branch.commits_behind ?? 0} behind</span>
+                            {canEditWorkspace && (
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                className="userspace-snapshot-branch-promote"
+                                onClick={(e) => { e.stopPropagation(); handlePromoteBranchToMain(branch.id); }}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); handlePromoteBranchToMain(branch.id); } }}
+                                title="Promote this branch to Main"
+                              >
+                                <Crown size={10} />
+                              </span>
+                            )}
+                          </button>
+                      ))}
                     </div>
 
                     {snapshotTimelineRows.map(({ snapshot, laneIndex, laneStates, forkLinks }) => {
@@ -5936,6 +5987,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                       );
                     })}
                   </div>
+                ) : snapshotsLoadedForWorkspace !== activeWorkspaceId ? (
+                  <p className="userspace-muted" style={{ padding: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <MiniLoadingSpinner variant="icon" size={12} /> Loading snapshots
+                  </p>
                 ) : (
                   <p className="userspace-muted" style={{ padding: '8px' }}>No snapshots yet</p>
                 )}

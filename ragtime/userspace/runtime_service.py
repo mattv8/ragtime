@@ -16,27 +16,30 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.core.workspace_ops import normalize_runtime_file_path
 from ragtime.indexer.workspace_state import build_workspace_chat_state
-from ragtime.userspace.models import (RuntimeOperationPhase,
-                                      RuntimeSessionState,
-                                      UserSpaceCapabilityTokenResponse,
-                                      UserSpaceCollabSnapshotResponse,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpacePreviewLaunchResponse,
-                                      UserSpacePreviewWarning,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSession,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse,
-                                      UserSpaceWorkspaceTabStateResponse)
+from ragtime.userspace.models import (
+    RuntimeOperationPhase,
+    RuntimeSessionState,
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceCollabSnapshotResponse,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpacePreviewLaunchResponse,
+    UserSpacePreviewWarning,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSession,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+    UserSpaceWorkspaceTabStateResponse,
+)
 from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
 from ragtime.userspace.service import userspace_service
 
@@ -747,8 +750,9 @@ class UserSpaceRuntimeService:
     ) -> None:
         await self.invalidate_preview_session_cache(workspace_id)
         if invalidate_preview_host:
-            from ragtime.userspace.preview_host import \
-                invalidate_preview_sessions_for_workspace
+            from ragtime.userspace.preview_host import (
+                invalidate_preview_sessions_for_workspace,
+            )
 
             await invalidate_preview_sessions_for_workspace(workspace_id)
 

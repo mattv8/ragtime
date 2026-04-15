@@ -226,7 +226,7 @@ class SettingsCache:
                     prisma_settings, "snapshotRetentionDays", 0
                 ),
                 "snapshot_stale_branch_threshold": getattr(
-                    prisma_settings, "snapshotStaleBranchThreshold", 20
+                    prisma_settings, "snapshotStaleBranchThreshold", 50
                 ),
                 # User Space configuration
                 "userspace_preview_sandbox_flags": userspace_preview_sandbox_flags,
