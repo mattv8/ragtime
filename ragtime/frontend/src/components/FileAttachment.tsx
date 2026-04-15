@@ -2,6 +2,13 @@ import { useState, useRef, useEffect } from 'react';
 import { X, FileText, Upload, Link } from 'lucide-react';
 import type { ContentPart } from '@/types';
 
+export function formatAttachmentSize(bytes: number): string {
+  if (bytes === 0) return 'Path';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
 export interface AttachmentFile {
   id: string;
   type: 'image' | 'file';
@@ -29,6 +36,39 @@ const SUPPORTED_FILE_TYPES = [
   'application/json',
   'text/markdown'
 ];
+
+export async function resizeAttachmentImageDataUrl(
+  dataUrl: string,
+  mimeType: string,
+  maxDimension = 1024,
+  quality = 0.8
+): Promise<string> {
+  try {
+    const img = new Image();
+    img.src = dataUrl;
+    await img.decode();
+
+    const { naturalWidth, naturalHeight } = img;
+    if (!naturalWidth || !naturalHeight) return dataUrl;
+
+    const scale = Math.min(1, maxDimension / Math.max(naturalWidth, naturalHeight));
+    if (scale === 1) return dataUrl; // Already within bounds
+
+    const width = Math.round(naturalWidth * scale);
+    const height = Math.round(naturalHeight * scale);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return dataUrl;
+    ctx.drawImage(img, 0, 0, width, height);
+
+    return canvas.toDataURL(mimeType || 'image/png', quality);
+  } catch {
+    return dataUrl; // Fallback to original if resize fails
+  }
+}
 
 export function FileAttachment({ attachments, onAttachmentsChange, disabled }: FileAttachmentProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -92,39 +132,6 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
     });
   };
 
-  const resizeImageDataUrl = async (
-    dataUrl: string,
-    mimeType: string,
-    maxDimension = 1024,
-    quality = 0.8
-  ): Promise<string> => {
-    try {
-      const img = new Image();
-      img.src = dataUrl;
-      await img.decode();
-
-      const { naturalWidth, naturalHeight } = img;
-      if (!naturalWidth || !naturalHeight) return dataUrl;
-
-      const scale = Math.min(1, maxDimension / Math.max(naturalWidth, naturalHeight));
-      if (scale === 1) return dataUrl; // Already within bounds
-
-      const width = Math.round(naturalWidth * scale);
-      const height = Math.round(naturalHeight * scale);
-
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return dataUrl;
-      ctx.drawImage(img, 0, 0, width, height);
-
-      return canvas.toDataURL(mimeType || 'image/png', quality);
-    } catch {
-      return dataUrl; // Fallback to original if resize fails
-    }
-  };
-
   const handleFiles = async (files: File[]) => {
     const newAttachments: AttachmentFile[] = [];
 
@@ -146,7 +153,7 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
 
       // Downsize images to reduce token usage while preserving visual fidelity
       if (isImage) {
-        dataUrl = await resizeImageDataUrl(dataUrl, file.type);
+        dataUrl = await resizeAttachmentImageDataUrl(dataUrl, file.type);
       }
 
       newAttachments.push({
@@ -220,12 +227,8 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
     onAttachmentsChange(attachments.filter(a => a.id !== id));
   };
 
-  const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return 'Path';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  };
+  const formatFileSize = formatAttachmentSize;
+
 
   return (
     <>

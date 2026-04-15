@@ -807,13 +807,12 @@
 }
 .chat-message {
   display: flex;
-  max-width: 85%;
+  width: 100%;
 }
 .chat-message-user {
-  align-self: flex-end;
+  justify-content: flex-end;
 }
 .chat-message-assistant {
-  align-self: flex-start;
 }
 .chat-message-content {
   background: var(--color-surface-hover);
@@ -845,33 +844,235 @@
   font-size: var(--text-xs);
   color: var(--color-text-muted);
 }
-.chat-message-edit-btn {
-  margin-left: auto;
+
+/* Action bar below messages — outside the bubble, flat on pane background */
+.chat-message-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px 2px;
+  font-size: var(--text-xs);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.chat-branch-wrapper:hover .chat-message-actions {
+  opacity: 1;
+}
+/* Keep visible when branch nav is present */
+.chat-message-actions:has(.chat-branch-nav) {
+  opacity: 1;
+}
+/* Keep visible when restore banner is present */
+.chat-message-actions:has(.chat-branch-restore-banner) {
+  opacity: 1;
+}
+/* Force visible (e.g. during inline edit) */
+.chat-message-actions.visible {
+  opacity: 1;
+}
+.chat-message-actions-right {
+  justify-content: flex-end;
+}
+.chat-message-actions-left {
+  justify-content: flex-start;
+}
+.chat-message-actions-spacer {
+  flex: 1;
+}
+.chat-action-icon-btn {
   background: none;
   border: none;
   cursor: pointer;
-  font-size: var(--text-xs);
-  padding: 2px 4px;
-  opacity: 0;
-  transition: opacity var(--transition-fast);
+  padding: 3px 5px;
   color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast), background var(--transition-fast);
 }
-.chat-message:hover .chat-message-edit-btn {
+.chat-action-icon-btn:hover {
+  color: var(--color-text);
+  background: var(--color-surface-hover);
+}
+
+/* Branch navigation indicator */
+.chat-branch-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: var(--space-xs);
+  background: var(--color-surface-hover);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  user-select: none;
+}
+.chat-branch-nav-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 1px 2px;
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-xs);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.chat-branch-nav-btn:hover:not(:disabled) {
+  color: var(--color-text);
+  background: var(--color-surface-active);
+}
+.chat-branch-nav-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.chat-branch-nav-label {
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  min-width: 24px;
+  text-align: center;
+}
+.chat-branch-nav-snapshot-icon {
+  margin-left: 2px;
   opacity: 0.6;
 }
-.chat-message-edit-btn:hover {
-  opacity: 1 !important;
+
+.chat-branch-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-width: 85%;
+  gap: 2px;
+  z-index: 0;
 }
+.chat-branch-wrapper:has(.attachment-dropdown) {
+  z-index: 220;
+}
+.chat-branch-wrapper-user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+.chat-branch-wrapper-assistant {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+
+.chat-message-banner-row {
+  display: flex;
+  width: 100%;
+  padding: 0 8px 2px;
+}
+
+.chat-message-banner-row-right {
+  justify-content: flex-end;
+}
+
+.chat-message-banner-row-left {
+  justify-content: flex-start;
+}
+
+.chat-branch-restore-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.chat-branch-restore-btn {
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  border: none;
+  cursor: pointer;
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  background: transparent;
+  color: #60a5fa;
+}
+
+.chat-branch-restore-btn:hover {
+  text-decoration: underline;
+}
+
+.chat-branch-restore-btn.dismiss {
+  color: var(--text-muted);
+}
+
 /* Edit input inherits chat-message-text styling, just adds editability */
 .chat-edit-input {
   outline: none;
   cursor: text;
 }
-.chat-edit-actions {
+/* Attachment button in action bar during edit mode */
+.chat-message-actions .chat-edit-attachments-wrapper {
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+}
+.chat-message-actions .chat-edit-attachments-wrapper .file-attachment {
+  display: contents;
+}
+.chat-message-actions .chat-edit-attachments-wrapper .attachment-controls {
+  position: relative;
+  left: auto;
+  bottom: auto;
+  margin-top: 0;
+  z-index: 200;
+}
+.chat-message-actions .chat-edit-attachments-wrapper .btn-attach-menu {
+  width: 24px;
+  height: 24px;
+  padding: 3px;
+}
+.chat-message-actions .chat-edit-attachments-wrapper .btn-attach-menu svg {
+  width: 14px;
+  height: 14px;
+}
+.chat-message-actions .chat-edit-attachments-wrapper .attachment-dropdown {
+  bottom: auto;
+  top: calc(100% + 4px);
+  left: auto;
+  right: 0;
+}
+/* Hide preview list inside the action bar — rendered separately in the wrapper */
+.chat-message-actions .chat-edit-attachments-wrapper .attachment-preview-list {
+  display: none;
+}
+/* Inline edit attachment preview — flows in the wrapper column between bubble and action bar */
+.chat-edit-preview-list {
   display: flex;
-  gap: var(--space-xs);
-  justify-content: flex-end;
-  margin-top: var(--space-xs);
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: var(--bg-primary);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+/* Flat text buttons in action bar (Resend / Cancel) */
+.chat-action-text-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 1px 6px;
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.chat-action-text-btn:hover {
+  color: var(--color-text);
+  background: var(--color-surface-hover);
+}
+.chat-action-text-btn.primary {
+  color: var(--color-primary);
+}
+.chat-action-text-btn.primary:hover {
+  background: var(--color-surface-hover);
 }
 .chat-message-streaming {
   font-size: var(--text-xs);

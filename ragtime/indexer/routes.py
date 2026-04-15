@@ -25,107 +25,155 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional
 
 import httpx
-from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
-                     Query, UploadFile)
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.copilot_api import (COPILOT_DEFAULT_BASE_URL,
-                                      build_copilot_headers)
-from ragtime.core.copilot_auth import (ensure_copilot_token_fresh,
-                                       exchange_github_token_for_copilot_token,
-                                       is_copilot_token_refresh_in_progress)
-from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
-                                           get_embedding_models)
+from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
+from ragtime.core.copilot_auth import (
+    ensure_copilot_token_fresh,
+    exchange_github_token_for_copilot_token,
+    is_copilot_token_refresh_in_progress,
+)
+from ragtime.core.embedding_models import (
+    OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
+)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
-                                       get_context_limit, get_output_limit,
-                                       register_model_reasoning_capabilities,
-                                       register_model_supported_endpoints,
-                                       requires_responses_api,
-                                       supports_function_calling,
-                                       supports_responses_api,
-                                       update_model_function_calling,
-                                       update_model_limit,
-                                       update_model_output_limit)
-from ragtime.core.ollama import (extract_capabilities,
-                                 extract_effective_context_length,
-                                 get_model_details, is_embedding_capable,
-                                 is_reachable)
+from ragtime.core.model_limits import (
+    MODEL_FAMILY_PATTERNS,
+    get_context_limit,
+    get_output_limit,
+    register_model_reasoning_capabilities,
+    register_model_supported_endpoints,
+    requires_responses_api,
+    supports_function_calling,
+    supports_responses_api,
+    update_model_function_calling,
+    update_model_limit,
+    update_model_output_limit,
+)
+from ragtime.core.ollama import (
+    extract_capabilities,
+    extract_effective_context_length,
+    get_model_details,
+    is_embedding_capable,
+    is_reachable,
+)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
-                                    mssql_connect, mysql_connect,
-                                    normalize_mssql_error_message)
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, ssh_tunnel_config_from_dict,
-                              test_ssh_connection)
+from ragtime.core.sql_utils import (
+    MssqlConnectionError,
+    MysqlConnectionError,
+    mssql_connect,
+    mysql_connect,
+    normalize_mssql_error_message,
+)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    ssh_tunnel_config_from_dict,
+    test_ssh_connection,
+)
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
-    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS)
+    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
+)
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import (
-    background_task_service, rebuild_tool_messages_from_events)
+    background_task_service,
+    rebuild_tool_messages_from_events,
+)
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    ChatMessage, ChatTaskResponse,
-                                    ChatTaskStatus, CheckRepoVisibilityRequest,
-                                    ConfigurationWarning, Conversation,
-                                    ConversationResponse,
-                                    CreateConversationRequest,
-                                    CreateIndexRequest,
-                                    CreateToolConfigRequest,
-                                    CreateToolGroupRequest,
-                                    DatabaseDiscoverOption, EmbeddingStatus,
-                                    FetchBranchesRequest,
-                                    FetchBranchesResponse,
-                                    FilesystemAnalysisJobResponse,
-                                    FilesystemConnectionConfig,
-                                    FilesystemIndexJobResponse,
-                                    IndexAnalysisResult, IndexConfig,
-                                    IndexInfo, IndexJobResponse, IndexStatus,
-                                    InfluxdbDiscoverRequest,
-                                    InfluxdbDiscoverResponse,
-                                    MssqlDiscoverRequest,
-                                    MssqlDiscoverResponse,
-                                    MysqlDiscoverRequest,
-                                    MysqlDiscoverResponse, OcrMode,
-                                    PdmDiscoverRequest, PdmDiscoverResponse,
-                                    PdmIndexJobResponse,
-                                    PostgresDiscoverRequest,
-                                    PostgresDiscoverResponse,
-                                    ProviderPromptDebugListResponse,
-                                    ProviderPromptDebugRecord,
-                                    RepoVisibilityResponse,
-                                    RetryVisualizationRequest,
-                                    RetryVisualizationResponse,
-                                    SchemaIndexJobResponse, SendMessageRequest,
-                                    ToolConfig, ToolGroup, ToolTestRequest,
-                                    ToolType, TriggerFilesystemIndexRequest,
-                                    TriggerPdmIndexRequest,
-                                    TriggerSchemaIndexRequest,
-                                    UpdateSettingsRequest,
-                                    UpdateToolConfigRequest,
-                                    UpdateToolGroupRequest,
-                                    UserSpacePreviewSettingsResponse,
-                                    VectorStoreType,
-                                    WorkspaceChatStateResponse)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    ChatMessage,
+    ChatTaskResponse,
+    ChatTaskStatus,
+    CheckRepoVisibilityRequest,
+    ConfigurationWarning,
+    Conversation,
+    ConversationBranchPointInfo,
+    ConversationBranchSummary,
+    ConversationResponse,
+    CreateConversationBranchRequest,
+    CreateConversationRequest,
+    CreateIndexRequest,
+    CreateToolConfigRequest,
+    CreateToolGroupRequest,
+    DatabaseDiscoverOption,
+    EmbeddingStatus,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    FilesystemAnalysisJobResponse,
+    FilesystemConnectionConfig,
+    FilesystemIndexJobResponse,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJobResponse,
+    IndexStatus,
+    InfluxdbDiscoverRequest,
+    InfluxdbDiscoverResponse,
+    MssqlDiscoverRequest,
+    MssqlDiscoverResponse,
+    MysqlDiscoverRequest,
+    MysqlDiscoverResponse,
+    OcrMode,
+    PdmDiscoverRequest,
+    PdmDiscoverResponse,
+    PdmIndexJobResponse,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
+    ProviderPromptDebugListResponse,
+    ProviderPromptDebugRecord,
+    RepoVisibilityResponse,
+    RetryVisualizationRequest,
+    RetryVisualizationResponse,
+    SchemaIndexJobResponse,
+    SendMessageRequest,
+    SwitchConversationBranchRequest,
+    ToolConfig,
+    ToolGroup,
+    ToolTestRequest,
+    ToolType,
+    TriggerFilesystemIndexRequest,
+    TriggerPdmIndexRequest,
+    TriggerSchemaIndexRequest,
+    UpdateSettingsRequest,
+    UpdateToolConfigRequest,
+    UpdateToolGroupRequest,
+    UserSpacePreviewSettingsResponse,
+    VectorStoreType,
+    WorkspaceChatStateResponse,
+)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
@@ -1861,8 +1909,7 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1883,8 +1930,7 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        get_faiss_backend
+                    from ragtime.indexer.vector_backends import get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -2864,8 +2910,7 @@ async def discover_influxdb_buckets(
 
     def discover_buckets(effective_url: str) -> tuple[bool, list[str], str | None]:
         try:
-            from influxdb_client import \
-                InfluxDBClient  # type: ignore[import-untyped]
+            from influxdb_client import InfluxDBClient  # type: ignore[import-untyped]
         except ImportError:
             return False, [], "influxdb-client package not installed"
 
@@ -6757,7 +6802,9 @@ async def _validate_conversation_model_before_send(stored_model: str) -> None:
 
     if not provider:
         settings = await repository.get_settings()
-        provider = str(getattr(settings, "llm_provider", "openai") or "openai").strip().lower()
+        provider = (
+            str(getattr(settings, "llm_provider", "openai") or "openai").strip().lower()
+        )
 
     await _validate_conversation_model_selection(
         provider=provider,
@@ -8769,6 +8816,7 @@ def _to_conversation_response(conv: Conversation) -> ConversationResponse:
         messages=conv.messages,
         total_tokens=conv.total_tokens,
         active_task_id=conv.active_task_id,
+        active_branch_id=conv.active_branch_id,
         tool_output_mode=conv.tool_output_mode,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
@@ -9367,6 +9415,201 @@ async def truncate_conversation(
     return _to_conversation_response(conv)
 
 
+# -------------------------------------------------------------------------
+# Conversation Branch Endpoints
+# -------------------------------------------------------------------------
+
+
+@router.get(
+    "/conversations/{conversation_id}/branches",
+    response_model=List[ConversationBranchSummary],
+)
+async def list_conversation_branches(
+    conversation_id: str,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """List all branches for a conversation."""
+    await _assert_workspace_access(workspace_id, user, "viewer")
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return await repository.get_conversation_branches(conversation_id)
+
+
+@router.get(
+    "/conversations/{conversation_id}/branch-points",
+    response_model=List[ConversationBranchPointInfo],
+)
+async def list_conversation_branch_points(
+    conversation_id: str,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """List branches grouped by branch point index for UI rendering."""
+    await _assert_workspace_access(workspace_id, user, "viewer")
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    branches = await repository.get_conversation_branches(conversation_id)
+    conv = await repository.get_conversation(conversation_id)
+    active_branch_id = conv.active_branch_id if conv else None
+
+    # Group by branch_point_index
+    points: dict[int, list[ConversationBranchSummary]] = {}
+    for b in branches:
+        points.setdefault(b.branch_point_index, []).append(b)
+
+    return [
+        ConversationBranchPointInfo(
+            branch_point_index=idx,
+            branches=point_branches,
+            active_branch_id=active_branch_id,
+        )
+        for idx, point_branches in sorted(points.items())
+    ]
+
+
+@router.post(
+    "/conversations/{conversation_id}/branches",
+    response_model=ConversationBranchSummary,
+)
+async def create_conversation_branch(
+    conversation_id: str,
+    request: CreateConversationBranchRequest,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Create a new branch at a message edit point.
+
+    Preserves the original messages from the edit point onward, optionally
+    creates a UserSpace snapshot before branching (for workspace chats).
+    """
+    await _assert_workspace_access(workspace_id, user, "editor")
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if request.from_message_index < 0 or request.from_message_index > len(
+        conv.messages
+    ):
+        raise HTTPException(status_code=400, detail="Invalid message index")
+
+    # Auto-snapshot for workspace conversations
+    associated_snapshot_id: Optional[str] = None
+    if request.auto_snapshot and workspace_id:
+        try:
+            snapshot = await userspace_service.create_snapshot(
+                workspace_id,
+                user.id,
+                message=f"Auto-snapshot before chat branch at message {request.from_message_index}",
+                auto_sync_to_scm=False,
+            )
+            associated_snapshot_id = snapshot.id
+        except Exception as e:
+            logger.warning(f"Failed to auto-create snapshot for branch: {e}")
+
+    branch = await repository.create_conversation_branch(
+        conversation_id=conversation_id,
+        branch_point_index=request.from_message_index,
+        user_id=user.id,
+        parent_branch_id=conv.active_branch_id,
+        associated_snapshot_id=associated_snapshot_id,
+    )
+    if not branch:
+        raise HTTPException(status_code=500, detail="Failed to create branch")
+
+    # Return summary
+    branches = await repository.get_conversation_branches(conversation_id)
+    for b in branches:
+        if b.id == branch.id:
+            return b
+
+    raise HTTPException(status_code=500, detail="Branch created but not found")
+
+
+@router.post(
+    "/conversations/{conversation_id}/branches/switch",
+    response_model=ConversationResponse,
+)
+async def switch_conversation_branch(
+    conversation_id: str,
+    request: SwitchConversationBranchRequest,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Switch to a different conversation branch.
+
+    Saves current downstream messages to the current branch, then
+    restores the target branch's messages.
+    """
+    await _assert_workspace_access(workspace_id, user, "editor")
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conv = await repository.switch_conversation_branch(
+        conversation_id, request.branch_id
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    return _to_conversation_response(conv)
+
+
+@router.delete(
+    "/conversations/{conversation_id}/branches/{branch_id}",
+)
+async def delete_conversation_branch(
+    conversation_id: str,
+    branch_id: str,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Delete a conversation branch."""
+    await _assert_workspace_access(workspace_id, user, "editor")
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    deleted = await repository.delete_conversation_branch(conversation_id, branch_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    return {"status": "deleted", "branch_id": branch_id}
+
+
 @router.post("/conversations/{conversation_id}/messages")
 async def send_message(
     conversation_id: str,
@@ -9904,7 +10147,9 @@ async def retry_terminal_tool(
         raise HTTPException(status_code=400, detail="Tool is not terminal-rerunnable")
 
     try:
-        tool = await rag.build_primary_runtime_tool_from_config(tool_config.model_dump())
+        tool = await rag.build_primary_runtime_tool_from_config(
+            tool_config.model_dump()
+        )
         if tool is None:
             raise HTTPException(status_code=500, detail="Failed to build tool")
 

@@ -2778,4 +2778,3 @@ class WorkerService:
 @lru_cache(maxsize=1)
 def get_worker_service() -> WorkerService:
     return WorkerService()
-    return WorkerService()

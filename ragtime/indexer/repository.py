@@ -24,38 +24,23 @@ from prisma.models import IndexMetadata as PrismaIndexMetadata
 
 from prisma import Json, Prisma
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
-    normalize_userspace_preview_sandbox_flags,
-)
-from ragtime.indexer.models import (
-    SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
-    AppSettings,
-    ChatMessage,
-    ChatTask,
-    ChatTaskStatus,
-    ChatTaskStreamingState,
-    Conversation,
-    IndexConfig,
-    IndexJob,
-    IndexStatus,
-    ProviderPromptDebugRecord,
-    ToolCallRecord,
-    ToolConfig,
-    ToolGroup,
-    ToolOutputMode,
-    ToolType,
-    VectorStoreType,
-)
+    normalize_userspace_preview_sandbox_flags)
+from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
+                                    AppSettings, ChatMessage, ChatTask,
+                                    ChatTaskStatus, ChatTaskStreamingState,
+                                    Conversation, ConversationBranch,
+                                    ConversationBranchSummary, IndexConfig,
+                                    IndexJob, IndexStatus,
+                                    ProviderPromptDebugRecord, ToolCallRecord,
+                                    ToolConfig, ToolGroup, ToolOutputMode,
+                                    ToolType, VectorStoreType)
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.utils import safe_tool_name
@@ -267,6 +252,16 @@ def _to_prisma_task_status(status: ChatTaskStatus) -> PrismaChatTaskStatus:
 
 class IndexerRepository:
     """Repository for indexer data persistence via Prisma."""
+
+    def __init__(self) -> None:
+        self._conversation_branch_locks: dict[str, asyncio.Lock] = {}
+
+    def _get_conversation_branch_lock(self, conversation_id: str) -> asyncio.Lock:
+        lock = self._conversation_branch_locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._conversation_branch_locks[conversation_id] = lock
+        return lock
 
     async def _get_db(self) -> Prisma:
         """Get database connection."""
@@ -1963,6 +1958,312 @@ class IndexerRepository:
             logger.warning(f"Failed to truncate conversation: {e}")
             return None
 
+    # -------------------------------------------------------------------------
+    # Conversation Branch Operations
+    # -------------------------------------------------------------------------
+
+    async def create_conversation_branch(
+        self,
+        conversation_id: str,
+        branch_point_index: int,
+        user_id: Optional[str] = None,
+        parent_branch_id: Optional[str] = None,
+        associated_snapshot_id: Optional[str] = None,
+    ) -> Optional[ConversationBranch]:
+        """Create a branch preserving messages from branch_point_index onward.
+
+        The preserved messages are saved in the branch record, then the
+        conversation is truncated to *branch_point_index* messages.
+        The conversation stays on the live path after branch creation.
+        """
+        db = await self._get_db()
+        try:
+            async with self._get_conversation_branch_lock(conversation_id):
+                async with db.tx() as tx:
+                    prisma_conv = await tx.conversation.find_unique(
+                        where={"id": conversation_id}
+                    )
+                    if not prisma_conv:
+                        return None
+
+                    messages: List[dict[str, Any]] = cast(
+                        List[dict[str, Any]],
+                        list(prisma_conv.messages) if prisma_conv.messages else [],
+                    )
+
+                    if branch_point_index < 0 or branch_point_index > len(messages):
+                        return None
+
+                    preserved = messages[branch_point_index:]
+                    branch_id = str(uuid.uuid4())
+                    await tx.conversationbranch.create(
+                        data={
+                            "id": branch_id,
+                            "conversationId": conversation_id,
+                            "parentBranchId": parent_branch_id,
+                            "branchPointIndex": branch_point_index,
+                            "preservedMessages": Json(preserved),
+                            "associatedSnapshotId": associated_snapshot_id,
+                            "createdByUserId": user_id,
+                        }
+                    )
+
+                    truncated = messages[:branch_point_index]
+                    total_tokens = _estimate_conversation_tokens(truncated)
+                    await tx.conversation.update(
+                        where={"id": conversation_id},
+                        data={
+                            "messages": Json(truncated),
+                            "totalTokens": total_tokens,
+                            "activeBranchId": None,
+                            "updatedAt": datetime.utcnow(),
+                        },
+                    )
+
+                    created_branch = await tx.conversationbranch.find_unique(
+                        where={"id": branch_id},
+                        include={"createdByUser": True},
+                    )
+
+                return self._prisma_branch_to_model(created_branch)
+        except Exception as e:
+            logger.warning(f"Failed to create conversation branch: {e}")
+            return None
+
+    async def switch_conversation_branch(
+        self,
+        conversation_id: str,
+        branch_id: str,
+    ) -> Optional[Conversation]:
+        """Switch to a different branch by restoring its preserved messages.
+
+        If the conversation is on the live path (active_branch_id is None),
+        the current downstream messages are saved into a new auto-created
+        branch so they can be recovered later.  If it's already on a saved
+        branch, the downstream messages are written back to that branch.
+        """
+        db = await self._get_db()
+        try:
+            async with self._get_conversation_branch_lock(conversation_id):
+                async with db.tx() as tx:
+                    prisma_conv = await tx.conversation.find_unique(
+                        where={"id": conversation_id},
+                        include={"user": True},
+                    )
+                    if not prisma_conv:
+                        return None
+
+                    current_branch_id = getattr(prisma_conv, "activeBranchId", None)
+                    if current_branch_id == branch_id:
+                        return self._prisma_conversation_to_model(prisma_conv)
+
+                    target_branch = await tx.conversationbranch.find_unique(
+                        where={"id": branch_id}
+                    )
+                    if (
+                        not target_branch
+                        or target_branch.conversationId != conversation_id
+                    ):
+                        return None
+
+                    messages: List[dict[str, Any]] = cast(
+                        List[dict[str, Any]],
+                        list(prisma_conv.messages) if prisma_conv.messages else [],
+                    )
+
+                    branch_point = target_branch.branchPointIndex
+                    current_downstream = messages[branch_point:]
+                    if current_downstream:
+                        if current_branch_id:
+                            await tx.conversationbranch.update(
+                                where={"id": current_branch_id},
+                                data={
+                                    "preservedMessages": Json(current_downstream),
+                                    "updatedAt": datetime.utcnow(),
+                                },
+                            )
+                        else:
+                            user_id = (
+                                str(prisma_conv.userId) if prisma_conv.userId else None
+                            )
+                            await tx.conversationbranch.create(
+                                data={
+                                    "id": str(uuid.uuid4()),
+                                    "conversationId": conversation_id,
+                                    "parentBranchId": getattr(
+                                        target_branch, "parentBranchId", None
+                                    ),
+                                    "branchPointIndex": branch_point,
+                                    "preservedMessages": Json(current_downstream),
+                                    "createdByUserId": user_id,
+                                }
+                            )
+
+                    base_messages = messages[:branch_point]
+                    target_preserved: List[dict[str, Any]] = cast(
+                        List[dict[str, Any]],
+                        (
+                            list(target_branch.preservedMessages)
+                            if target_branch.preservedMessages
+                            else []
+                        ),
+                    )
+                    new_messages = base_messages + target_preserved
+                    total_tokens = _estimate_conversation_tokens(new_messages)
+
+                    updated = await tx.conversation.update(
+                        where={"id": conversation_id},
+                        data={
+                            "messages": Json(new_messages),
+                            "totalTokens": total_tokens,
+                            "activeBranchId": branch_id,
+                            "updatedAt": datetime.utcnow(),
+                        },
+                        include={"user": True},
+                    )
+
+                return self._prisma_conversation_to_model(updated)
+        except Exception as e:
+            logger.warning(f"Failed to switch conversation branch: {e}")
+            return None
+
+    async def get_conversation_branches(
+        self,
+        conversation_id: str,
+    ) -> List[ConversationBranchSummary]:
+        """List all branches for a conversation, grouped by branch point."""
+        db = await self._get_db()
+        try:
+            branches = await db.conversationbranch.find_many(
+                where={"conversationId": conversation_id},
+                order=[{"createdAt": "asc"}],
+                include={"createdByUser": True},
+            )
+            return [self._prisma_branch_to_summary(b) for b in branches]
+        except Exception as e:
+            logger.warning(f"Failed to list conversation branches: {e}")
+            return []
+
+    async def delete_conversation_branch(
+        self,
+        conversation_id: str,
+        branch_id: str,
+    ) -> bool:
+        """Delete a branch. If it's the active branch, clear active_branch_id."""
+        db = await self._get_db()
+        try:
+            async with self._get_conversation_branch_lock(conversation_id):
+                async with db.tx() as tx:
+                    branch = await tx.conversationbranch.find_unique(
+                        where={"id": branch_id}
+                    )
+                    if not branch or branch.conversationId != conversation_id:
+                        return False
+
+                    conv = await tx.conversation.find_unique(
+                        where={"id": conversation_id}
+                    )
+                    if conv and getattr(conv, "activeBranchId", None) == branch_id:
+                        await tx.conversation.update(
+                            where={"id": conversation_id},
+                            data={
+                                "activeBranchId": None,
+                                "updatedAt": datetime.utcnow(),
+                            },
+                        )
+
+                    await tx.conversationbranch.delete(where={"id": branch_id})
+
+                return True
+        except Exception as e:
+            logger.warning(f"Failed to delete conversation branch: {e}")
+            return False
+
+    def _prisma_branch_to_model(
+        self, prisma_branch: Any
+    ) -> Optional[ConversationBranch]:
+        """Convert Prisma ConversationBranch to Pydantic model."""
+        if not prisma_branch:
+            return None
+        preserved_raw = (
+            prisma_branch.preservedMessages if prisma_branch.preservedMessages else []
+        )
+        preserved_messages = self._parse_messages_json(preserved_raw)
+        return ConversationBranch(
+            id=prisma_branch.id,
+            conversation_id=prisma_branch.conversationId,
+            parent_branch_id=getattr(prisma_branch, "parentBranchId", None),
+            branch_point_index=prisma_branch.branchPointIndex,
+            preserved_messages=preserved_messages,
+            associated_snapshot_id=getattr(prisma_branch, "associatedSnapshotId", None),
+            created_by_user_id=getattr(prisma_branch, "createdByUserId", None),
+            created_at=prisma_branch.createdAt,
+            updated_at=prisma_branch.updatedAt,
+        )
+
+    def _prisma_branch_to_summary(
+        self, prisma_branch: Any
+    ) -> ConversationBranchSummary:
+        """Convert Prisma ConversationBranch to lightweight summary."""
+        preserved_raw = (
+            prisma_branch.preservedMessages if prisma_branch.preservedMessages else []
+        )
+        message_count = len(preserved_raw) if isinstance(preserved_raw, list) else 0
+        user = getattr(prisma_branch, "createdByUser", None)
+        return ConversationBranchSummary(
+            id=prisma_branch.id,
+            conversation_id=prisma_branch.conversationId,
+            parent_branch_id=getattr(prisma_branch, "parentBranchId", None),
+            branch_point_index=prisma_branch.branchPointIndex,
+            message_count=message_count,
+            associated_snapshot_id=getattr(prisma_branch, "associatedSnapshotId", None),
+            created_by_user_id=getattr(prisma_branch, "createdByUserId", None),
+            created_by_username=getattr(user, "username", None) if user else None,
+            created_at=prisma_branch.createdAt,
+        )
+
+    def _parse_messages_json(self, messages_data: Any) -> List[ChatMessage]:
+        """Parse a JSON messages array into ChatMessage list (reuses _prisma_conversation_to_model logic)."""
+        if not messages_data:
+            return []
+        result: List[ChatMessage] = []
+        for m in messages_data:
+            events = None
+            if "events" in m and m["events"]:
+                events = _normalize_message_events(m["events"])
+            else:
+                events = _synthesize_events_from_legacy_message(m)
+            tool_calls = _extract_tool_calls_from_events(events)
+            if tool_calls is None and "tool_calls" in m and m["tool_calls"]:
+                tool_calls = [
+                    ToolCallRecord(
+                        tool=tc.get("tool", ""),
+                        input=tc.get("input"),
+                        output=tc.get("output"),
+                        connection=tc.get("connection"),
+                        presentation=normalize_tool_presentation(
+                            str(tc.get("tool", "")),
+                            cast(Optional[dict[str, Any]], tc.get("connection")),
+                            cast(Optional[dict[str, Any]], tc.get("presentation")),
+                        ),
+                    )
+                    for tc in m["tool_calls"]
+                ]
+            result.append(
+                ChatMessage(
+                    role=m.get("role", "user"),
+                    content=m.get("content", ""),
+                    timestamp=(
+                        datetime.fromisoformat(m["timestamp"])
+                        if "timestamp" in m
+                        else datetime.utcnow()
+                    ),
+                    tool_calls=tool_calls,
+                    events=events,
+                )
+            )
+        return result
+
     async def check_conversation_access(
         self,
         conversation_id: str,
@@ -2119,6 +2420,7 @@ class IndexerRepository:
             created_at=prisma_conv.createdAt,
             updated_at=prisma_conv.updatedAt,
             active_task_id=getattr(prisma_conv, "activeTaskId", None),
+            active_branch_id=getattr(prisma_conv, "activeBranchId", None),
             tool_output_mode=tool_output_mode,
         )
 

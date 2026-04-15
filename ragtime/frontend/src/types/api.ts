@@ -1609,9 +1609,37 @@ export interface Conversation {
   messages: ChatMessage[];
   total_tokens: number;
   active_task_id: string | null;  // ID of currently running background task
+  active_branch_id?: string | null;  // ID of currently active chat branch
   tool_output_mode: ToolOutputMode;  // Per-conversation tool output preference
   created_at: string;
   updated_at: string;
+}
+
+export interface ConversationBranchSummary {
+  id: string;
+  conversation_id: string;
+  parent_branch_id?: string | null;
+  branch_point_index: number;
+  message_count: number;
+  associated_snapshot_id?: string | null;
+  created_by_user_id?: string | null;
+  created_by_username?: string | null;
+  created_at: string;
+}
+
+export interface ConversationBranchPointInfo {
+  branch_point_index: number;
+  branches: ConversationBranchSummary[];
+  active_branch_id?: string | null;
+}
+
+export interface CreateConversationBranchRequest {
+  from_message_index: number;
+  auto_snapshot?: boolean;
+}
+
+export interface SwitchConversationBranchRequest {
+  branch_id: string;
 }
 
 export interface ConversationWorkspaceStateResponse {

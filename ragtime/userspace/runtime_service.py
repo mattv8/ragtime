@@ -1192,6 +1192,8 @@ class UserSpaceRuntimeService:
             json_payload=payload,
         )
 
+    # -- Workspace-level runtime manager requests (not session-scoped) --
+
     async def _runtime_workspace_file_list(
         self,
         workspace_id: str,
@@ -1200,13 +1202,13 @@ class UserSpaceRuntimeService:
         workspace_mounts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self._require_runtime_manager()
+        payload: dict[str, Any] = {"include_dirs": include_dirs}
+        if workspace_mounts is not None:
+            payload["workspace_mounts"] = workspace_mounts
         return await self._runtime_manager_request(
             "POST",
             f"/workspaces/{workspace_id}/files",
-            json_payload={
-                "include_dirs": include_dirs,
-                "workspace_mounts": workspace_mounts or [],
-            },
+            json_payload=payload,
         )
 
     async def _runtime_workspace_git_command(

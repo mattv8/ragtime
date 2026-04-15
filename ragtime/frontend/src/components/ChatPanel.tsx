@@ -2,10 +2,10 @@ import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { diffLines } from 'diff';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon } from 'lucide-react';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, GitBranch, Link } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff } from '@/types';
-import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
+import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchPointInfo } from '@/types';
+import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
@@ -233,6 +233,33 @@ function mergeConversationFromWorkspaceSnapshot(
       ? incoming.messages
       : current.messages,
   };
+}
+
+type BranchLookup = {
+  branch_point_index: number;
+  parent_branch_id?: string | null;
+};
+
+function findLineageBranchIdForPoint(
+  branchesById: ReadonlyMap<string, BranchLookup>,
+  activeBranchId: string | null | undefined,
+  branchPointIndex: number,
+): string | null {
+  if (!activeBranchId) return null;
+
+  const visited = new Set<string>();
+  let currentBranchId: string | null = activeBranchId;
+  while (currentBranchId && !visited.has(currentBranchId)) {
+    visited.add(currentBranchId);
+    const branch = branchesById.get(currentBranchId);
+    if (!branch) return null;
+    if (branch.branch_point_index === branchPointIndex) {
+      return currentBranchId;
+    }
+    currentBranchId = branch.parent_branch_id ?? null;
+  }
+
+  return null;
 }
 
 function findProviderState(
@@ -2198,8 +2225,10 @@ interface ChatPanelProps {
   onTaskComplete?: () => void;
   onConversationStateChange?: (hasLive: boolean, hasInterrupted: boolean) => void;
   onActiveConversationChange?: (conversationId: string | null) => void;
+  onBranchSwitch?: (branchId: string, associatedSnapshotId: string | null) => void;
   onFullscreenChange?: (fullscreen: boolean) => void;
   onOpenWorkspaceFile?: (path: string) => void;
+  inputBanner?: ReactNode;
   embedded?: boolean;
   readOnly?: boolean;
   readOnlyMessage?: string;
@@ -2221,8 +2250,10 @@ export function ChatPanel({
   onTaskComplete,
   onConversationStateChange,
   onActiveConversationChange,
+  onBranchSwitch,
   onFullscreenChange,
   onOpenWorkspaceFile,
+  inputBanner,
   embedded = false,
   readOnly = false,
   readOnlyMessage,
@@ -2252,6 +2283,21 @@ export function ChatPanel({
   const [editMessageContent, setEditMessageContent] = useState('');
   const [editMessageAttachments, setEditMessageAttachments] = useState<AttachmentFile[]>([]);
   const [hitMaxIterations, setHitMaxIterations] = useState(false);
+
+  // Chat branching state
+  const [branchPoints, setBranchPoints] = useState<ConversationBranchPointInfo[]>([]);
+  const [branchSwitching, setBranchSwitching] = useState(false);
+  const [branchSelections, setBranchSelections] = useState<Record<number, string>>({});
+  const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
+  const activeConversationId = activeConversation?.id ?? null;
+  const branchPointsByIndex = useMemo(
+    () => new Map(branchPoints.map((point) => [point.branch_point_index, point] as const)),
+    [branchPoints],
+  );
+  const branchesById = useMemo(
+    () => new Map(branchPoints.flatMap((point) => point.branches.map((branch) => [branch.id, branch] as const))),
+    [branchPoints],
+  );
   const [showToolCalls, setShowToolCalls] = useState(() => {
     const saved = localStorage.getItem('chat-show-tool-calls');
     return saved !== null ? saved === 'true' : true;
@@ -3326,6 +3372,23 @@ export function ChatPanel({
     }
   }, []);
 
+  const refreshBranchPoints = useCallback(async (conversationId: string): Promise<ConversationBranchPointInfo[]> => {
+    try {
+      const points = await api.getConversationBranchPoints(conversationId, workspaceId);
+      setBranchPoints(points);
+      return points;
+    } catch {
+      setBranchPoints([]);
+      return [];
+    }
+  }, [workspaceId]);
+
+  useEffect(() => {
+    setBranchPoints([]);
+    setBranchSelections({});
+    setCopiedMessageIdx(null);
+  }, [activeConversationId]);
+
   const fetchAvailableTools = useCallback(async () => {
     try {
       const [tools, groups] = await Promise.all([
@@ -3341,17 +3404,20 @@ export function ChatPanel({
     }
   }, []);
 
-  // Load conversation members and tools when conversation changes
+  // Load conversation members, tools, and branches when conversation changes
   useEffect(() => {
-    if (activeConversation) {
+    if (activeConversationId) {
       if (!useWorkspaceToolSource) {
-        fetchConversationTools(activeConversation.id);
+        void fetchConversationTools(activeConversationId);
       }
       if (!embedded) {
-        fetchConversationMembers(activeConversation.id);
+        void fetchConversationMembers(activeConversationId);
       }
+      void refreshBranchPoints(activeConversationId);
+    } else {
+      setBranchPoints([]);
     }
-  }, [activeConversation, embedded, fetchConversationMembers, fetchConversationTools, useWorkspaceToolSource]);
+  }, [activeConversationId, embedded, fetchConversationMembers, fetchConversationTools, useWorkspaceToolSource, refreshBranchPoints]);
 
   // Load available tools on mount
   useEffect(() => {
@@ -4285,39 +4351,6 @@ export function ChatPanel({
     }
   };
 
-  const resizeImageDataUrl = useCallback(async (
-    dataUrl: string,
-    mimeType: string,
-    maxDimension = 1024,
-    quality = 0.8
-  ): Promise<string> => {
-    try {
-      const img = new Image();
-      img.src = dataUrl;
-      await img.decode();
-
-      const { naturalWidth, naturalHeight } = img;
-      if (!naturalWidth || !naturalHeight) return dataUrl;
-
-      const scale = Math.min(1, maxDimension / Math.max(naturalWidth, naturalHeight));
-      if (scale === 1) return dataUrl;
-
-      const width = Math.round(naturalWidth * scale);
-      const height = Math.round(naturalHeight * scale);
-
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return dataUrl;
-      ctx.drawImage(img, 0, 0, width, height);
-
-      return canvas.toDataURL(mimeType || 'image/png', quality);
-    } catch {
-      return dataUrl;
-    }
-  }, []);
-
   const contentPartsToAttachments = useCallback(async (parts: ContentPart[]): Promise<AttachmentFile[]> => {
     // Extract mime type from data URL (e.g., "data:image/png;base64,..." -> "image/png")
     const extractMimeFromDataUrl = (url: string): string => {
@@ -4331,7 +4364,7 @@ export function ChatPanel({
         if (p.type === 'image_url') {
           const url = p.image_url.url;
           const mimeType = extractMimeFromDataUrl(url);
-          const resized = await resizeImageDataUrl(url, mimeType);
+          const resized = await resizeAttachmentImageDataUrl(url, mimeType);
           return {
             id: `edit-attachment-${i}-${Date.now()}`,
             type: 'image' as const,
@@ -4354,7 +4387,7 @@ export function ChatPanel({
       }));
 
     return mapped;
-  }, [resizeImageDataUrl]);
+  }, []);
 
   const startEditMessage = (idx: number, content: string, attachments: ContentPart[] = []) => {
     setEditingMessageIdx(idx);
@@ -4372,13 +4405,142 @@ export function ChatPanel({
     setEditMessageAttachments([]);
   };
 
+  const preserveConversationBranch = useCallback(async (conversationId: string, truncateAt: number) => {
+    try {
+      const createdBranch = await api.createConversationBranch(
+        conversationId,
+        { from_message_index: truncateAt, auto_snapshot: Boolean(workspaceId) },
+        workspaceId,
+      );
+      if (createdBranch.parent_branch_id) {
+        setBranchSelections((prev) => ({ ...prev, [truncateAt]: createdBranch.parent_branch_id! }));
+      }
+    } catch (branchErr) {
+      console.warn('Branch creation failed, falling back to truncate:', branchErr);
+      await api.truncateConversation(conversationId, truncateAt, workspaceId);
+    }
+  }, [workspaceId]);
+
+  const switchBranch = useCallback(async (branchId: string) => {
+    if (!activeConversation || branchSwitching) return;
+    if (branchId.startsWith('__current__:')) return;
+    const conversationId = activeConversation.id;
+    setBranchSwitching(true);
+    try {
+      // Remember the old active branch's position before switching
+      const oldActiveBranchId = activeConversation.active_branch_id;
+      if (oldActiveBranchId) {
+        const oldBranch = branchesById.get(oldActiveBranchId);
+        if (oldBranch) {
+          setBranchSelections(prev => ({ ...prev, [oldBranch.branch_point_index]: oldActiveBranchId }));
+        }
+      }
+
+      const updated = await api.switchConversationBranch(conversationId, branchId, workspaceId);
+      setActiveConversation(updated);
+      setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
+      const refreshedPoints = await refreshBranchPoints(conversationId);
+
+      // Notify parent (UserSpacePanel) about the branch switch with associated snapshot
+      if (onBranchSwitch) {
+        const allBranches = refreshedPoints.flatMap(bp => bp.branches);
+        const targetBranch = allBranches.find(b => b.id === branchId);
+        onBranchSwitch(branchId, targetBranch?.associated_snapshot_id ?? null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to switch branch');
+    } finally {
+      setBranchSwitching(false);
+    }
+  }, [activeConversation, branchSwitching, workspaceId, branchesById, refreshBranchPoints, onBranchSwitch]);
+
+  const copyMessageText = useCallback(async (idx: number, content: string | ContentPart[]) => {
+    const { text } = parseMessageContent(content);
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedMessageIdx(idx);
+      setTimeout(() => setCopiedMessageIdx(prev => prev === idx ? null : prev), 2000);
+    } catch { /* ignore */ }
+  }, []);
+
+  const retryFromMessage = useCallback(async (assistantIdx: number) => {
+    if (!activeConversation || isStreaming || readOnly) return;
+    const conversationId = activeConversation.id;
+    // Find the user message that triggered this assistant reply.
+    let userIdx = assistantIdx - 1;
+    while (userIdx >= 0 && activeConversation.messages[userIdx]?.role !== 'user') {
+      userIdx--;
+    }
+    if (userIdx < 0) return;
+
+    const userMsg = activeConversation.messages[userIdx];
+    const truncateAt = userIdx;
+    const hasDownstreamMessages = truncateAt < activeConversation.messages.length;
+
+    try {
+      if (hasDownstreamMessages) {
+        await preserveConversationBranch(conversationId, truncateAt);
+      }
+
+      // Re-send the original user message content verbatim
+      const rawContent = userMsg.content;
+      const messageToSend = typeof rawContent === 'string'
+        ? rawContent
+        : JSON.stringify(rawContent);
+
+      // Optimistic update
+      const messagesToKeep = activeConversation.messages.slice(0, truncateAt);
+      const optimisticMsg: ChatMessage = {
+        role: 'user',
+        content: rawContent as any,
+        timestamp: new Date().toISOString(),
+      };
+      const optimisticConv: Conversation = {
+        ...activeConversation,
+        messages: [...messagesToKeep, optimisticMsg],
+      };
+      setActiveConversation(optimisticConv);
+      setConversations(prev => prev.map(c => c.id === optimisticConv.id ? optimisticConv : c));
+
+      shouldAutoScrollRef.current = true;
+      setIsStreaming(true);
+      setStreamingContent('');
+      setStreamingEvents([]);
+      setHitMaxIterations(false);
+      setIsConnectionError(false);
+
+      const task = await api.sendMessageBackground(conversationId, messageToSend, workspaceId);
+      setActiveTask(task);
+      syncConversationActiveTaskId(conversationId, task.id);
+      await connectTaskStream(task.id);
+
+      // Refresh branch points after the branch was created
+      void refreshBranchPoints(conversationId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to retry message');
+    }
+  }, [activeConversation, isStreaming, readOnly, preserveConversationBranch, workspaceId, refreshBranchPoints, connectTaskStream, syncConversationActiveTaskId]);
+
   const submitEditMessage = async () => {
     if (readOnly || !activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0)) return;
     shouldAutoScrollRef.current = true;
+    const conversationId = activeConversation.id;
 
     let messageToSend: string = editMessageContent.trim();
     if (editMessageAttachments.length > 0) {
-      const parts = attachmentsToContentParts(messageToSend, editMessageAttachments);
+      const normalizedEditAttachments = await Promise.all(editMessageAttachments.map(async (attachment) => {
+        if (attachment.type !== 'image' || !attachment.dataUrl) {
+          return attachment;
+        }
+        const resized = await resizeAttachmentImageDataUrl(attachment.dataUrl, attachment.mimeType);
+        return {
+          ...attachment,
+          dataUrl: resized,
+          preview: resized,
+        };
+      }));
+      const parts = attachmentsToContentParts(messageToSend, normalizedEditAttachments);
       messageToSend = JSON.stringify(parts);
     }
 
@@ -4391,8 +4553,13 @@ export function ChatPanel({
     setError(null);
 
     try {
-      // 1. Local Optimistic Truncation & Update
-      // We do this immediately so the UI reflects the "revert" behavior users expect.
+      // 1. Create a branch to preserve the original messages
+      const hasDownstreamMessages = truncateAt < activeConversation.messages.length;
+      if (hasDownstreamMessages) {
+        await preserveConversationBranch(conversationId, truncateAt);
+      }
+
+      // 2. Local Optimistic Update
       const messagesToKeep = activeConversation.messages.slice(0, truncateAt);
 
       let content: string | ContentPart[] = messageToSend;
@@ -4425,22 +4592,17 @@ export function ChatPanel({
       setHitMaxIterations(false);
       setIsConnectionError(false);
 
-      // 2. Server Sync (Truncate)
-      // Call endpoint to persist string truncation (removes old message & subsequent from DB)
-      const truncated = await api.truncateConversation(activeConversation.id, truncateAt, workspaceId);
-
-      // Note: We don't overwrite local state with 'truncated' here because 'truncated'
-      // doesn't have our optimistic user message yet.
-
       // 3. Start background task
-      // This sends the message and creates a background task
-      const task = await api.sendMessageBackground(truncated.id, messageToSend, workspaceId);
+      const task = await api.sendMessageBackground(conversationId, messageToSend, workspaceId);
       setActiveTask(task);
       setInterruptedTask(null);
-      syncConversationActiveTaskId(truncated.id, task.id);
+      syncConversationActiveTaskId(conversationId, task.id);
 
       // 4. Connect to stream
       await connectTaskStream(task.id);
+
+      // 5. Refresh branch points for UI
+      void refreshBranchPoints(conversationId);
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to resend message');
@@ -4450,7 +4612,7 @@ export function ChatPanel({
 
       // Restore authoritative state from server on error
       try {
-        const refreshed = await api.getConversation(activeConversation.id, workspaceId);
+        const refreshed = await api.getConversation(conversationId, workspaceId);
         setActiveConversation(refreshed);
         setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
       } catch (refreshErr) {
@@ -4972,18 +5134,15 @@ export function ChatPanel({
               ) : (
                 <>
                   {activeConversation.messages.map((msg, idx) => {
+                    const bp = branchPointsByIndex.get(idx);
+                    const hasBranches = bp && bp.branches.length > 0;
+                    const msgKey = `msg-${idx}`;
                     return (
-                    <div key={idx} className={`chat-message chat-message-${msg.role}`}>
+                    <div key={msgKey} className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}`}>
+                    <div className={`chat-message chat-message-${msg.role}`}>
                       <div className="chat-message-content" key={editingMessageIdx === idx ? 'editing' : 'viewing'}>
                         {editingMessageIdx === idx ? (
                           <>
-                            {/* Attachments for editing mode */}
-                            <div className="chat-edit-attachments-wrapper">
-                              <FileAttachment
-                                attachments={editMessageAttachments}
-                                onAttachmentsChange={setEditMessageAttachments}
-                              />
-                            </div>
                             <div
                               contentEditable
                               suppressContentEditableWarning
@@ -5022,9 +5181,10 @@ export function ChatPanel({
                                 }
                               }}
                             />
-                            <div className="chat-edit-actions">
-                              <button className="btn btn-sm" onClick={submitEditMessage}>Resend</button>
-                              <button className="btn btn-sm btn-secondary" onClick={cancelEditMessage}>Cancel</button>
+                            <div className="chat-message-footer">
+                              <span className="chat-message-time">
+                                {formatChatTimestamp(msg.timestamp)}
+                              </span>
                             </div>
                           </>
                         ) : (
@@ -5150,32 +5310,155 @@ export function ChatPanel({
                               <span className="chat-message-time">
                                 {formatChatTimestamp(msg.timestamp)}
                               </span>
-                              {msg.role === 'assistant' && showPromptDebugButton && (
-                                <button
-                                  className="chat-message-edit-btn"
-                                  onClick={() => openPromptDebugForAssistantMessage(idx)}
-                                  title="Open prompt debug for this assistant reply"
-                                  aria-label="Open prompt debug for this assistant reply"
-                                >
-                                  <Bug size={12} />
-                                </button>
-                              )}
-                              {msg.role === 'user' && !isStreaming && !readOnly && (
-                                <button
-                                  className="chat-message-edit-btn"
-                                  onClick={() => {
-                                    const parsed = parseMessageContent(msg.content);
-                                    startEditMessage(idx, parsed.text, parsed.attachments);
-                                  }}
-                                  title="Edit and resend"
-                                >
-                                  <Pencil size={12} />
-                                </button>
-                              )}
                             </div>
                           </>
                         )}
                       </div>
+                    </div>
+                    {/* Action bar — flat on pane background, outside the bubble */}
+                    {(() => {
+                      const isEditing = editingMessageIdx === idx;
+                      const activeBranchId = activeConversation.active_branch_id;
+                      const branchNav = hasBranches && bp ? (() => {
+                        const livePathOptionId = `__current__:${bp.branch_point_index}`;
+                        const hasLivePathOption = !activeBranchId && activeConversation.messages.length > bp.branch_point_index;
+                        const allOptions = [
+                          ...bp.branches.map(b => ({ id: b.id, label: b.created_by_username || 'Branch' })),
+                          ...(hasLivePathOption ? [{ id: livePathOptionId, label: 'Current' }] : []),
+                        ];
+                        const newestBranch = bp.branches.length > 0 ? bp.branches[bp.branches.length - 1] : null;
+                        const inferredCurrentBranchId = newestBranch?.parent_branch_id ?? null;
+                        const lineageBranchId = findLineageBranchIdForPoint(branchesById, activeBranchId, bp.branch_point_index);
+                        // 1. Active branch matches this point → use it
+                        // 2. Active branch ancestry reaches this point → use that ancestor branch
+                        // 3. If on the live path, show the synthetic current option
+                        // 4. Remembered selection for this point → use it when on the live path
+                        // 5. If on live path (active is null), infer from newest branch's parent
+                        // 6. Fallback to last (most recent) branch
+                        const bpIdx = bp.branch_point_index;
+                        let matchIdx = lineageBranchId
+                          ? allOptions.findIndex(o => o.id === lineageBranchId)
+                          : -1;
+                        if (matchIdx < 0 && hasLivePathOption) {
+                          matchIdx = allOptions.findIndex(o => o.id === livePathOptionId);
+                        }
+                        if (matchIdx < 0 && branchSelections[bpIdx]) {
+                          matchIdx = allOptions.findIndex(o => o.id === branchSelections[bpIdx]);
+                        }
+                        if (matchIdx < 0 && inferredCurrentBranchId) {
+                          matchIdx = allOptions.findIndex(o => o.id === inferredCurrentBranchId);
+                        }
+                        const currentOptionIdx = matchIdx >= 0 ? matchIdx : allOptions.length - 1;
+                        return (
+                          <span className="chat-branch-nav">
+                            <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx > 0 && !branchSwitching) switchBranch(allOptions[currentOptionIdx - 1].id); }} disabled={currentOptionIdx <= 0 || branchSwitching} aria-label="Previous branch">
+                              <ChevronLeft size={12} />
+                            </button>
+                            <span className="chat-branch-nav-label">{currentOptionIdx + 1}/{allOptions.length}</span>
+                            <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx < allOptions.length - 1 && !branchSwitching) switchBranch(allOptions[currentOptionIdx + 1].id); }} disabled={currentOptionIdx >= allOptions.length - 1 || branchSwitching} aria-label="Next branch">
+                              <ChevronRight size={12} />
+                            </button>
+                            {bp.branches.some(b => b.associated_snapshot_id) && (
+                              <span className="chat-branch-nav-snapshot-icon" title="Has associated code snapshot"><GitBranch size={10} /></span>
+                            )}
+                          </span>
+                        );
+                      })() : null;
+
+                      const isCopied = copiedMessageIdx === idx;
+                      // Only show the restore banner on the branch-point message for the active branch
+                      const showBanner = inputBanner && bp && activeBranchId && bp.branches.some(b => b.id === activeBranchId);
+
+                      if (msg.role === 'user') {
+                        return (
+                          <>
+                            {isEditing && editMessageAttachments.length > 0 && (
+                              <div className="chat-edit-preview-list">
+                                {editMessageAttachments.map(att => (
+                                  <div key={att.id} className="attachment-item">
+                                    {att.type === 'image' && att.preview ? (
+                                      <div className="attachment-image-preview">
+                                        <img src={att.preview} alt={att.name} />
+                                      </div>
+                                    ) : (
+                                      <div className="attachment-file-preview">
+                                        {att.filePath ? <Link size={20} /> : <FileText size={20} />}
+                                      </div>
+                                    )}
+                                    <div className="attachment-info">
+                                      <span className="attachment-name" title={att.name}>{att.name}</span>
+                                      <span className="attachment-size">{formatAttachmentSize(att.size)}</span>
+                                    </div>
+                                    <button type="button" className="attachment-remove" onClick={() => setEditMessageAttachments(editMessageAttachments.filter(a => a.id !== att.id))}>
+                                      <X size={16} />
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <div className={`chat-message-actions chat-message-actions-right${isEditing ? ' visible' : ''}`}>
+                            {isEditing ? (
+                              <>
+                                <span className="chat-message-actions-spacer" />
+                                <button className="chat-action-text-btn primary" onClick={submitEditMessage}>Send</button>
+                                <button className="chat-action-text-btn" onClick={cancelEditMessage}>Cancel</button>
+                                <div className="chat-edit-attachments-wrapper">
+                                  <FileAttachment
+                                    attachments={editMessageAttachments}
+                                    onAttachmentsChange={setEditMessageAttachments}
+                                  />
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
+                                  {isCopied ? <Check size={12} /> : <Copy size={12} />}
+                                </button>
+                                {!isStreaming && !readOnly && (
+                                  <button className="chat-action-icon-btn" onClick={() => { const parsed = parseMessageContent(msg.content); startEditMessage(idx, parsed.text, parsed.attachments); }} title="Edit and resend">
+                                    <Pencil size={12} />
+                                  </button>
+                                )}
+                              </>
+                            )}
+                            {branchNav}
+                          </div>
+                            {showBanner && (
+                              <div className="chat-message-banner-row chat-message-banner-row-right">
+                                {inputBanner}
+                              </div>
+                            )}
+                          </>
+                        );
+                      } else {
+                        return (
+                          <>
+                            <div className="chat-message-actions chat-message-actions-left">
+                              <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
+                                {isCopied ? <Check size={12} /> : <Copy size={12} />}
+                              </button>
+                              {!isStreaming && !readOnly && (
+                                <button className="chat-action-icon-btn" onClick={() => retryFromMessage(idx)} title="Retry">
+                                  <RefreshCw size={12} />
+                                </button>
+                              )}
+                              {showPromptDebugButton && (
+                                <button className="chat-action-icon-btn" onClick={() => openPromptDebugForAssistantMessage(idx)} title="Open prompt debug for this assistant reply">
+                                  <Bug size={12} />
+                                </button>
+                              )}
+                              {branchNav && <span className="chat-message-actions-spacer" />}
+                              {branchNav}
+                            </div>
+                            {showBanner && (
+                              <div className="chat-message-banner-row chat-message-banner-row-left">
+                                {inputBanner}
+                              </div>
+                            )}
+                          </>
+                        );
+                      }
+                    })()}
                     </div>
                   );
                   })}

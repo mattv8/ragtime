@@ -767,6 +767,7 @@ model User {
   runtimeLeases UserSpaceRuntimeSession[] @relation("RuntimeLeaseUser")
   runtimeAuditEvents UserSpaceRuntimeAuditEvent[] @relation("RuntimeAuditUser")
   userspaceChangedFileAcknowledgements UserSpaceChangedFileAcknowledgement[]
+  conversationBranches ConversationBranch[]
 
   @@map("users")
 }
@@ -867,6 +868,9 @@ model Conversation {
   // Background task tracking - active task for this conversation
   activeTaskId String? @map("active_task_id")
 
+  // Chat branching - tracks which branch is currently active (null = main/original)
+  activeBranchId String? @map("active_branch_id")
+
   // Timestamps
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
@@ -880,11 +884,48 @@ model Conversation {
   toolSelections  ConversationToolSelection[]
   toolGroupSelections ConversationToolGroupSelection[]
 
+  // Chat branches
+  branches  ConversationBranch[]
+
   @@index([userId])
   @@index([activeTaskId])
   @@index([workspaceId, updatedAt])
   @@index([userId, workspaceId, updatedAt])
   @@map("conversations")
+}
+
+/// A branch of a chat conversation, created when a user edits and resends a message.
+/// Preserves the original messages from the branch point onward so they can be restored.
+model ConversationBranch {
+  id             String   @id @default(uuid())
+
+  // Parent conversation
+  conversationId String   @map("conversation_id")
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  // Branch lineage
+  parentBranchId String?  @map("parent_branch_id")
+
+  // Branch point: the message index where the edit occurred (0-based)
+  branchPointIndex Int    @map("branch_point_index")
+
+  // Preserved messages: the original messages from branch_point_index onward (JSON array)
+  preservedMessages Json  @default("[]") @map("preserved_messages")
+
+  // Associated UserSpace snapshot (taken before the branch was created)
+  associatedSnapshotId String? @map("associated_snapshot_id")
+
+  // Creator
+  createdByUserId String? @map("created_by_user_id")
+  createdByUser   User?   @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  // Metadata
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([conversationId, branchPointIndex, createdAt])
+  @@index([conversationId, createdAt])
+  @@map("conversation_branches")
 }
 
 /// User Space workspace metadata and ACL source-of-truth

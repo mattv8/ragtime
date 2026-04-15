@@ -483,6 +483,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     const [deleteConfirmSnapshotId, setDeleteConfirmSnapshotId] = useState<string | null>(null);
     const [navigatingSnapshots, setNavigatingSnapshots] = useState(false);
   const [restoringSnapshotId, setRestoringSnapshotId] = useState<string | null>(null);
+  const [branchRestoreSnapshotId, setBranchRestoreSnapshotId] = useState<string | null>(null);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
   const [toolGroups, setToolGroups] = useState<ToolGroupInfo[]>([]);
 
@@ -2657,6 +2658,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setNavigatingSnapshots(false);
     }
   }, [activeWorkspaceId, canEditWorkspace, currentSnapshotBranchId, loadChangedFileState, loadSnapshots, loadWorkspaceData]);
+
+  const handleBranchSwitch = useCallback((_branchId: string, associatedSnapshotId: string | null) => {
+    setBranchRestoreSnapshotId(associatedSnapshotId);
+  }, []);
+
+  const handleConfirmBranchRestore = useCallback(() => {
+    if (branchRestoreSnapshotId) {
+      void handleRestoreSnapshot(branchRestoreSnapshotId);
+    }
+    setBranchRestoreSnapshotId(null);
+  }, [branchRestoreSnapshotId, handleRestoreSnapshot]);
+
+  const handleDismissBranchRestore = useCallback(() => {
+    setBranchRestoreSnapshotId(null);
+  }, []);
 
   const handleStartSnapshotRename = useCallback((snapshot: UserSpaceSnapshot) => {
     if (!canEditWorkspace) return;
@@ -5581,10 +5597,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 onUserMessageSubmitted={canEditWorkspace ? handleUserMessageSubmitted : undefined}
                 onConversationStateChange={handleConversationStateChange}
                 onActiveConversationChange={setActiveWorkspaceConversationId}
+                onBranchSwitch={handleBranchSwitch}
                 onOpenWorkspaceFile={handleSelectFile}
                 embedded
                 readOnly={!canEditWorkspace}
                 readOnlyMessage="Workspace is read-only for viewers. You can review chat and files, but only owners/editors can send prompts."
+                inputBanner={branchRestoreSnapshotId ? (
+                  <div className="chat-branch-restore-banner">
+                    <span>This branch has an associated code snapshot.</span>
+                    <button className="chat-branch-restore-btn confirm" onClick={handleConfirmBranchRestore}>Restore</button>
+                    <button className="chat-branch-restore-btn dismiss" onClick={handleDismissBranchRestore}>Dismiss</button>
+                  </div>
+                ) : undefined}
               />
             ) : (
               <div className="userspace-chat-placeholder">

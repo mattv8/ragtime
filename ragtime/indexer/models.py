@@ -2174,8 +2174,76 @@ class Conversation(BaseModel):
         default=ToolOutputMode.DEFAULT,
         description="Per-conversation tool output preference: default (use global), show (always), hide (always), auto (AI decides)",
     )
+    active_branch_id: Optional[str] = Field(
+        default=None,
+        description="ID of the currently active chat branch (null = main/original)",
+    )
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ConversationBranch(BaseModel):
+    """A branch of a chat conversation created when a user edits and resends a message."""
+
+    id: str
+    conversation_id: str
+    parent_branch_id: Optional[str] = None
+    branch_point_index: int = Field(
+        description="0-based message index where the edit occurred"
+    )
+    preserved_messages: List[ChatMessage] = Field(
+        default_factory=list,
+        description="Original messages from branch_point_index onward that were replaced",
+    )
+    associated_snapshot_id: Optional[str] = Field(
+        default=None,
+        description="UserSpace snapshot taken before this branch was created",
+    )
+    created_by_user_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ConversationBranchSummary(BaseModel):
+    """Lightweight branch summary for list responses."""
+
+    id: str
+    conversation_id: str
+    parent_branch_id: Optional[str] = None
+    branch_point_index: int
+    message_count: int = Field(
+        description="Number of preserved messages in this branch"
+    )
+    associated_snapshot_id: Optional[str] = None
+    created_by_user_id: Optional[str] = None
+    created_by_username: Optional[str] = None
+    created_at: datetime
+
+
+class ConversationBranchPointInfo(BaseModel):
+    """Info about branches available at a specific branch point index."""
+
+    branch_point_index: int
+    branches: List[ConversationBranchSummary]
+    active_branch_id: Optional[str] = None
+
+
+class CreateConversationBranchRequest(BaseModel):
+    """Request to create a new branch by editing a message."""
+
+    from_message_index: int = Field(
+        description="0-based index of the message being edited"
+    )
+    auto_snapshot: bool = Field(
+        default=True,
+        description="Whether to auto-create a UserSpace snapshot before branching (workspace chats only)",
+    )
+
+
+class SwitchConversationBranchRequest(BaseModel):
+    """Request to switch to a different branch."""
+
+    branch_id: str = Field(description="ID of the branch to switch to")
 
 
 class ConversationResponse(BaseModel):
@@ -2191,6 +2259,7 @@ class ConversationResponse(BaseModel):
     messages: List[ChatMessage]
     total_tokens: int
     active_task_id: Optional[str] = None
+    active_branch_id: Optional[str] = None
     tool_output_mode: ToolOutputMode = Field(default=ToolOutputMode.DEFAULT)
     created_at: datetime
     updated_at: datetime

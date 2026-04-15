@@ -1641,6 +1641,51 @@ export const api = {
   },
 
   /**
+   * List branch points for a conversation (branches grouped by message index).
+   */
+  async getConversationBranchPoints(conversationId: string, workspaceId?: string): Promise<import('@/types').ConversationBranchPointInfo[]> {
+    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/branch-points`, workspaceId));
+    return handleResponse<import('@/types').ConversationBranchPointInfo[]>(response);
+  },
+
+  /**
+   * Create a conversation branch at a message edit point.
+   */
+  async createConversationBranch(conversationId: string, request: import('@/types').CreateConversationBranchRequest, workspaceId?: string): Promise<import('@/types').ConversationBranchSummary> {
+    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/branches`, workspaceId), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<import('@/types').ConversationBranchSummary>(response);
+  },
+
+  /**
+   * Switch to a different conversation branch.
+   */
+  async switchConversationBranch(conversationId: string, branchId: string, workspaceId?: string): Promise<Conversation> {
+    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/branches/switch`, workspaceId), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ branch_id: branchId }),
+    });
+    return handleResponse<Conversation>(response);
+  },
+
+  /**
+   * Delete a conversation branch.
+   */
+  async deleteConversationBranch(conversationId: string, branchId: string, workspaceId?: string): Promise<void> {
+    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/branches/${branchId}`, workspaceId), {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(data.detail || 'Delete failed', response.status, data.detail);
+    }
+  },
+
+  /**
    * Get conversation members
    */
   async getConversationMembers(conversationId: string): Promise<ConversationMember[]> {
