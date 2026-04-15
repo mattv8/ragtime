@@ -1779,9 +1779,6 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   );
 })
 
-// Reasoning visibility preference stored in localStorage
-type ReasoningVisibility = 'compact' | 'expanded' | 'hidden';
-
 // Consolidated streaming content - groups content events between tool calls
 // This avoids re-rendering markdown for every token and dramatically improves performance
 interface StreamingSegment {
@@ -1816,7 +1813,7 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
   isComplete: boolean;
   parts?: ReasoningPart[];
   toolCalls?: ActiveToolCall[];
-  visibility?: ReasoningVisibility;
+  visibility?: 'compact' | 'expanded' | 'hidden';
   workspaceId?: string;
   conversationId?: string;
   onOpenWorkspaceFile?: (path: string) => void;
@@ -2033,14 +2030,12 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
 const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
   segment,
   showToolCalls,
-  reasoningVisibility,
   workspaceId,
   conversationId,
   onOpenWorkspaceFile,
 }: {
   segment: StreamingSegment;
   showToolCalls: boolean;
-  reasoningVisibility: ReasoningVisibility;
   workspaceId?: string;
   conversationId?: string;
   onOpenWorkspaceFile?: (path: string) => void;
@@ -2052,7 +2047,6 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
         isComplete={!!segment.isComplete}
         parts={segment.reasoningParts}
         toolCalls={segment.embeddedToolCalls}
-        visibility={reasoningVisibility}
         workspaceId={workspaceId}
         conversationId={conversationId}
         onOpenWorkspaceFile={onOpenWorkspaceFile}
@@ -2261,10 +2255,6 @@ export function ChatPanel({
   const [showToolCalls, setShowToolCalls] = useState(() => {
     const saved = localStorage.getItem('chat-show-tool-calls');
     return saved !== null ? saved === 'true' : true;
-  });
-  const [reasoningVisibility, setReasoningVisibility] = useState<ReasoningVisibility>(() => {
-    const saved = localStorage.getItem('chat-reasoning-visibility');
-    return (saved === 'compact' || saved === 'expanded' || saved === 'hidden') ? saved : 'compact';
   });
   const [lastSentMessage, setLastSentMessage] = useState<string>('');
   const [isConnectionError, setIsConnectionError] = useState(false);
@@ -3101,11 +3091,6 @@ export function ChatPanel({
   useEffect(() => {
     localStorage.setItem('chat-show-tool-calls', showToolCalls.toString());
   }, [showToolCalls]);
-
-  // Save reasoning visibility preference to localStorage
-  useEffect(() => {
-    localStorage.setItem('chat-reasoning-visibility', reasoningVisibility);
-  }, [reasoningVisibility]);
 
   // Refresh available models once on mount (stable trigger, independent of model-fetch identity)
   useEffect(() => {
@@ -4921,19 +4906,6 @@ export function ChatPanel({
                     onToggleToolCalls={setShowToolCalls}
                   />
                 )}
-                <button
-                  className={`btn btn-secondary btn-sm btn-icon reasoning-visibility-toggle reasoning-visibility-${reasoningVisibility}`}
-                  onClick={() => {
-                    const next: ReasoningVisibility =
-                      reasoningVisibility === 'compact' ? 'expanded'
-                      : reasoningVisibility === 'expanded' ? 'hidden'
-                      : 'compact';
-                    setReasoningVisibility(next);
-                  }}
-                  title={`Thinking: ${reasoningVisibility} (click to cycle)`}
-                >
-                  <BrainCircuit size={14} />
-                </button>
                 <ModelSelector
                   models={availableModels}
                   selectedModelId={(() => {
@@ -5078,7 +5050,6 @@ export function ChatPanel({
                                         isComplete={true}
                                         parts={pendingReasoningParts.length > 0 ? pendingReasoningParts : undefined}
                                         toolCalls={pendingReasoningTools.length > 0 ? pendingReasoningTools : undefined}
-                                        visibility={reasoningVisibility}
                                         workspaceId={workspaceId}
                                         conversationId={activeConversation.id}
                                         onOpenWorkspaceFile={onOpenWorkspaceFile}
@@ -5218,7 +5189,6 @@ export function ChatPanel({
                             key={`segment-${idx}-${segment.type}`}
                             segment={segment}
                             showToolCalls={showToolCalls}
-                            reasoningVisibility={reasoningVisibility}
                             workspaceId={workspaceId}
                             conversationId={activeConversation.id}
                             onOpenWorkspaceFile={onOpenWorkspaceFile}
