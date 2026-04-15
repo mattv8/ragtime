@@ -9520,15 +9520,27 @@ async def create_conversation_branch(
     associated_snapshot_id: Optional[str] = None
     if request.auto_snapshot and workspace_id:
         try:
-            snapshot = await userspace_service.create_snapshot(
+            should_create_snapshot = await userspace_service.should_create_snapshot_for_workspace_chat_branch(
                 workspace_id,
                 user.id,
-                message=f"Auto-snapshot before chat branch at message {request.from_message_index}",
-                auto_sync_to_scm=False,
             )
-            associated_snapshot_id = snapshot.id
         except Exception as e:
-            logger.warning(f"Failed to auto-create snapshot for branch: {e}")
+            logger.warning(
+                f"Failed to determine whether chat branch auto-snapshot is needed: {e}"
+            )
+            should_create_snapshot = True
+
+        if should_create_snapshot:
+            try:
+                snapshot = await userspace_service.create_snapshot(
+                    workspace_id,
+                    user.id,
+                    message=f"Auto-snapshot before chat branch at message {request.from_message_index}",
+                    auto_sync_to_scm=False,
+                )
+                associated_snapshot_id = snapshot.id
+            except Exception as e:
+                logger.warning(f"Failed to auto-create snapshot for branch: {e}")
 
     branch = await repository.create_conversation_branch(
         conversation_id=conversation_id,

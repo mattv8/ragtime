@@ -9398,6 +9398,41 @@ class UserSpaceService:
 
         return self._parse_git_status_changed_file_paths(status_result.stdout)
 
+    async def should_create_snapshot_for_workspace_chat_branch(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> bool:
+        """Return whether a workspace chat branch should create an auto snapshot.
+
+        Preserve the existing behavior unless we can prove there is a current
+        snapshot cursor and the workspace has no user-visible changes relative
+        to that snapshot.
+        """
+        await self._enforce_workspace_access(workspace_id, user_id)
+        db = await get_db()
+        cursor_rows = await db.query_raw(
+            f"""
+            SELECT current_snapshot_id
+            FROM workspaces
+            WHERE id = {self._sql_quote(workspace_id)}
+            LIMIT 1
+            """
+        )
+        current_snapshot_id = (
+            str(cursor_rows[0].get("current_snapshot_id"))
+            if cursor_rows and cursor_rows[0].get("current_snapshot_id")
+            else None
+        )
+        if not current_snapshot_id:
+            return True
+
+        changed_file_paths = await self.list_workspace_changed_file_paths(
+            workspace_id,
+            user_id,
+        )
+        return bool(changed_file_paths)
+
     async def list_workspace_changed_file_acknowledgements(
         self,
         workspace_id: str,
@@ -11243,6 +11278,15 @@ class UserSpaceService:
         )
 
         async with self._snapshot_operation_semaphore:
+            await db.execute_raw(
+                f"""
+                UPDATE conversation_branches
+                SET associated_snapshot_id = NULL,
+                    updated_at = NOW()
+                WHERE associated_snapshot_id = {self._sql_quote(snapshot_id)}
+                """
+            )
+
             # Delete the snapshot record.
             await db.execute_raw(
                 f"""

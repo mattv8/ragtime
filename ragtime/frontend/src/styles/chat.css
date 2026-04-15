@@ -879,6 +879,11 @@
 .chat-message-actions-spacer {
   flex: 1;
 }
+.chat-message-hover-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
 .chat-action-icon-btn {
   background: none;
   border: none;
@@ -893,6 +898,17 @@
 .chat-action-icon-btn:hover {
   color: var(--color-text);
   background: var(--color-surface-hover);
+}
+.chat-branch-wrapper-has-branches .chat-message-hover-actions {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+}
+.chat-branch-wrapper-has-branches:hover .chat-message-hover-actions,
+.chat-branch-wrapper-has-branches:focus-within .chat-message-hover-actions,
+.chat-branch-wrapper-has-branches .chat-message-actions.visible .chat-message-hover-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* Branch navigation indicator */
@@ -932,10 +948,6 @@
   font-variant-numeric: tabular-nums;
   min-width: 24px;
   text-align: center;
-}
-.chat-branch-nav-snapshot-icon {
-  margin-left: 2px;
-  opacity: 0.6;
 }
 
 .chat-branch-wrapper {

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { diffLines } from 'diff';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, GitBranch, Link } from 'lucide-react';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchPointInfo } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
@@ -5138,7 +5138,7 @@ export function ChatPanel({
                     const hasBranches = bp && bp.branches.length > 0;
                     const msgKey = `msg-${idx}`;
                     return (
-                    <div key={msgKey} className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}`}>
+                    <div key={msgKey} className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}${hasBranches ? ' chat-branch-wrapper-has-branches' : ''}`}>
                     <div className={`chat-message chat-message-${msg.role}`}>
                       <div className="chat-message-content" key={editingMessageIdx === idx ? 'editing' : 'viewing'}>
                         {editingMessageIdx === idx ? (
@@ -5358,9 +5358,6 @@ export function ChatPanel({
                             <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx < allOptions.length - 1 && !branchSwitching) switchBranch(allOptions[currentOptionIdx + 1].id); }} disabled={currentOptionIdx >= allOptions.length - 1 || branchSwitching} aria-label="Next branch">
                               <ChevronRight size={12} />
                             </button>
-                            {bp.branches.some(b => b.associated_snapshot_id) && (
-                              <span className="chat-branch-nav-snapshot-icon" title="Has associated code snapshot"><GitBranch size={10} /></span>
-                            )}
                           </span>
                         );
                       })() : null;
@@ -5410,7 +5407,7 @@ export function ChatPanel({
                                 </div>
                               </>
                             ) : (
-                              <>
+                              <span className="chat-message-hover-actions">
                                 <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
                                   {isCopied ? <Check size={12} /> : <Copy size={12} />}
                                 </button>
@@ -5419,7 +5416,7 @@ export function ChatPanel({
                                     <Pencil size={12} />
                                   </button>
                                 )}
-                              </>
+                              </span>
                             )}
                             {branchNav}
                           </div>
@@ -5434,19 +5431,21 @@ export function ChatPanel({
                         return (
                           <>
                             <div className="chat-message-actions chat-message-actions-left">
-                              <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
-                                {isCopied ? <Check size={12} /> : <Copy size={12} />}
-                              </button>
-                              {!isStreaming && !readOnly && (
-                                <button className="chat-action-icon-btn" onClick={() => retryFromMessage(idx)} title="Retry">
-                                  <RefreshCw size={12} />
+                              <span className="chat-message-hover-actions">
+                                <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
+                                  {isCopied ? <Check size={12} /> : <Copy size={12} />}
                                 </button>
-                              )}
-                              {showPromptDebugButton && (
-                                <button className="chat-action-icon-btn" onClick={() => openPromptDebugForAssistantMessage(idx)} title="Open prompt debug for this assistant reply">
-                                  <Bug size={12} />
-                                </button>
-                              )}
+                                {!isStreaming && !readOnly && (
+                                  <button className="chat-action-icon-btn" onClick={() => retryFromMessage(idx)} title="Retry">
+                                    <RefreshCw size={12} />
+                                  </button>
+                                )}
+                                {showPromptDebugButton && (
+                                  <button className="chat-action-icon-btn" onClick={() => openPromptDebugForAssistantMessage(idx)} title="Open prompt debug for this assistant reply">
+                                    <Bug size={12} />
+                                  </button>
+                                )}
+                              </span>
                               {branchNav && <span className="chat-message-actions-spacer" />}
                               {branchNav}
                             </div>

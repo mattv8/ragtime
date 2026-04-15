@@ -1321,6 +1321,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setActiveWorkspaceChatSnapshot(null);
   }, [activeWorkspaceId]);
 
+  useEffect(() => {
+    if (
+      !branchRestoreSnapshotId
+      || !activeWorkspaceId
+      || snapshotsLoadedForWorkspace !== activeWorkspaceId
+    ) {
+      return;
+    }
+    if (!snapshots.some((snapshot) => snapshot.id === branchRestoreSnapshotId)) {
+      setBranchRestoreSnapshotId(null);
+    }
+  }, [activeWorkspaceId, branchRestoreSnapshotId, snapshots, snapshotsLoadedForWorkspace]);
+
   const handleConversationStateChange = useCallback((hasLive: boolean, hasInterrupted: boolean) => {
     if (!activeWorkspaceId) return;
     // The active workspace should reflect the live chat state from ChatPanel
@@ -2766,6 +2779,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setSnapshotBranches(timeline.branches);
       setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
       setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
+      setSnapshotsLoadedForWorkspace(activeWorkspaceId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete snapshot');
     } finally {
