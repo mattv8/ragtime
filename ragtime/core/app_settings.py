@@ -225,6 +225,9 @@ class SettingsCache:
                 "snapshot_retention_days": getattr(
                     prisma_settings, "snapshotRetentionDays", 0
                 ),
+                "snapshot_stale_branch_threshold": getattr(
+                    prisma_settings, "snapshotStaleBranchThreshold", 20
+                ),
                 # User Space configuration
                 "userspace_preview_sandbox_flags": userspace_preview_sandbox_flags,
             }
@@ -310,6 +313,7 @@ class SettingsCache:
                 "ocr_concurrency_limit": 1,
                 "ollama_embedding_timeout_seconds": 180,
                 "snapshot_retention_days": 0,
+                "snapshot_stale_branch_threshold": 20,
                 # User Space configuration
                 "userspace_preview_sandbox_flags": list(
                     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS

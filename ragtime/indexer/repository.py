@@ -920,6 +920,7 @@ class IndexerRepository:
             ),
             # User Space configuration
             snapshot_retention_days=getattr(settings, "snapshotRetentionDays", 0),
+            snapshot_stale_branch_threshold=getattr(settings, "snapshotStaleBranchThreshold", 20),
             userspace_preview_sandbox_flags=userspace_preview_sandbox_flags,
             updated_at=settings.updatedAt,
         )
@@ -1011,6 +1012,7 @@ class IndexerRepository:
             "ollama_embedding_timeout_seconds": "ollamaEmbeddingTimeoutSeconds",
             # User Space configuration
             "snapshot_retention_days": "snapshotRetentionDays",
+            "snapshot_stale_branch_threshold": "snapshotStaleBranchThreshold",
             "userspace_preview_sandbox_flags": "userspacePreviewSandboxFlags",
         }
 

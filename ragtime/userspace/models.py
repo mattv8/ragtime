@@ -495,6 +495,8 @@ class UserSpaceSnapshotBranch(BaseModel):
     base_snapshot_id: str | None = None
     branched_from_snapshot_id: str | None = None
     is_active: bool = False
+    commits_behind: int = 0
+    is_stale: bool = False
     created_at: datetime
 
 
@@ -526,6 +528,10 @@ class CreateSnapshotBranchRequest(BaseModel):
         max_length=100,
         description="Branch name; auto-generated if omitted",
     )
+
+
+class PromoteBranchToMainRequest(BaseModel):
+    branch_id: str = Field(min_length=1)
 
 
 class RestoreSnapshotResponse(BaseModel):

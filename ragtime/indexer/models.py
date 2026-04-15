@@ -781,6 +781,12 @@ class AppSettings(BaseModel):
         ge=0,
         description="Snapshot retention in days (0 = unlimited). Snapshots older than this are hidden and cannot be restored.",
     )
+    snapshot_stale_branch_threshold: int = Field(
+        default=20,
+        ge=1,
+        le=50,
+        description="Hide branches whose head is this many or more commits behind the active branch head.",
+    )
     userspace_preview_sandbox_flags: List[str] = Field(
         default_factory=lambda: list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
         description=(
@@ -1081,6 +1087,12 @@ class UpdateSettingsRequest(BaseModel):
         default=None,
         ge=0,
         description="Snapshot retention in days (0 = unlimited).",
+    )
+    snapshot_stale_branch_threshold: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=50,
+        description="Hide branches whose head is N+ commits behind the active head.",
     )
     userspace_preview_sandbox_flags: Optional[List[str]] = Field(
         default=None,

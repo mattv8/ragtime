@@ -567,6 +567,7 @@ export interface AppSettings {
   query_timeout: number;
   enable_write_ops: boolean;
   snapshot_retention_days: number;
+  snapshot_stale_branch_threshold: number;
   userspace_preview_sandbox_flags: string[];
   updated_at: string | null;
 }
@@ -649,6 +650,7 @@ export interface UpdateSettingsRequest {
   query_timeout?: number;
   enable_write_ops?: boolean;
   snapshot_retention_days?: number;
+  snapshot_stale_branch_threshold?: number;
   userspace_preview_sandbox_flags?: string[];
 }
 
@@ -2172,6 +2174,8 @@ export interface UserSpaceSnapshotBranch {
   base_snapshot_id?: string | null;
   branched_from_snapshot_id?: string | null;
   is_active: boolean;
+  commits_behind: number;
+  is_stale: boolean;
   created_at: string;
 }
 
@@ -2199,6 +2203,10 @@ export interface SwitchUserSpaceSnapshotBranchRequest {
 
 export interface CreateUserSpaceSnapshotBranchRequest {
   name?: string | null;
+}
+
+export interface PromoteUserSpaceSnapshotBranchRequest {
+  branch_id: string;
 }
 
 export interface RestoreUserSpaceSnapshotResponse {

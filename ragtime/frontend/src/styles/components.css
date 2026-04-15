@@ -2052,6 +2052,34 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.userspace-snapshot-branch-promote {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+span:hover > .userspace-snapshot-branch-promote {
+  opacity: 1;
+}
+
+.userspace-snapshot-branch-promote:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.userspace-snapshot-branch-promote:disabled {
+  opacity: 0;
+  cursor: wait;
+}
+
 .userspace-snapshot-graph-row {
   display: flex;
   align-items: center;

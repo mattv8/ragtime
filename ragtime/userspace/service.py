@@ -10248,6 +10248,11 @@ class UserSpaceService:
                         for branch in branches
                     )
 
+        # Compute commits_behind + is_stale for each branch
+        self._annotate_branch_staleness(
+            branches, snapshots, current_snapshot_id, current_branch_id
+        )
+
         return UserSpaceSnapshotTimelineResponse(
             workspace_id=workspace_id,
             current_snapshot_id=current_snapshot_id,
@@ -10257,6 +10262,66 @@ class UserSpaceService:
             snapshots=snapshots,
             branches=branches,
         )
+
+    def _annotate_branch_staleness(
+        self,
+        branches: list[UserSpaceSnapshotBranch],
+        snapshots: list[UserSpaceSnapshot],
+        current_snapshot_id: str | None,
+        current_branch_id: str | None,
+    ) -> None:
+        """Compute ``commits_behind`` and ``is_stale`` for each branch in-place.
+
+        A branch's "distance" is the number of snapshots on the active branch
+        between the active head and the point where the branch forked (its
+        ``branched_from_snapshot_id``).  The active branch itself always has
+        ``commits_behind=0``.
+        """
+        if not current_snapshot_id or not current_branch_id:
+            return
+
+        settings = SettingsCache.get_instance()._settings or {}
+        threshold = int(settings.get("snapshot_stale_branch_threshold", 20))
+        if threshold < 1:
+            threshold = 20
+
+        # Build ordered ancestor chain from the current head snapshot backward.
+        snapshot_by_id = {s.id: s for s in snapshots}
+        ancestor_depth: dict[str, int] = {}
+        cursor = current_snapshot_id
+        depth = 0
+        while cursor:
+            ancestor_depth[cursor] = depth
+            parent = snapshot_by_id.get(cursor)
+            cursor = parent.parent_snapshot_id if parent else None
+            depth += 1
+
+        for branch in branches:
+            if branch.id == current_branch_id:
+                branch.commits_behind = 0
+                branch.is_stale = False
+                continue
+
+            fork_id = branch.branched_from_snapshot_id or branch.base_snapshot_id
+            if fork_id and fork_id in ancestor_depth:
+                branch.commits_behind = ancestor_depth[fork_id]
+            else:
+                # Fork point not on the active ancestor chain; use the branch
+                # head's commit hash position if it appears in the chain,
+                # otherwise fall back to total chain length.
+                branch_head_ids = [
+                    s.id for s in snapshots if s.branch_id == branch.id
+                ]
+                found = False
+                for sid in branch_head_ids:
+                    if sid in ancestor_depth:
+                        branch.commits_behind = ancestor_depth[sid]
+                        found = True
+                        break
+                if not found:
+                    branch.commits_behind = depth
+
+            branch.is_stale = branch.commits_behind >= threshold
 
     async def list_snapshots(
         self, workspace_id: str, user_id: str
@@ -10936,6 +11001,106 @@ class UserSpaceService:
             await self._activate_branch(workspace_id, new_branch_id)
             await self._set_current_snapshot_cursor(
                 workspace_id, new_snapshot_id, new_branch_id
+            )
+
+        await self._touch_workspace(workspace_id)
+        return await self.get_snapshot_timeline(workspace_id, user_id)
+
+    async def promote_branch_to_main(
+        self,
+        workspace_id: str,
+        branch_id: str,
+        user_id: str,
+    ) -> UserSpaceSnapshotTimelineResponse:
+        """Promote a branch to 'Main' by swapping names with the current Main branch."""
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+        await self._ensure_snapshot_timeline(workspace_id, user_id)
+        db = await get_db()
+
+        # Load the branch to promote
+        target_rows = await db.query_raw(
+            f"""
+            SELECT id, name, git_ref_name
+            FROM userspace_snapshot_branches
+            WHERE workspace_id = {self._sql_quote(workspace_id)}
+              AND id = {self._sql_quote(branch_id)}
+            LIMIT 1
+            """
+        )
+        if not target_rows:
+            raise HTTPException(status_code=404, detail="Branch not found")
+        target = target_rows[0]
+        old_target_name = str(target.get("name") or "")
+
+        if old_target_name == "Main":
+            raise HTTPException(
+                status_code=400, detail="Branch is already Main"
+            )
+
+        # Find the current Main branch (by name)
+        main_rows = await db.query_raw(
+            f"""
+            SELECT id, name
+            FROM userspace_snapshot_branches
+            WHERE workspace_id = {self._sql_quote(workspace_id)}
+              AND name = 'Main'
+            LIMIT 1
+            """
+        )
+
+        async with self._snapshot_operation_semaphore:
+            # Rename old Main to the promoted branch's former name
+            if main_rows:
+                old_main_id = str(main_rows[0].get("id") or "")
+                demoted_name = old_target_name if old_target_name else "Former Main"
+                await db.execute_raw(
+                    f"""
+                    UPDATE userspace_snapshot_branches
+                    SET name = {self._sql_quote(demoted_name)},
+                        updated_at = NOW()
+                    WHERE workspace_id = {self._sql_quote(workspace_id)}
+                      AND id = {self._sql_quote(old_main_id)}
+                    """
+                )
+
+            # Rename promoted branch to Main
+            await db.execute_raw(
+                f"""
+                UPDATE userspace_snapshot_branches
+                SET name = 'Main',
+                    updated_at = NOW()
+                WHERE workspace_id = {self._sql_quote(workspace_id)}
+                  AND id = {self._sql_quote(branch_id)}
+                """
+            )
+
+            # Make the promoted branch active and switch to it
+            await self._activate_branch(workspace_id, branch_id)
+            # Set cursor to the promoted branch's head
+            head_rows = await db.query_raw(
+                f"""
+                SELECT s.id
+                FROM userspace_snapshots s
+                WHERE s.workspace_id = {self._sql_quote(workspace_id)}
+                  AND s.branch_id = {self._sql_quote(branch_id)}
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM userspace_snapshots child
+                    WHERE child.workspace_id = s.workspace_id
+                      AND child.branch_id = s.branch_id
+                      AND child.parent_snapshot_id = s.id
+                  )
+                ORDER BY s.created_at DESC, s.id DESC
+                LIMIT 1
+                """
+            )
+            head_snapshot_id = (
+                str(head_rows[0].get("id")) if head_rows else None
+            )
+            await self._set_current_snapshot_cursor(
+                workspace_id, head_snapshot_id, branch_id
             )
 
         await self._touch_workspace(workspace_id)

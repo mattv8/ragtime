@@ -48,6 +48,7 @@ from ragtime.userspace.models import (
     MountableSource,
     MountSourceAffectedWorkspacesResponse,
     PaginatedWorkspacesResponse,
+    PromoteBranchToMainRequest,
     RestoreSnapshotResponse,
     SqliteImportResponse,
     SwitchSnapshotBranchRequest,
@@ -1442,6 +1443,22 @@ async def create_snapshot_branch(
 ):
     result = await userspace_service.create_snapshot_branch(
         workspace_id, user.id, name=request.name
+    )
+    await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
+    return result
+
+
+@router.post(
+    "/workspaces/{workspace_id}/snapshots/promote-branch",
+    response_model=UserSpaceSnapshotTimelineResponse,
+)
+async def promote_branch_to_main(
+    workspace_id: str,
+    request: PromoteBranchToMainRequest,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.promote_branch_to_main(
+        workspace_id, request.branch_id, user.id
     )
     await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
     return result

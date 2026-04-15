@@ -1628,6 +1628,30 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     }
   }, [effectiveUserSpacePreviewSandboxFlags]);
 
+  const [staleBranchSaving, setStaleBranchSaving] = useState(false);
+  const handleSaveStaleBranchThreshold = useCallback(async () => {
+    setStaleBranchSaving(true);
+    setSuccess(null);
+    setError(null);
+
+    try {
+      const updated = await api.updateSettings({
+        snapshot_stale_branch_threshold: formData.snapshot_stale_branch_threshold,
+      });
+      setSettings(updated);
+      setFormData((prev) => ({
+        ...prev,
+        snapshot_stale_branch_threshold: updated.snapshot_stale_branch_threshold,
+      }));
+      setSuccess('Stale branch threshold saved.');
+      setTimeout(() => setSuccess(null), 5000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save stale branch threshold');
+    } finally {
+      setStaleBranchSaving(false);
+    }
+  }, [formData.snapshot_stale_branch_threshold]);
+
 
   const getDisplayUrl = (path: string) => {
     const protocol = window.location.protocol;
@@ -3936,6 +3960,46 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
         <fieldset id="setting-userspace">
           <legend>User Space</legend>
+
+          <div>
+            <h4 style={{ margin: '0 0 8px' }}>Stale Branch Threshold</h4>
+            <p className="fieldset-help" style={{ marginBottom: 12 }}>
+              Branches that fall behind the active head by this many snapshots are hidden from the timeline.
+            </p>
+            <div className="form-group">
+              <label>Hide branches after N snapshots behind</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input
+                  type="range"
+                  min="1"
+                  max="50"
+                  step="1"
+                  style={{ flex: 1 }}
+                  value={formData.snapshot_stale_branch_threshold ?? 20}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      snapshot_stale_branch_threshold: parseInt(e.target.value, 10),
+                    })
+                  }
+                />
+                <span style={{ minWidth: '30px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                  {formData.snapshot_stale_branch_threshold ?? 20}
+                </span>
+              </div>
+              <p className="field-help">
+                Default: 20. Branches whose fork point is more than this many snapshots behind the current head will be hidden.
+              </p>
+              <button
+                type="button"
+                className="btn"
+                onClick={handleSaveStaleBranchThreshold}
+                disabled={staleBranchSaving}
+              >
+                {staleBranchSaving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
 
           <div>
             <h4 style={{ margin: '0 0 8px' }}>Preview Sandbox</h4>

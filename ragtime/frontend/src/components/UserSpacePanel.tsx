@@ -1019,7 +1019,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         branch,
         snapshots: grouped.get(branch.id) ?? [],
       }))
-      .filter((group) => group.snapshots.length > 0 || group.branch.id === currentSnapshotBranchId);
+      .filter((group) => {
+        // Always keep the current active branch
+        if (group.branch.id === currentSnapshotBranchId) return true;
+        // Hide empty branches
+        if (group.snapshots.length === 0) return false;
+        // Hide stale branches
+        if (group.branch.is_stale) return false;
+        return true;
+      });
   }, [snapshotBranches, snapshots, currentSnapshotBranchId]);
 
   const snapshotTimelineRows = useMemo(() => {
@@ -2696,6 +2704,22 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create branch');
+    } finally {
+      setNavigatingSnapshots(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace]);
+
+  const handlePromoteBranchToMain = useCallback(async (branchId: string) => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setNavigatingSnapshots(true);
+    try {
+      const timeline = await api.promoteBranchToMain(activeWorkspaceId, { branch_id: branchId });
+      setSnapshots(timeline.snapshots);
+      setSnapshotBranches(timeline.branches);
+      setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
+      setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to promote branch to main');
     } finally {
       setNavigatingSnapshots(false);
     }
@@ -5637,24 +5661,38 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                     <div className="userspace-snapshot-graph-legend">
                       {snapshotsByBranch.map(({ branch, snapshots: branchSnapshots }) => {
                         const branchColor = snapshotBranchColorById.get(branch.id);
+                        const isMainBranch = branch.name === 'Main';
                         return (
-                          <button
-                            key={`legend-${branch.id}`}
-                            type="button"
-                            className={`userspace-snapshot-branch-legend ${currentSnapshotBranchId === branch.id ? 'active' : ''}`}
-                            onClick={() => handleSwitchSnapshotBranch(branch.id)}
-                            disabled={!canEditWorkspace || snapshotUiLocked}
-                            title={branch.git_ref_name}
-                            style={{ '--userspace-branch-color': branchColor } as CSSProperties}
-                          >
-                            <span className="userspace-snapshot-branch-legend-name">{branch.name}</span>
-                            <span className="userspace-snapshot-branch-legend-count">{branchSnapshots.length}</span>
-                            {branch.branched_from_snapshot_id && (
-                              <span className="userspace-snapshot-branch-legend-fork">
-                                from {branch.branched_from_snapshot_id.slice(0, 8)}
-                              </span>
+                          <span key={`legend-wrap-${branch.id}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}>
+                            <button
+                              key={`legend-${branch.id}`}
+                              type="button"
+                              className={`userspace-snapshot-branch-legend ${currentSnapshotBranchId === branch.id ? 'active' : ''}`}
+                              onClick={() => handleSwitchSnapshotBranch(branch.id)}
+                              disabled={!canEditWorkspace || snapshotUiLocked}
+                              title={branch.git_ref_name}
+                              style={{ '--userspace-branch-color': branchColor } as CSSProperties}
+                            >
+                              <span className="userspace-snapshot-branch-legend-name">{branch.name}</span>
+                              <span className="userspace-snapshot-branch-legend-count">{branchSnapshots.length}</span>
+                              {branch.branched_from_snapshot_id && (
+                                <span className="userspace-snapshot-branch-legend-fork">
+                                  from {branch.branched_from_snapshot_id.slice(0, 8)}
+                                </span>
+                              )}
+                            </button>
+                            {!isMainBranch && canEditWorkspace && (
+                              <button
+                                type="button"
+                                className="userspace-snapshot-branch-promote"
+                                onClick={() => handlePromoteBranchToMain(branch.id)}
+                                disabled={snapshotUiLocked}
+                                title="Promote this branch to Main"
+                              >
+                                <ArrowRight size={10} />
+                              </button>
                             )}
-                          </button>
+                          </span>
                         );
                       })}
                       <button
