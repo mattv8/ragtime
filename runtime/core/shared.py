@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from fastapi import HTTPException
+from .workspace_ops import normalize_runtime_file_path
 
 RuntimeSessionState = Literal["starting", "running", "stopping", "stopped", "error"]
 
@@ -33,11 +33,11 @@ SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
 EntrypointState = Literal["missing", "invalid", "valid"]
 
 # Framework names recognised by the runtime auto-install and prompt nudge
-# layers.  Keep alphabetically sorted.
+# layers. Keep alphabetically sorted.
 #
 # This is a COPY of KNOWN_FRAMEWORKS from ragtime/core/entrypoint_status.py
-# (the canonical source).  The two containers cannot cross-import, so this
-# must be kept manually in sync.  The ragtime-side set is derived from
+# (the canonical source). The two containers cannot cross-import, so this
+# must be kept manually in sync. The ragtime-side set is derived from
 # FRAMEWORK_REQUIRED_PACKAGES keys + platform extras (custom, node, static).
 KNOWN_FRAMEWORKS: frozenset[str] = frozenset(
     {
@@ -187,25 +187,8 @@ def normalize_file_path(
     Raises:
         HTTPException: On invalid or traversal-attempting paths.
     """
-    normalized = file_path.replace("\\", "/").strip().lstrip("/")
-    path = Path(normalized)
-    if not normalized or normalized == ".." or any(part == ".." for part in path.parts):
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    clean = "/".join(path.parts)
-    if not clean or clean == ".":
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    if check_reserved and clean.startswith(".ragtime/"):
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    if enforce_sqlite_managed:
-        suffix = Path(clean).suffix.lower()
-        if suffix in SQLITE_FILE_EXTENSIONS and not clean.startswith(
-            SQLITE_MANAGED_DIR_PREFIX
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "SQLite persistence files must be managed under .ragtime/db/. "
-                    "Use paths like .ragtime/db/app.sqlite3."
-                ),
-            )
-    return clean
+    return normalize_runtime_file_path(
+        file_path,
+        check_reserved=check_reserved,
+        enforce_sqlite_managed=enforce_sqlite_managed,
+    )

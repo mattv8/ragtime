@@ -35,7 +35,7 @@ Last updated: 2026-04-13 (codebase-scanned; concise agent-focused)
 ## Runtime + Bootstrap Conventions
 
 - Runtime bootstrap config is workspace-local: `.ragtime/runtime-bootstrap.json`.
-- Bootstrap execution stamp is `.ragtime/.runtime-bootstrap.done` (`runtime/shared.py`).
+- Bootstrap execution stamp is `.ragtime/.runtime-bootstrap.done` (`runtime/core/shared.py`).
 - Default bootstrap template is managed in `ragtime/userspace/service.py` (`_default_runtime_bootstrap_config`, template version 5). Auto-update logic includes `_is_legacy_default_bootstrap` detection for configs missing `managed_by`/`template_version`.
 - Worker startup reads bootstrap config and reruns commands when config digest changes (`runtime/worker/service.py`). Digest includes file content of `watch_paths`.
 - Bootstrap retry: if devserver exits with "command not found" patterns, the worker invalidates the stamp and retries on next start (`_should_retry_bootstrap_after_exit`).
@@ -52,10 +52,10 @@ Last updated: 2026-04-13 (codebase-scanned; concise agent-focused)
 
 ## Entrypoint Status + Framework Lock-In
 
-- Canonical entrypoint parsing lives in `runtime/shared.py` (`parse_entrypoint_config`, `EntrypointStatus`).
+- Canonical entrypoint parsing lives in `runtime/core/shared.py` (`parse_entrypoint_config`, `EntrypointStatus`).
 - Both the runtime worker (`runtime/worker/service.py`) and the ragtime prompt builder (`ragtime/rag/components.py`) use this shared parser, so the definition of valid/invalid/missing is always consistent.
 - `EntrypointStatus.state` is one of: `missing` (file absent), `invalid` (present but no command or malformed), `valid` (has a usable command).
-- `EntrypointStatus.framework_known` indicates whether the framework value is in the recognised set (`KNOWN_FRAMEWORKS` in `runtime/shared.py`).
+- `EntrypointStatus.framework_known` indicates whether the framework value is in the recognised set (`KNOWN_FRAMEWORKS` in `runtime/core/shared.py`).
 - `UserSpaceService.is_default_static_entrypoint()` detects the auto-seeded default (`python3 -m http.server`, framework `static`). The prompt layer treats this as equivalent to missing so the agent is nudged to choose a real framework.
 
 ### Dynamic System Prompt Behaviour
@@ -180,4 +180,4 @@ Modifying `_sync_usr_for_chroot`, `_sync_system_dirs_for_chroot`, `provision_roo
 ## Sources Used for This Guide
 
 - Conventions search requested by user found `README.md` only (no `AGENTS.md`/`copilot-instructions.md` in repo).
-- Primary implementation references: `ragtime/main.py`, `ragtime/userspace/runtime_routes.py`, `ragtime/userspace/runtime_service.py`, `ragtime/userspace/service.py`, `runtime/main.py`, `runtime/shared.py`, `runtime/worker/service.py`, `runtime/worker/sandbox.py`, `runtime/worker/api.py`.
+- Primary implementation references: `ragtime/main.py`, `ragtime/userspace/runtime_routes.py`, `ragtime/userspace/runtime_service.py`, `ragtime/userspace/service.py`, `runtime/main.py`, `runtime/core/shared.py`, `runtime/worker/service.py`, `runtime/worker/sandbox.py`, `runtime/worker/api.py`.

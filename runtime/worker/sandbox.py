@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Sequence
 
-from runtime.shared import has_cap_sys_admin
+from ..core.shared import has_cap_sys_admin
 
 logger = logging.getLogger(__name__)
 

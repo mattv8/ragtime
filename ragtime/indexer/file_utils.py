@@ -7,21 +7,15 @@ IndexerService (upload/git) and FilesystemIndexerService (local/SMB/NFS).
 
 import fnmatch
 import hashlib
-import os
 import re
-import shutil
-import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from ragtime.core.file_constants import (
-    BINARY_EXTENSIONS,
-    MINIFIED_PATTERNS,
-    PARSEABLE_DOCUMENT_EXTENSIONS,
-    UNPARSEABLE_BINARY_EXTENSIONS,
-)
+from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
+                                         PARSEABLE_DOCUMENT_EXTENSIONS,
+                                         UNPARSEABLE_BINARY_EXTENSIONS)
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -121,12 +115,11 @@ def compute_file_hash(file_path: Path, hash_algorithm: str = "sha256") -> str:
     Returns:
         Hex digest of the file hash
     """
-    h = hashlib.new(hash_algorithm)
-    with open(file_path, "rb") as f:
-        # Read in chunks to handle large files efficiently
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    hasher = hashlib.new(hash_algorithm)
+    with file_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8192), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def matches_pattern(path: str, patterns: List[str]) -> bool:
@@ -429,7 +422,7 @@ def collect_files_recursive(
     Returns:
         List of (file_path, size) tuples
     """
-    results = []
+    results: List[Tuple[Path, int]] = []
     all_excludes = list(exclude_patterns) + HARDCODED_EXCLUDES
 
     # Separate filename patterns (*.js) from path patterns (**/dir/**)

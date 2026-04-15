@@ -615,11 +615,19 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                   </span>
                 </div>
                 <div>{preview.summary}</div>
+                {preview.state_explanation && (
+                  <div className="userspace-muted" style={{ fontSize: 12, marginTop: 8 }}>
+                    {preview.state_explanation}
+                  </div>
+                )}
                 <div className="userspace-muted" style={{ fontSize: 12, marginTop: 8 }}>
-                  Local commit: {preview.local_commit_hash || 'none'}
+                  Workspace HEAD: {preview.workspace_head_commit_hash || preview.local_commit_hash || 'none'}
                 </div>
                 <div className="userspace-muted" style={{ fontSize: 12 }}>
-                  Remote commit: {preview.remote_commit_hash || 'none'}
+                  Remote HEAD: {preview.remote_head_commit_hash || preview.remote_commit_hash || 'none'}
+                </div>
+                <div className="userspace-muted" style={{ fontSize: 12 }}>
+                  Last synced remote: {preview.last_synced_remote_commit_hash || 'none'}
                 </div>
               </div>
 

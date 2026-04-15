@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -26,17 +27,29 @@ from runtime.manager.models import (RuntimeContentProbeRequest,
                                     RuntimeFileReadResponse,
                                     RuntimeScreenshotRequest,
                                     RuntimeScreenshotResponse,
+                                    RuntimeWorkspaceFileInfo,
+                                    RuntimeWorkspaceFileListResponse,
+                                    RuntimeWorkspaceGitCommandResponse,
+                                    RuntimeWorkspaceScmStatusResponse,
                                     WorkerHealthResponse,
                                     WorkerSessionResponse,
                                     WorkerStartSessionRequest)
-from runtime.shared import (RUNTIME_BOOTSTRAP_CONFIG_PATH,
-                            RUNTIME_BOOTSTRAP_STAMP_PATH, EntrypointStatus,
-                            RuntimeSessionState, normalize_file_path,
-                            parse_entrypoint_config)
 from runtime.worker.sandbox import (SANDBOX_WORKSPACE_MOUNT, SandboxSpec,
                                     cleanup_sandbox, ensure_sandbox_ready,
                                     get_sandbox_spec, materialize_mounts,
                                     sandbox_diagnostics, spawn_sandboxed)
+
+from ..core.shared import (RUNTIME_BOOTSTRAP_CONFIG_PATH,
+                           RUNTIME_BOOTSTRAP_STAMP_PATH, EntrypointStatus,
+                           RuntimeSessionState, normalize_file_path,
+                           parse_entrypoint_config)
+from ..core.workspace_ops import (PLATFORM_MANAGED_GITIGNORE_PATTERNS,
+                                  deduplicate_ancestor_paths,
+                                  list_mount_source_tree_entries,
+                                  list_workspace_tree_entries,
+                                  sync_scope_relative_paths,
+                                  workspace_mount_target_repo_relative_path,
+                                  workspace_path_matches_mount_prefix)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -260,6 +273,141 @@ class WorkerService:
         workspace_files.mkdir(parents=True, exist_ok=True)
         spec = get_sandbox_spec(workspace_id, workspace_root, workspace_files)
         return workspace_root, workspace_files, spec
+
+    @staticmethod
+    def _workspace_file_info(entry: Any) -> RuntimeWorkspaceFileInfo:
+        return RuntimeWorkspaceFileInfo(
+            path=str(entry.path),
+            size_bytes=int(entry.size_bytes),
+            updated_at=entry.updated_at,
+            entry_type=str(entry.entry_type),
+        )
+
+    async def _run_git_in_workspace_raw(
+        self,
+        workspace_id: str,
+        *,
+        args: list[str],
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, bytes, bytes]:
+        _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                *args,
+                cwd=str(workspace_files_path),
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await process.communicate()
+            return process.returncode if process.returncode is not None else 1, stdout_bytes, stderr_bytes
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Git binary not available in runtime worker",
+            ) from exc
+
+    async def list_workspace_files(
+        self,
+        workspace_id: str,
+        *,
+        include_dirs: bool = False,
+        workspace_mounts: list[dict[str, Any]] | None = None,
+    ) -> RuntimeWorkspaceFileListResponse:
+        _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
+        mount_specs = list(workspace_mounts or [])
+
+        base_entries = await asyncio.to_thread(
+            list_workspace_tree_entries,
+            workspace_files_path,
+            include_dirs=include_dirs,
+        )
+        mount_prefixes = deduplicate_ancestor_paths(
+            [
+                repo_rel
+                for spec in mount_specs
+                if (
+                    repo_rel := workspace_mount_target_repo_relative_path(
+                        str(spec.get("target_path", "") or "")
+                    )
+                )
+            ]
+        )
+        if mount_prefixes:
+            base_entries = [
+                entry
+                for entry in base_entries
+                if not any(
+                    workspace_path_matches_mount_prefix(entry.path, prefix)
+                    for prefix in mount_prefixes
+                )
+            ]
+
+        mount_entries = await asyncio.to_thread(
+            list_mount_source_tree_entries,
+            mount_specs,
+            include_dirs=include_dirs,
+        )
+        entries_by_path = {entry.path: entry for entry in base_entries}
+        for entry in mount_entries:
+            entries_by_path.setdefault(entry.path, entry)
+
+        return RuntimeWorkspaceFileListResponse(
+            files=[
+                self._workspace_file_info(entry)
+                for entry in sorted(entries_by_path.values(), key=lambda item: item.path)
+            ]
+        )
+
+    async def run_workspace_git_command(
+        self,
+        workspace_id: str,
+        *,
+        args: list[str],
+        env: dict[str, str] | None = None,
+    ) -> RuntimeWorkspaceGitCommandResponse:
+        returncode, stdout_bytes, stderr_bytes = await self._run_git_in_workspace_raw(
+            workspace_id,
+            args=args,
+            env=env,
+        )
+        return RuntimeWorkspaceGitCommandResponse(
+            returncode=returncode,
+            stdout_b64=base64.b64encode(stdout_bytes).decode("ascii"),
+            stderr_b64=base64.b64encode(stderr_bytes).decode("ascii"),
+        )
+
+    async def get_workspace_scm_status(
+        self,
+        workspace_id: str,
+    ) -> RuntimeWorkspaceScmStatusResponse:
+        _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
+        sync_scope_paths = await asyncio.to_thread(
+            sync_scope_relative_paths,
+            workspace_files_path,
+            ignored_relative_paths=PLATFORM_MANAGED_GITIGNORE_PATTERNS,
+        )
+        commit_result = await self._run_git_in_workspace_raw(
+            workspace_id,
+            args=["rev-parse", "HEAD"],
+        )
+        status_result = await self._run_git_in_workspace_raw(
+            workspace_id,
+            args=["status", "--porcelain", "--untracked-files=all"],
+        )
+        current_commit_hash = (
+            commit_result[1].decode("utf-8", errors="replace").strip()
+            if commit_result[0] == 0
+            else ""
+        )
+        return RuntimeWorkspaceScmStatusResponse(
+            has_sync_scope_files=bool(sync_scope_paths),
+            has_uncommitted_changes=bool(
+                status_result[1].decode("utf-8", errors="replace").strip()
+            ),
+            current_commit_hash=current_commit_hash or None,
+        )
 
     def _resolve_launch_cwd(self, session: WorkerSession) -> str:
         """Resolve the launch cwd as a sandbox-internal absolute path."""
@@ -2629,4 +2777,5 @@ class WorkerService:
 
 @lru_cache(maxsize=1)
 def get_worker_service() -> WorkerService:
+    return WorkerService()
     return WorkerService()

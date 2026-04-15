@@ -5,7 +5,6 @@ import base64
 import hashlib
 import json
 import os
-import posixpath
 import re
 import socket
 from dataclasses import dataclass, field
@@ -24,21 +23,20 @@ from starlette.websockets import WebSocket
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
+from ragtime.core.workspace_ops import normalize_runtime_file_path
 from ragtime.indexer.workspace_state import build_workspace_chat_state
-from ragtime.userspace.models import (
-    RuntimeOperationPhase,
-    RuntimeSessionState,
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceCollabSnapshotResponse,
-    UserSpaceFileResponse,
-    UserSpacePreviewLaunchResponse,
-    UserSpacePreviewWarning,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSession,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-    UserSpaceWorkspaceTabStateResponse,
-)
+from ragtime.userspace.models import (RuntimeOperationPhase,
+                                      RuntimeSessionState,
+                                      UserSpaceCapabilityTokenResponse,
+                                      UserSpaceCollabSnapshotResponse,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpacePreviewLaunchResponse,
+                                      UserSpacePreviewWarning,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSession,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse,
+                                      UserSpaceWorkspaceTabStateResponse)
 from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
 from ragtime.userspace.service import userspace_service
 
@@ -628,18 +626,10 @@ class UserSpaceRuntimeService:
         return update
 
     def _normalize_file_path(self, file_path: str) -> str:
-        normalized = posixpath.normpath((file_path or "").replace("\\", "/")).strip()
-        if (
-            normalized.startswith("../")
-            or normalized == ".."
-            or normalized.startswith("/")
-        ):
-            raise HTTPException(status_code=400, detail="Invalid file path")
-        if normalized in {"", "."}:
-            raise HTTPException(status_code=400, detail="Invalid file path")
-        if userspace_service.is_reserved_internal_path(normalized):
-            raise HTTPException(status_code=400, detail="Invalid file path")
-        return normalized
+        return normalize_runtime_file_path(
+            file_path,
+            is_reserved_path=userspace_service.is_reserved_internal_path,
+        )
 
     async def _get_active_session_row(self, workspace_id: str) -> Any | None:
         db = await get_db()
@@ -757,9 +747,8 @@ class UserSpaceRuntimeService:
     ) -> None:
         await self.invalidate_preview_session_cache(workspace_id)
         if invalidate_preview_host:
-            from ragtime.userspace.preview_host import (
-                invalidate_preview_sessions_for_workspace,
-            )
+            from ragtime.userspace.preview_host import \
+                invalidate_preview_sessions_for_workspace
 
             await invalidate_preview_sessions_for_workspace(workspace_id)
 
@@ -1199,6 +1188,50 @@ class UserSpaceRuntimeService:
             json_payload=payload,
         )
 
+    async def _runtime_workspace_file_list(
+        self,
+        workspace_id: str,
+        *,
+        include_dirs: bool = False,
+        workspace_mounts: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "POST",
+            f"/workspaces/{workspace_id}/files",
+            json_payload={
+                "include_dirs": include_dirs,
+                "workspace_mounts": workspace_mounts or [],
+            },
+        )
+
+    async def _runtime_workspace_git_command(
+        self,
+        workspace_id: str,
+        *,
+        args: list[str],
+        env: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        self._require_runtime_manager()
+        payload: dict[str, Any] = {"args": args}
+        if env is not None:
+            payload["env"] = env
+        return await self._runtime_manager_request(
+            "POST",
+            f"/workspaces/{workspace_id}/git",
+            json_payload=payload,
+        )
+
+    async def _runtime_workspace_scm_status(
+        self,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "GET",
+            f"/workspaces/{workspace_id}/scm-status",
+        )
+
     async def _ensure_session_row(
         self,
         workspace_id: str,
@@ -1372,6 +1405,78 @@ class UserSpaceRuntimeService:
         session = await self._ensure_session_row(workspace_id, owner_user_id)
         await self._cache_preview_upstream_session(session)
         return session
+
+    async def list_workspace_files_internal(
+        self,
+        workspace_id: str,
+        *,
+        include_dirs: bool = False,
+    ) -> list[UserSpaceFileInfo]:
+        mount_specs = await userspace_service.resolve_workspace_mounts_for_runtime(
+            workspace_id
+        )
+        payload = await self._runtime_workspace_file_list(
+            workspace_id,
+            include_dirs=include_dirs,
+            workspace_mounts=mount_specs,
+        )
+        files = payload.get("files") or []
+        result: list[UserSpaceFileInfo] = []
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            result.append(
+                UserSpaceFileInfo(
+                    path=str(item.get("path", "") or ""),
+                    size_bytes=int(item.get("size_bytes", 0) or 0),
+                    updated_at=self._parse_datetime(item.get("updated_at")),
+                    entry_type=cast(Any, str(item.get("entry_type", "file") or "file")),
+                )
+            )
+        return result
+
+    async def run_workspace_git_command_internal(
+        self,
+        workspace_id: str,
+        *,
+        args: list[str],
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, bytes, bytes]:
+        payload = await self._runtime_workspace_git_command(
+            workspace_id,
+            args=args,
+            env=env,
+        )
+        try:
+            returncode = int(payload.get("returncode", 1) or 1)
+        except Exception:
+            returncode = 1
+        stdout_bytes = base64.b64decode(str(payload.get("stdout_b64", "") or ""))
+        stderr_bytes = base64.b64decode(str(payload.get("stderr_b64", "") or ""))
+        return returncode, stdout_bytes, stderr_bytes
+
+    async def get_workspace_scm_status_internal(
+        self,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        return await self._runtime_workspace_scm_status(workspace_id)
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        text = str(value or "").strip()
+        if not text:
+            return datetime.now(timezone.utc)
+        try:
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return datetime.now(timezone.utc)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
 
     async def issue_workspace_preview_launch(
         self,

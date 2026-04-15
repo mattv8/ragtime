@@ -22,9 +22,9 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-
 from prisma import Json
 from prisma import fields as prisma_fields
+
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -48,6 +48,11 @@ from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
                               preview_ssh_directory_sync, rsync_ssh_directory,
                               ssh_config_from_dict,
                               ssh_tunnel_config_from_dict, sync_ssh_directory)
+from ragtime.core.workspace_ops import (
+    PLATFORM_MANAGED_GITIGNORE_PATTERNS, WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
+    compute_file_hash, deduplicate_ancestor_paths, sync_scope_relative_paths,
+    workspace_mount_target_repo_relative_path,
+    workspace_path_matches_mount_prefix)
 from ragtime.indexer.file_utils import build_authenticated_git_url
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
@@ -233,15 +238,6 @@ _SQLITE_EXCLUDE_GLOBS = (
     "*.sqlite3",
     "*.db",
     "*.db3",
-)
-_WORKSPACE_DEFAULT_GITIGNORE_PATTERNS = (
-    "node_modules/",
-    "dist/",
-    "__pycache__/",
-)
-_PLATFORM_MANAGED_GITIGNORE_PATTERNS = (
-    ".ragtime/runtime-bootstrap.json",
-    ".ragtime/.runtime-bootstrap.done",
 )
 _WORKSPACE_ENV_VAR_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WORKSPACE_ENV_VAR_MAX_COUNT = 200
@@ -1963,7 +1959,7 @@ class UserSpaceService:
     def get_workspace_entrypoint_status(self, workspace_id: str) -> EntrypointStatus:
         """Return the canonical entrypoint status for *workspace_id*.
 
-        Uses the shared :func:`runtime.shared.parse_entrypoint_config`
+        Uses the shared :func:`runtime.core.shared.parse_entrypoint_config`
         parser so that the ragtime app and the runtime worker always agree
         on what constitutes a valid/missing/invalid entrypoint.
 
@@ -2025,8 +2021,8 @@ class UserSpaceService:
 
         existing_set = {line.strip() for line in existing_lines if line.strip()}
         required = (
-            *_WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
-            *_PLATFORM_MANAGED_GITIGNORE_PATTERNS,
+            *WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
+            *PLATFORM_MANAGED_GITIGNORE_PATTERNS,
         )
         missing = [pattern for pattern in required if pattern not in existing_set]
         if not missing and gitignore.exists():
@@ -2046,30 +2042,22 @@ class UserSpaceService:
         check: bool = True,
         env: dict[str, str] | None = None,
     ) -> tuple[int, bytes, bytes]:
-        files_dir = self._workspace_files_dir(workspace_id)
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "git",
-                *args,
-                cwd=str(files_dir),
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        returncode, stdout_bytes, stderr_bytes = (
+            await userspace_runtime_service.run_workspace_git_command_internal(
+                workspace_id,
+                args=args,
                 env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
             )
-            stdout_bytes, stderr_bytes = await process.communicate()
-            returncode = process.returncode if process.returncode is not None else 1
-            if check and returncode != 0:
-                stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Git snapshot operation failed: {stderr or 'unknown error'}",
-                )
-            return returncode, stdout_bytes, stderr_bytes
-        except FileNotFoundError as exc:
+        )
+        if check and returncode != 0:
+            stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
             raise HTTPException(
                 status_code=500,
-                detail="Git binary not available for User Space snapshots",
-            ) from exc
+                detail=f"Git snapshot operation failed: {stderr or 'unknown error'}",
+            )
+        return returncode, stdout_bytes, stderr_bytes
 
     async def _run_git(
         self,
@@ -3999,43 +3987,15 @@ class UserSpaceService:
 
     @staticmethod
     def _workspace_mount_target_repo_relative_path(target_path: str) -> str | None:
-        raw = (target_path or "").strip()
-        if not raw or "\x00" in raw:
-            return None
-        normalized_target = posixpath.normpath(raw)
-        if not normalized_target.startswith("/workspace/"):
-            return None
-        relative = normalized_target[len("/workspace/") :].strip("/")
-        if not relative or relative == ".":
-            return None
-        # Reject any traversal segments that survived normalization.
-        parts = relative.split("/")
-        if any(part in ("..", ".", "") for part in parts):
-            return None
-        return relative
+        return workspace_mount_target_repo_relative_path(target_path)
 
     @staticmethod
     def _workspace_path_matches_mount_prefix(path: str, prefix: str) -> bool:
-        normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
-        normalized_prefix = (prefix or "").strip().replace("\\", "/").lstrip("/")
-        if not normalized_path or not normalized_prefix:
-            return False
-        return normalized_path == normalized_prefix or normalized_path.startswith(
-            normalized_prefix + "/"
-        )
+        return workspace_path_matches_mount_prefix(path, prefix)
 
     @staticmethod
     def _deduplicate_ancestor_paths(paths: list[str]) -> list[str]:
-        """Remove paths that are children of other paths in the list."""
-        if len(paths) <= 1:
-            return list(paths)
-        sorted_paths = sorted(paths)
-        result: list[str] = []
-        for path in sorted_paths:
-            if result and (path == result[-1] or path.startswith(result[-1] + "/")):
-                continue
-            result.append(path)
-        return result
+        return deduplicate_ancestor_paths(paths)
 
     async def _list_workspace_mount_target_repo_paths(
         self,
@@ -4114,7 +4074,7 @@ class UserSpaceService:
         reset_patterns: list[str] = []
 
         # Platform-managed files — always excluded.
-        rm_cached_paths.extend(_PLATFORM_MANAGED_GITIGNORE_PATTERNS)
+        rm_cached_paths.extend(PLATFORM_MANAGED_GITIGNORE_PATTERNS)
 
         # Mount targets — authoritative exclusion from DB records.
         mount_paths = await self._list_workspace_mount_target_repo_paths(workspace_id)
@@ -4297,30 +4257,14 @@ class UserSpaceService:
 
     @staticmethod
     def _sync_scope_relative_paths(root: Path) -> dict[str, Path]:
-        results: dict[str, Path] = {}
-        if not root.exists():
-            return results
-        for path in root.rglob("*"):
-            if not path.is_file():
-                continue
-            relative = path.relative_to(root).as_posix()
-            if relative.startswith(".git/") or relative == ".git":
-                continue
-            if relative in _PLATFORM_MANAGED_GITIGNORE_PATTERNS:
-                continue
-            results[relative] = path
-        return results
+        return sync_scope_relative_paths(
+            root,
+            ignored_relative_paths=PLATFORM_MANAGED_GITIGNORE_PATTERNS,
+        )
 
     @staticmethod
     def _compute_file_sha256(path: Path) -> str:
-        hasher = hashlib.sha256()
-        with path.open("rb") as handle:
-            while True:
-                chunk = handle.read(1024 * 1024)
-                if not chunk:
-                    break
-                hasher.update(chunk)
-        return hasher.hexdigest()
+        return compute_file_hash(path, hash_algorithm="sha256")
 
     def _collect_scm_diff_sample(
         self,
@@ -4344,26 +4288,28 @@ class UserSpaceService:
         return changed
 
     async def _workspace_has_sync_scope_files(self, workspace_id: str) -> bool:
-        files_dir = self._workspace_files_dir(workspace_id)
-        return bool(await asyncio.to_thread(self._sync_scope_relative_paths, files_dir))
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        status = await userspace_runtime_service.get_workspace_scm_status_internal(
+            workspace_id
+        )
+        return bool(status.get("has_sync_scope_files", False))
 
     async def _workspace_has_uncommitted_changes(self, workspace_id: str) -> bool:
-        result = await self._run_git(
-            workspace_id,
-            ["status", "--porcelain", "--untracked-files=all"],
-            check=False,
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        status = await userspace_runtime_service.get_workspace_scm_status_internal(
+            workspace_id
         )
-        return bool(result.stdout.strip())
+        return bool(status.get("has_uncommitted_changes", False))
 
     async def _workspace_current_commit_hash(self, workspace_id: str) -> str | None:
-        result = await self._run_git(
-            workspace_id,
-            ["rev-parse", "HEAD"],
-            check=False,
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        status = await userspace_runtime_service.get_workspace_scm_status_internal(
+            workspace_id
         )
-        if result.returncode != 0:
-            return None
-        value = result.stdout.strip()
+        value = str(status.get("current_commit_hash", "") or "").strip()
         return value or None
 
     @staticmethod
@@ -5249,9 +5195,15 @@ class UserSpaceService:
         remote_changed = bool(
             remote_commit_hash and remote_commit_hash != last_remote_commit_hash
         )
+        head_commits_match = bool(
+            local_commit_hash
+            and remote_commit_hash
+            and local_commit_hash == remote_commit_hash
+        )
 
         state: WorkspaceScmPreviewState
         summary: str
+        state_explanation: str | None = None
         will_overwrite_local = False
         will_overwrite_remote = False
         can_proceed_without_force = False
@@ -5291,7 +5243,10 @@ class UserSpaceService:
                 # Upstream pull: always merge (safe). Overwrite is a separate user action.
                 if not remote_changed:
                     state = "up_to_date"
-                    summary = "Upstream has no new changes since the last pull."
+                    summary = (
+                        "No new upstream commits since the last pull, and the "
+                        "workspace has no unsynced local state."
+                    )
                 else:
                     state = "safe"
                     can_proceed_without_force = True
@@ -5306,7 +5261,10 @@ class UserSpaceService:
                 summary = "Remote changes are available and the workspace has no unsynced local state."
             elif not local_changed and not remote_changed:
                 state = "up_to_date"
-                summary = "Workspace and remote repository are already in sync."
+                summary = (
+                    "No unsynced workspace changes and no new remote commits "
+                    "since the last sync."
+                )
             else:
                 state = "destructive"
                 will_overwrite_local = True
@@ -5318,11 +5276,35 @@ class UserSpaceService:
                 summary = "Workspace changes are ready to export and the remote has not moved since the last sync."
             elif not local_changed and not remote_changed:
                 state = "up_to_date"
-                summary = "Workspace and remote repository are already in sync."
+                summary = (
+                    "No unsynced workspace changes and no new remote commits "
+                    "since the last sync."
+                )
             else:
                 state = "destructive"
                 will_overwrite_remote = True
                 summary = "Export would overwrite newer or unknown remote state. Preview and confirm overwrite to continue."
+
+        if state == "up_to_date":
+            if remote_exists and last_remote_commit_hash and remote_commit_hash:
+                if head_commits_match:
+                    state_explanation = (
+                        "Workspace HEAD matches the current remote HEAD, and the "
+                        "remote has not moved since the last successful sync."
+                    )
+                else:
+                    state_explanation = (
+                        "This preview treats up-to-date as a sync-state check: the "
+                        "workspace has no unsynced local changes, and the current "
+                        "remote HEAD matches the remote commit recorded at the last "
+                        "successful sync. Workspace HEAD can differ from remote HEAD "
+                        "without requiring an import or export."
+                    )
+            elif not remote_exists:
+                state_explanation = (
+                    "No remote branch exists yet, so there is no newer remote state "
+                    "to compare against."
+                )
 
         state_fingerprint = hashlib.sha256(
             json.dumps(
@@ -5373,6 +5355,7 @@ class UserSpaceService:
                 direction=direction,
                 state=state,
                 summary=summary,
+                state_explanation=state_explanation,
                 git_url=git_url,
                 git_branch=git_branch,
                 provider=provider,
@@ -5383,6 +5366,12 @@ class UserSpaceService:
                 will_overwrite_local=will_overwrite_local,
                 will_overwrite_remote=will_overwrite_remote,
                 can_proceed_without_force=can_proceed_without_force,
+                workspace_head_commit_hash=local_commit_hash,
+                remote_head_commit_hash=remote_commit_hash,
+                last_synced_remote_commit_hash=(
+                    str(last_remote_commit_hash) if last_remote_commit_hash else None
+                ),
+                head_commits_match=head_commits_match,
                 local_commit_hash=local_commit_hash,
                 remote_commit_hash=remote_commit_hash,
                 current_snapshot_id=current_snapshot_id,
@@ -5407,6 +5396,57 @@ class UserSpaceService:
             workspace_id=workspace_id,
             scm=self._workspace_from_record(workspace_record).scm
             or UserSpaceWorkspaceScmStatus(),
+        )
+
+    async def _workspace_scm_noop_response(
+        self,
+        workspace_id: str,
+        *,
+        direction: WorkspaceScmDirection,
+        summary: str,
+        remote_commit_hash: str | None,
+    ) -> UserSpaceWorkspaceScmSyncResponse:
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        git_url = str(getattr(workspace_record, "scmGitUrl", "") or "").strip()
+        git_branch = self._normalize_workspace_scm_branch(
+            getattr(workspace_record, "scmGitBranch", None)
+        )
+        provider = self._normalize_workspace_scm_provider(
+            getattr(workspace_record, "scmProvider", None),
+            git_url or None,
+        )
+        repo_visibility = getattr(workspace_record, "scmRepoVisibility", None)
+        scm = await self._update_workspace_scm_sync_metadata(
+            workspace_id,
+            git_url=git_url or None,
+            git_branch=git_branch,
+            provider=provider,
+            repo_visibility=repo_visibility,
+            remote_commit_hash=(
+                remote_commit_hash
+                or getattr(workspace_record, "scmLastRemoteCommitHash", None)
+            ),
+            status="success",
+            message=summary,
+            direction=direction,
+        )
+
+        return UserSpaceWorkspaceScmSyncResponse(
+            workspace_id=workspace_id,
+            direction=direction,
+            state="success",
+            summary=summary,
+            scm=scm,
+            snapshot=None,
+            remote_commit_hash=(
+                remote_commit_hash
+                or getattr(workspace_record, "scmLastRemoteCommitHash", None)
+            ),
+            suggested_setup_prompt=None,
         )
 
     async def update_workspace_scm_connection(
@@ -5533,6 +5573,13 @@ class UserSpaceService:
             request,
             store_preview=False,
         )
+        if preview.state == "up_to_date":
+            return await self._workspace_scm_noop_response(
+                workspace_id,
+                direction="import",
+                summary=preview.summary,
+                remote_commit_hash=preview.remote_commit_hash,
+            )
         if preview.state == "missing_branch":
             raise HTTPException(status_code=404, detail=preview.summary)
         if preview.state == "destructive":
@@ -5718,6 +5765,13 @@ class UserSpaceService:
             request,
             store_preview=False,
         )
+        if preview.state == "up_to_date":
+            return await self._workspace_scm_noop_response(
+                workspace_id,
+                direction="export",
+                summary=preview.summary,
+                remote_commit_hash=preview.remote_commit_hash,
+            )
         if preview.state == "destructive":
             await self._consume_workspace_scm_preview(
                 workspace_id=workspace_id,
@@ -9451,10 +9505,6 @@ class UserSpaceService:
     ) -> list[UserSpaceFileInfo]:
         await self._enforce_workspace_access(workspace_id, user_id)
         await self._ensure_workspace_git_repo(workspace_id)
-        files_dir = self._workspace_files_dir(workspace_id)
-        if not files_dir.exists():
-            return []
-
         cached = self._file_list_cache.get(workspace_id)
         if cached is not None:
             cached_result, cached_include_dirs, cached_ts = cached
@@ -9464,9 +9514,17 @@ class UserSpaceService:
             ):
                 return cached_result
 
-        base_result = await asyncio.to_thread(
-            self._list_workspace_files_sync, files_dir, include_dirs
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        base_result = await userspace_runtime_service.list_workspace_files_internal(
+            workspace_id,
+            include_dirs=include_dirs,
         )
+        base_result = [
+            entry
+            for entry in base_result
+            if not self._is_reserved_internal_path(entry.path)
+        ]
 
         # Collect repo-relative prefixes for disabled mounts so their files
         # are hidden from the file tree while the mount is unmounted.
@@ -9498,46 +9556,7 @@ class UserSpaceService:
                     )
                     existing_paths.add(prefix)
 
-        mount_specs = await self.resolve_workspace_mounts_for_runtime(workspace_id)
-        if mount_specs:
-            mount_prefixes = self._deduplicate_ancestor_paths(
-                [
-                    repo_rel
-                    for spec in mount_specs
-                    if (
-                        repo_rel := self._workspace_mount_target_repo_relative_path(
-                            str(spec.get("target_path", "") or "")
-                        )
-                    )
-                ]
-            )
-            if mount_prefixes:
-                base_result = [
-                    entry
-                    for entry in base_result
-                    if not any(
-                        self._workspace_path_matches_mount_prefix(
-                            entry.path,
-                            prefix,
-                        )
-                        for prefix in mount_prefixes
-                    )
-                ]
-
-            # Augment with files from mount source directories so they appear in
-            # the file tree even though they live outside the workspace files dir.
-            existing_paths = {f.path for f in base_result}
-            mount_entries = await asyncio.to_thread(
-                self._list_mount_source_files_sync,
-                workspace_id,
-                mount_specs,
-                include_dirs,
-            )
-            for entry in mount_entries:
-                if entry.path not in existing_paths:
-                    base_result.append(entry)
-                    existing_paths.add(entry.path)
-            base_result.sort(key=lambda item: item.path)
+        base_result.sort(key=lambda item: item.path)
 
         self._file_list_cache[workspace_id] = (
             base_result,
@@ -11754,101 +11773,6 @@ class UserSpaceService:
             rows.append(row)
 
         return rows, columns
-
-    def _list_workspace_files_sync(
-        self, files_dir: Path, include_dirs: bool = False
-    ) -> list[UserSpaceFileInfo]:
-        files: list[UserSpaceFileInfo] = []
-        for path in files_dir.rglob("*"):
-            is_file = path.is_file()
-            is_dir = path.is_dir()
-            if not is_file and not (include_dirs and is_dir):
-                continue
-
-            relative = str(path.relative_to(files_dir))
-            if self._is_reserved_internal_path(relative):
-                continue
-
-            stat = path.stat()
-            files.append(
-                UserSpaceFileInfo(
-                    path=relative,
-                    size_bytes=stat.st_size if is_file else 0,
-                    updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-                    entry_type="directory" if is_dir else "file",
-                )
-            )
-        files.sort(key=lambda item: item.path)
-        return files
-
-    def _list_mount_source_files_sync(
-        self,
-        _workspace_id: str,
-        mount_specs: list[dict[str, Any]],
-        include_dirs: bool = False,
-    ) -> list[UserSpaceFileInfo]:
-        """Walk mount source directories and return entries mapped to their
-        workspace-relative target paths so they appear in the file tree."""
-        entries_by_path: dict[str, UserSpaceFileInfo] = {}
-        for spec in mount_specs:
-            source_local_path = spec.get("source_local_path", "")
-            target_path = spec.get("target_path", "")
-            repo_rel = self._workspace_mount_target_repo_relative_path(target_path)
-            if not repo_rel:
-                continue
-
-            source_dirs: list[Path] = []
-            if source_local_path:
-                source_dir = Path(source_local_path)
-                if source_dir.is_dir():
-                    source_dirs.append(source_dir)
-
-            if not source_dirs:
-                continue
-
-            if include_dirs:
-                for source_dir in source_dirs:
-                    try:
-                        stat = source_dir.stat()
-                        entries_by_path.setdefault(
-                            repo_rel,
-                            UserSpaceFileInfo(
-                                path=repo_rel,
-                                size_bytes=0,
-                                updated_at=datetime.fromtimestamp(
-                                    stat.st_mtime, tz=timezone.utc
-                                ),
-                                entry_type="directory",
-                            ),
-                        )
-                        break
-                    except OSError:
-                        continue
-
-            for source_dir in source_dirs:
-                for path in source_dir.rglob("*"):
-                    is_file = path.is_file()
-                    is_dir = path.is_dir()
-                    if not is_file and not (include_dirs and is_dir):
-                        continue
-                    try:
-                        relative = str(path.relative_to(source_dir))
-                        mapped_path = f"{repo_rel}/{relative}"
-                        stat = path.stat()
-                        entries_by_path.setdefault(
-                            mapped_path,
-                            UserSpaceFileInfo(
-                                path=mapped_path,
-                                size_bytes=stat.st_size if is_file else 0,
-                                updated_at=datetime.fromtimestamp(
-                                    stat.st_mtime, tz=timezone.utc
-                                ),
-                                entry_type="directory" if is_dir else "file",
-                            ),
-                        )
-                    except (OSError, ValueError):
-                        continue
-        return sorted(entries_by_path.values(), key=lambda item: item.path)
 
     def _write_workspace_file_sync(
         self,

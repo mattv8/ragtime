@@ -168,6 +168,7 @@ class UserSpaceWorkspaceScmPreviewResponse(BaseModel):
     direction: WorkspaceScmDirection
     state: WorkspaceScmPreviewState
     summary: str
+    state_explanation: str | None = None
     git_url: str
     git_branch: str
     provider: WorkspaceScmProvider
@@ -178,6 +179,10 @@ class UserSpaceWorkspaceScmPreviewResponse(BaseModel):
     will_overwrite_local: bool = False
     will_overwrite_remote: bool = False
     can_proceed_without_force: bool = False
+    workspace_head_commit_hash: str | None = None
+    remote_head_commit_hash: str | None = None
+    last_synced_remote_commit_hash: str | None = None
+    head_commits_match: bool = False
     local_commit_hash: str | None = None
     remote_commit_hash: str | None = None
     current_snapshot_id: str | None = None

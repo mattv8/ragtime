@@ -1749,6 +1749,7 @@ export interface UserSpaceWorkspaceScmPreviewResponse {
   direction: UserSpaceWorkspaceScmDirection;
   state: UserSpaceWorkspaceScmPreviewState;
   summary: string;
+  state_explanation?: string | null;
   git_url: string;
   git_branch: string;
   provider: UserSpaceWorkspaceScmProvider;
@@ -1759,6 +1760,10 @@ export interface UserSpaceWorkspaceScmPreviewResponse {
   will_overwrite_local: boolean;
   will_overwrite_remote: boolean;
   can_proceed_without_force: boolean;
+  workspace_head_commit_hash?: string | null;
+  remote_head_commit_hash?: string | null;
+  last_synced_remote_commit_hash?: string | null;
+  head_commits_match: boolean;
   local_commit_hash?: string | null;
   remote_commit_hash?: string | null;
   current_snapshot_id?: string | null;

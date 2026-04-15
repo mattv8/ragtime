@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from runtime.shared import RuntimeSessionState
+from ..core.shared import RuntimeSessionState
 
 
 @dataclass
@@ -288,6 +288,61 @@ class RuntimeExecResponse(BaseModel):
     truncated: bool = Field(
         default=False,
         description="Whether output was truncated due to size limits",
+    )
+
+
+class RuntimeWorkspaceFileInfo(BaseModel):
+    path: str = Field(description="Workspace-relative path")
+    size_bytes: int = Field(description="Entry size in bytes")
+    updated_at: datetime = Field(description="Updated timestamp")
+    entry_type: str = Field(description="Entry type: file or directory")
+
+
+class RuntimeWorkspaceFileListRequest(BaseModel):
+    include_dirs: bool = Field(
+        default=False,
+        description="Whether to include directories in the response",
+    )
+    workspace_mounts: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved workspace mount specs used to project mounted files",
+    )
+
+
+class RuntimeWorkspaceFileListResponse(BaseModel):
+    files: list[RuntimeWorkspaceFileInfo] = Field(
+        default_factory=list,
+        description="Workspace file tree entries",
+    )
+
+
+class RuntimeWorkspaceGitCommandRequest(BaseModel):
+    args: list[str] = Field(
+        default_factory=list,
+        description="Git CLI arguments excluding the git executable",
+    )
+    env: dict[str, str] | None = Field(
+        default=None,
+        description="Optional environment override for the git subprocess",
+    )
+
+
+class RuntimeWorkspaceGitCommandResponse(BaseModel):
+    returncode: int = Field(description="Git process exit code")
+    stdout_b64: str = Field(description="Base64 encoded stdout bytes")
+    stderr_b64: str = Field(description="Base64 encoded stderr bytes")
+
+
+class RuntimeWorkspaceScmStatusResponse(BaseModel):
+    has_sync_scope_files: bool = Field(
+        description="Whether the workspace has any sync-scoped files"
+    )
+    has_uncommitted_changes: bool = Field(
+        description="Whether git status reports local changes"
+    )
+    current_commit_hash: str | None = Field(
+        default=None,
+        description="Current HEAD commit hash when available",
     )
 
 

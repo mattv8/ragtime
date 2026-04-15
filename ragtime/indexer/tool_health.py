@@ -1,5 +1,5 @@
-from typing import Any
 
+from typing import Any
 
 def get_heartbeat_timeout_seconds(connection_config: dict[str, Any] | None) -> float:
     """Return the heartbeat timeout for a tool connection."""

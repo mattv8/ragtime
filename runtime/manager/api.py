@@ -18,6 +18,11 @@ from runtime.manager.models import (RuntimeContentProbeRequest,
                                     RuntimeScreenshotRequest,
                                     RuntimeScreenshotResponse,
                                     RuntimeSessionResponse,
+                                    RuntimeWorkspaceFileListRequest,
+                                    RuntimeWorkspaceFileListResponse,
+                                    RuntimeWorkspaceGitCommandRequest,
+                                    RuntimeWorkspaceGitCommandResponse,
+                                    RuntimeWorkspaceScmStatusResponse,
                                     StartSessionRequest)
 from runtime.manager.service import SessionManager
 
@@ -198,6 +203,46 @@ def create_app() -> FastAPI:
             timeout_seconds=payload.timeout_seconds,
             cwd=payload.cwd,
         )
+
+    @application.post(
+        "/workspaces/{workspace_id}/files",
+        response_model=RuntimeWorkspaceFileListResponse,
+    )
+    async def list_workspace_files(
+        workspace_id: str,
+        payload: RuntimeWorkspaceFileListRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeWorkspaceFileListResponse:
+        return await manager.list_workspace_files(
+            workspace_id,
+            include_dirs=payload.include_dirs,
+            workspace_mounts=payload.workspace_mounts,
+        )
+
+    @application.post(
+        "/workspaces/{workspace_id}/git",
+        response_model=RuntimeWorkspaceGitCommandResponse,
+    )
+    async def run_workspace_git_command(
+        workspace_id: str,
+        payload: RuntimeWorkspaceGitCommandRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeWorkspaceGitCommandResponse:
+        return await manager.run_workspace_git_command(
+            workspace_id,
+            args=payload.args,
+            env=payload.env,
+        )
+
+    @application.get(
+        "/workspaces/{workspace_id}/scm-status",
+        response_model=RuntimeWorkspaceScmStatusResponse,
+    )
+    async def get_workspace_scm_status(
+        workspace_id: str,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeWorkspaceScmStatusResponse:
+        return await manager.get_workspace_scm_status(workspace_id)
 
     return application
 

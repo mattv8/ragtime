@@ -9,10 +9,10 @@ ragtime-app side:
   keys plus platform-level frameworks (``custom``, ``node``, ``static``)
   that don't have installable package requirements.
 
-The runtime container (``runtime/shared.py``) keeps a **copy** of
+The runtime container (``runtime/core/shared.py``) keeps a **copy** of
 ``KNOWN_FRAMEWORKS`` because the two containers cannot cross-import.
 When adding or removing a framework here, mirror ``KNOWN_FRAMEWORKS``
-in ``runtime/shared.py``.
+in ``runtime/core/shared.py``.
 
 Keep changes to ``EntrypointStatus`` and ``parse_entrypoint_config``
 mirrored in both files as well.
@@ -54,7 +54,7 @@ FRAMEWORK_REQUIRED_PACKAGES: dict[str, tuple[str, list[str]]] = {
 _EXTRA_KNOWN_FRAMEWORKS: frozenset[str] = frozenset({"custom", "node", "static"})
 
 # All recognised framework names.  Derived from FRAMEWORK_REQUIRED_PACKAGES
-# keys + platform-level extras.  Keep runtime/shared.py copy in sync.
+# keys + platform-level extras. Keep runtime/core/shared.py copy in sync.
 KNOWN_FRAMEWORKS: frozenset[str] = (
     frozenset(FRAMEWORK_REQUIRED_PACKAGES) | _EXTRA_KNOWN_FRAMEWORKS
 )

@@ -19,6 +19,9 @@ from runtime.manager.models import (ManagerSession, RuntimeContentProbeRequest,
                                     RuntimeScreenshotRequest,
                                     RuntimeScreenshotResponse,
                                     RuntimeSessionResponse,
+                                    RuntimeWorkspaceFileListResponse,
+                                    RuntimeWorkspaceGitCommandResponse,
+                                    RuntimeWorkspaceScmStatusResponse,
                                     StartSessionRequest, WorkerSessionResponse,
                                     WorkerStartSessionRequest)
 from runtime.worker.service import get_worker_service
@@ -578,6 +581,38 @@ class SessionManager:
             timeout_seconds=timeout_seconds,
             cwd=cwd,
         )
+
+    async def list_workspace_files(
+        self,
+        workspace_id: str,
+        *,
+        include_dirs: bool = False,
+        workspace_mounts: list[dict[str, Any]] | None = None,
+    ) -> RuntimeWorkspaceFileListResponse:
+        return await self._worker_service.list_workspace_files(
+            workspace_id,
+            include_dirs=include_dirs,
+            workspace_mounts=workspace_mounts or [],
+        )
+
+    async def run_workspace_git_command(
+        self,
+        workspace_id: str,
+        *,
+        args: list[str],
+        env: dict[str, str] | None = None,
+    ) -> RuntimeWorkspaceGitCommandResponse:
+        return await self._worker_service.run_workspace_git_command(
+            workspace_id,
+            args=args,
+            env=env,
+        )
+
+    async def get_workspace_scm_status(
+        self,
+        workspace_id: str,
+    ) -> RuntimeWorkspaceScmStatusResponse:
+        return await self._worker_service.get_workspace_scm_status(workspace_id)
 
     async def pool_status(self) -> dict[str, Any]:
         async def _collect() -> dict[str, Any]:

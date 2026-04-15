@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     curl \
     dos2unix \
+    git \
     grep \
     nodejs \
     npm \
