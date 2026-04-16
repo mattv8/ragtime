@@ -2,16 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    File,
-    HTTPException,
-    Query,
-    Request,
-    Response,
-    UploadFile,
-)
+from fastapi import (APIRouter, Depends, File, HTTPException, Query, Request,
+                     Response, UploadFile)
 
 from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.database import get_db
@@ -19,82 +11,46 @@ from ragtime.core.encryption import decrypt_secret
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.security import (
-    get_current_user,
-    get_current_user_optional,
-    require_admin,
-)
-from ragtime.indexer.models import (
-    CheckRepoVisibilityRequest,
-    FetchBranchesRequest,
-    FetchBranchesResponse,
-    RepoVisibilityResponse,
-)
+from ragtime.core.security import (get_current_user, get_current_user_optional,
+                                   require_admin)
+from ragtime.indexer.models import (CheckRepoVisibilityRequest,
+                                    FetchBranchesRequest,
+                                    FetchBranchesResponse,
+                                    RepoVisibilityResponse)
 from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
-    BrowseUserspaceMountSourceRequest,
-    CreateSnapshotBranchRequest,
-    CreateSnapshotRequest,
-    CreateUserspaceMountSourceRequest,
-    CreateUserSpaceObjectStorageBucketRequest,
-    CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest,
-    DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse,
-    DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    MountableSource,
-    MountSourceAffectedWorkspacesResponse,
-    PaginatedWorkspacesResponse,
-    PromoteBranchToMainRequest,
-    RestoreSnapshotResponse,
-    SqliteImportResponse,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
+    BrowseUserspaceMountSourceRequest, CreateSnapshotBranchRequest,
+    CreateSnapshotRequest, CreateUserspaceMountSourceRequest,
+    CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest, DeleteUserspaceMountSourceResponse,
+    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse, ExecuteComponentRequest,
+    ExecuteComponentResponse, MountableSource,
+    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
+    PromoteBranchToMainRequest, RestoreSnapshotResponse, SqliteImportResponse,
+    SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
-    UpdateUserSpaceObjectStorageBucketRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpdateWorkspaceShareSlugRequest,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceAcknowledgeChangedFilePathRequest,
-    UserSpaceAvailableTool,
-    UserSpaceChangedFileStateResponse,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserspaceMountSource,
-    UserSpaceObjectStorageConfig,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceEnvVar,
+    UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest, UpdateWorkspaceShareSlugRequest,
+    UpsertWorkspaceEnvVarRequest, UpsertWorkspaceFileRequest,
+    UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceAvailableTool,
+    UserSpaceChangedFileStateResponse, UserSpaceFileInfo,
+    UserSpaceFileResponse, UserspaceMountSource, UserSpaceObjectStorageConfig,
+    UserSpaceSharedPreviewResponse, UserSpaceSnapshot,
+    UserSpaceSnapshotDiffSummaryResponse, UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse, UserSpaceWorkspace,
+    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceEnvVar,
     UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
-    UserSpaceWorkspaceScmExportRequest,
-    UserSpaceWorkspaceScmImportRequest,
-    UserSpaceWorkspaceScmPreviewRequest,
-    UserSpaceWorkspaceScmPreviewResponse,
-    UserSpaceWorkspaceScmSettingsRequest,
-    UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMount,
-    WorkspaceMountBrowseRequest,
-    WorkspaceMountBrowseResponse,
-    WorkspaceMountSyncPreviewRequest,
-    WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest,
-    WorkspaceMountSyncResponse,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+    UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmSettingsRequest, UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMount, WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
+    WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
+    WorkspaceShareSlugAvailabilityResponse)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 from ragtime.userspace.share_auth import share_auth_token_from_request
@@ -491,6 +447,39 @@ async def delete_workspace(
     await repository.delete_workspace_conversations(workspace_id)
     await userspace_service.delete_workspace(workspace_id, user.id, is_admin=is_admin)
     return {"success": True}
+
+
+@router.post(
+    "/workspaces/{workspace_id}/delete-task",
+    response_model=UserSpaceWorkspaceDeleteTask,
+    status_code=202,
+)
+async def queue_workspace_delete_task(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.enqueue_workspace_delete_task(
+        workspace_id,
+        user.id,
+        is_admin=is_admin,
+    )
+
+
+@router.get(
+    "/workspace-delete-tasks/{task_id}",
+    response_model=UserSpaceWorkspaceDeleteTask,
+)
+async def get_workspace_delete_task(
+    task_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.get_workspace_delete_task(
+        task_id,
+        user.id,
+        is_admin=is_admin,
+    )
 
 
 @router.put("/workspaces/{workspace_id}/members", response_model=UserSpaceWorkspace)

@@ -60,6 +60,14 @@ UserSpacePreviewWarningCode = Literal[
     "preview_dns_unresolvable",
     "preview_dev_domain_outside_debug",
 ]
+WorkspaceDeleteTaskPhase = Literal[
+    "queued",
+    "stopping_runtime",
+    "deleting_conversations",
+    "deleting_workspace",
+    "completed",
+    "failed",
+]
 
 
 class WorkspaceMember(BaseModel):
@@ -90,6 +98,16 @@ class UserSpaceWorkspace(BaseModel):
     members: list[WorkspaceMember] = Field(default_factory=list)
     scm: "UserSpaceWorkspaceScmStatus | None" = None
     created_at: datetime
+    updated_at: datetime
+
+
+class UserSpaceWorkspaceDeleteTask(BaseModel):
+    task_id: str
+    workspace_id: str
+    workspace_name: str
+    phase: WorkspaceDeleteTaskPhase
+    error: str | None = None
+    queued_at: datetime
     updated_at: datetime
 
 

@@ -1703,6 +1703,13 @@ export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
 export type UserSpaceArtifactType = 'module_ts';
 export type SqlitePersistenceMode = 'include' | 'exclude';
 export type UserSpaceWorkspaceDeletionPhase = 'queued' | 'deleting' | 'refreshing' | 'failed';
+export type UserSpaceWorkspaceDeleteTaskPhase =
+  | 'queued'
+  | 'stopping_runtime'
+  | 'deleting_conversations'
+  | 'deleting_workspace'
+  | 'completed'
+  | 'failed';
 
 export interface UserSpaceWorkspaceMember {
   user_id: string;
@@ -1825,6 +1832,16 @@ export interface UserSpaceWorkspaceScmSettingsRequest {
   remote_role?: UserSpaceWorkspaceScmRemoteRole;
   auto_sync_policy?: UserSpaceWorkspaceScmAutoSyncPolicy;
   clear_sync_paused?: boolean;
+}
+
+export interface UserSpaceWorkspaceDeleteTask {
+  task_id: string;
+  workspace_id: string;
+  workspace_name: string;
+  phase: UserSpaceWorkspaceDeleteTaskPhase;
+  error?: string | null;
+  queued_at: string;
+  updated_at: string;
 }
 
 export interface UserSpaceAvailableTool {

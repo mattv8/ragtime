@@ -426,6 +426,15 @@ textarea:focus {
   box-sizing: border-box;
 }
 
+.userspace-workspace-item.is-deleting {
+  opacity: 0.72;
+}
+
+.userspace-workspace-item.is-deleting .model-selector-item-name {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+
 .userspace-workspace-item.is-selected {
   background: color-mix(in srgb, var(--color-primary-soft) 72%, var(--color-surface));
   border: 1px solid var(--color-primary-border);

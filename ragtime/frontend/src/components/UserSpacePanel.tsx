@@ -19,7 +19,7 @@ import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeletionPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
@@ -57,23 +57,44 @@ type MountSyncPreviewIntent = 'sync' | 'enable-auto' | 'update-auto-sync-mode';
 
 const DEFAULT_WORKSPACE_CHAT_STATE: WorkspaceChatState = { hasLive: false, hasInterrupted: false };
 
-function formatWorkspaceDeletionStatus(
-  phase: UserSpaceWorkspaceDeletionPhase | null,
-  workspaceName: string | null,
-): string | null {
-  const label = workspaceName?.trim() || 'workspace';
-  switch (phase) {
+function isWorkspaceDeleteTaskTerminal(phase: UserSpaceWorkspaceDeleteTaskPhase): boolean {
+  return phase === 'completed' || phase === 'failed';
+}
+
+function formatWorkspaceDeleteTaskStatus(task: UserSpaceWorkspaceDeleteTask | null): string | null {
+  if (!task) {
+    return null;
+  }
+
+  const label = task.workspace_name?.trim() || 'workspace';
+  switch (task.phase) {
     case 'queued':
       return `Preparing to delete ${label}...`;
-    case 'deleting':
+    case 'stopping_runtime':
+      return `Stopping runtime for ${label}...`;
+    case 'deleting_conversations':
+      return `Deleting conversations for ${label}...`;
+    case 'deleting_workspace':
       return `Deleting ${label}...`;
-    case 'refreshing':
-      return 'Refreshing workspace list...';
     case 'failed':
-      return `Failed to delete ${label}.`;
+      return task.error?.trim() || `Failed to delete ${label}.`;
     default:
       return null;
   }
+}
+
+function formatWorkspaceDeleteTasksStatus(tasks: UserSpaceWorkspaceDeleteTask[]): string | null {
+  if (tasks.length === 0) {
+    return null;
+  }
+  if (tasks.length === 1) {
+    return formatWorkspaceDeleteTaskStatus(tasks[0]);
+  }
+
+  const queuedCount = tasks.filter((task) => task.phase === 'queued').length;
+  return queuedCount > 0
+    ? `Deleting ${tasks.length} workspaces (${queuedCount} queued)...`
+    : `Deleting ${tasks.length} workspaces...`;
 }
 
 function normalizeWorkspacePath(value: string): string {
@@ -517,9 +538,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   );
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [creatingWorkspaceStatus, setCreatingWorkspaceStatus] = useState<string | null>(null);
-  const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
-  const [deletingWorkspaceName, setDeletingWorkspaceName] = useState<string | null>(null);
-  const [deletingWorkspacePhase, setDeletingWorkspacePhase] = useState<UserSpaceWorkspaceDeletionPhase | null>(null);
+  const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDeleteTask>>({});
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [shareLinkType, setShareLinkType] = useState<ShareLinkType>('anonymous');
@@ -1249,9 +1268,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     return null;
   }, [runtimeDisplayState, runtimeOperationLabel]);
 
+  const activeWorkspaceDeleteTasks = useMemo(
+    () => Object.values(deletingWorkspaceTasks)
+      .filter((task) => !isWorkspaceDeleteTaskTerminal(task.phase))
+      .sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at)),
+    [deletingWorkspaceTasks],
+  );
+
+  const deletingWorkspaceId = activeWorkspaceDeleteTasks[0]?.workspace_id ?? null;
   const deletingWorkspaceStatus = useMemo(
-    () => formatWorkspaceDeletionStatus(deletingWorkspacePhase, deletingWorkspaceName),
-    [deletingWorkspaceName, deletingWorkspacePhase],
+    () => formatWorkspaceDeleteTasksStatus(activeWorkspaceDeleteTasks),
+    [activeWorkspaceDeleteTasks],
   );
 
   const showStartRuntimeButton = runtimeDisplayState === 'stopped' || runtimeDisplayState === 'error';
@@ -1276,26 +1303,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     try {
       const offset = append ? workspaces.length : 0;
       const page = await api.listUserSpaceWorkspaces(offset, 50);
-      const pendingDeleteWorkspaceId = deletingWorkspaceId;
-      const visibleItems = page.items.filter((workspace) => workspace.id !== pendingDeleteWorkspaceId);
       if (append) {
         setWorkspaces((prev) => [
           ...prev,
-          ...visibleItems.filter((workspace) => !prev.some((existing) => existing.id === workspace.id)),
+          ...page.items.filter((workspace) => !prev.some((existing) => existing.id === workspace.id)),
         ]);
       } else {
-        let nextItems = visibleItems;
+        let nextItems = page.items;
 
         if (
           activeWorkspaceId
-          && activeWorkspaceId !== pendingDeleteWorkspaceId
           && !nextItems.some((workspace) => workspace.id === activeWorkspaceId)
         ) {
           try {
             const activeWorkspace = await api.getUserSpaceWorkspace(activeWorkspaceId);
-            if (activeWorkspace.id !== pendingDeleteWorkspaceId) {
-              nextItems = [activeWorkspace, ...nextItems.filter((workspace) => workspace.id !== activeWorkspace.id)];
-            }
+            nextItems = [activeWorkspace, ...nextItems.filter((workspace) => workspace.id !== activeWorkspace.id)];
           } catch {
             // Ignore fetch errors for active workspace backfill.
           }
@@ -1307,7 +1329,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           clearCookieValue(lastWorkspaceCookieName);
         } else if (!activeWorkspaceId) {
           const lastWorkspaceId = getCookieValue(lastWorkspaceCookieName);
-          const restorableWorkspaceId = lastWorkspaceId === pendingDeleteWorkspaceId ? null : lastWorkspaceId;
+          const restorableWorkspaceId = lastWorkspaceId;
           const matchingWorkspace = restorableWorkspaceId
             ? nextItems.find((workspace) => workspace.id === restorableWorkspaceId)
             : null;
@@ -1317,14 +1339,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           } else if (restorableWorkspaceId) {
             try {
               const workspace = await api.getUserSpaceWorkspace(restorableWorkspaceId);
-              if (workspace.id !== pendingDeleteWorkspaceId) {
-                setWorkspaces((prev) => (
-                  prev.some((item) => item.id === workspace.id)
-                    ? prev
-                    : [workspace, ...prev]
-                ));
-                setActiveWorkspaceId(workspace.id);
-              }
+              setWorkspaces((prev) => (
+                prev.some((item) => item.id === workspace.id)
+                  ? prev
+                  : [workspace, ...prev]
+              ));
+              setActiveWorkspaceId(workspace.id);
             } catch {
               setActiveWorkspaceId(nextItems[0].id);
             }
@@ -1333,7 +1353,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           }
         }
       }
-      setWorkspacesTotal(Math.max(0, page.total - (pendingDeleteWorkspaceId ? 1 : 0)));
+      setWorkspacesTotal(page.total);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load User Space workspaces');
@@ -1341,7 +1361,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [activeWorkspaceId, deletingWorkspaceId, lastWorkspaceCookieName, workspaces.length]);
+  }, [activeWorkspaceId, lastWorkspaceCookieName, workspaces.length]);
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
@@ -3709,80 +3729,133 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const handleDeleteWorkspace = useCallback(async (workspaceId: string) => {
     setError(null);
-    const workspaceToDelete = workspaces.find((workspace) => workspace.id === workspaceId) ?? null;
-    const workspaceName = workspaceToDelete?.name ?? 'workspace';
     const deletingActiveWorkspace = activeWorkspaceId === workspaceId;
     const fallbackWorkspaceId = deletingActiveWorkspace
       ? workspaces.find((workspace) => workspace.id !== workspaceId)?.id ?? null
       : activeWorkspaceId;
-    let restoreDeletedWorkspace = false;
-
-    setDeletingWorkspaceId(workspaceId);
-    setDeletingWorkspaceName(workspaceName);
-    setDeletingWorkspacePhase('queued');
 
     setDeleteConfirmWorkspaceId(null);
-    setIsWorkspaceMenuOpen(false);
-
-    if (deletingActiveWorkspace) {
-      setRuntimeStatus(null);
-      setPreviewLiveDataConnections([]);
-      setActiveWorkspaceId(fallbackWorkspaceId);
-
-      if (!fallbackWorkspaceId) {
-        clearCookieValue(lastWorkspaceCookieName);
-        setFileBrowserEntries([]);
-        setFiles([]);
-        setSnapshots([]);
-        setSnapshotBranches([]);
-        setCurrentSnapshotId(null);
-        setCurrentSnapshotBranchId(null);
-        setFileContentCache({});
-        setFileContent('');
-        setSelectedFilePath('');
-        setFileDirty(false);
-      }
-    }
 
     try {
-      setDeletingWorkspacePhase('deleting');
-      await api.deleteUserSpaceWorkspace(workspaceId);
+      const task = await api.queueUserSpaceWorkspaceDelete(workspaceId);
+      setDeletingWorkspaceTasks((current) => ({
+        ...current,
+        [workspaceId]: task,
+      }));
 
-      setDeletingWorkspacePhase('refreshing');
-      await loadWorkspaces();
-    } catch (err) {
-      try {
-        await loadWorkspaces();
-      } catch {
-        // Best-effort refresh; continue with delete verification below.
-      }
+      if (deletingActiveWorkspace) {
+        setRuntimeStatus(null);
+        setPreviewLiveDataConnections([]);
+        setActiveWorkspaceId(fallbackWorkspaceId);
 
-      try {
-        await api.getUserSpaceWorkspace(workspaceId);
-        restoreDeletedWorkspace = true;
-        setDeletingWorkspacePhase('failed');
-        setError(err instanceof Error ? err.message : 'Failed to delete workspace');
-      } catch {
-        setError(null);
-      }
-    } finally {
-      if (restoreDeletedWorkspace && workspaceToDelete) {
-        setWorkspaces((current) => (
-          current.some((workspace) => workspace.id === workspaceToDelete.id)
-            ? current
-            : [workspaceToDelete, ...current]
-        ));
-        setWorkspacesTotal((current) => current + 1);
-        if (deletingActiveWorkspace && !fallbackWorkspaceId) {
-          setActiveWorkspaceId(workspaceToDelete.id);
+        if (!fallbackWorkspaceId) {
+          clearCookieValue(lastWorkspaceCookieName);
+          setFileBrowserEntries([]);
+          setFiles([]);
+          setSnapshots([]);
+          setSnapshotBranches([]);
+          setCurrentSnapshotId(null);
+          setCurrentSnapshotBranchId(null);
+          setFileContentCache({});
+          setFileContent('');
+          setSelectedFilePath('');
+          setFileDirty(false);
         }
       }
-
-      setDeletingWorkspacePhase(null);
-      setDeletingWorkspaceId(null);
-      setDeletingWorkspaceName(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to queue workspace delete');
     }
   }, [activeWorkspaceId, lastWorkspaceCookieName, loadWorkspaces, workspaces]);
+
+  useEffect(() => {
+    const tasks = Object.values(deletingWorkspaceTasks);
+    if (tasks.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    let pollInFlight = false;
+
+    const pollDeleteTasks = async () => {
+      if (pollInFlight) {
+        return;
+      }
+      pollInFlight = true;
+
+      try {
+        const results = await Promise.all(tasks.map(async (task) => {
+          try {
+            const status = await api.getUserSpaceWorkspaceDeleteTask(task.task_id);
+            return { task, status, error: null as Error | null };
+          } catch (error) {
+            return { task, status: null as UserSpaceWorkspaceDeleteTask | null, error: error as Error };
+          }
+        }));
+
+        if (cancelled) {
+          return;
+        }
+
+        const terminalWorkspaceIds = new Set<string>();
+        const updatedTasks: Record<string, UserSpaceWorkspaceDeleteTask> = {};
+        let nextError: string | null = null;
+
+        for (const result of results) {
+          if (result.status) {
+            if (isWorkspaceDeleteTaskTerminal(result.status.phase)) {
+              terminalWorkspaceIds.add(result.status.workspace_id);
+              if (result.status.phase === 'failed' && !nextError) {
+                nextError = result.status.error?.trim() || `Failed to delete ${result.status.workspace_name}`;
+              }
+            } else {
+              updatedTasks[result.status.workspace_id] = result.status;
+            }
+            continue;
+          }
+
+          if (result.error instanceof ApiError && result.error.status === 404) {
+            terminalWorkspaceIds.add(result.task.workspace_id);
+            continue;
+          }
+
+          if (!nextError && result.error instanceof Error) {
+            nextError = result.error.message;
+          }
+        }
+
+        setDeletingWorkspaceTasks((current) => {
+          const next = { ...current };
+          for (const workspaceId of terminalWorkspaceIds) {
+            delete next[workspaceId];
+          }
+          for (const [workspaceId, task] of Object.entries(updatedTasks)) {
+            next[workspaceId] = task;
+          }
+          return next;
+        });
+
+        if (nextError) {
+          setError(nextError);
+        }
+
+        if (terminalWorkspaceIds.size > 0) {
+          void loadWorkspaces();
+        }
+      } finally {
+        pollInFlight = false;
+      }
+    };
+
+    void pollDeleteTasks();
+    const intervalId = window.setInterval(() => {
+      void pollDeleteTasks();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [deletingWorkspaceTasks, loadWorkspaces]);
 
   const handleOpenMembersModal = useCallback(async () => {
     if (!activeWorkspace || !isOwner) return;
@@ -5158,12 +5231,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                         member.user_id === currentUser.id && (member.role === 'owner' || member.role === 'editor')
                       ));
                     const isConfirmingDelete = deleteConfirmWorkspaceId === ws.id;
-                    const isDeletingWorkspace = deletingWorkspaceId === ws.id;
+                    const isDeletingWorkspace = Boolean(deletingWorkspaceTasks[ws.id]);
                     const isRenamingWorkspace = editingWorkspaceNameId === ws.id;
                     return (
                       <div
                         key={ws.id}
-                        className={`model-selector-item userspace-workspace-item ${ws.id === activeWorkspaceId ? 'is-selected' : ''} ${!canDeleteWorkspace ? 'is-shared' : ''}`}
+                        className={`model-selector-item userspace-workspace-item ${ws.id === activeWorkspaceId ? 'is-selected' : ''}${isDeletingWorkspace ? ' is-deleting' : ''} ${!canDeleteWorkspace ? 'is-shared' : ''}`}
                       >
                         {isRenamingWorkspace ? (
                           <div className="userspace-workspace-inline-edit">
@@ -5223,7 +5296,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 <button
                                   type="button"
                                   className="chat-action-btn confirm-delete"
-                                  disabled={Boolean(deletingWorkspaceId)}
+                                  disabled={isDeletingWorkspace}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     void handleSaveWorkspaceRename(ws);
@@ -5235,7 +5308,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 <button
                                   type="button"
                                   className="chat-action-btn cancel-delete"
-                                  disabled={Boolean(deletingWorkspaceId)}
+                                  disabled={isDeletingWorkspace}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     handleCancelWorkspaceRename();
@@ -5250,7 +5323,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 <button
                                   type="button"
                                   className="chat-action-btn confirm-delete"
-                                  disabled={Boolean(deletingWorkspaceId)}
+                                  disabled={isDeletingWorkspace}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     void handleDeleteWorkspace(ws.id);
@@ -5262,7 +5335,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 <button
                                   type="button"
                                   className="chat-action-btn cancel-delete"
-                                  disabled={Boolean(deletingWorkspaceId)}
+                                  disabled={isDeletingWorkspace}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     setDeleteConfirmWorkspaceId(null);
@@ -5278,7 +5351,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                   <button
                                     type="button"
                                     className="chat-action-btn"
-                                    disabled={Boolean(deletingWorkspaceId)}
+                                    disabled={isDeletingWorkspace}
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       handleStartWorkspaceRename(ws);
@@ -5292,7 +5365,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                   <button
                                     type="button"
                                     className="chat-action-btn"
-                                    disabled={Boolean(deletingWorkspaceId)}
+                                    disabled={isDeletingWorkspace}
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       setDeleteConfirmWorkspaceId(ws.id);

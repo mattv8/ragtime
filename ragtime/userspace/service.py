@@ -29,132 +29,78 @@ from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.git import create_repository, parse_git_url
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
-    USERSPACE_MOUNT_WATCH_JITTER_SECONDS,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    check_remote_rsync_available,
-    execute_ssh_command,
-    is_rsync_missing_error,
-    preview_ssh_directory_sync,
-    rsync_ssh_directory,
-    ssh_config_from_dict,
-    ssh_tunnel_config_from_dict,
-    sync_ssh_directory,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
+                              USERSPACE_MOUNT_WATCH_JITTER_SECONDS, SSHTunnel,
+                              build_ssh_tunnel_config,
+                              check_remote_rsync_available,
+                              execute_ssh_command, is_rsync_missing_error,
+                              preview_ssh_directory_sync, rsync_ssh_directory,
+                              ssh_config_from_dict,
+                              ssh_tunnel_config_from_dict, sync_ssh_directory)
 from ragtime.core.workspace_ops import (
-    PLATFORM_MANAGED_GITIGNORE_PATTERNS,
-    WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
-    compute_file_hash,
-    deduplicate_ancestor_paths,
-    sync_scope_relative_paths,
+    PLATFORM_MANAGED_GITIGNORE_PATTERNS, WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
+    compute_file_hash, deduplicate_ancestor_paths, sync_scope_relative_paths,
     workspace_mount_target_repo_relative_path,
-    workspace_path_matches_mount_prefix,
-)
+    workspace_path_matches_mount_prefix)
 from ragtime.indexer.file_utils import build_authenticated_git_url
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
 from ragtime.userspace.models import (
-    ArtifactType,
-    BrowseUserspaceMountSourceRequest,
+    ArtifactType, BrowseUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
-    CreateUserSpaceObjectStorageBucketRequest,
-    CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest,
-    DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse,
-    DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    MountableSource,
-    MountSourceAffectedWorkspace,
-    MountSourceAffectedWorkspacesResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqliteImportResponse,
-    SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
+    CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest, DeleteUserspaceMountSourceResponse,
+    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse, ExecuteComponentRequest,
+    ExecuteComponentResponse, MountableSource, MountSourceAffectedWorkspace,
+    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
+    ShareAccessMode, SqliteImportResponse, SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
-    UpdateUserSpaceObjectStorageBucketRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserspaceMountBackend,
-    UserspaceMountSource,
-    UserspaceMountSourceType,
-    UserSpaceObjectStorageBucket,
-    UserSpaceObjectStorageConfig,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotBranch,
-    UserSpaceSnapshotDiffFileSummary,
-    UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceEnvVar,
+    UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest, UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest, UserSpaceFileInfo, UserSpaceFileResponse,
+    UserSpaceLiveDataCheck, UserSpaceLiveDataConnection, UserspaceMountBackend,
+    UserspaceMountSource, UserspaceMountSourceType,
+    UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig,
+    UserSpaceSharedPreviewResponse, UserSpaceSnapshot, UserSpaceSnapshotBranch,
+    UserSpaceSnapshotDiffFileSummary, UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceEnvVar,
     UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
-    UserSpaceWorkspaceScmExportRequest,
-    UserSpaceWorkspaceScmImportRequest,
-    UserSpaceWorkspaceScmPreviewRequest,
-    UserSpaceWorkspaceScmPreviewResponse,
-    UserSpaceWorkspaceScmStatus,
-    UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceMount,
-    WorkspaceMountBrowseRequest,
-    WorkspaceMountBrowseResponse,
-    WorkspaceMountDirectoryEntry,
-    WorkspaceMountSyncMode,
-    WorkspaceMountSyncPreviewRequest,
-    WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest,
-    WorkspaceMountSyncResponse,
-    WorkspaceScmDirection,
-    WorkspaceScmPreviewState,
-    WorkspaceScmProvider,
-    WorkspaceShareSlugAvailabilityResponse,
-)
-from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
-from ragtime.userspace.sqlite_import import (
-    _MAX_IMPORT_SIZE_BYTES,
-    SqlImportResult,
-    detect_binary_pg_dump,
-    detect_sql_dialect,
-    import_sql_to_sqlite,
-)
+    UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceDeleteTaskPhase, WorkspaceMember, WorkspaceMount,
+    WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
+    WorkspaceMountDirectoryEntry, WorkspaceMountSyncMode,
+    WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
+    WorkspaceScmDirection, WorkspaceScmPreviewState, WorkspaceScmProvider,
+    WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.preview_host import \
+    invalidate_preview_sessions_for_workspace
+from ragtime.userspace.sqlite_import import (_MAX_IMPORT_SIZE_BYTES,
+                                             SqlImportResult,
+                                             detect_binary_pg_dump,
+                                             detect_sql_dialect,
+                                             import_sql_to_sqlite)
 
 logger = get_logger(__name__)
 
@@ -259,6 +205,41 @@ class _WorkspaceScmPreviewRecord:
         self.expires_at = expires_at
 
 
+class _WorkspaceDeleteTaskRecord:
+    """In-memory status for an asynchronous workspace delete task."""
+
+    __slots__ = (
+        "task_id",
+        "workspace_id",
+        "workspace_name",
+        "requested_by_user_id",
+        "phase",
+        "error",
+        "queued_at",
+        "updated_at",
+    )
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        workspace_id: str,
+        workspace_name: str,
+        requested_by_user_id: str,
+        phase: WorkspaceDeleteTaskPhase,
+        queued_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        self.task_id = task_id
+        self.workspace_id = workspace_id
+        self.workspace_name = workspace_name
+        self.requested_by_user_id = requested_by_user_id
+        self.phase = phase
+        self.error: str | None = None
+        self.queued_at = queued_at
+        self.updated_at = updated_at
+
+
 class _NonUtf8WorkspaceFileError(Exception):
     __slots__ = ("file_path",)
 
@@ -297,6 +278,7 @@ _WORKSPACE_ENV_VAR_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WORKSPACE_ENV_VAR_MAX_COUNT = 200
 _WORKSPACE_SCM_PREVIEW_TTL_SECONDS = 300
 _WORKSPACE_SCM_PREVIEW_SAMPLE_LIMIT = 100
+_WORKSPACE_DELETE_TASK_TTL_SECONDS = 300
 
 _MODULE_SOURCE_EXTENSIONS = (
     ".ts",
@@ -670,6 +652,17 @@ class UserSpaceService:
             str, asyncio.Task[WorkspaceMountSyncResponse]
         ] = {}
         self._workspace_mount_sync_tasks_lock = asyncio.Lock()
+        # Limit concurrent workspace deletions; each can stop a runtime and
+        # remove a workspace tree from disk.
+        self._workspace_delete_semaphore = asyncio.Semaphore(
+            self._positive_int_env("USERSPACE_DELETE_CONCURRENCY", 2)
+        )
+        self._workspace_delete_tasks: dict[str, asyncio.Task[None]] = {}
+        self._workspace_delete_task_statuses: dict[
+            str, _WorkspaceDeleteTaskRecord
+        ] = {}
+        self._workspace_delete_active_task_ids_by_workspace: dict[str, str] = {}
+        self._workspace_delete_tasks_lock = asyncio.Lock()
         self._workspace_mount_operation_locks: dict[str, asyncio.Lock] = {}
         self._workspace_mount_operation_locks_lock = asyncio.Lock()
         self._workspace_mount_sync_previews: dict[
@@ -954,6 +947,165 @@ class UserSpaceService:
         task: asyncio.Task[WorkspaceMountSyncResponse],
     ) -> None:
         task.add_done_callback(partial(self._prune_workspace_mount_sync_task, mount_id))
+
+    def _prune_workspace_delete_task(
+        self,
+        task_id: str,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._workspace_delete_tasks.get(task_id) is task:
+            self._workspace_delete_tasks.pop(task_id, None)
+        if self._workspace_delete_active_task_ids_by_workspace.get(workspace_id) == task_id:
+            self._workspace_delete_active_task_ids_by_workspace.pop(workspace_id, None)
+
+    def _attach_workspace_delete_task_cleanup(
+        self,
+        task_id: str,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        task.add_done_callback(
+            partial(self._prune_workspace_delete_task, task_id, workspace_id)
+        )
+
+    def _prune_expired_workspace_delete_task_statuses(self) -> None:
+        cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_DELETE_TASK_TTL_SECONDS)
+        for task_id, record in list(self._workspace_delete_task_statuses.items()):
+            if record.phase not in {"completed", "failed"}:
+                continue
+            if record.updated_at > cutoff:
+                continue
+            self._workspace_delete_task_statuses.pop(task_id, None)
+
+    @staticmethod
+    def _workspace_delete_task_model(
+        record: _WorkspaceDeleteTaskRecord,
+    ) -> UserSpaceWorkspaceDeleteTask:
+        return UserSpaceWorkspaceDeleteTask(
+            task_id=record.task_id,
+            workspace_id=record.workspace_id,
+            workspace_name=record.workspace_name,
+            phase=cast(WorkspaceDeleteTaskPhase, record.phase),
+            error=record.error,
+            queued_at=record.queued_at,
+            updated_at=record.updated_at,
+        )
+
+    def _set_workspace_delete_task_phase(
+        self,
+        task_id: str,
+        phase: WorkspaceDeleteTaskPhase,
+        *,
+        error: str | None = None,
+    ) -> None:
+        record = self._workspace_delete_task_statuses.get(task_id)
+        if record is None:
+            return
+        record.phase = phase
+        record.updated_at = _utc_now()
+        record.error = error if phase == "failed" else None
+
+    async def _run_workspace_delete_task(
+        self,
+        task_id: str,
+        workspace_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> None:
+        try:
+            async with self._workspace_delete_semaphore:
+                self._set_workspace_delete_task_phase(
+                    task_id, "stopping_runtime"
+                )
+                from ragtime.userspace.runtime_service import \
+                    userspace_runtime_service
+
+                try:
+                    await userspace_runtime_service.stop_runtime_session(
+                        workspace_id, user_id
+                    )
+                except HTTPException as exc:
+                    if exc.status_code != 404:
+                        raise
+
+                self._set_workspace_delete_task_phase(
+                    task_id, "deleting_conversations"
+                )
+                await repository.delete_workspace_conversations(workspace_id)
+
+                self._set_workspace_delete_task_phase(task_id, "deleting_workspace")
+                await self.delete_workspace(
+                    workspace_id, user_id, is_admin=is_admin
+                )
+                self._set_workspace_delete_task_phase(task_id, "completed")
+        except Exception as exc:
+            detail = (
+                str(exc.detail)
+                if isinstance(exc, HTTPException)
+                else str(exc).strip() or "Failed to delete workspace"
+            )
+            logger.exception(
+                "Workspace delete task failed for %s: %s", workspace_id, detail
+            )
+            self._set_workspace_delete_task_phase(
+                task_id, "failed", error=detail
+            )
+
+    async def enqueue_workspace_delete_task(
+        self, workspace_id: str, user_id: str, *, is_admin: bool = False
+    ) -> UserSpaceWorkspaceDeleteTask:
+        workspace = await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="owner", is_admin=is_admin
+        )
+        self._prune_expired_workspace_delete_task_statuses()
+
+        async with self._workspace_delete_tasks_lock:
+            existing_task_id = self._workspace_delete_active_task_ids_by_workspace.get(
+                workspace_id
+            )
+            if existing_task_id is not None:
+                existing_record = self._workspace_delete_task_statuses.get(
+                    existing_task_id
+                )
+                if existing_record is not None:
+                    return self._workspace_delete_task_model(existing_record)
+
+            task_id = str(uuid4())
+            now = _utc_now()
+            record = _WorkspaceDeleteTaskRecord(
+                task_id=task_id,
+                workspace_id=workspace_id,
+                workspace_name=workspace.name,
+                requested_by_user_id=user_id,
+                phase="queued",
+                queued_at=now,
+                updated_at=now,
+            )
+            task = asyncio.create_task(
+                self._run_workspace_delete_task(
+                    task_id,
+                    workspace_id,
+                    user_id,
+                    is_admin=is_admin,
+                ),
+                name=f"userspace-workspace-delete:{workspace_id}",
+            )
+            self._attach_workspace_delete_task_cleanup(task_id, workspace_id, task)
+            self._workspace_delete_task_statuses[task_id] = record
+            self._workspace_delete_tasks[task_id] = task
+            self._workspace_delete_active_task_ids_by_workspace[workspace_id] = task_id
+            return self._workspace_delete_task_model(record)
+
+    async def get_workspace_delete_task(
+        self, task_id: str, user_id: str, *, is_admin: bool = False
+    ) -> UserSpaceWorkspaceDeleteTask:
+        self._prune_expired_workspace_delete_task_statuses()
+        record = self._workspace_delete_task_statuses.get(task_id)
+        if record is None or (record.requested_by_user_id != user_id and not is_admin):
+            raise HTTPException(status_code=404, detail="Delete task not found")
+        return self._workspace_delete_task_model(record)
 
     def _set_remote_rsync_availability(
         self,
@@ -2377,9 +2529,8 @@ class UserSpaceService:
                     ),
                 )
                 try:
-                    from ragtime.userspace.runtime_service import (
-                        userspace_runtime_service,
-                    )
+                    from ragtime.userspace.runtime_service import \
+                        userspace_runtime_service
 
                     await userspace_runtime_service.bump_workspace_generation(
                         workspace_id,
@@ -2405,7 +2556,8 @@ class UserSpaceService:
                 allow_destructive_auto_sync_approval=True,
             )
             try:
-                from ragtime.userspace.runtime_service import userspace_runtime_service
+                from ragtime.userspace.runtime_service import \
+                    userspace_runtime_service
 
                 await userspace_runtime_service.bump_workspace_generation(
                     workspace_id,
@@ -4785,9 +4937,8 @@ class UserSpaceService:
         request: "UserSpaceWorkspaceScmSettingsRequest",
     ) -> UserSpaceWorkspaceScmStatus:
         """Update SCM relationship / policy settings without touching connection fields."""
-        from ragtime.userspace.models import (
-            UserSpaceWorkspaceScmSettingsRequest as _Req,
-        )  # noqa: F811
+        from ragtime.userspace.models import \
+            UserSpaceWorkspaceScmSettingsRequest as _Req  # noqa: F811
 
         await self._enforce_workspace_access(
             workspace_id, user_id, required_role="owner"
@@ -7597,7 +7748,8 @@ class UserSpaceService:
         mount_id: str,
     ) -> str | None:
         try:
-            from ragtime.userspace.runtime_service import userspace_runtime_service
+            from ragtime.userspace.runtime_service import \
+                userspace_runtime_service
 
             return await userspace_runtime_service.refresh_workspace_mount_after_sync(
                 workspace_id,
