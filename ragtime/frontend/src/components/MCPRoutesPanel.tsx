@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/api';
+import { useToast, ToastContainer } from './shared/Toast';
 import type {
   McpRouteConfig,
   CreateMcpRouteRequest,
@@ -1101,8 +1102,7 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
   const [documentIndexes, setDocumentIndexes] = useState<IndexInfo[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [toasts, toast] = useToast();
 
   // Route wizard state
   const [showRouteWizard, setShowRouteWizard] = useState(false);
@@ -1128,7 +1128,6 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
   // Load routes, filters, tools, indexes, and settings
   const loadData = useCallback(async () => {
     setLoading(true);
-    setError(null);
 
     try {
       const [routesRes, filtersRes, toolsRes, indexesRes, settingsRes] = await Promise.all([
@@ -1144,7 +1143,7 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
       setDocumentIndexes(indexesRes);
       setSettings(settingsRes.settings);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load MCP configuration');
+      toast.error(err instanceof Error ? err.message : 'Failed to load MCP configuration');
     } finally {
       setLoading(false);
     }
@@ -1160,15 +1159,14 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
     try {
       if (routeId) {
         await api.updateMcpRoute(routeId, data as UpdateMcpRouteRequest);
-        setSuccess('Route updated successfully');
+        toast.success('Route updated successfully');
       } else {
         await api.createMcpRoute(data as CreateMcpRouteRequest);
-        setSuccess('Route created successfully');
+        toast.success('Route created successfully');
       }
       setShowRouteWizard(false);
       setEditingRoute(null);
       await loadData();
-      setTimeout(() => setSuccess(null), 3000);
     } finally {
       setSavingRoute(false);
     }
@@ -1179,18 +1177,17 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
       await api.toggleMcpRoute(routeId, enabled);
       await loadData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to toggle route');
+      toast.error(err instanceof Error ? err.message : 'Failed to toggle route');
     }
   };
 
   const handleDeleteRoute = async (routeId: string) => {
     try {
       await api.deleteMcpRoute(routeId);
-      setSuccess('Route deleted successfully');
+      toast.success('Route deleted successfully');
       await loadData();
-      setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete route');
+      toast.error(err instanceof Error ? err.message : 'Failed to delete route');
     }
   };
 
@@ -1210,15 +1207,14 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
     try {
       if (filterId) {
         await api.updateMcpDefaultFilter(filterId, data as UpdateMcpDefaultRouteFilterRequest);
-        setSuccess('Filter updated successfully');
+        toast.success('Filter updated successfully');
       } else {
         await api.createMcpDefaultFilter(data as CreateMcpDefaultRouteFilterRequest);
-        setSuccess('Filter created successfully');
+        toast.success('Filter created successfully');
       }
       setShowFilterWizard(false);
       setEditingFilter(null);
       await loadData();
-      setTimeout(() => setSuccess(null), 3000);
     } finally {
       setSavingFilter(false);
     }
@@ -1229,18 +1225,17 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
       await api.toggleMcpDefaultFilter(filterId, enabled);
       await loadData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to toggle filter');
+      toast.error(err instanceof Error ? err.message : 'Failed to toggle filter');
     }
   };
 
   const handleDeleteFilter = async (filterId: string) => {
     try {
       await api.deleteMcpDefaultFilter(filterId);
-      setSuccess('Filter deleted successfully');
+      toast.success('Filter deleted successfully');
       await loadData();
-      setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete filter');
+      toast.error(err instanceof Error ? err.message : 'Failed to delete filter');
     }
   };
 
@@ -1332,8 +1327,7 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
       </div>
 
       <div className="modal-body">
-        {error && <div className="error-banner">{error}</div>}
-        {success && <div className="success-banner">{success}</div>}
+        <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
 
           <>
             {activeTab === 'custom-routes' && (

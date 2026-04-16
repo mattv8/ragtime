@@ -8,6 +8,7 @@ import { Icon, getToolIconType } from './Icon';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
 import { IndexingPill } from './IndexingPill';
+import { useToast, ToastContainer } from './shared/Toast';
 import { HardDrive, Trash2, Pencil, X } from 'lucide-react';
 
 // Inline field being edited
@@ -438,8 +439,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const [tools, setTools] = useState<ToolConfig[]>([]);
   const [groups, setGroups] = useState<ToolGroup[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [toasts, toast] = useToast();
   const [showWizard, setShowWizard] = useState(false);
   const [editingTool, setEditingTool] = useState<ToolConfig | null>(null);
   const [testingToolId, setTestingToolId] = useState<string | null>(null);
@@ -476,9 +476,8 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       setTools(connectionTools);
       setGroups(groupData);
       setMountSources(sources);
-      setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load tools');
+      toast.error(err instanceof Error ? err.message : 'Failed to load tools');
     } finally {
       setLoading(false);
     }
@@ -583,18 +582,16 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     setShowWizard(false);
     setEditingTool(null);
     await loadTools();
-    setSuccess('Tool configuration saved successfully');
-    setTimeout(() => setSuccess(null), 3000);
+    toast.success('Tool configuration saved successfully');
   };
 
   const handleDeleteTool = async (toolId: string) => {
     try {
       await api.deleteToolConfig(toolId);
       await loadTools();
-      setSuccess('Tool deleted successfully');
-      setTimeout(() => setSuccess(null), 3000);
+      toast.success('Tool deleted successfully');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete tool');
+      toast.error(err instanceof Error ? err.message : 'Failed to delete tool');
     }
   };
 
@@ -603,7 +600,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       await api.toggleToolConfig(toolId, enabled);
       await loadTools();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to toggle tool');
+      toast.error(err instanceof Error ? err.message : 'Failed to toggle tool');
     }
   };
 
@@ -613,16 +610,12 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       const result = await api.testSavedToolConnection(toolId);
       await loadTools();
       if (result.success) {
-        setSuccess('Connection test successful');
+        toast.success('Connection test successful');
       } else {
-        setError(`Connection test failed: ${result.message}`);
+        toast.error(`Connection test failed: ${result.message}`);
       }
-      setTimeout(() => {
-        setSuccess(null);
-        setError(null);
-      }, 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Test failed');
+      toast.error(err instanceof Error ? err.message : 'Test failed');
     } finally {
       setTestingToolId(null);
     }
@@ -631,13 +624,11 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const handlePdmReindex = async (toolId: string, fullReindex: boolean) => {
     try {
       setPdmIndexingToolId(toolId);
-      setSuccess(fullReindex ? 'Starting full PDM re-index...' : 'Starting PDM index update...');
+      toast.success(fullReindex ? 'Starting full PDM re-index...' : 'Starting PDM index update...');
       await api.triggerPdmIndex(toolId, fullReindex);
-      setSuccess(fullReindex ? 'Full PDM re-index started' : 'PDM index update started');
-      setTimeout(() => setSuccess(null), 3000);
+      toast.success(fullReindex ? 'Full PDM re-index started' : 'PDM index update started');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to trigger PDM index');
-      setTimeout(() => setError(null), 5000);
+      toast.error(err instanceof Error ? err.message : 'Failed to trigger PDM index');
     } finally {
       setPdmIndexingToolId(null);
     }
@@ -646,17 +637,15 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const handleSchemaReindex = async (toolId: string, fullReindex: boolean) => {
     try {
       setSchemaIndexingToolId(toolId);
-      setSuccess('Starting schema re-index...');
+      toast.success('Starting schema re-index...');
       await api.triggerSchemaIndex(toolId, fullReindex);
-      setSuccess('Schema re-index started');
+      toast.success('Schema re-index started');
       // Notify parent to refresh schema jobs list
       onSchemaJobTriggered?.();
       // Refresh schema stats after a short delay to allow job to start
       setTimeout(() => loadSchemaStats(tools), 2000);
-      setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to trigger schema index');
-      setTimeout(() => setError(null), 5000);
+      toast.error(err instanceof Error ? err.message : 'Failed to trigger schema index');
     } finally {
       setSchemaIndexingToolId(null);
     }
@@ -667,14 +656,12 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       await api.updateToolConfig(toolId, updates);
       await loadTools();
       if (updates.name) {
-        setSuccess('Tool name updated');
+        toast.success('Tool name updated');
       } else {
-        setSuccess('Description updated');
+        toast.success('Description updated');
       }
-      setTimeout(() => setSuccess(null), 2000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update');
-      setTimeout(() => setError(null), 3000);
+      toast.error(err instanceof Error ? err.message : 'Failed to update');
       throw err; // Re-throw to let ToolCard know the save failed
     }
   };
@@ -690,8 +677,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
         setEditingGroupName('Untitled Group');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create group');
-      setTimeout(() => setError(null), 3000);
+      toast.error(err instanceof Error ? err.message : 'Failed to create group');
     }
   };
 
@@ -703,8 +689,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       setEditingGroupId(null);
       await loadTools();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to rename group');
-      setTimeout(() => setError(null), 3000);
+      toast.error(err instanceof Error ? err.message : 'Failed to rename group');
     }
   };
 
@@ -712,11 +697,9 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     try {
       await api.deleteToolGroup(groupId);
       await loadTools();
-      setSuccess('Group deleted');
-      setTimeout(() => setSuccess(null), 2000);
+      toast.success('Group deleted');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete group');
-      setTimeout(() => setError(null), 3000);
+      toast.error(err instanceof Error ? err.message : 'Failed to delete group');
     }
   };
 
@@ -725,8 +708,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       await api.updateToolConfig(toolId, { group_id: groupId ?? '' });
       await loadTools();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to assign group');
-      setTimeout(() => setError(null), 3000);
+      toast.error(err instanceof Error ? err.message : 'Failed to assign group');
     }
   };
 
@@ -805,22 +787,18 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     });
     setShowMountSourceWizard(false);
     setEditingMountSource(null);
-    setSuccess(saved.id === editingMountSource?.id ? 'Mount source updated.' : 'Mount source created.');
-    setTimeout(() => setSuccess(null), 5000);
+    toast.success(saved.id === editingMountSource?.id ? 'Mount source updated.' : 'Mount source created.', 5000);
   }, [editingMountSource]);
 
   const handleDeleteMountSource = useCallback(async (mountSourceId: string) => {
     setMountSourceDeletingId(mountSourceId);
-    setSuccess(null);
-    setError(null);
 
     try {
       await api.deleteUserspaceMountSource(mountSourceId);
       setMountSources((current) => current.filter((source) => source.id !== mountSourceId));
-      setSuccess('Mount source deleted.');
-      setTimeout(() => setSuccess(null), 5000);
+      toast.success('Mount source deleted.', 5000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete mount source');
+      toast.error(err instanceof Error ? err.message : 'Failed to delete mount source');
     } finally {
       setMountSourceDeletingId(null);
     }
@@ -849,7 +827,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       setMountSources((current) =>
         current.map((s) => s.id === source.id ? { ...s, enabled: source.enabled } : s)
       );
-      setError(err instanceof Error ? err.message : 'Failed to update mount source');
+      toast.error(err instanceof Error ? err.message : 'Failed to update mount source');
     }
   }, []);
 
@@ -869,7 +847,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       setMountSources((current) =>
         current.map((s) => s.id === source.id ? { ...s, enabled: true } : s)
       );
-      setError(err instanceof Error ? err.message : 'Failed to disable mount source');
+      toast.error(err instanceof Error ? err.message : 'Failed to disable mount source');
     }
   }, [disableConfirmation]);
 
@@ -985,8 +963,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
           />
         ) : (
           <>
-        {error && <div className="error-banner">{error}</div>}
-        {success && <div className="success-banner">{success}</div>}
+        <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
 
         <p className="fieldset-help">
           Configure connections to databases, shells, and other tools that the AI can use during conversations.

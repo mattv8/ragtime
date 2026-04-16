@@ -27,6 +27,19 @@
   :root { --container-max-width: 1320px; }
 }
 
+/* Narrow desktop breakpoint (995px and below) — collapse user-menu to avatar only */
+@media (max-width: 995px) {
+  .user-menu-name,
+  .user-menu-chevron,
+  .user-menu-trigger .admin-badge {
+    display: none;
+  }
+
+  .user-menu-trigger {
+    padding: var(--space-xs);
+  }
+}
+
 /* Tablet breakpoint (768px and below) */
 @media (max-width: 768px) {
   body {

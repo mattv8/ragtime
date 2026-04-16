@@ -30,6 +30,7 @@ import { WorkspaceRowList } from './shared/WorkspaceRowList';
 import { DataTable, type DataTableColumn, type TableSortConfig } from './shared/DataTable';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
+import { useToast, ToastContainer } from './shared/Toast';
 import { formatProviderDisplayName, formatModelDisplayName } from '@/utils/modelDisplay';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Filler, Tooltip, Legend);
@@ -187,7 +188,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   const [workspaceStateById, setWorkspaceStateById] = useState<Record<string, WorkspaceConversationStateSummaryItem>>({});
 
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [toasts, toast] = useToast();
 
   const [usageSummary, setUsageSummary] = useState<UserUsageSummary[]>([]);
   const [providerBreakdown, setProviderBreakdown] = useState<ProviderModelBreakdown[]>([]);
@@ -307,14 +308,13 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
 
   const loadManagementData = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       await Promise.all([
         loadUsers(),
         loadWorkspaces(),
       ]);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load users data');
+      toast.error(e instanceof Error ? e.message : 'Failed to load users data');
     } finally {
       setLoading(false);
     }
@@ -332,7 +332,6 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     usageRequestIdRef.current = requestId;
 
     setUsageLoading(true);
-    setError(null);
     try {
       const [summaryRes, providersRes, dailyRes, apiRes, mcpRes, rangeRes] = await Promise.all([
         api.getUsageSummary(d),
@@ -378,7 +377,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       applyUsageSnapshot(snapshot);
       usageCacheRef.current[d] = snapshot;
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load usage data');
+      toast.error(e instanceof Error ? e.message : 'Failed to load usage data');
     } finally {
       if (requestId === usageRequestIdRef.current) {
         setUsageLoading(false);
@@ -415,7 +414,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       await api.updateUserRole(userId, newRole);
       setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, role: newRole, role_manually_set: true } : u)));
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to update role');
+      toast.error(e instanceof Error ? e.message : 'Failed to update role');
     } finally {
       setActionLoading(null);
     }
@@ -429,7 +428,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
         u.id === userId ? { ...u, role: response.role, role_manually_set: response.role_manually_set } : u
       )));
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to reset role override');
+      toast.error(e instanceof Error ? e.message : 'Failed to reset role override');
     } finally {
       setActionLoading(null);
     }
@@ -441,7 +440,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       await api.deleteUser(userId);
       setUsers((prev) => prev.filter((u) => u.id !== userId));
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to delete user');
+      toast.error(e instanceof Error ? e.message : 'Failed to delete user');
     } finally {
       setActionLoading(null);
     }
@@ -462,7 +461,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
         return next;
       });
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to delete workspace');
+      toast.error(e instanceof Error ? e.message : 'Failed to delete workspace');
       throw e;
     }
   };
@@ -472,7 +471,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       const updated = await api.updateUserSpaceWorkspace(workspaceId, { owner_user_id: newOwnerId });
       setWorkspaces((prev) => prev.map((ws) => (ws.id === workspaceId ? updated : ws)));
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to transfer workspace ownership');
+      toast.error(e instanceof Error ? e.message : 'Failed to transfer workspace ownership');
       throw e;
     }
   };
@@ -500,7 +499,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       }
       setStorageByWorkspaceId((prev) => ({ ...prev, ...updates }));
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to compute workspace storage usage');
+      toast.error(e instanceof Error ? e.message : 'Failed to compute workspace storage usage');
     } finally {
       setStorageLoadingByUserId((prev) => ({ ...prev, [userId]: false }));
     }
@@ -1418,22 +1417,12 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
         )}
       </div>
 
+      <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
+
       {loading ? (
         <div className="card"><div className="card-body"><p>Loading...</p></div></div>
       ) : activeTab === 'management' ? (
         <>
-          {error && (
-            <div className="users-error-banner" role="alert" aria-live="polite">
-              <span className="users-error-banner-text">{error}</span>
-              <button
-                type="button"
-                className="users-error-banner-dismiss"
-                onClick={() => setError(null)}
-              >
-                Dismiss
-              </button>
-            </div>
-          )}
           <div className="users-summary-row">
             <div className="users-summary-card">
               <div className="users-summary-value">{users.length}</div>
@@ -1628,18 +1617,6 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
         <div className="card"><div className="card-body"><p>Loading usage data...</p></div></div>
       ) : (
         <>
-          {error && (
-            <div className="users-error-banner" role="alert" aria-live="polite">
-              <span className="users-error-banner-text">{error}</span>
-              <button
-                type="button"
-                className="users-error-banner-dismiss"
-                onClick={() => setError(null)}
-              >
-                Dismiss
-              </button>
-            </div>
-          )}
           <div className="users-summary-row">
             <div className="users-summary-card">
               <div className="users-summary-value">{users.length}</div>

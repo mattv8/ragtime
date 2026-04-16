@@ -6,6 +6,7 @@ import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
+import { useToast, ToastContainer } from './shared/Toast';
 
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import {
@@ -252,8 +253,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [userspacePreviewSettings, setUserspacePreviewSettings] = useState<UserSpacePreviewSettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [toasts, toast] = useToast();
   const [settingsFilterTags, setSettingsFilterTags] = useState<string[]>([]);
   const [settingsFilterInput, setSettingsFilterInput] = useState('');
   const [debouncedFilterInput, setDebouncedFilterInput] = useState('');
@@ -586,8 +586,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           setCopilotWizardVisible(false);
           setCopilotWizardStep(1);
           await refreshCopilotStatus();
-          setSuccess('GitHub Copilot connected successfully');
-          setTimeout(() => setSuccess(null), 3000);
+          toast.success('GitHub Copilot connected successfully');
           const selectedProvider = formData.llm_provider || 'openai';
           if (selectedProvider === 'github_copilot') {
             await fetchCopilotModels();
@@ -665,8 +664,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       await api.clearCopilotAuth();
       await refreshCopilotStatus();
       resetLlmModelsState();
-      setSuccess('GitHub Copilot connection removed');
-      setTimeout(() => setSuccess(null), 3000);
+      toast.success('GitHub Copilot connection removed');
     } catch (err) {
       setLlmModelsError(err instanceof Error ? err.message : 'Failed to clear GitHub Copilot auth');
     }
@@ -691,10 +689,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         document.execCommand('copy');
         document.body.removeChild(textarea);
       }
-      setSuccess('Device code copied');
+      toast.success('Device code copied');
       setCopilotCodeCopied(true);
       setTimeout(() => setCopilotCodeCopied(false), 2000);
-      setTimeout(() => setSuccess(null), 2000);
     } catch {
       setLlmModelsError('Unable to copy device code. Please copy it manually.');
     }
@@ -847,12 +844,11 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     try {
       await api.updateSettings({ allowed_chat_models: allowedModels });
       setShowModelFilterModal(false);
-      setSuccess('Model filter saved');
+      toast.success('Model filter saved');
       refreshModels();
       await refreshDefaultChatModelPreview();
-      setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save model filter');
+      toast.error(err instanceof Error ? err.message : 'Failed to save model filter');
     }
   };
 
@@ -892,10 +888,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     try {
       await api.updateSettings({ allowed_openapi_models: allowedModels });
       setShowOpenapiModelModal(false);
-      setSuccess('OpenAPI model filter saved');
-      setTimeout(() => setSuccess(null), 3000);
+      toast.success('OpenAPI model filter saved');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save OpenAPI model filter');
+      toast.error(err instanceof Error ? err.message : 'Failed to save OpenAPI model filter');
     }
   };
 
@@ -986,7 +981,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setCopilotRequestId(null);
       setCopilotDeviceCode('');
       setCopilotVerificationUri('');
-      setError(null);
+      toast.clear();
       setCopilotAuthMode(data.github_models_api_token ? 'pat' : 'oauth');
 
       // Form is ready — show the page immediately; remaining fetches are lazy.
@@ -1078,7 +1073,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           setLdapConfig(null);
         });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load settings');
+      toast.error(err instanceof Error ? err.message : 'Failed to load settings');
       setLoading(false);
     }
   }, [
@@ -1183,7 +1178,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   // Save LDAP configuration
   const handleSaveLdapConfig = async () => {
     setLdapSaving(true);
-    setError(null);
 
     try {
       const serverUrl = buildServerUrl();
@@ -1199,10 +1193,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         user_group_dn: ldapFormData.user_group_dn,
       });
       setLdapConfig(updated);
-      setSuccess('LDAP configuration saved successfully');
-      setTimeout(() => setSuccess(null), 3000);
+      toast.success('LDAP configuration saved successfully');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save LDAP configuration');
+      toast.error(err instanceof Error ? err.message : 'Failed to save LDAP configuration');
     } finally {
       setLdapSaving(false);
     }
@@ -1216,13 +1209,11 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [brandingSaving, setBrandingSaving] = useState(false);
   const handleSaveBranding = async () => {
     setBrandingSaving(true);
-    setSuccess(null);
-    setError(null);
 
     try {
       const normalizedServerName = (formData.server_name || '').trim();
       if (!normalizedServerName) {
-        setError('Server name cannot be empty');
+        toast.error('Server name cannot be empty');
         return;
       }
 
@@ -1255,10 +1246,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       if (onServerNameChange && updated.server_name) {
         onServerNameChange(updated.server_name);
       }
-      setSuccess('Server branding saved');
-      setTimeout(() => setSuccess(null), 3000);
+      toast.success('Server branding saved');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save branding settings');
+      toast.error(err instanceof Error ? err.message : 'Failed to save branding settings');
     } finally {
       setBrandingSaving(false);
     }
@@ -1267,8 +1257,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   // Save Embedding Configuration
   const handleSaveEmbedding = async () => {
     setEmbeddingSaving(true);
-    setSuccess(null);
-    setError(null);
 
     try {
       const dataToSave: UpdateSettingsRequest = {
@@ -1295,10 +1283,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         ...prev,
         ...getEmbeddingSettingsFormData(updated),
       }));
-      setSuccess('Embedding configuration saved');
-      setTimeout(() => setSuccess(null), 3000);
+      toast.success('Embedding configuration saved');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save embedding settings');
+      toast.error(err instanceof Error ? err.message : 'Failed to save embedding settings');
     } finally {
       setEmbeddingSaving(false);
     }
@@ -1307,8 +1294,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   // Save LLM Configuration
   const handleSaveLlm = async () => {
     setLlmSaving(true);
-    setSuccess(null);
-    setError(null);
 
     try {
       const normalizedProvider = normalizeLlmProvider(formData.llm_provider);
@@ -1360,12 +1345,11 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       }
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
-      setSuccess('LLM configuration saved');
+      toast.success('LLM configuration saved');
       refreshModels();
       await refreshDefaultChatModelPreview();
-      setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save LLM settings');
+      toast.error(err instanceof Error ? err.message : 'Failed to save LLM settings');
     } finally {
       setLlmSaving(false);
     }
@@ -1375,8 +1359,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [searchSaving, setSearchSaving] = useState(false);
   const handleSaveSearch = async () => {
     setSearchSaving(true);
-    setSuccess(null);
-    setError(null);
 
     try {
       const dataToSave = {
@@ -1390,10 +1372,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
-      setSuccess('Search configuration saved. Restart the server to apply changes to search tools.');
-      setTimeout(() => setSuccess(null), 5000);
+      toast.success('Search configuration saved. Restart the server to apply changes to search tools.', 5000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save search settings');
+      toast.error(err instanceof Error ? err.message : 'Failed to save search settings');
     } finally {
       setSearchSaving(false);
     }
@@ -1405,7 +1386,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [showMcpPassword, setShowMcpPassword] = useState(false);
   const handleSaveMcp = async () => {
     setMcpSaving(true);
-    setSuccess(null);
     setMcpError(null);
 
     // Validate password if provided (not empty string which clears, and not undefined which skips)
@@ -1439,8 +1419,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         mcp_default_route_allowed_group: updated.mcp_default_route_allowed_group,
         mcp_default_route_password: updated.mcp_default_route_password ?? '',
       }));
-      setSuccess('MCP configuration saved.');
-      setTimeout(() => setSuccess(null), 5000);
+      toast.success('MCP configuration saved.', 5000);
     } catch (err) {
       setMcpError(err instanceof Error ? err.message : 'Failed to save MCP settings');
     } finally {
@@ -1552,8 +1531,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
   const handleSaveUserSpacePreviewSandbox = useCallback(async () => {
     setUserspaceSaving(true);
-    setSuccess(null);
-    setError(null);
 
     try {
       const updated = await api.updateSettings({
@@ -1564,10 +1541,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         ...prev,
         userspace_preview_sandbox_flags: updated.userspace_preview_sandbox_flags,
       }));
-      setSuccess('User Space preview sandbox settings saved.');
-      setTimeout(() => setSuccess(null), 5000);
+      toast.success('User Space preview sandbox settings saved.', 5000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save User Space preview sandbox settings');
+      toast.error(err instanceof Error ? err.message : 'Failed to save User Space preview sandbox settings');
     } finally {
       setUserspaceSaving(false);
     }
@@ -1576,8 +1552,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [staleBranchSaving, setStaleBranchSaving] = useState(false);
   const handleSaveStaleBranchThreshold = useCallback(async () => {
     setStaleBranchSaving(true);
-    setSuccess(null);
-    setError(null);
 
     try {
       const updated = await api.updateSettings({
@@ -1588,10 +1562,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         ...prev,
         snapshot_stale_branch_threshold: updated.snapshot_stale_branch_threshold,
       }));
-      setSuccess('User Space settings saved.');
-      setTimeout(() => setSuccess(null), 5000);
+      toast.success('User Space settings saved.', 5000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save stale branch threshold');
+      toast.error(err instanceof Error ? err.message : 'Failed to save stale branch threshold');
     } finally {
       setStaleBranchSaving(false);
     }
@@ -1917,8 +1890,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         )}
       </div>
 
-      {error && <div className="error-banner">{error}</div>}
-      {success && <div className="success-banner">{success}</div>}
+      <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
 
       <form
         ref={settingsFormRef}
