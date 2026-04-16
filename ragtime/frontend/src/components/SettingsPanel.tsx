@@ -13,6 +13,7 @@ import {
   getUserSpacePreviewSandboxFlagValues,
   normalizeUserSpacePreviewSandboxFlags,
 } from '@/utils/userspacePreview/sandbox';
+import { CHAT_MODEL_PROVIDER_LABELS, parseScopedModelIdentifier } from '@/utils/modelDisplay';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -161,14 +162,6 @@ function toggleScopedModelSelection(currentSelection: Set<string>, model: Availa
   return nextSelection;
 }
 
-const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
-  ollama: 'Ollama',
-  github_copilot: 'GitHub Copilot',
-  github_models: 'GitHub Copilot',
-};
-
 const AUTH_PROVIDER_OPTIONS = [
   {
     value: 'ldap',
@@ -176,21 +169,6 @@ const AUTH_PROVIDER_OPTIONS = [
     description: 'External directory authentication for shared identity and group-based access.',
   },
 ] as const;
-
-function parseScopedModelIdentifier(value: string | null | undefined): { provider: string | null; modelId: string } {
-  const raw = (value || '').trim();
-  if (!raw) {
-    return { provider: null, modelId: '' };
-  }
-  if (raw.includes('::')) {
-    const [provider, ...rest] = raw.split('::');
-    return {
-      provider: provider.trim() || null,
-      modelId: rest.join('::').trim(),
-    };
-  }
-  return { provider: null, modelId: raw };
-}
 
 function toScopedModelIdentifier(model: AvailableModel): string {
   return `${model.provider}::${model.id}`;

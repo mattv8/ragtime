@@ -16,6 +16,12 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
+from ragtime.core.usage_accounting import (
+    bind_usage_attempt_task,
+    finalize_stale_attempts_for_tasks,
+    finalize_usage_attempt,
+    _estimate_output_tokens,
+)
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import (
     ChatTaskStatus,
@@ -381,6 +387,12 @@ class BackgroundTaskService:
             if count > 0:
                 logger.info(f"Marked {count} stale task(s) as interrupted")
 
+                # Finalize any open usage attempts linked to these stale tasks
+                stale_task_ids = [t.id for t in stale_tasks]
+                usage_count = await finalize_stale_attempts_for_tasks(stale_task_ids)
+                if usage_count > 0:
+                    logger.info(f"Finalized {usage_count} stale usage attempt(s)")
+
         except Exception as e:
             logger.error(f"Failed to mark stale tasks as interrupted: {e}")
 
@@ -689,6 +701,7 @@ class BackgroundTaskService:
         existing_task_id: Optional[str] = None,
         blocked_tool_names: Optional[set[str]] = None,
         workspace_context: Optional[dict[str, str]] = None,
+        usage_attempt_id: Optional[str] = None,
     ) -> str:
         """
         Start a background task for processing a chat message.
@@ -697,6 +710,7 @@ class BackgroundTaskService:
             conversation_id: The conversation ID
             user_message: The user's message to process
             existing_task_id: Optional existing task ID to resume
+            usage_attempt_id: Optional usage tracking attempt ID
 
         Returns:
             The task ID
@@ -722,6 +736,10 @@ class BackgroundTaskService:
                 await repository.update_chat_task_status(
                     task_id, ChatTaskStatus.running
                 )
+
+                # Bind usage attempt to this task
+                if usage_attempt_id:
+                    await bind_usage_attempt_task(usage_attempt_id, task_id)
 
                 # Get conversation for chat history
                 conv = await repository.get_conversation(conversation_id)
@@ -1114,6 +1132,13 @@ class BackgroundTaskService:
                                 "error": error_message,
                             },
                         )
+                        if usage_attempt_id:
+                            await finalize_usage_attempt(
+                                usage_attempt_id,
+                                status="failed",
+                                failure_reason=error_message,
+                                output_tokens=_estimate_output_tokens(full_response, events),
+                            )
                         return
 
                 await repository.complete_chat_task(
@@ -1146,6 +1171,14 @@ class BackgroundTaskService:
                 )
 
                 logger.info(f"Background task {task_id} completed successfully")
+
+                # Finalize usage attempt on success
+                if usage_attempt_id:
+                    await finalize_usage_attempt(
+                        usage_attempt_id,
+                        status="completed",
+                        output_tokens=_estimate_output_tokens(full_response, events),
+                    )
 
             except asyncio.CancelledError:
                 # Save partial response before cancelling
@@ -1182,11 +1215,24 @@ class BackgroundTaskService:
                             },
                         )
                         logger.info(f"Task {task_id} interrupted by shutdown")
+                        if usage_attempt_id:
+                            await finalize_usage_attempt(
+                                usage_attempt_id,
+                                status="interrupted",
+                                failure_reason="Server shutdown",
+                                output_tokens=_estimate_output_tokens(full_response, events),
+                            )
                     else:
                         await repository.cancel_chat_task(task_id)
                         await task_event_bus.publish(
                             task_id, {"completed": True, "status": "cancelled"}
                         )
+                        if usage_attempt_id:
+                            await finalize_usage_attempt(
+                                usage_attempt_id,
+                                status="cancelled",
+                                output_tokens=_estimate_output_tokens(full_response, events),
+                            )
                 except Exception as db_err:
                     logger.warning(
                         f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}"
@@ -1216,6 +1262,13 @@ class BackgroundTaskService:
                         task_id,
                         {"completed": True, "status": "failed", "error": str(e)},
                     )
+                    if usage_attempt_id:
+                        await finalize_usage_attempt(
+                            usage_attempt_id,
+                            status="failed",
+                            failure_reason=str(e),
+                            output_tokens=_estimate_output_tokens(full_response, events),
+                        )
                 except Exception as db_err:
                     logger.warning(
                         f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}"
@@ -1242,6 +1295,7 @@ class BackgroundTaskService:
         user_message: str,
         blocked_tool_names: Optional[set[str]] = None,
         workspace_context: Optional[dict[str, str]] = None,
+        usage_attempt_id: Optional[str] = None,
     ) -> str:
         """
         Start a background task asynchronously.
@@ -1251,6 +1305,7 @@ class BackgroundTaskService:
         Args:
             conversation_id: The conversation ID
             user_message: The user's message to process
+            usage_attempt_id: Optional usage tracking attempt ID
 
         Returns:
             The task ID
@@ -1265,6 +1320,7 @@ class BackgroundTaskService:
             task.id,
             blocked_tool_names=blocked_tool_names,
             workspace_context=workspace_context,
+            usage_attempt_id=usage_attempt_id,
         )
 
         return task.id

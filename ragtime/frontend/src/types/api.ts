@@ -2683,3 +2683,89 @@ export interface SqliteImportResponse {
   warnings: string[];
   message: string;
 }
+
+// =============================================================================
+// Usage Dashboard Types
+// =============================================================================
+
+export interface UserUsageSummary {
+  user_id: string;
+  username: string;
+  display_name: string | null;
+  total_requests: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_tokens: number;
+  completed_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  interrupted_count: number;
+  started_count: number;
+}
+
+export interface ProviderModelBreakdown {
+  provider: string;
+  model: string;
+  total_requests: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_tokens: number;
+}
+
+export interface DailyUsageTrend {
+  date: string;
+  total_requests: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_tokens: number;
+  completed_count: number;
+  failed_count: number;
+}
+
+export interface UserDailyUsageSeriesPoint {
+  user_id: string;
+  username: string;
+  display_name: string | null;
+  date: string;
+  total_requests: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_tokens: number;
+}
+
+export interface UsageSummaryResponse {
+  users: UserUsageSummary[];
+  days: number;
+}
+
+export interface ProviderBreakdownResponse {
+  providers: ProviderModelBreakdown[];
+  days: number;
+}
+
+export interface DailyTrendResponse {
+  daily: DailyUsageTrend[];
+  days: number;
+}
+
+export interface UserDailySeriesResponse {
+  series: UserDailyUsageSeriesPoint[];
+  days: number;
+}
+
+export interface UsageRangeResponse {
+  earliest_date: string | null;
+}
+
+export interface ProviderDailyFailureCell {
+  date: string;
+  provider: string;
+  model: string;
+  failed_count: number;
+  interrupted_count: number;
+}
+
+export interface ProviderDailyFailuresResponse {
+  cells: ProviderDailyFailureCell[];
+  days: number;
+}

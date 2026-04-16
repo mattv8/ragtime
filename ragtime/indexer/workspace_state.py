@@ -1,4 +1,5 @@
 
+
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +9,6 @@ from ragtime.indexer.models import (ChatTask, ChatTaskResponse, Conversation,
                                     ConversationResponse,
                                     WorkspaceChatStateResponse)
 from ragtime.indexer.repository import repository
-
 
 def _to_conversation_response(conversation: Conversation) -> ConversationResponse:
     return ConversationResponse(

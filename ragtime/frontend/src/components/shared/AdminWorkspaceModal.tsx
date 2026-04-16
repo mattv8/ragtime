@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Check, ChevronDown, ChevronRight, Repeat, Trash2, X } from 'lucide-react';
+import { AlertCircle, ChevronDown, ChevronRight, X } from 'lucide-react';
 import { MiniLoadingSpinner } from './MiniLoadingSpinner';
+import { WorkspaceRowList } from './WorkspaceRowList';
 import { api } from '@/api';
 import type { User, UserSpaceWorkspace } from '@/types';
 import {
@@ -38,11 +39,6 @@ export function AdminWorkspaceModal({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [transferringId, setTransferringId] = useState<string | null>(null);
-  const [transferTargetUserId, setTransferTargetUserId] = useState<string | null>(null);
-  const [transferSaving, setTransferSaving] = useState(false);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [workspaceChatStates, setWorkspaceChatStates] = useState<Record<string, { hasLive: boolean; hasInterrupted: boolean }>>({});
   // Track previous raw interrupted state per workspace so we can detect
@@ -131,11 +127,6 @@ export function AdminWorkspaceModal({
 
   useEffect(() => {
     if (isOpen) {
-      setDeleteConfirmId(null);
-      setDeletingId(null);
-      setTransferringId(null);
-      setTransferTargetUserId(null);
-      setTransferSaving(false);
       void loadWorkspaces();
       void api.listUsers().then(setAllUsers).catch(() => {});
     }
@@ -177,7 +168,6 @@ export function AdminWorkspaceModal({
   }, []);
 
   const handleDelete = useCallback(async (workspaceId: string) => {
-    setDeletingId(workspaceId);
     try {
       await api.deleteUserSpaceWorkspace(workspaceId);
       setWorkspaces((prev) => prev.filter((ws) => ws.id !== workspaceId));
@@ -185,24 +175,18 @@ export function AdminWorkspaceModal({
       onWorkspaceDeleted(workspaceId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete workspace');
-    } finally {
-      setDeletingId(null);
-      setDeleteConfirmId(null);
+      throw err;
     }
   }, [onWorkspaceDeleted]);
 
   const handleTransfer = useCallback(async (workspaceId: string, newOwnerId: string) => {
-    setTransferSaving(true);
     try {
       const updated = await api.updateUserSpaceWorkspace(workspaceId, { owner_user_id: newOwnerId });
       setWorkspaces((prev) => prev.map((ws) => (ws.id === workspaceId ? updated : ws)));
-      setTransferringId(null);
-      setTransferTargetUserId(null);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to transfer ownership');
-    } finally {
-      setTransferSaving(false);
+      throw err;
     }
   }, []);
 
@@ -247,134 +231,29 @@ export function AdminWorkspaceModal({
                       <span className="admin-ws-group-count">{group.workspaces.length}</span>
                     </button>
                     {!isCollapsed && (
-                      <div className="admin-ws-group-list">
-                        {group.workspaces.map((ws) => {
-                          const isOwn = ws.owner_user_id === currentUser.id;
-                          const isConfirming = deleteConfirmId === ws.id;
-                          const isDeleting = deletingId === ws.id;
-                          const isTransferring = transferringId === ws.id;
-                          return (
-                            <div key={ws.id} className="admin-ws-item-wrapper">
-                              <div className="admin-ws-item">
-                                <button
-                                  type="button"
-                                  className="admin-ws-item-select"
-                                  disabled={Boolean(deletingId) || transferSaving}
-                                  onClick={() => handleSelect(ws)}
-                                  title={`Open workspace: ${ws.name}`}
-                                >
-                                  <span className="admin-ws-item-name">{ws.name}</span>
-                                  {isOwn && <span className="admin-ws-badge-own">You</span>}
-                                  {workspaceChatStates[ws.id]?.hasLive && (
-                                    <MiniLoadingSpinner variant="icon" size={14} title="Chat in progress" />
-                                  )}
-                                  {!workspaceChatStates[ws.id]?.hasLive && workspaceChatStates[ws.id]?.hasInterrupted && (
-                                    <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
-                                      <AlertCircle size={13} />
-                                    </span>
-                                  )}
-                                  <span className="admin-ws-item-date">
-                                    {new Date(ws.updated_at).toLocaleDateString()}
-                                  </span>
-                                </button>
-                                <div className="admin-ws-item-actions">
-                                  <button
-                                    type="button"
-                                    className="chat-action-btn"
-                                    disabled={Boolean(deletingId) || transferSaving}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      if (isTransferring) {
-                                        setTransferringId(null);
-                                        setTransferTargetUserId(null);
-                                      } else {
-                                        setTransferringId(ws.id);
-                                        setTransferTargetUserId(null);
-                                        setDeleteConfirmId(null);
-                                      }
-                                    }}
-                                    title="Transfer ownership"
-                                  >
-                                    <Repeat size={12} />
-                                  </button>
-                                  {isConfirming ? (
-                                  <>
-                                    <button
-                                      type="button"
-                                      className="chat-action-btn confirm-delete"
-                                      disabled={Boolean(deletingId)}
-                                      onClick={(e) => { e.stopPropagation(); void handleDelete(ws.id); }}
-                                      title="Confirm delete"
-                                    >
-                                      {isDeleting ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="chat-action-btn cancel-delete"
-                                      disabled={Boolean(deletingId)}
-                                      onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(null); }}
-                                      title="Cancel"
-                                    >
-                                      <X size={12} />
-                                    </button>
-                                  </>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className="chat-action-btn"
-                                    disabled={Boolean(deletingId)}
-                                    onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(ws.id); }}
-                                    title="Delete workspace"
-                                  >
-                                    <Trash2 size={12} />
-                                  </button>
-                                )}
-                              </div>
-                              </div>
-                              {isTransferring && (
-                                <div className="admin-ws-transfer-row">
-                                  <select
-                                    className="admin-ws-transfer-select"
-                                    value={transferTargetUserId ?? ''}
-                                    onChange={(e) => setTransferTargetUserId(e.target.value || null)}
-                                    disabled={transferSaving}
-                                  >
-                                    <option value="">Select new owner...</option>
-                                    {allUsers
-                                      .filter((u) => u.id !== ws.owner_user_id)
-                                      .map((u) => (
-                                        <option key={u.id} value={u.id}>
-                                          {u.display_name && u.display_name !== u.username
-                                            ? `${u.display_name} (@${u.username})`
-                                            : `@${u.username}`}
-                                        </option>
-                                      ))}
-                                  </select>
-                                  <button
-                                    type="button"
-                                    className="btn btn-primary btn-sm"
-                                    disabled={!transferTargetUserId || transferSaving}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      if (transferTargetUserId) void handleTransfer(ws.id, transferTargetUserId);
-                                    }}
-                                  >
-                                    {transferSaving ? <MiniLoadingSpinner variant="icon" size={12} /> : 'Transfer'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn btn-secondary btn-sm"
-                                    disabled={transferSaving}
-                                    onClick={(e) => { e.stopPropagation(); setTransferringId(null); setTransferTargetUserId(null); }}
-                                  >
-                                    Cancel
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
+                      <WorkspaceRowList
+                        workspaces={group.workspaces}
+                        users={allUsers}
+                        onTransfer={handleTransfer}
+                        onDelete={handleDelete}
+                        onSelect={handleSelect}
+                        renderMeta={(ws) => (
+                          <>
+                            {ws.owner_user_id === currentUser.id && <span className="admin-ws-badge-own">You</span>}
+                            {workspaceChatStates[ws.id]?.hasLive && (
+                              <MiniLoadingSpinner variant="icon" size={14} title="Chat in progress" />
+                            )}
+                            {!workspaceChatStates[ws.id]?.hasLive && workspaceChatStates[ws.id]?.hasInterrupted && (
+                              <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
+                                <AlertCircle size={13} />
+                              </span>
+                            )}
+                            <span className="admin-ws-item-date">
+                              {new Date(ws.updated_at).toLocaleDateString()}
+                            </span>
+                          </>
+                        )}
+                      />
                     )}
                   </div>
                 );

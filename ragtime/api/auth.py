@@ -8,29 +8,50 @@ import asyncio
 import base64
 import hashlib
 import time
+from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import urlparse
 
-from fastapi import (APIRouter, Depends, Form, HTTPException, Query, Request,
-                     Response, status)
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse
-from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
+from prisma import Json
 from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings
-from ragtime.core.auth import (authenticate, create_access_token,
-                               create_session, discover_ldap_structure,
-                               get_ldap_config, invalidate_session,
-                               lookup_bind_dn)
+from ragtime.core.auth import (
+    authenticate,
+    create_access_token,
+    create_session,
+    discover_ldap_structure,
+    get_ldap_config,
+    invalidate_session,
+    lookup_bind_dn,
+)
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
-from ragtime.core.security import (get_current_user, get_session_token,
-                                   require_admin)
+from ragtime.core.security import get_current_user, get_session_token, require_admin
+from ragtime.core.usage_accounting import (
+    get_daily_provider_failures,
+    get_daily_usage_trend,
+    get_provider_model_breakdown,
+    get_usage_earliest_date,
+    get_user_daily_usage_series,
+    get_user_usage_summary,
+)
 
 logger = get_logger(__name__)
 
@@ -42,6 +63,12 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 _auth_codes: dict[str, dict] = {}
 AUTH_CODE_EXPIRY = 600  # 10 minutes
 MAX_AUTH_CODES = 10000  # Prevent memory exhaustion from code accumulation
+
+
+def _usage_window_start(days: int) -> datetime:
+    """Return the UTC start-of-day for an inclusive N-day usage window."""
+    today_utc = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    return today_utc - timedelta(days=days - 1)
 
 
 def validate_redirect_uri(redirect_uri: str) -> bool:
@@ -252,7 +279,9 @@ class AuthMethodStatus(BaseModel):
     key: str = Field(..., description="Stable auth method key (e.g. ldap, local, oidc)")
     label: str = Field(..., description="Human-readable auth method label")
     configured: bool = Field(..., description="Whether this auth method is configured")
-    available: bool = Field(..., description="Whether the method is currently available")
+    available: bool = Field(
+        ..., description="Whether the method is currently available"
+    )
     status: str = Field(
         ...,
         description="Availability status: available, unavailable, or not_configured",
@@ -1125,9 +1154,9 @@ async def test_ldap_connection(
 async def list_users(
     skip: int = Query(0, ge=0),
     take: int = Query(50, ge=1, le=500),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_admin),
 ):
-    """List all users."""
+    """List all users (admin only)."""
     db = await get_db()
     total = await db.user.count()
     users = await db.user.find_many(
@@ -1218,3 +1247,72 @@ async def update_user_role(
     )
 
     return {"success": True, "role": role}
+
+
+# =============================================================================
+# Usage Dashboard (Admin)
+# =============================================================================
+
+
+@router.get("/usage/summary")
+async def usage_summary(
+    days: int = Query(30, ge=1, le=365),
+    _user: User = Depends(require_admin),
+):
+    """Per-user usage summary for the admin dashboard."""
+    since = _usage_window_start(days)
+    rows = await get_user_usage_summary(since=since)
+    return {"users": rows, "days": days}
+
+
+@router.get("/usage/providers")
+async def usage_providers(
+    days: int = Query(30, ge=1, le=365),
+    _user: User = Depends(require_admin),
+):
+    """Usage breakdown by provider and model."""
+    since = _usage_window_start(days)
+    rows = await get_provider_model_breakdown(since=since)
+    return {"providers": rows, "days": days}
+
+
+@router.get("/usage/daily")
+async def usage_daily(
+    days: int = Query(30, ge=1, le=365),
+    _user: User = Depends(require_admin),
+):
+    """Daily usage trend for the admin dashboard."""
+    since = _usage_window_start(days)
+    rows = await get_daily_usage_trend(since=since)
+    return {"daily": rows, "days": days}
+
+
+@router.get("/usage/users/daily")
+async def usage_users_daily(
+    days: int = Query(30, ge=1, le=365),
+    _user: User = Depends(require_admin),
+):
+    """Per-user daily usage trend for the admin dashboard."""
+    since = _usage_window_start(days)
+    rows = await get_user_daily_usage_series(since=since)
+    return {"series": rows, "days": days}
+
+
+@router.get("/usage/range")
+async def usage_range(
+    _user: User = Depends(require_admin),
+):
+    """Return the earliest usage data date for dynamic range selection."""
+    earliest = await get_usage_earliest_date()
+    return {"earliest_date": earliest}
+
+
+@router.get("/usage/providers/daily-failures")
+async def usage_provider_daily_failures(
+    days: int = Query(30, ge=1, le=365),
+    _user: User = Depends(require_admin),
+):
+    """Daily failure/interrupted counts by provider and model."""
+    since = _usage_window_start(days)
+    rows = await get_daily_provider_failures(since=since)
+    return {"cells": rows, "days": days}

@@ -37,10 +37,10 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
-from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
@@ -97,6 +97,13 @@ from ragtime.core.ssh import (
     test_ssh_connection,
 )
 from ragtime.core.tokenization import count_tokens
+from ragtime.core.usage_accounting import (
+    create_usage_attempt,
+    finalize_usage_attempt,
+    bind_usage_attempt_task,
+    _estimate_input_tokens,
+    _estimate_output_tokens,
+)
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
@@ -9688,6 +9695,15 @@ async def send_message(
                 chat_history.append(AIMessage(content=msg.content))
 
     # Generate response
+    input_est = _estimate_input_tokens(user_message, chat_history)
+    attempt_id = await create_usage_attempt(
+        user_id=user.id,
+        request_source="ui",
+        provider=conv.model or "",
+        model=conv.model or "",
+        conversation_id=conversation_id,
+        input_tokens=input_est,
+    )
     try:
         answer = await rag.process_query(
             user_message,
@@ -9699,8 +9715,20 @@ async def send_message(
             user_id=user.id,
             message_index=len(conv.messages),
         )
+        output_est = _estimate_output_tokens(answer)
+        await finalize_usage_attempt(
+            attempt_id,
+            status="completed",
+            output_tokens=output_est,
+            input_tokens=input_est,
+        )
     except Exception as e:
         logger.exception("Error processing message")
+        await finalize_usage_attempt(
+            attempt_id,
+            status="failed",
+            failure_reason=str(e),
+        )
         answer = f"Error: {str(e)}"
 
     # Add assistant response
@@ -9785,6 +9813,16 @@ async def send_message_stream(
                 )
             else:
                 chat_history.append(AIMessage(content=msg.content))
+
+    input_est = _estimate_input_tokens(user_message, chat_history)
+    stream_attempt_id = await create_usage_attempt(
+        user_id=user.id,
+        request_source="ui",
+        provider=conv.model or "",
+        model=conv.model or "",
+        conversation_id=conversation_id,
+        input_tokens=input_est,
+    )
 
     async def stream_response():
         """Generate streaming response tokens."""
@@ -9935,6 +9973,15 @@ async def send_message_stream(
                 events=chronological_events if chronological_events else None,
             )
 
+            # Finalize usage attempt on success
+            output_est = _estimate_output_tokens(full_response, chronological_events)
+            await finalize_usage_attempt(
+                stream_attempt_id,
+                status="completed",
+                output_tokens=output_est,
+                input_tokens=input_est,
+            )
+
             # Final chunk
             final_chunk = {
                 "id": chunk_id,
@@ -9988,6 +10035,15 @@ async def send_message_stream(
                 )
             except Exception:
                 logger.exception("Failed to persist assistant message after error")
+
+            # Finalize usage attempt on failure
+            output_est = _estimate_output_tokens(full_response, chronological_events)
+            await finalize_usage_attempt(
+                stream_attempt_id,
+                status="failed",
+                output_tokens=output_est,
+                failure_reason=raw_error[:500] if raw_error else None,
+            )
 
             error_chunk = {
                 "id": chunk_id,
@@ -10238,12 +10294,24 @@ async def send_message_background(
     await repository.add_message(conversation_id, "user", user_message)
     schedule_title_generation(conversation_id, user_message)
 
+    # Create usage attempt before starting background task
+    input_est = _estimate_input_tokens(user_message)
+    attempt_id = await create_usage_attempt(
+        user_id=user.id,
+        request_source="ui",
+        provider=conv.model or "",
+        model=conv.model or "",
+        conversation_id=conversation_id,
+        input_tokens=input_est,
+    )
+
     # Start background task
     task_id = await background_task_service.start_task_async(
         conversation_id,
         user_message,
         blocked_tool_names=blocked_tool_names,
         workspace_context=workspace_context,
+        usage_attempt_id=attempt_id,
     )
 
     # Get the created task

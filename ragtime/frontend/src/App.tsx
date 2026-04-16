@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, onAuthExpired } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, UserSpaceSharedView, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner, WarningsBanner } from '@/components';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, UserSpaceSharedView, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner, WarningsBanner, UsersPanel } from '@/components';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ConfigurationWarning, UserSpacePreviewWarning } from '@/types';
 import type { OAuthParams } from '@/components';
 import '@/styles/global.css';
 
-type ViewType = 'chat' | 'userspace' | 'indexer' | 'tools' | 'settings';
+type ViewType = 'chat' | 'userspace' | 'indexer' | 'tools' | 'users' | 'settings';
 type UserSpaceSharedRoute =
   | { mode: 'token'; token: string }
   | { mode: 'slug'; ownerUsername: string; shareSlug: string }
@@ -16,6 +16,7 @@ function getInitialView(): ViewType {
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view');
   if (view === 'settings') return 'settings';
+  if (view === 'users') return 'users';
   if (view === 'tools') return 'tools';
   if (view === 'indexer') return 'indexer';
   if (view === 'userspace') return 'userspace';
@@ -613,6 +614,12 @@ export function App() {
                 Tools
               </button>
               <button
+                className={`topnav-link ${activeView === 'users' ? 'active' : ''}`}
+                onClick={() => setActiveView('users')}
+              >
+                Users
+              </button>
+              <button
                 className={`topnav-link ${activeView === 'settings' ? 'active' : ''}`}
                 onClick={() => setActiveView('settings')}
               >
@@ -691,6 +698,8 @@ export function App() {
           highlightSection={highlightToolsSection}
           onHighlightComplete={() => setHighlightToolsSection(null)}
         />
+      ) : activeView === 'users' ? (
+        <UsersPanel currentUser={currentUser} />
       ) : (
         <>
           {/* Document Indexes (FAISS) */}

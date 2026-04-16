@@ -768,6 +768,7 @@ model User {
   runtimeAuditEvents UserSpaceRuntimeAuditEvent[] @relation("RuntimeAuditUser")
   userspaceChangedFileAcknowledgements UserSpaceChangedFileAcknowledgement[]
   conversationBranches ConversationBranch[]
+  usageAttempts UserUsageAttempt[]
 
   @@map("users")
 }
@@ -1353,4 +1354,57 @@ model UserSpaceCollabDoc {
   @@unique([workspaceId, filePath])
   @@index([workspaceId, updatedAt])
   @@map("userspace_collab_docs")
+}
+
+// -----------------------------------------------------------------------------
+// Usage Accounting
+// -----------------------------------------------------------------------------
+
+/// Status of a usage accounting attempt
+enum UsageAttemptStatus {
+  started
+  completed
+  failed
+  cancelled
+  interrupted
+
+  @@map("usage_attempt_status")
+}
+
+/// Per-request usage accounting for billing/admin dashboards
+model UserUsageAttempt {
+  id               String              @id @default(uuid())
+  userId           String              @map("user_id")
+  conversationId   String?             @map("conversation_id")
+  chatTaskId       String?             @map("chat_task_id")
+
+  // Request metadata
+  requestSource    String              @map("request_source")  // "ui", "api", "mcp"
+  provider         String              @default("")            // "openai", "anthropic", etc.
+  model            String              @default("")            // Model name used
+
+  // Counts
+  requestCount     Int                 @default(1) @map("request_count")
+  inputTokens      Int                 @default(0) @map("input_tokens")
+  outputTokens     Int                 @default(0) @map("output_tokens")
+  totalTokens      Int                 @default(0) @map("total_tokens")
+  tokensEstimated  Boolean             @default(true) @map("tokens_estimated")
+
+  // Status
+  status           UsageAttemptStatus  @default(started)
+  failureReason    String?             @map("failure_reason")
+
+  // Timestamps
+  startedAt        DateTime            @default(now()) @map("started_at")
+  finalizedAt      DateTime?           @map("finalized_at")
+
+  // Relations
+  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startedAt])
+  @@index([status, startedAt])
+  @@index([provider, startedAt])
+  @@index([startedAt])
+  @@index([chatTaskId])
+  @@map("user_usage_attempts")
 }

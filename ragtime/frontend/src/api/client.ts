@@ -227,6 +227,52 @@ export const api = {
     return Array.isArray(data) ? data : (data as { users: User[] }).users ?? [];
   },
 
+  async getUsageSummary(days = 30): Promise<import('../types/api').UsageSummaryResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/usage/summary?days=${days}`, {});
+    return handleResponse(response);
+  },
+
+  async getUsageProviders(days = 30): Promise<import('../types/api').ProviderBreakdownResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/usage/providers?days=${days}`, {});
+    return handleResponse(response);
+  },
+
+  async getUsageDaily(days = 30): Promise<import('../types/api').DailyTrendResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/usage/daily?days=${days}`, {});
+    return handleResponse(response);
+  },
+
+  async getUsageUsersDaily(days = 30): Promise<import('../types/api').UserDailySeriesResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/usage/users/daily?days=${days}`, {});
+    return handleResponse(response);
+  },
+
+  async getUsageRange(): Promise<import('../types/api').UsageRangeResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/usage/range`, {});
+    return handleResponse(response);
+  },
+
+  async getUsageProviderDailyFailures(days = 30): Promise<import('../types/api').ProviderDailyFailuresResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/usage/providers/daily-failures?days=${days}`, {});
+    return handleResponse(response);
+  },
+
+  async deleteUser(userId: string): Promise<void> {
+    const response = await apiFetch(`${AUTH_BASE}/users/${userId}`, {
+      method: 'DELETE',
+    });
+    await handleResponse(response);
+  },
+
+  async updateUserRole(userId: string, role: 'admin' | 'user'): Promise<void> {
+    const response = await apiFetch(`${AUTH_BASE}/users/${userId}/role`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    });
+    await handleResponse(response);
+  },
+
   // ===========================================================================
   // Indexes
   // ===========================================================================
