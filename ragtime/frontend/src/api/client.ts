@@ -257,6 +257,16 @@ export const api = {
     return handleResponse(response);
   },
 
+  async getUsageApi(days = 30): Promise<import('../types/api').ApiUsageResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/usage/api?days=${days}`, {});
+    return handleResponse(response);
+  },
+
+  async getUsageMcp(days = 30): Promise<import('../types/api').McpUsageResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/usage/mcp?days=${days}`, {});
+    return handleResponse(response);
+  },
+
   async deleteUser(userId: string): Promise<void> {
     const response = await apiFetch(`${AUTH_BASE}/users/${userId}`, {
       method: 'DELETE',
@@ -1458,6 +1468,18 @@ export const api = {
    */
   async getWorkspacesConversationStateSummary(workspaceIds: string[]): Promise<import('@/types').WorkspaceConversationStateSummaryItem[]> {
     const response = await apiFetch(`${API_BASE}/conversations/workspaces/state-summary`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace_ids: workspaceIds }),
+    });
+    return handleResponse<import('@/types').WorkspaceConversationStateSummaryItem[]>(response);
+  },
+
+  /**
+   * Get live/interrupted summary for multiple workspaces in one lightweight request.
+   */
+  async getWorkspacesConversationStateSummaryLite(workspaceIds: string[]): Promise<import('@/types').WorkspaceConversationStateSummaryItem[]> {
+    const response = await apiFetch(`${API_BASE}/conversations/workspaces/state-summary-lite`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspace_ids: workspaceIds }),

@@ -5,8 +5,11 @@ import type {
   UserUsageSummary,
   ProviderModelBreakdown,
   DailyUsageTrend,
+  ApiDailyTrend,
   UserDailyUsageSeriesPoint,
-  ProviderDailyFailureCell,
+  McpUserUsage,
+  McpDailyTrend,
+  McpRouteUsage,
   UserSpaceWorkspace,
   WorkspaceConversationStateSummaryItem,
 } from '@/types';
@@ -26,6 +29,7 @@ import { Bar, Chart, Line } from 'react-chartjs-2';
 import { WorkspaceRowList } from './shared/WorkspaceRowList';
 import { DataTable, type DataTableColumn, type TableSortConfig } from './shared/DataTable';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
+import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { formatProviderDisplayName, formatModelDisplayName } from '@/utils/modelDisplay';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Filler, Tooltip, Legend);
@@ -97,11 +101,19 @@ function paginate<T>(items: T[], page: number, pageSize: number): { pageItems: T
 type PanelTab = 'management' | 'usage';
 type TrendTab = 'reliability' | 'daily-chart' | 'daily-table';
 type UsageMetric = 'requests' | 'tokens';
-type HeatmapSortDirection = 'asc' | 'desc';
+type McpUsageTab = 'chart' | 'table';
 type ManagementSortKey = 'user' | 'auth' | 'chats' | 'workspaces' | 'memberships' | 'workspaceChats' | 'liveInterrupted' | 'storage' | 'role' | 'actions';
 type UsageSortKey = 'user' | 'requests' | 'input' | 'output' | 'total' | 'completed' | 'failed';
-type ProviderSortKey = 'provider' | 'model' | 'requests' | 'input' | 'output' | 'total';
-type DailySortKey = 'date' | 'requests' | 'input' | 'output' | 'total' | 'completed' | 'failed';
+type ProviderSortKey = 'provider' | 'model' | 'source' | 'requests' | 'input' | 'output' | 'total';
+type DailySortKey = 'date' | 'requests' | 'input' | 'output' | 'total' | 'completed' | 'failed' | 'mcpRequests' | 'mcpErrors' | 'apiRequests' | 'apiErrors';
+type McpUserSortKey = 'user' | 'auth' | 'route' | 'requests' | 'success' | 'errors';
+
+interface DailyCombinedRow extends DailyUsageTrend {
+  mcp_requests: number;
+  mcp_errors: number;
+  api_requests: number;
+  api_errors: number;
+}
 
 const ALL_DAY_RANGES = [7, 30, 90, 180, 240, 360] as const;
 
@@ -127,8 +139,11 @@ interface UsageDataSnapshot {
   usageSummary: UserUsageSummary[];
   providerBreakdown: ProviderModelBreakdown[];
   dailyTrend: DailyUsageTrend[];
+  apiDaily: ApiDailyTrend[];
   userDailySeries: UserDailyUsageSeriesPoint[];
-  failureCells: ProviderDailyFailureCell[];
+  mcpUsers: McpUserUsage[];
+  mcpDaily: McpDailyTrend[];
+  mcpRoutes: McpRouteUsage[];
 }
 
 interface PagerProps {
@@ -177,8 +192,11 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   const [usageSummary, setUsageSummary] = useState<UserUsageSummary[]>([]);
   const [providerBreakdown, setProviderBreakdown] = useState<ProviderModelBreakdown[]>([]);
   const [dailyTrend, setDailyTrend] = useState<DailyUsageTrend[]>([]);
+  const [apiDaily, setApiDaily] = useState<ApiDailyTrend[]>([]);
   const [userDailySeries, setUserDailySeries] = useState<UserDailyUsageSeriesPoint[]>([]);
-  const [failureCells, setFailureCells] = useState<ProviderDailyFailureCell[]>([]);
+  const [mcpUsers, setMcpUsers] = useState<McpUserUsage[]>([]);
+  const [mcpDaily, setMcpDaily] = useState<McpDailyTrend[]>([]);
+  const [, setMcpRoutes] = useState<McpRouteUsage[]>([]);
   const [days, setDays] = useState(30);
   const [earliestDate, setEarliestDate] = useState<string | null>(null);
   const [usageLoadedDays, setUsageLoadedDays] = useState<number | null>(null);
@@ -188,6 +206,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   const [trendTab, setTrendTab] = useState<TrendTab>('reliability');
+  const [mcpUsageTab, setMcpUsageTab] = useState<McpUsageTab>('chart');
   const [providerChartMetric, setProviderChartMetric] = useState<UsageMetric>('tokens');
   const [perUserChartMetric, setPerUserChartMetric] = useState<UsageMetric>('requests');
 
@@ -195,23 +214,26 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   const [usagePage, setUsagePage] = useState(1);
   const [providerPage, setProviderPage] = useState(1);
   const [dailyPage, setDailyPage] = useState(1);
+  const [mcpUsersPage, setMcpUsersPage] = useState(1);
 
   const [managementPageSize, setManagementPageSize] = useState(10);
   const [usagePageSize, setUsagePageSize] = useState(10);
   const [providerPageSize, setProviderPageSize] = useState(10);
   const [dailyPageSize, setDailyPageSize] = useState(10);
+  const [mcpUsersPageSize, setMcpUsersPageSize] = useState(10);
 
   const [managementSort, setManagementSort] = useState<TableSortConfig<ManagementSortKey>>({ key: 'chats', direction: 'desc' });
   const [usageSort, setUsageSort] = useState<TableSortConfig<UsageSortKey>>({ key: 'requests', direction: 'desc' });
   const [providerSort, setProviderSort] = useState<TableSortConfig<ProviderSortKey>>({ key: 'total', direction: 'desc' });
   const [dailySort, setDailySort] = useState<TableSortConfig<DailySortKey>>({ key: 'date', direction: 'desc' });
-  const [heatmapSort, setHeatmapSort] = useState<{ key: string; direction: HeatmapSortDirection }>({ key: 'date', direction: 'desc' });
+  const [mcpUserSort, setMcpUserSort] = useState<TableSortConfig<McpUserSortKey>>({ key: 'requests', direction: 'desc' });
 
   const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
 
   const themeColors = useThemeColors();
   const usageCacheRef = useRef<Record<number, UsageDataSnapshot>>({});
   const usageRequestIdRef = useRef(0);
+  const workspaceStateRequestIdRef = useRef(0);
 
   const [storageByWorkspaceId, setStorageByWorkspaceId] = useState<Record<string, number>>({});
   const [storageLoadingByUserId, setStorageLoadingByUserId] = useState<Record<string, boolean>>({});
@@ -221,15 +243,11 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     setUsers(res);
   }, []);
 
-  const fetchUsageDetails = useCallback(async (d: number): Promise<Pick<UsageDataSnapshot, 'userDailySeries' | 'failureCells'>> => {
-    const [userDailyRes, failureRes] = await Promise.all([
-      api.getUsageUsersDaily(d),
-      api.getUsageProviderDailyFailures(d),
-    ]);
+  const fetchUsageDetails = useCallback(async (d: number): Promise<Pick<UsageDataSnapshot, 'userDailySeries'>> => {
+    const userDailyRes = await api.getUsageUsersDaily(d);
 
     return {
       userDailySeries: userDailyRes.series,
-      failureCells: failureRes.cells,
     };
   }, []);
 
@@ -237,8 +255,30 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     setUsageSummary(snapshot.usageSummary);
     setProviderBreakdown(snapshot.providerBreakdown);
     setDailyTrend(snapshot.dailyTrend);
+    setApiDaily(snapshot.apiDaily);
     setUserDailySeries(snapshot.userDailySeries);
-    setFailureCells(snapshot.failureCells);
+    setMcpUsers(snapshot.mcpUsers);
+    setMcpDaily(snapshot.mcpDaily);
+    setMcpRoutes(snapshot.mcpRoutes);
+  }, []);
+
+  const loadWorkspaceStateSummary = useCallback(async (workspaceIds: string[]) => {
+    const requestId = workspaceStateRequestIdRef.current + 1;
+    workspaceStateRequestIdRef.current = requestId;
+
+    try {
+      const summary = await api.getWorkspacesConversationStateSummaryLite(workspaceIds);
+      if (requestId !== workspaceStateRequestIdRef.current) return;
+
+      const byId = summary.reduce<Record<string, WorkspaceConversationStateSummaryItem>>((acc, item) => {
+        acc[item.workspace_id] = item;
+        return acc;
+      }, {});
+      setWorkspaceStateById(byId);
+    } catch (err) {
+      // Keep management table responsive even if state summaries fail.
+      console.warn('Failed to load workspace state summary:', err);
+    }
   }, []);
 
   const loadWorkspaces = useCallback(async () => {
@@ -262,13 +302,8 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       return;
     }
 
-    const summary = await api.getWorkspacesConversationStateSummary(all.map((w) => w.id));
-    const byId = summary.reduce<Record<string, WorkspaceConversationStateSummaryItem>>((acc, item) => {
-      acc[item.workspace_id] = item;
-      return acc;
-    }, {});
-    setWorkspaceStateById(byId);
-  }, []);
+    void loadWorkspaceStateSummary(all.map((w) => w.id));
+  }, [loadWorkspaceStateSummary]);
 
   const loadManagementData = useCallback(async () => {
     setLoading(true);
@@ -299,10 +334,12 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     setUsageLoading(true);
     setError(null);
     try {
-      const [summaryRes, providersRes, dailyRes, rangeRes] = await Promise.all([
+      const [summaryRes, providersRes, dailyRes, apiRes, mcpRes, rangeRes] = await Promise.all([
         api.getUsageSummary(d),
         api.getUsageProviders(d),
         api.getUsageDaily(d),
+        api.getUsageApi(d),
+        api.getUsageMcp(d),
         hasLoadedUsageRange ? Promise.resolve(null) : api.getUsageRange(),
       ]);
 
@@ -312,8 +349,11 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       setUsageSummary(summaryRes.users);
       setProviderBreakdown(providersRes.providers);
       setDailyTrend(dailyRes.daily);
+      setApiDaily(apiRes.daily);
       setUserDailySeries([]);
-      setFailureCells([]);
+      setMcpUsers(mcpRes.users);
+      setMcpDaily(mcpRes.daily);
+      setMcpRoutes(mcpRes.routes);
 
       if (rangeRes) {
         setEarliestDate(rangeRes.earliest_date);
@@ -328,8 +368,11 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
         usageSummary: summaryRes.users,
         providerBreakdown: providersRes.providers,
         dailyTrend: dailyRes.daily,
+        apiDaily: apiRes.daily,
         userDailySeries: details.userDailySeries,
-        failureCells: details.failureCells,
+        mcpUsers: mcpRes.users,
+        mcpDaily: mcpRes.daily,
+        mcpRoutes: mcpRes.routes,
       };
 
       applyUsageSnapshot(snapshot);
@@ -346,6 +389,19 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   useEffect(() => {
     void loadManagementData();
   }, [loadManagementData]);
+
+  // Poll workspace live/interrupted state while management tab is visible
+  useEffect(() => {
+    if (activeTab !== 'management') return;
+    if (workspaces.length === 0) return;
+
+    const ids = workspaces.map((w) => w.id);
+    const handle = setInterval(() => {
+      void loadWorkspaceStateSummary(ids);
+    }, 10_000);
+
+    return () => clearInterval(handle);
+  }, [activeTab, workspaces, loadWorkspaceStateSummary]);
 
   useEffect(() => {
     if (activeTab !== 'usage') return;
@@ -550,24 +606,76 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     return 0;
   };
 
-  const providerChartData = useMemo(() => ({
-    labels: providerBreakdown.map((row) => {
+  const providerChartData = useMemo(() => {
+    const grouped = new Map<string, {
+      provider: string;
+      model: string;
+      bySource: Record<string, { requests: number; tokens: number }>;
+      total: number;
+    }>();
+
+    for (const row of providerBreakdown) {
+      const key = `${row.provider}::${row.model}`;
+      let current = grouped.get(key);
+      if (!current) {
+        current = {
+          provider: row.provider,
+          model: row.model,
+          bySource: {},
+          total: 0,
+        };
+        grouped.set(key, current);
+      }
+
+      const sourceKey = row.request_source || 'ui';
+      if (!current.bySource[sourceKey]) {
+        current.bySource[sourceKey] = { requests: 0, tokens: 0 };
+      }
+      current.bySource[sourceKey].requests += row.total_requests;
+      current.bySource[sourceKey].tokens += row.total_tokens;
+      current.total += providerChartMetric === 'requests' ? row.total_requests : row.total_tokens;
+    }
+
+    const groupedRows = [...grouped.values()].sort((a, b) => b.total - a.total);
+    const labels = groupedRows.map((row) => {
       const providerLabel = formatProviderDisplayName(row.provider);
       const modelLabel = formatModelDisplayName(row.model, row.provider);
       const label = `${providerLabel} / ${modelLabel}`;
       return label.length > 36 ? label.slice(0, 35) + '\u2026' : label;
-    }),
-    datasets: [
-      {
-        label: providerChartMetric === 'requests' ? 'Requests' : 'Total Tokens',
-        data: providerBreakdown.map((row) => (providerChartMetric === 'requests' ? row.total_requests : row.total_tokens)),
-        backgroundColor: providerBreakdown.map((_, idx) => CHART_PALETTE[idx % CHART_PALETTE.length]),
-        borderRadius: 6,
-        borderSkipped: false,
-        maxBarThickness: 20,
-      },
-    ],
-  }), [providerBreakdown, providerChartMetric]);
+    });
+
+    const sourceOrder = ['ui', 'api'];
+    const sources = [...new Set(providerBreakdown.map((row) => row.request_source || 'ui'))].sort((a, b) => {
+      const ai = sourceOrder.indexOf(a);
+      const bi = sourceOrder.indexOf(b);
+      if (ai === -1 && bi === -1) return a.localeCompare(b);
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
+    });
+
+    const labelForSource = (source: string) => {
+      if (source === 'ui') return 'Ragtime Chat';
+      if (source === 'api') return 'API';
+      return source;
+    };
+
+    const datasets = sources.map((source, idx) => ({
+      label: labelForSource(source),
+      data: groupedRows.map((row) => {
+        const bucket = row.bySource[source];
+        if (!bucket) return 0;
+        return providerChartMetric === 'requests' ? bucket.requests : bucket.tokens;
+      }),
+      backgroundColor: CHART_PALETTE[idx % CHART_PALETTE.length],
+      borderRadius: 4,
+      borderSkipped: false,
+      stack: 'source',
+      maxBarThickness: 22,
+    }));
+
+    return { labels, datasets };
+  }, [providerBreakdown, providerChartMetric]);
 
   const perUserChartData = useMemo(() => {
     const pointsByUser = userDailySeries.reduce<Record<string, Record<string, UserDailyUsageSeriesPoint>>>((acc, row) => {
@@ -609,14 +717,72 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     };
   }, [dateLabels, perUserChartMetric, usageSummary, userDailySeries]);
 
+  const mcpDailyRows = useMemo<McpDailyTrend[]>(() => {
+    const byDate = mcpDaily.reduce<Record<string, McpDailyTrend>>((acc, row) => {
+      const date = normalizeDateLabel(row.date);
+      acc[date] = { ...row, date };
+      return acc;
+    }, {});
+
+    return dateLabels.map((date) => byDate[date] ?? {
+      date,
+      total_requests: 0,
+      success_count: 0,
+      error_count: 0,
+      unique_users: 0,
+    });
+  }, [dateLabels, mcpDaily]);
+
+  const apiDailyRows = useMemo<ApiDailyTrend[]>(() => {
+    const byDate = apiDaily.reduce<Record<string, ApiDailyTrend>>((acc, row) => {
+      const date = normalizeDateLabel(row.date);
+      acc[date] = { ...row, date };
+      return acc;
+    }, {});
+
+    return dateLabels.map((date) => byDate[date] ?? {
+      date,
+      total_requests: 0,
+      success_count: 0,
+      error_count: 0,
+      unique_users: 0,
+    });
+  }, [apiDaily, dateLabels]);
+
+  const dailyCombinedRows = useMemo<DailyCombinedRow[]>(() =>
+    dailyTrendRows.map((row, i) => ({
+      ...row,
+      mcp_requests: mcpDailyRows[i]?.total_requests ?? 0,
+      mcp_errors: mcpDailyRows[i]?.error_count ?? 0,
+      api_requests: apiDailyRows[i]?.total_requests ?? 0,
+      api_errors: apiDailyRows[i]?.error_count ?? 0,
+    })),
+  [apiDailyRows, dailyTrendRows, mcpDailyRows]);
+
   const dailyChartData = useMemo(() => ({
     labels: dailyTrendRows.map((row) => row.date),
     datasets: [
       {
-        label: 'Requests',
+        label: 'Chat Requests',
         data: dailyTrendRows.map((row) => row.total_requests),
         borderColor: '#f59e0b',
         backgroundColor: 'rgba(245, 158, 11, 0.25)',
+        yAxisID: 'yRequests',
+        tension: 0.25,
+      },
+      {
+        label: 'MCP / API Requests',
+        data: mcpDailyRows.map((row) => row.total_requests),
+        borderColor: '#22c55e',
+        backgroundColor: 'rgba(34, 197, 94, 0.25)',
+        yAxisID: 'yRequests',
+        tension: 0.25,
+      },
+      {
+        label: 'API Requests',
+        data: apiDailyRows.map((row) => row.total_requests),
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59, 130, 246, 0.25)',
         yAxisID: 'yRequests',
         tension: 0.25,
       },
@@ -629,7 +795,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
         tension: 0.25,
       },
     ],
-  }), [dailyTrendRows]);
+  }), [apiDailyRows, dailyTrendRows, mcpDailyRows]);
 
   const singleAxisLineOptions = useMemo<ChartOptions<'line'>>(() => ({
     responsive: true,
@@ -693,46 +859,150 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     animation: false,
     indexAxis: 'y',
     plugins: {
-      legend: { display: false },
+      legend: { display: true, labels: { color: themeColors.text } },
       tooltip: { mode: 'nearest', intersect: false },
     },
     scales: {
       x: {
         beginAtZero: true,
+        stacked: true,
         ticks: { color: themeColors.textSecondary },
         grid: { color: themeColors.grid },
       },
       y: {
+        stacked: true,
         ticks: { color: themeColors.text, autoSkip: false },
         grid: { display: false },
       },
     },
   }), [themeColors]);
 
+  const mcpChartData = useMemo(() => ({
+    labels: mcpDailyRows.map((row) => row.date),
+    datasets: [
+      {
+        label: 'MCP Success',
+        data: mcpDailyRows.map((row) => row.success_count),
+        backgroundColor: 'rgba(34, 197, 94, 0.75)',
+        borderColor: '#22c55e',
+        borderWidth: 1,
+        stack: 'requests',
+      },
+      {
+        label: 'MCP Error',
+        data: mcpDailyRows.map((row) => row.error_count),
+        backgroundColor: 'rgba(239, 68, 68, 0.75)',
+        borderColor: '#ef4444',
+        borderWidth: 1,
+        stack: 'requests',
+      },
+      {
+        label: 'API Success',
+        data: apiDailyRows.map((row) => row.success_count),
+        backgroundColor: 'rgba(59, 130, 246, 0.75)',
+        borderColor: '#3b82f6',
+        borderWidth: 1,
+        stack: 'requests',
+      },
+      {
+        label: 'API Error',
+        data: apiDailyRows.map((row) => row.error_count),
+        backgroundColor: 'rgba(245, 158, 11, 0.75)',
+        borderColor: '#f59e0b',
+        borderWidth: 1,
+        stack: 'requests',
+      },
+    ],
+  }), [apiDailyRows, mcpDailyRows]);
+
+  const mcpChartOptions = useMemo<ChartOptions<'bar'>>(() => ({
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    plugins: {
+      legend: {
+        labels: { color: themeColors.text, boxWidth: 10, boxHeight: 10 },
+      },
+      tooltip: { mode: 'index', intersect: false },
+    },
+    scales: {
+      x: {
+        stacked: true,
+        ticks: {
+          color: themeColors.textSecondary,
+          maxRotation: 45,
+          minRotation: 45,
+          autoSkip: true,
+          maxTicksLimit: days >= 90 ? 12 : undefined,
+        },
+        grid: { color: themeColors.grid },
+      },
+      y: {
+        stacked: true,
+        beginAtZero: true,
+        ticks: { color: themeColors.textSecondary },
+        grid: { color: themeColors.grid },
+      },
+    },
+  }), [days, themeColors]);
+
   const reliabilityTrendData = useMemo(() => ({
     labels: dailyTrendRows.map((row) => row.date),
     datasets: [
       {
-        label: 'Success Rate %',
+        label: 'Chat Success %',
         data: dailyTrendRows.map((row) => {
           const total = row.total_requests;
           return total > 0 ? (row.completed_count / total) * 100 : null;
         }),
+        borderColor: '#f59e0b',
+        backgroundColor: 'rgba(245, 158, 11, 0.08)',
+        tension: 0.25,
+        pointRadius: 2,
+        pointHoverRadius: 4,
+        fill: true,
+      },
+      {
+        label: 'MCP Success %',
+        data: mcpDailyRows.map((row) => {
+          const total = row.total_requests;
+          return total > 0 ? (row.success_count / total) * 100 : null;
+        }),
         borderColor: '#22c55e',
-        backgroundColor: 'rgba(34, 197, 94, 0.12)',
+        backgroundColor: 'rgba(34, 197, 94, 0.08)',
+        tension: 0.25,
+        pointRadius: 2,
+        pointHoverRadius: 4,
+        fill: true,
+      },
+      {
+        label: 'API Success %',
+        data: apiDailyRows.map((row) => {
+          const total = row.total_requests;
+          return total > 0 ? (row.success_count / total) * 100 : null;
+        }),
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59, 130, 246, 0.08)',
         tension: 0.25,
         pointRadius: 2,
         pointHoverRadius: 4,
         fill: true,
       },
     ],
-  }), [dailyTrendRows]);
+  }), [apiDailyRows, dailyTrendRows, mcpDailyRows]);
 
   const reliabilityTrendOptions = useMemo<ChartOptions<'line'>>(() => {
-    const rates = dailyTrendRows
+    const chatRates = dailyTrendRows
       .filter((row) => row.total_requests > 0)
       .map((row) => (row.completed_count / row.total_requests) * 100);
-    const minRate = rates.length > 0 ? Math.min(...rates) : 100;
+    const mcpRates = mcpDailyRows
+      .filter((row) => row.total_requests > 0)
+      .map((row) => (row.success_count / row.total_requests) * 100);
+    const apiRates = apiDailyRows
+      .filter((row) => row.total_requests > 0)
+      .map((row) => (row.success_count / row.total_requests) * 100);
+    const allRates = [...chatRates, ...mcpRates, ...apiRates];
+    const minRate = allRates.length > 0 ? Math.min(...allRates) : 100;
     const dynamicMin = minRate >= 95 ? 90 : minRate >= 80 ? Math.floor(minRate / 10) * 10 : 0;
 
     return {
@@ -740,7 +1010,9 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       maintainAspectRatio: false,
       animation: false,
       plugins: {
-        legend: { display: false },
+        legend: {
+          labels: { color: themeColors.text, boxWidth: 10, boxHeight: 10 },
+        },
         tooltip: {
           mode: 'index',
           intersect: false,
@@ -763,7 +1035,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
         },
       },
     };
-  }, [days, dailyTrendRows, themeColors]);
+  }, [apiDailyRows, days, dailyTrendRows, mcpDailyRows, themeColors]);
 
   const paretoChartData = useMemo(() => {
     const sorted = [...usageSummary].sort((a, b) => b.total_tokens - a.total_tokens);
@@ -852,66 +1124,28 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     },
   }), [themeColors]);
 
-  const failureHeatmap = useMemo(() => {
-    if (failureCells.length === 0) return null;
-
-    const modelKeys = new Set<string>();
-    const lookup = new Map<string, { failed: number; interrupted: number }>();
-
-    for (const c of failureCells) {
-      const date = normalizeDateLabel(c.date);
-      const key = `${c.provider}::${c.model}`;
-      modelKeys.add(key);
-      const mapKey = `${date}|${key}`;
-      const existing = lookup.get(mapKey);
-      if (existing) {
-        existing.failed += c.failed_count;
-        existing.interrupted += c.interrupted_count;
-      } else {
-        lookup.set(mapKey, { failed: c.failed_count, interrupted: c.interrupted_count });
-      }
-    }
-
-    const sortedModels = [...modelKeys].sort();
-    const modelLabels = sortedModels.map((key) => {
-      const [prov, model] = key.split('::');
-      const provLabel = formatProviderDisplayName(prov);
-      const modelLabel = formatModelDisplayName(model, prov);
-      const label = `${provLabel} / ${modelLabel}`;
-      return label.length > 28 ? label.slice(0, 27) + '\u2026' : label;
+  const sortedMcpUsers = useMemo(() => {
+    const rows = [...mcpUsers];
+    return rows.sort((a, b) => {
+      const sortValueA: Record<McpUserSortKey, string | number | null> = {
+        user: a.display_name || a.username,
+        auth: a.auth_method,
+        route: a.route_name,
+        requests: a.total_requests,
+        success: a.success_count,
+        errors: a.error_count,
+      };
+      const sortValueB: Record<McpUserSortKey, string | number | null> = {
+        user: b.display_name || b.username,
+        auth: b.auth_method,
+        route: b.route_name,
+        requests: b.total_requests,
+        success: b.success_count,
+        errors: b.error_count,
+      };
+      return compareSortValues(sortValueA[mcpUserSort.key], sortValueB[mcpUserSort.key], mcpUserSort.direction);
     });
-
-    let maxCount = 0;
-    for (const v of lookup.values()) {
-      const total = v.failed + v.interrupted;
-      if (total > maxCount) maxCount = total;
-    }
-
-    return { dates: dateLabels, models: sortedModels, modelLabels, lookup, maxCount };
-  }, [failureCells, dateLabels]);
-
-  const sortedHeatmapDates = useMemo(() => {
-    if (!failureHeatmap) return [] as string[];
-
-    const dates = [...failureHeatmap.dates];
-    return dates.sort((a, b) => {
-      let aValue: string | number = a;
-      let bValue: string | number = b;
-
-      if (heatmapSort.key !== 'date') {
-        const aCell = failureHeatmap.lookup.get(`${a}|${heatmapSort.key}`);
-        const bCell = failureHeatmap.lookup.get(`${b}|${heatmapSort.key}`);
-        aValue = (aCell?.failed || 0) + (aCell?.interrupted || 0);
-        bValue = (bCell?.failed || 0) + (bCell?.interrupted || 0);
-      }
-
-      return compareSortValues(
-        aValue,
-        bValue,
-        heatmapSort.direction,
-      );
-    });
-  }, [failureHeatmap, heatmapSort.direction, heatmapSort.key]);
+  }, [mcpUserSort.direction, mcpUserSort.key, mcpUsers]);
 
   const totalRequests = usageSummary.reduce((s, u) => s + u.total_requests, 0);
   const totalTokens = usageSummary.reduce((s, u) => s + u.total_tokens, 0);
@@ -1002,6 +1236,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       const sortValueA: Record<ProviderSortKey, string | number | null> = {
         provider: formatProviderDisplayName(a.provider),
         model: formatModelDisplayName(a.model, a.provider),
+        source: a.request_source,
         requests: a.total_requests,
         input: a.total_input_tokens,
         output: a.total_output_tokens,
@@ -1010,6 +1245,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       const sortValueB: Record<ProviderSortKey, string | number | null> = {
         provider: formatProviderDisplayName(b.provider),
         model: formatModelDisplayName(b.model, b.provider),
+        source: b.request_source,
         requests: b.total_requests,
         input: b.total_input_tokens,
         output: b.total_output_tokens,
@@ -1020,7 +1256,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   }, [providerBreakdown, providerSort.direction, providerSort.key]);
 
   const sortedDailyRows = useMemo(() => {
-    const rows = [...dailyTrendRows];
+    const rows = [...dailyCombinedRows];
     return rows.sort((a, b) => {
       const sortValueA: Record<DailySortKey, string | number | null> = {
         date: a.date,
@@ -1030,6 +1266,10 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
         total: a.total_tokens,
         completed: a.completed_count,
         failed: a.failed_count,
+        mcpRequests: a.mcp_requests,
+        mcpErrors: a.mcp_errors,
+        apiRequests: a.api_requests,
+        apiErrors: a.api_errors,
       };
       const sortValueB: Record<DailySortKey, string | number | null> = {
         date: b.date,
@@ -1039,10 +1279,14 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
         total: b.total_tokens,
         completed: b.completed_count,
         failed: b.failed_count,
+        mcpRequests: b.mcp_requests,
+        mcpErrors: b.mcp_errors,
+        apiRequests: b.api_requests,
+        apiErrors: b.api_errors,
       };
       return compareSortValues(sortValueA[dailySort.key], sortValueB[dailySort.key], dailySort.direction);
     });
-  }, [dailySort.direction, dailySort.key, dailyTrendRows]);
+  }, [dailyCombinedRows, dailySort.direction, dailySort.key]);
 
   const managementColumns = useMemo<DataTableColumn<DerivedUserStats, ManagementSortKey>[]>(() => ([
     { key: 'user', label: 'User' },
@@ -1070,20 +1314,32 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   const providerColumns = useMemo<DataTableColumn<ProviderModelBreakdown, ProviderSortKey>[]>(() => ([
     { key: 'provider', label: 'Provider' },
     { key: 'model', label: 'Model' },
+    { key: 'source', label: 'Source' },
     { key: 'requests', label: 'Requests', headerClassName: 'num', cellClassName: 'num' },
     { key: 'input', label: 'Input Tokens', headerClassName: 'num', cellClassName: 'num' },
     { key: 'output', label: 'Output Tokens', headerClassName: 'num', cellClassName: 'num' },
     { key: 'total', label: 'Total Tokens', headerClassName: 'num', cellClassName: 'num' },
   ]), []);
 
-  const dailyColumns = useMemo<DataTableColumn<DailyUsageTrend, DailySortKey>[]>(() => ([
-    { key: 'date', label: 'Date' },
+  const mcpUsersColumns = useMemo<DataTableColumn<McpUserUsage, McpUserSortKey>[]>(() => ([
+    { key: 'user', label: 'User' },
+    { key: 'auth', label: 'Auth' },
+    { key: 'route', label: 'Route' },
     { key: 'requests', label: 'Requests', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'input', label: 'Input Tokens', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'output', label: 'Output Tokens', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'total', label: 'Total Tokens', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'completed', label: 'Completed', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'failed', label: 'Failed', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'success', label: 'Success', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'errors', label: 'Errors', headerClassName: 'num', cellClassName: 'num' },
+  ]), []);
+
+  const dailyColumns = useMemo<DataTableColumn<DailyCombinedRow, DailySortKey>[]>(() => ([
+    { key: 'date', label: 'Date' },
+    { key: 'requests', label: 'Chat Req', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'completed', label: 'Chat OK', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'failed', label: 'Chat Fail', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'mcpRequests', label: 'MCP Req', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'mcpErrors', label: 'MCP Fail', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'apiRequests', label: 'API Req', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'apiErrors', label: 'API Fail', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'total', label: 'Tokens', headerClassName: 'num', cellClassName: 'num' },
   ]), []);
 
   const handleSort = <K extends string>(current: TableSortConfig<K>, key: K, setter: (next: TableSortConfig<K>) => void) => {
@@ -1091,15 +1347,11 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     setter({ key, direction });
   };
 
-  const handleHeatmapSort = (key: string) => {
-    const direction: HeatmapSortDirection = heatmapSort.key === key && heatmapSort.direction === 'asc' ? 'desc' : 'asc';
-    setHeatmapSort({ key, direction });
-  };
-
   const managementPaging = paginate(sortedManagementRows, managementPage, managementPageSize);
   const usagePaging = paginate(sortedUsageRows, usagePage, usagePageSize);
   const providerPaging = paginate(sortedProviderRows, providerPage, providerPageSize);
   const dailyPaging = paginate(sortedDailyRows, dailyPage, dailyPageSize);
+  const mcpUsersPaging = paginate(sortedMcpUsers, mcpUsersPage, mcpUsersPageSize);
 
   useEffect(() => {
     if (managementPage !== managementPaging.safePage) setManagementPage(managementPaging.safePage);
@@ -1116,6 +1368,10 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   useEffect(() => {
     if (dailyPage !== dailyPaging.safePage) setDailyPage(dailyPaging.safePage);
   }, [dailyPage, dailyPaging.safePage]);
+
+  useEffect(() => {
+    if (mcpUsersPage !== mcpUsersPaging.safePage) setMcpUsersPage(mcpUsersPaging.safePage);
+  }, [mcpUsersPage, mcpUsersPaging.safePage]);
 
   return (
     <div className="users-panel">
@@ -1164,7 +1420,10 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
               <div className="users-summary-label">Workspaces</div>
             </div>
             <div className="users-summary-card">
-              <div className="users-summary-value">{liveWorkspaces}</div>
+              <div className="users-summary-value">
+                {liveWorkspaces}
+                {liveWorkspaces > 0 && <MiniLoadingSpinner variant="icon" size={14} className="users-live-spin" />}
+              </div>
               <div className="users-summary-label">Live Task Workspaces</div>
             </div>
             <div className="users-summary-card">
@@ -1228,7 +1487,10 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                               </td>
                               <td className="num">{row.memberWorkspaceCount}</td>
                               <td className="num">{row.workspaceConversationCount}</td>
-                              <td className="num">{row.liveWorkspaceCount}/{row.interruptedWorkspaceCount}</td>
+                              <td className="num">
+                                {row.liveWorkspaceCount > 0 && <MiniLoadingSpinner variant="icon" size={12} className="users-live-spin" title="Live task running" />}
+                                {row.liveWorkspaceCount}/{row.interruptedWorkspaceCount}
+                              </td>
                               <td className="num">
                                 {row.ownedWorkspaceCount === 0 ? (
                                   <span className="users-action-muted">-</span>
@@ -1254,15 +1516,20 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                                 {isRowSelf ? (
                                   <span className="users-role-badge users-role-admin">{user.role}</span>
                                 ) : (
-                                  <select
-                                    className="users-role-select"
-                                    value={user.role}
-                                    disabled={actionLoading === user.id}
-                                    onChange={(e) => handleRoleChange(user.id, e.target.value as 'admin' | 'user')}
-                                  >
-                                    <option value="user">user</option>
-                                    <option value="admin">admin</option>
-                                  </select>
+                                  <>
+                                    <select
+                                      className="users-role-select"
+                                      value={user.role}
+                                      disabled={actionLoading === user.id}
+                                      onChange={(e) => handleRoleChange(user.id, e.target.value as 'admin' | 'user')}
+                                    >
+                                      <option value="user">user</option>
+                                      <option value="admin">admin</option>
+                                    </select>
+                                    {user.auth_provider === 'ldap' && (
+                                      <div className="users-ldap-role-note">Overwritten on next LDAP login unless group assignments are updated</div>
+                                    )}
+                                  </>
                                 )}
                               </td>
                               <td className="num">
@@ -1297,7 +1564,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                                       if (state?.has_interrupted_task) parts.push('interrupted');
                                       return (
                                         <span className="admin-ws-item-date">
-                                          {parts.join(' ')} \u00b7 storage: {typeof wsStorage === 'number' ? formatBytes(wsStorage) : 'not sampled'}
+                                            {parts.join(' ')} storage: {typeof wsStorage === 'number' ? formatBytes(wsStorage) : 'not sampled'}
                                         </span>
                                       );
                                     }}
@@ -1403,11 +1670,13 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                         <tr key={row.date}>
                           <td>{row.date}</td>
                           <td className="num">{formatNumber(row.total_requests)}</td>
-                          <td className="num">{formatNumber(row.total_input_tokens)}</td>
-                          <td className="num">{formatNumber(row.total_output_tokens)}</td>
-                          <td className="num">{formatNumber(row.total_tokens)}</td>
                           <td className="num">{row.completed_count}</td>
                           <td className="num">{row.failed_count}</td>
+                          <td className="num">{formatNumber(row.mcp_requests)}</td>
+                          <td className="num">{row.mcp_errors}</td>
+                          <td className="num">{formatNumber(row.api_requests)}</td>
+                          <td className="num">{row.api_errors}</td>
+                          <td className="num">{formatNumber(row.total_tokens)}</td>
                         </tr>
                       )}
                     />
@@ -1415,7 +1684,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                   <TablePager
                     page={dailyPaging.safePage}
                     totalPages={dailyPaging.totalPages}
-                    totalItems={dailyTrendRows.length}
+                    totalItems={dailyCombinedRows.length}
                     pageSize={dailyPageSize}
                     onPageChange={setDailyPage}
                     onPageSizeChange={(size) => { setDailyPageSize(size); setDailyPage(1); }}
@@ -1497,62 +1766,68 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
 
           <div className="users-two-column" style={{ marginBottom: 0 }}>
             <div className="card" style={{ minWidth: 0, marginBottom: 0 }}>
-              <div className="card-header"><h3>Failure Heatmap</h3></div>
+              <div className="card-header users-card-header-inline">
+                <h3>MCP / API Requests</h3>
+                <div className="users-inline-switch">
+                  <button
+                    type="button"
+                    className={`users-switch-btn ${mcpUsageTab === 'chart' ? 'active' : ''}`}
+                    onClick={() => setMcpUsageTab('chart')}
+                  >
+                    Chart
+                  </button>
+                  <button
+                    type="button"
+                    className={`users-switch-btn ${mcpUsageTab === 'table' ? 'active' : ''}`}
+                    onClick={() => setMcpUsageTab('table')}
+                  >
+                    Table
+                  </button>
+                </div>
+              </div>
               <div className="card-body users-compact-card-body">
-                {!failureHeatmap ? (
-                  <p className="muted-text">No failures in the selected window.</p>
+                {mcpUsageTab === 'chart' ? (
+                  mcpDailyRows.every((row) => row.total_requests === 0) ? (
+                    <p className="muted-text">No MCP requests in the selected window.</p>
+                  ) : (
+                    <>
+                      <div className="users-chart-caption">Daily MCP requests split by success/error</div>
+                      <div className="users-chart-shell users-chart-shell-tall">
+                        <Bar data={mcpChartData} options={mcpChartOptions} />
+                      </div>
+                    </>
+                  )
                 ) : (
-                  <div className="users-heatmap-wrap">
-                    <table className="users-heatmap-table">
-                      <thead>
-                        <tr>
-                          <th
-                            className="users-heatmap-corner"
-                            onClick={() => handleHeatmapSort('date')}
-                            style={{ cursor: 'pointer' }}
-                            title="Sort by date"
-                          >
-                            Date {heatmapSort.key === 'date' ? (heatmapSort.direction === 'asc' ? '\u2191' : '\u2193') : ''}
-                          </th>
-                          {failureHeatmap.modelLabels.map((label, idx) => (
-                            <th
-                              key={idx}
-                              className="users-heatmap-col-header"
-                              title={failureHeatmap.models[idx]}
-                              onClick={() => handleHeatmapSort(failureHeatmap.models[idx])}
-                              style={{ cursor: 'pointer' }}
-                            >
-                              {label}
-                              {heatmapSort.key === failureHeatmap.models[idx] ? (heatmapSort.direction === 'asc' ? ' \u2191' : ' \u2193') : ''}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortedHeatmapDates.map((date) => (
-                          <tr key={date}>
-                            <td className="users-heatmap-row-header">{date.slice(5)}</td>
-                            {failureHeatmap.models.map((modelKey) => {
-                              const cell = failureHeatmap.lookup.get(`${date}|${modelKey}`);
-                              const total = cell ? cell.failed + cell.interrupted : 0;
-                              const intensity = failureHeatmap.maxCount > 0 ? total / failureHeatmap.maxCount : 0;
-                              return (
-                                <td
-                                  key={modelKey}
-                                  className="users-heatmap-cell"
-                                  style={{
-                                    backgroundColor: total === 0 ? 'transparent' : `rgba(239, 68, 68, ${0.15 + intensity * 0.75})`,
-                                  }}
-                                  title={total > 0 ? `${date} · ${modelKey}\n${cell!.failed}f · ${cell!.interrupted}i` : ''}
-                                >
-                                  {total > 0 ? total : ''}
-                                </td>
-                              );
-                            })}
+                  <div className="users-data-slot">
+                    <div className="users-table-wrap">
+                      <DataTable
+                        rows={mcpUsersPaging.pageItems}
+                        columns={mcpUsersColumns}
+                        sortConfig={mcpUserSort}
+                        onSort={(key) => handleSort(mcpUserSort, key as McpUserSortKey, setMcpUserSort)}
+                        renderRow={(row) => (
+                          <tr key={`${row.user_id}-${row.auth_method}-${row.route_name}`}>
+                            <td>
+                              <span className="users-username">{row.display_name || row.username}</span>
+                              {row.display_name && row.username !== 'anonymous' && <span className="users-handle">@{row.username}</span>}
+                            </td>
+                            <td>{row.auth_method}</td>
+                            <td>{row.route_name}</td>
+                            <td className="num">{formatNumber(row.total_requests)}</td>
+                            <td className="num">{formatNumber(row.success_count)}</td>
+                            <td className="num">{formatNumber(row.error_count)}</td>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        )}
+                      />
+                    </div>
+                    <TablePager
+                      page={mcpUsersPaging.safePage}
+                      totalPages={mcpUsersPaging.totalPages}
+                      totalItems={sortedMcpUsers.length}
+                      pageSize={mcpUsersPageSize}
+                      onPageChange={setMcpUsersPage}
+                      onPageSizeChange={(size) => { setMcpUsersPageSize(size); setMcpUsersPage(1); }}
+                    />
                   </div>
                 )}
               </div>
@@ -1616,9 +1891,10 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                         sortConfig={providerSort}
                         onSort={(key) => handleSort(providerSort, key as ProviderSortKey, setProviderSort)}
                         renderRow={(row) => (
-                          <tr key={`${row.provider}-${row.model}`}>
+                          <tr key={`${row.provider}-${row.model}-${row.request_source}`}>
                             <td>{formatProviderDisplayName(row.provider)}</td>
                             <td>{formatModelDisplayName(row.model, row.provider)}</td>
+                            <td>{row.request_source === 'ui' ? 'Ragtime Chat' : row.request_source === 'api' ? 'API' : row.request_source}</td>
                             <td className="num">{formatNumber(row.total_requests)}</td>
                             <td className="num">{formatNumber(row.total_input_tokens)}</td>
                             <td className="num">{formatNumber(row.total_output_tokens)}</td>

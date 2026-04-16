@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
+from ragtime.core.model_limits import normalize_provider_name
 from ragtime.core.tokenization import count_tokens
 
 logger = get_logger(__name__)
@@ -236,6 +237,11 @@ async def get_user_usage_summary(
     """
 
     rows = await db.query_raw(query, *params)
+    for row in rows:
+        row["provider"] = normalize_provider_name(
+            row.get("provider"),
+            model_id=row.get("model"),
+        )
     return rows
 
 
@@ -266,13 +272,14 @@ async def get_provider_model_breakdown(
         SELECT
             provider,
             model,
+            request_source,
             COUNT(*)::int AS total_requests,
             COALESCE(SUM(input_tokens), 0)::int AS total_input_tokens,
             COALESCE(SUM(output_tokens), 0)::int AS total_output_tokens,
             COALESCE(SUM(total_tokens), 0)::int AS total_tokens
         FROM user_usage_attempts
         {where_sql}
-        GROUP BY provider, model
+        GROUP BY provider, model, request_source
         ORDER BY total_tokens DESC
     """
 

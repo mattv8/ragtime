@@ -15,14 +15,22 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ragtime import __version__
 from ragtime.config import settings
+from ragtime.core.api_accounting import log_api_request
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
 from ragtime.indexer.background_tasks import rebuild_tool_messages_from_events
 from ragtime.indexer.routes import get_available_chat_models
-from ragtime.models import (ChatChoice, ChatCompletionRequest,
-                            ChatCompletionResponse, HealthResponse,
-                            IndexLoadingDetail, MemoryStats, Message,
-                            ModelInfo, ModelsResponse)
+from ragtime.models import (
+    ChatChoice,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    HealthResponse,
+    IndexLoadingDetail,
+    MemoryStats,
+    Message,
+    ModelInfo,
+    ModelsResponse,
+)
 from ragtime.rag import rag
 
 logger = get_logger(__name__)
@@ -500,6 +508,13 @@ async def chat_completions(request: ChatCompletionRequest):
     OpenAI API compatible for use with OpenWebUI and similar tools.
     """
     if not rag.is_ready:
+        asyncio.ensure_future(
+            log_api_request(
+                endpoint="/v1/chat/completions",
+                http_method="POST",
+                status_code=503,
+            )
+        )
         raise HTTPException(
             status_code=503, detail="Service initializing, please retry"
         )
@@ -510,6 +525,13 @@ async def chat_completions(request: ChatCompletionRequest):
     )
     effective_model = _resolve_effective_model(request.model, app_settings)
     if not effective_model:
+        asyncio.ensure_future(
+            log_api_request(
+                endpoint="/v1/chat/completions",
+                http_method="POST",
+                status_code=400,
+            )
+        )
         raise HTTPException(
             status_code=400,
             detail="No model configured. Set an LLM model in Settings.",
@@ -531,6 +553,15 @@ async def chat_completions(request: ChatCompletionRequest):
     )
 
     if not user_message:
+        asyncio.ensure_future(
+            log_api_request(
+                provider=default_provider,
+                model=effective_model,
+                endpoint="/v1/chat/completions",
+                http_method="POST",
+                status_code=400,
+            )
+        )
         raise HTTPException(status_code=400, detail="No user message found")
 
     user_text = user_message.get_text_content()
@@ -546,7 +577,9 @@ async def chat_completions(request: ChatCompletionRequest):
         elif msg.role == "assistant":
             message_events = getattr(msg, "events", None)
             if message_events:
-                chat_history.extend(rebuild_tool_messages_from_events(message_events, 0))
+                chat_history.extend(
+                    rebuild_tool_messages_from_events(message_events, 0)
+                )
             elif msg.tool_calls:
                 # Reconstruct native AIMessage with tool_calls
                 chat_history.append(
@@ -574,6 +607,16 @@ async def chat_completions(request: ChatCompletionRequest):
 
     # Handle streaming response - use true LLM streaming
     if request.stream:
+        asyncio.ensure_future(
+            log_api_request(
+                provider=default_provider,
+                model=effective_model,
+                endpoint="/v1/chat/completions",
+                http_method="POST",
+                status_code=200,
+                streaming=True,
+            )
+        )
         return StreamingResponse(
             _stream_response_tokens(
                 user_message,
@@ -593,6 +636,17 @@ async def chat_completions(request: ChatCompletionRequest):
     )
 
     logger.info(f"Response generated ({len(answer)} chars)")
+
+    asyncio.ensure_future(
+        log_api_request(
+            provider=default_provider,
+            model=effective_model,
+            endpoint="/v1/chat/completions",
+            http_method="POST",
+            status_code=200,
+            streaming=False,
+        )
+    )
 
     # Standard JSON response
     return ChatCompletionResponse(

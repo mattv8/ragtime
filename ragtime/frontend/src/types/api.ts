@@ -2740,6 +2740,7 @@ export interface UserUsageSummary {
 export interface ProviderModelBreakdown {
   provider: string;
   model: string;
+  request_source: string;
   total_requests: number;
   total_input_tokens: number;
   total_output_tokens: number;
@@ -2801,5 +2802,60 @@ export interface ProviderDailyFailureCell {
 
 export interface ProviderDailyFailuresResponse {
   cells: ProviderDailyFailureCell[];
+  days: number;
+}
+
+// =============================================================================
+// MCP Usage Types
+// =============================================================================
+
+export interface McpUserUsage {
+  user_id: string;
+  username: string;
+  display_name: string | null;
+  auth_method: string;
+  route_name: string;
+  total_requests: number;
+  success_count: number;
+  error_count: number;
+}
+
+export interface McpDailyTrend {
+  date: string;
+  total_requests: number;
+  success_count: number;
+  error_count: number;
+  unique_users: number;
+}
+
+export interface McpRouteUsage {
+  route_name: string;
+  total_requests: number;
+  success_count: number;
+  error_count: number;
+  unique_users: number;
+}
+
+export interface McpUsageResponse {
+  users: McpUserUsage[];
+  daily: McpDailyTrend[];
+  routes: McpRouteUsage[];
+  days: number;
+}
+
+// =============================================================================
+// API Usage Types
+// =============================================================================
+
+export interface ApiDailyTrend {
+  date: string;
+  total_requests: number;
+  success_count: number;
+  error_count: number;
+  unique_users: number;
+}
+
+export interface ApiUsageResponse {
+  daily: ApiDailyTrend[];
   days: number;
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Crown, Database, ExternalLink, File, GitBranch, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Crown, Database, ExternalLink, File, GitBranch, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { keymap } from '@codemirror/view';
 import { openSearchPanel } from '@codemirror/search';
@@ -16,6 +16,7 @@ import {
 import { useCodeMirrorLanguageExtension } from '@/utils/codemirrorLanguage';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
+import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
@@ -1097,6 +1098,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const canEditWorkspace = activeWorkspaceRole === 'owner' || activeWorkspaceRole === 'editor';
   const isOwner = activeWorkspaceRole === 'owner';
   const isAdminImpersonating = currentUser.role === 'admin' && activeWorkspace != null && activeWorkspace.owner_user_id !== currentUser.id;
+  const workspaceChatShareableUserIds = useMemo(() => {
+    if (!activeWorkspace) return [];
+    return Array.from(new Set([
+      activeWorkspace.owner_user_id,
+      ...activeWorkspace.members.map((member) => member.user_id),
+    ]));
+  }, [activeWorkspace]);
 
   const snapshotsByBranch = useMemo(() => {
     const grouped = new Map<string, UserSpaceSnapshot[]>();
@@ -5588,9 +5596,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           )}
           {isOwner && (
             <>
-              <button className="btn btn-secondary btn-sm" onClick={handleOpenMembersModal} title="Manage members">
-                <Users size={14} />
-              </button>
+              <MemberManagementButton onClick={handleOpenMembersModal} title="Manage members" />
               <button className="btn btn-secondary btn-sm" onClick={handleOpenEnvVarsModal} title="Environment variables">
                 <KeyRound size={14} />
               </button>
@@ -5959,18 +5965,22 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 onToggleWorkspaceToolGroup={handleToggleWorkspaceToolGroup}
                 workspaceToolGroups={toolGroups}
                 workspaceSavingTools={savingWorkspaceTools}
-                onUserMessageSubmitted={canEditWorkspace ? handleUserMessageSubmitted : undefined}
+                conversationShareableUserIds={workspaceChatShareableUserIds}
+                onUserMessageSubmitted={handleUserMessageSubmitted}
                 onConversationStateChange={handleConversationStateChange}
                 onActiveConversationChange={setActiveWorkspaceConversationId}
                 onBranchSwitch={handleBranchSwitch}
                 onOpenWorkspaceFile={handleSelectFile}
                 embedded
-                readOnly={!canEditWorkspace}
-                readOnlyMessage="Workspace is read-only for viewers. You can review chat and files, but only owners/editors can send prompts."
+                readOnly={false}
                 inputBanner={branchRestoreSnapshotId ? (
                   <div className="chat-branch-restore-banner">
                     <span>This branch has an associated code snapshot.</span>
-                    <button className="chat-branch-restore-btn confirm" onClick={handleConfirmBranchRestore}>Restore</button>
+                    {canEditWorkspace ? (
+                      <button className="chat-branch-restore-btn confirm" onClick={handleConfirmBranchRestore}>Restore</button>
+                    ) : (
+                      <span className="chat-branch-restore-note">Only workspace owners and editors can restore files.</span>
+                    )}
                     <button className="chat-branch-restore-btn dismiss" onClick={handleDismissBranchRestore}>Dismiss</button>
                   </div>
                 ) : undefined}

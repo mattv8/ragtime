@@ -769,6 +769,8 @@ model User {
   userspaceChangedFileAcknowledgements UserSpaceChangedFileAcknowledgement[]
   conversationBranches ConversationBranch[]
   usageAttempts UserUsageAttempt[]
+  mcpRequestLogs McpRequestLog[]
+  apiRequestLogs ApiRequestLog[]
 
   @@map("users")
 }
@@ -1407,4 +1409,51 @@ model UserUsageAttempt {
   @@index([startedAt])
   @@index([chatTaskId])
   @@map("user_usage_attempts")
+}
+
+// -----------------------------------------------------------------------------
+// MCP Request Logging
+// -----------------------------------------------------------------------------
+
+/// Log of MCP HTTP requests for usage analytics
+model McpRequestLog {
+  id          String   @id @default(uuid())
+  userId      String?  @map("user_id")
+  username    String?
+  routeName   String   @default("default") @map("route_name")
+  authMethod  String   @default("none") @map("auth_method")  // "bearer", "oauth2", "password", "none"
+  httpMethod  String   @map("http_method")                    // "GET", "POST", "DELETE"
+  statusCode  Int      @default(200) @map("status_code")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([routeName, createdAt])
+  @@index([createdAt])
+  @@map("mcp_request_logs")
+}
+
+// -----------------------------------------------------------------------------
+// API Request Logging
+// -----------------------------------------------------------------------------
+
+/// Log of OpenAI-compatible API requests for usage analytics
+model ApiRequestLog {
+  id          String   @id @default(uuid())
+  userId      String?  @map("user_id")
+  provider    String   @default("")           // resolved provider
+  model       String   @default("")           // resolved model
+  endpoint    String                           // "/v1/chat/completions", "/v1/models"
+  httpMethod  String   @map("http_method")    // "GET", "POST"
+  statusCode  Int      @default(200) @map("status_code")
+  streaming   Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([endpoint, createdAt])
+  @@index([createdAt])
+  @@map("api_request_logs")
 }

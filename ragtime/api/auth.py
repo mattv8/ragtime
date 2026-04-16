@@ -9,11 +9,12 @@ import base64
 import hashlib
 import time
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import urlparse
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     Form,
     HTTPException,
@@ -23,12 +24,16 @@ from fastapi import (
     status,
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
-from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
+from prisma import Json
 from ragtime.config.settings import settings
+from ragtime.core.api_accounting import (
+    get_api_daily_trend,
+    get_api_provider_model_breakdown,
+)
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import (
     authenticate,
@@ -42,6 +47,11 @@ from ragtime.core.auth import (
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
+from ragtime.core.mcp_accounting import (
+    get_mcp_daily_trend,
+    get_mcp_usage_by_route,
+    get_mcp_usage_by_user,
+)
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
 from ragtime.core.security import get_current_user, get_session_token, require_admin
 from ragtime.core.usage_accounting import (
@@ -191,6 +201,15 @@ class UserListResponse(BaseModel):
     total: int
     skip: int
     take: int
+
+
+class UpdateUserRoleRequest(BaseModel):
+    """User role update request payload."""
+
+    role: Literal["user", "admin"] = Field(
+        ...,
+        description="New role value ('user' or 'admin').",
+    )
 
 
 class LdapConfigRequest(BaseModel):
@@ -1212,24 +1231,20 @@ async def delete_user(
 @router.patch("/users/{user_id}/role")
 async def update_user_role(
     user_id: str,
-    role: str,
+    request: UpdateUserRoleRequest = Body(...),
     current_user: User = Depends(require_admin),
 ):
     """Update user role (admin only)."""
+    resolved_role = request.role
+
     if user_id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot change your own role",
         )
 
-    if role not in ("user", "admin"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid role. Must be 'user' or 'admin'",
-        )
-
     # Convert string to enum
-    role_enum = UserRole.admin if role == "admin" else UserRole.user
+    role_enum = UserRole.admin if resolved_role == "admin" else UserRole.user
 
     db = await get_db()
     user = await db.user.update(
@@ -1243,10 +1258,10 @@ async def update_user_role(
         )
 
     logger.info(
-        f"User '{user.username}' role changed to '{role}' by admin '{current_user.username}'"
+        f"User '{user.username}' role changed to '{resolved_role}' by admin '{current_user.username}'"
     )
 
-    return {"success": True, "role": role}
+    return {"success": True, "role": resolved_role}
 
 
 # =============================================================================
@@ -1272,7 +1287,9 @@ async def usage_providers(
 ):
     """Usage breakdown by provider and model."""
     since = _usage_window_start(days)
-    rows = await get_provider_model_breakdown(since=since)
+    ui_rows = await get_provider_model_breakdown(since=since)
+    api_rows = await get_api_provider_model_breakdown(since=since)
+    rows = ui_rows + api_rows
     return {"providers": rows, "days": days}
 
 
@@ -1316,3 +1333,29 @@ async def usage_provider_daily_failures(
     since = _usage_window_start(days)
     rows = await get_daily_provider_failures(since=since)
     return {"cells": rows, "days": days}
+
+
+@router.get("/usage/mcp")
+async def usage_mcp(
+    days: int = Query(30, ge=1, le=365),
+    _user: User = Depends(require_admin),
+):
+    """MCP request usage summary for the admin dashboard."""
+    since = _usage_window_start(days)
+    users, daily, routes = (
+        await get_mcp_usage_by_user(since=since),
+        await get_mcp_daily_trend(since=since),
+        await get_mcp_usage_by_route(since=since),
+    )
+    return {"users": users, "daily": daily, "routes": routes, "days": days}
+
+
+@router.get("/usage/api")
+async def usage_api(
+    days: int = Query(30, ge=1, le=365),
+    _user: User = Depends(require_admin),
+):
+    """API request daily usage summary for the admin dashboard."""
+    since = _usage_window_start(days)
+    daily = await get_api_daily_trend(since=since)
+    return {"daily": daily, "days": days}

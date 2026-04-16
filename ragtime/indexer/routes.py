@@ -37,10 +37,10 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
@@ -98,11 +98,11 @@ from ragtime.core.ssh import (
 )
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.usage_accounting import (
-    create_usage_attempt,
-    finalize_usage_attempt,
-    bind_usage_attempt_task,
     _estimate_input_tokens,
     _estimate_output_tokens,
+    bind_usage_attempt_task,
+    create_usage_attempt,
+    finalize_usage_attempt,
 )
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
@@ -8916,6 +8916,10 @@ async def _assert_workspace_access(
     )
 
 
+def _workspace_chat_required_role(workspace_id: Optional[str]) -> str:
+    return "viewer" if workspace_id else "editor"
+
+
 async def _resolve_selected_tool_ids_for_request(
     conversation: Conversation,
     user: User,
@@ -9097,6 +9101,46 @@ async def get_workspaces_conversation_state_summary(
     return results
 
 
+@router.post(
+    "/conversations/workspaces/state-summary-lite",
+    response_model=List[WorkspaceConversationStateSummaryItem],
+)
+async def get_workspaces_conversation_state_summary_lite(
+    request: WorkspaceConversationStateSummaryRequest,
+    user: User = Depends(get_current_user),
+):
+    """Return workspace live/interrupted flags using batched lookups."""
+    workspace_ids = [
+        wid.strip() for wid in request.workspace_ids if wid and wid.strip()
+    ]
+    if not workspace_ids:
+        return []
+
+    deduped_workspace_ids = list(dict.fromkeys(workspace_ids))
+    is_admin = user.role == "admin"
+
+    if not is_admin:
+        await asyncio.gather(
+            *(
+                _assert_workspace_access(workspace_id, user, "viewer")
+                for workspace_id in deduped_workspace_ids
+            )
+        )
+
+    live_workspace_ids, interrupted_workspace_ids = (
+        await repository.get_workspace_task_state_summary(deduped_workspace_ids)
+    )
+
+    return [
+        WorkspaceConversationStateSummaryItem(
+            workspace_id=workspace_id,
+            has_live_task=workspace_id in live_workspace_ids,
+            has_interrupted_task=workspace_id in interrupted_workspace_ids,
+        )
+        for workspace_id in deduped_workspace_ids
+    ]
+
+
 def _resolve_default_conversation_model(app_settings: Optional[AppSettings]) -> str:
     """Resolve default model for new conversations.
 
@@ -9150,7 +9194,9 @@ async def create_conversation(
 
     workspace_id = request.workspace_id if request else None
 
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
 
     conv = await repository.create_conversation(
         title=title,
@@ -9255,7 +9301,9 @@ async def delete_conversation(
     user: User = Depends(get_current_user),
 ):
     """Delete a conversation. Users can only delete their own conversations."""
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -9281,7 +9329,9 @@ async def update_conversation_title(
     user: User = Depends(get_current_user),
 ):
     """Update a conversation's title. Users can only update their own conversations."""
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -9312,7 +9362,9 @@ async def update_conversation_model(
     user: User = Depends(get_current_user),
 ):
     """Update a conversation's model. Users can only update their own conversations."""
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -9368,7 +9420,9 @@ async def update_conversation_tool_output_mode(
     user: User = Depends(get_current_user),
 ):
     """Update a conversation's tool output mode. Users can only update their own conversations."""
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -9405,7 +9459,9 @@ async def truncate_conversation(
     Truncate conversation messages to keep only the first N messages.
     Used when editing/resending a message to remove subsequent messages.
     """
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -9504,7 +9560,9 @@ async def create_conversation_branch(
     Preserves the original messages from the edit point onward, optionally
     creates a UserSpace snapshot before branching (for workspace chats).
     """
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -9583,7 +9641,9 @@ async def switch_conversation_branch(
     Saves current downstream messages to the current branch, then
     restores the target branch's messages.
     """
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -9612,7 +9672,9 @@ async def delete_conversation_branch(
     user: User = Depends(get_current_user),
 ):
     """Delete a conversation branch."""
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -9640,7 +9702,9 @@ async def send_message(
     Send a message to a conversation and get a response.
     Non-streaming version.
     """
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
 
     # Check access
     has_access = await repository.check_conversation_access(
@@ -9661,7 +9725,7 @@ async def send_message(
         conv,
         user,
         workspace_id,
-        "editor",
+        _workspace_chat_required_role(workspace_id),
     )
 
     if not rag.is_ready:
@@ -9757,7 +9821,9 @@ async def send_message_stream(
     Send a message to a conversation and stream the response.
     Returns SSE stream of tokens.
     """
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
 
     # Check access
     has_access = await repository.check_conversation_access(
@@ -9778,7 +9844,7 @@ async def send_message_stream(
         conv,
         user,
         workspace_id,
-        "editor",
+        _workspace_chat_required_role(workspace_id),
     )
 
     if not rag.is_ready:
@@ -10099,7 +10165,9 @@ async def retry_visualization(
     For datatables, source_data should be: {"columns": [...], "rows": [...]}
     For charts, source_data should be: {"labels": [...], "datasets": [...], "chart_type": "..."}
     """
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
     # Check access
     has_access = await repository.check_conversation_access(
         conversation_id,
@@ -10179,7 +10247,9 @@ async def retry_terminal_tool(
     user: User = Depends(get_current_user),
 ):
     """Replay a terminal-classified runtime tool with its captured input."""
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -10202,7 +10272,7 @@ async def retry_terminal_tool(
         conversation,
         user,
         workspace_id,
-        "editor",
+        _workspace_chat_required_role(workspace_id),
     )
     if request.tool_config_id not in selected_tool_ids:
         raise HTTPException(status_code=404, detail="Tool not available")
@@ -10249,7 +10319,9 @@ async def send_message_background(
     Send a message to a conversation and process it in the background.
     Returns a task object that can be polled for status and results.
     """
-    await _assert_workspace_access(workspace_id, user, "editor")
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
 
     # Check access
     has_access = await repository.check_conversation_access(
@@ -10650,13 +10722,16 @@ async def get_conversation_members(
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         is_admin = user.role == "admin"
+        workspace_id = getattr(conversation, "workspaceId", None)
 
-        # Check membership
-        user_member = next(
-            (m for m in conversation.members if m.userId == user.id), None
-        )
-        if not is_admin and not user_member and conversation.userId != user.id:
-            raise HTTPException(status_code=403, detail="Access denied")
+        if workspace_id:
+            await _assert_workspace_access(workspace_id, user, "viewer")
+        else:
+            user_member = next(
+                (m for m in conversation.members if m.userId == user.id), None
+            )
+            if not is_admin and not user_member and conversation.userId != user.id:
+                raise HTTPException(status_code=403, detail="Access denied")
 
         # Return members
         return [{"user_id": m.userId, "role": m.role} for m in conversation.members]
@@ -10681,12 +10756,19 @@ async def update_conversation_members(
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-        # Check if user is owner
-        user_member = next(
-            (m for m in conversation.members if m.userId == user.id), None
-        )
-        if not user_member or user_member.role != "owner":
-            if conversation.userId != user.id:
+        workspace_id = getattr(conversation, "workspaceId", None)
+        if workspace_id:
+            await _assert_workspace_access(
+                workspace_id, user, _workspace_chat_required_role(workspace_id)
+            )
+        else:
+            user_member = next(
+                (m for m in conversation.members if m.userId == user.id), None
+            )
+            if user.role != "admin" and (
+                (not user_member or user_member.role != "owner")
+                and conversation.userId != user.id
+            ):
                 raise HTTPException(
                     status_code=403, detail="Only owner can manage members"
                 )
@@ -10731,12 +10813,16 @@ async def get_conversation_tools(
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         is_admin = user.role == "admin"
+        workspace_id = getattr(conversation, "workspaceId", None)
 
-        user_member = next(
-            (m for m in conversation.members if m.userId == user.id), None
-        )
-        if not is_admin and not user_member and conversation.userId != user.id:
-            raise HTTPException(status_code=403, detail="Access denied")
+        if workspace_id:
+            await _assert_workspace_access(workspace_id, user, "viewer")
+        else:
+            user_member = next(
+                (m for m in conversation.members if m.userId == user.id), None
+            )
+            if not is_admin and not user_member and conversation.userId != user.id:
+                raise HTTPException(status_code=403, detail="Access denied")
 
         # Get tool selections
         selections = await db.conversationtoolselection.find_many(
@@ -10773,11 +10859,19 @@ async def update_conversation_tools(
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-        user_member = next(
-            (m for m in conversation.members if m.userId == user.id), None
-        )
-        if not user_member or user_member.role == "viewer":
-            if conversation.userId != user.id:
+        workspace_id = getattr(conversation, "workspaceId", None)
+        if workspace_id:
+            await _assert_workspace_access(
+                workspace_id, user, _workspace_chat_required_role(workspace_id)
+            )
+        else:
+            user_member = next(
+                (m for m in conversation.members if m.userId == user.id), None
+            )
+            if user.role != "admin" and (
+                (not user_member or user_member.role == "viewer")
+                and conversation.userId != user.id
+            ):
                 raise HTTPException(
                     status_code=403, detail="Only owner/editor can manage tools"
                 )

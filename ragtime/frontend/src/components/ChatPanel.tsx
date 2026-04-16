@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { diffLines } from 'diff';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link } from 'lucide-react';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchPointInfo } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
@@ -22,6 +22,7 @@ import {
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 import { ContextUsagePie } from './shared/ContextUsagePie';
 import { FileDiffOverlay } from './shared/FileDiffOverlay';
+import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
@@ -2221,6 +2222,7 @@ interface ChatPanelProps {
   onToggleWorkspaceToolGroup?: (groupId: string) => void | Promise<void>;
   workspaceToolGroups?: ToolGroupInfo[];
   workspaceSavingTools?: boolean;
+  conversationShareableUserIds?: string[];
   onUserMessageSubmitted?: (message: string) => void | Promise<void>;
   onTaskComplete?: () => void;
   onConversationStateChange?: (hasLive: boolean, hasInterrupted: boolean) => void;
@@ -2246,6 +2248,7 @@ export function ChatPanel({
   onToggleWorkspaceToolGroup,
   workspaceToolGroups,
   workspaceSavingTools = false,
+  conversationShareableUserIds,
   onUserMessageSubmitted,
   onTaskComplete,
   onConversationStateChange,
@@ -2485,8 +2488,11 @@ export function ChatPanel({
     return myMember?.role || null;
   }, [activeConversation, currentUser, conversationMembers]);
 
-  const isConversationOwner = myConversationRole === 'owner' || (activeConversation?.user_id === currentUser?.id && conversationMembers.length === 0);
+  const isConversationOwner = myConversationRole === 'owner' || activeConversation?.user_id === currentUser?.id;
   const isConversationViewer = myConversationRole === 'viewer';
+  const hasWorkspaceChatCollaboration = Boolean(workspaceId);
+  const canManageConversationMembers = Boolean(activeConversation) && (hasWorkspaceChatCollaboration || isConversationOwner);
+  const canUseConversationTools = Boolean(activeConversation) && !readOnly && (hasWorkspaceChatCollaboration || !isConversationViewer);
   const showPromptDebugButton = Boolean(debugMode && isAdmin && activeConversation);
 
   const toggleFullscreen = useCallback(() => {
@@ -3412,14 +3418,13 @@ export function ChatPanel({
       if (!useWorkspaceToolSource) {
         void fetchConversationTools(activeConversationId);
       }
-      if (!embedded) {
-        void fetchConversationMembers(activeConversationId);
-      }
+      void fetchConversationMembers(activeConversationId);
       void refreshBranchPoints(activeConversationId);
     } else {
+      setConversationMembers([]);
       setBranchPoints([]);
     }
-  }, [activeConversationId, embedded, fetchConversationMembers, fetchConversationTools, useWorkspaceToolSource, refreshBranchPoints]);
+  }, [activeConversationId, fetchConversationMembers, fetchConversationTools, useWorkspaceToolSource, refreshBranchPoints]);
 
   // Load available tools on mount
   useEffect(() => {
@@ -3429,7 +3434,7 @@ export function ChatPanel({
   }, [embedded, fetchAvailableTools, useWorkspaceToolSource, workspaceId]);
 
   const handleOpenMembersModal = useCallback(async () => {
-    if (!activeConversation || !isConversationOwner) return;
+    if (!activeConversation || !canManageConversationMembers) return;
     try {
       const users = await api.listUsers();
       setAllUsers(users);
@@ -3437,7 +3442,7 @@ export function ChatPanel({
       setAllUsers([]);
     }
     setShowMembersModal(true);
-  }, [activeConversation, isConversationOwner]);
+  }, [activeConversation, canManageConversationMembers]);
 
   const handleSaveMembers = useCallback(async (members: ConversationMember[]) => {
     if (!activeConversation) return;
@@ -4658,9 +4663,17 @@ export function ChatPanel({
 
   const showWorkspaceConversationSelect = embedded && Boolean(workspaceId);
   const workspaceConversationOptions = conversations.filter((conv) => conv.title !== 'Untitled Chat');
-  const showInlineToolSelector = Boolean(activeConversation)
-    && !isConversationViewer
-    && !readOnly;
+  const shareableConversationUsers = useMemo(() => {
+    if (!conversationShareableUserIds || conversationShareableUserIds.length === 0) {
+      return allUsers;
+    }
+    const allowedIds = new Set(conversationShareableUserIds);
+    if (conversationOwnerId) {
+      allowedIds.add(conversationOwnerId);
+    }
+    return allUsers.filter((user) => allowedIds.has(user.id));
+  }, [allUsers, conversationOwnerId, conversationShareableUserIds]);
+  const showInlineToolSelector = canUseConversationTools;
 
   const renderConversationItem = (conv: Conversation) => {
     const metaText = `${conv.messages.length} messages | ${formatChatTimestamp(conv.updated_at)}`;
@@ -5094,16 +5107,14 @@ export function ChatPanel({
                   contextLimit={contextUsage.contextLimit}
                   loading={modelsLoading}
                 />
-                {!embedded && activeConversation && isConversationOwner && (
-                  <button
+                {canManageConversationMembers && (
+                  <MemberManagementButton
                     className="btn btn-secondary btn-sm btn-icon"
                     onClick={handleOpenMembersModal}
                     title="Manage conversation members"
-                  >
-                    <Users size={14} />
-                  </button>
+                  />
                 )}
-                {!embedded && activeConversation && !isConversationViewer && (
+                {canUseConversationTools && (
                   <ToolSelectorDropdown
                     availableTools={availableTools}
                     selectedToolIds={resolvedConversationToolIdSet}
@@ -5732,7 +5743,7 @@ export function ChatPanel({
           onClose={() => setShowMembersModal(false)}
           members={conversationMembers}
           onSave={handleSaveMembers}
-          allUsers={allUsers}
+          allUsers={shareableConversationUsers}
           ownerId={conversationOwnerId}
           entityType="conversation"
           formatUserLabel={formatUserLabel}

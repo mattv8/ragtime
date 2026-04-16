@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,24 +22,42 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
-                                     decrypt_json_passwords, decrypt_secret,
-                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_json_passwords,
+    encrypt_secret,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
-    normalize_userspace_preview_sandbox_flags)
-from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
-                                    AppSettings, ChatMessage, ChatTask,
-                                    ChatTaskStatus, ChatTaskStreamingState,
-                                    Conversation, ConversationBranch,
-                                    ConversationBranchSummary, IndexConfig,
-                                    IndexJob, IndexStatus,
-                                    ProviderPromptDebugRecord, ToolCallRecord,
-                                    ToolConfig, ToolGroup, ToolOutputMode,
-                                    ToolType, VectorStoreType)
+    normalize_userspace_preview_sandbox_flags,
+)
+from ragtime.indexer.models import (
+    SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
+    AppSettings,
+    ChatMessage,
+    ChatTask,
+    ChatTaskStatus,
+    ChatTaskStreamingState,
+    Conversation,
+    ConversationBranch,
+    ConversationBranchSummary,
+    IndexConfig,
+    IndexJob,
+    IndexStatus,
+    ProviderPromptDebugRecord,
+    ToolCallRecord,
+    ToolConfig,
+    ToolGroup,
+    ToolOutputMode,
+    ToolType,
+    VectorStoreType,
+)
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.utils import safe_tool_name
@@ -1790,8 +1807,13 @@ class IndexerRepository:
         else:
             where_clause["workspaceId"] = None
 
-        if workspace_id is None and not include_all and user_id:
-            where_clause["userId"] = user_id
+        if workspace_id is None and not include_all:
+            if not user_id:
+                return []
+            where_clause["OR"] = [
+                {"userId": user_id},
+                {"members": {"some": {"userId": user_id}}},
+            ]
 
         prisma_convs = await db.conversation.find_many(
             where=where_clause if where_clause else None,  # type: ignore[arg-type]
@@ -2283,7 +2305,9 @@ class IndexerRepository:
             True if user has access, False otherwise
         """
         db = await self._get_db()
-        conv = await db.conversation.find_unique(where={"id": conversation_id})
+        conv = await db.conversation.find_unique(
+            where={"id": conversation_id}, include={"members": True}
+        )
 
         if not conv:
             return False
@@ -2318,7 +2342,13 @@ class IndexerRepository:
             )
 
         # Allow access if conversation has no owner (legacy) or matches user
-        return conv.userId is None or conv.userId == user_id
+        if conv.userId is None or conv.userId == user_id:
+            return True
+
+        return any(
+            getattr(member, "userId", None) == user_id
+            for member in list(getattr(conv, "members", []) or [])
+        )
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         """Delete a conversation."""
@@ -2531,6 +2561,71 @@ class IndexerRepository:
         )  # type: ignore[arg-type]
 
         return [t.conversationId for t in tasks]
+
+    async def get_workspace_task_state_summary(
+        self, workspace_ids: list[str]
+    ) -> tuple[set[str], set[str]]:
+        """Return workspace IDs with live tasks and interrupted tasks."""
+        deduped_workspace_ids = [
+            wid.strip() for wid in dict.fromkeys(workspace_ids) if wid and wid.strip()
+        ]
+        if not deduped_workspace_ids:
+            return set(), set()
+
+        db = await self._get_db()
+
+        live_rows = await db.conversation.find_many(
+            where=cast(
+                Any,
+                {
+                    "workspaceId": {"in": deduped_workspace_ids},
+                    "activeTaskId": {"not": None},
+                },
+            ),
+            distinct=["workspaceId"],
+        )  # type: ignore[arg-type]
+
+        interrupted_task_rows = await db.chattask.find_many(
+            where=cast(
+                Any,
+                {
+                    "status": PrismaChatTaskStatus.interrupted,
+                },
+            ),
+            distinct=["conversationId"],
+        )  # type: ignore[arg-type]
+
+        interrupted_conversation_ids = [
+            str(getattr(row, "conversationId", "") or "")
+            for row in interrupted_task_rows
+            if getattr(row, "conversationId", None)
+        ]
+
+        interrupted_rows = []
+        if interrupted_conversation_ids:
+            interrupted_rows = await db.conversation.find_many(
+                where=cast(
+                    Any,
+                    {
+                        "id": {"in": interrupted_conversation_ids},
+                        "workspaceId": {"in": deduped_workspace_ids},
+                    },
+                ),
+                distinct=["workspaceId"],
+            )  # type: ignore[arg-type]
+
+        live_workspace_ids = {
+            str(getattr(row, "workspaceId", "") or "")
+            for row in live_rows
+            if getattr(row, "workspaceId", None)
+        }
+        interrupted_workspace_ids = {
+            str(getattr(row, "workspaceId", "") or "")
+            for row in interrupted_rows
+            if getattr(row, "workspaceId", None)
+        }
+
+        return live_workspace_ids, interrupted_workspace_ids
 
     async def update_chat_task_status(
         self, task_id: str, status: ChatTaskStatus, error_message: Optional[str] = None

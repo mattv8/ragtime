@@ -36,11 +36,15 @@ from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
+from ragtime.core.mcp_accounting import log_mcp_request
 from ragtime.core.security import require_admin
-from ragtime.mcp.server import (get_custom_route_server,
-                                get_default_route_filtered_server,
-                                get_mcp_server, notify_tools_changed,
-                                register_tools_changed_callback)
+from ragtime.mcp.server import (
+    get_custom_route_server,
+    get_default_route_filtered_server,
+    get_mcp_server,
+    notify_tools_changed,
+    register_tools_changed_callback,
+)
 from ragtime.mcp.tools import mcp_tool_adapter
 
 logger = get_logger(__name__)
@@ -249,7 +253,11 @@ async def _validate_bearer_token(scope: Scope) -> bool:
 
     try:
         token_data = await validate_session(token)
-        return token_data is not None
+        if token_data is not None:
+            # Annotate scope for downstream MCP request logging
+            scope["_mcp_user_id"] = token_data.user_id
+            return True
+        return False
     except Exception as e:
         logger.debug(f"Token validation failed: {e}")
         return False
@@ -286,6 +294,9 @@ async def _validate_oauth2_token(
         token_data = await validate_session(token)
         if token_data is None:
             return False
+
+        # Annotate scope for downstream MCP request logging
+        scope["_mcp_user_id"] = token_data.user_id
 
         # If no group restriction, token is valid
         if not allowed_group_dn:
@@ -634,6 +645,27 @@ async def _check_mcp_enabled() -> bool:
     return app_settings.get("mcp_enabled", False)
 
 
+async def _log_mcp(
+    scope: Scope,
+    *,
+    route_name: str = "default",
+    auth_method: str = "none",
+    status_code: int = 200,
+) -> None:
+    """Fire-and-forget MCP request log entry."""
+    user_id = scope.get("_mcp_user_id")
+    username = scope.get("_mcp_username")
+    http_method = scope.get("method", "POST")
+    await log_mcp_request(
+        user_id=user_id,
+        username=username,
+        route_name=route_name,
+        auth_method=auth_method,
+        http_method=http_method,
+        status_code=status_code,
+    )
+
+
 class MCPTransportEndpoint:
     """
     ASGI endpoint for MCP Streamable HTTP transport.
@@ -659,6 +691,7 @@ class MCPTransportEndpoint:
                     "body": b'{"error": "MCP server is disabled. Enable it in Settings."}',
                 }
             )
+            await _log_mcp(scope, status_code=503)
             return
 
         # Check if default route requires auth and get auth config
@@ -666,16 +699,20 @@ class MCPTransportEndpoint:
             await _check_default_route_auth()
         )
 
+        resolved_auth_method = "none"
         if require_auth:
             is_valid = False
 
             if auth_method == "oauth2":
+                resolved_auth_method = "oauth2"
                 # OAuth2 with LDAP - validate token and check group membership
                 is_valid = await _validate_oauth2_token(scope, allowed_group)
             elif encrypted_password:
+                resolved_auth_method = "password"
                 # Password-based auth
                 is_valid = await _validate_route_password(scope, encrypted_password)
             else:
+                resolved_auth_method = "bearer"
                 # Fall back to session token validation
                 is_valid = await _validate_bearer_token(scope)
 
@@ -703,6 +740,7 @@ class MCPTransportEndpoint:
                         "body": f'{{"error": "Unauthorized", "detail": "{detail}"}}'.encode(),
                     }
                 )
+                await _log_mcp(scope, auth_method=resolved_auth_method, status_code=401)
                 return
 
         # If using OAuth2 auth, check for LDAP group-based tool filtering
@@ -714,12 +752,14 @@ class MCPTransportEndpoint:
                 filtered_server = await get_filtered_server(matching_filter_id)
                 if filtered_server:
                     await handle_filtered_request(filtered_server, scope, receive, send)
+                    await _log_mcp(scope, auth_method=resolved_auth_method)
                     return
                 # Filter found but couldn't create server - fall back to default
 
         # Use the default session manager
         session_manager = await get_session_manager()
         await session_manager.handle_request(scope, receive, send)
+        await _log_mcp(scope, auth_method=resolved_auth_method)
 
 
 class MCPCustomRouteEndpoint:
@@ -746,6 +786,7 @@ class MCPCustomRouteEndpoint:
                     "body": b'{"error": "MCP server is disabled. Enable it in Settings."}',
                 }
             )
+            await _log_mcp(scope, status_code=503)
             return
 
         # Extract route_path from path
@@ -775,6 +816,7 @@ class MCPCustomRouteEndpoint:
                     "body": b'{"error": "Not Found", "detail": "Route path required"}',
                 }
             )
+            await _log_mcp(scope, status_code=404)
             return
 
         # Get server for this route
@@ -793,18 +835,22 @@ class MCPCustomRouteEndpoint:
                     "body": b'{"error": "Not Found", "detail": "Custom MCP route not found or disabled"}',
                 }
             )
+            await _log_mcp(scope, route_name=route_path, status_code=404)
             return
 
         server, require_auth, auth_password, auth_method, allowed_group = result
 
         # Check authentication if required
+        resolved_auth_method = "none"
         if require_auth:
             is_valid = False
 
             if auth_method == "oauth2":
+                resolved_auth_method = "oauth2"
                 # OAuth2 with LDAP - validate token and check group membership
                 is_valid = await _validate_oauth2_token(scope, allowed_group)
             elif auth_password:
+                resolved_auth_method = "password"
                 # Password-based auth
                 is_valid = await _validate_route_password(scope, auth_password)
             else:
@@ -825,6 +871,7 @@ class MCPCustomRouteEndpoint:
                         "body": b'{"error": "Unauthorized", "detail": "Authentication required but not configured"}',
                     }
                 )
+                await _log_mcp(scope, route_name=route_path, status_code=401)
                 return
 
             if not is_valid:
@@ -848,10 +895,17 @@ class MCPCustomRouteEndpoint:
                         "body": f'{{"error": "Unauthorized", "detail": "{detail}"}}'.encode(),
                     }
                 )
+                await _log_mcp(
+                    scope,
+                    route_name=route_path,
+                    auth_method=resolved_auth_method,
+                    status_code=401,
+                )
                 return
 
         # Handle request directly with the server (bypasses session manager)
         await handle_filtered_request(server, scope, receive, send)
+        await _log_mcp(scope, route_name=route_path, auth_method=resolved_auth_method)
 
 
 # MCP Transport Route - uses ASGI app directly to avoid double response

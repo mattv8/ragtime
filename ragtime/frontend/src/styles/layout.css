@@ -2164,6 +2164,22 @@ body {
   outline: none;
 }
 
+.users-ldap-role-note {
+  margin-top: 3px;
+  font-size: 0.68rem;
+  line-height: 1.25;
+  color: var(--color-text-tertiary, var(--color-text-secondary));
+  opacity: 0.75;
+  max-width: 150px;
+}
+
+.users-live-spin {
+  display: inline-block;
+  margin-left: 4px;
+  vertical-align: middle;
+  color: var(--color-success, #22c55e);
+}
+
 .users-row-self {
   background: var(--color-surface-hover, rgba(255,255,255,0.02));
 }

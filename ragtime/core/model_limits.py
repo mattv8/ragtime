@@ -126,6 +126,33 @@ MODEL_FAMILY_PATTERNS = {
 }
 
 
+def normalize_provider_name(
+    provider: str | None,
+    *,
+    model_id: str | None = None,
+) -> str:
+    """Normalize provider identifiers to canonical values used by the app.
+
+    Handles scoped provider values (e.g. ``github_copilot::gpt-5``) and
+    provider aliases (e.g. ``github_models``).
+    """
+    raw = str(provider or "").strip()
+
+    if "::" in raw:
+        raw = raw.split("::", 1)[0].strip()
+
+    if not raw and model_id:
+        model_raw = str(model_id).strip()
+        if "::" in model_raw:
+            raw = model_raw.split("::", 1)[0].strip()
+
+    normalized = raw.lower().replace("-", "_")
+    alias_map = {
+        "github_models": "github_copilot",
+    }
+    return alias_map.get(normalized, normalized)
+
+
 def _coerce_int(value: object) -> int | None:
     if isinstance(value, bool):
         return None
