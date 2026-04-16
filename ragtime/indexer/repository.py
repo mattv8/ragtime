@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,6 +22,7 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -104,6 +104,47 @@ def _safe_serialize(value: Any) -> str:
         return json.dumps(value, default=str)
     except Exception:
         return str(value) if value is not None else ""
+
+
+def _identifier_in_allowed_models(
+    identifier: str,
+    allowed_models: list[str],
+) -> bool:
+    normalized_identifier = identifier.strip()
+    return bool(normalized_identifier) and normalized_identifier in {
+        value.strip() for value in allowed_models if value.strip()
+    }
+
+
+def _resolve_default_conversation_model(app_settings: Optional[AppSettings]) -> str:
+    """Resolve the configured default model for a new conversation."""
+    if app_settings is None:
+        return "gpt-4-turbo"
+
+    manual_default = str(getattr(app_settings, "default_chat_model", "") or "").strip()
+    configured_model = str(app_settings.llm_model or "").strip()
+    allowed_models = [
+        str(value).strip()
+        for value in (app_settings.allowed_chat_models or [])
+        if str(value).strip()
+    ]
+
+    if allowed_models:
+        if manual_default and _identifier_in_allowed_models(
+            manual_default, allowed_models
+        ):
+            return manual_default
+        if configured_model and _identifier_in_allowed_models(
+            configured_model, allowed_models
+        ):
+            return configured_model
+        return allowed_models[0]
+
+    if manual_default:
+        return manual_default
+    if configured_model:
+        return configured_model
+    return "gpt-4-turbo"
 
 
 def _extract_tool_calls_from_events(
@@ -1721,18 +1762,22 @@ class IndexerRepository:
     async def create_conversation(
         self,
         title: str = "Untitled Chat",
-        model: str = "gpt-4-turbo",
+        model: Optional[str] = None,
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
     ) -> Conversation:
         """Create a new conversation."""
         db = await self._get_db()
+        resolved_model = (model or "").strip()
+        if not resolved_model:
+            app_settings = await self.get_settings()
+            resolved_model = _resolve_default_conversation_model(app_settings)
 
         prisma_conv = await db.conversation.create(
             data={
                 "id": str(uuid.uuid4()),
                 "title": title,
-                "model": model,
+                "model": resolved_model,
                 "messages": Json([]),
                 "totalTokens": 0,
                 "userId": user_id,

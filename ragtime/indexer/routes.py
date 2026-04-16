@@ -37,10 +37,10 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
@@ -179,7 +179,7 @@ from ragtime.indexer.models import (
     WorkspaceChatStateResponse,
 )
 from ragtime.indexer.pdm_service import pdm_indexer
-from ragtime.indexer.repository import repository
+from ragtime.indexer.repository import _resolve_default_conversation_model, repository
 from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
@@ -941,37 +941,30 @@ class UpdateIndexWeightRequest(BaseModel):
     """Request to update index search weight."""
 
     weight: float = Field(
+        default=1.0,
         ge=0.0,
-        le=10.0,
-        description="Search weight (0.0-10.0). Higher values make this index more prominent in results.",
+        description="Relative search weight used when aggregate_search is enabled",
     )
 
 
 @router.patch("/{name}/toggle")
 async def toggle_index(
-    name: str, request: ToggleIndexRequest, _user: User = Depends(require_admin)
+    name: str,
+    request: ToggleIndexRequest,
+    _user: User = Depends(require_admin),
 ):
-    """Toggle an index's enabled status for RAG context. Admin only.
-
-    When enabling an index, this will reinitialize RAG components to attempt
-    loading the index (useful for retrying failed loads).
-    """
+    """Enable or disable an index for RAG context. Admin only."""
     success = await repository.set_index_enabled(name, request.enabled)
     if not success:
         raise HTTPException(status_code=404, detail="Index not found")
 
-    # When disabling, unload the index from memory to free RAM
     if not request.enabled:
         rag.unload_index(name)
-
-        # Rebuild agent without the disabled index
         try:
             await rag.rebuild_agent()
         except Exception as e:
             logger.warning(f"Failed to rebuild agent after disabling index {name}: {e}")
 
-    # Reinitialize RAG when enabling to attempt loading the index
-    # This allows retrying failed loads when user toggles an errored index back on
     if request.enabled:
         try:
             await rag.initialize()
@@ -9139,44 +9132,6 @@ async def get_workspaces_conversation_state_summary_lite(
         )
         for workspace_id in deduped_workspace_ids
     ]
-
-
-def _resolve_default_conversation_model(app_settings: Optional[AppSettings]) -> str:
-    """Resolve default model for new conversations.
-
-    Preference order:
-    1. Manual default_chat_model override (if allowed)
-    2. llm_model (if allowed)
-    3. First allowed_chat_models entry (if any)
-    4. Hard fallback
-    """
-    if app_settings is None:
-        return "gpt-4-turbo"
-
-    manual_default = str(getattr(app_settings, "default_chat_model", "") or "").strip()
-    configured_model = str(app_settings.llm_model or "").strip()
-    allowed_models = [
-        str(value).strip()
-        for value in (app_settings.allowed_chat_models or [])
-        if str(value).strip()
-    ]
-
-    if allowed_models:
-        if manual_default and _identifier_in_allowed_models(
-            manual_default, allowed_models
-        ):
-            return manual_default
-        if configured_model and _identifier_in_allowed_models(
-            configured_model, allowed_models
-        ):
-            return configured_model
-        return allowed_models[0]
-
-    if manual_default:
-        return manual_default
-    if configured_model:
-        return configured_model
-    return "gpt-4-turbo"
 
 
 @router.post("/conversations", response_model=ConversationResponse)
