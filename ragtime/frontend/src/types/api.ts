@@ -1710,6 +1710,13 @@ export type UserSpaceWorkspaceDeleteTaskPhase =
   | 'deleting_workspace'
   | 'completed'
   | 'failed';
+export type UserSpaceWorkspaceCreateTaskPhase =
+  | 'queued'
+  | 'creating_workspace'
+  | 'bootstrapping_files'
+  | 'creating_conversation'
+  | 'completed'
+  | 'failed';
 
 export interface UserSpaceWorkspaceMember {
   user_id: string;
@@ -1839,6 +1846,16 @@ export interface UserSpaceWorkspaceDeleteTask {
   workspace_id: string;
   workspace_name: string;
   phase: UserSpaceWorkspaceDeleteTaskPhase;
+  error?: string | null;
+  queued_at: string;
+  updated_at: string;
+}
+
+export interface UserSpaceWorkspaceCreateTask {
+  task_id: string;
+  workspace_id?: string | null;
+  workspace_name?: string | null;
+  phase: UserSpaceWorkspaceCreateTaskPhase;
   error?: string | null;
   queued_at: string;
   updated_at: string;

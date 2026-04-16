@@ -22,9 +22,9 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
+
 from prisma import Json
 from prisma import fields as prisma_fields
-
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -80,15 +80,16 @@ from ragtime.userspace.models import (
     UserSpaceSharedPreviewResponse, UserSpaceSnapshot, UserSpaceSnapshotBranch,
     UserSpaceSnapshotDiffFileSummary, UserSpaceSnapshotDiffSummaryResponse,
     UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspace, UserSpaceWorkspaceCreateTask,
+    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceEnvVar,
     UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
     UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
     UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
     UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse,
     UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceDeleteTaskPhase, WorkspaceMember, WorkspaceMount,
-    WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
+    WorkspaceCreateTaskPhase, WorkspaceDeleteTaskPhase, WorkspaceMember,
+    WorkspaceMount, WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
     WorkspaceMountDirectoryEntry, WorkspaceMountSyncMode,
     WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
     WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
@@ -240,6 +241,41 @@ class _WorkspaceDeleteTaskRecord:
         self.updated_at = updated_at
 
 
+class _WorkspaceCreateTaskRecord:
+    """In-memory status for an asynchronous workspace create task."""
+
+    __slots__ = (
+        "task_id",
+        "workspace_id",
+        "workspace_name",
+        "requested_by_user_id",
+        "phase",
+        "error",
+        "queued_at",
+        "updated_at",
+    )
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        workspace_id: str | None,
+        workspace_name: str | None,
+        requested_by_user_id: str,
+        phase: WorkspaceCreateTaskPhase,
+        queued_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        self.task_id = task_id
+        self.workspace_id = workspace_id
+        self.workspace_name = workspace_name
+        self.requested_by_user_id = requested_by_user_id
+        self.phase = phase
+        self.error: str | None = None
+        self.queued_at = queued_at
+        self.updated_at = updated_at
+
+
 class _NonUtf8WorkspaceFileError(Exception):
     __slots__ = ("file_path",)
 
@@ -264,6 +300,11 @@ _GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf899d8e13f7beb2c"
 
 _USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql", "influxdb"}
 _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
+_DEFAULT_WORKSPACE_DASHBOARD_CONTENT = (
+    "export function render(container: HTMLElement) {\n"
+    "  container.innerHTML = `<h2>Interactive Report</h2><p>Ask chat to build your report and wire live data connections.</p>`;\n"
+    "}\n"
+)
 _DEFAULT_SHARE_SLUG_PREFIX = "share"
 _USERSPACE_PREVIEW_MAX_FILES = 200
 _USERSPACE_PREVIEW_MAX_BYTES = 3_000_000
@@ -278,6 +319,7 @@ _WORKSPACE_ENV_VAR_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WORKSPACE_ENV_VAR_MAX_COUNT = 200
 _WORKSPACE_SCM_PREVIEW_TTL_SECONDS = 300
 _WORKSPACE_SCM_PREVIEW_SAMPLE_LIMIT = 100
+_WORKSPACE_CREATE_TASK_TTL_SECONDS = 300
 _WORKSPACE_DELETE_TASK_TTL_SECONDS = 300
 
 _MODULE_SOURCE_EXTENSIONS = (
@@ -652,6 +694,14 @@ class UserSpaceService:
             str, asyncio.Task[WorkspaceMountSyncResponse]
         ] = {}
         self._workspace_mount_sync_tasks_lock = asyncio.Lock()
+        self._workspace_create_semaphore = asyncio.Semaphore(
+            self._positive_int_env("USERSPACE_CREATE_CONCURRENCY", 2)
+        )
+        self._workspace_create_tasks: dict[str, asyncio.Task[None]] = {}
+        self._workspace_create_task_statuses: dict[
+            str, _WorkspaceCreateTaskRecord
+        ] = {}
+        self._workspace_create_tasks_lock = asyncio.Lock()
         # Limit concurrent workspace deletions; each can stop a runtime and
         # remove a workspace tree from disk.
         self._workspace_delete_semaphore = asyncio.Semaphore(
@@ -947,6 +997,159 @@ class UserSpaceService:
         task: asyncio.Task[WorkspaceMountSyncResponse],
     ) -> None:
         task.add_done_callback(partial(self._prune_workspace_mount_sync_task, mount_id))
+
+    def _prune_workspace_create_task(
+        self,
+        task_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._workspace_create_tasks.get(task_id) is task:
+            self._workspace_create_tasks.pop(task_id, None)
+
+    def _attach_workspace_create_task_cleanup(
+        self,
+        task_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        task.add_done_callback(partial(self._prune_workspace_create_task, task_id))
+
+    def _prune_expired_workspace_create_task_statuses(self) -> None:
+        cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_CREATE_TASK_TTL_SECONDS)
+        for task_id, record in list(self._workspace_create_task_statuses.items()):
+            if record.phase not in {"completed", "failed"}:
+                continue
+            if record.updated_at > cutoff:
+                continue
+            self._workspace_create_task_statuses.pop(task_id, None)
+
+    @staticmethod
+    def _workspace_create_task_model(
+        record: _WorkspaceCreateTaskRecord,
+    ) -> UserSpaceWorkspaceCreateTask:
+        return UserSpaceWorkspaceCreateTask(
+            task_id=record.task_id,
+            workspace_id=record.workspace_id,
+            workspace_name=record.workspace_name,
+            phase=cast(WorkspaceCreateTaskPhase, record.phase),
+            error=record.error,
+            queued_at=record.queued_at,
+            updated_at=record.updated_at,
+        )
+
+    def _set_workspace_create_task_phase(
+        self,
+        task_id: str,
+        phase: WorkspaceCreateTaskPhase,
+        *,
+        workspace_id: str | None = None,
+        workspace_name: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        record = self._workspace_create_task_statuses.get(task_id)
+        if record is None:
+            return
+        record.phase = phase
+        record.updated_at = _utc_now()
+        record.error = error if phase == "failed" else None
+        if workspace_id is not None:
+            record.workspace_id = workspace_id
+        if workspace_name is not None:
+            record.workspace_name = workspace_name
+
+    async def _run_workspace_create_task(
+        self,
+        task_id: str,
+        request: CreateWorkspaceRequest,
+        user_id: str,
+    ) -> None:
+        try:
+            async with self._workspace_create_semaphore:
+                self._set_workspace_create_task_phase(task_id, "creating_workspace")
+                workspace = await self.create_workspace(request, user_id)
+                self._set_workspace_create_task_phase(
+                    task_id,
+                    "bootstrapping_files",
+                    workspace_id=workspace.id,
+                    workspace_name=workspace.name,
+                )
+                await self.upsert_workspace_file(
+                    workspace.id,
+                    _USERSPACE_PREVIEW_ENTRY_PATH,
+                    UpsertWorkspaceFileRequest(
+                        content=_DEFAULT_WORKSPACE_DASHBOARD_CONTENT,
+                        artifact_type="module_ts",
+                    ),
+                    user_id,
+                )
+                self._set_workspace_create_task_phase(
+                    task_id,
+                    "creating_conversation",
+                    workspace_id=workspace.id,
+                    workspace_name=workspace.name,
+                )
+                await repository.create_conversation(
+                    user_id=user_id,
+                    workspace_id=workspace.id,
+                )
+                self._set_workspace_create_task_phase(
+                    task_id,
+                    "completed",
+                    workspace_id=workspace.id,
+                    workspace_name=workspace.name,
+                )
+        except Exception as exc:
+            detail = (
+                str(exc.detail)
+                if isinstance(exc, HTTPException)
+                else str(exc).strip() or "Failed to create workspace"
+            )
+            logger.exception("Workspace create task failed: %s", detail)
+            self._set_workspace_create_task_phase(
+                task_id,
+                "failed",
+                error=detail,
+            )
+
+    async def enqueue_workspace_create_task(
+        self,
+        request: CreateWorkspaceRequest,
+        user_id: str,
+    ) -> UserSpaceWorkspaceCreateTask:
+        self._prune_expired_workspace_create_task_statuses()
+
+        task_id = str(uuid4())
+        now = _utc_now()
+        requested_name = (request.name or "").strip() or None
+        record = _WorkspaceCreateTaskRecord(
+            task_id=task_id,
+            workspace_id=None,
+            workspace_name=requested_name,
+            requested_by_user_id=user_id,
+            phase="queued",
+            queued_at=now,
+            updated_at=now,
+        )
+        queued_request = request.model_copy(deep=True)
+        task = asyncio.create_task(
+            self._run_workspace_create_task(task_id, queued_request, user_id),
+            name=f"userspace-workspace-create:{task_id}",
+        )
+
+        async with self._workspace_create_tasks_lock:
+            self._attach_workspace_create_task_cleanup(task_id, task)
+            self._workspace_create_task_statuses[task_id] = record
+            self._workspace_create_tasks[task_id] = task
+
+        return self._workspace_create_task_model(record)
+
+    async def get_workspace_create_task(
+        self, task_id: str, user_id: str, *, is_admin: bool = False
+    ) -> UserSpaceWorkspaceCreateTask:
+        self._prune_expired_workspace_create_task_statuses()
+        record = self._workspace_create_task_statuses.get(task_id)
+        if record is None or (record.requested_by_user_id != user_id and not is_admin):
+            raise HTTPException(status_code=404, detail="Create task not found")
+        return self._workspace_create_task_model(record)
 
     def _prune_workspace_delete_task(
         self,

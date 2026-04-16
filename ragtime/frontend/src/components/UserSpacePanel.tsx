@@ -19,7 +19,7 @@ import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
@@ -56,6 +56,46 @@ type ShareLinkType = 'named' | 'anonymous' | 'subdomain';
 type MountSyncPreviewIntent = 'sync' | 'enable-auto' | 'update-auto-sync-mode';
 
 const DEFAULT_WORKSPACE_CHAT_STATE: WorkspaceChatState = { hasLive: false, hasInterrupted: false };
+
+function isWorkspaceCreateTaskTerminal(phase: UserSpaceWorkspaceCreateTaskPhase): boolean {
+  return phase === 'completed' || phase === 'failed';
+}
+
+function formatWorkspaceCreateTaskStatus(task: UserSpaceWorkspaceCreateTask | null): string | null {
+  if (!task) {
+    return null;
+  }
+
+  const label = task.workspace_name?.trim() || 'workspace';
+  switch (task.phase) {
+    case 'queued':
+      return `Preparing to create ${label}...`;
+    case 'creating_workspace':
+      return `Creating ${label}...`;
+    case 'bootstrapping_files':
+      return `Bootstrapping files for ${label}...`;
+    case 'creating_conversation':
+      return `Setting up conversation for ${label}...`;
+    case 'failed':
+      return task.error?.trim() || `Failed to create ${label}.`;
+    default:
+      return null;
+  }
+}
+
+function formatWorkspaceCreateTasksStatus(tasks: UserSpaceWorkspaceCreateTask[]): string | null {
+  if (tasks.length === 0) {
+    return null;
+  }
+  if (tasks.length === 1) {
+    return formatWorkspaceCreateTaskStatus(tasks[0]);
+  }
+
+  const queuedCount = tasks.filter((task) => task.phase === 'queued').length;
+  return queuedCount > 0
+    ? `Creating ${tasks.length} workspaces (${queuedCount} queued)...`
+    : `Creating ${tasks.length} workspaces...`;
+}
 
 function isWorkspaceDeleteTaskTerminal(phase: UserSpaceWorkspaceDeleteTaskPhase): boolean {
   return phase === 'completed' || phase === 'failed';
@@ -536,8 +576,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [isPageVisible, setIsPageVisible] = useState(
     typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'
   );
-  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
-  const [creatingWorkspaceStatus, setCreatingWorkspaceStatus] = useState<string | null>(null);
+  const [creatingWorkspaceTasks, setCreatingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceCreateTask>>({});
   const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDeleteTask>>({});
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
@@ -669,6 +708,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const selectedFilePathRef = useRef(selectedFilePath);
   const fileContentCacheRef = useRef(fileContentCache);
   const activeWorkspaceIdRef = useRef<string | null>(activeWorkspaceId);
+  const activeWorkspaceConversationIdRef = useRef<string | null>(activeWorkspaceConversationId);
   const loadWorkspaceDataRequestIdRef = useRef(0);
   const loadChangedFileStateRequestIdRef = useRef(0);
   const loadRuntimeStatusRequestIdRef = useRef(0);
@@ -700,6 +740,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const previewLaunchExpiresAtMsRef = useRef(0);
   const previousRuntimeDisplayStateRef = useRef<string | null>(null);
   const statusOverlayDismissedSignatureRef = useRef<string | null>(null);
+  const refreshRuntimeStatusPendingRef = useRef(false);
+  const latestQueuedWorkspaceCreateTaskIdRef = useRef<string | null>(null);
   const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
   const userSpaceLayoutCookieName = useMemo(() => getUserSpaceLayoutCookieName(currentUser.id), [currentUser.id]);
   const userSpaceFullscreenCookieName = useMemo(() => getUserSpaceFullscreenCookieName(currentUser.id), [currentUser.id]);
@@ -1267,6 +1309,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
     return null;
   }, [runtimeDisplayState, runtimeOperationLabel]);
+
+  const activeWorkspaceCreateTasks = useMemo(
+    () => Object.values(creatingWorkspaceTasks)
+      .filter((task) => !isWorkspaceCreateTaskTerminal(task.phase))
+      .sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at)),
+    [creatingWorkspaceTasks],
+  );
+
+  const creatingWorkspace = activeWorkspaceCreateTasks.length > 0;
+  const creatingWorkspaceStatus = useMemo(
+    () => formatWorkspaceCreateTasksStatus(activeWorkspaceCreateTasks),
+    [activeWorkspaceCreateTasks],
+  );
 
   const activeWorkspaceDeleteTasks = useMemo(
     () => Object.values(deletingWorkspaceTasks)
@@ -2116,33 +2171,68 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     activeWorkspaceIdRef.current = activeWorkspaceId;
   }, [activeWorkspaceId]);
 
-  const refreshActiveWorkspaceState = useCallback(async () => {
-    if (!activeWorkspaceId) {
+  useEffect(() => {
+    activeWorkspaceConversationIdRef.current = activeWorkspaceConversationId;
+  }, [activeWorkspaceConversationId]);
+
+  const runRefreshActiveWorkspaceState = useCallback(async (
+    workspaceId: string | null,
+    conversationId: string | null,
+  ) => {
+    if (!workspaceId) {
       setRuntimeStatus(null);
       setActiveWorkspaceChatSnapshot(null);
       return;
     }
-    if (refreshRuntimeStatusInflightRef.current) return;
+
     refreshRuntimeStatusInflightRef.current = true;
     const requestId = ++loadRuntimeStatusRequestIdRef.current;
+
     try {
       const state = await api.getUserSpaceWorkspaceTabState(
-        activeWorkspaceId,
-        activeWorkspaceConversationId,
+        workspaceId,
+        conversationId,
       );
-      if (requestId === loadRuntimeStatusRequestIdRef.current) {
+
+      if (
+        requestId === loadRuntimeStatusRequestIdRef.current
+        && activeWorkspaceIdRef.current === workspaceId
+      ) {
         setRuntimeStatus(state.runtime_status);
         setActiveWorkspaceChatSnapshot(state.chat_state);
       }
     } catch {
-      if (requestId === loadRuntimeStatusRequestIdRef.current) {
+      if (
+        requestId === loadRuntimeStatusRequestIdRef.current
+        && activeWorkspaceIdRef.current === workspaceId
+      ) {
         setRuntimeStatus(null);
         setActiveWorkspaceChatSnapshot(null);
       }
     } finally {
       refreshRuntimeStatusInflightRef.current = false;
+
+      if (refreshRuntimeStatusPendingRef.current) {
+        refreshRuntimeStatusPendingRef.current = false;
+        void runRefreshActiveWorkspaceState(
+          activeWorkspaceIdRef.current,
+          activeWorkspaceConversationIdRef.current,
+        );
+      }
     }
-  }, [activeWorkspaceConversationId, activeWorkspaceId]);
+  }, []);
+
+  const refreshActiveWorkspaceState = useCallback(async () => {
+    if (refreshRuntimeStatusInflightRef.current) {
+      refreshRuntimeStatusPendingRef.current = true;
+      return;
+    }
+
+    await runRefreshActiveWorkspaceState(
+      activeWorkspaceIdRef.current,
+      activeWorkspaceConversationIdRef.current,
+    );
+  }, [runRefreshActiveWorkspaceState]);
 
   // SSE subscription for workspace change events (file upsert/patch/delete, snapshots).
   // Bumps previewRefreshCounter to remount the preview iframe and reloads workspace data.
@@ -2371,48 +2461,135 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const handleCreateWorkspace = useCallback(async () => {
     setError(null);
-    setCreatingWorkspace(true);
-    setCreatingWorkspaceStatus('Creating workspace...');
-    setIsWorkspaceMenuOpen(false);
-    setRuntimeStatus(null);
-    setPreviewLiveDataConnections([]);
-    setActiveWorkspaceId(null);
-    setFileBrowserEntries([]);
-    setFiles([]);
-    setSnapshots([]);
-    setSelectedFilePath(previewEntryPath);
-    setFileContent('');
-    setFileDirty(false);
 
     try {
-      const created = await api.createUserSpaceWorkspace({});
-
-      setWorkspaces((current) => (
-        current.some((workspace) => workspace.id === created.id)
-          ? current
-          : [created, ...current]
-      ));
-      setActiveWorkspaceId(created.id);
-
-      setCreatingWorkspaceStatus('Bootstrapping workspace files...');
-      await api.upsertUserSpaceFile(created.id, 'dashboard/main.ts', {
-        content: 'export function render(container: HTMLElement) {\n  container.innerHTML = `<h2>Interactive Report</h2><p>Ask chat to build your report and wire live data connections.</p>`;\n}\n',
-        artifact_type: 'module_ts',
-      });
-
-      setCreatingWorkspaceStatus('Setting up workspace conversation...');
-      await api.createConversation(undefined, created.id);
-
-      setCreatingWorkspaceStatus('Loading workspace...');
-      await loadWorkspaces();
-      await loadWorkspaceData(created.id);
+      const task = await api.queueUserSpaceWorkspaceCreate({});
+      latestQueuedWorkspaceCreateTaskIdRef.current = task.task_id;
+      setCreatingWorkspaceTasks((current) => ({
+        ...current,
+        [task.task_id]: task,
+      }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create workspace');
-    } finally {
-      setCreatingWorkspaceStatus(null);
-      setCreatingWorkspace(false);
+      setError(err instanceof Error ? err.message : 'Failed to queue workspace creation');
     }
-  }, [loadWorkspaceData, loadWorkspaces, previewEntryPath]);
+  }, []);
+
+  useEffect(() => {
+    const tasks = Object.values(creatingWorkspaceTasks);
+    if (tasks.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    let pollInFlight = false;
+
+    const pollCreateTasks = async () => {
+      if (pollInFlight) {
+        return;
+      }
+      pollInFlight = true;
+
+      try {
+        const results = await Promise.all(tasks.map(async (task) => {
+          try {
+            const status = await api.getUserSpaceWorkspaceCreateTask(task.task_id);
+            return { task, status, error: null as Error | null };
+          } catch (error) {
+            return { task, status: null as UserSpaceWorkspaceCreateTask | null, error: error as Error };
+          }
+        }));
+
+        if (cancelled) {
+          return;
+        }
+
+        const terminalTaskIds = new Set<string>();
+        const completedTasks: UserSpaceWorkspaceCreateTask[] = [];
+        const updatedTasks: Record<string, UserSpaceWorkspaceCreateTask> = {};
+        let nextError: string | null = null;
+
+        for (const result of results) {
+          if (result.status) {
+            if (isWorkspaceCreateTaskTerminal(result.status.phase)) {
+              terminalTaskIds.add(result.status.task_id);
+              if (result.status.phase === 'completed' && result.status.workspace_id) {
+                completedTasks.push(result.status);
+              }
+              if (result.status.phase === 'failed' && !nextError) {
+                nextError = result.status.error?.trim() || `Failed to create ${result.status.workspace_name || 'workspace'}`;
+              }
+            } else {
+              updatedTasks[result.status.task_id] = result.status;
+            }
+            continue;
+          }
+
+          if (result.error instanceof ApiError && result.error.status === 404) {
+            terminalTaskIds.add(result.task.task_id);
+            continue;
+          }
+
+          if (!nextError && result.error instanceof Error) {
+            nextError = result.error.message;
+          }
+        }
+
+        setCreatingWorkspaceTasks((current) => {
+          const next = { ...current };
+          for (const taskId of terminalTaskIds) {
+            delete next[taskId];
+          }
+          for (const [taskId, task] of Object.entries(updatedTasks)) {
+            next[taskId] = task;
+          }
+          return next;
+        });
+
+        if (nextError) {
+          setError(nextError);
+        }
+
+        if (terminalTaskIds.size > 0) {
+          try {
+            await loadWorkspaces();
+          } catch (error) {
+            if (!nextError && error instanceof Error) {
+              setError(error.message);
+            }
+          }
+        }
+
+        if (cancelled || completedTasks.length === 0) {
+          return;
+        }
+
+        completedTasks.sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at));
+        const autoSelectTask = completedTasks.find((task) => task.task_id === latestQueuedWorkspaceCreateTaskIdRef.current)
+          ?? (!activeWorkspaceId ? completedTasks[completedTasks.length - 1] : null);
+
+        if (autoSelectTask?.workspace_id) {
+          if (latestQueuedWorkspaceCreateTaskIdRef.current === autoSelectTask.task_id) {
+            latestQueuedWorkspaceCreateTaskIdRef.current = null;
+          }
+          setRuntimeStatus(null);
+          setPreviewLiveDataConnections([]);
+          setActiveWorkspaceId(autoSelectTask.workspace_id);
+        }
+      } finally {
+        pollInFlight = false;
+      }
+    };
+
+    void pollCreateTasks();
+    const intervalId = window.setInterval(() => {
+      void pollCreateTasks();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeWorkspaceId, creatingWorkspaceTasks, loadWorkspaces]);
 
   const handleSelectFile = useCallback(async (path: string) => {
     if (!activeWorkspaceId) return;
@@ -5400,8 +5577,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           <button
             className="btn btn-primary btn-sm"
             onClick={handleCreateWorkspace}
-            disabled={creatingWorkspace}
-            title={creatingWorkspace ? (creatingWorkspaceStatus || 'Bootstrapping workspace...') : 'New workspace'}
+            title={creatingWorkspace ? (creatingWorkspaceStatus || 'Creating workspaces...') : 'New workspace'}
           >
             {creatingWorkspace ? <MiniLoadingSpinner variant="icon" size={14} /> : <Plus size={14} />}
           </button>

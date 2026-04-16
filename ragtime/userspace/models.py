@@ -68,6 +68,14 @@ WorkspaceDeleteTaskPhase = Literal[
     "completed",
     "failed",
 ]
+WorkspaceCreateTaskPhase = Literal[
+    "queued",
+    "creating_workspace",
+    "bootstrapping_files",
+    "creating_conversation",
+    "completed",
+    "failed",
+]
 
 
 class WorkspaceMember(BaseModel):
@@ -106,6 +114,16 @@ class UserSpaceWorkspaceDeleteTask(BaseModel):
     workspace_id: str
     workspace_name: str
     phase: WorkspaceDeleteTaskPhase
+    error: str | None = None
+    queued_at: datetime
+    updated_at: datetime
+
+
+class UserSpaceWorkspaceCreateTask(BaseModel):
+    task_id: str
+    workspace_id: str | None = None
+    workspace_name: str | None = None
+    phase: WorkspaceCreateTaskPhase
     error: str | None = None
     queued_at: datetime
     updated_at: datetime

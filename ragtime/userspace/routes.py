@@ -40,8 +40,8 @@ from ragtime.userspace.models import (
     UserSpaceSharedPreviewResponse, UserSpaceSnapshot,
     UserSpaceSnapshotDiffSummaryResponse, UserSpaceSnapshotFileDiffResponse,
     UserSpaceSnapshotTimelineResponse, UserSpaceWorkspace,
-    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceEnvVar,
-    UserSpaceWorkspaceScmConnectionRequest,
+    UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask,
+    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
     UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
     UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
@@ -194,6 +194,37 @@ async def create_workspace(
     )
     # selected_tool_group_ids are validated in service layer
     return await userspace_service.create_workspace(request, user.id)
+
+
+@router.post(
+    "/workspaces/create-task",
+    response_model=UserSpaceWorkspaceCreateTask,
+    status_code=202,
+)
+async def queue_workspace_create_task(
+    request: CreateWorkspaceRequest,
+    user: Any = Depends(get_current_user),
+):
+    request.selected_tool_ids = await _normalize_selected_tool_ids(
+        request.selected_tool_ids
+    )
+    return await userspace_service.enqueue_workspace_create_task(request, user.id)
+
+
+@router.get(
+    "/workspace-create-tasks/{task_id}",
+    response_model=UserSpaceWorkspaceCreateTask,
+)
+async def get_workspace_create_task(
+    task_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.get_workspace_create_task(
+        task_id,
+        user.id,
+        is_admin=is_admin,
+    )
 
 
 @router.get("/workspaces/{workspace_id}", response_model=UserSpaceWorkspace)
