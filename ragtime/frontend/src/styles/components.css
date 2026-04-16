@@ -2891,6 +2891,15 @@ textarea:focus {
   border-bottom: none;
 }
 
+.userspace-env-var-row-readonly {
+  background: color-mix(in srgb, var(--color-bg-secondary) 85%, var(--color-bg-primary) 15%);
+}
+
+.userspace-env-var-row-compact {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
 .userspace-env-var-primary {
   display: flex;
   align-items: center;
@@ -2920,6 +2929,20 @@ textarea:focus {
   gap: 6px;
   flex: 1;
   min-width: 0;
+}
+
+.userspace-env-var-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-family: var(--font-family, system-ui, sans-serif);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-primary);
 }
 
 .userspace-env-var-copy-btn {

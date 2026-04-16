@@ -24,11 +24,11 @@ from fastapi import (
     status,
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
+from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
-from prisma import Json
 from ragtime.config.settings import settings
 from ragtime.core.api_accounting import (
     get_api_daily_trend,

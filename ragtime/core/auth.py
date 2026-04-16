@@ -19,8 +19,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import Request
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from ldap3 import AUTO_BIND_NO_TLS  # type: ignore[import-untyped]
 from ldap3 import ALL, AUTO_BIND_TLS_BEFORE_BIND, SUBTREE, Connection, Server, Tls
+from ldap3 import AUTO_BIND_NO_TLS  # type: ignore[import-untyped]
 from ldap3.core.exceptions import (  # type: ignore[import-untyped]
     LDAPBindError,
     LDAPException,

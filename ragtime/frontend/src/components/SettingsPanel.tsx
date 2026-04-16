@@ -2,10 +2,11 @@ import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Lock, LockOpen, Info, Search, Clipboard, ExternalLink, X } from 'lucide-react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire, UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
+import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { useToast, ToastContainer } from './shared/Toast';
 
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
@@ -1432,6 +1433,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   // OCR Configuration
   const [userspaceSaving, setUserspaceSaving] = useState(false);
   const [showSandboxModal, setShowSandboxModal] = useState(false);
+  const [showGlobalEnvVarsModal, setShowGlobalEnvVarsModal] = useState(false);
+  const [globalEnvVars, setGlobalEnvVars] = useState<UserSpaceWorkspaceEnvVar[]>([]);
+  const [globalEnvVarsLoading, setGlobalEnvVarsLoading] = useState(false);
+  const [globalEnvVarsSaving, setGlobalEnvVarsSaving] = useState(false);
 
 
   const [visionModels, setVisionModels] = useState<OllamaVisionModel[]>([]);
@@ -1569,6 +1574,71 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setStaleBranchSaving(false);
     }
   }, [formData.snapshot_stale_branch_threshold]);
+
+  const loadGlobalEnvVars = useCallback(async () => {
+    setGlobalEnvVarsLoading(true);
+    try {
+      const vars = await api.listUserSpaceGlobalEnvVars();
+      setGlobalEnvVars(vars);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load global environment variables');
+    } finally {
+      setGlobalEnvVarsLoading(false);
+    }
+  }, [toast]);
+
+  const handleOpenGlobalEnvVarsModal = useCallback(async () => {
+    setShowGlobalEnvVarsModal(true);
+    await loadGlobalEnvVars();
+  }, [loadGlobalEnvVars]);
+
+  const handleCreateGlobalEnvVar = useCallback(async (request: UpsertUserSpaceWorkspaceEnvVarRequest) => {
+    setGlobalEnvVarsSaving(true);
+    try {
+      const upserted = await api.upsertUserSpaceGlobalEnvVar(request);
+      setGlobalEnvVars((current) => {
+        const next = current.filter((v) => v.key !== upserted.key);
+        return [...next, upserted].sort((a, b) => a.key.localeCompare(b.key));
+      });
+      toast.success('Global environment variable saved.');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save global environment variable');
+      throw err;
+    } finally {
+      setGlobalEnvVarsSaving(false);
+    }
+  }, [toast]);
+
+  const handleUpdateGlobalEnvVar = useCallback(async (request: UpsertUserSpaceWorkspaceEnvVarRequest) => {
+    setGlobalEnvVarsSaving(true);
+    try {
+      const upserted = await api.upsertUserSpaceGlobalEnvVar(request);
+      setGlobalEnvVars((current) => {
+        const next = current.filter((v) => v.key !== upserted.key);
+        return [...next, upserted].sort((a, b) => a.key.localeCompare(b.key));
+      });
+      toast.success('Global environment variable updated.');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update global environment variable');
+      throw err;
+    } finally {
+      setGlobalEnvVarsSaving(false);
+    }
+  }, [toast]);
+
+  const handleDeleteGlobalEnvVar = useCallback(async (key: string) => {
+    setGlobalEnvVarsSaving(true);
+    try {
+      await api.deleteUserSpaceGlobalEnvVar(key);
+      setGlobalEnvVars((current) => current.filter((v) => v.key !== key));
+      toast.success('Global environment variable deleted.');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete global environment variable');
+      throw err;
+    } finally {
+      setGlobalEnvVarsSaving(false);
+    }
+  }, [toast]);
 
 
   const getDisplayUrl = (path: string) => {
@@ -3824,24 +3894,49 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         <fieldset id="setting-userspace">
           <legend>User Space</legend>
 
-          <div>
-            <h4 style={{ margin: '0 0 8px' }}>Preview Sandbox</h4>
-            <p className="fieldset-help" style={{ marginBottom: 12 }}>
-              Control which HTML iframe sandbox flags are granted to User Space previews.
-            </p>
-            <div className="form-group">
-              <p className="field-help">
-                <strong>{effectiveUserSpacePreviewSandboxFlags.length}</strong> of{' '}
-                {(userspacePreviewSettings?.userspace_preview_sandbox_flag_options ?? []).length} sandbox flags enabled.
-                Sandbox attribute: <code>{userspacePreviewSandboxAttribute || '(empty)'}</code>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+              gap: '1rem',
+              alignItems: 'start',
+            }}
+          >
+            <div>
+              <h4 style={{ margin: '0 0 8px' }}>Global Environment Variables</h4>
+              <p className="fieldset-help" style={{ marginBottom: 12 }}>
+                Define admin-managed environment variables that are inherited by every workspace.
               </p>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setShowSandboxModal(true)}
-              >
-                Configure Sandbox Flags
-              </button>
+              <div className="form-group">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => { void handleOpenGlobalEnvVarsModal(); }}
+                >
+                  Manage Global Env Vars
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <h4 style={{ margin: '0 0 8px' }}>Preview Sandbox</h4>
+              <p className="fieldset-help" style={{ marginBottom: 12 }}>
+                Control which HTML iframe sandbox flags are granted to User Space previews.
+              </p>
+              <div className="form-group">
+                <p className="field-help">
+                  <strong>{effectiveUserSpacePreviewSandboxFlags.length}</strong> of{' '}
+                  {(userspacePreviewSettings?.userspace_preview_sandbox_flag_options ?? []).length} sandbox flags enabled.
+                  Sandbox attribute: <code>{userspacePreviewSandboxAttribute || '(empty)'}</code>
+                </p>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowSandboxModal(true)}
+                >
+                  Configure Sandbox Flags
+                </button>
+              </div>
             </div>
           </div>
 
@@ -4315,6 +4410,20 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           </div>
         </div>
       )}
+
+      <UserSpaceEnvVarsModal
+        isOpen={showGlobalEnvVarsModal}
+        title="Global Environment Variables"
+        onClose={() => setShowGlobalEnvVarsModal(false)}
+        envVars={globalEnvVars}
+        loading={globalEnvVarsLoading}
+        saving={globalEnvVarsSaving}
+        canManage
+        addLabel="Add global variable"
+        onCreateEnvVar={handleCreateGlobalEnvVar}
+        onUpdateEnvVar={handleUpdateGlobalEnvVar}
+        onDeleteEnvVar={handleDeleteGlobalEnvVar}
+      />
 
       {/* MCP Routes Panel Modal */}
       {showMcpRoutesPanel && (

@@ -1009,6 +1009,20 @@ model WorkspaceEnvironmentVariable {
   @@map("workspace_environment_variables")
 }
 
+/// Global environment variables applied to all workspaces.
+model GlobalEnvironmentVariable {
+  id          String  @id @default(uuid())
+  key         String  @unique
+  value       String
+  description String? @default("")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([updatedAt])
+  @@map("global_environment_variables")
+}
+
 /// Admin-managed reusable userspace mount source definitions.
 model UserspaceMountSource {
   id                  String                   @id @default(uuid())

@@ -22,7 +22,8 @@ from ragtime.userspace.models import (
     BrowseUserspaceMountSourceRequest, CreateSnapshotBranchRequest,
     CreateSnapshotRequest, CreateUserspaceMountSourceRequest,
     CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest, DeleteUserspaceMountSourceResponse,
+    CreateWorkspaceRequest, DeleteGlobalEnvVarResponse,
+    DeleteUserspaceMountSourceResponse,
     DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
     DeleteWorkspaceMountResponse, ExecuteComponentRequest,
     ExecuteComponentResponse, MountableSource,
@@ -33,15 +34,16 @@ from ragtime.userspace.models import (
     UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
     UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
     UpdateWorkspaceShareAccessRequest, UpdateWorkspaceShareSlugRequest,
-    UpsertWorkspaceEnvVarRequest, UpsertWorkspaceFileRequest,
-    UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceAvailableTool,
-    UserSpaceChangedFileStateResponse, UserSpaceFileInfo,
-    UserSpaceFileResponse, UserspaceMountSource, UserSpaceObjectStorageConfig,
-    UserSpaceSharedPreviewResponse, UserSpaceSnapshot,
-    UserSpaceSnapshotDiffSummaryResponse, UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse, UserSpaceWorkspace,
-    UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask,
-    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceScmConnectionRequest,
+    UpsertGlobalEnvVarRequest, UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest, UserSpaceAcknowledgeChangedFilePathRequest,
+    UserSpaceAvailableTool, UserSpaceChangedFileStateResponse,
+    UserSpaceFileInfo, UserSpaceFileResponse, UserspaceMountSource,
+    UserSpaceObjectStorageConfig, UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot, UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace, UserSpaceWorkspaceCreateTask,
+    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
     UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
     UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
@@ -568,6 +570,42 @@ async def delete_workspace_env_var(
         env_key,
     )
     await userspace_runtime_service.refresh_runtime_env_vars(workspace_id)
+    return result
+
+
+@router.get(
+    "/admin/env-vars",
+    response_model=list[UserSpaceWorkspaceEnvVar],
+)
+async def list_global_env_vars(
+    _user: Any = Depends(require_admin),
+):
+    return await userspace_service.list_global_env_vars()
+
+
+@router.put(
+    "/admin/env-vars",
+    response_model=UserSpaceWorkspaceEnvVar,
+)
+async def upsert_global_env_var(
+    request: UpsertGlobalEnvVarRequest,
+    user: Any = Depends(require_admin),
+):
+    result = await userspace_service.upsert_global_env_var(user.id, request)
+    await userspace_runtime_service.refresh_runtime_env_vars_for_all_active_workspaces()
+    return result
+
+
+@router.delete(
+    "/admin/env-vars/{env_key}",
+    response_model=DeleteGlobalEnvVarResponse,
+)
+async def delete_global_env_var(
+    env_key: str,
+    user: Any = Depends(require_admin),
+):
+    result = await userspace_service.delete_global_env_var(user.id, env_key)
+    await userspace_runtime_service.refresh_runtime_env_vars_for_all_active_workspaces()
     return result
 
 

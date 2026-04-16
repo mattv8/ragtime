@@ -29,136 +29,81 @@ from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.git import create_repository, parse_git_url
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
-    USERSPACE_MOUNT_WATCH_JITTER_SECONDS,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    check_remote_rsync_available,
-    execute_ssh_command,
-    is_rsync_missing_error,
-    preview_ssh_directory_sync,
-    rsync_ssh_directory,
-    ssh_config_from_dict,
-    ssh_tunnel_config_from_dict,
-    sync_ssh_directory,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
+                              USERSPACE_MOUNT_WATCH_JITTER_SECONDS, SSHTunnel,
+                              build_ssh_tunnel_config,
+                              check_remote_rsync_available,
+                              execute_ssh_command, is_rsync_missing_error,
+                              preview_ssh_directory_sync, rsync_ssh_directory,
+                              ssh_config_from_dict,
+                              ssh_tunnel_config_from_dict, sync_ssh_directory)
 from ragtime.core.workspace_ops import (
-    PLATFORM_MANAGED_GITIGNORE_PATTERNS,
-    WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
-    compute_file_hash,
-    deduplicate_ancestor_paths,
-    sync_scope_relative_paths,
+    PLATFORM_MANAGED_GITIGNORE_PATTERNS, WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
+    compute_file_hash, deduplicate_ancestor_paths, sync_scope_relative_paths,
     workspace_mount_target_repo_relative_path,
-    workspace_path_matches_mount_prefix,
-)
+    workspace_path_matches_mount_prefix)
 from ragtime.indexer.file_utils import build_authenticated_git_url
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
 from ragtime.userspace.models import (
-    ArtifactType,
-    BrowseUserspaceMountSourceRequest,
+    ArtifactType, BrowseUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
-    CreateUserSpaceObjectStorageBucketRequest,
-    CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest,
+    CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest, DeleteGlobalEnvVarResponse,
     DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse,
-    DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    MountableSource,
-    MountSourceAffectedWorkspace,
-    MountSourceAffectedWorkspacesResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqliteImportResponse,
-    SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
+    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse, ExecuteComponentRequest,
+    ExecuteComponentResponse, MountableSource, MountSourceAffectedWorkspace,
+    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
+    ShareAccessMode, SqliteImportResponse, SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
-    UpdateUserSpaceObjectStorageBucketRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserspaceMountBackend,
-    UserspaceMountSource,
-    UserspaceMountSourceType,
-    UserSpaceObjectStorageBucket,
-    UserSpaceObjectStorageConfig,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotBranch,
-    UserSpaceSnapshotDiffFileSummary,
-    UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceCreateTask,
-    UserSpaceWorkspaceDeleteTask,
-    UserSpaceWorkspaceEnvVar,
+    UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest, UpsertGlobalEnvVarRequest,
+    UpsertWorkspaceEnvVarRequest, UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo, UserSpaceFileResponse, UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection, UserspaceMountBackend, UserspaceMountSource,
+    UserspaceMountSourceType, UserSpaceObjectStorageBucket,
+    UserSpaceObjectStorageConfig, UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot, UserSpaceSnapshotBranch,
+    UserSpaceSnapshotDiffFileSummary, UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace, UserSpaceWorkspaceCreateTask,
+    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceEnvVar,
     UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
-    UserSpaceWorkspaceScmExportRequest,
-    UserSpaceWorkspaceScmImportRequest,
-    UserSpaceWorkspaceScmPreviewRequest,
-    UserSpaceWorkspaceScmPreviewResponse,
-    UserSpaceWorkspaceScmStatus,
-    UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceCreateTaskPhase,
-    WorkspaceDeleteTaskPhase,
-    WorkspaceMember,
-    WorkspaceMount,
-    WorkspaceMountBrowseRequest,
-    WorkspaceMountBrowseResponse,
-    WorkspaceMountDirectoryEntry,
-    WorkspaceMountSyncMode,
-    WorkspaceMountSyncPreviewRequest,
-    WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest,
-    WorkspaceMountSyncResponse,
-    WorkspaceScmDirection,
-    WorkspaceScmPreviewState,
-    WorkspaceScmProvider,
-    WorkspaceShareSlugAvailabilityResponse,
-)
-from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
-from ragtime.userspace.sqlite_import import (
-    _MAX_IMPORT_SIZE_BYTES,
-    SqlImportResult,
-    detect_binary_pg_dump,
-    detect_sql_dialect,
-    import_sql_to_sqlite,
-)
+    UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceCreateTaskPhase, WorkspaceDeleteTaskPhase, WorkspaceMember,
+    WorkspaceMount, WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
+    WorkspaceMountDirectoryEntry, WorkspaceMountSyncMode,
+    WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
+    WorkspaceScmDirection, WorkspaceScmPreviewState, WorkspaceScmProvider,
+    WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.preview_host import \
+    invalidate_preview_sessions_for_workspace
+from ragtime.userspace.sqlite_import import (_MAX_IMPORT_SIZE_BYTES,
+                                             SqlImportResult,
+                                             detect_binary_pg_dump,
+                                             detect_sql_dialect,
+                                             import_sql_to_sqlite)
 
 logger = get_logger(__name__)
 
@@ -333,6 +278,29 @@ class _WorkspaceCreateTaskRecord:
         self.updated_at = updated_at
 
 
+class _GlobalEnvVarRecord:
+    """Compatibility row wrapper for global env vars loaded via raw SQL."""
+
+    __slots__ = ("id", "key", "value", "description", "createdAt", "updatedAt")
+
+    def __init__(
+        self,
+        *,
+        record_id: str,
+        key: str,
+        value: str,
+        description: str | None,
+        created_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        self.id = record_id
+        self.key = key
+        self.value = value
+        self.description = description
+        self.createdAt = created_at
+        self.updatedAt = updated_at
+
+
 class _NonUtf8WorkspaceFileError(Exception):
     __slots__ = ("file_path",)
 
@@ -374,6 +342,7 @@ _SQLITE_EXCLUDE_GLOBS = (
 )
 _WORKSPACE_ENV_VAR_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WORKSPACE_ENV_VAR_MAX_COUNT = 200
+_GLOBAL_ENV_VAR_MAX_COUNT = 200
 _WORKSPACE_SCM_PREVIEW_TTL_SECONDS = 300
 _WORKSPACE_SCM_PREVIEW_SAMPLE_LIMIT = 100
 _WORKSPACE_CREATE_TASK_TTL_SECONDS = 300
@@ -1276,7 +1245,8 @@ class UserSpaceService:
         try:
             async with self._workspace_delete_semaphore:
                 self._set_workspace_delete_task_phase(task_id, "stopping_runtime")
-                from ragtime.userspace.runtime_service import userspace_runtime_service
+                from ragtime.userspace.runtime_service import \
+                    userspace_runtime_service
 
                 try:
                     await userspace_runtime_service.stop_runtime_session(
@@ -1994,12 +1964,68 @@ class UserSpaceService:
         return getattr(db, "userspaceruntimeauditevent")
 
     @staticmethod
-    def _workspace_env_var_from_record(record: Any) -> UserSpaceWorkspaceEnvVar:
+    def _global_env_var_model(db: Any) -> Any | None:
+        # Keep runtime compatible with older generated Prisma clients where the
+        # GlobalEnvironmentVariable model is not yet present.
+        return getattr(db, "globalenvironmentvariable", None)
+
+    @staticmethod
+    def _global_env_var_record_from_row(row: dict[str, Any]) -> _GlobalEnvVarRecord:
+        return _GlobalEnvVarRecord(
+            record_id=str(row.get("id") or ""),
+            key=str(row.get("key") or ""),
+            value=str(row.get("value") or ""),
+            description=(
+                str(row.get("description"))
+                if row.get("description") is not None
+                else None
+            ),
+            created_at=_coerce_utc_datetime(row.get("created_at")),
+            updated_at=_coerce_utc_datetime(row.get("updated_at")),
+        )
+
+    async def _find_global_env_var_record(
+        self,
+        db: Any,
+        *,
+        key: str,
+    ) -> _GlobalEnvVarRecord | None:
+        rows: list[dict[str, Any]] = await db.query_raw(
+            (
+                "SELECT id, key, value, description, created_at, updated_at "
+                "FROM global_environment_variables "
+                f"WHERE key = {self._sql_quote(key)} "
+                "LIMIT 1"
+            )
+        )
+        if not rows:
+            return None
+        return self._global_env_var_record_from_row(rows[0])
+
+    async def _count_global_env_vars_raw(self, db: Any) -> int:
+        rows: list[dict[str, Any]] = await db.query_raw(
+            "SELECT COUNT(*)::int AS cnt FROM global_environment_variables"
+        )
+        if not rows:
+            return 0
+        return int(rows[0].get("cnt", 0) or 0)
+
+    @staticmethod
+    def _workspace_env_var_from_record(
+        record: Any,
+        *,
+        source: Literal["workspace", "global"] = "workspace",
+        read_only: bool = False,
+        inherited: bool = False,
+    ) -> UserSpaceWorkspaceEnvVar:
         description = getattr(record, "description", None)
         return UserSpaceWorkspaceEnvVar(
             key=str(getattr(record, "key", "") or ""),
             has_value=bool(str(getattr(record, "value", "") or "")),
             description=str(description) if description is not None else None,
+            source=source,
+            read_only=read_only,
+            inherited=inherited,
             created_at=getattr(record, "createdAt"),
             updated_at=getattr(record, "updatedAt"),
         )
@@ -2051,6 +2077,17 @@ class UserSpaceService:
                 continue
             resolved[key] = decrypt_secret(encrypted_value)
         return resolved
+
+    async def _list_global_env_var_records(self) -> list[Any]:
+        db = await get_db()
+        model = self._global_env_var_model(db)
+        if model is not None:
+            return await model.find_many(order={"key": "asc"})
+        rows: list[dict[str, Any]] = await db.query_raw(
+            "SELECT id, key, value, description, created_at, updated_at "
+            "FROM global_environment_variables ORDER BY key ASC"
+        )
+        return [self._global_env_var_record_from_row(row) for row in rows]
 
     @staticmethod
     def _default_runtime_bootstrap_config() -> dict[str, Any]:
@@ -2779,9 +2816,8 @@ class UserSpaceService:
                     ),
                 )
                 try:
-                    from ragtime.userspace.runtime_service import (
-                        userspace_runtime_service,
-                    )
+                    from ragtime.userspace.runtime_service import \
+                        userspace_runtime_service
 
                     await userspace_runtime_service.bump_workspace_generation(
                         workspace_id,
@@ -2807,7 +2843,8 @@ class UserSpaceService:
                 allow_destructive_auto_sync_approval=True,
             )
             try:
-                from ragtime.userspace.runtime_service import userspace_runtime_service
+                from ragtime.userspace.runtime_service import \
+                    userspace_runtime_service
 
                 await userspace_runtime_service.bump_workspace_generation(
                     workspace_id,
@@ -5193,9 +5230,8 @@ class UserSpaceService:
         request: "UserSpaceWorkspaceScmSettingsRequest",
     ) -> UserSpaceWorkspaceScmStatus:
         """Update SCM relationship / policy settings without touching connection fields."""
-        from ragtime.userspace.models import (
-            UserSpaceWorkspaceScmSettingsRequest as _Req,
-        )  # noqa: F811
+        from ragtime.userspace.models import \
+            UserSpaceWorkspaceScmSettingsRequest as _Req  # noqa: F811
 
         await self._enforce_workspace_access(
             workspace_id, user_id, required_role="owner"
@@ -7341,11 +7377,35 @@ class UserSpaceService:
             required_role="owner",
         )
         db = await get_db()
-        rows = await self._workspace_env_var_model(db).find_many(
-            where={"workspaceId": workspace_id},
-            order={"key": "asc"},
+        workspace_rows, global_rows = await asyncio.gather(
+            self._workspace_env_var_model(db).find_many(
+                where={"workspaceId": workspace_id},
+                order={"key": "asc"},
+            ),
+            self._list_global_env_var_records(),
         )
-        return [self._workspace_env_var_from_record(row) for row in rows]
+
+        workspace_keys = {
+            str(getattr(row, "key", "") or "").strip() for row in workspace_rows
+        }
+        merged_rows = [
+            self._workspace_env_var_from_record(row, source="workspace")
+            for row in workspace_rows
+        ]
+        for row in global_rows:
+            key = str(getattr(row, "key", "") or "").strip()
+            if not key or key in workspace_keys:
+                continue
+            merged_rows.append(
+                self._workspace_env_var_from_record(
+                    row,
+                    source="global",
+                    read_only=True,
+                    inherited=True,
+                )
+            )
+
+        return sorted(merged_rows, key=lambda row: row.key)
 
     async def list_workspace_env_var_summaries(
         self,
@@ -7360,11 +7420,290 @@ class UserSpaceService:
 
         await self._enforce_workspace_access(workspace_id, user_id)
         db = await get_db()
-        rows = await self._workspace_env_var_model(db).find_many(
-            where={"workspaceId": workspace_id},
-            order={"key": "asc"},
+        workspace_rows, global_rows = await asyncio.gather(
+            self._workspace_env_var_model(db).find_many(
+                where={"workspaceId": workspace_id},
+                order={"key": "asc"},
+            ),
+            self._list_global_env_var_records(),
         )
-        return [self._workspace_env_var_from_record(row) for row in rows]
+        workspace_keys = {
+            str(getattr(row, "key", "") or "").strip() for row in workspace_rows
+        }
+        summaries = [
+            self._workspace_env_var_from_record(row, source="workspace")
+            for row in workspace_rows
+        ]
+        for row in global_rows:
+            key = str(getattr(row, "key", "") or "").strip()
+            if not key or key in workspace_keys:
+                continue
+            summaries.append(
+                self._workspace_env_var_from_record(
+                    row,
+                    source="global",
+                    read_only=True,
+                    inherited=True,
+                )
+            )
+        return sorted(summaries, key=lambda row: row.key)
+
+    async def list_global_env_vars(
+        self,
+    ) -> list[UserSpaceWorkspaceEnvVar]:
+        rows = await self._list_global_env_var_records()
+        return [
+            self._workspace_env_var_from_record(row, source="global") for row in rows
+        ]
+
+    async def upsert_global_env_var(
+        self,
+        user_id: str,
+        request: UpsertGlobalEnvVarRequest,
+    ) -> UserSpaceWorkspaceEnvVar:
+        db = await get_db()
+        model = self._global_env_var_model(db)
+
+        key = self._normalize_workspace_env_var_key(request.key)
+        target_key = self._normalize_workspace_env_var_key(request.new_key or key)
+        description = request.description
+        now = _utc_now()
+
+        if model is None:
+            existing = await self._find_global_env_var_record(db, key=key)
+            if existing is None:
+                count = await self._count_global_env_vars_raw(db)
+                if count >= _GLOBAL_ENV_VAR_MAX_COUNT:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Global environment variable limit reached ({_GLOBAL_ENV_VAR_MAX_COUNT})"
+                        ),
+                    )
+
+                conflict = await self._find_global_env_var_record(db, key=target_key)
+                if conflict is not None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Environment variable '{target_key}' already exists",
+                    )
+
+                created_id = str(uuid4())
+                await db.execute_raw(
+                    (
+                        "INSERT INTO global_environment_variables "
+                        "(id, key, value, description, created_at, updated_at) VALUES ("
+                        f"{self._sql_quote(created_id)}, "
+                        f"{self._sql_quote(target_key)}, "
+                        f"{self._sql_quote(encrypt_secret(request.value) if request.value is not None else '')}, "
+                        f"{self._sql_quote(description)}, "
+                        f"{self._sql_quote(now.isoformat())}, "
+                        f"{self._sql_quote(now.isoformat())}"
+                        ")"
+                    )
+                )
+                created = await self._find_global_env_var_record(db, key=target_key)
+                if created is None:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to create global environment variable",
+                    )
+                await self._audit_workspace_env_var_event(
+                    workspace_id="__global__",
+                    user_id=user_id,
+                    event_type="global_env_var_created",
+                    payload={"key": target_key},
+                )
+                return self._workspace_env_var_from_record(created, source="global")
+
+            if target_key != key:
+                conflict = await self._find_global_env_var_record(db, key=target_key)
+                if conflict is not None and str(getattr(conflict, "id", "")) != str(
+                    getattr(existing, "id", "")
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Environment variable '{target_key}' already exists",
+                    )
+
+            encrypted_value = str(getattr(existing, "value", "") or "")
+            if request.value is not None:
+                encrypted_value = encrypt_secret(request.value)
+
+            next_description = (
+                str(getattr(existing, "description", "") or "")
+                if description is None
+                else description
+            )
+            existing_id = str(getattr(existing, "id", "") or "")
+            await db.execute_raw(
+                (
+                    "UPDATE global_environment_variables SET "
+                    f"key = {self._sql_quote(target_key)}, "
+                    f"value = {self._sql_quote(encrypted_value)}, "
+                    f"description = {self._sql_quote(next_description)}, "
+                    f"updated_at = {self._sql_quote(now.isoformat())} "
+                    f"WHERE id = {self._sql_quote(existing_id)}"
+                )
+            )
+            updated = await self._find_global_env_var_record(db, key=target_key)
+            if updated is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to update global environment variable",
+                )
+
+            event_type = "global_env_var_updated"
+            payload: dict[str, Any] = {"key": key}
+            if target_key != key:
+                event_type = "global_env_var_renamed"
+                payload["new_key"] = target_key
+            if request.value is not None:
+                payload["value_replaced"] = True
+            await self._audit_workspace_env_var_event(
+                workspace_id="__global__",
+                user_id=user_id,
+                event_type=event_type,
+                payload=payload,
+            )
+
+            return self._workspace_env_var_from_record(updated, source="global")
+
+        existing = await model.find_first(where={"key": key})
+
+        if existing is None:
+            count = await model.count()
+            if count >= _GLOBAL_ENV_VAR_MAX_COUNT:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Global environment variable limit reached ({_GLOBAL_ENV_VAR_MAX_COUNT})"
+                    ),
+                )
+
+            conflict = await model.find_first(where={"key": target_key})
+            if conflict is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Environment variable '{target_key}' already exists",
+                )
+
+            created = await model.create(
+                data={
+                    "id": str(uuid4()),
+                    "key": target_key,
+                    # Empty string means "placeholder key" (no secret set yet).
+                    "value": (
+                        encrypt_secret(request.value)
+                        if request.value is not None
+                        else ""
+                    ),
+                    "description": description,
+                    "createdAt": now,
+                    "updatedAt": now,
+                }
+            )
+            await self._audit_workspace_env_var_event(
+                workspace_id="__global__",
+                user_id=user_id,
+                event_type="global_env_var_created",
+                payload={"key": target_key},
+            )
+            return self._workspace_env_var_from_record(created, source="global")
+
+        if target_key != key:
+            conflict = await model.find_first(
+                where={
+                    "key": target_key,
+                    "NOT": {"id": str(getattr(existing, "id", "") or "")},
+                }
+            )
+            if conflict is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Environment variable '{target_key}' already exists",
+                )
+
+        encrypted_value = getattr(existing, "value", "")
+        if request.value is not None:
+            encrypted_value = encrypt_secret(request.value)
+
+        next_description = (
+            str(getattr(existing, "description", "") or "")
+            if description is None
+            else description
+        )
+
+        updated = await model.update(
+            where={"id": str(getattr(existing, "id", "") or "")},
+            data={
+                "key": target_key,
+                "value": encrypted_value,
+                "description": next_description,
+                "updatedAt": now,
+            },
+        )
+
+        event_type = "global_env_var_updated"
+        payload: dict[str, Any] = {"key": key}
+        if target_key != key:
+            event_type = "global_env_var_renamed"
+            payload["new_key"] = target_key
+        if request.value is not None:
+            payload["value_replaced"] = True
+        await self._audit_workspace_env_var_event(
+            workspace_id="__global__",
+            user_id=user_id,
+            event_type=event_type,
+            payload=payload,
+        )
+
+        return self._workspace_env_var_from_record(updated, source="global")
+
+    async def delete_global_env_var(
+        self,
+        user_id: str,
+        key: str,
+    ) -> DeleteGlobalEnvVarResponse:
+        normalized_key = self._normalize_workspace_env_var_key(key)
+        db = await get_db()
+        model = self._global_env_var_model(db)
+
+        if model is None:
+            existing = await self._find_global_env_var_record(db, key=normalized_key)
+            if existing is None:
+                raise HTTPException(
+                    status_code=404, detail="Environment variable not found"
+                )
+
+            await db.execute_raw(
+                (
+                    "DELETE FROM global_environment_variables "
+                    f"WHERE id = {self._sql_quote(str(getattr(existing, 'id', '') or ''))}"
+                )
+            )
+            await self._audit_workspace_env_var_event(
+                workspace_id="__global__",
+                user_id=user_id,
+                event_type="global_env_var_deleted",
+                payload={"key": normalized_key},
+            )
+            return DeleteGlobalEnvVarResponse(success=True, key=normalized_key)
+
+        existing = await model.find_first(where={"key": normalized_key})
+        if existing is None:
+            raise HTTPException(
+                status_code=404, detail="Environment variable not found"
+            )
+
+        await model.delete(where={"id": str(getattr(existing, "id", "") or "")})
+        await self._audit_workspace_env_var_event(
+            workspace_id="__global__",
+            user_id=user_id,
+            event_type="global_env_var_deleted",
+            payload={"key": normalized_key},
+        )
+        return DeleteGlobalEnvVarResponse(success=True, key=normalized_key)
 
     async def upsert_workspace_env_var(
         self,
@@ -7531,11 +7870,17 @@ class UserSpaceService:
         workspace_id: str,
     ) -> dict[str, str]:
         db = await get_db()
-        rows = await self._workspace_env_var_model(db).find_many(
-            where={"workspaceId": workspace_id},
-            order={"key": "asc"},
+        workspace_rows, global_rows = await asyncio.gather(
+            self._workspace_env_var_model(db).find_many(
+                where={"workspaceId": workspace_id},
+                order={"key": "asc"},
+            ),
+            self._global_env_var_model(db).find_many(order={"key": "asc"}),
         )
-        env_map = self._sanitize_workspace_env_map(list(rows))
+        env_map = {
+            **self._sanitize_workspace_env_map(list(global_rows)),
+            **self._sanitize_workspace_env_map(list(workspace_rows)),
+        }
         env_map.update(self._build_object_storage_runtime_env(workspace_id))
         return env_map
 
@@ -7544,12 +7889,20 @@ class UserSpaceService:
         workspace_id: str,
     ) -> dict[str, bool]:
         db = await get_db()
-        rows = await self._workspace_env_var_model(db).find_many(
-            where={"workspaceId": workspace_id},
-            order={"key": "asc"},
+        workspace_rows, global_rows = await asyncio.gather(
+            self._workspace_env_var_model(db).find_many(
+                where={"workspaceId": workspace_id},
+                order={"key": "asc"},
+            ),
+            self._global_env_var_model(db).find_many(order={"key": "asc"}),
         )
         visibility: dict[str, bool] = {}
-        for row in rows:
+        for row in global_rows:
+            key = str(getattr(row, "key", "") or "").strip()
+            if not key:
+                continue
+            visibility[key] = bool(str(getattr(row, "value", "") or ""))
+        for row in workspace_rows:
             key = str(getattr(row, "key", "") or "").strip()
             if not key:
                 continue
@@ -8007,7 +8360,8 @@ class UserSpaceService:
         mount_id: str,
     ) -> str | None:
         try:
-            from ragtime.userspace.runtime_service import userspace_runtime_service
+            from ragtime.userspace.runtime_service import \
+                userspace_runtime_service
 
             return await userspace_runtime_service.refresh_workspace_mount_after_sync(
                 workspace_id,

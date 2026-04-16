@@ -2037,6 +2037,30 @@ class UserSpaceRuntimeService:
             workspace_env_visibility=workspace_env_visibility,
         )
 
+    async def refresh_runtime_env_vars_for_all_active_workspaces(self) -> None:
+        """Best-effort env-var refresh for all active runtime sessions."""
+        db = await get_db()
+        model = self._runtime_session_model(db)
+        rows = await model.find_many(
+            where={"state": {"in": ["starting", "running"]}},
+            order={"updatedAt": "desc"},
+        )
+        workspace_ids: set[str] = set()
+        for row in rows:
+            workspace_id = str(getattr(row, "workspaceId", "") or "").strip()
+            if workspace_id:
+                workspace_ids.add(workspace_id)
+
+        for workspace_id in workspace_ids:
+            try:
+                await self.refresh_runtime_env_vars(workspace_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to refresh runtime env vars for workspace %s: %s",
+                    workspace_id,
+                    exc,
+                )
+
     async def _persist_runtime_mount_refresh_result(
         self,
         active_session: UserSpaceRuntimeSession,

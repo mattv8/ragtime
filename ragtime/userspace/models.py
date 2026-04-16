@@ -268,6 +268,18 @@ class UserSpaceWorkspaceEnvVar(BaseModel):
         description="True when an encrypted value exists for this key",
     )
     description: str | None = Field(default=None, max_length=1000)
+    source: Literal["workspace", "global"] = Field(
+        default="workspace",
+        description="Where this variable is defined.",
+    )
+    read_only: bool = Field(
+        default=False,
+        description="True when this row is inherited and cannot be edited in this context.",
+    )
+    inherited: bool = Field(
+        default=False,
+        description="True when this variable is inherited from global defaults.",
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -295,6 +307,33 @@ class UpsertWorkspaceEnvVarRequest(BaseModel):
 
 
 class DeleteWorkspaceEnvVarResponse(BaseModel):
+    success: bool = True
+    key: str
+
+
+class UpsertGlobalEnvVarRequest(BaseModel):
+    key: str = Field(
+        min_length=1,
+        max_length=128,
+        description="Current global environment variable key",
+    )
+    value: str | None = Field(
+        default=None,
+        max_length=10000,
+        description=(
+            "Replacement value. Required for create, optional for rename-only updates."
+        ),
+    )
+    new_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="Optional new key name for rename",
+    )
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class DeleteGlobalEnvVarResponse(BaseModel):
     success: bool = True
     key: str
 

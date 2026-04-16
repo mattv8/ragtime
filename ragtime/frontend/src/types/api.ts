@@ -1896,6 +1896,9 @@ export interface UserSpaceWorkspaceEnvVar {
   key: string;
   has_value: boolean;
   description?: string | null;
+  source?: 'workspace' | 'global';
+  read_only?: boolean;
+  inherited?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -1908,6 +1911,18 @@ export interface UpsertUserSpaceWorkspaceEnvVarRequest {
 }
 
 export interface DeleteUserSpaceWorkspaceEnvVarResponse {
+  success: boolean;
+  key: string;
+}
+
+export interface UpsertUserSpaceGlobalEnvVarRequest {
+  key: string;
+  value?: string;
+  new_key?: string;
+  description?: string;
+}
+
+export interface DeleteUserSpaceGlobalEnvVarResponse {
   success: boolean;
   key: string;
 }
