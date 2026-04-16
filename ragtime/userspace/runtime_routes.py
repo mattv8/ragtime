@@ -539,8 +539,9 @@ async def _proxy_http_request(
             bridge_context=bridge_context,
             bridge_script_src=bridge_script_src,
         )
-        # Content length changed after injection; drop stale header so
-        # Starlette re-calculates it from the actual body.
+        # The response body may be decoded by httpx and is definitely mutated by
+        # bridge injection, so upstream encoding and length metadata is stale.
+        resp_headers.pop("content-encoding", None)
         resp_headers.pop("content-length", None)
 
         return Response(
@@ -552,7 +553,7 @@ async def _proxy_http_request(
 
     async def _iter_stream() -> AsyncIterator[bytes]:
         try:
-            async for chunk in upstream_response.aiter_bytes():
+            async for chunk in upstream_response.aiter_raw():
                 yield chunk
         finally:
             await upstream_response.aclose()

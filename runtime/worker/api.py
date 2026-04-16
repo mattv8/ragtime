@@ -14,29 +14,56 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import (APIRouter, FastAPI, HTTPException, Request, WebSocket,
-                     WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import Response, StreamingResponse
 
 from runtime.auth import WorkerAuth
-from runtime.manager.models import (RuntimeContentProbeRequest,
-                                    RuntimeContentProbeResponse,
-                                    RuntimeExecRequest, RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    WorkerHealthResponse,
-                                    WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
-from runtime.worker.sandbox import (SandboxSpec, ensure_sandbox_ready,
-                                    make_sandbox_preexec, sandbox_env)
+from runtime.manager.models import (
+    RuntimeContentProbeRequest,
+    RuntimeContentProbeResponse,
+    RuntimeExecRequest,
+    RuntimeExecResponse,
+    RuntimeFileReadResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    WorkerHealthResponse,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
+from runtime.worker.sandbox import (
+    SandboxSpec,
+    ensure_sandbox_ready,
+    make_sandbox_preexec,
+    sandbox_env,
+)
 from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
 
-_SANDBOX_BASHRC_TEMPLATE_PATH = Path(__file__).parent / "templates" / "sandbox_bashrc.sh"
+_SANDBOX_BASHRC_TEMPLATE_PATH = (
+    Path(__file__).parent / "templates" / "sandbox_bashrc.sh"
+)
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 logger = logging.getLogger(__name__)
+
+
+def _is_html_document_request(request: Request) -> bool:
+    if request.method.upper() not in {"GET", "HEAD"}:
+        return False
+    if request.headers.get("range"):
+        return False
+    sec_fetch_dest = request.headers.get("sec-fetch-dest", "").strip().lower()
+    if sec_fetch_dest == "document":
+        return True
+    accept = request.headers.get("accept", "").strip().lower()
+    return "text/html" in accept or "application/xhtml+xml" in accept
 
 
 def _preview_request_headers(request: Request) -> dict[str, str]:
@@ -64,6 +91,11 @@ def _preview_request_headers(request: Request) -> dict[str, str]:
     client_host = request.client.host if request.client else ""
     if client_host:
         forwarded_headers.setdefault("x-forwarded-for", client_host)
+    # HTML documents are rewritten later in the preview pipeline, so asking the
+    # devserver for an identity-encoded body avoids avoidable decode/re-encode
+    # work while leaving assets and downloads untouched.
+    if _is_html_document_request(request):
+        forwarded_headers["accept-encoding"] = "identity"
     return forwarded_headers
 
 
@@ -117,6 +149,10 @@ async def _proxy_preview_request(request: Request, upstream_url: str) -> Respons
         finally:
             await upstream_response.aclose()
             await client.aclose()
+        # httpx decodes encoded bodies during aread(), so the upstream
+        # encoding and byte length metadata no longer applies.
+        response_headers.pop("content-encoding", None)
+        response_headers.pop("content-length", None)
         return Response(
             content=content,
             status_code=upstream_response.status_code,
@@ -126,7 +162,7 @@ async def _proxy_preview_request(request: Request, upstream_url: str) -> Respons
 
     async def _iter_stream() -> AsyncIterator[bytes]:
         try:
-            async for chunk in upstream_response.aiter_bytes():
+            async for chunk in upstream_response.aiter_raw():
                 yield chunk
         finally:
             await upstream_response.aclose()
@@ -330,7 +366,9 @@ async def preview_websocket(
     try:
         _verify_worker_auth_from_websocket(websocket)
     except HTTPException as exc:
-        logger.warning("WS preview auth rejected for %s: %s", worker_session_id, exc.detail)
+        logger.warning(
+            "WS preview auth rejected for %s: %s", worker_session_id, exc.detail
+        )
         await websocket.close(code=4403 if exc.status_code == 403 else 4404)
         return
 
@@ -341,12 +379,19 @@ async def preview_websocket(
             query=websocket.url.query or None,
         )
     except HTTPException as exc:
-        logger.warning("WS preview upstream lookup failed for %s/%s: %s", worker_session_id, path, exc.detail)
+        logger.warning(
+            "WS preview upstream lookup failed for %s/%s: %s",
+            worker_session_id,
+            path,
+            exc.detail,
+        )
         await websocket.close(code=4000 + exc.status_code)
         return
 
     # Convert http:// to ws://
-    ws_url = upstream_url.replace("http://", "ws://", 1).replace("https://", "wss://", 1)
+    ws_url = upstream_url.replace("http://", "ws://", 1).replace(
+        "https://", "wss://", 1
+    )
 
     requested_subprotocols = [
         str(p).strip()
@@ -400,7 +445,9 @@ async def preview_websocket(
     except WebSocketDisconnect:
         return
     except Exception as exc:
-        logger.debug("WS preview proxy error for %s/%s: %s", worker_session_id, path, exc)
+        logger.debug(
+            "WS preview proxy error for %s/%s: %s", worker_session_id, path, exc
+        )
         with contextlib.suppress(Exception):
             await websocket.close(code=1011)
         return
@@ -580,7 +627,12 @@ async def pty(worker_session_id: str, websocket: WebSocket):
             text,
             carry=redaction_carry,
         )
-        if text and not output_text and redaction_carry and not buffered_for_redaction_logged:
+        if (
+            text
+            and not output_text
+            and redaction_carry
+            and not buffered_for_redaction_logged
+        ):
             buffered_for_redaction_logged = True
             logger.debug(
                 "PTY output buffered for redaction overlap: worker_session_id=%s chunk_len=%s carry_len=%s",
@@ -589,7 +641,9 @@ async def pty(worker_session_id: str, websocket: WebSocket):
                 len(redaction_carry),
             )
         if output_text:
-            await websocket.send_text(json.dumps({"type": "output", "data": output_text}))
+            await websocket.send_text(
+                json.dumps({"type": "output", "data": output_text})
+            )
 
     loop.add_reader(master_fd, _queue_pty_output)
     output_task = asyncio.create_task(pty_output_queue.get())
