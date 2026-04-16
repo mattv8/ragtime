@@ -28,9 +28,9 @@ enum IndexStatus {
 
 /// OCR mode for extracting text from images
 enum OcrMode {
-  disabled   // No OCR - skip image files
-  tesseract  // Traditional OCR with Tesseract (fast, basic)
-  ollama     // Semantic OCR with Ollama vision model (slower, better understanding)
+  disabled // No OCR - skip image files
+  tesseract // Traditional OCR with Tesseract (fast, basic)
+  ollama // Semantic OCR with Ollama vision model (slower, better understanding)
 }
 
 /// Configuration for creating an index (stored as part of job)
@@ -85,25 +85,25 @@ model IndexJob {
 
 /// Metadata for a document index (upload or git source)
 model IndexMetadata {
-  id            String   @id @default(uuid())
-  name          String   @unique // Safe tool name (lowercase, alphanumeric with underscores)
-  displayName   String?  @map("display_name") // Human-readable name for UI display
-  description   String   @default("") // Description for LLM context
+  id            String  @id @default(uuid())
+  name          String  @unique // Safe tool name (lowercase, alphanumeric with underscores)
+  displayName   String? @map("display_name") // Human-readable name for UI display
+  description   String  @default("") // Description for LLM context
   path          String
-  documentCount Int      @default(0) @map("document_count")
-  chunkCount    Int      @default(0) @map("chunk_count")
-  sizeBytes     BigInt   @default(0) @map("size_bytes")
-  enabled       Boolean  @default(true) // Include in RAG context
-  searchWeight  Float    @default(1.0) @map("search_weight") // Weighting for search prioritization (0.0-10.0)
+  documentCount Int     @default(0) @map("document_count")
+  chunkCount    Int     @default(0) @map("chunk_count")
+  sizeBytes     BigInt  @default(0) @map("size_bytes")
+  enabled       Boolean @default(true) // Include in RAG context
+  searchWeight  Float   @default(1.0) @map("search_weight") // Weighting for search prioritization (0.0-10.0)
 
   // Vector store backend selection
   vectorStoreType VectorStoreType @default(faiss) @map("vector_store_type") // faiss (default) or pgvector
 
   // Memory tracking (observed during loading)
-  embeddingDimension  Int?    @map("embedding_dimension") // Dimension of vectors in this index
-  steadyMemoryBytes   BigInt? @map("steady_memory_bytes") // RAM usage after loading (observed)
-  peakMemoryBytes     BigInt? @map("peak_memory_bytes") // Peak RAM during loading (observed)
-  loadTimeSeconds     Float?  @map("load_time_seconds") // Time to load this index
+  embeddingDimension Int?    @map("embedding_dimension") // Dimension of vectors in this index
+  steadyMemoryBytes  BigInt? @map("steady_memory_bytes") // RAM usage after loading (observed)
+  peakMemoryBytes    BigInt? @map("peak_memory_bytes") // Peak RAM during loading (observed)
+  loadTimeSeconds    Float?  @map("load_time_seconds") // Time to load this index
 
   // Source info
   sourceType String  @map("source_type")
@@ -131,49 +131,49 @@ model IndexMetadata {
 
 /// Application settings stored in database
 model AppSettings {
-  id    String @id @default("default")
+  id String @id @default("default")
 
   // Server Identity
-  serverName    String   @default("Ragtime") @map("server_name") // Customizable server/model name
+  serverName String @default("Ragtime") @map("server_name") // Customizable server/model name
 
   // Embedding Configuration (for FAISS indexing)
-  embeddingProvider   String   @default("ollama") @map("embedding_provider") // "ollama" or "openai"
-  embeddingModel      String   @default("nomic-embed-text") @map("embedding_model")
-  embeddingDimensions Int?     @map("embedding_dimensions") // Target dims for OpenAI text-embedding-3-* (MRL)
+  embeddingProvider   String @default("ollama") @map("embedding_provider") // "ollama" or "openai"
+  embeddingModel      String @default("nomic-embed-text") @map("embedding_model")
+  embeddingDimensions Int?   @map("embedding_dimensions") // Target dims for OpenAI text-embedding-3-* (MRL)
   // Ollama connection settings (separate fields for UI)
-  ollamaProtocol    String   @default("http") @map("ollama_protocol") // "http" or "https"
-  ollamaHost        String   @default("localhost") @map("ollama_host")
-  ollamaPort        Int      @default(11434) @map("ollama_port")
-  ollamaBaseUrl     String   @default("http://localhost:11434") @map("ollama_base_url")
+  ollamaProtocol      String @default("http") @map("ollama_protocol") // "http" or "https"
+  ollamaHost          String @default("localhost") @map("ollama_host")
+  ollamaPort          Int    @default(11434) @map("ollama_port")
+  ollamaBaseUrl       String @default("http://localhost:11434") @map("ollama_base_url")
 
   // LLM Configuration (for chat/RAG responses)
-  llmProvider       String   @default("openai") @map("llm_provider") // "openai", "anthropic", "ollama", "github_copilot", or "github_models"
-  llmModel          String   @default("gpt-4-turbo") @map("llm_model")
-  llmMaxTokens      Int      @default(4096) @map("llm_max_tokens") // Max output tokens
-  imagePayloadMaxWidth  Int   @default(1024) @map("image_payload_max_width") // Max width (px) for image attachments
-  imagePayloadMaxHeight Int   @default(1024) @map("image_payload_max_height") // Max height (px) for image attachments
-  imagePayloadMaxPixels Int   @default(786432) @map("image_payload_max_pixels") // Max total pixels for image attachments
-  imagePayloadMaxBytes  Int   @default(350000) @map("image_payload_max_bytes") // Max compressed bytes for image attachments
-    llmOllamaProtocol String   @default("http") @map("llm_ollama_protocol")
-    llmOllamaHost     String   @default("localhost") @map("llm_ollama_host")
-    llmOllamaPort     Int      @default(11434) @map("llm_ollama_port")
-    llmOllamaBaseUrl  String   @default("http://localhost:11434") @map("llm_ollama_base_url")
-  openaiApiKey      String   @default("") @map("openai_api_key")
-  anthropicApiKey   String   @default("") @map("anthropic_api_key")
-  githubModelsApiToken String @default("") @map("github_models_api_token")
-  githubCopilotAccessToken String  @default("") @map("github_copilot_access_token")
-  githubCopilotRefreshToken String @default("") @map("github_copilot_refresh_token")
-  githubCopilotOauthRefreshToken String @default("") @map("github_copilot_oauth_refresh_token") // ghr_* token for refreshing expired ghu_* access tokens
-  githubCopilotTokenExpiresAt DateTime? @map("github_copilot_token_expires_at")
-  githubCopilotEnterpriseUrl String? @map("github_copilot_enterprise_url")
-  githubCopilotBaseUrl String @default("https://api.githubcopilot.com") @map("github_copilot_base_url")
-  includeCopilotThirdPartyModels Boolean @default(false) @map("include_copilot_third_party_models")
-  allowedChatModels String[] @default([]) @map("allowed_chat_models") // Empty = all models allowed
-  defaultChatModel String? @map("default_chat_model") // Optional manual override for chat default model selection
+  llmProvider                    String    @default("openai") @map("llm_provider") // "openai", "anthropic", "ollama", "github_copilot", or "github_models"
+  llmModel                       String    @default("gpt-4-turbo") @map("llm_model")
+  llmMaxTokens                   Int       @default(4096) @map("llm_max_tokens") // Max output tokens
+  imagePayloadMaxWidth           Int       @default(1024) @map("image_payload_max_width") // Max width (px) for image attachments
+  imagePayloadMaxHeight          Int       @default(1024) @map("image_payload_max_height") // Max height (px) for image attachments
+  imagePayloadMaxPixels          Int       @default(786432) @map("image_payload_max_pixels") // Max total pixels for image attachments
+  imagePayloadMaxBytes           Int       @default(350000) @map("image_payload_max_bytes") // Max compressed bytes for image attachments
+  llmOllamaProtocol              String    @default("http") @map("llm_ollama_protocol")
+  llmOllamaHost                  String    @default("localhost") @map("llm_ollama_host")
+  llmOllamaPort                  Int       @default(11434) @map("llm_ollama_port")
+  llmOllamaBaseUrl               String    @default("http://localhost:11434") @map("llm_ollama_base_url")
+  openaiApiKey                   String    @default("") @map("openai_api_key")
+  anthropicApiKey                String    @default("") @map("anthropic_api_key")
+  githubModelsApiToken           String    @default("") @map("github_models_api_token")
+  githubCopilotAccessToken       String    @default("") @map("github_copilot_access_token")
+  githubCopilotRefreshToken      String    @default("") @map("github_copilot_refresh_token")
+  githubCopilotOauthRefreshToken String    @default("") @map("github_copilot_oauth_refresh_token") // ghr_* token for refreshing expired ghu_* access tokens
+  githubCopilotTokenExpiresAt    DateTime? @map("github_copilot_token_expires_at")
+  githubCopilotEnterpriseUrl     String?   @map("github_copilot_enterprise_url")
+  githubCopilotBaseUrl           String    @default("https://api.githubcopilot.com") @map("github_copilot_base_url")
+  includeCopilotThirdPartyModels Boolean   @default(false) @map("include_copilot_third_party_models")
+  allowedChatModels              String[]  @default([]) @map("allowed_chat_models") // Empty = all models allowed
+  defaultChatModel               String?   @map("default_chat_model") // Optional manual override for chat default model selection
 
   // OpenAPI-compatible endpoint model configuration
-  allowedOpenapiModels    String[]  @default([]) @map("allowed_openapi_models") // Models exposed via /v1/models; empty = use chat models
-  openapiSyncChatModels   Boolean   @default(true) @map("openapi_sync_chat_models") // true = mirror chat models list
+  allowedOpenapiModels  String[] @default([]) @map("allowed_openapi_models") // Models exposed via /v1/models; empty = use chat models
+  openapiSyncChatModels Boolean  @default(true) @map("openapi_sync_chat_models") // true = mirror chat models list
 
   // Legacy tool configuration (deprecated - use ToolConfig table)
   enabledTools      String[] @default([]) @map("enabled_tools")
@@ -186,59 +186,59 @@ model AppSettings {
   postgresDb        String   @default("") @map("postgres_db")
 
   // Query Limits
-  maxQueryResults   Int      @default(100) @map("max_query_results")
-  queryTimeout      Int      @default(30) @map("query_timeout")
-  maxIterations     Int      @default(30) @map("max_iterations") // Agent iteration limit
+  maxQueryResults Int @default(100) @map("max_query_results")
+  queryTimeout    Int @default(30) @map("query_timeout")
+  maxIterations   Int @default(30) @map("max_iterations") // Agent iteration limit
 
   // Agent Token Optimization
-  maxToolOutputChars    Int      @default(5000) @map("max_tool_output_chars") // Max chars per tool output before truncation (0=unlimited)
-  scratchpadWindowSize  Int      @default(6) @map("scratchpad_window_size") // Keep last N tool calls in full detail; older ones are summarized (0=keep all)
+  maxToolOutputChars   Int @default(5000) @map("max_tool_output_chars") // Max chars per tool output before truncation (0=unlimited)
+  scratchpadWindowSize Int @default(6) @map("scratchpad_window_size") // Keep last N tool calls in full detail; older ones are summarized (0=keep all)
 
   // Search Configuration
-  searchResultsK       Int      @default(5) @map("search_results_k") // Number of results per vector search (k)
-  aggregateSearch      Boolean  @default(true) @map("aggregate_search") // If true, use single search_knowledge; if false, create per-index tools
-  searchUseMmr         Boolean  @default(false) @map("search_use_mmr") // Use Max Marginal Relevance for result diversification
-  searchMmrLambda      Float    @default(0.5) @map("search_mmr_lambda") // MMR diversity/relevance tradeoff (0=max diversity, 1=max relevance)
-  contextTokenBudget   Int      @default(4000) @map("context_token_budget") // Max tokens for retrieved context (0=unlimited)
-  chunkingUseTokens    Boolean  @default(true) @map("chunking_use_tokens") // Use token-based chunking instead of character-based
+  searchResultsK     Int     @default(5) @map("search_results_k") // Number of results per vector search (k)
+  aggregateSearch    Boolean @default(true) @map("aggregate_search") // If true, use single search_knowledge; if false, create per-index tools
+  searchUseMmr       Boolean @default(false) @map("search_use_mmr") // Use Max Marginal Relevance for result diversification
+  searchMmrLambda    Float   @default(0.5) @map("search_mmr_lambda") // MMR diversity/relevance tradeoff (0=max diversity, 1=max relevance)
+  contextTokenBudget Int     @default(4000) @map("context_token_budget") // Max tokens for retrieved context (0=unlimited)
+  chunkingUseTokens  Boolean @default(true) @map("chunking_use_tokens") // Use token-based chunking instead of character-based
 
   // pgvector Index Configuration
-  ivfflatLists         Int      @default(100) @map("ivfflat_lists") // IVFFlat index lists parameter (higher=slower build, faster query)
+  ivfflatLists Int @default(100) @map("ivfflat_lists") // IVFFlat index lists parameter (higher=slower build, faster query)
 
   // Performance / Memory Configuration
   sequentialIndexLoading Boolean @default(false) @map("sequential_index_loading") // Load indexes one-by-one (lower peak RAM) vs parallel (faster)
 
   // Security
-  enableWriteOps    Boolean  @default(false) @map("enable_write_ops")
+  enableWriteOps Boolean @default(false) @map("enable_write_ops")
 
   // API Tool Output Configuration
-  toolOutputMode      ConversationToolOutputMode @default(default) @map("tool_output_mode") // API tool output mode
+  toolOutputMode ConversationToolOutputMode @default(default) @map("tool_output_mode") // API tool output mode
 
   // MCP Configuration
-  mcpEnabled                  Boolean        @default(false) @map("mcp_enabled") // Enable/disable MCP server
-  mcpDefaultRouteAuth         Boolean        @default(false) @map("mcp_default_route_auth") // Require auth for default /mcp route
-  mcpDefaultRouteAuthMethod   McpAuthMethod  @default(password) @map("mcp_default_route_auth_method") // Auth method for default route
-  mcpDefaultRoutePassword     String?        @map("mcp_default_route_password") // Password for default /mcp route (encrypted)
-  mcpDefaultRouteAllowedGroup String?        @map("mcp_default_route_allowed_group") // LDAP group DN for OAuth2 access (optional)
+  mcpEnabled                  Boolean       @default(false) @map("mcp_enabled") // Enable/disable MCP server
+  mcpDefaultRouteAuth         Boolean       @default(false) @map("mcp_default_route_auth") // Require auth for default /mcp route
+  mcpDefaultRouteAuthMethod   McpAuthMethod @default(password) @map("mcp_default_route_auth_method") // Auth method for default route
+  mcpDefaultRoutePassword     String?       @map("mcp_default_route_password") // Password for default /mcp route (encrypted)
+  mcpDefaultRouteAllowedGroup String?       @map("mcp_default_route_allowed_group") // LDAP group DN for OAuth2 access (optional)
 
   // Embedding dimension tracking (for detecting provider/model changes)
   // Stored dimension of embeddings in filesystem_embeddings table
   // null = not yet determined (first index will set it)
-  embeddingDimension     Int?    @map("embedding_dimension")
+  embeddingDimension  Int?    @map("embedding_dimension")
   // Hash of provider+model to detect changes (e.g., "ollama:qwen3-embedding:latest")
-  embeddingConfigHash    String? @map("embedding_config_hash")
+  embeddingConfigHash String? @map("embedding_config_hash")
 
   // OCR Configuration (global defaults for new indexes)
-  defaultOcrMode           OcrMode  @default(disabled) @map("default_ocr_mode") // Default OCR mode for new indexes
-  defaultOcrVisionModel    String?  @map("default_ocr_vision_model") // Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b')
-  ocrConcurrencyLimit      Int      @default(1) @map("ocr_concurrency_limit") // Max concurrent Ollama vision OCR requests
+  defaultOcrMode        OcrMode @default(disabled) @map("default_ocr_mode") // Default OCR mode for new indexes
+  defaultOcrVisionModel String? @map("default_ocr_vision_model") // Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b')
+  ocrConcurrencyLimit   Int     @default(1) @map("ocr_concurrency_limit") // Max concurrent Ollama vision OCR requests
 
   // Ollama Embedding Timeout
   ollamaEmbeddingTimeoutSeconds Int @default(180) @map("ollama_embedding_timeout_seconds") // Per sub-batch timeout (seconds) for Ollama embedding calls
 
   // User Space Configuration
-  snapshotRetentionDays    Int      @default(0) @map("snapshot_retention_days") // Snapshot retention in days (0 = unlimited)
-  snapshotStaleBranchThreshold Int  @default(50) @map("snapshot_stale_branch_threshold") // Hide branches whose head is >= N commits behind the active head (0 = show all, 10-500)
+  snapshotRetentionDays        Int      @default(0) @map("snapshot_retention_days") // Snapshot retention in days (0 = unlimited)
+  snapshotStaleBranchThreshold Int      @default(50) @map("snapshot_stale_branch_threshold") // Hide branches whose head is >= N commits behind the active head (0 = show all, 10-500)
   userspacePreviewSandboxFlags String[] @default(["allow-scripts", "allow-same-origin", "allow-forms", "allow-popups", "allow-popups-to-escape-sandbox", "allow-modals", "allow-downloads"]) @map("userspace_preview_sandbox_flags") // Allowed iframe sandbox flags for User Space previews
 
   // Timestamps
@@ -253,13 +253,13 @@ model AppSettings {
 
 /// A named group (folder) of tool configs
 model ToolGroup {
-  id          String   @id @default(uuid())
-  name        String   @unique
-  description String   @default("")
-  sortOrder   Int      @default(0) @map("sort_order")
+  id          String @id @default(uuid())
+  name        String @unique
+  description String @default("")
+  sortOrder   Int    @default(0) @map("sort_order")
 
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   tools                       ToolConfig[]
   workspaceGroupSelections    WorkspaceToolGroupSelection[]
@@ -286,10 +286,10 @@ enum ToolType {
 
 /// Mount type for filesystem indexer
 enum FilesystemMountType {
-  docker_volume  // Preferred - fastest, requires container config
-  smb            // SMB/CIFS network share
-  nfs            // NFS network mount
-  local          // Direct local path (container must have access)
+  docker_volume // Preferred - fastest, requires container config
+  smb // SMB/CIFS network share
+  nfs // NFS network mount
+  local // Direct local path (container must have access)
 }
 
 enum UserspaceMountSourceType {
@@ -305,23 +305,23 @@ enum WorkspaceMountSyncMode {
 
 /// Vector store type for indexes (document and filesystem)
 enum VectorStoreType {
-  pgvector  // PostgreSQL pgvector - persistent, scalable
-  faiss     // FAISS - in-memory, loaded at startup
+  pgvector // PostgreSQL pgvector - persistent, scalable
+  faiss // FAISS - in-memory, loaded at startup
 }
 
 /// Configuration for a tool instance
 model ToolConfig {
-  id          String   @id @default(uuid())
-  name        String   // User-friendly name (e.g., "Production DB", "Staging Odoo")
-  toolType    ToolType @map("tool_type")
-  enabled     Boolean  @default(true)
+  id       String   @id @default(uuid())
+  name     String // User-friendly name (e.g., "Production DB", "Staging Odoo")
+  toolType ToolType @map("tool_type")
+  enabled  Boolean  @default(true)
 
   // Optional group membership (each tool belongs to at most one group)
-  groupId     String?  @map("group_id")
-  group       ToolGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  groupId String?    @map("group_id")
+  group   ToolGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
 
   // Description for RAG context - presented to the model
-  description String   @default("")
+  description String @default("")
 
   // Connection configuration stored as JSON
   // For postgres: host, port, user, password, database, container (optional)
@@ -330,12 +330,12 @@ model ToolConfig {
   connectionConfig Json @map("connection_config")
 
   // Query/execution limits
-  maxResults  Int      @default(100) @map("max_results")
-  timeout     Int      @default(30) // seconds
+  maxResults        Int @default(100) @map("max_results")
+  timeout           Int @default(30) // seconds
   timeoutMaxSeconds Int @default(300) @map("timeout_max_seconds") // max allowed timeout for this tool (0=unlimited)
 
   // Security
-  allowWrite  Boolean  @default(false) @map("allow_write")
+  allowWrite Boolean @default(false) @map("allow_write")
 
   // Connection test results
   lastTestAt     DateTime? @map("last_test_at")
@@ -375,22 +375,22 @@ model ToolConfig {
 /// Authentication method for MCP routes
 enum McpAuthMethod {
   password // Static password/API key
-  oauth2   // OAuth2 via LDAP authentication
+  oauth2 // OAuth2 via LDAP authentication
 }
 
 /// Custom MCP route configuration
 model McpRouteConfig {
-  id          String   @id @default(uuid())
-  name        String   // User-friendly name (e.g., "Production Tools")
-  routePath   String   @unique @map("route_path") // Route suffix (e.g., "my_toolset" for /mcp/my_toolset)
-  description String   @default("") // Description for documentation
-  enabled     Boolean  @default(true)
+  id          String  @id @default(uuid())
+  name        String // User-friendly name (e.g., "Production Tools")
+  routePath   String  @unique @map("route_path") // Route suffix (e.g., "my_toolset" for /mcp/my_toolset)
+  description String  @default("") // Description for documentation
+  enabled     Boolean @default(true)
 
   // Authorization settings
-  requireAuth    Boolean        @default(false) @map("require_auth") // Require authentication for this route
-  authMethod     McpAuthMethod  @default(password) @map("auth_method") // Authentication method
-  authPassword   String?        @map("auth_password") // Password/API key for this route (stored encrypted)
-  allowedLdapGroup String?      @map("allowed_ldap_group") // LDAP group DN required for OAuth2 access (optional)
+  requireAuth      Boolean       @default(false) @map("require_auth") // Require authentication for this route
+  authMethod       McpAuthMethod @default(password) @map("auth_method") // Authentication method
+  authPassword     String?       @map("auth_password") // Password/API key for this route (stored encrypted)
+  allowedLdapGroup String?       @map("allowed_ldap_group") // LDAP group DN required for OAuth2 access (optional)
 
   // Built-in tools configuration
   includeKnowledgeSearch Boolean @default(true) @map("include_knowledge_search") // Include search_knowledge tool
@@ -432,14 +432,14 @@ model McpRouteToolSelection {
 /// LDAP group membership and filters available tools based on these configurations.
 /// If no filter matches, all tools are shown (default behavior).
 model McpDefaultRouteFilter {
-  id          String   @id @default(uuid())
-  name        String   // User-friendly name (e.g., "Engineering Tools")
-  description String   @default("") // Description for documentation
-  enabled     Boolean  @default(true)
-  priority    Int      @default(0) // Higher priority filters take precedence
+  id          String  @id @default(uuid())
+  name        String // User-friendly name (e.g., "Engineering Tools")
+  description String  @default("") // Description for documentation
+  enabled     Boolean @default(true)
+  priority    Int     @default(0) // Higher priority filters take precedence
 
   // LDAP group requirement - user must be member of this group
-  ldapGroupDn String   @map("ldap_group_dn") // e.g., "CN=Engineers,OU=Groups,DC=example,DC=com"
+  ldapGroupDn String @map("ldap_group_dn") // e.g., "CN=Engineers,OU=Groups,DC=example,DC=com"
 
   // Built-in tools configuration
   includeKnowledgeSearch Boolean @default(true) @map("include_knowledge_search")
@@ -492,20 +492,20 @@ enum FilesystemIndexStatus {
 
 /// Filesystem indexing job
 model FilesystemIndexJob {
-  id           String                @id @default(uuid())
-  toolConfigId String                @map("tool_config_id")
-  toolConfig   ToolConfig            @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+  id           String     @id @default(uuid())
+  toolConfigId String     @map("tool_config_id")
+  toolConfig   ToolConfig @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
 
-  status       FilesystemIndexStatus @default(pending)
-  indexName    String                @map("index_name")
+  status    FilesystemIndexStatus @default(pending)
+  indexName String                @map("index_name")
 
   // Progress tracking
-  totalFiles       Int      @default(0) @map("total_files")
-  processedFiles   Int      @default(0) @map("processed_files")
-  skippedFiles     Int      @default(0) @map("skipped_files")  // Unchanged files
-  totalChunks      Int      @default(0) @map("total_chunks")
-  processedChunks  Int      @default(0) @map("processed_chunks")
-  errorMessage     String?  @map("error_message")
+  totalFiles      Int     @default(0) @map("total_files")
+  processedFiles  Int     @default(0) @map("processed_files")
+  skippedFiles    Int     @default(0) @map("skipped_files") // Unchanged files
+  totalChunks     Int     @default(0) @map("total_chunks")
+  processedChunks Int     @default(0) @map("processed_chunks")
+  errorMessage    String? @map("error_message")
 
   // Timing
   createdAt   DateTime  @default(now()) @map("created_at")
@@ -517,14 +517,14 @@ model FilesystemIndexJob {
 
 /// Tracks file metadata for incremental indexing
 model FilesystemFileMetadata {
-  id           String   @id @default(uuid())
-  indexName    String   @map("index_name")
-  filePath     String   @map("file_path")  // Relative path within the mount
-  fileHash     String   @map("file_hash")  // SHA-256 for change detection
-  fileSize     BigInt   @map("file_size")
-  mimeType     String?  @map("mime_type")
-  chunkCount   Int      @default(0) @map("chunk_count")
-  lastIndexed  DateTime @default(now()) @map("last_indexed")
+  id          String   @id @default(uuid())
+  indexName   String   @map("index_name")
+  filePath    String   @map("file_path") // Relative path within the mount
+  fileHash    String   @map("file_hash") // SHA-256 for change detection
+  fileSize    BigInt   @map("file_size")
+  mimeType    String?  @map("mime_type")
+  chunkCount  Int      @default(0) @map("chunk_count")
+  lastIndexed DateTime @default(now()) @map("last_indexed")
 
   @@unique([indexName, filePath])
   @@index([indexName])
@@ -535,17 +535,17 @@ model FilesystemFileMetadata {
 /// NOTE: Requires pgvector extension: CREATE EXTENSION IF NOT EXISTS vector;
 /// The embedding column uses raw SQL for vector type, managed via migration
 model FilesystemEmbedding {
-  id           String   @id @default(uuid())
-  indexName    String   @map("index_name")
-  filePath     String   @map("file_path")
-  chunkIndex   Int      @map("chunk_index")
-  content      String   // The text content of this chunk
+  id         String @id @default(uuid())
+  indexName  String @map("index_name")
+  filePath   String @map("file_path")
+  chunkIndex Int    @map("chunk_index")
+  content    String // The text content of this chunk
   // embedding field is added via raw SQL migration (vector type)
 
   // Metadata for search context
-  metadata     Json     @default("{}")  // Additional context (line numbers, headings, etc.)
+  metadata Json @default("{}") // Additional context (line numbers, headings, etc.)
 
-  createdAt    DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@index([indexName])
   @@map("filesystem_embeddings")
@@ -566,18 +566,18 @@ enum SchemaIndexStatus {
 
 /// Schema indexing job (for SQL database tools)
 model SchemaIndexJob {
-  id           String            @id @default(uuid())
-  toolConfigId String            @map("tool_config_id")
+  id           String @id @default(uuid())
+  toolConfigId String @map("tool_config_id")
 
-  status       SchemaIndexStatus @default(pending)
-  indexName    String            @map("index_name")
+  status    SchemaIndexStatus @default(pending)
+  indexName String            @map("index_name")
 
   // Progress tracking
-  totalTables      Int      @default(0) @map("total_tables")
-  processedTables  Int      @default(0) @map("processed_tables")
-  totalChunks      Int      @default(0) @map("total_chunks")
-  processedChunks  Int      @default(0) @map("processed_chunks")
-  errorMessage     String?  @map("error_message")
+  totalTables     Int     @default(0) @map("total_tables")
+  processedTables Int     @default(0) @map("processed_tables")
+  totalChunks     Int     @default(0) @map("total_chunks")
+  processedChunks Int     @default(0) @map("processed_chunks")
+  errorMessage    String? @map("error_message")
 
   // Timing
   createdAt   DateTime  @default(now()) @map("created_at")
@@ -591,17 +591,17 @@ model SchemaIndexJob {
 /// NOTE: Requires pgvector extension: CREATE EXTENSION IF NOT EXISTS vector;
 /// The embedding column uses raw SQL for vector type, managed via migration
 model SchemaEmbedding {
-  id           String   @id @default(uuid())
-  indexName    String   @map("index_name")    // References tool config id or name
-  tableName    String   @map("table_name")    // Full table name (schema.table)
-  tableSchema  String   @map("table_schema")  // Database schema (e.g., 'public', 'dbo')
-  content      String   // The formatted schema text (table + columns + constraints)
+  id          String @id @default(uuid())
+  indexName   String @map("index_name") // References tool config id or name
+  tableName   String @map("table_name") // Full table name (schema.table)
+  tableSchema String @map("table_schema") // Database schema (e.g., 'public', 'dbo')
+  content     String // The formatted schema text (table + columns + constraints)
   // embedding field is added via raw SQL migration (vector type)
 
   // Metadata for search context
-  metadata     Json     @default("{}")  // Additional context (column count, relations, etc.)
+  metadata Json @default("{}") // Additional context (column count, relations, etc.)
 
-  createdAt    DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([indexName, tableName])
   @@index([indexName])
@@ -623,21 +623,21 @@ enum PdmIndexStatus {
 
 /// SolidWorks PDM indexing job
 model PdmIndexJob {
-  id           String         @id @default(uuid())
-  toolConfigId String         @map("tool_config_id")
+  id           String @id @default(uuid())
+  toolConfigId String @map("tool_config_id")
 
-  status       PdmIndexStatus @default(pending)
-  indexName    String         @map("index_name")
-  currentStep  String?        @map("current_step")  // Current processing step for UI display
+  status      PdmIndexStatus @default(pending)
+  indexName   String         @map("index_name")
+  currentStep String?        @map("current_step") // Current processing step for UI display
 
   // Progress tracking
-  totalDocuments     Int      @default(0) @map("total_documents")
-  processedDocuments Int      @default(0) @map("processed_documents")
-  skippedDocuments   Int      @default(0) @map("skipped_documents")  // Unchanged documents
-  extractedDocuments Int      @default(0) @map("extracted_documents")  // Documents extracted from PDM
-  totalChunks        Int      @default(0) @map("total_chunks")
-  processedChunks    Int      @default(0) @map("processed_chunks")
-  errorMessage       String?  @map("error_message")
+  totalDocuments     Int     @default(0) @map("total_documents")
+  processedDocuments Int     @default(0) @map("processed_documents")
+  skippedDocuments   Int     @default(0) @map("skipped_documents") // Unchanged documents
+  extractedDocuments Int     @default(0) @map("extracted_documents") // Documents extracted from PDM
+  totalChunks        Int     @default(0) @map("total_chunks")
+  processedChunks    Int     @default(0) @map("processed_chunks")
+  errorMessage       String? @map("error_message")
 
   // Timing
   createdAt   DateTime  @default(now()) @map("created_at")
@@ -651,10 +651,10 @@ model PdmIndexJob {
 model PdmDocumentMetadata {
   id           String   @id @default(uuid())
   indexName    String   @map("index_name")
-  documentId   Int      @map("document_id")     // PDM DocumentID from SQL Server
+  documentId   Int      @map("document_id") // PDM DocumentID from SQL Server
   filename     String
   revisionNo   Int      @map("revision_no")
-  metadataHash String   @map("metadata_hash")   // Hash of all variables for change detection
+  metadataHash String   @map("metadata_hash") // Hash of all variables for change detection
   lastIndexed  DateTime @default(now()) @map("last_indexed")
 
   @@unique([indexName, documentId])
@@ -666,21 +666,21 @@ model PdmDocumentMetadata {
 /// NOTE: Requires pgvector extension: CREATE EXTENSION IF NOT EXISTS vector;
 /// The embedding column uses raw SQL for vector type, managed via migration
 model PdmEmbedding {
-  id           String   @id @default(uuid())
-  indexName    String   @map("index_name")
-  documentId   Int      @map("document_id")
-  documentType String   @map("document_type")   // SLDPRT, SLDASM, SLDDRW, etc.
-  content      String   // The structured text content
+  id           String @id @default(uuid())
+  indexName    String @map("index_name")
+  documentId   Int    @map("document_id")
+  documentType String @map("document_type") // SLDPRT, SLDASM, SLDDRW, etc.
+  content      String // The structured text content
   // embedding field is added via raw SQL migration (vector type)
 
   // Searchable metadata (duplicated for filtering)
-  partNumber   String?  @map("part_number")
-  filename     String
-  folderPath   String?  @map("folder_path")
+  partNumber String? @map("part_number")
+  filename   String
+  folderPath String? @map("folder_path")
 
-  metadata     Json     @default("{}")  // Full variable data as JSON
+  metadata Json @default("{}") // Full variable data as JSON
 
-  createdAt    DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([indexName, documentId])
   @@index([indexName])
@@ -737,56 +737,57 @@ enum WorkspaceScmRemoteRole {
 
 /// Policy for automatic snapshot pushes to the connected Git remote.
 enum WorkspaceScmAutoSyncPolicy {
-  manual     // Never auto-push; user must push explicitly
-  auto_push  // Auto-push each snapshot to remote
+  manual // Never auto-push; user must push explicitly
+  auto_push // Auto-push each snapshot to remote
 
   @@map("workspace_scm_auto_sync_policy")
 }
 
 /// User account (synced from LDAP or local admin)
 model User {
-  id            String       @id @default(uuid())
-  username      String       @unique // For LDAP: samAccountName/uid, for local: prefixed with "local:"
-  authProvider  AuthProvider @default(ldap) @map("auth_provider")
-  ldapDn        String?      @map("ldap_dn") // LDAP distinguished name (null for local users)
-  email         String?
-  displayName   String?      @map("display_name")
-  role          UserRole     @default(user)
-  lastLoginAt   DateTime?    @map("last_login_at")
+  id              String       @id @default(uuid())
+  username        String       @unique // For LDAP: samAccountName/uid, for local: prefixed with "local:"
+  authProvider    AuthProvider @default(ldap) @map("auth_provider")
+  ldapDn          String?      @map("ldap_dn") // LDAP distinguished name (null for local users)
+  email           String?
+  displayName     String?      @map("display_name")
+  role            UserRole     @default(user)
+  roleManuallySet Boolean      @default(false) @map("role_manually_set") // True when admin manually changed role; cleared on LDAP login
+  lastLoginAt     DateTime?    @map("last_login_at")
 
-  createdAt     DateTime     @default(now()) @map("created_at")
-  updatedAt     DateTime     @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   // Relations
-  sessions      Session[]
-  conversations Conversation[]
-  ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
-  workspaceMemberships WorkspaceMember[]
-  conversationMembers ConversationMember[]
-  providerPromptDebugRecords ProviderPromptDebugRecord[]
-  runtimeLeases UserSpaceRuntimeSession[] @relation("RuntimeLeaseUser")
-  runtimeAuditEvents UserSpaceRuntimeAuditEvent[] @relation("RuntimeAuditUser")
+  sessions                             Session[]
+  conversations                        Conversation[]
+  ownedWorkspaces                      Workspace[]                           @relation("WorkspaceOwner")
+  workspaceMemberships                 WorkspaceMember[]
+  conversationMembers                  ConversationMember[]
+  providerPromptDebugRecords           ProviderPromptDebugRecord[]
+  runtimeLeases                        UserSpaceRuntimeSession[]             @relation("RuntimeLeaseUser")
+  runtimeAuditEvents                   UserSpaceRuntimeAuditEvent[]          @relation("RuntimeAuditUser")
   userspaceChangedFileAcknowledgements UserSpaceChangedFileAcknowledgement[]
-  conversationBranches ConversationBranch[]
-  usageAttempts UserUsageAttempt[]
-  mcpRequestLogs McpRequestLog[]
-  apiRequestLogs ApiRequestLog[]
+  conversationBranches                 ConversationBranch[]
+  usageAttempts                        UserUsageAttempt[]
+  mcpRequestLogs                       McpRequestLog[]
+  apiRequestLogs                       ApiRequestLog[]
 
   @@map("users")
 }
 
 /// User session with JWT token
 model Session {
-  id          String   @id @default(uuid())
-  userId      String   @map("user_id")
-  tokenHash   String   @map("token_hash") // Hash of JWT for validation
-  expiresAt   DateTime @map("expires_at")
-  userAgent   String?  @map("user_agent")
-  ipAddress   String?  @map("ip_address")
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  tokenHash String   @map("token_hash") // Hash of JWT for validation
+  expiresAt DateTime @map("expires_at")
+  userAgent String?  @map("user_agent")
+  ipAddress String?  @map("ip_address")
 
-  createdAt   DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([userId, expiresAt])
@@ -796,28 +797,28 @@ model Session {
 
 /// LDAP configuration (stored in database for UI management)
 model LdapConfig {
-  id              String   @id @default("default")
+  id String @id @default("default")
 
   // Connection
-  serverUrl       String   @default("") @map("server_url") // ldap://host:389 or ldaps://host:636
-  bindDn          String   @default("") @map("bind_dn") // Service account DN or samAccountName
-  bindPassword    String   @default("") @map("bind_password") // Encrypted
-  allowSelfSigned Boolean  @default(false) @map("allow_self_signed") // Skip SSL cert validation
+  serverUrl       String  @default("") @map("server_url") // ldap://host:389 or ldaps://host:636
+  bindDn          String  @default("") @map("bind_dn") // Service account DN or samAccountName
+  bindPassword    String  @default("") @map("bind_password") // Encrypted
+  allowSelfSigned Boolean @default(false) @map("allow_self_signed") // Skip SSL cert validation
 
   // Search configuration (auto-discovered or manually set)
-  baseDn          String   @default("") @map("base_dn") // e.g., dc=example,dc=com
-  userSearchBase  String   @default("") @map("user_search_base") // e.g., ou=Users,dc=example,dc=com
-  userSearchFilter String  @default("(uid={username})") @map("user_search_filter")
+  baseDn           String @default("") @map("base_dn") // e.g., dc=example,dc=com
+  userSearchBase   String @default("") @map("user_search_base") // e.g., ou=Users,dc=example,dc=com
+  userSearchFilter String @default("(uid={username})") @map("user_search_filter")
 
   // Group-based ACL
-  adminGroupDn    String   @default("") @map("admin_group_dn") // Members get admin role
-  userGroupDn     String   @default("") @map("user_group_dn") // Members get user role (optional, all auth'd users if empty)
+  adminGroupDn String @default("") @map("admin_group_dn") // Members get admin role
+  userGroupDn  String @default("") @map("user_group_dn") // Members get user role (optional, all auth'd users if empty)
 
   // Discovery cache (JSON array of discovered OUs/groups)
-  discoveredOus   Json     @default("[]") @map("discovered_ous")
-  discoveredGroups Json    @default("[]") @map("discovered_groups")
+  discoveredOus    Json @default("[]") @map("discovered_ous")
+  discoveredGroups Json @default("[]") @map("discovered_groups")
 
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@map("ldap_config")
 }
@@ -839,31 +840,31 @@ enum ChatTaskStatus {
 /// Tool output mode for conversations
 enum ConversationToolOutputMode {
   default // Use global setting
-  show    // Always show tool output
-  hide    // Always hide tool output
-  auto    // Let AI decide based on relevance
+  show // Always show tool output
+  hide // Always hide tool output
+  auto // Let AI decide based on relevance
 }
 
 /// A chat conversation with the RAG assistant
 model Conversation {
-  id        String    @id @default(uuid())
-  title     String    @default("Untitled Chat") // Auto-generated from first message or user-set
-  model     String    @default("gpt-4-turbo") // Model used for this conversation
+  id    String @id @default(uuid())
+  title String @default("Untitled Chat") // Auto-generated from first message or user-set
+  model String @default("gpt-4-turbo") // Model used for this conversation
 
   // Owner - null for legacy conversations before auth was added
-  userId    String?   @map("user_id")
-  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId String? @map("user_id")
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   // Optional User Space workspace scoping
-  workspaceId String? @map("workspace_id")
+  workspaceId String?    @map("workspace_id")
   workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   // Messages stored as JSON array
   // Each message: { role: 'user' | 'assistant' | 'system', content: string, timestamp: string }
-  messages  Json      @default("[]")
+  messages Json @default("[]")
 
   // Token tracking for context management
-  totalTokens Int     @default(0) @map("total_tokens")
+  totalTokens Int @default(0) @map("total_tokens")
 
   // Tool output mode for this conversation
   toolOutputMode ConversationToolOutputMode @default(default) @map("tool_output_mode")
@@ -875,20 +876,20 @@ model Conversation {
   activeBranchId String? @map("active_branch_id")
 
   // Timestamps
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   // Relation to background tasks
-  tasks     ChatTask[]
+  tasks                      ChatTask[]
   providerPromptDebugRecords ProviderPromptDebugRecord[]
 
   // Relation to conversation members and tool selections
-  members         ConversationMember[]
-  toolSelections  ConversationToolSelection[]
+  members             ConversationMember[]
+  toolSelections      ConversationToolSelection[]
   toolGroupSelections ConversationToolGroupSelection[]
 
   // Chat branches
-  branches  ConversationBranch[]
+  branches ConversationBranch[]
 
   @@index([userId])
   @@index([activeTaskId])
@@ -900,20 +901,20 @@ model Conversation {
 /// A branch of a chat conversation, created when a user edits and resends a message.
 /// Preserves the original messages from the branch point onward so they can be restored.
 model ConversationBranch {
-  id             String   @id @default(uuid())
+  id String @id @default(uuid())
 
   // Parent conversation
-  conversationId String   @map("conversation_id")
+  conversationId String       @map("conversation_id")
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   // Branch lineage
-  parentBranchId String?  @map("parent_branch_id")
+  parentBranchId String? @map("parent_branch_id")
 
   // Branch point: the message index where the edit occurred (0-based)
-  branchPointIndex Int    @map("branch_point_index")
+  branchPointIndex Int @map("branch_point_index")
 
   // Preserved messages: the original messages from branch_point_index onward (JSON array)
-  preservedMessages Json  @default("[]") @map("preserved_messages")
+  preservedMessages Json @default("[]") @map("preserved_messages")
 
   // Associated UserSpace snapshot (taken before the branch was created)
   associatedSnapshotId String? @map("associated_snapshot_id")
@@ -933,75 +934,75 @@ model ConversationBranch {
 
 /// User Space workspace metadata and ACL source-of-truth
 model Workspace {
-  id          String   @id
-  name        String
-  nameNormalized String? @map("name_normalized")
-  description String?  @default("")
-  sqlitePersistenceMode SqlitePersistenceMode @default(exclude) @map("sqlite_persistence_mode")
-  shareToken  String?  @unique @map("share_token")
-  shareTokenCreatedAt DateTime? @map("share_token_created_at")
-  shareSlug   String?  @map("share_slug")
-  shareAccessMode String @default("token") @map("share_access_mode")
-  sharePassword String? @map("share_password")
-  shareSelectedUserIds Json @default("[]") @map("share_selected_user_ids")
-  shareSelectedLdapGroups Json @default("[]") @map("share_selected_ldap_groups")
-  currentSnapshotId String? @map("current_snapshot_id")
-  currentSnapshotBranchId String? @map("current_snapshot_branch_id")
-  scmGitUrl   String?  @map("scm_git_url")
-  scmGitBranch String? @map("scm_git_branch")
-  scmProvider String?  @map("scm_provider")
-  scmRepoVisibility String? @map("scm_repo_visibility")
-  scmToken    String?  @map("scm_token")
-  scmConnectedAt DateTime? @map("scm_connected_at")
-  scmLastSyncAt DateTime? @map("scm_last_sync_at")
-  scmLastSyncDirection String? @map("scm_last_sync_direction")
-  scmLastSyncStatus String? @map("scm_last_sync_status")
-  scmLastSyncMessage String? @map("scm_last_sync_message")
-  scmLastRemoteCommitHash String? @map("scm_last_remote_commit_hash")
-  scmLastSyncedSnapshotId String? @map("scm_last_synced_snapshot_id")
-  scmRemoteRole WorkspaceScmRemoteRole? @map("scm_remote_role")
-  scmAutoSyncPolicy WorkspaceScmAutoSyncPolicy? @map("scm_auto_sync_policy")
-  scmSyncPaused Boolean @default(false) @map("scm_sync_paused")
-  scmSyncPausedReason String? @map("scm_sync_paused_reason")
+  id                      String                      @id
+  name                    String
+  nameNormalized          String?                     @map("name_normalized")
+  description             String?                     @default("")
+  sqlitePersistenceMode   SqlitePersistenceMode       @default(include) @map("sqlite_persistence_mode")
+  shareToken              String?                     @unique @map("share_token")
+  shareTokenCreatedAt     DateTime?                   @map("share_token_created_at")
+  shareSlug               String?                     @map("share_slug")
+  shareAccessMode         String                      @default("token") @map("share_access_mode")
+  sharePassword           String?                     @map("share_password")
+  shareSelectedUserIds    Json                        @default("[]") @map("share_selected_user_ids")
+  shareSelectedLdapGroups Json                        @default("[]") @map("share_selected_ldap_groups")
+  currentSnapshotId       String?                     @map("current_snapshot_id")
+  currentSnapshotBranchId String?                     @map("current_snapshot_branch_id")
+  scmGitUrl               String?                     @map("scm_git_url")
+  scmGitBranch            String?                     @map("scm_git_branch")
+  scmProvider             String?                     @map("scm_provider")
+  scmRepoVisibility       String?                     @map("scm_repo_visibility")
+  scmToken                String?                     @map("scm_token")
+  scmConnectedAt          DateTime?                   @map("scm_connected_at")
+  scmLastSyncAt           DateTime?                   @map("scm_last_sync_at")
+  scmLastSyncDirection    String?                     @map("scm_last_sync_direction")
+  scmLastSyncStatus       String?                     @map("scm_last_sync_status")
+  scmLastSyncMessage      String?                     @map("scm_last_sync_message")
+  scmLastRemoteCommitHash String?                     @map("scm_last_remote_commit_hash")
+  scmLastSyncedSnapshotId String?                     @map("scm_last_synced_snapshot_id")
+  scmRemoteRole           WorkspaceScmRemoteRole?     @map("scm_remote_role")
+  scmAutoSyncPolicy       WorkspaceScmAutoSyncPolicy? @map("scm_auto_sync_policy")
+  scmSyncPaused           Boolean                     @default(false) @map("scm_sync_paused")
+  scmSyncPausedReason     String?                     @map("scm_sync_paused_reason")
 
-  ownerUserId String   @map("owner_user_id")
-  owner       User     @relation("WorkspaceOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  ownerUserId String @map("owner_user_id")
+  owner       User   @relation("WorkspaceOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
 
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
-  members         WorkspaceMember[]
-  toolSelections  WorkspaceToolSelection[]
-  toolGroupSelections WorkspaceToolGroupSelection[]
-  conversations   Conversation[]
-  runtimeSessions UserSpaceRuntimeSession[]
-  runtimeAuditEvents UserSpaceRuntimeAuditEvent[]
-  environmentVariables WorkspaceEnvironmentVariable[]
-  mounts          WorkspaceMount[]
-  collabDocs UserSpaceCollabDoc[]
+  members                     WorkspaceMember[]
+  toolSelections              WorkspaceToolSelection[]
+  toolGroupSelections         WorkspaceToolGroupSelection[]
+  conversations               Conversation[]
+  runtimeSessions             UserSpaceRuntimeSession[]
+  runtimeAuditEvents          UserSpaceRuntimeAuditEvent[]
+  environmentVariables        WorkspaceEnvironmentVariable[]
+  mounts                      WorkspaceMount[]
+  collabDocs                  UserSpaceCollabDoc[]
   changedFileAcknowledgements UserSpaceChangedFileAcknowledgement[]
-  snapshotBranches UserSpaceSnapshotBranch[]
-  snapshots UserSpaceSnapshot[]
+  snapshotBranches            UserSpaceSnapshotBranch[]
+  snapshots                   UserSpaceSnapshot[]
 
-  @@index([ownerUserId])
   @@unique([ownerUserId, nameNormalized])
   @@unique([ownerUserId, shareSlug])
+  @@index([ownerUserId])
   @@index([updatedAt])
   @@map("workspaces")
 }
 
 /// Workspace-scoped environment variables (value encrypted at rest).
 model WorkspaceEnvironmentVariable {
-  id          String   @id @default(uuid())
-  workspaceId String   @map("workspace_id")
+  id          String  @id @default(uuid())
+  workspaceId String  @map("workspace_id")
   key         String
   value       String
-  description String?  @default("")
+  description String? @default("")
 
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@unique([workspaceId, key])
   @@index([workspaceId, updatedAt])
@@ -1010,19 +1011,19 @@ model WorkspaceEnvironmentVariable {
 
 /// Admin-managed reusable userspace mount source definitions.
 model UserspaceMountSource {
-  id           String   @id @default(uuid())
-  name         String
-  description  String?  @default("")
-  enabled      Boolean  @default(true)
-  sourceType   UserspaceMountSourceType @map("source_type")
-  toolConfigId String?  @map("tool_config_id")
-  toolConfig   ToolConfig? @relation(fields: [toolConfigId], references: [id], onDelete: Restrict)
-  connectionConfig Json @map("connection_config")
-  approvedPaths Json    @default("[]") @map("approved_paths")
-  syncIntervalSeconds Int? @default(30) @map("sync_interval_seconds")
+  id                  String                   @id @default(uuid())
+  name                String
+  description         String?                  @default("")
+  enabled             Boolean                  @default(true)
+  sourceType          UserspaceMountSourceType @map("source_type")
+  toolConfigId        String?                  @map("tool_config_id")
+  toolConfig          ToolConfig?              @relation(fields: [toolConfigId], references: [id], onDelete: Restrict)
+  connectionConfig    Json                     @map("connection_config")
+  approvedPaths       Json                     @default("[]") @map("approved_paths")
+  syncIntervalSeconds Int?                     @default(30) @map("sync_interval_seconds")
 
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   workspaceMounts WorkspaceMount[]
 
@@ -1034,28 +1035,28 @@ model UserspaceMountSource {
 /// Workspace-scoped mount attachment linking an admin-managed approved source path
 /// to a user-chosen target path inside the runtime sandbox.
 model WorkspaceMount {
-  id           String   @id @default(uuid())
-  workspaceId  String   @map("workspace_id")
-  mountSourceId String  @map("mount_source_id")
-  sourcePath   String   @map("source_path")  // Admin-approved relative source path
-  targetPath   String   @map("target_path")  // User-chosen sandbox target path
-  description  String?  @map("description")
-  enabled      Boolean  @default(true) @map("enabled")
-  autoSyncEnabled Boolean @default(false) @map("auto_sync_enabled")
-  syncMode     WorkspaceMountSyncMode @default(merge) @map("sync_mode")
-  destructiveAutoSyncConfirmedAt DateTime? @map("destructive_auto_sync_confirmed_at")
+  id                               String                  @id @default(uuid())
+  workspaceId                      String                  @map("workspace_id")
+  mountSourceId                    String                  @map("mount_source_id")
+  sourcePath                       String                  @map("source_path") // Admin-approved relative source path
+  targetPath                       String                  @map("target_path") // User-chosen sandbox target path
+  description                      String?                 @map("description")
+  enabled                          Boolean                 @default(true) @map("enabled")
+  autoSyncEnabled                  Boolean                 @default(false) @map("auto_sync_enabled")
+  syncMode                         WorkspaceMountSyncMode  @default(merge) @map("sync_mode")
+  destructiveAutoSyncConfirmedAt   DateTime?               @map("destructive_auto_sync_confirmed_at")
   destructiveAutoSyncConfirmedMode WorkspaceMountSyncMode? @map("destructive_auto_sync_confirmed_mode")
-  syncStatus   String   @default("pending") @map("sync_status") // pending | synced | error
-  syncBackend  String?  @map("sync_backend") // rsync | paramiko
-  syncNotice   String?  @map("sync_notice")
-  lastSyncAt   DateTime? @map("last_sync_at")
-  lastSyncError String?  @map("last_sync_error")
+  syncStatus                       String                  @default("pending") @map("sync_status") // pending | synced | error
+  syncBackend                      String?                 @map("sync_backend") // rsync | paramiko
+  syncNotice                       String?                 @map("sync_notice")
+  lastSyncAt                       DateTime?               @map("last_sync_at")
+  lastSyncError                    String?                 @map("last_sync_error")
 
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
-  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  mountSource  UserspaceMountSource @relation(fields: [mountSourceId], references: [id])
+  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  mountSource UserspaceMountSource @relation(fields: [mountSourceId], references: [id])
 
   @@unique([workspaceId, targetPath])
   @@index([workspaceId])
@@ -1064,18 +1065,18 @@ model WorkspaceMount {
 }
 
 model UserSpaceSnapshotBranch {
-  id                     String   @id @default(uuid())
-  workspaceId            String   @map("workspace_id")
+  id                     String    @id @default(uuid())
+  workspaceId            String    @map("workspace_id")
   name                   String
-  gitRefName             String   @map("git_ref_name")
-  baseSnapshotId         String?  @map("base_snapshot_id")
-  branchedFromSnapshotId String?  @map("branched_from_snapshot_id")
-  isActive               Boolean  @default(false) @map("is_active")
+  gitRefName             String    @map("git_ref_name")
+  baseSnapshotId         String?   @map("base_snapshot_id")
+  branchedFromSnapshotId String?   @map("branched_from_snapshot_id")
+  isActive               Boolean   @default(false) @map("is_active")
   archivedAt             DateTime? @map("archived_at")
-  createdAt              DateTime @default(now()) @map("created_at")
-  updatedAt              DateTime @default(now()) @updatedAt @map("updated_at")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   snapshots UserSpaceSnapshot[]
 
   @@unique([workspaceId, gitRefName])
@@ -1084,20 +1085,20 @@ model UserSpaceSnapshotBranch {
 }
 
 model UserSpaceSnapshot {
-  id              String   @id @default(uuid())
-  workspaceId     String   @map("workspace_id")
-  branchId        String   @map("branch_id")
-  gitCommitHash   String   @map("git_commit_hash")
-  remoteCommitHash String? @map("remote_commit_hash") // Commit hash on remote when snapshot was created/synced; makes snapshot remote-backed when set
-  message         String?  @map("message")
-  fileCount       Int      @default(0) @map("file_count")
-  parentSnapshotId String? @map("parent_snapshot_id")
-  createdByUserId String?  @map("created_by_user_id")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+  id               String   @id @default(uuid())
+  workspaceId      String   @map("workspace_id")
+  branchId         String   @map("branch_id")
+  gitCommitHash    String   @map("git_commit_hash")
+  remoteCommitHash String?  @map("remote_commit_hash") // Commit hash on remote when snapshot was created/synced; makes snapshot remote-backed when set
+  message          String?  @map("message")
+  fileCount        Int      @default(0) @map("file_count")
+  parentSnapshotId String?  @map("parent_snapshot_id")
+  createdByUserId  String?  @map("created_by_user_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  branch UserSpaceSnapshotBranch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  workspace Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  branch    UserSpaceSnapshotBranch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   @@unique([workspaceId, branchId, gitCommitHash])
   @@index([workspaceId, createdAt])
@@ -1108,16 +1109,16 @@ model UserSpaceSnapshot {
 /// Per-user acknowledgement of a changedFile userspace file path.
 /// changedFile truth comes from git status; acknowledgements suppress UI dots for a user.
 model UserSpaceChangedFileAcknowledgement {
-  id          String   @id @default(uuid())
-  workspaceId String   @map("workspace_id")
-  userId      String   @map("user_id")
+  id          String @id @default(uuid())
+  workspaceId String @map("workspace_id")
+  userId      String @map("user_id")
   path        String
 
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([workspaceId, userId, path])
   @@index([workspaceId, userId])
@@ -1132,11 +1133,11 @@ model WorkspaceMember {
   userId      String        @map("user_id")
   role        WorkspaceRole
 
-  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  createdAt   DateTime      @default(now()) @map("created_at")
-  updatedAt   DateTime      @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@unique([workspaceId, userId])
   @@index([userId])
@@ -1145,14 +1146,14 @@ model WorkspaceMember {
 
 /// Workspace-selected tool configs (many-to-many)
 model WorkspaceToolSelection {
-  id           String     @id @default(uuid())
-  workspaceId  String     @map("workspace_id")
-  toolConfigId String     @map("tool_config_id")
+  id           String @id @default(uuid())
+  workspaceId  String @map("workspace_id")
+  toolConfigId String @map("tool_config_id")
 
-  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  toolConfig   ToolConfig @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+  workspace  Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  toolConfig ToolConfig @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
 
-  createdAt    DateTime   @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([workspaceId, toolConfigId])
   @@index([workspaceId])
@@ -1162,14 +1163,14 @@ model WorkspaceToolSelection {
 
 /// Workspace-selected tool groups (many-to-many)
 model WorkspaceToolGroupSelection {
-  id          String    @id @default(uuid())
-  workspaceId String    @map("workspace_id")
-  toolGroupId String    @map("tool_group_id")
+  id          String @id @default(uuid())
+  workspaceId String @map("workspace_id")
+  toolGroupId String @map("tool_group_id")
 
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  toolGroup   ToolGroup @relation(fields: [toolGroupId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  toolGroup ToolGroup @relation(fields: [toolGroupId], references: [id], onDelete: Cascade)
 
-  createdAt   DateTime  @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([workspaceId, toolGroupId])
   @@index([workspaceId])
@@ -1184,26 +1185,26 @@ model ChatTask {
   status         ChatTaskStatus @default(pending)
 
   // Input message that triggered this task
-  userMessage    String         @map("user_message")
+  userMessage String @map("user_message")
 
   // Streaming state - stored as JSON
   // Contains: { content: string, events: array, toolCalls: array }
-  streamingState Json?          @map("streaming_state")
+  streamingState Json? @map("streaming_state")
 
   // Final response content (populated on completion)
-  responseContent String?       @map("response_content")
+  responseContent String? @map("response_content")
 
   // Error info if task failed
-  errorMessage   String?        @map("error_message")
+  errorMessage String? @map("error_message")
 
   // Timestamps
-  createdAt      DateTime       @default(now()) @map("created_at")
-  startedAt      DateTime?      @map("started_at")
-  completedAt    DateTime?      @map("completed_at")
-  lastUpdateAt   DateTime       @default(now()) @map("last_update_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  startedAt    DateTime? @map("started_at")
+  completedAt  DateTime? @map("completed_at")
+  lastUpdateAt DateTime  @default(now()) @map("last_update_at")
 
   // Relation to conversation
-  conversation   Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversation               Conversation                @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   providerPromptDebugRecords ProviderPromptDebugRecord[]
 
   @@map("chat_tasks")
@@ -1211,30 +1212,30 @@ model ChatTask {
 
 /// DEBUG-only capture of rendered provider prompt input payloads per API call
 model ProviderPromptDebugRecord {
-  id            String   @id @default(uuid())
+  id             String  @id @default(uuid())
   conversationId String  @map("conversation_id")
-  chatTaskId    String?  @map("chat_task_id")
-  userId        String?  @map("user_id")
-  provider      String
-  model         String
-  mode          String
-  requestKind   String   @map("request_kind")
+  chatTaskId     String? @map("chat_task_id")
+  userId         String? @map("user_id")
+  provider       String
+  model          String
+  mode           String
+  requestKind    String  @map("request_kind")
 
-  renderedSystemPrompt      String @map("rendered_system_prompt")
-  renderedUserInput         String @map("rendered_user_input")
-  renderedProviderMessages  Json   @map("rendered_provider_messages")
-  renderedChatHistory       Json   @map("rendered_chat_history")
-  toolScopePrompt           String @default("") @map("tool_scope_prompt")
-  promptAdditions           String @default("") @map("prompt_additions")
-  turnReminders             String @default("") @map("turn_reminders")
-  debugMetadata             Json?  @map("debug_metadata")
-  messageIndex              Int?   @map("message_index")
+  renderedSystemPrompt     String @map("rendered_system_prompt")
+  renderedUserInput        String @map("rendered_user_input")
+  renderedProviderMessages Json   @map("rendered_provider_messages")
+  renderedChatHistory      Json   @map("rendered_chat_history")
+  toolScopePrompt          String @default("") @map("tool_scope_prompt")
+  promptAdditions          String @default("") @map("prompt_additions")
+  turnReminders            String @default("") @map("turn_reminders")
+  debugMetadata            Json?  @map("debug_metadata")
+  messageIndex             Int?   @map("message_index")
 
-  createdAt     DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  chatTask      ChatTask?    @relation(fields: [chatTaskId], references: [id], onDelete: SetNull)
-  user          User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  chatTask     ChatTask?    @relation(fields: [chatTaskId], references: [id], onDelete: SetNull)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([conversationId, createdAt])
   @@index([chatTaskId, createdAt])
@@ -1250,11 +1251,11 @@ model ConversationMember {
   userId         String        @map("user_id")
   role           WorkspaceRole
 
-  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  createdAt      DateTime      @default(now()) @map("created_at")
-  updatedAt      DateTime      @default(now()) @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@unique([conversationId, userId])
   @@index([userId])
@@ -1263,14 +1264,14 @@ model ConversationMember {
 
 /// Conversation-selected tool configs (many-to-many)
 model ConversationToolSelection {
-  id             String       @id @default(uuid())
-  conversationId String       @map("conversation_id")
-  toolConfigId   String       @map("tool_config_id")
+  id             String @id @default(uuid())
+  conversationId String @map("conversation_id")
+  toolConfigId   String @map("tool_config_id")
 
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  toolConfig     ToolConfig   @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  toolConfig   ToolConfig   @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
 
-  createdAt      DateTime     @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([conversationId, toolConfigId])
   @@index([conversationId])
@@ -1280,14 +1281,14 @@ model ConversationToolSelection {
 
 /// Conversation-selected tool groups (many-to-many)
 model ConversationToolGroupSelection {
-  id             String       @id @default(uuid())
-  conversationId String       @map("conversation_id")
-  toolGroupId    String       @map("tool_group_id")
+  id             String @id @default(uuid())
+  conversationId String @map("conversation_id")
+  toolGroupId    String @map("tool_group_id")
 
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  toolGroup      ToolGroup    @relation(fields: [toolGroupId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  toolGroup    ToolGroup    @relation(fields: [toolGroupId], references: [id], onDelete: Cascade)
 
-  createdAt      DateTime     @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([conversationId, toolGroupId])
   @@index([conversationId])
@@ -1297,26 +1298,26 @@ model ConversationToolGroupSelection {
 
 /// Runtime session metadata for User Space execution environments
 model UserSpaceRuntimeSession {
-  id                String              @id @default(uuid())
-  workspaceId       String              @map("workspace_id")
-  leasedByUserId    String              @map("leased_by_user_id")
-  state             RuntimeSessionState @default(starting)
-  runtimeProvider   String              @default("microvm_pool_v1") @map("runtime_provider")
-  providerSessionId String?             @map("provider_session_id")
-  previewInternalUrl String?            @map("preview_internal_url")
-  launchFramework   String?             @map("launch_framework")
-  launchCommand     String?             @map("launch_command")
-  launchCwd         String?             @map("launch_cwd")
-  launchPort        Int?                @map("launch_port")
-  createdAt         DateTime            @default(now()) @map("created_at")
-  updatedAt         DateTime            @default(now()) @updatedAt @map("updated_at")
-  lastHeartbeatAt   DateTime?           @map("last_heartbeat_at")
-  idleExpiresAt     DateTime?           @map("idle_expires_at")
-  ttlExpiresAt      DateTime?           @map("ttl_expires_at")
-  lastError         String?             @map("last_error")
+  id                 String              @id @default(uuid())
+  workspaceId        String              @map("workspace_id")
+  leasedByUserId     String              @map("leased_by_user_id")
+  state              RuntimeSessionState @default(starting)
+  runtimeProvider    String              @default("microvm_pool_v1") @map("runtime_provider")
+  providerSessionId  String?             @map("provider_session_id")
+  previewInternalUrl String?             @map("preview_internal_url")
+  launchFramework    String?             @map("launch_framework")
+  launchCommand      String?             @map("launch_command")
+  launchCwd          String?             @map("launch_cwd")
+  launchPort         Int?                @map("launch_port")
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
+  lastHeartbeatAt    DateTime?           @map("last_heartbeat_at")
+  idleExpiresAt      DateTime?           @map("idle_expires_at")
+  ttlExpiresAt       DateTime?           @map("ttl_expires_at")
+  lastError          String?             @map("last_error")
 
-  workspace         Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  leasedByUser      User                @relation("RuntimeLeaseUser", fields: [leasedByUserId], references: [id], onDelete: Cascade)
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  leasedByUser User      @relation("RuntimeLeaseUser", fields: [leasedByUserId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, updatedAt])
   @@index([leasedByUserId, updatedAt])
@@ -1333,8 +1334,8 @@ model UserSpaceRuntimeAuditEvent {
   eventPayload Json     @default("{}") @map("event_payload")
   createdAt    DateTime @default(now()) @map("created_at")
 
-  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  user         User?     @relation("RuntimeAuditUser", fields: [userId], references: [id], onDelete: SetNull)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?     @relation("RuntimeAuditUser", fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, createdAt])
   @@index([userId, createdAt])
@@ -1343,15 +1344,15 @@ model UserSpaceRuntimeAuditEvent {
 
 /// Checkpointed collaborative document state by workspace file path
 model UserSpaceCollabDoc {
-  id                 String   @id @default(uuid())
-  workspaceId        String   @map("workspace_id")
-  filePath           String   @map("file_path")
-  checkpointVersion  Int      @default(0) @map("checkpoint_version")
-  docStateBase64     String?  @map("doc_state_base64")
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
+  id                String   @id @default(uuid())
+  workspaceId       String   @map("workspace_id")
+  filePath          String   @map("file_path")
+  checkpointVersion Int      @default(0) @map("checkpoint_version")
+  docStateBase64    String?  @map("doc_state_base64")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
 
-  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@unique([workspaceId, filePath])
   @@index([workspaceId, updatedAt])
@@ -1375,33 +1376,33 @@ enum UsageAttemptStatus {
 
 /// Per-request usage accounting for billing/admin dashboards
 model UserUsageAttempt {
-  id               String              @id @default(uuid())
-  userId           String              @map("user_id")
-  conversationId   String?             @map("conversation_id")
-  chatTaskId       String?             @map("chat_task_id")
+  id             String  @id @default(uuid())
+  userId         String  @map("user_id")
+  conversationId String? @map("conversation_id")
+  chatTaskId     String? @map("chat_task_id")
 
   // Request metadata
-  requestSource    String              @map("request_source")  // "ui", "api", "mcp"
-  provider         String              @default("")            // "openai", "anthropic", etc.
-  model            String              @default("")            // Model name used
+  requestSource String @map("request_source") // "ui", "api", "mcp"
+  provider      String @default("") // "openai", "anthropic", etc.
+  model         String @default("") // Model name used
 
   // Counts
-  requestCount     Int                 @default(1) @map("request_count")
-  inputTokens      Int                 @default(0) @map("input_tokens")
-  outputTokens     Int                 @default(0) @map("output_tokens")
-  totalTokens      Int                 @default(0) @map("total_tokens")
-  tokensEstimated  Boolean             @default(true) @map("tokens_estimated")
+  requestCount    Int     @default(1) @map("request_count")
+  inputTokens     Int     @default(0) @map("input_tokens")
+  outputTokens    Int     @default(0) @map("output_tokens")
+  totalTokens     Int     @default(0) @map("total_tokens")
+  tokensEstimated Boolean @default(true) @map("tokens_estimated")
 
   // Status
-  status           UsageAttemptStatus  @default(started)
-  failureReason    String?             @map("failure_reason")
+  status        UsageAttemptStatus @default(started)
+  failureReason String?            @map("failure_reason")
 
   // Timestamps
-  startedAt        DateTime            @default(now()) @map("started_at")
-  finalizedAt      DateTime?           @map("finalized_at")
+  startedAt   DateTime  @default(now()) @map("started_at")
+  finalizedAt DateTime? @map("finalized_at")
 
   // Relations
-  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, startedAt])
   @@index([status, startedAt])
@@ -1417,16 +1418,16 @@ model UserUsageAttempt {
 
 /// Log of MCP HTTP requests for usage analytics
 model McpRequestLog {
-  id          String   @id @default(uuid())
-  userId      String?  @map("user_id")
-  username    String?
-  routeName   String   @default("default") @map("route_name")
-  authMethod  String   @default("none") @map("auth_method")  // "bearer", "oauth2", "password", "none"
-  httpMethod  String   @map("http_method")                    // "GET", "POST", "DELETE"
-  statusCode  Int      @default(200) @map("status_code")
-  createdAt   DateTime @default(now()) @map("created_at")
+  id         String   @id @default(uuid())
+  userId     String?  @map("user_id")
+  username   String?
+  routeName  String   @default("default") @map("route_name")
+  authMethod String   @default("none") @map("auth_method") // "bearer", "oauth2", "password", "none"
+  httpMethod String   @map("http_method") // "GET", "POST", "DELETE"
+  statusCode Int      @default(200) @map("status_code")
+  createdAt  DateTime @default(now()) @map("created_at")
 
-  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt])
   @@index([routeName, createdAt])
@@ -1440,17 +1441,17 @@ model McpRequestLog {
 
 /// Log of OpenAI-compatible API requests for usage analytics
 model ApiRequestLog {
-  id          String   @id @default(uuid())
-  userId      String?  @map("user_id")
-  provider    String   @default("")           // resolved provider
-  model       String   @default("")           // resolved model
-  endpoint    String                           // "/v1/chat/completions", "/v1/models"
-  httpMethod  String   @map("http_method")    // "GET", "POST"
-  statusCode  Int      @default(200) @map("status_code")
-  streaming   Boolean  @default(false)
-  createdAt   DateTime @default(now()) @map("created_at")
+  id         String   @id @default(uuid())
+  userId     String?  @map("user_id")
+  provider   String   @default("") // resolved provider
+  model      String   @default("") // resolved model
+  endpoint   String // "/v1/chat/completions", "/v1/models"
+  httpMethod String   @map("http_method") // "GET", "POST"
+  statusCode Int      @default(200) @map("status_code")
+  streaming  Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at")
 
-  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt])
   @@index([endpoint, createdAt])

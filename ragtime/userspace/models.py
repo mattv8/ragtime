@@ -96,7 +96,7 @@ class UserSpaceWorkspace(BaseModel):
     id: str
     name: str
     description: str | None = None
-    sqlite_persistence_mode: SqlitePersistenceMode = "exclude"
+    sqlite_persistence_mode: SqlitePersistenceMode = "include"
     owner_user_id: str
     owner_username: str | None = None
     owner_display_name: str | None = None
@@ -132,7 +132,7 @@ class UserSpaceWorkspaceCreateTask(BaseModel):
 class CreateWorkspaceRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
-    sqlite_persistence_mode: SqlitePersistenceMode = "exclude"
+    sqlite_persistence_mode: SqlitePersistenceMode = "include"
     selected_tool_ids: list[str] | None = Field(
         default=None,
         description=(

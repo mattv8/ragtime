@@ -43,6 +43,7 @@ from ragtime.core.auth import (
     get_ldap_config,
     invalidate_session,
     lookup_bind_dn,
+    resolve_ldap_role_for_user_dn,
 )
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
@@ -192,6 +193,7 @@ class UserResponse(BaseModel):
     email: Optional[str]
     role: str
     auth_provider: str
+    role_manually_set: bool = False
 
 
 class UserListResponse(BaseModel):
@@ -210,6 +212,14 @@ class UpdateUserRoleRequest(BaseModel):
         ...,
         description="New role value ('user' or 'admin').",
     )
+
+
+class ResetUserRoleResponse(BaseModel):
+    """Reset role override response payload."""
+
+    success: bool
+    role: Literal["user", "admin"]
+    role_manually_set: bool
 
 
 class LdapConfigRequest(BaseModel):
@@ -897,6 +907,7 @@ async def get_current_user_info(user: User = Depends(get_current_user)):
         email=user.email,
         role=user.role,
         auth_provider=user.authProvider,
+        role_manually_set=user.roleManuallySet,
     )
 
 
@@ -1193,6 +1204,7 @@ async def list_users(
                 email=u.email,
                 role=u.role,
                 auth_provider=u.authProvider,
+                role_manually_set=u.roleManuallySet,
             )
             for u in users
         ],
@@ -1249,7 +1261,7 @@ async def update_user_role(
     db = await get_db()
     user = await db.user.update(
         where={"id": user_id},
-        data={"role": role_enum},
+        data={"role": role_enum, "roleManuallySet": True},
     )
 
     if not user:
@@ -1262,6 +1274,68 @@ async def update_user_role(
     )
 
     return {"success": True, "role": resolved_role}
+
+
+@router.post("/users/{user_id}/role/reset", response_model=ResetUserRoleResponse)
+async def reset_user_role_override(
+    user_id: str,
+    current_user: User = Depends(require_admin),
+):
+    """Reset manual role override and re-apply LDAP-derived role (admin only)."""
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot reset your own role override",
+        )
+
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": user_id})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if str(user.authProvider) != "ldap":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Role reset is only supported for LDAP users",
+        )
+
+    if not user.ldapDn:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="LDAP DN is missing for this user",
+        )
+
+    resolved_role, error = await resolve_ldap_role_for_user_dn(
+        user.ldapDn,
+        ldap_username_hint=user.username,
+    )
+    if error or resolved_role is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error or "Failed to resolve LDAP role",
+        )
+
+    updated_user = await db.user.update(
+        where={"id": user_id},
+        data={"role": resolved_role, "roleManuallySet": False},
+    )
+
+    role_value: Literal["user", "admin"] = (
+        "admin" if updated_user.role == UserRole.admin else "user"
+    )
+
+    logger.info(
+        f"User '{updated_user.username}' role override reset by admin '{current_user.username}'"
+    )
+
+    return ResetUserRoleResponse(
+        success=True,
+        role=role_value,
+        role_manually_set=False,
+    )
 
 
 # =============================================================================

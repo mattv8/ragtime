@@ -19,8 +19,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import Request
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from ldap3 import ALL, AUTO_BIND_TLS_BEFORE_BIND, SUBTREE, Connection, Server, Tls
 from ldap3 import AUTO_BIND_NO_TLS  # type: ignore[import-untyped]
+from ldap3 import ALL, AUTO_BIND_TLS_BEFORE_BIND, SUBTREE, Connection, Server, Tls
 from ldap3.core.exceptions import (  # type: ignore[import-untyped]
     LDAPBindError,
     LDAPException,
@@ -754,127 +754,37 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
         user_conn.unbind()
 
         # Determine role based on group membership
-        role: UserRole = UserRole.user
-        if ldap_config.adminGroupDn:
-            member_of: list[str] = []
-            if hasattr(user_entry, "memberOf") and user_entry.memberOf:
-                member_of = [str(g) for g in user_entry.memberOf]
-
-            # Get primary group ID (AD doesn't include primary group in memberOf)
-            primary_group_id = None
-            if hasattr(user_entry, "primaryGroupID") and user_entry.primaryGroupID:
-                # Extract the value from the LDAP attribute object
-                primary_group_id = int(str(user_entry.primaryGroupID))
-
-            # Case-insensitive DN comparison helper
-            def dn_matches(dn1: str, dn2: str) -> bool:
-                """Case-insensitive DN comparison (AD DNs are case-insensitive)."""
-                return dn1.lower() == dn2.lower()
-
-            def get_group_rid(group_dn: str) -> int | None:
-                """Query a group and extract its RID from primaryGroupToken or objectSid."""
-                try:
-                    group_conn = _get_ldap_connection(
-                        ldap_config.serverUrl,
-                        ldap_config.bindDn,
-                        bind_password,
-                        ldap_config.allowSelfSigned,
-                    )
-                    if not group_conn:
-                        return None
-
-                    # Query primaryGroupToken (the RID) directly - simpler than parsing objectSid
-                    group_conn.search(
-                        search_base=group_dn,
-                        search_filter="(objectClass=*)",
-                        search_scope="BASE",
-                        attributes=["primaryGroupToken", "objectSid"],
-                    )
-
-                    if group_conn.entries:
-                        entry = group_conn.entries[0]
-
-                        # Try primaryGroupToken first (this is the RID directly)
-                        if (
-                            hasattr(entry, "primaryGroupToken")
-                            and entry.primaryGroupToken
-                        ):
-                            rid = int(str(entry.primaryGroupToken))
-                            group_conn.unbind()
-                            logger.debug(
-                                f"Got RID {rid} for group {group_dn} via primaryGroupToken"
-                            )
-                            return rid
-
-                        # Fall back to parsing objectSid
-                        if hasattr(entry, "objectSid") and entry.objectSid:
-                            sid_value = entry.objectSid.value
-                            if isinstance(sid_value, bytes) and len(sid_value) >= 4:
-                                rid = int.from_bytes(sid_value[-4:], byteorder="little")
-                                group_conn.unbind()
-                                logger.debug(
-                                    f"Got RID {rid} for group {group_dn} via objectSid"
-                                )
-                                return rid
-
-                    group_conn.unbind()
-                except LDAPException as e:
-                    logger.debug(f"Failed to get RID for group {group_dn}: {e}")
-                return None
-
-            def is_member_of_group(group_dn: str) -> bool:
-                """Check if user is member of group (case-insensitive, includes primary group)."""
-                # Check direct membership via memberOf (case-insensitive)
-                for member_dn in member_of:
-                    if dn_matches(member_dn, group_dn):
-                        return True
-
-                # Check if this group is the user's primary group
-                # AD stores primary group as RID in primaryGroupID, not in memberOf
-                if primary_group_id:
-                    group_rid = get_group_rid(group_dn)
-                    if group_rid and group_rid == primary_group_id:
-                        logger.debug(
-                            f"User's primary group (RID {primary_group_id}) matches {group_dn}"
-                        )
-                        return True
-
-                return False
-
-            logger.debug(
-                f"Group membership check for {ldap_username}: "
-                f"memberOf={member_of}, primaryGroupID={primary_group_id}, "
-                f"adminGroupDn={ldap_config.adminGroupDn}, userGroupDn={ldap_config.userGroupDn}"
+        try:
+            role = _determine_ldap_role_for_entry(
+                ldap_config=ldap_config,
+                bind_password=bind_password,
+                user_entry=user_entry,
+                ldap_username=ldap_username,
             )
-
-            if is_member_of_group(ldap_config.adminGroupDn):
-                role = UserRole.admin
-            elif ldap_config.userGroupDn and not is_member_of_group(
-                ldap_config.userGroupDn
-            ):
-                # If user group is specified, user must be a member
-                logger.warning(
-                    f"User {ldap_username} not in authorized group. "
-                    f"memberOf={member_of}, primaryGroupID={primary_group_id}, "
-                    f"required userGroupDn={ldap_config.userGroupDn}"
-                )
-                return AuthResult(success=False, error="User not in authorized group")
+        except ValueError:
+            logger.warning(
+                f"User {ldap_username} not in authorized group. "
+                f"required userGroupDn={ldap_config.userGroupDn}"
+            )
+            return AuthResult(success=False, error="User not in authorized group")
 
         # Sync user to database
         db = await get_db()
         existing_user = await db.user.find_unique(where={"username": ldap_username})
 
         if existing_user:
-            # Update existing user
+            # Update existing user — preserve manually overridden role
+            update_data: dict = {
+                "ldapDn": user_dn,
+                "email": user_mail,
+                "displayName": user_display,
+                "lastLoginAt": datetime.now(timezone.utc),
+            }
+            if not existing_user.roleManuallySet:
+                update_data["role"] = role
             user = await db.user.update(
                 where={"id": existing_user.id},
-                data={
-                    "ldapDn": user_dn,
-                    "email": user_mail,
-                    "displayName": user_display,
-                    "role": role,
-                    "lastLoginAt": datetime.now(timezone.utc),
-                },
+                data=update_data,
             )
         else:
             # Create new user
@@ -907,6 +817,149 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
     except LDAPException as e:
         logger.error(f"LDAP auth error: {e}")
         return AuthResult(success=False, error=f"LDAP error: {str(e)}")
+    finally:
+        if conn.bound:
+            conn.unbind()
+
+
+def _determine_ldap_role_for_entry(
+    *,
+    ldap_config: Any,
+    bind_password: str,
+    user_entry: Any,
+    ldap_username: str,
+) -> UserRole:
+    """Resolve LDAP role for a user entry using configured group mappings."""
+    role: UserRole = UserRole.user
+    if not ldap_config.adminGroupDn:
+        return role
+
+    member_of: list[str] = []
+    if hasattr(user_entry, "memberOf") and user_entry.memberOf:
+        member_of = [str(g) for g in user_entry.memberOf]
+
+    primary_group_id = None
+    if hasattr(user_entry, "primaryGroupID") and user_entry.primaryGroupID:
+        primary_group_id = int(str(user_entry.primaryGroupID))
+
+    def dn_matches(dn1: str, dn2: str) -> bool:
+        return dn1.lower() == dn2.lower()
+
+    def get_group_rid(group_dn: str) -> int | None:
+        try:
+            group_conn = _get_ldap_connection(
+                ldap_config.serverUrl,
+                ldap_config.bindDn,
+                bind_password,
+                ldap_config.allowSelfSigned,
+            )
+            if not group_conn:
+                return None
+
+            group_conn.search(
+                search_base=group_dn,
+                search_filter="(objectClass=*)",
+                search_scope="BASE",
+                attributes=["primaryGroupToken", "objectSid"],
+            )
+
+            if group_conn.entries:
+                entry = group_conn.entries[0]
+                if hasattr(entry, "primaryGroupToken") and entry.primaryGroupToken:
+                    rid = int(str(entry.primaryGroupToken))
+                    group_conn.unbind()
+                    return rid
+
+                if hasattr(entry, "objectSid") and entry.objectSid:
+                    sid_value = entry.objectSid.value
+                    if isinstance(sid_value, bytes) and len(sid_value) >= 4:
+                        rid = int.from_bytes(sid_value[-4:], byteorder="little")
+                        group_conn.unbind()
+                        return rid
+
+            group_conn.unbind()
+        except LDAPException as e:
+            logger.debug(f"Failed to get RID for group {group_dn}: {e}")
+        return None
+
+    def is_member_of_group(group_dn: str) -> bool:
+        for member_dn in member_of:
+            if dn_matches(member_dn, group_dn):
+                return True
+
+        if primary_group_id:
+            group_rid = get_group_rid(group_dn)
+            if group_rid and group_rid == primary_group_id:
+                return True
+
+        return False
+
+    logger.debug(
+        f"Group membership check for {ldap_username}: "
+        f"memberOf={member_of}, primaryGroupID={primary_group_id}, "
+        f"adminGroupDn={ldap_config.adminGroupDn}, userGroupDn={ldap_config.userGroupDn}"
+    )
+
+    if is_member_of_group(ldap_config.adminGroupDn):
+        return UserRole.admin
+
+    if ldap_config.userGroupDn and not is_member_of_group(ldap_config.userGroupDn):
+        raise ValueError("User not in authorized group")
+
+    return role
+
+
+async def resolve_ldap_role_for_user_dn(
+    user_dn: str,
+    *,
+    ldap_username_hint: str | None = None,
+) -> tuple[UserRole | None, str | None]:
+    """Resolve current LDAP-derived role for a specific LDAP DN."""
+    ldap_config = await get_ldap_config()
+    if not ldap_config.serverUrl or not ldap_config.bindDn:
+        return None, "LDAP not configured"
+
+    bind_password = decrypt_secret(ldap_config.bindPassword)
+    conn = _get_ldap_connection(
+        ldap_config.serverUrl,
+        ldap_config.bindDn,
+        bind_password,
+        ldap_config.allowSelfSigned,
+    )
+    if not conn:
+        return None, "Failed to connect to LDAP server"
+
+    try:
+        conn.search(
+            search_base=user_dn,
+            search_filter="(objectClass=*)",
+            search_scope="BASE",
+            attributes=["memberOf", "primaryGroupID", "sAMAccountName", "uid"],
+        )
+        if not conn.entries:
+            return None, "User not found"
+
+        user_entry = conn.entries[0]
+        ldap_username = ldap_username_hint or user_dn
+        if hasattr(user_entry, "sAMAccountName") and user_entry.sAMAccountName:
+            ldap_username = str(user_entry.sAMAccountName)
+        elif hasattr(user_entry, "uid") and user_entry.uid:
+            ldap_username = str(user_entry.uid)
+
+        try:
+            role = _determine_ldap_role_for_entry(
+                ldap_config=ldap_config,
+                bind_password=bind_password,
+                user_entry=user_entry,
+                ldap_username=ldap_username,
+            )
+        except ValueError as exc:
+            return None, str(exc)
+
+        return role, None
+    except LDAPException as e:
+        logger.error(f"LDAP role resolution error for {user_dn}: {e}")
+        return None, f"LDAP error: {str(e)}"
     finally:
         if conn.bound:
             conn.unbind()

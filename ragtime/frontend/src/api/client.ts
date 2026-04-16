@@ -283,6 +283,13 @@ export const api = {
     await handleResponse(response);
   },
 
+  async resetUserRoleOverride(userId: string): Promise<{ success: boolean; role: 'admin' | 'user'; role_manually_set: boolean }> {
+    const response = await apiFetch(`${AUTH_BASE}/users/${userId}/role/reset`, {
+      method: 'POST',
+    });
+    return handleResponse(response);
+  },
+
   // ===========================================================================
   // Indexes
   // ===========================================================================

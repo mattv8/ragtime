@@ -413,9 +413,23 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     setActionLoading(userId);
     try {
       await api.updateUserRole(userId, newRole);
-      setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, role: newRole } : u)));
+      setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, role: newRole, role_manually_set: true } : u)));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to update role');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleResetRoleOverride = async (userId: string) => {
+    setActionLoading(userId);
+    try {
+      const response = await api.resetUserRoleOverride(userId);
+      setUsers((prev) => prev.map((u) => (
+        u.id === userId ? { ...u, role: response.role, role_manually_set: response.role_manually_set } : u
+      )));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to reset role override');
     } finally {
       setActionLoading(null);
     }
@@ -1406,10 +1420,20 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
 
       {loading ? (
         <div className="card"><div className="card-body"><p>Loading...</p></div></div>
-      ) : error ? (
-        <div className="card"><div className="card-body"><p className="error-text">{error}</p></div></div>
       ) : activeTab === 'management' ? (
         <>
+          {error && (
+            <div className="users-error-banner" role="alert" aria-live="polite">
+              <span className="users-error-banner-text">{error}</span>
+              <button
+                type="button"
+                className="users-error-banner-dismiss"
+                onClick={() => setError(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           <div className="users-summary-row">
             <div className="users-summary-card">
               <div className="users-summary-value">{users.length}</div>
@@ -1526,8 +1550,18 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                                       <option value="user">user</option>
                                       <option value="admin">admin</option>
                                     </select>
-                                    {user.auth_provider === 'ldap' && (
-                                      <div className="users-ldap-role-note">Overwritten on next LDAP login unless group assignments are updated</div>
+                                    {user.auth_provider === 'ldap' && user.role_manually_set && (
+                                      <div className="users-role-override-row">
+                                        <span className="users-role-override-badge">Overridden,</span>
+                                        <button
+                                          type="button"
+                                          className="users-role-reset-btn"
+                                          disabled={actionLoading === user.id}
+                                          onClick={() => handleResetRoleOverride(user.id)}
+                                        >
+                                          reset?
+                                        </button>
+                                      </div>
                                     )}
                                   </>
                                 )}
@@ -1594,6 +1628,18 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
         <div className="card"><div className="card-body"><p>Loading usage data...</p></div></div>
       ) : (
         <>
+          {error && (
+            <div className="users-error-banner" role="alert" aria-live="polite">
+              <span className="users-error-banner-text">{error}</span>
+              <button
+                type="button"
+                className="users-error-banner-dismiss"
+                onClick={() => setError(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           <div className="users-summary-row">
             <div className="users-summary-card">
               <div className="users-summary-value">{users.length}</div>

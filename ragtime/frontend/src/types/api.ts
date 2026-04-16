@@ -17,6 +17,7 @@ export interface User {
   email: string | null;
   role: UserRole;
   auth_provider: AuthProvider;
+  role_manually_set?: boolean;
 }
 
 export interface LoginRequest {

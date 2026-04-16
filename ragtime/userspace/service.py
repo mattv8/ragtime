@@ -695,8 +695,8 @@ def _entrypoint_references_module(main_content: str, candidates: list[str]) -> b
 
 
 def _normalize_sqlite_persistence_mode(value: str | None) -> str:
-    mode = (value or "exclude").strip().lower()
-    return mode if mode in {"include", "exclude"} else "exclude"
+    mode = (value or "include").strip().lower()
+    return mode if mode in {"include", "exclude"} else "include"
 
 
 def _is_sqlite_file_path(relative_path: str) -> bool:
@@ -4546,9 +4546,9 @@ class UserSpaceService:
         db = await get_db()
         workspace = await db.workspace.find_unique(where={"id": workspace_id})
         sqlite_mode = _normalize_sqlite_persistence_mode(
-            str(getattr(workspace, "sqlitePersistenceMode", "exclude") or "exclude")
+            str(getattr(workspace, "sqlitePersistenceMode", "include") or "include")
             if workspace
-            else "exclude"
+            else "include"
         )
         if sqlite_mode == "exclude":
             reset_patterns.extend(_SQLITE_EXCLUDE_GLOBS)
@@ -4670,7 +4670,7 @@ class UserSpaceService:
                 SqlitePersistenceMode,
                 _normalize_sqlite_persistence_mode(
                     str(
-                        getattr(record, "sqlitePersistenceMode", "exclude") or "exclude"
+                        getattr(record, "sqlitePersistenceMode", "include") or "include"
                     )
                 ),
             ),
@@ -10124,7 +10124,7 @@ class UserSpaceService:
         parsed_live_data_checks = request.live_data_checks or []
         workspace_has_tools = bool(workspace.selected_tool_ids)
         _sqlite_include = (
-            getattr(workspace, "sqlite_persistence_mode", "exclude") == "include"
+            getattr(workspace, "sqlite_persistence_mode", "include") == "include"
         )
         _sqlite_suffix = (
             " Note: this workspace has SQLite local persistence enabled -- "
