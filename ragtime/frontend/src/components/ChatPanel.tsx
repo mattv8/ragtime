@@ -2264,6 +2264,7 @@ export function ChatPanel({
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
+  const [isConversationSwitchLoading, setIsConversationSwitchLoading] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -3148,6 +3149,7 @@ export function ChatPanel({
   useEffect(() => {
     setConversations([]);
     setActiveConversation(null);
+    setIsConversationSwitchLoading(false);
     if (!workspaceId) {
       loadConversations();
     } else {
@@ -4062,11 +4064,15 @@ export function ChatPanel({
   }, [stopTaskStreaming]);
 
   const selectConversation = async (conversation: Conversation) => {
+    const isSwitchingConversation = activeConversation?.id !== conversation.id;
     try {
       if (!embedded && typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches) {
         setShowSidebar(false);
       }
       shouldAutoScrollRef.current = true;
+      if (isSwitchingConversation) {
+        setIsConversationSwitchLoading(true);
+      }
       // Stop any current streaming when switching
       clearActiveStreamingUi();
 
@@ -4080,6 +4086,10 @@ export function ChatPanel({
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load conversation');
+    } finally {
+      if (isSwitchingConversation) {
+        setIsConversationSwitchLoading(false);
+      }
     }
   };
 
@@ -4735,6 +4745,54 @@ export function ChatPanel({
     );
   };
 
+  const renderMessageBubbleSkeletons = () => (
+    <div className="chat-message-skeleton-list">
+      <div className="chat-message-skeleton-row chat-message-skeleton-row-user">
+        <div className="chat-message-skeleton-bubble chat-message-skeleton-bubble-user">
+          <div className="chat-skeleton-line chat-message-skeleton-line"></div>
+          <div className="chat-skeleton-line chat-message-skeleton-line chat-message-skeleton-line-user-short"></div>
+        </div>
+      </div>
+      <div className="chat-message-skeleton-row chat-message-skeleton-row-assistant">
+        <div className="chat-message-skeleton-bubble chat-message-skeleton-bubble-assistant">
+          <div className="chat-skeleton-line chat-message-skeleton-line"></div>
+          <div className="chat-skeleton-line chat-message-skeleton-line chat-message-skeleton-line-short"></div>
+        </div>
+      </div>
+      <div className="chat-message-skeleton-row chat-message-skeleton-row-assistant">
+        <div className="chat-message-skeleton-bubble chat-message-skeleton-bubble-assistant">
+          <div className="chat-skeleton-line chat-message-skeleton-line"></div>
+          <div className="chat-skeleton-line chat-message-skeleton-line chat-message-skeleton-line-short"></div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderFullChatSkeleton = () => (
+    <>
+      {/* Skeleton header */}
+      <div className={`chat-header ${embedded ? 'chat-header-embedded' : ''} chat-header-skeleton`} aria-hidden="true">
+        <div className="chat-header-info">
+          <div className="chat-skeleton-line chat-header-skeleton-title"></div>
+        </div>
+        <div className="chat-header-actions">
+          <div className="chat-skeleton-line chat-header-skeleton-action"></div>
+          <div className="chat-skeleton-line chat-header-skeleton-action"></div>
+        </div>
+      </div>
+      {/* Skeleton messages */}
+      <div className="chat-messages chat-messages-skeleton">
+        {renderMessageBubbleSkeletons()}
+      </div>
+      {/* Skeleton input area */}
+      <div className="chat-input-area manual-resize chat-input-area-skeleton" aria-hidden="true">
+        <div className="chat-input-wrapper">
+          <div className="chat-skeleton-line chat-input-skeleton-line"></div>
+        </div>
+      </div>
+    </>
+  );
+
   const panelStyle: CSSProperties | undefined = !embedded
     ? ({ ['--chat-sidebar-width' as '--chat-sidebar-width']: `${sidebarWidth}px` } as CSSProperties)
     : undefined;
@@ -4808,14 +4866,7 @@ export function ChatPanel({
       {/* Main Chat Area */}
       <div className="chat-main" ref={chatMainRef}>
         {isConversationListLoading ? (
-          <div className="chat-no-conversation chat-no-conversation-loading" aria-live="polite">
-            <div className="chat-main-skeleton" aria-hidden="true">
-              <div className="chat-skeleton-line chat-main-skeleton-title"></div>
-              <div className="chat-skeleton-line chat-main-skeleton-body"></div>
-              <div className="chat-skeleton-line chat-main-skeleton-body chat-main-skeleton-body-short"></div>
-            </div>
-            <p className="chat-loading-label">Loading conversations...</p>
-          </div>
+          renderFullChatSkeleton()
         ) : activeConversation ? (
           <>
             {/* Chat Header */}
@@ -5126,7 +5177,9 @@ export function ChatPanel({
             {/* Messages */}
             {!isMessagesCollapsed && (
             <div className="chat-messages" ref={chatMessagesRef} onScroll={handleScroll}>
-              {activeConversation.messages.length === 0 && !isStreaming ? (
+              {isConversationSwitchLoading ? (
+                renderMessageBubbleSkeletons()
+              ) : activeConversation.messages.length === 0 && !isStreaming ? (
                 <div className="chat-welcome">
                   <h3>Start a conversation</h3>
                   <p>Ask questions about your indexed code, query databases, or get help with your systems.</p>

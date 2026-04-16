@@ -346,6 +346,81 @@
   width: 46%;
   height: 10px;
 }
+.chat-message-skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  width: min(820px, 100%);
+  margin: 0 auto;
+}
+.chat-message-skeleton-row {
+  display: flex;
+  width: 100%;
+}
+.chat-message-skeleton-row-assistant {
+  justify-content: flex-start;
+}
+.chat-message-skeleton-row-user {
+  justify-content: flex-end;
+}
+.chat-message-skeleton-bubble {
+  border-radius: var(--radius-lg);
+  padding: var(--space-sm) var(--space-md);
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chat-message-skeleton-bubble-assistant {
+  background: var(--color-surface-hover);
+  width: min(74%, 560px);
+}
+.chat-message-skeleton-bubble-user {
+  background: var(--color-primary-light);
+  border: 1px solid var(--color-primary-border);
+  width: min(68%, 480px);
+}
+.chat-message-skeleton-line {
+  height: 12px;
+  width: 100%;
+}
+.chat-message-skeleton-line-short {
+  width: 64%;
+}
+.chat-message-skeleton-line-user-short {
+  width: 52%;
+}
+/* Skeleton header */
+.chat-header-skeleton {
+  pointer-events: none;
+}
+.chat-header-skeleton-title {
+  width: min(180px, 40%);
+  height: 16px;
+  border-radius: var(--radius-sm);
+}
+.chat-header-skeleton-action {
+  width: 32px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+}
+/* Skeleton messages wrapper */
+.chat-messages-skeleton {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  padding: var(--space-lg);
+  overflow: hidden;
+}
+/* Skeleton input area */
+.chat-input-area-skeleton {
+  pointer-events: none;
+}
+.chat-input-skeleton-line {
+  height: 20px;
+  width: 100%;
+  border-radius: var(--radius-md);
+}
 .chat-empty-state p {
   margin-bottom: var(--space-md);
 }
@@ -1355,29 +1430,6 @@
 .chat-no-conversation p {
   color: var(--color-text-secondary);
   margin-bottom: var(--space-lg);
-}
-.chat-no-conversation-loading {
-  gap: var(--space-lg);
-}
-.chat-main-skeleton {
-  width: min(520px, 100%);
-}
-.chat-main-skeleton-title {
-  width: 38%;
-  height: 24px;
-  margin: 0 auto 18px;
-}
-.chat-main-skeleton-body {
-  width: 82%;
-  height: 14px;
-  margin: 0 auto 10px;
-}
-.chat-main-skeleton-body-short {
-  width: 58%;
-}
-.chat-loading-label {
-  margin: 0;
-  color: var(--color-text-secondary);
 }
 @keyframes chat-skeleton-shimmer {
   100% {
