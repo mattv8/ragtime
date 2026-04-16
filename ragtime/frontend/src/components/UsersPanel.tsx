@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import { api } from '@/api';
 import type {
   User,
@@ -24,6 +24,7 @@ import {
 } from 'chart.js';
 import { Bar, Chart, Line } from 'react-chartjs-2';
 import { WorkspaceRowList } from './shared/WorkspaceRowList';
+import { DataTable, type DataTableColumn, type TableSortConfig } from './shared/DataTable';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { formatProviderDisplayName, formatModelDisplayName } from '@/utils/modelDisplay';
 
@@ -96,6 +97,11 @@ function paginate<T>(items: T[], page: number, pageSize: number): { pageItems: T
 type PanelTab = 'management' | 'usage';
 type TrendTab = 'reliability' | 'daily-chart' | 'daily-table';
 type UsageMetric = 'requests' | 'tokens';
+type HeatmapSortDirection = 'asc' | 'desc';
+type ManagementSortKey = 'user' | 'auth' | 'chats' | 'workspaces' | 'memberships' | 'workspaceChats' | 'liveInterrupted' | 'storage' | 'role' | 'actions';
+type UsageSortKey = 'user' | 'requests' | 'input' | 'output' | 'total' | 'completed' | 'failed';
+type ProviderSortKey = 'provider' | 'model' | 'requests' | 'input' | 'output' | 'total';
+type DailySortKey = 'date' | 'requests' | 'input' | 'output' | 'total' | 'completed' | 'failed';
 
 const ALL_DAY_RANGES = [7, 30, 90, 180, 240, 360] as const;
 
@@ -115,6 +121,14 @@ interface DerivedUserStats {
   ownedWorkspaces: UserSpaceWorkspace[];
   storageBytesKnown: number;
   storageCoverage: number;
+}
+
+interface UsageDataSnapshot {
+  usageSummary: UserUsageSummary[];
+  providerBreakdown: ProviderModelBreakdown[];
+  dailyTrend: DailyUsageTrend[];
+  userDailySeries: UserDailyUsageSeriesPoint[];
+  failureCells: ProviderDailyFailureCell[];
 }
 
 interface PagerProps {
@@ -167,6 +181,9 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   const [failureCells, setFailureCells] = useState<ProviderDailyFailureCell[]>([]);
   const [days, setDays] = useState(30);
   const [earliestDate, setEarliestDate] = useState<string | null>(null);
+  const [usageLoadedDays, setUsageLoadedDays] = useState<number | null>(null);
+  const [hasLoadedUsageRange, setHasLoadedUsageRange] = useState(false);
+  const [usageLoading, setUsageLoading] = useState(false);
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
@@ -184,9 +201,17 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   const [providerPageSize, setProviderPageSize] = useState(10);
   const [dailyPageSize, setDailyPageSize] = useState(10);
 
+  const [managementSort, setManagementSort] = useState<TableSortConfig<ManagementSortKey>>({ key: 'chats', direction: 'desc' });
+  const [usageSort, setUsageSort] = useState<TableSortConfig<UsageSortKey>>({ key: 'requests', direction: 'desc' });
+  const [providerSort, setProviderSort] = useState<TableSortConfig<ProviderSortKey>>({ key: 'total', direction: 'desc' });
+  const [dailySort, setDailySort] = useState<TableSortConfig<DailySortKey>>({ key: 'date', direction: 'desc' });
+  const [heatmapSort, setHeatmapSort] = useState<{ key: string; direction: HeatmapSortDirection }>({ key: 'date', direction: 'desc' });
+
   const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
 
   const themeColors = useThemeColors();
+  const usageCacheRef = useRef<Record<number, UsageDataSnapshot>>({});
+  const usageRequestIdRef = useRef(0);
 
   const [storageByWorkspaceId, setStorageByWorkspaceId] = useState<Record<string, number>>({});
   const [storageLoadingByUserId, setStorageLoadingByUserId] = useState<Record<string, boolean>>({});
@@ -196,19 +221,24 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     setUsers(res);
   }, []);
 
-  const loadUsage = useCallback(async (d: number) => {
-    const [summaryRes, providersRes, dailyRes, userDailyRes, failureRes] = await Promise.all([
-      api.getUsageSummary(d),
-      api.getUsageProviders(d),
-      api.getUsageDaily(d),
+  const fetchUsageDetails = useCallback(async (d: number): Promise<Pick<UsageDataSnapshot, 'userDailySeries' | 'failureCells'>> => {
+    const [userDailyRes, failureRes] = await Promise.all([
       api.getUsageUsersDaily(d),
       api.getUsageProviderDailyFailures(d),
     ]);
-    setUsageSummary(summaryRes.users);
-    setProviderBreakdown(providersRes.providers);
-    setDailyTrend(dailyRes.daily);
-    setUserDailySeries(userDailyRes.series);
-    setFailureCells(failureRes.cells);
+
+    return {
+      userDailySeries: userDailyRes.series,
+      failureCells: failureRes.cells,
+    };
+  }, []);
+
+  const applyUsageSnapshot = useCallback((snapshot: UsageDataSnapshot) => {
+    setUsageSummary(snapshot.usageSummary);
+    setProviderBreakdown(snapshot.providerBreakdown);
+    setDailyTrend(snapshot.dailyTrend);
+    setUserDailySeries(snapshot.userDailySeries);
+    setFailureCells(snapshot.failureCells);
   }, []);
 
   const loadWorkspaces = useCallback(async () => {
@@ -240,27 +270,88 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     setWorkspaceStateById(byId);
   }, []);
 
-  const loadAll = useCallback(async (d: number) => {
+  const loadManagementData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [, , , rangeRes] = await Promise.all([
+      await Promise.all([
         loadUsers(),
-        loadUsage(d),
         loadWorkspaces(),
-        api.getUsageRange(),
       ]);
-      setEarliestDate(rangeRes.earliest_date);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load users data');
     } finally {
       setLoading(false);
     }
-  }, [loadUsers, loadUsage, loadWorkspaces]);
+  }, [loadUsers, loadWorkspaces]);
+
+  const loadUsageData = useCallback(async (d: number) => {
+    const cached = usageCacheRef.current[d];
+    if (cached) {
+      applyUsageSnapshot(cached);
+      setUsageLoadedDays(d);
+      return;
+    }
+
+    const requestId = usageRequestIdRef.current + 1;
+    usageRequestIdRef.current = requestId;
+
+    setUsageLoading(true);
+    setError(null);
+    try {
+      const [summaryRes, providersRes, dailyRes, rangeRes] = await Promise.all([
+        api.getUsageSummary(d),
+        api.getUsageProviders(d),
+        api.getUsageDaily(d),
+        hasLoadedUsageRange ? Promise.resolve(null) : api.getUsageRange(),
+      ]);
+
+      if (requestId !== usageRequestIdRef.current) return;
+
+      // Show key usage cards/charts first, then enrich with heavier series calls.
+      setUsageSummary(summaryRes.users);
+      setProviderBreakdown(providersRes.providers);
+      setDailyTrend(dailyRes.daily);
+      setUserDailySeries([]);
+      setFailureCells([]);
+
+      if (rangeRes) {
+        setEarliestDate(rangeRes.earliest_date);
+        setHasLoadedUsageRange(true);
+      }
+      setUsageLoadedDays(d);
+
+      const details = await fetchUsageDetails(d);
+      if (requestId !== usageRequestIdRef.current) return;
+
+      const snapshot: UsageDataSnapshot = {
+        usageSummary: summaryRes.users,
+        providerBreakdown: providersRes.providers,
+        dailyTrend: dailyRes.daily,
+        userDailySeries: details.userDailySeries,
+        failureCells: details.failureCells,
+      };
+
+      applyUsageSnapshot(snapshot);
+      usageCacheRef.current[d] = snapshot;
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to load usage data');
+    } finally {
+      if (requestId === usageRequestIdRef.current) {
+        setUsageLoading(false);
+      }
+    }
+  }, [applyUsageSnapshot, fetchUsageDetails, hasLoadedUsageRange]);
 
   useEffect(() => {
-    void loadAll(days);
-  }, [days, loadAll]);
+    void loadManagementData();
+  }, [loadManagementData]);
+
+  useEffect(() => {
+    if (activeTab !== 'usage') return;
+    if (usageLoadedDays === days && hasLoadedUsageRange) return;
+    void loadUsageData(days);
+  }, [activeTab, days, hasLoadedUsageRange, loadUsageData, usageLoadedDays]);
 
   const handleRoleChange = async (userId: string, newRole: 'admin' | 'user') => {
     setActionLoading(userId);
@@ -440,6 +531,24 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       failed_count: 0,
     });
   }, [dailyTrend, dateLabels]);
+
+  const compareSortValues = (a: string | number | null, b: string | number | null, direction: 'asc' | 'desc') => {
+    if (a === null && b === null) return 0;
+    if (a === null) return 1;
+    if (b === null) return -1;
+
+    if (typeof a === 'number' && typeof b === 'number') {
+      if (a < b) return direction === 'asc' ? -1 : 1;
+      if (a > b) return direction === 'asc' ? 1 : -1;
+      return 0;
+    }
+
+    const aStr = String(a).toLowerCase();
+    const bStr = String(b).toLowerCase();
+    if (aStr < bStr) return direction === 'asc' ? -1 : 1;
+    if (aStr > bStr) return direction === 'asc' ? 1 : -1;
+    return 0;
+  };
 
   const providerChartData = useMemo(() => ({
     labels: providerBreakdown.map((row) => {
@@ -781,6 +890,29 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     return { dates: dateLabels, models: sortedModels, modelLabels, lookup, maxCount };
   }, [failureCells, dateLabels]);
 
+  const sortedHeatmapDates = useMemo(() => {
+    if (!failureHeatmap) return [] as string[];
+
+    const dates = [...failureHeatmap.dates];
+    return dates.sort((a, b) => {
+      let aValue: string | number = a;
+      let bValue: string | number = b;
+
+      if (heatmapSort.key !== 'date') {
+        const aCell = failureHeatmap.lookup.get(`${a}|${heatmapSort.key}`);
+        const bCell = failureHeatmap.lookup.get(`${b}|${heatmapSort.key}`);
+        aValue = (aCell?.failed || 0) + (aCell?.interrupted || 0);
+        bValue = (bCell?.failed || 0) + (bCell?.interrupted || 0);
+      }
+
+      return compareSortValues(
+        aValue,
+        bValue,
+        heatmapSort.direction,
+      );
+    });
+  }, [failureHeatmap, heatmapSort.direction, heatmapSort.key]);
+
   const totalRequests = usageSummary.reduce((s, u) => s + u.total_requests, 0);
   const totalTokens = usageSummary.reduce((s, u) => s + u.total_tokens, 0);
   const totalFailed = usageSummary.reduce((s, u) => s + u.failed_count + u.interrupted_count, 0);
@@ -795,10 +927,179 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
 
   const isSelf = (userId: string) => currentUser?.id === userId;
 
-  const managementPaging = paginate(userStatsRows, managementPage, managementPageSize);
-  const usagePaging = paginate(usageSummary, usagePage, usagePageSize);
-  const providerPaging = paginate(providerBreakdown, providerPage, providerPageSize);
-  const dailyPaging = paginate(dailyTrendRows, dailyPage, dailyPageSize);
+  const sortedManagementRows = useMemo(() => {
+    const rows = [...userStatsRows];
+    return rows.sort((a, b) => {
+      const aFail = (a.usage?.failed_count || 0) + (a.usage?.interrupted_count || 0);
+      const bFail = (b.usage?.failed_count || 0) + (b.usage?.interrupted_count || 0);
+
+      const sortValueA: Record<ManagementSortKey, string | number | null> = {
+        user: (a.user.display_name || a.user.username),
+        auth: a.user.auth_provider,
+        chats: a.usage?.total_requests || 0,
+        workspaces: a.ownedWorkspaceCount,
+        memberships: a.memberWorkspaceCount,
+        workspaceChats: a.workspaceConversationCount,
+        liveInterrupted: a.liveWorkspaceCount + a.interruptedWorkspaceCount,
+        storage: a.storageBytesKnown,
+        role: a.user.role,
+        actions: null,
+      };
+      const sortValueB: Record<ManagementSortKey, string | number | null> = {
+        user: (b.user.display_name || b.user.username),
+        auth: b.user.auth_provider,
+        chats: b.usage?.total_requests || 0,
+        workspaces: b.ownedWorkspaceCount,
+        memberships: b.memberWorkspaceCount,
+        workspaceChats: b.workspaceConversationCount,
+        liveInterrupted: b.liveWorkspaceCount + b.interruptedWorkspaceCount,
+        storage: b.storageBytesKnown,
+        role: b.user.role,
+        actions: null,
+      };
+
+      const result = compareSortValues(sortValueA[managementSort.key], sortValueB[managementSort.key], managementSort.direction);
+      if (result !== 0) return result;
+      // Preserve previous relevance as deterministic tiebreaker
+      if ((b.usage?.total_requests || 0) !== (a.usage?.total_requests || 0)) {
+        return (b.usage?.total_requests || 0) - (a.usage?.total_requests || 0);
+      }
+      if (bFail !== aFail) return bFail - aFail;
+      return a.user.username.localeCompare(b.user.username);
+    });
+  }, [managementSort.direction, managementSort.key, userStatsRows]);
+
+  const sortedUsageRows = useMemo(() => {
+    const rows = [...usageSummary];
+    return rows.sort((a, b) => {
+      const aFail = a.failed_count + a.interrupted_count;
+      const bFail = b.failed_count + b.interrupted_count;
+      const sortValueA: Record<UsageSortKey, string | number | null> = {
+        user: a.display_name || a.username,
+        requests: a.total_requests,
+        input: a.total_input_tokens,
+        output: a.total_output_tokens,
+        total: a.total_tokens,
+        completed: a.completed_count,
+        failed: aFail,
+      };
+      const sortValueB: Record<UsageSortKey, string | number | null> = {
+        user: b.display_name || b.username,
+        requests: b.total_requests,
+        input: b.total_input_tokens,
+        output: b.total_output_tokens,
+        total: b.total_tokens,
+        completed: b.completed_count,
+        failed: bFail,
+      };
+      return compareSortValues(sortValueA[usageSort.key], sortValueB[usageSort.key], usageSort.direction);
+    });
+  }, [usageSort.direction, usageSort.key, usageSummary]);
+
+  const sortedProviderRows = useMemo(() => {
+    const rows = [...providerBreakdown];
+    return rows.sort((a, b) => {
+      const sortValueA: Record<ProviderSortKey, string | number | null> = {
+        provider: formatProviderDisplayName(a.provider),
+        model: formatModelDisplayName(a.model, a.provider),
+        requests: a.total_requests,
+        input: a.total_input_tokens,
+        output: a.total_output_tokens,
+        total: a.total_tokens,
+      };
+      const sortValueB: Record<ProviderSortKey, string | number | null> = {
+        provider: formatProviderDisplayName(b.provider),
+        model: formatModelDisplayName(b.model, b.provider),
+        requests: b.total_requests,
+        input: b.total_input_tokens,
+        output: b.total_output_tokens,
+        total: b.total_tokens,
+      };
+      return compareSortValues(sortValueA[providerSort.key], sortValueB[providerSort.key], providerSort.direction);
+    });
+  }, [providerBreakdown, providerSort.direction, providerSort.key]);
+
+  const sortedDailyRows = useMemo(() => {
+    const rows = [...dailyTrendRows];
+    return rows.sort((a, b) => {
+      const sortValueA: Record<DailySortKey, string | number | null> = {
+        date: a.date,
+        requests: a.total_requests,
+        input: a.total_input_tokens,
+        output: a.total_output_tokens,
+        total: a.total_tokens,
+        completed: a.completed_count,
+        failed: a.failed_count,
+      };
+      const sortValueB: Record<DailySortKey, string | number | null> = {
+        date: b.date,
+        requests: b.total_requests,
+        input: b.total_input_tokens,
+        output: b.total_output_tokens,
+        total: b.total_tokens,
+        completed: b.completed_count,
+        failed: b.failed_count,
+      };
+      return compareSortValues(sortValueA[dailySort.key], sortValueB[dailySort.key], dailySort.direction);
+    });
+  }, [dailySort.direction, dailySort.key, dailyTrendRows]);
+
+  const managementColumns = useMemo<DataTableColumn<DerivedUserStats, ManagementSortKey>[]>(() => ([
+    { key: 'user', label: 'User' },
+    { key: 'auth', label: 'Auth' },
+    { key: 'chats', label: 'Chats', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'workspaces', label: 'Workspaces', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'memberships', label: 'Memberships', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'workspaceChats', label: 'Workspace Chats', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'liveInterrupted', label: 'Live/Interrupted', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'storage', label: 'Storage', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'role', label: 'Role' },
+    { key: 'actions', label: 'Actions', headerClassName: 'num', cellClassName: 'num', sortable: false },
+  ]), []);
+
+  const usageColumns = useMemo<DataTableColumn<UserUsageSummary, UsageSortKey>[]>(() => ([
+    { key: 'user', label: 'User' },
+    { key: 'requests', label: 'Requests', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'input', label: 'Input Tokens', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'output', label: 'Output Tokens', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'total', label: 'Total Tokens', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'completed', label: 'Completed', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'failed', label: 'Failed', headerClassName: 'num', cellClassName: 'num' },
+  ]), []);
+
+  const providerColumns = useMemo<DataTableColumn<ProviderModelBreakdown, ProviderSortKey>[]>(() => ([
+    { key: 'provider', label: 'Provider' },
+    { key: 'model', label: 'Model' },
+    { key: 'requests', label: 'Requests', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'input', label: 'Input Tokens', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'output', label: 'Output Tokens', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'total', label: 'Total Tokens', headerClassName: 'num', cellClassName: 'num' },
+  ]), []);
+
+  const dailyColumns = useMemo<DataTableColumn<DailyUsageTrend, DailySortKey>[]>(() => ([
+    { key: 'date', label: 'Date' },
+    { key: 'requests', label: 'Requests', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'input', label: 'Input Tokens', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'output', label: 'Output Tokens', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'total', label: 'Total Tokens', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'completed', label: 'Completed', headerClassName: 'num', cellClassName: 'num' },
+    { key: 'failed', label: 'Failed', headerClassName: 'num', cellClassName: 'num' },
+  ]), []);
+
+  const handleSort = <K extends string>(current: TableSortConfig<K>, key: K, setter: (next: TableSortConfig<K>) => void) => {
+    const direction = current.key === key && current.direction === 'asc' ? 'desc' : 'asc';
+    setter({ key, direction });
+  };
+
+  const handleHeatmapSort = (key: string) => {
+    const direction: HeatmapSortDirection = heatmapSort.key === key && heatmapSort.direction === 'asc' ? 'desc' : 'asc';
+    setHeatmapSort({ key, direction });
+  };
+
+  const managementPaging = paginate(sortedManagementRows, managementPage, managementPageSize);
+  const usagePaging = paginate(sortedUsageRows, usagePage, usagePageSize);
+  const providerPaging = paginate(sortedProviderRows, providerPage, providerPageSize);
+  const dailyPaging = paginate(sortedDailyRows, dailyPage, dailyPageSize);
 
   useEffect(() => {
     if (managementPage !== managementPaging.safePage) setManagementPage(managementPaging.safePage);
@@ -829,15 +1130,20 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
         </div>
         {activeTab === 'usage' && (
           <div className="users-panel-controls">
-            {availableRanges.map((d) => (
-              <button
-                key={d}
-                className={`users-range-btn ${days === d ? 'active' : ''}`}
-                onClick={() => setDays(d)}
-              >
-                {d}d
-              </button>
-            ))}
+            {hasLoadedUsageRange ? (
+              availableRanges.map((d) => (
+                <button
+                  key={d}
+                  className={`users-range-btn ${days === d ? 'active' : ''}`}
+                  onClick={() => setDays(d)}
+                >
+                  {d}d
+                </button>
+              ))
+            ) : (
+              <span className="users-subnum">loading ranges...</span>
+            )}
+            {usageLoading && <span className="users-subnum">loading...</span>}
           </div>
         )}
       </div>
@@ -875,143 +1181,134 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
               ) : (
                 <>
                   <div className="users-table-wrap users-table-compact-wrap">
-                    <table className="users-table users-table-compact">
-                      <thead>
-                        <tr>
-                          <th>User</th>
-                          <th>Auth</th>
-                          <th className="num">Chats</th>
-                          <th className="num">Workspaces</th>
-                          <th className="num">Memberships</th>
-                          <th className="num">Workspace Chats</th>
-                          <th className="num">Live/Interrupted</th>
-                          <th className="num">Storage</th>
-                          <th>Role</th>
-                          <th className="num">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {managementPaging.pageItems.map((row) => {
-                          const user = row.user;
-                          const chatCount = row.usage?.total_requests || 0;
-                          const failedCount = (row.usage?.failed_count || 0) + (row.usage?.interrupted_count || 0);
-                          const isRowSelf = isSelf(user.id);
+                    <DataTable
+                      rows={managementPaging.pageItems}
+                      columns={managementColumns}
+                      sortConfig={managementSort}
+                      onSort={(key) => {
+                        if (key === 'actions') return;
+                        handleSort(managementSort, key as ManagementSortKey, setManagementSort);
+                      }}
+                      renderRow={(row) => {
+                        const user = row.user;
+                        const chatCount = row.usage?.total_requests || 0;
+                        const failedCount = (row.usage?.failed_count || 0) + (row.usage?.interrupted_count || 0);
+                        const isRowSelf = isSelf(user.id);
 
-                          return (
-                            <Fragment key={user.id}>
-                              <tr className={isRowSelf ? 'users-row-self' : ''}>
-                                <td>
-                                  <div className="users-cell-identity">
-                                    <span className="users-username">
-                                      {user.display_name || user.username}
-                                      {isRowSelf && <span className="users-you-badge">you</span>}
-                                    </span>
-                                    <span className="users-handle">@{user.username}</span>
-                                  </div>
-                                </td>
-                                <td>
-                                  <span className={`users-auth-badge users-auth-${user.auth_provider}`}>
-                                    {user.auth_provider}
+                        return (
+                          <Fragment key={user.id}>
+                            <tr className={isRowSelf ? 'users-row-self' : ''}>
+                              <td>
+                                <div className="users-cell-identity">
+                                  <span className="users-username">
+                                    {user.display_name || user.username}
+                                    {isRowSelf && <span className="users-you-badge">you</span>}
                                   </span>
-                                </td>
-                                <td className="num">
-                                  <div>{formatNumber(chatCount)}</div>
-                                  {failedCount > 0 && <div className="users-subnum">{failedCount} fail/int</div>}
-                                </td>
-                                <td className="num">
+                                  <span className="users-handle">@{user.username}</span>
+                                </div>
+                              </td>
+                              <td>
+                                <span className={`users-auth-badge users-auth-${user.auth_provider}`}>
+                                  {user.auth_provider}
+                                </span>
+                              </td>
+                              <td className="num">
+                                <div>{formatNumber(chatCount)}</div>
+                                {failedCount > 0 && <div className="users-subnum">{failedCount} fail/int</div>}
+                              </td>
+                              <td className="num">
+                                <button
+                                  type="button"
+                                  className="users-link-btn"
+                                  onClick={() => setExpandedUserId(expandedUserId === user.id ? null : user.id)}
+                                  title="Show workspace operations"
+                                >
+                                  {row.ownedWorkspaceCount}
+                                </button>
+                              </td>
+                              <td className="num">{row.memberWorkspaceCount}</td>
+                              <td className="num">{row.workspaceConversationCount}</td>
+                              <td className="num">{row.liveWorkspaceCount}/{row.interruptedWorkspaceCount}</td>
+                              <td className="num">
+                                {row.ownedWorkspaceCount === 0 ? (
+                                  <span className="users-action-muted">-</span>
+                                ) : row.storageCoverage > 0 ? (
+                                  <div>
+                                    <div>{formatBytes(row.storageBytesKnown)}</div>
+                                    {row.storageCoverage < 1 && (
+                                      <div className="users-subnum">{Math.round(row.storageCoverage * 100)}% sampled</div>
+                                    )}
+                                  </div>
+                                ) : (
                                   <button
                                     type="button"
-                                    className="users-link-btn"
-                                    onClick={() => setExpandedUserId(expandedUserId === user.id ? null : user.id)}
-                                    title="Show workspace operations"
+                                    className="btn btn-sm btn-secondary users-btn-inline"
+                                    disabled={storageLoadingByUserId[user.id]}
+                                    onClick={() => handleComputeStorageForUser(user.id)}
                                   >
-                                    {row.ownedWorkspaceCount}
+                                    {storageLoadingByUserId[user.id] ? '...' : 'Compute'}
                                   </button>
-                                </td>
-                                <td className="num">{row.memberWorkspaceCount}</td>
-                                <td className="num">{row.workspaceConversationCount}</td>
-                                <td className="num">{row.liveWorkspaceCount}/{row.interruptedWorkspaceCount}</td>
-                                <td className="num">
-                                  {row.ownedWorkspaceCount === 0 ? (
-                                    <span className="users-action-muted">-</span>
-                                  ) : row.storageCoverage > 0 ? (
-                                    <div>
-                                      <div>{formatBytes(row.storageBytesKnown)}</div>
-                                      {row.storageCoverage < 1 && (
-                                        <div className="users-subnum">{Math.round(row.storageCoverage * 100)}% sampled</div>
-                                      )}
-                                    </div>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      className="btn btn-sm btn-secondary users-btn-inline"
-                                      disabled={storageLoadingByUserId[user.id]}
-                                      onClick={() => handleComputeStorageForUser(user.id)}
-                                    >
-                                      {storageLoadingByUserId[user.id] ? '...' : 'Compute'}
-                                    </button>
-                                  )}
-                                </td>
-                                <td>
-                                  {isRowSelf ? (
-                                    <span className="users-role-badge users-role-admin">{user.role}</span>
-                                  ) : (
-                                    <select
-                                      className="users-role-select"
-                                      value={user.role}
-                                      disabled={actionLoading === user.id}
-                                      onChange={(e) => handleRoleChange(user.id, e.target.value as 'admin' | 'user')}
-                                    >
-                                      <option value="user">user</option>
-                                      <option value="admin">admin</option>
-                                    </select>
-                                  )}
-                                </td>
-                                <td className="num">
-                                  {isRowSelf ? (
-                                    <span className="users-action-muted">-</span>
-                                  ) : (
-                                    <DeleteConfirmButton
-                                      onDelete={() => handleDelete(user.id)}
-                                      disabled={actionLoading === user.id}
-                                      deleting={actionLoading === user.id}
-                                      title="Delete user"
-                                    />
-                                  )}
+                                )}
+                              </td>
+                              <td>
+                                {isRowSelf ? (
+                                  <span className="users-role-badge users-role-admin">{user.role}</span>
+                                ) : (
+                                  <select
+                                    className="users-role-select"
+                                    value={user.role}
+                                    disabled={actionLoading === user.id}
+                                    onChange={(e) => handleRoleChange(user.id, e.target.value as 'admin' | 'user')}
+                                  >
+                                    <option value="user">user</option>
+                                    <option value="admin">admin</option>
+                                  </select>
+                                )}
+                              </td>
+                              <td className="num">
+                                {isRowSelf ? (
+                                  <span className="users-action-muted">-</span>
+                                ) : (
+                                  <DeleteConfirmButton
+                                    onDelete={() => handleDelete(user.id)}
+                                    disabled={actionLoading === user.id}
+                                    deleting={actionLoading === user.id}
+                                    title="Delete user"
+                                  />
+                                )}
+                              </td>
+                            </tr>
+                            {expandedUserId === user.id && (
+                              <tr key={`${user.id}-details`} className="users-workspace-detail-row">
+                                <td colSpan={10}>
+                                  <WorkspaceRowList
+                                    workspaces={row.ownedWorkspaces}
+                                    users={users}
+                                    onTransfer={handleTransferWorkspace}
+                                    onDelete={handleDeleteWorkspace}
+                                    emptyMessage="No owned workspaces."
+                                    renderMeta={(ws) => {
+                                      const state = workspaceStateById[ws.id];
+                                      const wsStorage = storageByWorkspaceId[ws.id];
+                                      const parts: string[] = [];
+                                      parts.push(`chats:${ws.conversation_ids.length}`);
+                                      parts.push(`members:${ws.members.length}`);
+                                      if (state?.has_live_task) parts.push('live');
+                                      if (state?.has_interrupted_task) parts.push('interrupted');
+                                      return (
+                                        <span className="admin-ws-item-date">
+                                          {parts.join(' ')} \u00b7 storage: {typeof wsStorage === 'number' ? formatBytes(wsStorage) : 'not sampled'}
+                                        </span>
+                                      );
+                                    }}
+                                  />
                                 </td>
                               </tr>
-                              {expandedUserId === user.id && (
-                                <tr key={`${user.id}-details`} className="users-workspace-detail-row">
-                                  <td colSpan={10}>
-                                    <WorkspaceRowList
-                                      workspaces={row.ownedWorkspaces}
-                                      users={users}
-                                      onTransfer={handleTransferWorkspace}
-                                      onDelete={handleDeleteWorkspace}
-                                      emptyMessage="No owned workspaces."
-                                      renderMeta={(ws) => {
-                                        const state = workspaceStateById[ws.id];
-                                        const wsStorage = storageByWorkspaceId[ws.id];
-                                        const parts: string[] = [];
-                                        parts.push(`chats:${ws.conversation_ids.length}`);
-                                        parts.push(`members:${ws.members.length}`);
-                                        if (state?.has_live_task) parts.push('live');
-                                        if (state?.has_interrupted_task) parts.push('interrupted');
-                                        return (
-                                          <span className="admin-ws-item-date">
-                                            {parts.join(' ')} \u00b7 storage: {typeof wsStorage === 'number' ? formatBytes(wsStorage) : 'not sampled'}
-                                          </span>
-                                        );
-                                      }}
-                                    />
-                                  </td>
-                                </tr>
-                              )}
-                            </Fragment>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                            )}
+                          </Fragment>
+                        );
+                      }}
+                    />
                   </div>
                   <TablePager
                     page={managementPaging.safePage}
@@ -1026,6 +1323,8 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
             </div>
           </div>
         </>
+      ) : usageLoadedDays === null ? (
+        <div className="card"><div className="card-body"><p>Loading usage data...</p></div></div>
       ) : (
         <>
           <div className="users-summary-row">
@@ -1095,32 +1394,23 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
               ) : (
                 <div className="users-data-slot">
                   <div className="users-table-wrap">
-                    <table className="users-table users-table-compact">
-                      <thead>
-                        <tr>
-                          <th>Date</th>
-                          <th className="num">Requests</th>
-                          <th className="num">Input Tokens</th>
-                          <th className="num">Output Tokens</th>
-                          <th className="num">Total Tokens</th>
-                          <th className="num">Completed</th>
-                          <th className="num">Failed</th>
+                    <DataTable
+                      rows={dailyPaging.pageItems}
+                      columns={dailyColumns}
+                      sortConfig={dailySort}
+                      onSort={(key) => handleSort(dailySort, key as DailySortKey, setDailySort)}
+                      renderRow={(row) => (
+                        <tr key={row.date}>
+                          <td>{row.date}</td>
+                          <td className="num">{formatNumber(row.total_requests)}</td>
+                          <td className="num">{formatNumber(row.total_input_tokens)}</td>
+                          <td className="num">{formatNumber(row.total_output_tokens)}</td>
+                          <td className="num">{formatNumber(row.total_tokens)}</td>
+                          <td className="num">{row.completed_count}</td>
+                          <td className="num">{row.failed_count}</td>
                         </tr>
-                      </thead>
-                      <tbody>
-                        {dailyPaging.pageItems.map((row) => (
-                          <tr key={row.date}>
-                            <td>{row.date}</td>
-                            <td className="num">{formatNumber(row.total_requests)}</td>
-                            <td className="num">{formatNumber(row.total_input_tokens)}</td>
-                            <td className="num">{formatNumber(row.total_output_tokens)}</td>
-                            <td className="num">{formatNumber(row.total_tokens)}</td>
-                            <td className="num">{row.completed_count}</td>
-                            <td className="num">{row.failed_count}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                      )}
+                    />
                   </div>
                   <TablePager
                     page={dailyPaging.safePage}
@@ -1170,35 +1460,26 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                   </div>
                   <div className="users-two-column-panel">
                     <div className="users-table-wrap">
-                      <table className="users-table users-table-compact">
-                        <thead>
-                          <tr>
-                            <th>User</th>
-                            <th className="num">Requests</th>
-                            <th className="num">Input Tokens</th>
-                            <th className="num">Output Tokens</th>
-                            <th className="num">Total Tokens</th>
-                            <th className="num">Completed</th>
-                            <th className="num">Failed</th>
+                      <DataTable
+                        rows={usagePaging.pageItems}
+                        columns={usageColumns}
+                        sortConfig={usageSort}
+                        onSort={(key) => handleSort(usageSort, key as UsageSortKey, setUsageSort)}
+                        renderRow={(row) => (
+                          <tr key={row.user_id}>
+                            <td>
+                              <span className="users-username">{row.display_name || row.username}</span>
+                              {row.display_name && <span className="users-handle">@{row.username}</span>}
+                            </td>
+                            <td className="num">{formatNumber(row.total_requests)}</td>
+                            <td className="num">{formatNumber(row.total_input_tokens)}</td>
+                            <td className="num">{formatNumber(row.total_output_tokens)}</td>
+                            <td className="num">{formatNumber(row.total_tokens)}</td>
+                            <td className="num">{row.completed_count}</td>
+                            <td className="num">{row.failed_count + row.interrupted_count}</td>
                           </tr>
-                        </thead>
-                        <tbody>
-                          {usagePaging.pageItems.map((row) => (
-                            <tr key={row.user_id}>
-                              <td>
-                                <span className="users-username">{row.display_name || row.username}</span>
-                                {row.display_name && <span className="users-handle">@{row.username}</span>}
-                              </td>
-                              <td className="num">{formatNumber(row.total_requests)}</td>
-                              <td className="num">{formatNumber(row.total_input_tokens)}</td>
-                              <td className="num">{formatNumber(row.total_output_tokens)}</td>
-                              <td className="num">{formatNumber(row.total_tokens)}</td>
-                              <td className="num">{row.completed_count}</td>
-                              <td className="num">{row.failed_count + row.interrupted_count}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                        )}
+                      />
                     </div>
                     <TablePager
                       page={usagePaging.safePage}
@@ -1225,16 +1506,30 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                     <table className="users-heatmap-table">
                       <thead>
                         <tr>
-                          <th className="users-heatmap-corner" />
+                          <th
+                            className="users-heatmap-corner"
+                            onClick={() => handleHeatmapSort('date')}
+                            style={{ cursor: 'pointer' }}
+                            title="Sort by date"
+                          >
+                            Date {heatmapSort.key === 'date' ? (heatmapSort.direction === 'asc' ? '\u2191' : '\u2193') : ''}
+                          </th>
                           {failureHeatmap.modelLabels.map((label, idx) => (
-                            <th key={idx} className="users-heatmap-col-header" title={failureHeatmap.models[idx]}>
+                            <th
+                              key={idx}
+                              className="users-heatmap-col-header"
+                              title={failureHeatmap.models[idx]}
+                              onClick={() => handleHeatmapSort(failureHeatmap.models[idx])}
+                              style={{ cursor: 'pointer' }}
+                            >
                               {label}
+                              {heatmapSort.key === failureHeatmap.models[idx] ? (heatmapSort.direction === 'asc' ? ' \u2191' : ' \u2193') : ''}
                             </th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {failureHeatmap.dates.map((date) => (
+                        {sortedHeatmapDates.map((date) => (
                           <tr key={date}>
                             <td className="users-heatmap-row-header">{date.slice(5)}</td>
                             {failureHeatmap.models.map((modelKey) => {
@@ -1315,30 +1610,22 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                   </div>
                   <div className="users-two-column-panel">
                     <div className="users-table-wrap">
-                      <table className="users-table users-table-compact">
-                        <thead>
-                          <tr>
-                            <th>Provider</th>
-                            <th>Model</th>
-                            <th className="num">Requests</th>
-                            <th className="num">Input Tokens</th>
-                            <th className="num">Output Tokens</th>
-                            <th className="num">Total Tokens</th>
+                      <DataTable
+                        rows={providerPaging.pageItems}
+                        columns={providerColumns}
+                        sortConfig={providerSort}
+                        onSort={(key) => handleSort(providerSort, key as ProviderSortKey, setProviderSort)}
+                        renderRow={(row) => (
+                          <tr key={`${row.provider}-${row.model}`}>
+                            <td>{formatProviderDisplayName(row.provider)}</td>
+                            <td>{formatModelDisplayName(row.model, row.provider)}</td>
+                            <td className="num">{formatNumber(row.total_requests)}</td>
+                            <td className="num">{formatNumber(row.total_input_tokens)}</td>
+                            <td className="num">{formatNumber(row.total_output_tokens)}</td>
+                            <td className="num">{formatNumber(row.total_tokens)}</td>
                           </tr>
-                        </thead>
-                        <tbody>
-                          {providerPaging.pageItems.map((row, i) => (
-                            <tr key={`${row.provider}-${row.model}-${i}`}>
-                              <td>{formatProviderDisplayName(row.provider)}</td>
-                              <td>{formatModelDisplayName(row.model, row.provider)}</td>
-                              <td className="num">{formatNumber(row.total_requests)}</td>
-                              <td className="num">{formatNumber(row.total_input_tokens)}</td>
-                              <td className="num">{formatNumber(row.total_output_tokens)}</td>
-                              <td className="num">{formatNumber(row.total_tokens)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                        )}
+                      />
                     </div>
                     <TablePager
                       page={providerPaging.safePage}
