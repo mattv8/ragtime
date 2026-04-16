@@ -2234,6 +2234,7 @@ interface ChatPanelProps {
   embedded?: boolean;
   readOnly?: boolean;
   readOnlyMessage?: string;
+  allowAdminReadOnlyBypass?: boolean;
 }
 
 export function ChatPanel({
@@ -2260,6 +2261,7 @@ export function ChatPanel({
   embedded = false,
   readOnly = false,
   readOnlyMessage,
+  allowAdminReadOnlyBypass = false,
 }: ChatPanelProps) {
   const MIN_INPUT_AREA_HEIGHT = 96;
   const INPUT_AREA_COLLAPSE_THRESHOLD = 80;
@@ -2310,6 +2312,7 @@ export function ChatPanel({
   const [isConnectionError, setIsConnectionError] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const isAdmin = currentUser.role === 'admin';
+  const isReadOnly = readOnly && !(allowAdminReadOnlyBypass && isAdmin);
   const effectiveReadOnlyMessage = readOnlyMessage || 'Workspace is read-only. Viewers can review messages but cannot send prompts.';
 
   // Inline confirmation for delete (conversation ID waiting for confirmation)
@@ -2492,7 +2495,7 @@ export function ChatPanel({
   const isConversationViewer = myConversationRole === 'viewer';
   const hasWorkspaceChatCollaboration = Boolean(workspaceId);
   const canManageConversationMembers = Boolean(activeConversation) && (hasWorkspaceChatCollaboration || isConversationOwner);
-  const canUseConversationTools = Boolean(activeConversation) && !readOnly && (hasWorkspaceChatCollaboration || !isConversationViewer);
+  const canUseConversationTools = Boolean(activeConversation) && !isReadOnly && (hasWorkspaceChatCollaboration || !isConversationViewer);
   const showPromptDebugButton = Boolean(debugMode && isAdmin && activeConversation);
 
   const toggleFullscreen = useCallback(() => {
@@ -3690,7 +3693,7 @@ export function ChatPanel({
   }, []);
 
   const createNewConversation = async () => {
-    if (readOnly) return;
+    if (isReadOnly) return;
     try {
       shouldAutoScrollRef.current = true;
       const conversation = await api.createConversation(undefined, workspaceId);
@@ -4183,7 +4186,7 @@ export function ChatPanel({
   };
 
   const startFreshConversation = async () => {
-    if (readOnly) return;
+    if (isReadOnly) return;
     // Start a fresh conversation and detach from any currently streaming one.
     shouldAutoScrollRef.current = true;
     try {
@@ -4269,7 +4272,7 @@ export function ChatPanel({
 
   // Direct message send - bypasses inputValue state for programmatic sending
   const sendMessageDirect = async (message: string) => {
-    if (!message.trim() || !activeConversation || isStreaming || readOnly) return;
+    if (!message.trim() || !activeConversation || isStreaming || isReadOnly) return;
     if (sendReadinessBlockReason) {
       setError(sendReadinessBlockReason);
       return;
@@ -4332,7 +4335,7 @@ export function ChatPanel({
   };
 
   const sendMessage = async () => {
-    if ((!inputValue.trim() && attachments.length === 0) || !activeConversation || isStreaming || readOnly) return;
+    if ((!inputValue.trim() && attachments.length === 0) || !activeConversation || isStreaming || isReadOnly) return;
     if (sendReadinessBlockReason) {
       setError(sendReadinessBlockReason);
       return;
@@ -4357,7 +4360,7 @@ export function ChatPanel({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (readOnly) return;
+    if (isReadOnly) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       if (isStreaming) return; // Allow typing while a response streams
 
@@ -4480,7 +4483,7 @@ export function ChatPanel({
   }, []);
 
   const retryFromMessage = useCallback(async (assistantIdx: number) => {
-    if (!activeConversation || isStreaming || readOnly) return;
+    if (!activeConversation || isStreaming || isReadOnly) return;
     const conversationId = activeConversation.id;
     // Find the user message that triggered this assistant reply.
     let userIdx = assistantIdx - 1;
@@ -4535,10 +4538,10 @@ export function ChatPanel({
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to retry message');
     }
-  }, [activeConversation, isStreaming, readOnly, preserveConversationBranch, workspaceId, refreshBranchPoints, connectTaskStream, syncConversationActiveTaskId]);
+  }, [activeConversation, isStreaming, isReadOnly, preserveConversationBranch, workspaceId, refreshBranchPoints, connectTaskStream, syncConversationActiveTaskId]);
 
   const submitEditMessage = async () => {
-    if (readOnly || !activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0)) return;
+    if (isReadOnly || !activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0)) return;
     shouldAutoScrollRef.current = true;
     const conversationId = activeConversation.id;
 
@@ -5178,7 +5181,7 @@ export function ChatPanel({
                     {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
                   </button>
                 )}
-                <button className="btn btn-sm btn-secondary chat-new-chat-btn" onClick={startFreshConversation} title="Start a new conversation" disabled={readOnly}>
+                <button className="btn btn-sm btn-secondary chat-new-chat-btn" onClick={startFreshConversation} title="Start a new conversation" disabled={isReadOnly}>
                   <MessageSquarePlus size={14} className="chat-new-chat-icon" aria-hidden="true" />
                   <span className="chat-new-chat-label">New Chat</span>
                 </button>
@@ -5475,7 +5478,7 @@ export function ChatPanel({
                                 <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
                                   {isCopied ? <Check size={12} /> : <Copy size={12} />}
                                 </button>
-                                {!isStreaming && !readOnly && (
+                                {!isStreaming && !isReadOnly && (
                                   <button className="chat-action-icon-btn" onClick={() => { const parsed = parseMessageContent(msg.content); startEditMessage(idx, parsed.text, parsed.attachments); }} title="Edit and resend">
                                     <Pencil size={12} />
                                   </button>
@@ -5499,7 +5502,7 @@ export function ChatPanel({
                                 <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
                                   {isCopied ? <Check size={12} /> : <Copy size={12} />}
                                 </button>
-                                {!isStreaming && !readOnly && (
+                                {!isStreaming && !isReadOnly && (
                                   <button className="chat-action-icon-btn" onClick={() => retryFromMessage(idx)} title="Retry">
                                     <RefreshCw size={12} />
                                   </button>
@@ -5590,7 +5593,7 @@ export function ChatPanel({
                 ((activeConversation.messages.length > 0 &&
                   activeConversation.messages[activeConversation.messages.length - 1].role === 'assistant' &&
                   (hitMaxIterations || isConnectionError)) ||
-                 interruptedTask) && !readOnly && (
+                 interruptedTask) && !isReadOnly && (
                 <div className="chat-continue-inline">
                   <span className="chat-continue-text">
                     Conversation interrupted, <button className="chat-continue-link" onClick={continueConversation}>continue?</button>
@@ -5636,7 +5639,7 @@ export function ChatPanel({
               className={`chat-input-area ${isManualResize ? 'manual-resize' : ''} ${autoResizeState ? 'auto-resizing' : ''} ${autoResizeState === 'shrinking' ? 'shrinking' : ''}`.trim().replace(/\s+/g, ' ')}
               style={isMessagesCollapsed ? { flex: 1, minHeight: 'auto' } : { height: `${inputAreaHeight}px`, minHeight: `${inputAreaHeight}px` }}
             >
-              {readOnly && (
+              {isReadOnly && (
                 <div className="chat-readonly-note" role="status">
                   {effectiveReadOnlyMessage}
                 </div>
@@ -5645,17 +5648,17 @@ export function ChatPanel({
                 <FileAttachment
                   attachments={attachments}
                   onAttachmentsChange={setAttachments}
-                  disabled={readOnly || isStreaming}
+                  disabled={isReadOnly || isStreaming}
                 />
                 <textarea
                   ref={inputRef}
                   value={inputValue}
                   onChange={handleInputChange}
                   onKeyDown={handleKeyDown}
-                  placeholder={readOnly ? effectiveReadOnlyMessage : 'Ask a question or paste an image (Ctrl+V)...'}
+                  placeholder={isReadOnly ? effectiveReadOnlyMessage : 'Ask a question or paste an image (Ctrl+V)...'}
                   rows={1}
                   className="chat-input"
-                  disabled={readOnly}
+                  disabled={isReadOnly}
                 />
                 {isStreaming ? (
                   <div className="chat-input-inline-actions">
@@ -5685,7 +5688,7 @@ export function ChatPanel({
                     </button>
                   </div>
                 ) : (
-                  !readOnly && (
+                  !isReadOnly && (
                     <div className="chat-input-inline-actions">
                       {showInlineToolSelector && (
                         <ToolSelectorDropdown

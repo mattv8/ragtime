@@ -5973,6 +5973,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 onOpenWorkspaceFile={handleSelectFile}
                 embedded
                 readOnly={false}
+                allowAdminReadOnlyBypass={isAdminImpersonating}
                 inputBanner={branchRestoreSnapshotId ? (
                   <div className="chat-branch-restore-banner">
                     <span>This branch has an associated code snapshot.</span>
