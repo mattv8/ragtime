@@ -21,7 +21,7 @@ import weakref
 from collections.abc import Callable
 from typing import Any, cast
 
-from mcp.server import Server
+from mcp.server import NotificationOptions, Server
 from mcp.server.session import ServerSession
 from mcp.types import TextContent, Tool
 
@@ -66,8 +66,31 @@ def _to_mcp_server_id(server_name: str | None) -> str:
 def _create_server(server_id: str) -> Server:
     """Create a new MCP server instance with default handlers registered."""
     server = Server(server_id)
+    _enable_dynamic_tool_refresh(server)
     _register_handlers(server)
     return server
+
+
+def _enable_dynamic_tool_refresh(server: Server) -> None:
+    """Advertise tools/listChanged by default for all Ragtime MCP servers."""
+    original_create_initialization_options = server.create_initialization_options
+
+    def create_initialization_options_with_tool_refresh(
+        notification_options: NotificationOptions | None = None,
+        experimental_capabilities: dict[str, dict[str, Any]] | None = None,
+    ):
+        effective_notification_options = notification_options
+        if effective_notification_options is None:
+            effective_notification_options = NotificationOptions(tools_changed=True)
+
+        return original_create_initialization_options(
+            notification_options=effective_notification_options,
+            experimental_capabilities=experimental_capabilities,
+        )
+
+    server.create_initialization_options = (
+        create_initialization_options_with_tool_refresh
+    )
 
 
 def register_tools_changed_callback(callback: Callable[[], None]) -> None:
@@ -312,6 +335,7 @@ async def get_custom_route_server(
     route_server_name = f"{server_name}-{route_path}"
 
     server = Server(route_server_name)
+    _enable_dynamic_tool_refresh(server)
     _register_handlers(server, adapter, route_filter)
     _custom_route_servers[route_path] = server
 
@@ -382,6 +406,7 @@ async def get_default_route_filtered_server(
     filter_server_name = f"{server_name}-filter-{filter_id[:8]}"
 
     server = Server(filter_server_name)
+    _enable_dynamic_tool_refresh(server)
     _register_handlers(server, adapter, route_filter)
     _default_filter_servers[filter_id] = server
 
@@ -415,7 +440,6 @@ async def run_mcp_server(transport: str = "stdio") -> None:
 
     try:
         if transport == "stdio":
-            from mcp.server.lowlevel import NotificationOptions
             from mcp.server.stdio import stdio_server
 
             default_server = await get_mcp_server()
