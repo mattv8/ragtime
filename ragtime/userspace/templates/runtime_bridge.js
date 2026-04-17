@@ -25,6 +25,22 @@
     return origin || '*';
   }
 
+  function normalizeOrigin(value) {
+    try {
+      var parsed = new URL(String(value || ''));
+      var protocol = parsed.protocol || '';
+      var hostname = parsed.hostname || '';
+      var port = parsed.port || '';
+      if ((protocol === 'https:' && port === '443') || (protocol === 'http:' && port === '80')) {
+        port = '';
+      }
+      if (!protocol || !hostname) return '';
+      return protocol + '//' + hostname + (port ? ':' + port : '');
+    } catch (error) {
+      return String(value || '').trim();
+    }
+  }
+
   function hasDataTables() {
     return !!(window.jQuery && window.jQuery.fn && window.jQuery.fn.DataTable);
   }
@@ -279,12 +295,30 @@
       return;
     }
 
-    fetch(executeUrl, {
+    var controller = null;
+    var abortTimer = null;
+    try {
+      if (typeof AbortController === 'function') {
+        controller = new AbortController();
+        abortTimer = setTimeout(function () {
+          try { controller.abort(); } catch (_e) { /* noop */ }
+        }, T);
+      }
+    } catch (_e) {
+      controller = null;
+    }
+
+    var fetchOpts = {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ component_id: componentId, request: request || {} }),
-    })
+    };
+    if (controller) {
+      fetchOpts.signal = controller.signal;
+    }
+
+    fetch(executeUrl, fetchOpts)
       .then(function (response) {
         return response
           .json()
@@ -292,6 +326,7 @@
           .then(function (payload) { return { ok: response.ok, payload: payload }; });
       })
       .then(function (result) {
+        if (abortTimer) { clearTimeout(abortTimer); abortTimer = null; }
         if (result.ok) {
           resolve(result.payload || { rows: [], columns: [], row_count: 0 });
           return;
@@ -305,11 +340,15 @@
         });
       })
       .catch(function (error) {
+        if (abortTimer) { clearTimeout(abortTimer); abortTimer = null; }
+        var isAbort = error && (error.name === 'AbortError' || error.code === 20);
         resolve({
           rows: [],
           columns: [],
           row_count: 0,
-          error: error && error.message ? error.message : String(error),
+          error: isAbort
+            ? ('Live data execution timed out after ' + T_LABEL)
+            : (error && error.message ? error.message : String(error)),
         });
       });
   }
@@ -327,31 +366,46 @@
         }
 
         var parentOrigin = getParentOrigin();
-        var expectedParentOrigin = parentOrigin === '*' ? '' : parentOrigin;
+        var expectedParentOrigin = parentOrigin === '*' ? '' : normalizeOrigin(parentOrigin);
+        var completed = false;
 
         var timer = setTimeout(function () {
+          if (completed) return;
+          completed = true;
           window.removeEventListener('message', handler);
-          resolve({ rows: [], columns: [], row_count: 0, error: 'Execute timed out after ' + T_LABEL + '. An admin can increase the tool timeout in Settings > Tools.' });
+          // If parent-window bridge messaging is unavailable, fall back to
+          // same-origin direct execution using the preview session.
+          executeDirect(componentId, request, resolve);
         }, T);
         function handler(event) {
+          if (completed) return;
           if (event.source !== window.parent) return;
-          if (expectedParentOrigin && event.origin !== expectedParentOrigin) return;
+          if (expectedParentOrigin && normalizeOrigin(event.origin) !== expectedParentOrigin) return;
           if (
             event.data &&
             event.data.bridge === B &&
             event.data.type === R &&
             event.data.callId === callId
           ) {
+            completed = true;
             window.removeEventListener('message', handler);
             clearTimeout(timer);
             resolve(event.data.result || { rows: [], columns: [], row_count: 0, error: 'Empty response' });
           }
         }
         window.addEventListener('message', handler);
-        window.parent.postMessage(
-          { bridge: B, type: E, callId: callId, component_id: componentId, request: request || {} },
-          parentOrigin
-        );
+        try {
+          window.parent.postMessage(
+            { bridge: B, type: E, callId: callId, component_id: componentId, request: request || {} },
+            parentOrigin
+          );
+        } catch (error) {
+          if (completed) return;
+          completed = true;
+          window.removeEventListener('message', handler);
+          clearTimeout(timer);
+          executeDirect(componentId, request, resolve);
+        }
       });
     };
   }

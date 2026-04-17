@@ -46,6 +46,21 @@ export function UserSpaceArtifactPreview({
   const [sandboxSettingsStatus, setSandboxSettingsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [sandboxBlockedMessage, setSandboxBlockedMessage] = useState<string | null>(null);
 
+  const normalizeOrigin = useCallback((value: string | null | undefined): string => {
+    const raw = (value || '').trim();
+    if (!raw) return '';
+    try {
+      const parsed = new URL(raw);
+      let port = parsed.port;
+      if ((parsed.protocol === 'https:' && port === '443') || (parsed.protocol === 'http:' && port === '80')) {
+        port = '';
+      }
+      return `${parsed.protocol}//${parsed.hostname}${port ? `:${port}` : ''}`;
+    } catch {
+      return raw;
+    }
+  }, []);
+
   const expectedPreviewOrigin = useMemo(() => {
     if (runtimePreviewOrigin) {
       return runtimePreviewOrigin;
@@ -58,14 +73,23 @@ export function UserSpaceArtifactPreview({
     }
   }, [runtimePreviewOrigin, runtimePreviewUrl]);
 
+  const normalizedExpectedPreviewOrigin = useMemo(
+    () => normalizeOrigin(expectedPreviewOrigin),
+    [expectedPreviewOrigin, normalizeOrigin],
+  );
+
   const handleIframeMessage = useCallback(
     async (event: MessageEvent) => {
       const frameWindow = iframeRef.current?.contentWindow;
       if (!frameWindow || event.source !== frameWindow) return;
 
+      const normalizedEventOrigin = normalizeOrigin(event.origin);
+
       const isExpectedOrigin =
         event.origin === 'null'
-        || (expectedPreviewOrigin ? event.origin === expectedPreviewOrigin : false);
+        || (normalizedExpectedPreviewOrigin
+          ? normalizedEventOrigin === normalizedExpectedPreviewOrigin
+          : false);
       if (!isExpectedOrigin) return;
 
       if (!event.data || event.data.bridge !== USERSPACE_EXEC_BRIDGE) return;
@@ -96,16 +120,24 @@ export function UserSpaceArtifactPreview({
       setPendingExecutions((c) => c + 1);
 
       const sendResult = (result: unknown) => {
-        frameWindow.postMessage(
-          {
-            bridge: USERSPACE_EXEC_BRIDGE,
-            type: USERSPACE_EXEC_MESSAGE_TYPES.RESULT,
-            callId,
-            result,
-          },
-          '*',
-        );
-        setPendingExecutions((c) => Math.max(0, c - 1));
+        try {
+          frameWindow.postMessage(
+            {
+              bridge: USERSPACE_EXEC_BRIDGE,
+              type: USERSPACE_EXEC_MESSAGE_TYPES.RESULT,
+              callId,
+              result,
+            },
+            '*',
+          );
+        } catch (postErr) {
+          // Iframe may have unmounted or navigated mid-execute. Swallow so we
+          // always reach the pending-counter decrement; bridge child has its
+          // own timeout fallback for unanswered calls.
+          console.warn('[UserSpacePreview] failed to deliver execute result:', postErr);
+        } finally {
+          setPendingExecutions((c) => Math.max(0, c - 1));
+        }
       };
 
       if (!workspaceId && !shareToken && !(ownerUsername && shareSlug)) {
@@ -147,7 +179,7 @@ export function UserSpaceArtifactPreview({
         });
       }
     },
-    [expectedPreviewOrigin, workspaceId, shareToken, ownerUsername, shareSlug],
+    [normalizeOrigin, normalizedExpectedPreviewOrigin, workspaceId, shareToken, ownerUsername, shareSlug],
   );
 
   useEffect(() => {
