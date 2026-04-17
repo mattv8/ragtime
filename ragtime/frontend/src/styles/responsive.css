@@ -81,6 +81,15 @@
     gap: var(--space-sm);
   }
 
+  .warnings-banner-compact .warnings-banner-content {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .warnings-banner-dismiss {
+    margin-left: 0;
+  }
+
   .topnav-username {
     font-size: var(--text-xs);
   }

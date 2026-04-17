@@ -58,6 +58,7 @@ UserSpacePreviewRoutingMode = Literal["subdomain", "root_proxy"]
 UserSpacePreviewWarningSource = Literal["configured", "derived", "debug_default"]
 UserSpacePreviewWarningCode = Literal[
     "preview_dns_unresolvable",
+    "preview_host_unreachable",
     "preview_dev_domain_outside_debug",
 ]
 WorkspaceDeleteTaskPhase = Literal[

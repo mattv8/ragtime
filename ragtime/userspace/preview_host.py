@@ -16,6 +16,11 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import JSONResponse
 
 from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse
+from ragtime.userspace.preview_probe import (
+    PREVIEW_HOST_PROBE_HEADER,
+    PREVIEW_HOST_PROBE_PATH,
+    PREVIEW_HOST_PROBE_VALUE,
+)
 from ragtime.userspace.runtime_routes import (
     _PROXY_METHODS,
     _proxy_http_request,
@@ -448,6 +453,17 @@ async def preview_bootstrap(request: Request, grant: str):
         path="/",
     )
     return response
+
+
+@preview_host_app.get(PREVIEW_HOST_PROBE_PATH)
+async def preview_probe() -> Response:
+    return Response(
+        status_code=204,
+        headers={
+            PREVIEW_HOST_PROBE_HEADER: PREVIEW_HOST_PROBE_VALUE,
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @preview_host_app.get("/__ragtime/bridge.js")

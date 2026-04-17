@@ -659,6 +659,7 @@ export function App() {
         title={previewWarning?.title || 'Userspace Preview Setup'}
         warnings={previewWarning?.warnings || []}
         dismissKey={previewWarning?.dismiss_key}
+        compact
         hidden={hideChrome || !isAdmin}
       />
       <div className="container">

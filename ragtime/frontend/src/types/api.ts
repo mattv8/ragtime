@@ -2492,7 +2492,7 @@ export interface UserSpacePreviewLaunchRequest {
 
 export type UserSpacePreviewRoutingMode = 'subdomain' | 'root_proxy';
 export type UserSpacePreviewWarningSource = 'configured' | 'derived' | 'debug_default';
-export type UserSpacePreviewWarningCode = 'preview_dns_unresolvable' | 'preview_dev_domain_outside_debug';
+export type UserSpacePreviewWarningCode = 'preview_dns_unresolvable' | 'preview_host_unreachable' | 'preview_dev_domain_outside_debug';
 
 export interface UserSpacePreviewWarning {
   issue_code: UserSpacePreviewWarningCode;

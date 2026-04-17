@@ -238,6 +238,65 @@ body {
 }
 
 /* =============================================================================
+   WARNINGS BANNER
+   ============================================================================= */
+
+.warnings-banner {
+  width: 100%;
+  max-width: var(--container-max-width);
+  margin: 0 auto var(--space-md);
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  color: #fbbf24;
+}
+
+.warnings-banner-content {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+}
+
+.warnings-banner-title {
+  color: #fbbf24;
+  flex-shrink: 0;
+}
+
+.warnings-banner-summary {
+  flex: 1;
+  min-width: 0;
+  color: #fcd34d;
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.warnings-banner-dismiss {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: #fbbf24;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.warnings-banner-list {
+  margin: var(--space-sm) 0 0;
+  padding-left: 20px;
+}
+
+.warnings-banner-item {
+  color: #fcd34d;
+  font-size: 0.9rem;
+}
+
+.warnings-banner-compact .warnings-banner-content {
+  align-items: center;
+}
+
+/* =============================================================================
    CONFIGURATION BANNER
    ============================================================================= */
 

@@ -9,13 +9,21 @@ interface WarningsBannerProps {
   hidden?: boolean;
   /** Optional session storage key for dismissible warnings */
   dismissKey?: string;
+  /** Render warnings as a compact summary instead of a bullet list */
+  compact?: boolean;
 }
 
 /**
  * Reusable banner for displaying analysis warnings.
  * Used by GitIndexWizard, UploadForm, and ToolWizard during analysis review.
  */
-export function WarningsBanner({ warnings, title = 'Warnings:', hidden = false, dismissKey }: WarningsBannerProps) {
+export function WarningsBanner({
+  warnings,
+  title = 'Warnings:',
+  hidden = false,
+  dismissKey,
+  compact = false,
+}: WarningsBannerProps) {
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
@@ -29,6 +37,9 @@ export function WarningsBanner({ warnings, title = 'Warnings:', hidden = false, 
   if (warnings.length === 0) return null;
   if (hidden || dismissed) return null;
 
+  const summary = warnings.join(' ');
+  const bannerClassName = compact ? 'warnings-banner warnings-banner-compact' : 'warnings-banner';
+
   const handleDismiss = () => {
     if (dismissKey) {
       sessionStorage.setItem(dismissKey, 'true');
@@ -37,48 +48,29 @@ export function WarningsBanner({ warnings, title = 'Warnings:', hidden = false, 
   };
 
   return (
-    <div
-      style={{
-        background: 'rgba(251, 191, 36, 0.1)',
-        border: '1px solid rgba(251, 191, 36, 0.3)',
-        borderRadius: '8px',
-        padding: '12px',
-        marginBottom: '16px',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '12px',
-        }}
-      >
-        <strong style={{ color: '#fbbf24' }}>{title}</strong>
+    <div className={bannerClassName}>
+      <div className="warnings-banner-content">
+        <strong className="warnings-banner-title">{title}</strong>
+        {compact ? <span className="warnings-banner-summary">{summary}</span> : null}
         {dismissKey ? (
           <button
             type="button"
             onClick={handleDismiss}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: '#fbbf24',
-              cursor: 'pointer',
-              fontSize: '0.9rem',
-              padding: 0,
-            }}
+            className="warnings-banner-dismiss"
           >
             Dismiss
           </button>
         ) : null}
       </div>
-      <ul style={{ margin: '8px 0 0 0', paddingLeft: '20px' }}>
-        {warnings.map((warning, i) => (
-          <li key={i} style={{ color: '#fbbf24', fontSize: '0.9rem' }}>
-            {warning}
-          </li>
-        ))}
-      </ul>
+      {!compact ? (
+        <ul className="warnings-banner-list">
+          {warnings.map((warning, i) => (
+            <li key={i} className="warnings-banner-item">
+              {warning}
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

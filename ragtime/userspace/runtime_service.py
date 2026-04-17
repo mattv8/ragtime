@@ -26,18 +26,25 @@ from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.core.workspace_ops import normalize_runtime_file_path
 from ragtime.indexer.workspace_state import build_workspace_chat_state
-from ragtime.userspace.models import (RuntimeOperationPhase,
-                                      RuntimeSessionState,
-                                      UserSpaceCapabilityTokenResponse,
-                                      UserSpaceCollabSnapshotResponse,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpacePreviewLaunchResponse,
-                                      UserSpacePreviewWarning,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSession,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse,
-                                      UserSpaceWorkspaceTabStateResponse)
+from ragtime.userspace.models import (
+    RuntimeOperationPhase,
+    RuntimeSessionState,
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceCollabSnapshotResponse,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpacePreviewLaunchResponse,
+    UserSpacePreviewWarning,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSession,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+    UserSpaceWorkspaceTabStateResponse,
+)
+from ragtime.userspace.preview_probe import (
+    build_preview_probe_url,
+    is_preview_probe_response,
+)
 from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
 from ragtime.userspace.service import userspace_service
 
@@ -57,6 +64,8 @@ _RUNTIME_PREVIEW_UPSTREAM_CACHE_TTL_SECONDS = 300
 _RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS = 2.0
 _RUNTIME_PROVIDER_STATUS_STALE_FALLBACK_SECONDS = 8.0
 _RUNTIME_PREVIEW_PROBE_CACHE_TTL_SECONDS = 3.0
+_RUNTIME_PUBLIC_PREVIEW_DNS_CACHE_TTL_SECONDS = 30.0
+_RUNTIME_PUBLIC_PREVIEW_PROBE_CACHE_TTL_SECONDS = 30.0
 
 
 @dataclass
@@ -112,6 +121,9 @@ class UserSpaceRuntimeService:
         self._preview_upstream_cache: dict[str, _PreviewUpstreamCacheEntry] = {}
         self._provider_status_cache: dict[str, _ProviderStatusCacheEntry] = {}
         self._preview_probe_cache: dict[str, _PreviewProbeCacheEntry] = {}
+        self._public_preview_dns_cache: dict[str, _PreviewProbeCacheEntry] = {}
+        self._public_preview_probe_cache: dict[str, _PreviewProbeCacheEntry] = {}
+        self._probe_tasks: dict[str, asyncio.Task[bool]] = {}
         self._runtime_watch_task: asyncio.Task[None] | None = None
         self._runtime_watch_task_lock = asyncio.Lock()
         self._runtime_watch_interval_seconds = float(
@@ -224,7 +236,7 @@ class UserSpaceRuntimeService:
             domains.add(_DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN)
         return domains
 
-    def _build_preview_launch_warning(
+    async def _build_preview_launch_warning(
         self,
         *,
         preview_origin: str,
@@ -247,9 +259,8 @@ class UserSpaceRuntimeService:
                 issue_code="preview_dev_domain_outside_debug",
                 title="Userspace preview domain is using the dev-only default",
                 warnings=[
-                    "The preview host currently resolves under userspace-preview.lvh.me, which is intended for DEBUG_MODE localhost development only.",
-                    "Unset USERSPACE_PREVIEW_BASE_DOMAIN to auto-derive preview hosts from your deployed Ragtime origin, or set it to a real wildcard preview domain.",
-                    "Configure wildcard DNS and TLS for the preview host family before relying on subdomain previews remotely.",
+                    "userspace-preview.lvh.me is only meant for local DEBUG_MODE development.",
+                    "Either set USERSPACE_PREVIEW_BASE_DOMAIN to a real wildcard DNS/TLS domain, or unset it to auto-derive from your Ragtime origin.",
                 ],
                 dismiss_key=f"userspace-preview-warning:{resolved_base_domain}:dev-domain",
                 resolved_base_domain=resolved_base_domain,
@@ -258,23 +269,29 @@ class UserSpaceRuntimeService:
             )
 
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        try:
-            socket.getaddrinfo(preview_host, port, type=socket.SOCK_STREAM)
-        except OSError:
-            derived_hint = (
-                "Leave USERSPACE_PREVIEW_BASE_DOMAIN unset to keep deriving preview hosts from the current Ragtime origin."
-                if source == "derived"
-                else f"Verify USERSPACE_PREVIEW_BASE_DOMAIN points at a wildcard-enabled host family such as {resolved_base_domain}."
-            )
+        if not await self._resolve_preview_host_cached(preview_host, port):
             return UserSpacePreviewWarning(
                 issue_code="preview_dns_unresolvable",
                 title="Userspace preview DNS is not resolving",
                 warnings=[
-                    f"The preview host {preview_host} did not resolve during launch-time checks, so new subdomain previews are likely to fail to load.",
-                    derived_hint,
-                    f"Configure wildcard DNS and TLS for *.{resolved_base_domain} so requests route back to Ragtime.",
+                    f"{preview_host} did not resolve during preview launch checks.",
+                    f"Either configure wildcard DNS/TLS for *.{resolved_base_domain} pointing back to Ragtime, or set USERSPACE_PREVIEW_BASE_DOMAIN to a domain with working wildcard resolution.",
                 ],
                 dismiss_key=f"userspace-preview-warning:{resolved_base_domain}:dns",
+                resolved_base_domain=resolved_base_domain,
+                preview_host=preview_host,
+                source=cast(Any, source),
+            )
+
+        if not await self._probe_public_preview_origin_cached(preview_origin):
+            return UserSpacePreviewWarning(
+                issue_code="preview_host_unreachable",
+                title="Userspace preview subdomains are not reaching Ragtime",
+                warnings=[
+                    f"{preview_host} resolves in DNS but does not reach Ragtime's public preview endpoint.",
+                    f"Either fix wildcard routing/TLS for *.{resolved_base_domain} to reach Ragtime, or set USERSPACE_PREVIEW_BASE_DOMAIN to a domain with working wildcard proxy.",
+                ],
+                dismiss_key=f"userspace-preview-warning:{resolved_base_domain}:routing",
                 resolved_base_domain=resolved_base_domain,
                 preview_host=preview_host,
                 source=cast(Any, source),
@@ -342,7 +359,7 @@ class UserSpaceRuntimeService:
             normalized = f"{normalized}?{query}"
         return normalized
 
-    def _build_workspace_preview_launch_response(
+    async def _build_workspace_preview_launch_response(
         self,
         *,
         workspace_id: str,
@@ -384,16 +401,17 @@ class UserSpaceRuntimeService:
             ttl_seconds=_RUNTIME_PREVIEW_BOOTSTRAP_TTL_SECONDS,
         )
         bootstrap_query = urlencode({"grant": grant_token})
+        preview_warning = await self._build_preview_launch_warning(
+            preview_origin=preview_origin,
+            resolved_base_domain=resolved_base_domain,
+            source=source,
+        )
         return UserSpacePreviewLaunchResponse(
             workspace_id=workspace_id,
             preview_origin=preview_origin,
             preview_url=f"{preview_origin}/__ragtime/bootstrap?{bootstrap_query}",
             expires_at=expires_at,
-            preview_warning=self._build_preview_launch_warning(
-                preview_origin=preview_origin,
-                resolved_base_domain=resolved_base_domain,
-                source=source,
-            ),
+            preview_warning=preview_warning,
         )
 
     def build_preview_session_token(
@@ -748,41 +766,130 @@ class UserSpaceRuntimeService:
     ) -> None:
         await self.invalidate_preview_session_cache(workspace_id)
         if invalidate_preview_host:
-            from ragtime.userspace.preview_host import \
-                invalidate_preview_sessions_for_workspace
+            from ragtime.userspace.preview_host import (
+                invalidate_preview_sessions_for_workspace,
+            )
 
             await invalidate_preview_sessions_for_workspace(workspace_id)
 
-    async def _get_cached_preview_probe_result(
+    async def _get_cached_probe_result(
         self,
-        workspace_id: str,
+        cache: dict[str, _PreviewProbeCacheEntry],
+        key: str,
+        *,
+        max_age_seconds: float,
     ) -> bool | None:
         async with self._runtime_cache_lock:
-            entry = self._preview_probe_cache.get(workspace_id)
+            entry = cache.get(key)
             if entry is None:
                 return None
             if not self._cache_entry_is_fresh(
                 entry.checked_at,
-                _RUNTIME_PREVIEW_PROBE_CACHE_TTL_SECONDS,
+                max_age_seconds,
             ):
                 return None
             return entry.ok
+
+    async def _cache_probe_result(
+        self,
+        cache: dict[str, _PreviewProbeCacheEntry],
+        key: str,
+        ok: bool,
+    ) -> None:
+        async with self._runtime_cache_lock:
+            cache[key] = _PreviewProbeCacheEntry(ok=ok, checked_at=self._utc_now())
+
+    async def _run_cached_probe(
+        self,
+        *,
+        cache: dict[str, _PreviewProbeCacheEntry],
+        cache_key: str,
+        ttl_seconds: float,
+        inflight_key: str,
+        probe: Callable[[], Any],
+    ) -> bool:
+        cached = await self._get_cached_probe_result(
+            cache,
+            cache_key,
+            max_age_seconds=ttl_seconds,
+        )
+        if cached is not None:
+            return cached
+
+        async with self._runtime_cache_lock:
+            task = self._probe_tasks.get(inflight_key)
+            if task is None:
+                task = asyncio.create_task(probe())
+                self._probe_tasks[inflight_key] = task
+
+        try:
+            ok = bool(await task)
+        except Exception:
+            ok = False
+        finally:
+            async with self._runtime_cache_lock:
+                if self._probe_tasks.get(inflight_key) is task:
+                    self._probe_tasks.pop(inflight_key, None)
+
+        await self._cache_probe_result(cache, cache_key, ok)
+        return ok
 
     async def _probe_preview_base_url_cached(
         self,
         workspace_id: str,
         base_url: str,
     ) -> bool:
-        cached = await self._get_cached_preview_probe_result(workspace_id)
-        if cached is not None:
-            return cached
-        ok = await self._probe_preview_base_url(base_url)
-        async with self._runtime_cache_lock:
-            self._preview_probe_cache[workspace_id] = _PreviewProbeCacheEntry(
-                ok=ok,
-                checked_at=self._utc_now(),
+        return await self._run_cached_probe(
+            cache=self._preview_probe_cache,
+            cache_key=workspace_id,
+            ttl_seconds=_RUNTIME_PREVIEW_PROBE_CACHE_TTL_SECONDS,
+            inflight_key=f"workspace-preview:{workspace_id}",
+            probe=lambda: self._probe_preview_base_url(base_url),
+        )
+
+    async def _resolve_preview_host_cached(self, preview_host: str, port: int) -> bool:
+        cache_key = f"{preview_host}:{port}"
+        return await self._run_cached_probe(
+            cache=self._public_preview_dns_cache,
+            cache_key=cache_key,
+            ttl_seconds=_RUNTIME_PUBLIC_PREVIEW_DNS_CACHE_TTL_SECONDS,
+            inflight_key=f"dns:{cache_key}",
+            probe=lambda: self._resolve_preview_host(preview_host, port),
+        )
+
+    async def _resolve_preview_host(self, preview_host: str, port: int) -> bool:
+        try:
+            await asyncio.to_thread(
+                socket.getaddrinfo,
+                preview_host,
+                port,
+                type=socket.SOCK_STREAM,
             )
-        return ok
+        except OSError:
+            return False
+        return True
+
+    async def _probe_public_preview_origin_cached(self, preview_origin: str) -> bool:
+        probe_url = build_preview_probe_url(preview_origin)
+        return await self._run_cached_probe(
+            cache=self._public_preview_probe_cache,
+            cache_key=probe_url,
+            ttl_seconds=_RUNTIME_PUBLIC_PREVIEW_PROBE_CACHE_TTL_SECONDS,
+            inflight_key=f"public-preview:{probe_url}",
+            probe=lambda: self._probe_public_preview_origin(probe_url),
+        )
+
+    async def _probe_public_preview_origin(self, probe_url: str) -> bool:
+        timeout = httpx.Timeout(connect=1.0, read=1.0, write=1.0, pool=0.5)
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=False,
+            ) as client:
+                response = await client.get(probe_url)
+        except Exception:
+            return False
+        return is_preview_probe_response(response.status_code, response.headers)
 
     async def _probe_preview_base_url(self, base_url: str) -> bool:
         health_candidates = ["/", "/@vite/client"]
@@ -1492,7 +1599,7 @@ class UserSpaceRuntimeService:
         parent_origin: str | None = None,
     ) -> UserSpacePreviewLaunchResponse:
         await self.ensure_workspace_preview_session(workspace_id, user_id)
-        return self._build_workspace_preview_launch_response(
+        return await self._build_workspace_preview_launch_response(
             workspace_id=workspace_id,
             subject_user_id=user_id,
             control_plane_origin=control_plane_origin,
@@ -1516,7 +1623,7 @@ class UserSpaceRuntimeService:
     ) -> UserSpacePreviewLaunchResponse:
         await self.ensure_shared_preview_session(workspace_id)
         mode = "share_token" if share_token else "share_slug"
-        return self._build_workspace_preview_launch_response(
+        return await self._build_workspace_preview_launch_response(
             workspace_id=workspace_id,
             subject_user_id=subject_user_id,
             control_plane_origin=control_plane_origin,
@@ -2088,9 +2195,9 @@ class UserSpaceRuntimeService:
             order={"name": "asc"},
         )
         names_by_id = {
-            str(getattr(row, "id", "") or "").strip(): str(
-                getattr(row, "name", "") or ""
-            ).strip()
+            str(getattr(row, "id", "") or "")
+            .strip(): str(getattr(row, "name", "") or "")
+            .strip()
             for row in workspace_rows
         }
         return [
@@ -2113,7 +2220,10 @@ class UserSpaceRuntimeService:
             )
 
         session = self._to_runtime_session(active)
-        if session.state not in {"running", "starting"} or not session.provider_session_id:
+        if (
+            session.state not in {"running", "starting"}
+            or not session.provider_session_id
+        ):
             raise HTTPException(
                 status_code=404,
                 detail="Runtime session is no longer active",
@@ -2146,7 +2256,9 @@ class UserSpaceRuntimeService:
                     detail="Runtime session is no longer active",
                 )
 
-            phase_value = str(provider_status.get("runtime_operation_phase") or "").strip()
+            phase_value = str(
+                provider_status.get("runtime_operation_phase") or ""
+            ).strip()
             runtime_operation_phase: RuntimeOperationPhase | None = None
             if phase_value in allowed_runtime_phases:
                 runtime_operation_phase = cast(RuntimeOperationPhase, phase_value)
