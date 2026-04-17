@@ -18,6 +18,7 @@ from ragtime.config import settings
 from ragtime.core.api_accounting import log_api_request
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
+from ragtime.core.security import get_current_user_optional
 from ragtime.indexer.background_tasks import rebuild_tool_messages_from_events
 from ragtime.indexer.routes import get_available_chat_models
 from ragtime.models import (
@@ -259,7 +260,9 @@ async def verify_api_key(authorization: Optional[str] = Header(None)):
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check(
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+):
     """Health check endpoint.
 
     Returns progressive loading status:
@@ -268,8 +271,11 @@ async def health_check():
     - indexes_ready: True when all indexes are loaded
     - memory: Real-time process memory statistics
     - index_details: Per-index loading status with timing info
+
+    Unauthenticated callers receive only readiness-focused fields. Detailed
+    model/provider/index/memory information is returned only to
+    authenticated users to avoid disclosing deployment posture publicly.
     """
-    app_settings = await get_app_settings()
     loading_status = rag.loading_status
 
     # Determine overall status
@@ -277,6 +283,18 @@ async def health_check():
         status = "healthy"
     else:
         status = "initializing"
+
+    if current_user is None:
+        # Minimal public readiness signal.
+        return HealthResponse(
+            status=status,
+            version=__version__,
+            indexes_loaded=[],
+            model="",
+            llm_provider="",
+        )
+
+    app_settings = await get_app_settings()
 
     # Get real-time memory stats
     process = psutil.Process()

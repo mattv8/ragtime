@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from runtime.auth import ManagerAuth
+from runtime.auth import ManagerAuth, OptionalManagerAuth
 from runtime.manager.models import (RuntimeContentProbeRequest,
                                     RuntimeContentProbeResponse,
                                     RuntimeExecRequest, RuntimeExecResponse,
@@ -54,8 +54,21 @@ def create_app() -> FastAPI:
     )
 
     @application.get("/health", response_model=RuntimeManagerHealthResponse)
-    async def health() -> RuntimeManagerHealthResponse:
+    async def health(
+        is_authenticated: bool = OptionalManagerAuth,
+    ) -> RuntimeManagerHealthResponse:
         pool = await manager.pool_status()
+        # Unauthenticated container healthchecks only receive liveness;
+        # pool/session details require a valid manager bearer token.
+        if not is_authenticated:
+            return RuntimeManagerHealthResponse(
+                status="ok",
+                workers_total=0,
+                workers_leased=0,
+                active_sessions=0,
+                max_sessions=0,
+                sessions=[],
+            )
         return RuntimeManagerHealthResponse(
             status="ok",
             workers_total=pool["workers_total"],

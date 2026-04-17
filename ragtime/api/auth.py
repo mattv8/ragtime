@@ -54,7 +54,12 @@ from ragtime.core.mcp_accounting import (
     get_mcp_usage_by_user,
 )
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
-from ragtime.core.security import get_current_user, get_session_token, require_admin
+from ragtime.core.security import (
+    get_current_user,
+    get_current_user_optional,
+    get_session_token,
+    require_admin,
+)
 from ragtime.core.usage_accounting import (
     get_daily_provider_failures,
     get_daily_usage_trend,
@@ -489,8 +494,19 @@ async def _build_auth_method_statuses(ldap_config) -> list[AuthMethodStatus]:
 
 
 @router.get("/status", response_model=AuthStatusResponse)
-async def get_auth_status(request: Request):
-    """Get authentication system status."""
+async def get_auth_status(
+    request: Request,
+    current_user: Optional[dict] = Depends(get_current_user_optional),
+):
+    """Get authentication system status.
+
+    Unauthenticated callers receive only the fields needed to render the
+    login page (auth methods, server branding, cookie/protocol warning,
+    and debug creds when DEBUG_MODE is explicitly enabled). Operator
+    posture flags such as api_key_configured, session_cookie_secure,
+    allowed_origins_open, and debug_mode are only returned to
+    authenticated users to avoid public reconnaissance signals.
+    """
     ldap_config = await get_ldap_config()
     cookie_warning = _detect_cookie_mismatch(request)
     auth_methods = await _build_auth_method_statuses(ldap_config)
@@ -504,18 +520,24 @@ async def get_auth_status(request: Request):
     except Exception as exc:
         logger.debug("Failed to load server branding for auth status: %s", exc)
 
+    is_authenticated = current_user is not None
+
     return AuthStatusResponse(
-        authenticated=False,  # This endpoint is for unauthenticated users
+        authenticated=is_authenticated,
         ldap_configured=bool(ldap_config.serverUrl),
         local_admin_enabled=bool(settings.local_admin_password),
-        debug_mode=settings.debug_mode,
+        debug_mode=settings.debug_mode if is_authenticated else False,
         debug_username=settings.local_admin_user if settings.debug_mode else None,
         # Debug mode is development-only; frontend uses this for local login autofill.
         debug_password=settings.local_admin_password if settings.debug_mode else None,
         cookie_warning=cookie_warning,
-        api_key_configured=bool(settings.api_key),
-        session_cookie_secure=settings.session_cookie_secure,
-        allowed_origins_open=settings.allowed_origins == "*",
+        api_key_configured=bool(settings.api_key) if is_authenticated else False,
+        session_cookie_secure=(
+            settings.session_cookie_secure if is_authenticated else False
+        ),
+        allowed_origins_open=(
+            (settings.allowed_origins == "*") if is_authenticated else False
+        ),
         auth_methods=auth_methods,
         server_name=server_name,
     )

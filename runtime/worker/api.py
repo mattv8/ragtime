@@ -14,35 +14,22 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import (
-    APIRouter,
-    FastAPI,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (APIRouter, FastAPI, HTTPException, Request, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.responses import Response, StreamingResponse
 
-from runtime.auth import WorkerAuth
-from runtime.manager.models import (
-    RuntimeContentProbeRequest,
-    RuntimeContentProbeResponse,
-    RuntimeExecRequest,
-    RuntimeExecResponse,
-    RuntimeFileReadResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    WorkerHealthResponse,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
-from runtime.worker.sandbox import (
-    SandboxSpec,
-    ensure_sandbox_ready,
-    make_sandbox_preexec,
-    sandbox_env,
-)
+from runtime.auth import OptionalWorkerAuth, WorkerAuth
+from runtime.manager.models import (RuntimeContentProbeRequest,
+                                    RuntimeContentProbeResponse,
+                                    RuntimeExecRequest, RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    WorkerHealthResponse,
+                                    WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
+from runtime.worker.sandbox import (SandboxSpec, ensure_sandbox_ready,
+                                    make_sandbox_preexec, sandbox_env)
 from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
@@ -192,8 +179,20 @@ def _write_sandbox_init_file(spec: SandboxSpec) -> None:
 
 
 @router.get("/worker/health", response_model=WorkerHealthResponse)
-async def health() -> WorkerHealthResponse:
-    return await get_worker_service().health()
+async def health(
+    is_authenticated: bool = OptionalWorkerAuth,
+) -> WorkerHealthResponse:
+    full = await get_worker_service().health()
+    # Unauthenticated container healthchecks only receive liveness;
+    # session counts and worker metadata require a valid worker bearer token.
+    if not is_authenticated:
+        return WorkerHealthResponse(
+            status=full.status,
+            service_mode=full.service_mode,
+            active_sessions=0,
+            metadata={},
+        )
+    return full
 
 
 @router.post("/worker/sessions/start", response_model=WorkerSessionResponse)
@@ -478,7 +477,13 @@ async def _evict_pty(session_id: str) -> None:
 
 @router.websocket("/worker/sessions/{worker_session_id}/pty")
 async def pty(worker_session_id: str, websocket: WebSocket):
-    token = websocket.query_params.get("token", "")
+    # Prefer the X-PTY-Token header so the per-session token never appears
+    # in URL-based access logs. The query-string fallback is retained for
+    # backward compatibility with callers that still embed it in the URL.
+    token = (
+        websocket.headers.get("x-pty-token", "")
+        or websocket.query_params.get("token", "")
+    )
     try:
         session = await get_worker_service().verify_pty_token(worker_session_id, token)
     except HTTPException as exc:
@@ -764,8 +769,18 @@ def create_app() -> FastAPI:
     include_worker_routes(application)
 
     @application.get("/health", response_model=WorkerHealthResponse)
-    async def standalone_health() -> WorkerHealthResponse:
-        return await get_worker_service().health()
+    async def standalone_health(
+        is_authenticated: bool = OptionalWorkerAuth,
+    ) -> WorkerHealthResponse:
+        full = await get_worker_service().health()
+        if not is_authenticated:
+            return WorkerHealthResponse(
+                status=full.status,
+                service_mode=full.service_mode,
+                active_sessions=0,
+                metadata={},
+            )
+        return full
 
     return application
 

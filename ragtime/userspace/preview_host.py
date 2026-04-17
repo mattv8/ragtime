@@ -408,6 +408,9 @@ async def preview_bootstrap(request: Request, grant: str):
         grant,
         expected_kind=_RUNTIME_PREVIEW_GRANT_KIND,
     )
+    # Enforce single-use semantics: a leaked bootstrap URL must not be
+    # replayable even within the grant TTL.
+    await _runtime_service().consume_preview_grant(claims)
     await _enforce_shared_subdomain_allowed(claims)
     workspace_id = str(claims.get("workspace_id") or "").strip()
     _ensure_preview_host_matches_workspace(
@@ -452,6 +455,11 @@ async def preview_bootstrap(request: Request, grant: str):
         samesite="lax",
         path="/",
     )
+    # Prevent caching of the bootstrap redirect (which carried the grant
+    # token in its URL) and block Referer propagation to the target page.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
     return response
 
 

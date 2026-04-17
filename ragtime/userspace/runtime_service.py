@@ -17,10 +17,10 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
+from prisma import fields as prisma_fields
 from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
-from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
@@ -129,6 +129,12 @@ class UserSpaceRuntimeService:
         self._runtime_watch_interval_seconds = float(
             getattr(settings, "userspace_runtime_watch_interval_seconds", 1.0)
         )
+        # Consumed preview bootstrap grant JTIs with monotonic expiry.
+        # Enforces single-use semantics for grants presented to
+        # /__ragtime/bootstrap so a leaked URL cannot be replayed inside
+        # the grant's TTL window.
+        self._consumed_preview_grant_jtis: dict[str, float] = {}
+        self._consumed_preview_grant_lock = asyncio.Lock()
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -445,6 +451,40 @@ class UserSpaceRuntimeService:
         if not workspace_id:
             raise HTTPException(status_code=401, detail="Invalid preview token")
         return claims
+
+    async def consume_preview_grant(self, claims: dict[str, Any]) -> None:
+        """Enforce single-use semantics for preview bootstrap grants.
+
+        Raises HTTPException(401) if the grant's `jti` has already been
+        consumed within its expiry window. Tokens without a `jti` or `exp`
+        claim are rejected because replay protection cannot be guaranteed.
+        """
+        jti = str(claims.get("jti") or "").strip()
+        exp_raw = claims.get("exp")
+        try:
+            exp_ts = float(exp_raw) if exp_raw is not None else 0.0
+        except (TypeError, ValueError):
+            exp_ts = 0.0
+        if not jti or exp_ts <= 0.0:
+            raise HTTPException(status_code=401, detail="Invalid preview token")
+
+        now_ts = _time.time()
+        async with self._consumed_preview_grant_lock:
+            # Opportunistically drop expired entries so the cache stays bounded.
+            expired = [
+                key
+                for key, expiry in self._consumed_preview_grant_jtis.items()
+                if expiry <= now_ts
+            ]
+            for key in expired:
+                self._consumed_preview_grant_jtis.pop(key, None)
+
+            if jti in self._consumed_preview_grant_jtis:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Preview grant already used",
+                )
+            self._consumed_preview_grant_jtis[jti] = exp_ts
 
     @staticmethod
     def _optional_int(value: Any) -> int | None:

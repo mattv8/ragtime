@@ -79,18 +79,74 @@ class LdapDiscoveryResult(BaseModel):
 # =============================================================================
 
 
+def _is_loopback_hostname(hostname: str | None) -> bool:
+    normalized = str(hostname or "").strip().strip(".").lower().strip("[]")
+    if not normalized:
+        return False
+    if normalized in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    return normalized.endswith(".localhost")
+
+
+def _host_matches_family(
+    candidate_host: str | None,
+    request_host: str | None,
+) -> bool:
+    """Return True if candidate_host belongs to a trusted host family.
+
+    Trusted means: identical bare hostname to the active request, a
+    loopback alias in both positions, or a subdomain of the configured
+    USERSPACE_PREVIEW_BASE_DOMAIN. This constrains how much a client-
+    supplied forwarding/browser header can shift the minted origin when
+    EXTERNAL_BASE_URL is unset.
+    """
+    candidate = str(candidate_host or "").strip().lower().strip("[]")
+    request_bare = str(request_host or "").strip().lower().strip("[]")
+    if not candidate:
+        return False
+    if candidate == request_bare:
+        return True
+    if _is_loopback_hostname(candidate) and _is_loopback_hostname(request_bare):
+        return True
+    preview_base = (
+        str(getattr(settings, "userspace_preview_base_domain", "") or "")
+        .strip()
+        .lower()
+    )
+    if preview_base:
+        if candidate == preview_base or candidate.endswith("." + preview_base):
+            return True
+    return False
+
+
 def get_external_origin(request: Request) -> str:
-    """Derive the public-facing origin for the current request."""
+    """Derive the public-facing origin for the current request.
+
+    When EXTERNAL_BASE_URL is set it is authoritative. Otherwise forwarded
+    headers are only honored if the host they describe matches the active
+    request's host family; any mismatch falls back to the direct request
+    origin so hostile Host/X-Forwarded-Host values cannot redirect minted
+    preview/share URLs onto unintended hostnames.
+    """
     configured = str(getattr(settings, "external_base_url", "") or "").strip()
     if configured:
         return configured.rstrip("/")
 
-    proto = request.headers.get("x-forwarded-proto", "").lower() or request.url.scheme
-    host = request.headers.get("x-forwarded-host", "") or request.headers.get(
-        "host", ""
-    )
-    if host:
-        return f"{proto}://{host}"
+    request_scheme = request.url.scheme or "http"
+    request_host_header = request.headers.get("host", "") or ""
+    request_host_only = urlsplit(f"{request_scheme}://{request_host_header}").hostname
+
+    forwarded_host = request.headers.get("x-forwarded-host", "").strip()
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").lower().strip()
+    if forwarded_host:
+        forwarded_host_only = urlsplit(
+            f"{forwarded_proto or request_scheme}://{forwarded_host}"
+        ).hostname
+        if _host_matches_family(forwarded_host_only, request_host_only):
+            return f"{forwarded_proto or request_scheme}://{forwarded_host}"
+
+    if request_host_header:
+        return f"{request_scheme}://{request_host_header}"
 
     return str(request.base_url).rstrip("/")
 
@@ -149,6 +205,16 @@ def get_browser_matched_origin(
 
     browser_parts = urlsplit(browser_candidate)
     server_parts = urlsplit(server_origin)
+    # Only honor browser-supplied origin hints when they describe a host
+    # in the same family as the active request; otherwise fall back to
+    # the server-derived origin. This prevents attacker-controlled
+    # Origin/Referer/x-ragtime-browser-origin headers from steering
+    # minted preview/share URLs onto unrelated hostnames.
+    request_host_only = urlsplit(
+        f"{request.url.scheme}://{request.headers.get('host', '')}"
+    ).hostname
+    if not _host_matches_family(browser_parts.hostname, request_host_only):
+        return server_origin
     scheme = browser_parts.scheme or server_parts.scheme or request.url.scheme or "http"
     hostname = browser_parts.hostname or server_parts.hostname
     if not hostname:

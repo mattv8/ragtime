@@ -53,3 +53,37 @@ require_worker_auth = _create_runtime_auth_dependency("RUNTIME_WORKER_AUTH_TOKEN
 # Convenience aliases usable as ``Depends(require_manager_auth)`` in route signatures.
 ManagerAuth = Depends(require_manager_auth)
 WorkerAuth = Depends(require_worker_auth)
+
+
+def _create_optional_runtime_auth_dependency(env_var: str) -> Any:
+    """Create a non-raising bearer-token check used for soft-gating responses.
+
+    Returns ``True`` only when the configured token is present **and** the
+    caller supplied a matching ``Authorization: Bearer`` value. Used for
+    ``/health`` endpoints where unauthenticated container healthchecks must
+    keep working but verbose pool/session details should be withheld.
+    """
+    cached_token = os.getenv(env_var, "").strip()
+
+    async def _check_optional_runtime_auth(
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> bool:
+        if not cached_token:
+            return False
+        value = (authorization or "").strip()
+        if not value.startswith("Bearer "):
+            return False
+        return value[7:] == cached_token
+
+    return _check_optional_runtime_auth
+
+
+check_optional_manager_auth = _create_optional_runtime_auth_dependency(
+    "RUNTIME_MANAGER_AUTH_TOKEN"
+)
+check_optional_worker_auth = _create_optional_runtime_auth_dependency(
+    "RUNTIME_WORKER_AUTH_TOKEN"
+)
+
+OptionalManagerAuth = Depends(check_optional_manager_auth)
+OptionalWorkerAuth = Depends(check_optional_worker_auth)

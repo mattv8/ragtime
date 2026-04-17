@@ -213,14 +213,19 @@ async def lifespan(app: FastAPI):
 
 
 # Create FastAPI app
+# Security: the interactive docs and OpenAPI schema enumerate admin-only and
+# maintenance routes (tool testing, filesystem browsing, MCP admin, etc.) that
+# unauthenticated callers should not be able to inventory. In production the
+# docs/schema endpoints are disabled; enable them only when DEBUG_MODE=true.
+_docs_enabled = bool(getattr(settings, "debug_mode", False))
 app = FastAPI(
     title="Ragtime RAG API",
     description="RAG + Tool Calling API for business intelligence queries",
     version=__version__,
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
 )
 
 
@@ -266,8 +271,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # CORS middleware
 # Note: allow_origins=["*"] with allow_credentials=True is problematic per CORS spec.
-# When origins is "*", we allow credentials but log a security warning.
-# For production, set ALLOWED_ORIGINS to specific origins like "http://localhost:8001"
+# When ALLOWED_ORIGINS is unset, default to loopback-only origins; dev clients
+# on arbitrary localhost ports are still matched via allow_origin_regex below.
+# For production, set ALLOWED_ORIGINS to specific origins like
+# "https://ragtime.example.com".
 if settings.allowed_origins == "*":
     origins = ["*"]
     logger.warning(
@@ -282,7 +289,13 @@ else:
     for lb in loopback_origins:
         if lb not in origins:
             origins.append(lb)
-    logger.info(f"CORS: Allowing origins: {origins}")
+    if not settings.allowed_origins:
+        logger.info(
+            "CORS: ALLOWED_ORIGINS unset; defaulting to loopback-only origins. "
+            "Set ALLOWED_ORIGINS to an explicit list for non-loopback deployments."
+        )
+    else:
+        logger.info(f"CORS: Allowing origins: {origins}")
 
 app.add_middleware(
     CORSMiddleware,

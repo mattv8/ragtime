@@ -13,15 +13,8 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Depends,
-    Header,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
@@ -29,25 +22,21 @@ from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import decode_access_token, get_browser_matched_origin
 from ragtime.core.rate_limit import SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (
-    UserSpaceBrowserAuthorization,
-    UserSpaceBrowserAuthRequest,
-    UserSpaceBrowserAuthResponse,
-    UserSpaceBrowserSurface,
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceFileResponse,
-    UserSpacePreviewLaunchRequest,
-    UserSpacePreviewLaunchResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-    UserSpaceWorkspaceTabStateResponse,
-)
+from ragtime.userspace.models import (UserSpaceBrowserAuthorization,
+                                      UserSpaceBrowserAuthRequest,
+                                      UserSpaceBrowserAuthResponse,
+                                      UserSpaceBrowserSurface,
+                                      UserSpaceCapabilityTokenResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpacePreviewLaunchRequest,
+                                      UserSpacePreviewLaunchResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse,
+                                      UserSpaceWorkspaceTabStateResponse)
 from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
-from ragtime.userspace.share_auth import (
-    set_share_auth_cookie,
-    share_auth_token_from_request,
-)
+from ragtime.userspace.share_auth import (set_share_auth_cookie,
+                                          share_auth_token_from_request)
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
@@ -270,6 +259,9 @@ def _is_html_media_type(media_type: str) -> bool:
 
 
 def _extract_capability_token_from_request(request: Request) -> str | None:
+    # Capability tokens must travel via Authorization/explicit header only.
+    # Query-string transport is rejected to prevent leakage via browser
+    # history, Referer headers, and reverse-proxy access logs.
     auth_header = request.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:].strip()
@@ -278,16 +270,12 @@ def _extract_capability_token_from_request(request: Request) -> str | None:
     explicit = request.headers.get("x-userspace-capability-token", "").strip()
     if explicit:
         return explicit
-    query_token = request.query_params.get("cap_token", "").strip()
-    if query_token:
-        return query_token
     return None
 
 
 def _extract_capability_token_from_websocket(websocket: WebSocket) -> str | None:
-    query_token = websocket.query_params.get("cap_token", "").strip()
-    if query_token:
-        return query_token
+    # Capability tokens must travel via Authorization/explicit header only.
+    # See _extract_capability_token_from_request.
     auth_header = websocket.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:].strip()
@@ -359,11 +347,36 @@ def _sanitize_preview_query(query: str | None) -> str | None:
     return urlencode(cleaned_pairs, doseq=True)
 
 
+def _split_pty_token_from_url(ws_url: str) -> tuple[str, str | None]:
+    """Strip the PTY ``token`` query param and return (cleaned_url, token).
+
+    The runtime manager emits PTY WebSocket URLs with the per-session
+    token embedded in the query string. Returning it as a separate value
+    lets callers forward it via a header so the token never appears in
+    worker access logs or any URL-based observability surface.
+    """
+    parsed = urlsplit(ws_url)
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    pty_token: str | None = None
+    cleaned_pairs: list[tuple[str, str]] = []
+    for key, value in pairs:
+        if key == "token" and pty_token is None:
+            pty_token = value or None
+            continue
+        cleaned_pairs.append((key, value))
+    cleaned_query = urlencode(cleaned_pairs, doseq=True) if cleaned_pairs else ""
+    cleaned_url = urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, cleaned_query, parsed.fragment)
+    )
+    return cleaned_url, pty_token
+
+
 async def _proxy_websocket_request(
     websocket: WebSocket,
     upstream_url: str,
     *,
     read_only: bool = False,
+    additional_headers: dict[str, str] | None = None,
 ) -> None:
     try:
         websockets_module = importlib.import_module("websockets")
@@ -383,6 +396,10 @@ async def _proxy_websocket_request(
     worker_token = getattr(settings, "userspace_runtime_worker_auth_token", "") or ""
     if worker_token:
         extra_headers["authorization"] = f"Bearer {worker_token}"
+    if additional_headers:
+        for header_name, header_value in additional_headers.items():
+            if header_value:
+                extra_headers[header_name] = header_value
 
     try:
         async with websockets_module.connect(
@@ -1175,15 +1192,26 @@ async def runtime_pty(workspace_id: str, websocket: WebSocket):
         workspace_id,
         user_id,
     )
+    # The runtime manager mints PTY URLs with the per-session token in the
+    # URL query (legacy contract). Move it into an X-PTY-Token header before
+    # connecting upstream so the token does not appear in worker access logs
+    # or any URL-based observability surface.
+    upstream_ws_url, pty_token = _split_pty_token_from_url(upstream_ws_url)
+    pty_headers = {"x-pty-token": pty_token} if pty_token else None
     if not can_write:
         await _proxy_websocket_request(
             websocket,
             upstream_ws_url,
             read_only=True,
+            additional_headers=pty_headers,
         )
         return
 
-    await _proxy_websocket_request(websocket, upstream_ws_url)
+    await _proxy_websocket_request(
+        websocket,
+        upstream_ws_url,
+        additional_headers=pty_headers,
+    )
 
 
 @router.websocket("/collab/workspaces/{workspace_id}/files/{file_path:path}")

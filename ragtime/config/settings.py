@@ -44,7 +44,17 @@ class Settings(BaseSettings):
 
     # Security
     api_key: str = Field(default="", alias="API_KEY")  # API key for auth
-    allowed_origins: str = Field(default="*", alias="ALLOWED_ORIGINS")
+    allowed_origins: str = Field(
+        default="",
+        alias="ALLOWED_ORIGINS",
+        description=(
+            "Comma-separated list of allowed CORS origins. When empty, only "
+            "loopback origins are permitted (via allow_origin_regex). Set to "
+            "explicit origins such as 'https://ragtime.example.com' in "
+            "production. The legacy '*' value is still honored but emits a "
+            "security warning because it is unsafe with allow_credentials=True."
+        ),
+    )
     external_base_url: str = Field(
         default="",
         alias="EXTERNAL_BASE_URL",
