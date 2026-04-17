@@ -45,7 +45,7 @@ DEFAULT_CONTEXT_LIMIT = 8192
 # Format: {provider: [(regex_pattern, group_name_or_None)]}
 # If group_name is None, it uses the first capture group of the regex
 # IMPORTANT: Patterns are matched in order, so more specific patterns must come first
-MODEL_FAMILY_PATTERNS = {
+MODEL_FAMILY_PATTERNS: dict[str, list[tuple[str, str | None]]] = {
     "openai": [
         # O-series models (reasoning models) - must come before gpt patterns
         (r"^o\d+-", "O-Series"),
@@ -66,8 +66,8 @@ MODEL_FAMILY_PATTERNS = {
         (r"claude-haiku-4", "Haiku"),
         (r"claude-(3-5|3\.5|3)-haiku", "Haiku"),
         # Opus and Sonnet families
-        (r"claude-opus-4", "Claude Opus 4"),
-        (r"claude-sonnet-4", "Claude Sonnet 4"),
+        (r"claude-opus-4(?:[.-]\d+)?(?:\b|$)", "Claude Opus 4"),
+        (r"claude-sonnet-4(?:[.-]\d+)?(?:\b|$)", "Claude Sonnet 4"),
         (r"claude-4", "Claude 4"),
         (r"claude-(3-5|3\.5)-sonnet", "Claude 3.5 Sonnet"),
         (r"claude-(3-5|3\.5)", "Claude 3.5"),
@@ -75,6 +75,8 @@ MODEL_FAMILY_PATTERNS = {
         (r"claude-3-sonnet", "Claude 3 Sonnet"),
         (r"claude-3", "Claude 3"),
         (r"claude-2", "Claude 2"),
+        (r"claude-([a-z0-9]+)-(\d+)(?:[.-]\d+)?(?:\b|$)", None),
+        (r"claude", "Claude"),
     ],
     "ollama": [(r"^([a-z0-9]+)", None)],
     "github_copilot": [
@@ -89,8 +91,8 @@ MODEL_FAMILY_PATTERNS = {
         (r"(anthropic/)?claude-haiku-4\.5", "Haiku"),
         (r"(anthropic/)?claude-haiku-4", "Haiku"),
         (r"(anthropic/)?claude-(3-5|3\.5|3)-haiku", "Haiku"),
-        (r"(anthropic/)?claude-opus-4", "Claude Opus 4"),
-        (r"(anthropic/)?claude-sonnet-4", "Claude Sonnet 4"),
+        (r"(anthropic/)?claude-opus-4(?:[.-]\d+)?(?:\b|$)", "Claude Opus 4"),
+        (r"(anthropic/)?claude-sonnet-4(?:[.-]\d+)?(?:\b|$)", "Claude Sonnet 4"),
         (r"(anthropic/)?claude-4", "Claude 4"),
         (r"(anthropic/)?claude-(3-5|3\.5)-sonnet", "Claude 3.5 Sonnet"),
         (r"(anthropic/)?claude-(3-5|3\.5)", "Claude 3.5"),
@@ -98,11 +100,10 @@ MODEL_FAMILY_PATTERNS = {
         (r"(anthropic/)?claude-3-sonnet", "Claude 3 Sonnet"),
         (r"(anthropic/)?claude-3", "Claude 3"),
         (r"(anthropic/)?claude-2", "Claude 2"),
+        (r"(?:anthropic/)?claude-([a-z0-9]+)-(\d+)(?:[.-]\d+)?(?:\b|$)", None),
         (r"claude", "Claude"),
-        # Gemini families
-        (r"(google/)?gemini-2\.5", "Gemini 2.5"),
-        (r"(google/)?gemini-2", "Gemini 2"),
-        (r"(google/)?gemini-1\.5", "Gemini 1.5"),
+        # Gemini families are captured by major version (e.g. 3.1 -> Gemini 3).
+        (r"(?:google/)?gemini-(\d+)(?:\.\d+)?(?:$|[-_])", None),
         (r"gemini", "Gemini"),
         (r"(xai/)?grok", "Grok"),
         (r"o\d", "O-Series"),
@@ -116,9 +117,11 @@ MODEL_FAMILY_PATTERNS = {
         (r"^anthropic/claude-haiku-4\.5", "Haiku"),
         (r"^anthropic/claude-haiku-4", "Haiku"),
         (r"^anthropic/claude-(3-5|3\.5|3)-haiku", "Haiku"),
-        (r"^anthropic/claude-opus-4", "Claude Opus 4"),
-        (r"^anthropic/claude-sonnet-4", "Claude Sonnet 4"),
+        (r"^anthropic/claude-opus-4(?:[.-]\d+)?(?:\b|$)", "Claude Opus 4"),
+        (r"^anthropic/claude-sonnet-4(?:[.-]\d+)?(?:\b|$)", "Claude Sonnet 4"),
+        (r"^anthropic/claude-([a-z0-9]+)-(\d+)(?:[.-]\d+)?(?:\b|$)", None),
         (r"^anthropic/claude", "Claude"),
+        (r"^google/gemini-(\d+)(?:\.\d+)?(?:$|[-_])", None),
         (r"^google/gemini", "Gemini"),
         (r"^xai/grok", "Grok"),
         (r"^openai/o\d", "O-Series"),

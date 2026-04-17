@@ -22,165 +22,121 @@ import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional
+from typing import (TYPE_CHECKING, Any, Awaitable, Callable, List, Optional,
+                    cast)
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Body,
-    Depends,
-    File,
-    Form,
-    HTTPException,
-    Query,
-    UploadFile,
-)
+from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
+                     Query, UploadFile)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
-from ragtime.core.copilot_auth import (
-    ensure_copilot_token_fresh,
-    exchange_github_token_for_copilot_token,
-    is_copilot_token_refresh_in_progress,
-)
-from ragtime.core.embedding_models import (
-    OPENAI_EMBEDDING_PRIORITY,
-    get_embedding_models,
-)
+from ragtime.core.copilot_api import (COPILOT_DEFAULT_BASE_URL,
+                                      build_copilot_headers)
+from ragtime.core.copilot_auth import (ensure_copilot_token_fresh,
+                                       exchange_github_token_for_copilot_token,
+                                       is_copilot_token_refresh_in_progress)
+from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
+                                           get_embedding_models)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    MODEL_FAMILY_PATTERNS,
-    get_context_limit,
-    get_output_limit,
-    register_model_reasoning_capabilities,
-    register_model_supported_endpoints,
-    requires_responses_api,
-    supports_function_calling,
-    supports_responses_api,
-    update_model_function_calling,
-    update_model_limit,
-    update_model_output_limit,
-)
-from ragtime.core.ollama import (
-    extract_capabilities,
-    extract_effective_context_length,
-    get_model_details,
-    is_embedding_capable,
-    is_reachable,
-)
+from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
+                                       get_context_limit, get_output_limit,
+                                       register_model_reasoning_capabilities,
+                                       register_model_supported_endpoints,
+                                       requires_responses_api,
+                                       supports_function_calling,
+                                       supports_responses_api,
+                                       update_model_function_calling,
+                                       update_model_limit,
+                                       update_model_output_limit)
+from ragtime.core.ollama import (extract_capabilities,
+                                 extract_effective_context_length,
+                                 get_model_details, is_embedding_capable,
+                                 is_reachable)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (
-    MssqlConnectionError,
-    MysqlConnectionError,
-    mssql_connect,
-    mysql_connect,
-    normalize_mssql_error_message,
-)
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    ssh_tunnel_config_from_dict,
-    test_ssh_connection,
-)
+from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
+                                    mssql_connect, mysql_connect,
+                                    normalize_mssql_error_message)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, ssh_tunnel_config_from_dict,
+                              test_ssh_connection)
 from ragtime.core.tokenization import count_tokens
-from ragtime.core.usage_accounting import (
-    _estimate_input_tokens,
-    _estimate_output_tokens,
-    bind_usage_attempt_task,
-    create_usage_attempt,
-    finalize_usage_attempt,
-)
+from ragtime.core.usage_accounting import (_estimate_input_tokens,
+                                           _estimate_output_tokens,
+                                           bind_usage_attempt_task,
+                                           create_usage_attempt,
+                                           finalize_usage_attempt)
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
-    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
-)
+    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS)
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import (
-    background_task_service,
-    rebuild_tool_messages_from_events,
-)
+    background_task_service, rebuild_tool_messages_from_events)
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    ChatMessage,
-    ChatTaskResponse,
-    ChatTaskStatus,
-    CheckRepoVisibilityRequest,
-    ConfigurationWarning,
-    Conversation,
-    ConversationBranchPointInfo,
-    ConversationBranchSummary,
-    ConversationResponse,
-    CreateConversationBranchRequest,
-    CreateConversationRequest,
-    CreateIndexRequest,
-    CreateToolConfigRequest,
-    CreateToolGroupRequest,
-    DatabaseDiscoverOption,
-    EmbeddingStatus,
-    FetchBranchesRequest,
-    FetchBranchesResponse,
-    FilesystemAnalysisJobResponse,
-    FilesystemConnectionConfig,
-    FilesystemIndexJobResponse,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJobResponse,
-    IndexStatus,
-    InfluxdbDiscoverRequest,
-    InfluxdbDiscoverResponse,
-    MssqlDiscoverRequest,
-    MssqlDiscoverResponse,
-    MysqlDiscoverRequest,
-    MysqlDiscoverResponse,
-    OcrMode,
-    PdmDiscoverRequest,
-    PdmDiscoverResponse,
-    PdmIndexJobResponse,
-    PostgresDiscoverRequest,
-    PostgresDiscoverResponse,
-    ProviderPromptDebugListResponse,
-    ProviderPromptDebugRecord,
-    RepoVisibilityResponse,
-    RetryVisualizationRequest,
-    RetryVisualizationResponse,
-    SchemaIndexJobResponse,
-    SendMessageRequest,
-    SwitchConversationBranchRequest,
-    ToolConfig,
-    ToolGroup,
-    ToolTestRequest,
-    ToolType,
-    TriggerFilesystemIndexRequest,
-    TriggerPdmIndexRequest,
-    TriggerSchemaIndexRequest,
-    UpdateSettingsRequest,
-    UpdateToolConfigRequest,
-    UpdateToolGroupRequest,
-    UserSpacePreviewSettingsResponse,
-    VectorStoreType,
-    WorkspaceChatStateResponse,
-)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    ChatMessage, ChatTaskResponse,
+                                    ChatTaskStatus, CheckRepoVisibilityRequest,
+                                    ConfigurationWarning, Conversation,
+                                    ConversationBranchPointInfo,
+                                    ConversationBranchSummary,
+                                    ConversationResponse,
+                                    CreateConversationBranchRequest,
+                                    CreateConversationRequest,
+                                    CreateIndexRequest,
+                                    CreateToolConfigRequest,
+                                    CreateToolGroupRequest,
+                                    DatabaseDiscoverOption, EmbeddingStatus,
+                                    FetchBranchesRequest,
+                                    FetchBranchesResponse,
+                                    FilesystemAnalysisJobResponse,
+                                    FilesystemConnectionConfig,
+                                    FilesystemIndexJobResponse,
+                                    IndexAnalysisResult, IndexConfig,
+                                    IndexInfo, IndexJobResponse, IndexStatus,
+                                    InfluxdbDiscoverRequest,
+                                    InfluxdbDiscoverResponse,
+                                    MssqlDiscoverRequest,
+                                    MssqlDiscoverResponse,
+                                    MysqlDiscoverRequest,
+                                    MysqlDiscoverResponse, OcrMode,
+                                    PdmDiscoverRequest, PdmDiscoverResponse,
+                                    PdmIndexJobResponse,
+                                    PostgresDiscoverRequest,
+                                    PostgresDiscoverResponse,
+                                    ProviderPromptDebugListResponse,
+                                    ProviderPromptDebugRecord,
+                                    RepoVisibilityResponse,
+                                    RetryVisualizationRequest,
+                                    RetryVisualizationResponse,
+                                    SchemaIndexJobResponse, SendMessageRequest,
+                                    SwitchConversationBranchRequest,
+                                    ToolConfig, ToolGroup, ToolTestRequest,
+                                    ToolType, TriggerFilesystemIndexRequest,
+                                    TriggerPdmIndexRequest,
+                                    TriggerSchemaIndexRequest,
+                                    UpdateSettingsRequest,
+                                    UpdateToolConfigRequest,
+                                    UpdateToolGroupRequest,
+                                    UserSpacePreviewSettingsResponse,
+                                    VectorStoreType,
+                                    WorkspaceChatStateResponse)
 from ragtime.indexer.pdm_service import pdm_indexer
-from ragtime.indexer.repository import _resolve_default_conversation_model, repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
+from ragtime.indexer.repository import (_resolve_default_conversation_model,
+                                        repository)
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
@@ -1909,7 +1865,8 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import \
+                        FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1930,7 +1887,8 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import get_faiss_backend
+                    from ragtime.indexer.vector_backends import \
+                        get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -2910,7 +2868,8 @@ async def discover_influxdb_buckets(
 
     def discover_buckets(effective_url: str) -> tuple[bool, list[str], str | None]:
         try:
-            from influxdb_client import InfluxDBClient  # type: ignore[import-untyped]
+            from influxdb_client import \
+                InfluxDBClient  # type: ignore[import-untyped]
         except ImportError:
             return False, [], "influxdb-client package not installed"
 
@@ -7197,8 +7156,12 @@ def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
     """
     # Use the same logic as _assign_model_groups but for LLMModel
     for model in models:
+        model.is_latest = False
         mid = model.id.lower()
-        provider_patterns = MODEL_FAMILY_PATTERNS.get(provider, [])
+        provider_patterns = cast(
+            list[tuple[str, Optional[str]]],
+            MODEL_FAMILY_PATTERNS.get(provider, []),
+        )
         found_group = False
 
         for pattern, group_name in provider_patterns:
@@ -7210,7 +7173,7 @@ def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
                     model.group = _derive_group_label(
                         provider,
                         model.id.lower(),
-                        match.group(1),
+                        match,
                     )
                 found_group = True
                 break
@@ -7227,10 +7190,7 @@ def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
         if not group_models:
             continue
 
-        # Sort: version (higher first), then created date, then ID length
-        group_models.sort(
-            key=lambda m: (-_extract_version(m.name), -(m.created or 0), len(m.id))
-        )
+        group_models.sort(key=_model_group_sort_key, reverse=True)
 
         # Mark first as latest
         group_models[0].is_latest = True
@@ -7238,10 +7198,20 @@ def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
     return models
 
 
-def _derive_group_label(provider: str, model_id: str, capture: str) -> str:
+def _derive_group_label(provider: str, model_id: str, match: re.Match[str]) -> str:
     """Build a group label from regex captures for dynamic family patterns."""
+    capture = match.group(1)
+
     if provider in {"openai", "github_copilot", "github_models"} and "gpt-" in model_id:
         return f"GPT-{capture}"
+
+    if "claude-" in model_id and (match.lastindex or 0) >= 2:
+        family = match.group(1)
+        major = match.group(2)
+        return f"Claude {family.title()} {major}"
+
+    if "gemini-" in model_id:
+        return f"Gemini {capture}"
 
     if provider == "ollama":
         return capture.title()
@@ -7250,41 +7220,103 @@ def _derive_group_label(provider: str, model_id: str, capture: str) -> str:
 
 
 def _extract_version(name: str) -> float:
-    """Extract numeric version from model name.
+    """Extract a float-like version for legacy callers.
 
-    Handles various naming conventions:
-    - Anthropic: 'Claude Haiku 4.5' -> 4.5
-    - OpenAI display: 'GPT-4.1 Mini' -> 4.1
-    - OpenAI ID: 'gpt-4.1-mini' -> 4.1
-    - Dated versions: 'gpt-4-0613' -> 4.0 (base version, no sub-version)
-    - Gemini: 'Gemini 3.1 Pro' -> 3.1, 'Gemini 3 Flash (Preview)' -> 3.0
+    This preserves the previous return type while delegating to the richer
+    tuple-based parser used for latest-model selection.
     """
-    name_lower = name.lower()
+    parts = _extract_version_parts(name)
+    if not parts:
+        return 0.0
+    if len(parts) == 1:
+        return float(parts[0])
+    return float(f"{parts[0]}.{parts[1]}")
 
-    # OpenAI: Extract version from gpt-X.Y pattern (e.g., gpt-4.1-mini -> 4.1)
-    gpt_match = re.search(r"gpt-(\d+(?:\.\d+)?)", name_lower)
-    if gpt_match:
-        return float(gpt_match.group(1))
 
-    # Anthropic/general: version at end of name (e.g., 'Claude Haiku 4.5' -> 4.5)
-    end_match = re.search(r"(\d+(?:\.\d+)?)\s*$", name)
-    if end_match:
-        return float(end_match.group(1))
+def _extract_version_parts(*values: str) -> tuple[int, ...]:
+    """Extract version components from model identifiers or display names."""
+    best: tuple[int, ...] = ()
 
-    # Gemini/general: version number followed by non-digit qualifier
-    # e.g. 'Gemini 3.1 Pro' -> 3.1, 'Gemini 3 Flash (Preview)' -> 3.0
-    mid_match = re.search(r"(\d+(?:\.\d+)?)\s+\w", name)
-    if mid_match:
-        return float(mid_match.group(1))
+    patterns = [
+        re.compile(r"\bgpt-(\d+)(?:\.(\d+))?"),
+        re.compile(r"\bo(\d+)(?:\b|[-_])"),
+        re.compile(r"\bclaude(?:[-\s][a-z0-9]+)*[-\s](\d+)(?:[.-](\d+))?"),
+        re.compile(r"\bgemini(?:[-\s][a-z0-9]+)*[-\s](\d+)(?:\.(\d+))?"),
+        re.compile(r"(\d+)(?:\.(\d+))?\s*$"),
+    ]
 
-    return 0.0
+    for raw_value in values:
+        candidate = str(raw_value or "").strip().lower()
+        if not candidate:
+            continue
+
+        for pattern in patterns:
+            match = pattern.search(candidate)
+            if not match:
+                continue
+
+            parts_list: list[int] = []
+            for index in range(1, (match.lastindex or 0) + 1):
+                group = match.group(index)
+                if group:
+                    parts_list.append(int(group))
+
+            parts = tuple(parts_list)
+            if parts and parts > best:
+                best = parts
+            if parts:
+                break
+
+    return best
+
+
+def _model_group_sort_key(model: LLMModel | AvailableModel) -> tuple[tuple[int, ...], int, int, str]:
+    """Sort models so newest family versions win without changing default selection semantics."""
+    return (
+        _extract_version_parts(model.id, model.name),
+        model.created or 0,
+        -len(model.id),
+        model.id.lower(),
+    )
+
+
+def _merge_model_metadata(primary: LLMModel, extra: LLMModel) -> LLMModel:
+    """Merge duplicate model records while keeping the primary source authoritative."""
+    merged = primary.model_copy(deep=True)
+
+    if merged.created is None:
+        merged.created = extra.created
+    if merged.max_output_tokens is None:
+        merged.max_output_tokens = extra.max_output_tokens
+    if merged.context_limit is None:
+        merged.context_limit = extra.context_limit
+    if not merged.group:
+        merged.group = extra.group
+    if not merged.name:
+        merged.name = extra.name
+    if not merged.capabilities:
+        merged.capabilities = extra.capabilities
+    if not merged.supported_endpoints:
+        merged.supported_endpoints = extra.supported_endpoints
+    if merged.reasoning_supported is None:
+        merged.reasoning_supported = extra.reasoning_supported
+    if merged.thinking_budget_supported is None:
+        merged.thinking_budget_supported = extra.thinking_budget_supported
+    if not merged.effort_levels:
+        merged.effort_levels = extra.effort_levels
+
+    return merged
 
 
 def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
     """Assign UI group labels to models for better organization."""
     for model in models:
+        model.is_latest = False
         mid = model.id.lower()
-        provider_patterns = MODEL_FAMILY_PATTERNS.get(model.provider, [])
+        provider_patterns = cast(
+            list[tuple[str, Optional[str]]],
+            MODEL_FAMILY_PATTERNS.get(model.provider, []),
+        )
         found_group = False
 
         for pattern, group_name in provider_patterns:
@@ -7296,7 +7328,7 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
                     model.group = _derive_group_label(
                         model.provider,
                         model.id.lower(),
-                        match.group(1),
+                        match,
                     )
                 found_group = True
                 break
@@ -7319,14 +7351,7 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
                 if m.id.endswith(":latest"):
                     m.is_latest = True
         else:
-            # Sort: version (higher first), then created date, then ID length
-            group_models.sort(
-                key=lambda m: (
-                    -_extract_version(m.name),
-                    -(m.created or 0),
-                    len(m.id),
-                )
-            )
+            group_models.sort(key=_model_group_sort_key, reverse=True)
             # Mark the first one as latest
             group_models[0].is_latest = True
 
@@ -7375,9 +7400,13 @@ def _merge_llm_model_results(
     if not primary.success and not extra.success:
         return primary
 
-    merged: dict[str, LLMModel] = {m.id: m for m in primary.models}
+    merged: dict[str, LLMModel] = {m.id: m.model_copy(deep=True) for m in primary.models}
     for model in extra.models:
-        merged.setdefault(model.id, model)
+        existing = merged.get(model.id)
+        if existing is None:
+            merged[model.id] = model.model_copy(deep=True)
+            continue
+        merged[model.id] = _merge_model_metadata(existing, model)
 
     models = list(merged.values())
     models = _group_models(models, "github_copilot")
