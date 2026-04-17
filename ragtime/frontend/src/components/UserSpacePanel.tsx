@@ -5401,7 +5401,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace list">
                   {workspaces.map((ws) => {
                     const workspaceChatState = workspaceChatStates[ws.id] ?? DEFAULT_WORKSPACE_CHAT_STATE;
-                    const canDeleteWorkspace = ws.owner_user_id === currentUser.id;
+                    const canDeleteWorkspace =
+                      ws.owner_user_id === currentUser.id ||
+                      ws.members.some((member) => member.user_id === currentUser.id && member.role === 'owner');
                     const canRenameWorkspace = currentUser.role === 'admin'
                       || ws.owner_user_id === currentUser.id
                       || ws.members.some((member) => (
