@@ -734,6 +734,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const statusOverlayDismissedSignatureRef = useRef<string | null>(null);
   const refreshRuntimeStatusPendingRef = useRef(false);
   const latestQueuedWorkspaceCreateTaskIdRef = useRef<string | null>(null);
+  const workspacesRef = useRef(workspaces);
+  const lastWorkspaceCookieNameRef = useRef('');
   const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
   const userSpaceLayoutCookieName = useMemo(() => getUserSpaceLayoutCookieName(currentUser.id), [currentUser.id]);
   const userSpaceFullscreenCookieName = useMemo(() => getUserSpaceFullscreenCookieName(currentUser.id), [currentUser.id]);
@@ -2169,6 +2171,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   useEffect(() => {
     activeWorkspaceIdRef.current = activeWorkspaceId;
   }, [activeWorkspaceId]);
+
+  useEffect(() => {
+    workspacesRef.current = workspaces;
+  }, [workspaces]);
+
+  useEffect(() => {
+    lastWorkspaceCookieNameRef.current = lastWorkspaceCookieName;
+  }, [lastWorkspaceCookieName]);
 
   useEffect(() => {
     activeWorkspaceConversationIdRef.current = activeWorkspaceConversationId;
@@ -3905,11 +3915,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const handleDeleteWorkspace = useCallback(async (workspaceId: string) => {
     setError(null);
-    const deletingActiveWorkspace = activeWorkspaceId === workspaceId;
-    const fallbackWorkspaceId = deletingActiveWorkspace
-      ? workspaces.find((workspace) => workspace.id !== workspaceId)?.id ?? null
-      : activeWorkspaceId;
-
     setDeleteConfirmWorkspaceId(null);
 
     try {
@@ -3918,30 +3923,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         ...current,
         [workspaceId]: task,
       }));
-
-      if (deletingActiveWorkspace) {
-        setRuntimeStatus(null);
-        setPreviewLiveDataConnections([]);
-        setActiveWorkspaceId(fallbackWorkspaceId);
-
-        if (!fallbackWorkspaceId) {
-          clearCookieValue(lastWorkspaceCookieName);
-          setFileBrowserEntries([]);
-          setFiles([]);
-          setSnapshots([]);
-          setSnapshotBranches([]);
-          setCurrentSnapshotId(null);
-          setCurrentSnapshotBranchId(null);
-          setFileContentCache({});
-          setFileContent('');
-          setSelectedFilePath('');
-          setFileDirty(false);
-        }
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to queue workspace delete');
     }
-  }, [activeWorkspaceId, lastWorkspaceCookieName, loadWorkspaces, workspaces]);
+  }, []);
 
   useEffect(() => {
     const tasks = Object.values(deletingWorkspaceTasks);
@@ -4015,7 +4000,49 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         }
 
         if (terminalWorkspaceIds.size > 0) {
-          void loadWorkspaces();
+          try {
+            await loadWorkspaces();
+          } catch {
+            // Best-effort refresh after delete.
+          }
+
+          // Switch away from a successfully-deleted workspace only after
+          // the backend confirms the delete completed (not at queue time).
+          for (const deletedId of terminalWorkspaceIds) {
+            if (deletedId !== activeWorkspaceIdRef.current) {
+              continue;
+            }
+            // Check that this workspace was actually deleted (completed, not failed).
+            const matchingResult = results.find(
+              (r) => r.status?.workspace_id === deletedId || r.task.workspace_id === deletedId,
+            );
+            const wasDeleted =
+              matchingResult?.status?.phase === 'completed'
+              || (matchingResult?.error instanceof ApiError && matchingResult.error.status === 404);
+            if (!wasDeleted) {
+              continue;
+            }
+
+            setRuntimeStatus(null);
+            setPreviewLiveDataConnections([]);
+            const fallback = workspacesRef.current.find((ws) => ws.id !== deletedId)?.id ?? null;
+            setActiveWorkspaceId(fallback);
+
+            if (!fallback) {
+              clearCookieValue(lastWorkspaceCookieNameRef.current);
+              setFileBrowserEntries([]);
+              setFiles([]);
+              setSnapshots([]);
+              setSnapshotBranches([]);
+              setCurrentSnapshotId(null);
+              setCurrentSnapshotBranchId(null);
+              setFileContentCache({});
+              setFileContent('');
+              setSelectedFilePath('');
+              setFileDirty(false);
+            }
+            break;
+          }
         }
       } finally {
         pollInFlight = false;
