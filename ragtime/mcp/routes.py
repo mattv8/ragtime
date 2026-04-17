@@ -38,13 +38,10 @@ from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.mcp_accounting import log_mcp_request
 from ragtime.core.security import require_admin
-from ragtime.mcp.server import (
-    get_custom_route_server,
-    get_default_route_filtered_server,
-    get_mcp_server,
-    notify_tools_changed,
-    register_tools_changed_callback,
-)
+from ragtime.mcp.server import (get_custom_route_server,
+                                get_default_route_filtered_server,
+                                get_mcp_server, notify_tools_changed,
+                                register_tools_changed_callback)
 from ragtime.mcp.tools import mcp_tool_adapter
 
 logger = get_logger(__name__)
@@ -653,9 +650,13 @@ async def _log_mcp(
     status_code: int = 200,
 ) -> None:
     """Fire-and-forget MCP request log entry."""
+    http_method = str(scope.get("method", "POST")).upper()
+    if http_method == "OPTIONS":
+        # CORS preflight requests are transport noise, not MCP protocol usage.
+        return
+
     user_id = scope.get("_mcp_user_id")
     username = scope.get("_mcp_username")
-    http_method = scope.get("method", "POST")
     await log_mcp_request(
         user_id=user_id,
         username=username,
@@ -664,6 +665,20 @@ async def _log_mcp(
         http_method=http_method,
         status_code=status_code,
     )
+
+
+def _wrap_send_for_status(
+    send: Send,
+) -> tuple[Send, dict[str, int | None]]:
+    """Wrap ASGI send to capture the final response status code."""
+    response_state: dict[str, int | None] = {"status_code": None}
+
+    async def send_with_status(message: dict[str, Any]) -> None:
+        if message.get("type") == "http.response.start":
+            response_state["status_code"] = int(message.get("status", 200))
+        await send(message)
+
+    return send_with_status, response_state
 
 
 class MCPTransportEndpoint:
@@ -758,8 +773,21 @@ class MCPTransportEndpoint:
 
         # Use the default session manager
         session_manager = await get_session_manager()
-        await session_manager.handle_request(scope, receive, send)
-        await _log_mcp(scope, auth_method=resolved_auth_method)
+        send_with_status, response_state = _wrap_send_for_status(send)
+        try:
+            await session_manager.handle_request(scope, receive, send_with_status)
+        except Exception:
+            await _log_mcp(
+                scope,
+                auth_method=resolved_auth_method,
+                status_code=response_state["status_code"] or 500,
+            )
+            raise
+        await _log_mcp(
+            scope,
+            auth_method=resolved_auth_method,
+            status_code=response_state["status_code"] or 200,
+        )
 
 
 class MCPCustomRouteEndpoint:
@@ -904,8 +932,23 @@ class MCPCustomRouteEndpoint:
                 return
 
         # Handle request directly with the server (bypasses session manager)
-        await handle_filtered_request(server, scope, receive, send)
-        await _log_mcp(scope, route_name=route_path, auth_method=resolved_auth_method)
+        send_with_status, response_state = _wrap_send_for_status(send)
+        try:
+            await handle_filtered_request(server, scope, receive, send_with_status)
+        except Exception:
+            await _log_mcp(
+                scope,
+                route_name=route_path,
+                auth_method=resolved_auth_method,
+                status_code=response_state["status_code"] or 500,
+            )
+            raise
+        await _log_mcp(
+            scope,
+            route_name=route_path,
+            auth_method=resolved_auth_method,
+            status_code=response_state["status_code"] or 200,
+        )
 
 
 # MCP Transport Route - uses ASGI app directly to avoid double response
