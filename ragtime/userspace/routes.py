@@ -38,12 +38,12 @@ from ragtime.userspace.models import (
     UpsertWorkspaceFileRequest, UserSpaceAcknowledgeChangedFilePathRequest,
     UserSpaceAvailableTool, UserSpaceChangedFileStateResponse,
     UserSpaceFileInfo, UserSpaceFileResponse, UserspaceMountSource,
-    UserSpaceObjectStorageConfig, UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot, UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace, UserSpaceWorkspaceCreateTask,
-    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceEnvVar,
-    UserSpaceWorkspaceScmConnectionRequest,
+    UserSpaceObjectStorageConfig, UserSpaceRuntimeRestartBatchTask,
+    UserSpaceSharedPreviewResponse, UserSpaceSnapshot,
+    UserSpaceSnapshotDiffSummaryResponse, UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse, UserSpaceWorkspace,
+    UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask,
+    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
     UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
     UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
@@ -591,9 +591,7 @@ async def upsert_global_env_var(
     request: UpsertGlobalEnvVarRequest,
     user: Any = Depends(require_admin),
 ):
-    result = await userspace_service.upsert_global_env_var(user.id, request)
-    await userspace_runtime_service.refresh_runtime_env_vars_for_all_active_workspaces()
-    return result
+    return await userspace_service.upsert_global_env_var(user.id, request)
 
 
 @router.delete(
@@ -604,9 +602,39 @@ async def delete_global_env_var(
     env_key: str,
     user: Any = Depends(require_admin),
 ):
-    result = await userspace_service.delete_global_env_var(user.id, env_key)
-    await userspace_runtime_service.refresh_runtime_env_vars_for_all_active_workspaces()
-    return result
+    return await userspace_service.delete_global_env_var(user.id, env_key)
+
+
+@router.get(
+    "/admin/runtime-restart-task",
+    response_model=UserSpaceRuntimeRestartBatchTask,
+)
+async def get_latest_runtime_restart_task(
+    _user: Any = Depends(require_admin),
+):
+    return await userspace_service.get_latest_runtime_restart_batch_task()
+
+
+@router.post(
+    "/admin/runtime-restart-task",
+    response_model=UserSpaceRuntimeRestartBatchTask,
+    status_code=202,
+)
+async def enqueue_runtime_restart_task(
+    user: Any = Depends(require_admin),
+):
+    return await userspace_service.enqueue_runtime_restart_batch_task(user.id)
+
+
+@router.get(
+    "/admin/runtime-restart-task/{task_id}",
+    response_model=UserSpaceRuntimeRestartBatchTask,
+)
+async def get_runtime_restart_task(
+    task_id: str,
+    _user: Any = Depends(require_admin),
+):
+    return await userspace_service.get_runtime_restart_batch_task(task_id)
 
 
 @router.get(

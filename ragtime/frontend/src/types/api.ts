@@ -1718,6 +1718,18 @@ export type UserSpaceWorkspaceCreateTaskPhase =
   | 'creating_conversation'
   | 'completed'
   | 'failed';
+export type UserSpaceRuntimeRestartBatchTaskPhase =
+  | 'queued'
+  | 'restarting'
+  | 'completed'
+  | 'completed_with_failures'
+  | 'failed';
+export type UserSpaceRuntimeRestartWorkspacePhase =
+  | 'queued'
+  | 'restarting'
+  | 'completed'
+  | 'skipped'
+  | 'failed';
 
 export interface UserSpaceWorkspaceMember {
   user_id: string;
@@ -1860,6 +1872,32 @@ export interface UserSpaceWorkspaceCreateTask {
   error?: string | null;
   queued_at: string;
   updated_at: string;
+}
+
+export interface UserSpaceRuntimeRestartWorkspaceTask {
+  workspace_id: string;
+  workspace_name: string;
+  phase: UserSpaceRuntimeRestartWorkspacePhase;
+  error?: string | null;
+  runtime_operation_phase?: UserSpaceRuntimeOperationPhase | null;
+  started_at?: string | null;
+  updated_at: string;
+}
+
+export interface UserSpaceRuntimeRestartBatchTask {
+  task_id: string;
+  phase: UserSpaceRuntimeRestartBatchTaskPhase;
+  total_workspaces: number;
+  completed_workspaces: number;
+  failed_workspaces: number;
+  skipped_workspaces: number;
+  current_workspace_id?: string | null;
+  current_workspace_name?: string | null;
+  error?: string | null;
+  queued_at: string;
+  started_at?: string | null;
+  updated_at: string;
+  workspace_results: UserSpaceRuntimeRestartWorkspaceTask[];
 }
 
 export interface UserSpaceAvailableTool {

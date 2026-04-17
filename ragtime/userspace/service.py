@@ -22,145 +22,91 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-
 from prisma import Json
 from prisma import fields as prisma_fields
+
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.git import create_repository, parse_git_url
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
-    USERSPACE_MOUNT_WATCH_JITTER_SECONDS,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    check_remote_rsync_available,
-    execute_ssh_command,
-    is_rsync_missing_error,
-    preview_ssh_directory_sync,
-    rsync_ssh_directory,
-    ssh_config_from_dict,
-    ssh_tunnel_config_from_dict,
-    sync_ssh_directory,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
+                              USERSPACE_MOUNT_WATCH_JITTER_SECONDS, SSHTunnel,
+                              build_ssh_tunnel_config,
+                              check_remote_rsync_available,
+                              execute_ssh_command, is_rsync_missing_error,
+                              preview_ssh_directory_sync, rsync_ssh_directory,
+                              ssh_config_from_dict,
+                              ssh_tunnel_config_from_dict, sync_ssh_directory)
 from ragtime.core.workspace_ops import (
-    PLATFORM_MANAGED_GITIGNORE_PATTERNS,
-    WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
-    compute_file_hash,
-    deduplicate_ancestor_paths,
-    sync_scope_relative_paths,
+    PLATFORM_MANAGED_GITIGNORE_PATTERNS, WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
+    compute_file_hash, deduplicate_ancestor_paths, sync_scope_relative_paths,
     workspace_mount_target_repo_relative_path,
-    workspace_path_matches_mount_prefix,
-)
+    workspace_path_matches_mount_prefix)
 from ragtime.indexer.file_utils import build_authenticated_git_url
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
-from ragtime.indexer.repository import _resolve_default_conversation_model, repository
+from ragtime.indexer.repository import (_resolve_default_conversation_model,
+                                        repository)
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
 from ragtime.userspace.models import (
-    ArtifactType,
-    BrowseUserspaceMountSourceRequest,
+    ArtifactType, BrowseUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
-    CreateUserSpaceObjectStorageBucketRequest,
-    CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest,
-    DeleteGlobalEnvVarResponse,
+    CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest, DeleteGlobalEnvVarResponse,
     DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse,
-    DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    MountableSource,
-    MountSourceAffectedWorkspace,
-    MountSourceAffectedWorkspacesResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqliteImportResponse,
-    SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
+    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse, ExecuteComponentRequest,
+    ExecuteComponentResponse, MountableSource, MountSourceAffectedWorkspace,
+    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
+    RuntimeOperationPhase, RuntimeRestartBatchTaskPhase,
+    RuntimeRestartWorkspacePhase, ShareAccessMode, SqliteImportResponse,
+    SqlitePersistenceMode, SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
-    UpdateUserSpaceObjectStorageBucketRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertGlobalEnvVarRequest,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserspaceMountBackend,
-    UserspaceMountSource,
-    UserspaceMountSourceType,
-    UserSpaceObjectStorageBucket,
-    UserSpaceObjectStorageConfig,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotBranch,
-    UserSpaceSnapshotDiffFileSummary,
-    UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceCreateTask,
-    UserSpaceWorkspaceDeleteTask,
-    UserSpaceWorkspaceEnvVar,
+    UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest, UpsertGlobalEnvVarRequest,
+    UpsertWorkspaceEnvVarRequest, UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo, UserSpaceFileResponse, UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection, UserspaceMountBackend, UserspaceMountSource,
+    UserspaceMountSourceType, UserSpaceObjectStorageBucket,
+    UserSpaceObjectStorageConfig, UserSpaceRuntimeRestartBatchTask,
+    UserSpaceRuntimeRestartWorkspaceTask, UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot, UserSpaceSnapshotBranch,
+    UserSpaceSnapshotDiffFileSummary, UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace, UserSpaceWorkspaceCreateTask,
+    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceEnvVar,
     UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
-    UserSpaceWorkspaceScmExportRequest,
-    UserSpaceWorkspaceScmImportRequest,
-    UserSpaceWorkspaceScmPreviewRequest,
-    UserSpaceWorkspaceScmPreviewResponse,
-    UserSpaceWorkspaceScmStatus,
-    UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceCreateTaskPhase,
-    WorkspaceDeleteTaskPhase,
-    WorkspaceMember,
-    WorkspaceMount,
-    WorkspaceMountBrowseRequest,
-    WorkspaceMountBrowseResponse,
-    WorkspaceMountDirectoryEntry,
-    WorkspaceMountSyncMode,
-    WorkspaceMountSyncPreviewRequest,
-    WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest,
-    WorkspaceMountSyncResponse,
-    WorkspaceScmDirection,
-    WorkspaceScmPreviewState,
-    WorkspaceScmProvider,
-    WorkspaceShareSlugAvailabilityResponse,
-)
-from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
-from ragtime.userspace.sqlite_import import (
-    _MAX_IMPORT_SIZE_BYTES,
-    SqlImportResult,
-    detect_binary_pg_dump,
-    detect_sql_dialect,
-    import_sql_to_sqlite,
-)
+    UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceCreateTaskPhase, WorkspaceDeleteTaskPhase, WorkspaceMember,
+    WorkspaceMount, WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
+    WorkspaceMountDirectoryEntry, WorkspaceMountSyncMode,
+    WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
+    WorkspaceScmDirection, WorkspaceScmPreviewState, WorkspaceScmProvider,
+    WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.preview_host import \
+    invalidate_preview_sessions_for_workspace
+from ragtime.userspace.sqlite_import import (_MAX_IMPORT_SIZE_BYTES,
+                                             SqlImportResult,
+                                             detect_binary_pg_dump,
+                                             detect_sql_dialect,
+                                             import_sql_to_sqlite)
 
 logger = get_logger(__name__)
 
@@ -338,6 +284,74 @@ class _WorkspaceCreateTaskRecord:
         self.updated_at = updated_at
 
 
+class _RuntimeRestartWorkspaceTaskRecord:
+    """In-memory status for one workspace in a runtime restart batch."""
+
+    __slots__ = (
+        "workspace_id",
+        "workspace_name",
+        "phase",
+        "error",
+        "runtime_operation_phase",
+        "started_at",
+        "updated_at",
+    )
+
+    def __init__(
+        self,
+        *,
+        workspace_id: str,
+        workspace_name: str,
+        phase: RuntimeRestartWorkspacePhase,
+        updated_at: datetime,
+    ) -> None:
+        self.workspace_id = workspace_id
+        self.workspace_name = workspace_name
+        self.phase = phase
+        self.error: str | None = None
+        self.runtime_operation_phase: RuntimeOperationPhase | None = None
+        self.started_at: datetime | None = None
+        self.updated_at = updated_at
+
+
+class _RuntimeRestartBatchTaskRecord:
+    """In-memory status for an admin-triggered runtime restart batch."""
+
+    __slots__ = (
+        "task_id",
+        "requested_by_user_id",
+        "phase",
+        "error",
+        "queued_at",
+        "started_at",
+        "updated_at",
+        "current_workspace_id",
+        "current_workspace_name",
+        "workspace_results",
+    )
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        requested_by_user_id: str,
+        phase: RuntimeRestartBatchTaskPhase,
+        queued_at: datetime,
+        updated_at: datetime,
+        workspace_results: list[_RuntimeRestartWorkspaceTaskRecord],
+    ) -> None:
+        self.task_id = task_id
+        self.requested_by_user_id = requested_by_user_id
+        self.phase = phase
+        self.error: str | None = None
+        self.queued_at = queued_at
+        self.started_at: datetime | None = None
+        self.updated_at = updated_at
+        self.current_workspace_id: str | None = None
+        self.current_workspace_name: str | None = None
+        self.workspace_results = workspace_results
+
+
 class _GlobalEnvVarRecord:
     """Compatibility row wrapper for global env vars loaded via raw SQL."""
 
@@ -407,6 +421,7 @@ _WORKSPACE_SCM_PREVIEW_TTL_SECONDS = 300
 _WORKSPACE_SCM_PREVIEW_SAMPLE_LIMIT = 100
 _WORKSPACE_CREATE_TASK_TTL_SECONDS = 300
 _WORKSPACE_DELETE_TASK_TTL_SECONDS = 300
+_RUNTIME_RESTART_BATCH_TASK_TTL_SECONDS = 900
 
 _MODULE_SOURCE_EXTENSIONS = (
     ".ts",
@@ -786,6 +801,13 @@ class UserSpaceService:
         self._workspace_create_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_create_task_statuses: dict[str, _WorkspaceCreateTaskRecord] = {}
         self._workspace_create_tasks_lock = asyncio.Lock()
+        self._runtime_restart_batch_tasks: dict[str, asyncio.Task[None]] = {}
+        self._runtime_restart_batch_task_statuses: dict[
+            str, _RuntimeRestartBatchTaskRecord
+        ] = {}
+        self._runtime_restart_batch_tasks_lock = asyncio.Lock()
+        self._runtime_restart_active_task_id: str | None = None
+        self._runtime_restart_latest_task_id: str | None = None
         # Limit concurrent workspace deletions; each can stop a runtime and
         # remove a workspace tree from disk.
         self._workspace_delete_semaphore = asyncio.Semaphore(
@@ -1243,6 +1265,324 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="Create task not found")
         return self._workspace_create_task_model(record)
 
+    @staticmethod
+    def _runtime_restart_workspace_timeout_seconds() -> float:
+        configured = float(
+            getattr(settings, "userspace_runtime_restart_workspace_timeout_seconds", 0)
+            or 0
+        )
+        if configured > 0:
+            return configured
+        manager_timeout = float(
+            getattr(settings, "userspace_runtime_manager_timeout_seconds", 120.0)
+        )
+        return max(manager_timeout + 30.0, 90.0)
+
+    def _prune_runtime_restart_batch_task(
+        self,
+        task_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._runtime_restart_batch_tasks.get(task_id) is task:
+            self._runtime_restart_batch_tasks.pop(task_id, None)
+        if self._runtime_restart_active_task_id == task_id:
+            self._runtime_restart_active_task_id = None
+
+    def _attach_runtime_restart_batch_task_cleanup(
+        self,
+        task_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        task.add_done_callback(
+            partial(self._prune_runtime_restart_batch_task, task_id)
+        )
+
+    def _prune_expired_runtime_restart_batch_task_statuses(self) -> None:
+        cutoff = _utc_now() - timedelta(seconds=_RUNTIME_RESTART_BATCH_TASK_TTL_SECONDS)
+        for task_id, record in list(self._runtime_restart_batch_task_statuses.items()):
+            if record.phase not in {"completed", "completed_with_failures", "failed"}:
+                continue
+            if record.updated_at > cutoff:
+                continue
+            self._runtime_restart_batch_task_statuses.pop(task_id, None)
+            if self._runtime_restart_latest_task_id == task_id:
+                self._runtime_restart_latest_task_id = None
+
+    @staticmethod
+    def _runtime_restart_workspace_task_model(
+        record: _RuntimeRestartWorkspaceTaskRecord,
+    ) -> UserSpaceRuntimeRestartWorkspaceTask:
+        return UserSpaceRuntimeRestartWorkspaceTask(
+            workspace_id=record.workspace_id,
+            workspace_name=record.workspace_name,
+            phase=cast(RuntimeRestartWorkspacePhase, record.phase),
+            error=record.error,
+            runtime_operation_phase=record.runtime_operation_phase,
+            started_at=record.started_at,
+            updated_at=record.updated_at,
+        )
+
+    @classmethod
+    def _runtime_restart_batch_task_model(
+        cls,
+        record: _RuntimeRestartBatchTaskRecord,
+    ) -> UserSpaceRuntimeRestartBatchTask:
+        completed_workspaces = sum(
+            1 for item in record.workspace_results if item.phase == "completed"
+        )
+        failed_workspaces = sum(
+            1 for item in record.workspace_results if item.phase == "failed"
+        )
+        skipped_workspaces = sum(
+            1 for item in record.workspace_results if item.phase == "skipped"
+        )
+        return UserSpaceRuntimeRestartBatchTask(
+            task_id=record.task_id,
+            phase=cast(RuntimeRestartBatchTaskPhase, record.phase),
+            total_workspaces=len(record.workspace_results),
+            completed_workspaces=completed_workspaces,
+            failed_workspaces=failed_workspaces,
+            skipped_workspaces=skipped_workspaces,
+            current_workspace_id=record.current_workspace_id,
+            current_workspace_name=record.current_workspace_name,
+            error=record.error,
+            queued_at=record.queued_at,
+            started_at=record.started_at,
+            updated_at=record.updated_at,
+            workspace_results=[
+                cls._runtime_restart_workspace_task_model(item)
+                for item in record.workspace_results
+            ],
+        )
+
+    def _set_runtime_restart_batch_phase(
+        self,
+        task_id: str,
+        phase: RuntimeRestartBatchTaskPhase,
+        *,
+        error: str | None = None,
+    ) -> None:
+        record = self._runtime_restart_batch_task_statuses.get(task_id)
+        if record is None:
+            return
+        record.phase = phase
+        now = _utc_now()
+        if phase == "restarting" and record.started_at is None:
+            record.started_at = now
+        record.updated_at = now
+        record.error = error if phase == "failed" else None
+
+    def _set_runtime_restart_current_workspace(
+        self,
+        task_id: str,
+        workspace_id: str | None,
+        workspace_name: str | None,
+    ) -> None:
+        record = self._runtime_restart_batch_task_statuses.get(task_id)
+        if record is None:
+            return
+        record.current_workspace_id = workspace_id
+        record.current_workspace_name = workspace_name
+        record.updated_at = _utc_now()
+
+    def _set_runtime_restart_workspace_phase(
+        self,
+        task_id: str,
+        workspace_id: str,
+        phase: RuntimeRestartWorkspacePhase,
+        *,
+        error: str | None = None,
+        runtime_operation_phase: RuntimeOperationPhase | None = None,
+    ) -> None:
+        record = self._runtime_restart_batch_task_statuses.get(task_id)
+        if record is None:
+            return
+        target = next(
+            (item for item in record.workspace_results if item.workspace_id == workspace_id),
+            None,
+        )
+        if target is None:
+            return
+        now = _utc_now()
+        if phase == "restarting" and target.started_at is None:
+            target.started_at = now
+        target.phase = phase
+        target.error = error if phase in {"failed", "skipped"} else None
+        target.runtime_operation_phase = runtime_operation_phase
+        target.updated_at = now
+        record.updated_at = now
+
+    async def _wait_for_runtime_restart_ready(
+        self,
+        *,
+        task_id: str,
+        workspace_id: str,
+    ) -> None:
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        restart_and_wait = getattr(
+            userspace_runtime_service,
+            "restart_runtime_env_vars_and_wait",
+        )
+        await restart_and_wait(
+            workspace_id,
+            timeout_seconds=self._runtime_restart_workspace_timeout_seconds(),
+            progress_callback=lambda phase: self._set_runtime_restart_workspace_phase(
+                task_id,
+                workspace_id,
+                "restarting",
+                runtime_operation_phase=phase,
+            ),
+        )
+
+    async def _run_runtime_restart_batch_task(
+        self,
+        task_id: str,
+        targets: list[tuple[str, str]],
+    ) -> None:
+        try:
+            self._set_runtime_restart_batch_phase(task_id, "restarting")
+            for workspace_id, workspace_name in targets:
+                self._set_runtime_restart_current_workspace(
+                    task_id,
+                    workspace_id,
+                    workspace_name,
+                )
+                self._set_runtime_restart_workspace_phase(
+                    task_id,
+                    workspace_id,
+                    "restarting",
+                    runtime_operation_phase="queued",
+                )
+
+                try:
+                    await self._wait_for_runtime_restart_ready(
+                        task_id=task_id,
+                        workspace_id=workspace_id,
+                    )
+                    self._set_runtime_restart_workspace_phase(
+                        task_id,
+                        workspace_id,
+                        "completed",
+                        runtime_operation_phase="ready",
+                    )
+                except HTTPException as exc:
+                    detail = str(exc.detail)
+                    phase: RuntimeRestartWorkspacePhase = (
+                        "skipped" if exc.status_code == 404 else "failed"
+                    )
+                    self._set_runtime_restart_workspace_phase(
+                        task_id,
+                        workspace_id,
+                        phase,
+                        error=detail,
+                    )
+                except asyncio.TimeoutError as exc:
+                    self._set_runtime_restart_workspace_phase(
+                        task_id,
+                        workspace_id,
+                        "failed",
+                        error=str(exc),
+                    )
+                except Exception as exc:
+                    self._set_runtime_restart_workspace_phase(
+                        task_id,
+                        workspace_id,
+                        "failed",
+                        error=str(exc).strip() or "Runtime restart failed",
+                    )
+
+            record = self._runtime_restart_batch_task_statuses.get(task_id)
+            if record is None:
+                return
+            failed_count = sum(
+                1 for item in record.workspace_results if item.phase == "failed"
+            )
+            final_phase: RuntimeRestartBatchTaskPhase = (
+                "completed_with_failures" if failed_count > 0 else "completed"
+            )
+            self._set_runtime_restart_current_workspace(task_id, None, None)
+            self._set_runtime_restart_batch_phase(task_id, final_phase)
+        except Exception as exc:
+            detail = str(exc).strip() or "Failed to restart active runtimes"
+            logger.exception("Runtime restart batch task failed: %s", detail)
+            self._set_runtime_restart_current_workspace(task_id, None, None)
+            self._set_runtime_restart_batch_phase(task_id, "failed", error=detail)
+
+    async def enqueue_runtime_restart_batch_task(
+        self,
+        user_id: str,
+    ) -> UserSpaceRuntimeRestartBatchTask:
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        self._prune_expired_runtime_restart_batch_task_statuses()
+
+        async with self._runtime_restart_batch_tasks_lock:
+            active_task_id = self._runtime_restart_active_task_id
+            if active_task_id is not None:
+                active_record = self._runtime_restart_batch_task_statuses.get(active_task_id)
+                if active_record is not None and active_record.phase in {"queued", "restarting"}:
+                    return self._runtime_restart_batch_task_model(active_record)
+
+            list_active_targets = getattr(
+                userspace_runtime_service,
+                "list_active_runtime_workspace_targets",
+            )
+            targets = await list_active_targets()
+            now = _utc_now()
+            task_id = str(uuid4())
+            workspace_results = [
+                _RuntimeRestartWorkspaceTaskRecord(
+                    workspace_id=workspace_id,
+                    workspace_name=workspace_name,
+                    phase="queued",
+                    updated_at=now,
+                )
+                for workspace_id, workspace_name in targets
+            ]
+            record = _RuntimeRestartBatchTaskRecord(
+                task_id=task_id,
+                requested_by_user_id=user_id,
+                phase="queued",
+                queued_at=now,
+                updated_at=now,
+                workspace_results=workspace_results,
+            )
+            self._runtime_restart_batch_task_statuses[task_id] = record
+            self._runtime_restart_latest_task_id = task_id
+
+            if not targets:
+                self._set_runtime_restart_batch_phase(task_id, "completed")
+                return self._runtime_restart_batch_task_model(record)
+
+            task = asyncio.create_task(
+                self._run_runtime_restart_batch_task(task_id, targets),
+                name=f"userspace-runtime-restart-batch:{task_id}",
+            )
+            self._attach_runtime_restart_batch_task_cleanup(task_id, task)
+            self._runtime_restart_batch_tasks[task_id] = task
+            self._runtime_restart_active_task_id = task_id
+            return self._runtime_restart_batch_task_model(record)
+
+    async def get_runtime_restart_batch_task(
+        self,
+        task_id: str,
+    ) -> UserSpaceRuntimeRestartBatchTask:
+        self._prune_expired_runtime_restart_batch_task_statuses()
+        record = self._runtime_restart_batch_task_statuses.get(task_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Runtime restart task not found")
+        return self._runtime_restart_batch_task_model(record)
+
+    async def get_latest_runtime_restart_batch_task(
+        self,
+    ) -> UserSpaceRuntimeRestartBatchTask:
+        self._prune_expired_runtime_restart_batch_task_statuses()
+        task_id = self._runtime_restart_latest_task_id
+        if task_id is None:
+            raise HTTPException(status_code=404, detail="Runtime restart task not found")
+        return await self.get_runtime_restart_batch_task(task_id)
+
     def _prune_workspace_delete_task(
         self,
         task_id: str,
@@ -1315,7 +1655,8 @@ class UserSpaceService:
         try:
             async with self._workspace_delete_semaphore:
                 self._set_workspace_delete_task_phase(task_id, "stopping_runtime")
-                from ragtime.userspace.runtime_service import userspace_runtime_service
+                from ragtime.userspace.runtime_service import \
+                    userspace_runtime_service
 
                 try:
                     await userspace_runtime_service.stop_runtime_session(
@@ -2885,9 +3226,8 @@ class UserSpaceService:
                     ),
                 )
                 try:
-                    from ragtime.userspace.runtime_service import (
-                        userspace_runtime_service,
-                    )
+                    from ragtime.userspace.runtime_service import \
+                        userspace_runtime_service
 
                     await userspace_runtime_service.bump_workspace_generation(
                         workspace_id,
@@ -2913,7 +3253,8 @@ class UserSpaceService:
                 allow_destructive_auto_sync_approval=True,
             )
             try:
-                from ragtime.userspace.runtime_service import userspace_runtime_service
+                from ragtime.userspace.runtime_service import \
+                    userspace_runtime_service
 
                 await userspace_runtime_service.bump_workspace_generation(
                     workspace_id,
@@ -5299,9 +5640,8 @@ class UserSpaceService:
         request: "UserSpaceWorkspaceScmSettingsRequest",
     ) -> UserSpaceWorkspaceScmStatus:
         """Update SCM relationship / policy settings without touching connection fields."""
-        from ragtime.userspace.models import (
-            UserSpaceWorkspaceScmSettingsRequest as _Req,
-        )  # noqa: F811
+        from ragtime.userspace.models import \
+            UserSpaceWorkspaceScmSettingsRequest as _Req  # noqa: F811
 
         await self._enforce_workspace_access(
             workspace_id, user_id, required_role="owner"
@@ -8430,7 +8770,8 @@ class UserSpaceService:
         mount_id: str,
     ) -> str | None:
         try:
-            from ragtime.userspace.runtime_service import userspace_runtime_service
+            from ragtime.userspace.runtime_service import \
+                userspace_runtime_service
 
             return await userspace_runtime_service.refresh_workspace_mount_after_sync(
                 workspace_id,

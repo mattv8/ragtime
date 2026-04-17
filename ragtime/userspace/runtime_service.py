@@ -7,39 +7,37 @@ import json
 import os
 import re
 import socket
+import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, cast
+from typing import Any, Callable, cast
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.core.workspace_ops import normalize_runtime_file_path
 from ragtime.indexer.workspace_state import build_workspace_chat_state
-from ragtime.userspace.models import (
-    RuntimeOperationPhase,
-    RuntimeSessionState,
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceCollabSnapshotResponse,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpacePreviewLaunchResponse,
-    UserSpacePreviewWarning,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSession,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-    UserSpaceWorkspaceTabStateResponse,
-)
+from ragtime.userspace.models import (RuntimeOperationPhase,
+                                      RuntimeSessionState,
+                                      UserSpaceCapabilityTokenResponse,
+                                      UserSpaceCollabSnapshotResponse,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpacePreviewLaunchResponse,
+                                      UserSpacePreviewWarning,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSession,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse,
+                                      UserSpaceWorkspaceTabStateResponse)
 from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
 from ragtime.userspace.service import userspace_service
 
@@ -750,9 +748,8 @@ class UserSpaceRuntimeService:
     ) -> None:
         await self.invalidate_preview_session_cache(workspace_id)
         if invalidate_preview_host:
-            from ragtime.userspace.preview_host import (
-                invalidate_preview_sessions_for_workspace,
-            )
+            from ragtime.userspace.preview_host import \
+                invalidate_preview_sessions_for_workspace
 
             await invalidate_preview_sessions_for_workspace(workspace_id)
 
@@ -2025,6 +2022,11 @@ class UserSpaceRuntimeService:
         session = self._to_runtime_session(active)
         if session.state not in {"running", "starting"}:
             return
+        session = await self._ensure_session_row(
+            workspace_id,
+            session.leased_by_user_id,
+            auto_start=False,
+        )
         workspace_env, workspace_env_visibility = await asyncio.gather(
             userspace_service.get_workspace_runtime_environment(workspace_id),
             userspace_service.get_workspace_runtime_environment_visibility(
@@ -2060,6 +2062,126 @@ class UserSpaceRuntimeService:
                     workspace_id,
                     exc,
                 )
+
+    async def list_active_runtime_workspace_targets(self) -> list[tuple[str, str]]:
+        """Return active runtime workspace ids with names, sorted for stable batch order."""
+        db = await get_db()
+        model = self._runtime_session_model(db)
+        rows = await model.find_many(
+            where={"state": {"in": ["starting", "running"]}},
+            order={"updatedAt": "asc"},
+        )
+        workspace_ids: list[str] = []
+        seen_workspace_ids: set[str] = set()
+        for row in rows:
+            workspace_id = str(getattr(row, "workspaceId", "") or "").strip()
+            if not workspace_id or workspace_id in seen_workspace_ids:
+                continue
+            seen_workspace_ids.add(workspace_id)
+            workspace_ids.append(workspace_id)
+
+        if not workspace_ids:
+            return []
+
+        workspace_rows = await db.workspace.find_many(
+            where={"id": {"in": workspace_ids}},
+            order={"name": "asc"},
+        )
+        names_by_id = {
+            str(getattr(row, "id", "") or "").strip(): str(
+                getattr(row, "name", "") or ""
+            ).strip()
+            for row in workspace_rows
+        }
+        return [
+            (workspace_id, names_by_id.get(workspace_id) or workspace_id)
+            for workspace_id in workspace_ids
+        ]
+
+    async def restart_runtime_env_vars_and_wait(
+        self,
+        workspace_id: str,
+        *,
+        timeout_seconds: float,
+        progress_callback: Callable[[RuntimeOperationPhase | None], None] | None = None,
+    ) -> None:
+        active = await self._get_active_session_row(workspace_id)
+        if active is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Runtime session is no longer active",
+            )
+
+        session = self._to_runtime_session(active)
+        if session.state not in {"running", "starting"} or not session.provider_session_id:
+            raise HTTPException(
+                status_code=404,
+                detail="Runtime session is no longer active",
+            )
+
+        provider_session_id = session.provider_session_id
+        await self.refresh_runtime_env_vars(workspace_id)
+
+        deadline = _time.monotonic() + timeout_seconds
+        allowed_runtime_phases = {
+            "queued",
+            "provisioning",
+            "bootstrapping",
+            "deps_install",
+            "launching",
+            "probing",
+            "ready",
+            "failed",
+            "stopped",
+        }
+
+        while True:
+            provider_status = await self._runtime_provider_get_status(
+                provider_session_id,
+                max_age_seconds=0,
+            )
+            if provider_status is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Runtime session is no longer active",
+                )
+
+            phase_value = str(provider_status.get("runtime_operation_phase") or "").strip()
+            runtime_operation_phase: RuntimeOperationPhase | None = None
+            if phase_value in allowed_runtime_phases:
+                runtime_operation_phase = cast(RuntimeOperationPhase, phase_value)
+
+            if progress_callback is not None:
+                progress_callback(runtime_operation_phase)
+
+            state = str(provider_status.get("state") or "").strip() or "running"
+            last_error = str(provider_status.get("last_error") or "").strip() or None
+            devserver_running = bool(provider_status.get("devserver_running"))
+
+            if state == "running" and (
+                runtime_operation_phase in {None, "ready"} or devserver_running
+            ):
+                return
+
+            if state in {"error", "stopped"} or runtime_operation_phase == "failed":
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        last_error
+                        or f"Runtime entered {runtime_operation_phase or state} during restart"
+                    ),
+                )
+
+            if _time.monotonic() >= deadline:
+                raise HTTPException(
+                    status_code=504,
+                    detail=(
+                        "Timed out waiting for runtime restart after "
+                        f"{int(timeout_seconds)} seconds"
+                    ),
+                )
+
+            await asyncio.sleep(1.0)
 
     async def _persist_runtime_mount_refresh_result(
         self,

@@ -76,6 +76,20 @@ WorkspaceCreateTaskPhase = Literal[
     "completed",
     "failed",
 ]
+RuntimeRestartBatchTaskPhase = Literal[
+    "queued",
+    "restarting",
+    "completed",
+    "completed_with_failures",
+    "failed",
+]
+RuntimeRestartWorkspacePhase = Literal[
+    "queued",
+    "restarting",
+    "completed",
+    "skipped",
+    "failed",
+]
 
 
 class WorkspaceMember(BaseModel):
@@ -127,6 +141,34 @@ class UserSpaceWorkspaceCreateTask(BaseModel):
     error: str | None = None
     queued_at: datetime
     updated_at: datetime
+
+
+class UserSpaceRuntimeRestartWorkspaceTask(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    phase: RuntimeRestartWorkspacePhase
+    error: str | None = None
+    runtime_operation_phase: RuntimeOperationPhase | None = None
+    started_at: datetime | None = None
+    updated_at: datetime
+
+
+class UserSpaceRuntimeRestartBatchTask(BaseModel):
+    task_id: str
+    phase: RuntimeRestartBatchTaskPhase
+    total_workspaces: int = 0
+    completed_workspaces: int = 0
+    failed_workspaces: int = 0
+    skipped_workspaces: int = 0
+    current_workspace_id: str | None = None
+    current_workspace_name: str | None = None
+    error: str | None = None
+    queued_at: datetime
+    started_at: datetime | None = None
+    updated_at: datetime
+    workspace_results: list[UserSpaceRuntimeRestartWorkspaceTask] = Field(
+        default_factory=list
+    )
 
 
 class CreateWorkspaceRequest(BaseModel):

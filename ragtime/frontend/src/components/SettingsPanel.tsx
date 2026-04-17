@@ -2,11 +2,12 @@ import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Lock, LockOpen, Info, Search, Clipboard, ExternalLink, X } from 'lucide-react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire, UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire, UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar, User } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
+import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
 import { useToast, ToastContainer } from './shared/Toast';
 
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
@@ -240,6 +241,7 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
 }
 
 interface SettingsPanelProps {
+  currentUser?: User | null;
   onServerNameChange?: (name: string) => void;
   /** Setting ID to highlight and scroll to (e.g., 'sequential_index_loading') */
   highlightSetting?: string | null;
@@ -249,7 +251,7 @@ interface SettingsPanelProps {
   authStatus?: AuthStatus | null;
 }
 
-export function SettingsPanel({ onServerNameChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
+export function SettingsPanel({ currentUser, onServerNameChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
   const { refresh: refreshModels } = useAvailableModels();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [userspacePreviewSettings, setUserspacePreviewSettings] = useState<UserSpacePreviewSettingsResponse | null>(null);
@@ -1611,7 +1613,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       } catch {
         mergeGlobalEnvVar(upserted, request.key);
       }
-      toast.success('Global environment variable saved.');
+      toast.success('Global environment variable saved. Restart active runtimes to apply changes.');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save global environment variable');
       throw err;
@@ -1629,7 +1631,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       } catch {
         mergeGlobalEnvVar(upserted, request.key);
       }
-      toast.success('Global environment variable updated.');
+      toast.success('Global environment variable updated. Restart active runtimes to apply changes.');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to update global environment variable');
       throw err;
@@ -1647,7 +1649,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       } catch {
         setGlobalEnvVars((current) => current.filter((item) => item.key !== key));
       }
-      toast.success('Global environment variable deleted.');
+      toast.success('Global environment variable deleted. Restart active runtimes to apply changes.');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to delete global environment variable');
       throw err;
@@ -1655,7 +1657,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setGlobalEnvVarsSaving(false);
     }
   }, [loadGlobalEnvVars, toast]);
-
 
   const getDisplayUrl = (path: string) => {
     const protocol = window.location.protocol;
@@ -1802,6 +1803,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   );
   const activeAuthProvider = AUTH_PROVIDER_OPTIONS[0];
   const ldapConfigured = Boolean(ldapFormData.ldap_host.trim() || ldapConfig?.server_url?.trim());
+  const isAdmin = currentUser?.role === 'admin';
   const manualDefaultChatModel = (() => {
     if (formData.default_chat_model !== undefined) {
       return formData.default_chat_model ?? null;
@@ -4436,6 +4438,15 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         saving={globalEnvVarsSaving}
         canManage
         addLabel="Add global variable"
+        extraContent={isAdmin ? (
+          <UserSpaceRuntimeRestartPanel
+            enabled={isAdmin}
+            isVisible={showGlobalEnvVarsModal}
+            description="Global environment variable changes are only picked up by active runtime containers after they restart."
+            notifySuccess={toast.success}
+            notifyError={toast.error}
+          />
+        ) : undefined}
         onCreateEnvVar={handleCreateGlobalEnvVar}
         onUpdateEnvVar={handleUpdateGlobalEnvVar}
         onDeleteEnvVar={handleDeleteGlobalEnvVar}

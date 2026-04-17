@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Check, Copy, Pencil, Trash2, X } from 'lucide-react';
 
 import type { UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar } from '@/types';
@@ -15,6 +15,7 @@ interface UserSpaceEnvVarsModalProps {
   showReadonlyAsCompact?: boolean;
   helperText?: string;
   addLabel?: string;
+  extraContent?: ReactNode;
   onCreateEnvVar: (request: UpsertUserSpaceWorkspaceEnvVarRequest) => Promise<void>;
   onUpdateEnvVar: (request: UpsertUserSpaceWorkspaceEnvVarRequest) => Promise<void>;
   onDeleteEnvVar: (key: string) => Promise<void>;
@@ -39,6 +40,7 @@ export function UserSpaceEnvVarsModal({
   showReadonlyAsCompact = false,
   helperText,
   addLabel = 'Add variable',
+  extraContent,
   onCreateEnvVar,
   onUpdateEnvVar,
   onDeleteEnvVar,
@@ -113,6 +115,11 @@ export function UserSpaceEnvVarsModal({
               </>
             )}
           </p>
+          {extraContent && (
+            <div style={{ marginBottom: 12 }}>
+              {extraContent}
+            </div>
+          )}
           {loading ? (
             <p className="userspace-muted">Loading...</p>
           ) : (

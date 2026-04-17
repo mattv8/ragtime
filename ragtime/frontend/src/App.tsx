@@ -686,6 +686,7 @@ export function App() {
         </div>
       ) : activeView === 'settings' ? (
         <SettingsPanel
+          currentUser={currentUser}
           onServerNameChange={handleServerNameChange}
           highlightSetting={highlightSetting}
           onHighlightComplete={() => setHighlightSetting(null)}
