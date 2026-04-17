@@ -4087,19 +4087,32 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspace, isOwner]);
 
+  const loadWorkspaceEnvVars = useCallback(async (workspaceId: string) => {
+    const vars = await api.listUserSpaceWorkspaceEnvVars(workspaceId);
+    setEnvVars(vars);
+    return vars;
+  }, []);
+
+  const mergeWorkspaceEnvVar = useCallback((envVar: UserSpaceWorkspaceEnvVar, previousKey?: string) => {
+    setEnvVars((current) => {
+      const keysToReplace = new Set([previousKey, envVar.key].filter(Boolean));
+      const next = current.filter((item) => !keysToReplace.has(item.key));
+      return [...next, envVar].sort((a, b) => a.key.localeCompare(b.key));
+    });
+  }, []);
+
   const handleOpenEnvVarsModal = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner) return;
     setShowEnvVarsModal(true);
     setEnvVarsLoading(true);
     try {
-      const vars = await api.listUserSpaceWorkspaceEnvVars(activeWorkspaceId);
-      setEnvVars(vars);
+      await loadWorkspaceEnvVars(activeWorkspaceId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load environment variables');
     } finally {
       setEnvVarsLoading(false);
     }
-  }, [activeWorkspaceId, isOwner]);
+  }, [activeWorkspaceId, isOwner, loadWorkspaceEnvVars]);
 
   const loadObjectStorageConfig = useCallback(async (workspaceId: string) => {
     const config = await api.getUserSpaceObjectStorageConfig(workspaceId);
@@ -4136,48 +4149,54 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setSavingEnvVar(true);
     try {
       const upserted = await api.upsertUserSpaceWorkspaceEnvVar(activeWorkspaceId, request);
-      setEnvVars((current) => {
-        const next = current.filter((v) => v.key !== upserted.key);
-        return [...next, upserted].sort((a, b) => a.key.localeCompare(b.key));
-      });
+      try {
+        await loadWorkspaceEnvVars(activeWorkspaceId);
+      } catch {
+        mergeWorkspaceEnvVar(upserted, request.key);
+      }
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save environment variable');
     } finally {
       setSavingEnvVar(false);
     }
-  }, [activeWorkspaceId, isOwner]);
+  }, [activeWorkspaceId, isOwner, loadWorkspaceEnvVars, mergeWorkspaceEnvVar]);
 
   const handleUpdateEnvVar = useCallback(async (request: UpsertUserSpaceWorkspaceEnvVarRequest) => {
     if (!activeWorkspaceId || !isOwner) return;
     setSavingEnvVar(true);
     try {
       const upserted = await api.upsertUserSpaceWorkspaceEnvVar(activeWorkspaceId, request);
-      setEnvVars((current) => {
-        const next = current.filter((v) => v.key !== upserted.key);
-        return [...next, upserted].sort((a, b) => a.key.localeCompare(b.key));
-      });
+      try {
+        await loadWorkspaceEnvVars(activeWorkspaceId);
+      } catch {
+        mergeWorkspaceEnvVar(upserted, request.key);
+      }
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update environment variable');
     } finally {
       setSavingEnvVar(false);
     }
-  }, [activeWorkspaceId, isOwner]);
+  }, [activeWorkspaceId, isOwner, loadWorkspaceEnvVars, mergeWorkspaceEnvVar]);
 
   const handleDeleteEnvVar = useCallback(async (key: string) => {
     if (!activeWorkspaceId || !isOwner) return;
     setSavingEnvVar(true);
     try {
       await api.deleteUserSpaceWorkspaceEnvVar(activeWorkspaceId, key);
-      setEnvVars((current) => current.filter((v) => v.key !== key));
+      try {
+        await loadWorkspaceEnvVars(activeWorkspaceId);
+      } catch {
+        setEnvVars((current) => current.filter((item) => item.key !== key));
+      }
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete environment variable');
     } finally {
       setSavingEnvVar(false);
     }
-  }, [activeWorkspaceId, isOwner]);
+  }, [activeWorkspaceId, isOwner, loadWorkspaceEnvVars]);
 
   const handleOpenMountsModal = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner) return;

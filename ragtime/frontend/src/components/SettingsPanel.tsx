@@ -1580,12 +1580,22 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     try {
       const vars = await api.listUserSpaceGlobalEnvVars();
       setGlobalEnvVars(vars);
+      return vars;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to load global environment variables');
+      throw err;
     } finally {
       setGlobalEnvVarsLoading(false);
     }
   }, [toast]);
+
+  const mergeGlobalEnvVar = useCallback((envVar: UserSpaceWorkspaceEnvVar, previousKey?: string) => {
+    setGlobalEnvVars((current) => {
+      const keysToReplace = new Set([previousKey, envVar.key].filter(Boolean));
+      const next = current.filter((item) => !keysToReplace.has(item.key));
+      return [...next, envVar].sort((a, b) => a.key.localeCompare(b.key));
+    });
+  }, []);
 
   const handleOpenGlobalEnvVarsModal = useCallback(async () => {
     setShowGlobalEnvVarsModal(true);
@@ -1596,10 +1606,11 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     setGlobalEnvVarsSaving(true);
     try {
       const upserted = await api.upsertUserSpaceGlobalEnvVar(request);
-      setGlobalEnvVars((current) => {
-        const next = current.filter((v) => v.key !== upserted.key);
-        return [...next, upserted].sort((a, b) => a.key.localeCompare(b.key));
-      });
+      try {
+        await loadGlobalEnvVars();
+      } catch {
+        mergeGlobalEnvVar(upserted, request.key);
+      }
       toast.success('Global environment variable saved.');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save global environment variable');
@@ -1607,16 +1618,17 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     } finally {
       setGlobalEnvVarsSaving(false);
     }
-  }, [toast]);
+  }, [loadGlobalEnvVars, mergeGlobalEnvVar, toast]);
 
   const handleUpdateGlobalEnvVar = useCallback(async (request: UpsertUserSpaceWorkspaceEnvVarRequest) => {
     setGlobalEnvVarsSaving(true);
     try {
       const upserted = await api.upsertUserSpaceGlobalEnvVar(request);
-      setGlobalEnvVars((current) => {
-        const next = current.filter((v) => v.key !== upserted.key);
-        return [...next, upserted].sort((a, b) => a.key.localeCompare(b.key));
-      });
+      try {
+        await loadGlobalEnvVars();
+      } catch {
+        mergeGlobalEnvVar(upserted, request.key);
+      }
       toast.success('Global environment variable updated.');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to update global environment variable');
@@ -1624,13 +1636,17 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     } finally {
       setGlobalEnvVarsSaving(false);
     }
-  }, [toast]);
+  }, [loadGlobalEnvVars, mergeGlobalEnvVar, toast]);
 
   const handleDeleteGlobalEnvVar = useCallback(async (key: string) => {
     setGlobalEnvVarsSaving(true);
     try {
       await api.deleteUserSpaceGlobalEnvVar(key);
-      setGlobalEnvVars((current) => current.filter((v) => v.key !== key));
+      try {
+        await loadGlobalEnvVars();
+      } catch {
+        setGlobalEnvVars((current) => current.filter((item) => item.key !== key));
+      }
       toast.success('Global environment variable deleted.');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to delete global environment variable');
@@ -1638,7 +1654,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     } finally {
       setGlobalEnvVarsSaving(false);
     }
-  }, [toast]);
+  }, [loadGlobalEnvVars, toast]);
 
 
   const getDisplayUrl = (path: string) => {
