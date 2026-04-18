@@ -237,9 +237,13 @@ model AppSettings {
   ollamaEmbeddingTimeoutSeconds Int @default(180) @map("ollama_embedding_timeout_seconds") // Per sub-batch timeout (seconds) for Ollama embedding calls
 
   // User Space Configuration
-  snapshotRetentionDays        Int      @default(0) @map("snapshot_retention_days") // Snapshot retention in days (0 = unlimited)
-  snapshotStaleBranchThreshold Int      @default(50) @map("snapshot_stale_branch_threshold") // Hide branches whose head is >= N commits behind the active head (0 = show all, 10-500)
-  userspacePreviewSandboxFlags String[] @default(["allow-scripts", "allow-same-origin", "allow-forms", "allow-popups", "allow-popups-to-escape-sandbox", "allow-modals", "allow-downloads"]) @map("userspace_preview_sandbox_flags") // Allowed iframe sandbox flags for User Space previews
+  snapshotRetentionDays                 Int      @default(0) @map("snapshot_retention_days") // Snapshot retention in days (0 = unlimited)
+  snapshotStaleBranchThreshold          Int      @default(50) @map("snapshot_stale_branch_threshold") // Hide branches whose head is >= N commits behind the active head (0 = show all, 10-500)
+  userspacePreviewSandboxFlags          String[] @default(["allow-scripts", "allow-same-origin", "allow-forms", "allow-popups", "allow-popups-to-escape-sandbox", "allow-modals", "allow-downloads"]) @map("userspace_preview_sandbox_flags") // Allowed iframe sandbox flags for User Space previews
+  userspaceDuplicateCopyFilesDefault    Boolean  @default(true) @map("userspace_duplicate_copy_files_default")
+  userspaceDuplicateCopyMetadataDefault Boolean  @default(true) @map("userspace_duplicate_copy_metadata_default")
+  userspaceDuplicateCopyChatsDefault    Boolean  @default(false) @map("userspace_duplicate_copy_chats_default")
+  userspaceDuplicateCopyMountsDefault   Boolean  @default(false) @map("userspace_duplicate_copy_mounts_default")
 
   // Timestamps
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")

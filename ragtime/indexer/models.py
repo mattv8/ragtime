@@ -11,15 +11,13 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from ragtime.core.embedding_models import (
-    get_embedding_models,
-    get_model_dimensions_sync,
-)
+from ragtime.core.embedding_models import (get_embedding_models,
+                                           get_model_dimensions_sync)
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
-    normalize_userspace_preview_sandbox_flags,
-)
+    normalize_userspace_preview_sandbox_flags)
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -793,6 +791,26 @@ class AppSettings(BaseModel):
             "Allowed iframe sandbox flags for User Space previews. "
             "Defaults to the current preview capability set."
         ),
+    )
+    userspace_duplicate_copy_files_default: bool = Field(
+        default=True,
+        description="Default User Space duplication behavior for copying workspace files.",
+    )
+    userspace_duplicate_copy_metadata_default: bool = Field(
+        default=True,
+        description=(
+            "Default User Space duplication behavior for copying workspace "
+            "description, SQLite mode, tool selections, and workspace "
+            "environment variables when accessible."
+        ),
+    )
+    userspace_duplicate_copy_chats_default: bool = Field(
+        default=False,
+        description="Default User Space duplication behavior for copying chat history.",
+    )
+    userspace_duplicate_copy_mounts_default: bool = Field(
+        default=False,
+        description="Default User Space duplication behavior for copying workspace mounts.",
     )
 
     updated_at: Optional[datetime] = None

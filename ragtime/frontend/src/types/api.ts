@@ -570,6 +570,10 @@ export interface AppSettings {
   snapshot_retention_days: number;
   snapshot_stale_branch_threshold: number;
   userspace_preview_sandbox_flags: string[];
+  userspace_duplicate_copy_files_default: boolean;
+  userspace_duplicate_copy_metadata_default: boolean;
+  userspace_duplicate_copy_chats_default: boolean;
+  userspace_duplicate_copy_mounts_default: boolean;
   updated_at: string | null;
 }
 
@@ -653,6 +657,10 @@ export interface UpdateSettingsRequest {
   snapshot_retention_days?: number;
   snapshot_stale_branch_threshold?: number;
   userspace_preview_sandbox_flags?: string[];
+  userspace_duplicate_copy_files_default?: boolean;
+  userspace_duplicate_copy_metadata_default?: boolean;
+  userspace_duplicate_copy_chats_default?: boolean;
+  userspace_duplicate_copy_mounts_default?: boolean;
 }
 
 // Ollama Connection Testing
@@ -1718,6 +1726,13 @@ export type UserSpaceWorkspaceCreateTaskPhase =
   | 'creating_conversation'
   | 'completed'
   | 'failed';
+export type UserSpaceWorkspaceDuplicateTaskPhase =
+  | 'queued'
+  | 'creating_workspace'
+  | 'copying_files'
+  | 'creating_conversation'
+  | 'completed'
+  | 'failed';
 export type UserSpaceRuntimeRestartBatchTaskPhase =
   | 'queued'
   | 'restarting'
@@ -1874,6 +1889,18 @@ export interface UserSpaceWorkspaceCreateTask {
   updated_at: string;
 }
 
+export interface UserSpaceWorkspaceDuplicateTask {
+  task_id: string;
+  source_workspace_id: string;
+  source_workspace_name: string;
+  workspace_id?: string | null;
+  workspace_name?: string | null;
+  phase: UserSpaceWorkspaceDuplicateTaskPhase;
+  error?: string | null;
+  queued_at: string;
+  updated_at: string;
+}
+
 export interface UserSpaceRuntimeRestartWorkspaceTask {
   workspace_id: string;
   workspace_name: string;
@@ -1915,6 +1942,14 @@ export interface CreateUserSpaceWorkspaceRequest {
   sqlite_persistence_mode?: SqlitePersistenceMode;
   selected_tool_ids?: string[];
   selected_tool_group_ids?: string[];
+}
+
+export interface DuplicateUserSpaceWorkspaceRequest {
+  name?: string;
+  copy_files?: boolean;
+  copy_metadata?: boolean;
+  copy_chats?: boolean;
+  copy_mounts?: boolean;
 }
 
 export interface UpdateUserSpaceWorkspaceRequest {

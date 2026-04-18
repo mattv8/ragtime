@@ -971,6 +971,10 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         default_ocr_vision_model: data.default_ocr_vision_model,
         ocr_concurrency_limit: data.ocr_concurrency_limit,
         userspace_preview_sandbox_flags: data.userspace_preview_sandbox_flags,
+        userspace_duplicate_copy_files_default: data.userspace_duplicate_copy_files_default,
+        userspace_duplicate_copy_metadata_default: data.userspace_duplicate_copy_metadata_default,
+        userspace_duplicate_copy_chats_default: data.userspace_duplicate_copy_chats_default,
+        userspace_duplicate_copy_mounts_default: data.userspace_duplicate_copy_mounts_default,
 
         // OpenAPI model settings
         openapi_sync_chat_models: data.openapi_sync_chat_models,
@@ -1563,19 +1567,33 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     try {
       const updated = await api.updateSettings({
         snapshot_stale_branch_threshold: formData.snapshot_stale_branch_threshold,
+        userspace_duplicate_copy_files_default: formData.userspace_duplicate_copy_files_default,
+        userspace_duplicate_copy_metadata_default: formData.userspace_duplicate_copy_metadata_default,
+        userspace_duplicate_copy_chats_default: formData.userspace_duplicate_copy_chats_default,
+        userspace_duplicate_copy_mounts_default: formData.userspace_duplicate_copy_mounts_default,
       });
       setSettings(updated);
       setFormData((prev) => ({
         ...prev,
         snapshot_stale_branch_threshold: updated.snapshot_stale_branch_threshold,
+        userspace_duplicate_copy_files_default: updated.userspace_duplicate_copy_files_default,
+        userspace_duplicate_copy_metadata_default: updated.userspace_duplicate_copy_metadata_default,
+        userspace_duplicate_copy_chats_default: updated.userspace_duplicate_copy_chats_default,
+        userspace_duplicate_copy_mounts_default: updated.userspace_duplicate_copy_mounts_default,
       }));
       toast.success('User Space settings saved.', 5000);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save stale branch threshold');
+      toast.error(err instanceof Error ? err.message : 'Failed to save User Space settings');
     } finally {
       setStaleBranchSaving(false);
     }
-  }, [formData.snapshot_stale_branch_threshold]);
+  }, [
+    formData.snapshot_stale_branch_threshold,
+    formData.userspace_duplicate_copy_files_default,
+    formData.userspace_duplicate_copy_metadata_default,
+    formData.userspace_duplicate_copy_chats_default,
+    formData.userspace_duplicate_copy_mounts_default,
+  ]);
 
   const loadGlobalEnvVars = useCallback(async () => {
     setGlobalEnvVarsLoading(true);
@@ -3960,6 +3978,60 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
 
           <details style={{ marginBottom: '16px' }} id="setting-userspace_advanced">
             <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Settings</summary>
+
+            <div className="form-group">
+              <label>Workspace Duplication Defaults</label>
+              <p className="field-help" style={{ marginTop: 0 }}>
+                Control what the hover-duplicate action copies into the new workspace when no per-duplicate override is provided.
+              </p>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                <input
+                  type="checkbox"
+                  checked={formData.userspace_duplicate_copy_files_default ?? settings?.userspace_duplicate_copy_files_default ?? true}
+                  onChange={(event) => setFormData({
+                    ...formData,
+                    userspace_duplicate_copy_files_default: event.target.checked,
+                  })}
+                />
+                Copy workspace files by default
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input
+                  type="checkbox"
+                  checked={formData.userspace_duplicate_copy_metadata_default ?? settings?.userspace_duplicate_copy_metadata_default ?? true}
+                  onChange={(event) => setFormData({
+                    ...formData,
+                    userspace_duplicate_copy_metadata_default: event.target.checked,
+                  })}
+                />
+                Copy metadata by default (description, SQLite mode, tool selections, env vars when accessible)
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <input
+                  type="checkbox"
+                  checked={formData.userspace_duplicate_copy_chats_default ?? settings?.userspace_duplicate_copy_chats_default ?? false}
+                  onChange={(event) => setFormData({
+                    ...formData,
+                    userspace_duplicate_copy_chats_default: event.target.checked,
+                  })}
+                />
+                Copy chats by default
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <input
+                  type="checkbox"
+                  checked={formData.userspace_duplicate_copy_mounts_default ?? settings?.userspace_duplicate_copy_mounts_default ?? false}
+                  onChange={(event) => setFormData({
+                    ...formData,
+                    userspace_duplicate_copy_mounts_default: event.target.checked,
+                  })}
+                />
+                Copy mounts by default
+              </label>
+              <p className="field-help">
+                Disable metadata copy to create a copy with the source files but fresh workspace settings. Chat and mount defaults are off by default.
+              </p>
+            </div>
 
             <div className="form-group">
               <label>Stale Branch Threshold</label>

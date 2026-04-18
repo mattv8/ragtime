@@ -77,6 +77,14 @@ WorkspaceCreateTaskPhase = Literal[
     "completed",
     "failed",
 ]
+WorkspaceDuplicateTaskPhase = Literal[
+    "queued",
+    "creating_workspace",
+    "copying_files",
+    "creating_conversation",
+    "completed",
+    "failed",
+]
 RuntimeRestartBatchTaskPhase = Literal[
     "queued",
     "restarting",
@@ -144,6 +152,18 @@ class UserSpaceWorkspaceCreateTask(BaseModel):
     updated_at: datetime
 
 
+class UserSpaceWorkspaceDuplicateTask(BaseModel):
+    task_id: str
+    source_workspace_id: str
+    source_workspace_name: str
+    workspace_id: str | None = None
+    workspace_name: str | None = None
+    phase: WorkspaceDuplicateTaskPhase
+    error: str | None = None
+    queued_at: datetime
+    updated_at: datetime
+
+
 class UserSpaceRuntimeRestartWorkspaceTask(BaseModel):
     workspace_id: str
     workspace_name: str
@@ -186,6 +206,30 @@ class CreateWorkspaceRequest(BaseModel):
     selected_tool_group_ids: list[str] | None = Field(
         default=None,
         description="Workspace-selected tool group IDs.",
+    )
+
+
+class DuplicateWorkspaceRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    copy_files: bool | None = Field(
+        default=None,
+        description="Override whether duplication copies workspace files.",
+    )
+    copy_metadata: bool | None = Field(
+        default=None,
+        description=(
+            "Override whether duplication copies description, SQLite mode, "
+            "tool selections, and workspace environment variables from the "
+            "source workspace when available."
+        ),
+    )
+    copy_chats: bool | None = Field(
+        default=None,
+        description="Override whether duplication copies workspace chat history.",
+    )
+    copy_mounts: bool | None = Field(
+        default=None,
+        description="Override whether duplication copies workspace mounts.",
     )
 
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Crown, Database, ExternalLink, File, GitBranch, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, CopyPlus, Crown, Database, ExternalLink, File, GitBranch, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { keymap } from '@codemirror/view';
 import { openSearchPanel } from '@codemirror/search';
@@ -20,7 +20,7 @@ import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
@@ -97,6 +97,46 @@ function formatWorkspaceCreateTasksStatus(tasks: UserSpaceWorkspaceCreateTask[])
   return queuedCount > 0
     ? `Creating ${tasks.length} workspaces (${queuedCount} queued)...`
     : `Creating ${tasks.length} workspaces...`;
+}
+
+function isWorkspaceDuplicateTaskTerminal(phase: UserSpaceWorkspaceDuplicateTaskPhase): boolean {
+  return phase === 'completed' || phase === 'failed';
+}
+
+function formatWorkspaceDuplicateTaskStatus(task: UserSpaceWorkspaceDuplicateTask | null): string | null {
+  if (!task) {
+    return null;
+  }
+
+  const label = task.workspace_name?.trim() || 'workspace';
+  switch (task.phase) {
+    case 'queued':
+      return `Preparing to duplicate ${label}...`;
+    case 'creating_workspace':
+      return `Creating ${label}...`;
+    case 'copying_files':
+      return `Copying files into ${label}...`;
+    case 'creating_conversation':
+      return `Setting up conversation for ${label}...`;
+    case 'failed':
+      return task.error?.trim() || `Failed to duplicate ${label}.`;
+    default:
+      return null;
+  }
+}
+
+function formatWorkspaceDuplicateTasksStatus(tasks: UserSpaceWorkspaceDuplicateTask[]): string | null {
+  if (tasks.length === 0) {
+    return null;
+  }
+  if (tasks.length === 1) {
+    return formatWorkspaceDuplicateTaskStatus(tasks[0]);
+  }
+
+  const queuedCount = tasks.filter((task) => task.phase === 'queued').length;
+  return queuedCount > 0
+    ? `Duplicating ${tasks.length} workspaces (${queuedCount} queued)...`
+    : `Duplicating ${tasks.length} workspaces...`;
 }
 
 function isWorkspaceDeleteTaskTerminal(phase: UserSpaceWorkspaceDeleteTaskPhase): boolean {
@@ -580,6 +620,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   );
   const [creatingWorkspaceTasks, setCreatingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceCreateTask>>({});
   const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDeleteTask>>({});
+  const [duplicatingWorkspaceTasks, setDuplicatingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDuplicateTask>>({});
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [shareLinkType, setShareLinkType] = useState<ShareLinkType>('anonymous');
@@ -1331,11 +1372,32 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     [deletingWorkspaceTasks],
   );
 
+  const activeWorkspaceDuplicateTasks = useMemo(
+    () => Object.values(duplicatingWorkspaceTasks)
+      .filter((task) => !isWorkspaceDuplicateTaskTerminal(task.phase))
+      .sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at)),
+    [duplicatingWorkspaceTasks],
+  );
+
   const deletingWorkspaceId = activeWorkspaceDeleteTasks[0]?.workspace_id ?? null;
   const deletingWorkspaceStatus = useMemo(
     () => formatWorkspaceDeleteTasksStatus(activeWorkspaceDeleteTasks),
     [activeWorkspaceDeleteTasks],
   );
+  const duplicatingWorkspaceSourceId = activeWorkspaceDuplicateTasks[0]?.source_workspace_id ?? null;
+  const duplicatingWorkspaceStatus = useMemo(
+    () => formatWorkspaceDuplicateTasksStatus(activeWorkspaceDuplicateTasks),
+    [activeWorkspaceDuplicateTasks],
+  );
+  const activeWorkspaceDuplicateTaskBySourceId = useMemo(() => {
+    const next: Record<string, UserSpaceWorkspaceDuplicateTask> = {};
+    for (const task of activeWorkspaceDuplicateTasks) {
+      if (!next[task.source_workspace_id]) {
+        next[task.source_workspace_id] = task;
+      }
+    }
+    return next;
+  }, [activeWorkspaceDuplicateTasks]);
 
   const showStartRuntimeButton = runtimeDisplayState === 'stopped' || runtimeDisplayState === 'error';
   const showRestartRuntimeButton = runtimeDisplayState === 'running';
@@ -2483,6 +2545,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, []);
 
+  const handleDuplicateWorkspace = useCallback(async (workspaceId: string) => {
+    setError(null);
+
+    try {
+      const task = await api.queueUserSpaceWorkspaceDuplicate(workspaceId, {});
+      setDuplicatingWorkspaceTasks((current) => ({
+        ...current,
+        [task.task_id]: task,
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to queue workspace duplication');
+    }
+  }, []);
+
   useEffect(() => {
     const tasks = Object.values(creatingWorkspaceTasks);
     if (tasks.length === 0) {
@@ -2599,6 +2675,100 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       window.clearInterval(intervalId);
     };
   }, [activeWorkspaceId, creatingWorkspaceTasks, loadWorkspaces]);
+
+  useEffect(() => {
+    const tasks = Object.values(duplicatingWorkspaceTasks);
+    if (tasks.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    let pollInFlight = false;
+
+    const pollDuplicateTasks = async () => {
+      if (pollInFlight) {
+        return;
+      }
+      pollInFlight = true;
+
+      try {
+        const results = await Promise.all(tasks.map(async (task) => {
+          try {
+            const status = await api.getUserSpaceWorkspaceDuplicateTask(task.task_id);
+            return { task, status, error: null as Error | null };
+          } catch (error) {
+            return { task, status: null as UserSpaceWorkspaceDuplicateTask | null, error: error as Error };
+          }
+        }));
+
+        if (cancelled) {
+          return;
+        }
+
+        const terminalTaskIds = new Set<string>();
+        const updatedTasks: Record<string, UserSpaceWorkspaceDuplicateTask> = {};
+        let nextError: string | null = null;
+
+        for (const result of results) {
+          if (result.status) {
+            if (isWorkspaceDuplicateTaskTerminal(result.status.phase)) {
+              terminalTaskIds.add(result.status.task_id);
+              if (result.status.phase === 'failed' && !nextError) {
+                nextError = result.status.error?.trim() || `Failed to duplicate ${result.status.workspace_name || 'workspace'}`;
+              }
+            } else {
+              updatedTasks[result.status.task_id] = result.status;
+            }
+            continue;
+          }
+
+          if (result.error instanceof ApiError && result.error.status === 404) {
+            terminalTaskIds.add(result.task.task_id);
+            continue;
+          }
+
+          if (!nextError && result.error instanceof Error) {
+            nextError = result.error.message;
+          }
+        }
+
+        setDuplicatingWorkspaceTasks((current) => {
+          const next = { ...current };
+          for (const taskId of terminalTaskIds) {
+            delete next[taskId];
+          }
+          for (const [taskId, task] of Object.entries(updatedTasks)) {
+            next[taskId] = task;
+          }
+          return next;
+        });
+
+        if (nextError) {
+          setError(nextError);
+        }
+
+        if (terminalTaskIds.size > 0) {
+          try {
+            await loadWorkspaces();
+          } catch {
+            // Best-effort refresh after duplicate.
+          }
+        }
+      } finally {
+        pollInFlight = false;
+      }
+    };
+
+    void pollDuplicateTasks();
+    const intervalId = window.setInterval(() => {
+      void pollDuplicateTasks();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [duplicatingWorkspaceTasks, loadWorkspaces]);
 
   const handleSelectFile = useCallback(async (path: string) => {
     if (!activeWorkspaceId) return;
@@ -5288,20 +5458,24 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     : 'Two-lane persistence mode. Live data wiring is primary for dashboards; SQLite local state is persisted with snapshots. Click to switch to live data only mode.';
   const formattedError = useMemo(() => formatUserSpaceErrorMessage(error), [error]);
   const hasStatusOverlayContent = Boolean(
-    loading || creatingWorkspace || deletingWorkspaceId || runtimeOverlayStatus || (formattedError && !creatingWorkspace && !deletingWorkspaceId)
+    loading || creatingWorkspace || duplicatingWorkspaceSourceId || deletingWorkspaceId || runtimeOverlayStatus || (formattedError && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId)
   );
   const statusOverlaySignature = useMemo(() => JSON.stringify({
     loading,
     creatingWorkspace,
     creatingWorkspaceStatus,
+    duplicatingWorkspaceSourceId,
+    duplicatingWorkspaceStatus,
     deletingWorkspaceId,
     deletingWorkspaceStatus,
     runtimeOverlayStatus,
-    formattedError: formattedError && !creatingWorkspace && !deletingWorkspaceId ? formattedError : null,
+    formattedError: formattedError && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId ? formattedError : null,
   }), [
     loading,
     creatingWorkspace,
     creatingWorkspaceStatus,
+    duplicatingWorkspaceSourceId,
+    duplicatingWorkspaceStatus,
     deletingWorkspaceId,
     deletingWorkspaceStatus,
     runtimeOverlayStatus,
@@ -5411,11 +5585,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                       ));
                     const isConfirmingDelete = deleteConfirmWorkspaceId === ws.id;
                     const isDeletingWorkspace = Boolean(deletingWorkspaceTasks[ws.id]);
+                    const duplicateTask = activeWorkspaceDuplicateTaskBySourceId[ws.id] ?? null;
+                    const isDuplicatingWorkspace = Boolean(duplicateTask);
+                    const workspaceActionBusy = isDeletingWorkspace || isDuplicatingWorkspace;
                     const isRenamingWorkspace = editingWorkspaceNameId === ws.id;
                     return (
                       <div
                         key={ws.id}
-                        className={`model-selector-item userspace-workspace-item ${ws.id === activeWorkspaceId ? 'is-selected' : ''}${isDeletingWorkspace ? ' is-deleting' : ''} ${!canDeleteWorkspace ? 'is-shared' : ''}`}
+                        className={`model-selector-item userspace-workspace-item ${ws.id === activeWorkspaceId ? 'is-selected' : ''}${isDeletingWorkspace ? ' is-deleting' : ''}${isDuplicatingWorkspace ? ' is-duplicating' : ''} ${!canDeleteWorkspace ? 'is-shared' : ''}`}
                       >
                         {isRenamingWorkspace ? (
                           <div className="userspace-workspace-inline-edit">
@@ -5475,7 +5652,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 <button
                                   type="button"
                                   className="chat-action-btn confirm-delete"
-                                  disabled={isDeletingWorkspace}
+                                  disabled={workspaceActionBusy}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     void handleSaveWorkspaceRename(ws);
@@ -5502,7 +5679,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 <button
                                   type="button"
                                   className="chat-action-btn confirm-delete"
-                                  disabled={isDeletingWorkspace}
+                                  disabled={workspaceActionBusy}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     void handleDeleteWorkspace(ws.id);
@@ -5530,7 +5707,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                   <button
                                     type="button"
                                     className="chat-action-btn"
-                                    disabled={isDeletingWorkspace}
+                                    disabled={workspaceActionBusy}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void handleDuplicateWorkspace(ws.id);
+                                    }}
+                                    title={isDuplicatingWorkspace ? (formatWorkspaceDuplicateTaskStatus(duplicateTask) || 'Duplicating workspace...') : 'Duplicate workspace'}
+                                  >
+                                    {isDuplicatingWorkspace ? <MiniLoadingSpinner variant="icon" size={12} /> : <CopyPlus size={12} />}
+                                  </button>
+                                )}
+                                {canRenameWorkspace && (
+                                  <button
+                                    type="button"
+                                    className="chat-action-btn"
+                                    disabled={workspaceActionBusy}
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       handleStartWorkspaceRename(ws);
@@ -5544,7 +5735,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                   <button
                                     type="button"
                                     className="chat-action-btn"
-                                    disabled={isDeletingWorkspace}
+                                    disabled={workspaceActionBusy}
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       setDeleteConfirmWorkspaceId(ws.id);
@@ -5809,17 +6000,22 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               <MiniLoadingSpinner variant="icon" size={14} /> {creatingWorkspaceStatus || 'Bootstrapping workspace...'}
             </p>
           )}
+          {duplicatingWorkspaceSourceId && (
+            <p className="userspace-status userspace-status-overlay-item">
+              <MiniLoadingSpinner variant="icon" size={14} /> {duplicatingWorkspaceStatus || 'Duplicating workspace...'}
+            </p>
+          )}
           {deletingWorkspaceId && (
             <p className="userspace-status userspace-status-overlay-item">
               <MiniLoadingSpinner variant="icon" size={14} /> {deletingWorkspaceStatus || 'Deleting workspace...'}
             </p>
           )}
-          {runtimeOverlayStatus && !creatingWorkspace && !deletingWorkspaceId && (
+          {runtimeOverlayStatus && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId && (
             <p className="userspace-status userspace-status-overlay-item">
               <MiniLoadingSpinner variant="icon" size={14} /> {runtimeOverlayStatus}
             </p>
           )}
-          {formattedError && !creatingWorkspace && !deletingWorkspaceId && (
+          {formattedError && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId && (
             <p className="userspace-error userspace-status userspace-status-overlay-item">{formattedError}</p>
           )}
         </div>

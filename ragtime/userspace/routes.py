@@ -25,8 +25,8 @@ from ragtime.userspace.models import (
     CreateWorkspaceRequest, DeleteGlobalEnvVarResponse,
     DeleteUserspaceMountSourceResponse,
     DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse, ExecuteComponentRequest,
-    ExecuteComponentResponse, MountableSource,
+    DeleteWorkspaceMountResponse, DuplicateWorkspaceRequest,
+    ExecuteComponentRequest, ExecuteComponentResponse, MountableSource,
     MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
     PromoteBranchToMainRequest, RestoreSnapshotResponse, SqliteImportResponse,
     SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
@@ -43,7 +43,8 @@ from ragtime.userspace.models import (
     UserSpaceSnapshotDiffSummaryResponse, UserSpaceSnapshotFileDiffResponse,
     UserSpaceSnapshotTimelineResponse, UserSpaceWorkspace,
     UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask,
-    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceScmConnectionRequest,
+    UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
     UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
     UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
@@ -223,6 +224,39 @@ async def get_workspace_create_task(
 ):
     is_admin = user.role == "admin"
     return await userspace_service.get_workspace_create_task(
+        task_id,
+        user.id,
+        is_admin=is_admin,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/duplicate-task",
+    response_model=UserSpaceWorkspaceDuplicateTask,
+    status_code=202,
+)
+async def queue_workspace_duplicate_task(
+    workspace_id: str,
+    request: DuplicateWorkspaceRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.enqueue_workspace_duplicate_task(
+        workspace_id,
+        request,
+        user.id,
+    )
+
+
+@router.get(
+    "/workspace-duplicate-tasks/{task_id}",
+    response_model=UserSpaceWorkspaceDuplicateTask,
+)
+async def get_workspace_duplicate_task(
+    task_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.get_workspace_duplicate_task(
         task_id,
         user.id,
         is_admin=is_admin,

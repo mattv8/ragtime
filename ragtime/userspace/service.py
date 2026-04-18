@@ -22,9 +22,9 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
+
 from prisma import Json
 from prisma import fields as prisma_fields
-
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -66,12 +66,13 @@ from ragtime.userspace.models import (
     CreateWorkspaceRequest, DeleteGlobalEnvVarResponse,
     DeleteUserspaceMountSourceResponse,
     DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse, ExecuteComponentRequest,
-    ExecuteComponentResponse, MountableSource, MountSourceAffectedWorkspace,
-    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
-    RuntimeOperationPhase, RuntimeRestartBatchTaskPhase,
-    RuntimeRestartWorkspacePhase, ShareAccessMode, SqliteImportResponse,
-    SqlitePersistenceMode, SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
+    DeleteWorkspaceMountResponse, DuplicateWorkspaceRequest,
+    ExecuteComponentRequest, ExecuteComponentResponse, MountableSource,
+    MountSourceAffectedWorkspace, MountSourceAffectedWorkspacesResponse,
+    PaginatedWorkspacesResponse, RuntimeOperationPhase,
+    RuntimeRestartBatchTaskPhase, RuntimeRestartWorkspacePhase,
+    ShareAccessMode, SqliteImportResponse, SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
     UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
     UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
@@ -86,15 +87,16 @@ from ragtime.userspace.models import (
     UserSpaceSnapshotDiffFileSummary, UserSpaceSnapshotDiffSummaryResponse,
     UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
     UserSpaceWorkspace, UserSpaceWorkspaceCreateTask,
-    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceEnvVar,
-    UserSpaceWorkspaceScmConnectionRequest,
+    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask,
+    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
     UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
     UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
     UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse,
     UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceCreateTaskPhase, WorkspaceDeleteTaskPhase, WorkspaceMember,
-    WorkspaceMount, WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
+    WorkspaceCreateTaskPhase, WorkspaceDeleteTaskPhase,
+    WorkspaceDuplicateTaskPhase, WorkspaceMember, WorkspaceMount,
+    WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
     WorkspaceMountDirectoryEntry, WorkspaceMountSyncMode,
     WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
     WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
@@ -284,6 +286,50 @@ class _WorkspaceCreateTaskRecord:
         self.updated_at = updated_at
 
 
+class _WorkspaceDuplicateTaskRecord:
+    """In-memory status for an asynchronous workspace duplicate task."""
+
+    __slots__ = (
+        "task_id",
+        "source_workspace_id",
+        "source_workspace_name",
+        "workspace_id",
+        "workspace_name",
+        "requested_by_user_id",
+        "resolved_model",
+        "phase",
+        "error",
+        "queued_at",
+        "updated_at",
+    )
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        source_workspace_id: str,
+        source_workspace_name: str,
+        workspace_id: str | None,
+        workspace_name: str | None,
+        requested_by_user_id: str,
+        resolved_model: str,
+        phase: WorkspaceDuplicateTaskPhase,
+        queued_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        self.task_id = task_id
+        self.source_workspace_id = source_workspace_id
+        self.source_workspace_name = source_workspace_name
+        self.workspace_id = workspace_id
+        self.workspace_name = workspace_name
+        self.requested_by_user_id = requested_by_user_id
+        self.resolved_model = resolved_model
+        self.phase = phase
+        self.error: str | None = None
+        self.queued_at = queued_at
+        self.updated_at = updated_at
+
+
 class _RuntimeRestartWorkspaceTaskRecord:
     """In-memory status for one workspace in a runtime restart batch."""
 
@@ -420,6 +466,7 @@ _GLOBAL_ENV_VAR_MAX_COUNT = 200
 _WORKSPACE_SCM_PREVIEW_TTL_SECONDS = 300
 _WORKSPACE_SCM_PREVIEW_SAMPLE_LIMIT = 100
 _WORKSPACE_CREATE_TASK_TTL_SECONDS = 300
+_WORKSPACE_DUPLICATE_TASK_TTL_SECONDS = 300
 _WORKSPACE_DELETE_TASK_TTL_SECONDS = 300
 _RUNTIME_RESTART_BATCH_TASK_TTL_SECONDS = 900
 
@@ -801,6 +848,14 @@ class UserSpaceService:
         self._workspace_create_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_create_task_statuses: dict[str, _WorkspaceCreateTaskRecord] = {}
         self._workspace_create_tasks_lock = asyncio.Lock()
+        self._workspace_duplicate_semaphore = asyncio.Semaphore(
+            self._positive_int_env("USERSPACE_DUPLICATE_CONCURRENCY", 2)
+        )
+        self._workspace_duplicate_tasks: dict[str, asyncio.Task[None]] = {}
+        self._workspace_duplicate_task_statuses: dict[
+            str, _WorkspaceDuplicateTaskRecord
+        ] = {}
+        self._workspace_duplicate_tasks_lock = asyncio.Lock()
         self._runtime_restart_batch_tasks: dict[str, asyncio.Task[None]] = {}
         self._runtime_restart_batch_task_statuses: dict[
             str, _RuntimeRestartBatchTaskRecord
@@ -1117,6 +1172,21 @@ class UserSpaceService:
     ) -> None:
         task.add_done_callback(partial(self._prune_workspace_create_task, task_id))
 
+    def _prune_workspace_duplicate_task(
+        self,
+        task_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._workspace_duplicate_tasks.get(task_id) is task:
+            self._workspace_duplicate_tasks.pop(task_id, None)
+
+    def _attach_workspace_duplicate_task_cleanup(
+        self,
+        task_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        task.add_done_callback(partial(self._prune_workspace_duplicate_task, task_id))
+
     def _prune_expired_workspace_create_task_statuses(self) -> None:
         cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_CREATE_TASK_TTL_SECONDS)
         for task_id, record in list(self._workspace_create_task_statuses.items()):
@@ -1125,6 +1195,15 @@ class UserSpaceService:
             if record.updated_at > cutoff:
                 continue
             self._workspace_create_task_statuses.pop(task_id, None)
+
+    def _prune_expired_workspace_duplicate_task_statuses(self) -> None:
+        cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_DUPLICATE_TASK_TTL_SECONDS)
+        for task_id, record in list(self._workspace_duplicate_task_statuses.items()):
+            if record.phase not in {"completed", "failed"}:
+                continue
+            if record.updated_at > cutoff:
+                continue
+            self._workspace_duplicate_task_statuses.pop(task_id, None)
 
     @staticmethod
     def _workspace_create_task_model(
@@ -1159,6 +1238,444 @@ class UserSpaceService:
             record.workspace_id = workspace_id
         if workspace_name is not None:
             record.workspace_name = workspace_name
+
+    @staticmethod
+    def _workspace_duplicate_task_model(
+        record: _WorkspaceDuplicateTaskRecord,
+    ) -> UserSpaceWorkspaceDuplicateTask:
+        return UserSpaceWorkspaceDuplicateTask(
+            task_id=record.task_id,
+            source_workspace_id=record.source_workspace_id,
+            source_workspace_name=record.source_workspace_name,
+            workspace_id=record.workspace_id,
+            workspace_name=record.workspace_name,
+            phase=cast(WorkspaceDuplicateTaskPhase, record.phase),
+            error=record.error,
+            queued_at=record.queued_at,
+            updated_at=record.updated_at,
+        )
+
+    def _set_workspace_duplicate_task_phase(
+        self,
+        task_id: str,
+        phase: WorkspaceDuplicateTaskPhase,
+        *,
+        workspace_id: str | None = None,
+        workspace_name: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        record = self._workspace_duplicate_task_statuses.get(task_id)
+        if record is None:
+            return
+        record.phase = phase
+        record.updated_at = _utc_now()
+        record.error = error if phase == "failed" else None
+        if workspace_id is not None:
+            record.workspace_id = workspace_id
+        if workspace_name is not None:
+            record.workspace_name = workspace_name
+
+    @staticmethod
+    def _workspace_duplicate_copy_files_default(app_settings: Any) -> bool:
+        return bool(
+            getattr(app_settings, "userspace_duplicate_copy_files_default", True)
+        )
+
+    @staticmethod
+    def _workspace_duplicate_copy_metadata_default(app_settings: Any) -> bool:
+        return bool(
+            getattr(app_settings, "userspace_duplicate_copy_metadata_default", True)
+        )
+
+    @staticmethod
+    def _workspace_duplicate_copy_chats_default(app_settings: Any) -> bool:
+        return bool(
+            getattr(app_settings, "userspace_duplicate_copy_chats_default", False)
+        )
+
+    @staticmethod
+    def _workspace_duplicate_copy_mounts_default(app_settings: Any) -> bool:
+        return bool(
+            getattr(app_settings, "userspace_duplicate_copy_mounts_default", False)
+        )
+
+    @staticmethod
+    def _duplicate_workspace_name_candidate(source_name: str, index: int) -> str:
+        suffix = " (Copy)" if index <= 1 else f" (Copy {index})"
+        normalized_source = (source_name or "").strip() or "Workspace"
+        max_base_length = max(1, 120 - len(suffix))
+        truncated = normalized_source[:max_base_length].rstrip() or "Workspace"
+        return f"{truncated}{suffix}"
+
+    async def _allocate_next_duplicate_workspace_name(
+        self,
+        user_id: str,
+        source_name: str,
+    ) -> str:
+        db = await get_db()
+        owner_workspaces = await db.workspace.find_many(
+            where={"ownerUserId": user_id},
+            take=10000,
+            order={"createdAt": "asc"},
+        )
+        used: set[str] = {
+            str(getattr(workspace, "nameNormalized", "") or "")
+            for workspace in owner_workspaces
+            if str(getattr(workspace, "nameNormalized", "") or "")
+        }
+
+        next_index = 1
+        while True:
+            candidate = self._duplicate_workspace_name_candidate(source_name, next_index)
+            normalized = _normalize_workspace_name_for_uniqueness(candidate)
+            if normalized and normalized not in used:
+                return candidate
+            next_index += 1
+
+    async def _copy_workspace_files_for_duplicate(
+        self,
+        source_workspace_id: str,
+        target_workspace_id: str,
+    ) -> None:
+        source_root = self._workspace_files_dir(source_workspace_id)
+        target_root = self._workspace_files_dir(target_workspace_id)
+
+        def _copy() -> None:
+            staged_files = sync_scope_relative_paths(source_root)
+            ignored_paths = {".ragtime/.runtime-bootstrap.done"}
+            ignored_prefixes = (".ragtime/s3/",)
+            for relative_path, source_path in staged_files.items():
+                if relative_path in ignored_paths:
+                    continue
+                if any(relative_path.startswith(prefix) for prefix in ignored_prefixes):
+                    continue
+                destination_path = target_root / relative_path
+                destination_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_path, destination_path)
+
+        await asyncio.to_thread(_copy)
+
+    @staticmethod
+    def _clone_json_value(value: Any, fallback: Any) -> Json:
+        return Json(json.loads(json.dumps(value if value is not None else fallback)))
+
+    async def _is_admin_user(self, user_id: str) -> bool:
+        db = await get_db()
+        user_record = await db.user.find_unique(where={"id": user_id})
+        return bool(user_record and getattr(user_record, "role", None) == "admin")
+
+    async def _copy_workspace_env_vars_for_duplicate(
+        self,
+        source_workspace_id: str,
+        target_workspace_id: str,
+    ) -> None:
+        db = await get_db()
+        model = self._workspace_env_var_model(db)
+        rows = await model.find_many(
+            where={"workspaceId": source_workspace_id},
+            order={"key": "asc"},
+        )
+        for row in rows:
+            await model.create(
+                data={
+                    "id": str(uuid4()),
+                    "workspaceId": target_workspace_id,
+                    "key": str(getattr(row, "key", "") or ""),
+                    "value": str(getattr(row, "value", "") or ""),
+                    "description": getattr(row, "description", None) or "",
+                }
+            )
+
+    async def _copy_workspace_mounts_for_duplicate(
+        self,
+        source_workspace_id: str,
+        target_workspace_id: str,
+        user_id: str,
+    ) -> None:
+        source_mounts = await self.list_workspace_mounts(source_workspace_id, user_id)
+        for mount in source_mounts:
+            created = await self.create_workspace_mount(
+                target_workspace_id,
+                user_id,
+                CreateWorkspaceMountRequest(
+                    mount_source_id=mount.mount_source_id,
+                    source_path=mount.source_path,
+                    target_path=mount.target_path,
+                    description=mount.description,
+                    auto_sync_enabled=False,
+                    sync_mode=mount.sync_mode,
+                ),
+            )
+            if not mount.enabled:
+                await self.update_workspace_mount(
+                    target_workspace_id,
+                    user_id,
+                    created.id,
+                    UpdateWorkspaceMountRequest(enabled=False),
+                )
+
+    async def _copy_workspace_chats_for_duplicate(
+        self,
+        source_workspace_id: str,
+        target_workspace_id: str,
+        user_id: str,
+    ) -> int:
+        db = await get_db()
+        source_conversations = await db.conversation.find_many(
+            where={"workspaceId": source_workspace_id},
+            order={"createdAt": "asc"},
+        )
+        copied_count = 0
+        for source_conversation in source_conversations:
+            source_tool_selections = await db.conversationtoolselection.find_many(
+                where={"conversationId": source_conversation.id},
+                order={"createdAt": "asc"},
+            )
+            source_tool_group_selections = await db.conversationtoolgroupselection.find_many(
+                where={"conversationId": source_conversation.id},
+                order={"createdAt": "asc"},
+            )
+            source_branches = await db.conversationbranch.find_many(
+                where={"conversationId": source_conversation.id},
+                order={"createdAt": "asc"},
+            )
+
+            cloned_conversation_id = str(uuid4())
+            await db.conversation.create(
+                data={
+                    "id": cloned_conversation_id,
+                    "title": str(
+                        getattr(source_conversation, "title", "Untitled Chat")
+                        or "Untitled Chat"
+                    ),
+                    "model": str(getattr(source_conversation, "model", "") or ""),
+                    "messages": self._clone_json_value(
+                        getattr(source_conversation, "messages", None),
+                        [],
+                    ),
+                    "totalTokens": int(
+                        getattr(source_conversation, "totalTokens", 0) or 0
+                    ),
+                    "toolOutputMode": getattr(
+                        source_conversation,
+                        "toolOutputMode",
+                        "default",
+                    ),
+                    "userId": user_id,
+                    "workspaceId": target_workspace_id,
+                    "activeTaskId": None,
+                }
+            )
+
+            for selection in source_tool_selections:
+                await db.conversationtoolselection.create(
+                    data={
+                        "conversationId": cloned_conversation_id,
+                        "toolConfigId": selection.toolConfigId,
+                    }
+                )
+            for selection in source_tool_group_selections:
+                await db.conversationtoolgroupselection.create(
+                    data={
+                        "conversationId": cloned_conversation_id,
+                        "toolGroupId": selection.toolGroupId,
+                    }
+                )
+
+            branch_id_map = {
+                source_branch.id: str(uuid4()) for source_branch in source_branches
+            }
+            for source_branch in source_branches:
+                await db.conversationbranch.create(
+                    data={
+                        "id": branch_id_map[source_branch.id],
+                        "conversationId": cloned_conversation_id,
+                        "parentBranchId": branch_id_map.get(
+                            getattr(source_branch, "parentBranchId", None)
+                        ),
+                        "branchPointIndex": int(
+                            getattr(source_branch, "branchPointIndex", 0) or 0
+                        ),
+                        "preservedMessages": self._clone_json_value(
+                            getattr(source_branch, "preservedMessages", None),
+                            [],
+                        ),
+                        "associatedSnapshotId": None,
+                        "createdByUserId": user_id,
+                    }
+                )
+
+            source_active_branch_id = getattr(source_conversation, "activeBranchId", None)
+            cloned_active_branch_id = branch_id_map.get(source_active_branch_id)
+            if cloned_active_branch_id:
+                await db.conversation.update(
+                    where={"id": cloned_conversation_id},
+                    data={"activeBranchId": cloned_active_branch_id},
+                )
+
+            copied_count += 1
+
+        return copied_count
+
+    async def _run_workspace_duplicate_task(
+        self,
+        task_id: str,
+        source_workspace_id: str,
+        request: DuplicateWorkspaceRequest,
+        user_id: str,
+        resolved_model: str,
+    ) -> None:
+        created_workspace_id: str | None = None
+        try:
+            async with self._workspace_duplicate_semaphore:
+                source_workspace = await self._enforce_workspace_access(
+                    source_workspace_id,
+                    user_id,
+                    required_role="viewer",
+                )
+                app_settings = await repository.get_settings()
+                copy_files = (
+                    request.copy_files
+                    if request.copy_files is not None
+                    else self._workspace_duplicate_copy_files_default(app_settings)
+                )
+                copy_metadata = (
+                    request.copy_metadata
+                    if request.copy_metadata is not None
+                    else self._workspace_duplicate_copy_metadata_default(app_settings)
+                )
+                copy_chats = (
+                    request.copy_chats
+                    if request.copy_chats is not None
+                    else self._workspace_duplicate_copy_chats_default(app_settings)
+                )
+                copy_mounts = (
+                    request.copy_mounts
+                    if request.copy_mounts is not None
+                    else self._workspace_duplicate_copy_mounts_default(app_settings)
+                )
+                target_name = (
+                    (request.name or "").strip()
+                    or await self._allocate_next_duplicate_workspace_name(
+                        user_id,
+                        source_workspace.name,
+                    )
+                )
+
+                create_request_kwargs: dict[str, Any] = {"name": target_name}
+                if copy_metadata:
+                    create_request_kwargs.update(
+                        {
+                            "description": source_workspace.description,
+                            "sqlite_persistence_mode": source_workspace.sqlite_persistence_mode,
+                            "selected_tool_ids": list(source_workspace.selected_tool_ids),
+                            "selected_tool_group_ids": list(
+                                source_workspace.selected_tool_group_ids
+                            ),
+                        }
+                    )
+
+                self._set_workspace_duplicate_task_phase(task_id, "creating_workspace")
+                workspace = await self.create_workspace(
+                    CreateWorkspaceRequest(**create_request_kwargs),
+                    user_id,
+                )
+                created_workspace_id = workspace.id
+
+                self._set_workspace_duplicate_task_phase(
+                    task_id,
+                    "copying_files",
+                    workspace_id=workspace.id,
+                    workspace_name=workspace.name,
+                )
+                if copy_files:
+                    await self._copy_workspace_files_for_duplicate(
+                        source_workspace_id,
+                        workspace.id,
+                    )
+                else:
+                    await self.upsert_workspace_file(
+                        workspace.id,
+                        _USERSPACE_PREVIEW_ENTRY_PATH,
+                        UpsertWorkspaceFileRequest(
+                            content=_DEFAULT_WORKSPACE_DASHBOARD_CONTENT,
+                            artifact_type="module_ts",
+                        ),
+                        user_id,
+                    )
+
+                self._ensure_object_storage_config(workspace.id)
+                self._seed_runtime_bootstrap_config(workspace.id)
+                self._seed_runtime_entrypoint_config(workspace.id)
+                await self._ensure_workspace_git_repo(workspace.id)
+
+                if copy_metadata and (
+                    getattr(source_workspace, "owner_user_id", None) == user_id
+                    or await self._is_admin_user(user_id)
+                ):
+                    await self._copy_workspace_env_vars_for_duplicate(
+                        source_workspace_id,
+                        workspace.id,
+                    )
+
+                if copy_mounts:
+                    await self._copy_workspace_mounts_for_duplicate(
+                        source_workspace_id,
+                        workspace.id,
+                        user_id,
+                    )
+
+                self._set_workspace_duplicate_task_phase(
+                    task_id,
+                    "creating_conversation",
+                    workspace_id=workspace.id,
+                    workspace_name=workspace.name,
+                )
+                copied_chats = 0
+                if copy_chats:
+                    copied_chats = await self._copy_workspace_chats_for_duplicate(
+                        source_workspace_id,
+                        workspace.id,
+                        user_id,
+                    )
+                if copied_chats == 0:
+                    await repository.create_conversation(
+                        user_id=user_id,
+                        workspace_id=workspace.id,
+                        model=resolved_model,
+                    )
+                self._set_workspace_duplicate_task_phase(
+                    task_id,
+                    "completed",
+                    workspace_id=workspace.id,
+                    workspace_name=workspace.name,
+                )
+        except Exception as exc:
+            detail = (
+                str(exc.detail)
+                if isinstance(exc, HTTPException)
+                else str(exc).strip() or "Failed to duplicate workspace"
+            )
+            logger.exception(
+                "Workspace duplicate task failed for %s: %s",
+                source_workspace_id,
+                detail,
+            )
+            if created_workspace_id is not None:
+                try:
+                    await repository.delete_workspace_conversations(created_workspace_id)
+                    await self.delete_workspace(created_workspace_id, user_id)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "Failed to clean up partially duplicated workspace %s: %s",
+                        created_workspace_id,
+                        cleanup_exc,
+                    )
+            self._set_workspace_duplicate_task_phase(
+                task_id,
+                "failed",
+                error=detail,
+            )
 
     async def _run_workspace_create_task(
         self,
@@ -1255,6 +1772,75 @@ class UserSpaceService:
             self._workspace_create_tasks[task_id] = task
 
         return self._workspace_create_task_model(record)
+
+    async def enqueue_workspace_duplicate_task(
+        self,
+        workspace_id: str,
+        request: DuplicateWorkspaceRequest,
+        user_id: str,
+    ) -> UserSpaceWorkspaceDuplicateTask:
+        source_workspace = await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="viewer",
+        )
+        self._prune_expired_workspace_duplicate_task_statuses()
+
+        app_settings = await repository.get_settings()
+        resolved_model = _resolve_default_conversation_model(app_settings)
+        target_name = (
+            (request.name or "").strip()
+            or await self._allocate_next_duplicate_workspace_name(
+                user_id,
+                source_workspace.name,
+            )
+        )
+
+        task_id = str(uuid4())
+        now = _utc_now()
+        record = _WorkspaceDuplicateTaskRecord(
+            task_id=task_id,
+            source_workspace_id=source_workspace.id,
+            source_workspace_name=source_workspace.name,
+            workspace_id=None,
+            workspace_name=target_name,
+            requested_by_user_id=user_id,
+            resolved_model=resolved_model,
+            phase="queued",
+            queued_at=now,
+            updated_at=now,
+        )
+        queued_request = request.model_copy(deep=True)
+        task = asyncio.create_task(
+            self._run_workspace_duplicate_task(
+                task_id,
+                source_workspace.id,
+                queued_request,
+                user_id,
+                resolved_model,
+            ),
+            name=f"userspace-workspace-duplicate:{task_id}",
+        )
+
+        async with self._workspace_duplicate_tasks_lock:
+            self._attach_workspace_duplicate_task_cleanup(task_id, task)
+            self._workspace_duplicate_task_statuses[task_id] = record
+            self._workspace_duplicate_tasks[task_id] = task
+
+        return self._workspace_duplicate_task_model(record)
+
+    async def get_workspace_duplicate_task(
+        self,
+        task_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceDuplicateTask:
+        self._prune_expired_workspace_duplicate_task_statuses()
+        record = self._workspace_duplicate_task_statuses.get(task_id)
+        if record is None or (record.requested_by_user_id != user_id and not is_admin):
+            raise HTTPException(status_code=404, detail="Duplicate task not found")
+        return self._workspace_duplicate_task_model(record)
 
     async def get_workspace_create_task(
         self, task_id: str, user_id: str, *, is_admin: bool = False
