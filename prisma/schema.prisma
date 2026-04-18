@@ -776,6 +776,7 @@ model User {
   usageAttempts                        UserUsageAttempt[]
   mcpRequestLogs                       McpRequestLog[]
   apiRequestLogs                       ApiRequestLog[]
+  agentGrantsGranted                   WorkspaceAgentGrant[]                 @relation("AgentGrantGranter")
 
   @@map("users")
 }
@@ -987,12 +988,45 @@ model Workspace {
   changedFileAcknowledgements UserSpaceChangedFileAcknowledgement[]
   snapshotBranches            UserSpaceSnapshotBranch[]
   snapshots                   UserSpaceSnapshot[]
+  outgoingAgentGrants         WorkspaceAgentGrant[]                 @relation("AgentGrantSource")
+  incomingAgentGrants         WorkspaceAgentGrant[]                 @relation("AgentGrantTarget")
 
   @@unique([ownerUserId, nameNormalized])
   @@unique([ownerUserId, shareSlug])
   @@index([ownerUserId])
   @@index([updatedAt])
   @@map("workspaces")
+}
+
+/// Cross-workspace agent access mode
+enum WorkspaceAgentGrantMode {
+  read
+  read_write
+
+  @@map("workspace_agent_grant_mode")
+}
+
+/// Grant from a source workspace's agent to access another (target) workspace's
+/// runtime files. The grant is owned/managed by the target workspace owner.
+model WorkspaceAgentGrant {
+  id                String                  @id @default(uuid())
+  sourceWorkspaceId String                  @map("source_workspace_id")
+  targetWorkspaceId String                  @map("target_workspace_id")
+  accessMode        WorkspaceAgentGrantMode @default(read) @map("access_mode")
+  grantedByUserId   String                  @map("granted_by_user_id")
+  expiresAt         DateTime?               @map("expires_at")
+  createdAt         DateTime                @default(now()) @map("created_at")
+  updatedAt         DateTime                @default(now()) @updatedAt @map("updated_at")
+
+  sourceWorkspace Workspace @relation("AgentGrantSource", fields: [sourceWorkspaceId], references: [id], onDelete: Cascade)
+  targetWorkspace Workspace @relation("AgentGrantTarget", fields: [targetWorkspaceId], references: [id], onDelete: Cascade)
+  grantedBy       User      @relation("AgentGrantGranter", fields: [grantedByUserId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceWorkspaceId, targetWorkspaceId])
+  @@index([sourceWorkspaceId])
+  @@index([targetWorkspaceId])
+  @@index([expiresAt])
+  @@map("workspace_agent_grants")
 }
 
 /// Workspace-scoped environment variables (value encrypted at rest).

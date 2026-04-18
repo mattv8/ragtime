@@ -106,6 +106,57 @@ class WorkspaceMember(BaseModel):
     role: WorkspaceRole = Field(description="Permission role")
 
 
+WorkspaceAgentGrantMode = Literal["read", "read_write"]
+
+
+class WorkspaceAgentGrant(BaseModel):
+    """Cross-workspace agent access grant.
+
+    The agent running in `source_workspace_id` may access files/runtime in
+    `target_workspace_id` according to `access_mode`.
+    """
+
+    id: str
+    source_workspace_id: str
+    target_workspace_id: str
+    target_workspace_name: str | None = None
+    access_mode: WorkspaceAgentGrantMode = "read"
+    granted_by_user_id: str
+    granted_by_username: str | None = None
+    expires_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class UpsertWorkspaceAgentGrantRequest(BaseModel):
+    target_workspace_id: str = Field(
+        min_length=1,
+        description=(
+            "Workspace ID that the agent in this (source) workspace will be "
+            "permitted to access."
+        ),
+    )
+    access_mode: WorkspaceAgentGrantMode = Field(
+        default="read",
+        description=(
+            "Access mode for cross-workspace agent operations. 'read' allows "
+            "list/read/search/screenshot only. 'read_write' additionally "
+            "allows file mutations and terminal commands."
+        ),
+    )
+
+
+class ListWorkspaceAgentGrantsResponse(BaseModel):
+    source_workspace_id: str
+    grants: list[WorkspaceAgentGrant] = Field(default_factory=list)
+
+
+class RevokeWorkspaceAgentGrantResponse(BaseModel):
+    source_workspace_id: str
+    target_workspace_id: str
+    revoked: bool = True
+
+
 class UserSpaceAvailableTool(BaseModel):
     id: str
     name: str

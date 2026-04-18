@@ -34,26 +34,26 @@ from ragtime.userspace.models import (
     UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
     UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
     UpdateWorkspaceShareAccessRequest, UpdateWorkspaceShareSlugRequest,
-    UpsertGlobalEnvVarRequest, UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest, UserSpaceAcknowledgeChangedFilePathRequest,
-    UserSpaceAvailableTool, UserSpaceChangedFileStateResponse,
-    UserSpaceFileInfo, UserSpaceFileResponse, UserspaceMountSource,
-    UserSpaceObjectStorageConfig, UserSpaceRuntimeRestartBatchTask,
-    UserSpaceSharedPreviewResponse, UserSpaceSnapshot,
-    UserSpaceSnapshotDiffSummaryResponse, UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse, UserSpaceWorkspace,
-    UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask,
-    UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceEnvVar,
-    UserSpaceWorkspaceScmConnectionRequest,
+    UpsertGlobalEnvVarRequest, UpsertWorkspaceAgentGrantRequest,
+    UpsertWorkspaceEnvVarRequest, UpsertWorkspaceFileRequest,
+    UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceAvailableTool,
+    UserSpaceChangedFileStateResponse, UserSpaceFileInfo,
+    UserSpaceFileResponse, UserspaceMountSource, UserSpaceObjectStorageConfig,
+    UserSpaceRuntimeRestartBatchTask, UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot, UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace, UserSpaceWorkspaceCreateTask,
+    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask,
+    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
     UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
     UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
     UserSpaceWorkspaceScmSettingsRequest, UserSpaceWorkspaceScmSyncResponse,
     UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMount, WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
-    WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
-    WorkspaceShareSlugAvailabilityResponse)
+    WorkspaceAgentGrant, WorkspaceMount, WorkspaceMountBrowseRequest,
+    WorkspaceMountBrowseResponse, WorkspaceMountSyncPreviewRequest,
+    WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest,
+    WorkspaceMountSyncResponse, WorkspaceShareSlugAvailabilityResponse)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 from ragtime.userspace.share_auth import share_auth_token_from_request
@@ -558,6 +558,62 @@ async def update_workspace_members(
     return await userspace_service.update_workspace_members(
         workspace_id, request, user.id
     )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/agent-grants",
+    response_model=list[WorkspaceAgentGrant],
+)
+async def list_workspace_agent_grants(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    """List active cross-workspace agent grants originating from this workspace."""
+    return await userspace_service.list_workspace_agent_grants(
+        workspace_id,
+        user.id,
+        is_admin=user.role == "admin",
+    )
+
+
+@router.put(
+    "/workspaces/{workspace_id}/agent-grants",
+    response_model=WorkspaceAgentGrant,
+)
+async def upsert_workspace_agent_grant(
+    workspace_id: str,
+    request: UpsertWorkspaceAgentGrantRequest,
+    user: Any = Depends(get_current_user),
+):
+    """Grant the agent in this (source) workspace access to a target workspace."""
+    return await userspace_service.upsert_workspace_agent_grant(
+        workspace_id,
+        request,
+        user.id,
+        is_admin=user.role == "admin",
+    )
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/agent-grants/{target_workspace_id}",
+    response_model=dict,
+)
+async def revoke_workspace_agent_grant(
+    workspace_id: str,
+    target_workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    revoked = await userspace_service.revoke_workspace_agent_grant(
+        workspace_id,
+        target_workspace_id,
+        user.id,
+        is_admin=user.role == "admin",
+    )
+    return {
+        "source_workspace_id": workspace_id,
+        "target_workspace_id": target_workspace_id,
+        "revoked": revoked,
+    }
 
 
 @router.get(

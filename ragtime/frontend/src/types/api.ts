@@ -1965,6 +1965,32 @@ export interface UpdateUserSpaceWorkspaceMembersRequest {
   members: UserSpaceWorkspaceMember[];
 }
 
+export type WorkspaceAgentGrantMode = 'read' | 'read_write';
+
+export interface WorkspaceAgentGrant {
+  id: string;
+  source_workspace_id: string;
+  target_workspace_id: string;
+  target_workspace_name?: string | null;
+  access_mode: WorkspaceAgentGrantMode;
+  granted_by_user_id: string;
+  granted_by_username?: string | null;
+  expires_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpsertWorkspaceAgentGrantRequest {
+  target_workspace_id: string;
+  access_mode: WorkspaceAgentGrantMode;
+}
+
+export interface RevokeWorkspaceAgentGrantResponse {
+  source_workspace_id: string;
+  target_workspace_id: string;
+  revoked: boolean;
+}
+
 export interface UserSpaceWorkspaceEnvVar {
   key: string;
   has_value: boolean;

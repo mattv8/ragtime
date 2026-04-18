@@ -22,165 +22,121 @@ import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional, cast
+from typing import (TYPE_CHECKING, Any, Awaitable, Callable, List, Optional,
+                    cast)
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Body,
-    Depends,
-    File,
-    Form,
-    HTTPException,
-    Query,
-    UploadFile,
-)
+from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
+                     Query, UploadFile)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
-from ragtime.core.copilot_auth import (
-    ensure_copilot_token_fresh,
-    exchange_github_token_for_copilot_token,
-    is_copilot_token_refresh_in_progress,
-)
-from ragtime.core.embedding_models import (
-    OPENAI_EMBEDDING_PRIORITY,
-    get_embedding_models,
-)
+from ragtime.core.copilot_api import (COPILOT_DEFAULT_BASE_URL,
+                                      build_copilot_headers)
+from ragtime.core.copilot_auth import (ensure_copilot_token_fresh,
+                                       exchange_github_token_for_copilot_token,
+                                       is_copilot_token_refresh_in_progress)
+from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
+                                           get_embedding_models)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    MODEL_FAMILY_PATTERNS,
-    get_context_limit,
-    get_output_limit,
-    register_model_reasoning_capabilities,
-    register_model_supported_endpoints,
-    requires_responses_api,
-    supports_function_calling,
-    supports_responses_api,
-    update_model_function_calling,
-    update_model_limit,
-    update_model_output_limit,
-)
-from ragtime.core.ollama import (
-    extract_capabilities,
-    extract_effective_context_length,
-    get_model_details,
-    is_embedding_capable,
-    is_reachable,
-)
+from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
+                                       get_context_limit, get_output_limit,
+                                       register_model_reasoning_capabilities,
+                                       register_model_supported_endpoints,
+                                       requires_responses_api,
+                                       supports_function_calling,
+                                       supports_responses_api,
+                                       update_model_function_calling,
+                                       update_model_limit,
+                                       update_model_output_limit)
+from ragtime.core.ollama import (extract_capabilities,
+                                 extract_effective_context_length,
+                                 get_model_details, is_embedding_capable,
+                                 is_reachable)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (
-    MssqlConnectionError,
-    MysqlConnectionError,
-    mssql_connect,
-    mysql_connect,
-    normalize_mssql_error_message,
-)
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    ssh_tunnel_config_from_dict,
-    test_ssh_connection,
-)
+from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
+                                    mssql_connect, mysql_connect,
+                                    normalize_mssql_error_message)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, ssh_tunnel_config_from_dict,
+                              test_ssh_connection)
 from ragtime.core.tokenization import count_tokens
-from ragtime.core.usage_accounting import (
-    _estimate_input_tokens,
-    _estimate_output_tokens,
-    bind_usage_attempt_task,
-    create_usage_attempt,
-    finalize_usage_attempt,
-)
+from ragtime.core.usage_accounting import (_estimate_input_tokens,
+                                           _estimate_output_tokens,
+                                           bind_usage_attempt_task,
+                                           create_usage_attempt,
+                                           finalize_usage_attempt)
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
-    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
-)
+    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS)
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import (
-    background_task_service,
-    rebuild_tool_messages_from_events,
-)
+    background_task_service, rebuild_tool_messages_from_events)
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    ChatMessage,
-    ChatTaskResponse,
-    ChatTaskStatus,
-    CheckRepoVisibilityRequest,
-    ConfigurationWarning,
-    Conversation,
-    ConversationBranchPointInfo,
-    ConversationBranchSummary,
-    ConversationResponse,
-    CreateConversationBranchRequest,
-    CreateConversationRequest,
-    CreateIndexRequest,
-    CreateToolConfigRequest,
-    CreateToolGroupRequest,
-    DatabaseDiscoverOption,
-    EmbeddingStatus,
-    FetchBranchesRequest,
-    FetchBranchesResponse,
-    FilesystemAnalysisJobResponse,
-    FilesystemConnectionConfig,
-    FilesystemIndexJobResponse,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJobResponse,
-    IndexStatus,
-    InfluxdbDiscoverRequest,
-    InfluxdbDiscoverResponse,
-    MssqlDiscoverRequest,
-    MssqlDiscoverResponse,
-    MysqlDiscoverRequest,
-    MysqlDiscoverResponse,
-    OcrMode,
-    PdmDiscoverRequest,
-    PdmDiscoverResponse,
-    PdmIndexJobResponse,
-    PostgresDiscoverRequest,
-    PostgresDiscoverResponse,
-    ProviderPromptDebugListResponse,
-    ProviderPromptDebugRecord,
-    RepoVisibilityResponse,
-    RetryVisualizationRequest,
-    RetryVisualizationResponse,
-    SchemaIndexJobResponse,
-    SendMessageRequest,
-    SwitchConversationBranchRequest,
-    ToolConfig,
-    ToolGroup,
-    ToolTestRequest,
-    ToolType,
-    TriggerFilesystemIndexRequest,
-    TriggerPdmIndexRequest,
-    TriggerSchemaIndexRequest,
-    UpdateSettingsRequest,
-    UpdateToolConfigRequest,
-    UpdateToolGroupRequest,
-    UserSpacePreviewSettingsResponse,
-    VectorStoreType,
-    WorkspaceChatStateResponse,
-)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    ChatMessage, ChatTaskResponse,
+                                    ChatTaskStatus, CheckRepoVisibilityRequest,
+                                    ConfigurationWarning, Conversation,
+                                    ConversationBranchPointInfo,
+                                    ConversationBranchSummary,
+                                    ConversationResponse,
+                                    CreateConversationBranchRequest,
+                                    CreateConversationRequest,
+                                    CreateIndexRequest,
+                                    CreateToolConfigRequest,
+                                    CreateToolGroupRequest,
+                                    DatabaseDiscoverOption, EmbeddingStatus,
+                                    FetchBranchesRequest,
+                                    FetchBranchesResponse,
+                                    FilesystemAnalysisJobResponse,
+                                    FilesystemConnectionConfig,
+                                    FilesystemIndexJobResponse,
+                                    IndexAnalysisResult, IndexConfig,
+                                    IndexInfo, IndexJobResponse, IndexStatus,
+                                    InfluxdbDiscoverRequest,
+                                    InfluxdbDiscoverResponse,
+                                    MssqlDiscoverRequest,
+                                    MssqlDiscoverResponse,
+                                    MysqlDiscoverRequest,
+                                    MysqlDiscoverResponse, OcrMode,
+                                    PdmDiscoverRequest, PdmDiscoverResponse,
+                                    PdmIndexJobResponse,
+                                    PostgresDiscoverRequest,
+                                    PostgresDiscoverResponse,
+                                    ProviderPromptDebugListResponse,
+                                    ProviderPromptDebugRecord,
+                                    RepoVisibilityResponse,
+                                    RetryVisualizationRequest,
+                                    RetryVisualizationResponse,
+                                    SchemaIndexJobResponse, SendMessageRequest,
+                                    SwitchConversationBranchRequest,
+                                    ToolConfig, ToolGroup, ToolTestRequest,
+                                    ToolType, TriggerFilesystemIndexRequest,
+                                    TriggerPdmIndexRequest,
+                                    TriggerSchemaIndexRequest,
+                                    UpdateSettingsRequest,
+                                    UpdateToolConfigRequest,
+                                    UpdateToolGroupRequest,
+                                    UserSpacePreviewSettingsResponse,
+                                    VectorStoreType,
+                                    WorkspaceChatStateResponse)
 from ragtime.indexer.pdm_service import pdm_indexer
-from ragtime.indexer.repository import _resolve_default_conversation_model, repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
+from ragtime.indexer.repository import (_resolve_default_conversation_model,
+                                        repository)
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
@@ -1909,7 +1865,8 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import \
+                        FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1930,7 +1887,8 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import get_faiss_backend
+                    from ragtime.indexer.vector_backends import \
+                        get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -2910,7 +2868,8 @@ async def discover_influxdb_buckets(
 
     def discover_buckets(effective_url: str) -> tuple[bool, list[str], str | None]:
         try:
-            from influxdb_client import InfluxDBClient  # type: ignore[import-untyped]
+            from influxdb_client import \
+                InfluxDBClient  # type: ignore[import-untyped]
         except ImportError:
             return False, [], "influxdb-client package not installed"
 
@@ -8992,7 +8951,7 @@ async def _resolve_selected_tool_ids_for_request(
     user: User,
     workspace_id: Optional[str],
     required_role: str,
-) -> tuple[Optional[str], set[str], Optional[dict[str, str]]]:
+) -> tuple[Optional[str], set[str], Optional[dict[str, Any]]]:
     requested_workspace_id = (workspace_id or "").strip() or None
     conversation_workspace_id = (conversation.workspace_id or "").strip() or None
 
@@ -9049,9 +9008,18 @@ async def _resolve_selected_tool_ids_for_request(
                 workspace.selected_tool_group_ids
             )
             selected_tool_ids.update(group_tool_ids)
+        # Resolve any cross-workspace agent grants originating from this workspace
+        # so userspace tools can target other workspaces the user has explicitly
+        # granted access to. Stored as JSON-friendly mapping for downstream use.
+        accessible_modes = (
+            await userspace_service.get_active_cross_workspace_grant_modes(
+                effective_workspace_id
+            )
+        )
         workspace_context = {
             "workspace_id": effective_workspace_id,
             "user_id": user.id,
+            "accessible_workspace_modes": accessible_modes,
         }
 
     return effective_workspace_id, selected_tool_ids, workspace_context
@@ -9062,7 +9030,7 @@ async def _resolve_workspace_runtime_scope(
     user: User,
     workspace_id: Optional[str],
     required_role: str,
-) -> tuple[Optional[str], Optional[set[str]], Optional[dict[str, str]]]:
+) -> tuple[Optional[str], Optional[set[str]], Optional[dict[str, Any]]]:
     effective_workspace_id, selected_tool_ids, workspace_context = (
         await _resolve_selected_tool_ids_for_request(
             conversation,

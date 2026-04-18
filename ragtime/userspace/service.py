@@ -77,13 +77,13 @@ from ragtime.userspace.models import (
     UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
     UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
     UpdateWorkspaceShareAccessRequest, UpsertGlobalEnvVarRequest,
-    UpsertWorkspaceEnvVarRequest, UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo, UserSpaceFileResponse, UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection, UserspaceMountBackend, UserspaceMountSource,
-    UserspaceMountSourceType, UserSpaceObjectStorageBucket,
-    UserSpaceObjectStorageConfig, UserSpaceRuntimeRestartBatchTask,
-    UserSpaceRuntimeRestartWorkspaceTask, UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot, UserSpaceSnapshotBranch,
+    UpsertWorkspaceAgentGrantRequest, UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest, UserSpaceFileInfo, UserSpaceFileResponse,
+    UserSpaceLiveDataCheck, UserSpaceLiveDataConnection, UserspaceMountBackend,
+    UserspaceMountSource, UserspaceMountSourceType,
+    UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig,
+    UserSpaceRuntimeRestartBatchTask, UserSpaceRuntimeRestartWorkspaceTask,
+    UserSpaceSharedPreviewResponse, UserSpaceSnapshot, UserSpaceSnapshotBranch,
     UserSpaceSnapshotDiffFileSummary, UserSpaceSnapshotDiffSummaryResponse,
     UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
     UserSpaceWorkspace, UserSpaceWorkspaceCreateTask,
@@ -94,9 +94,9 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
     UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse,
     UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceCreateTaskPhase, WorkspaceDeleteTaskPhase,
-    WorkspaceDuplicateTaskPhase, WorkspaceMember, WorkspaceMount,
-    WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
+    WorkspaceAgentGrant, WorkspaceAgentGrantMode, WorkspaceCreateTaskPhase,
+    WorkspaceDeleteTaskPhase, WorkspaceDuplicateTaskPhase, WorkspaceMember,
+    WorkspaceMount, WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
     WorkspaceMountDirectoryEntry, WorkspaceMountSyncMode,
     WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
     WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
@@ -8361,6 +8361,380 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
         return self._workspace_from_record(refreshed)
+
+    # ------------------------------------------------------------------
+    # Cross-workspace agent grants
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _workspace_agent_grant_model(db: Any) -> Any | None:
+        return getattr(db, "workspaceagentgrant", None)
+
+    @staticmethod
+    def _normalize_agent_grant_mode(value: Any) -> WorkspaceAgentGrantMode:
+        raw = (
+            value
+            if isinstance(value, str)
+            else str(getattr(value, "value", value) or "")
+        )
+        if raw == "read_write":
+            return "read_write"
+        return "read"
+
+    def _agent_grant_from_record(
+        self,
+        record: Any,
+        *,
+        target_workspace_name: str | None = None,
+        granted_by_username: str | None = None,
+    ) -> WorkspaceAgentGrant:
+        return WorkspaceAgentGrant(
+            id=str(getattr(record, "id", "") or ""),
+            source_workspace_id=str(getattr(record, "sourceWorkspaceId", "") or ""),
+            target_workspace_id=str(getattr(record, "targetWorkspaceId", "") or ""),
+            target_workspace_name=target_workspace_name,
+            access_mode=self._normalize_agent_grant_mode(
+                getattr(record, "accessMode", "read")
+            ),
+            granted_by_user_id=str(getattr(record, "grantedByUserId", "") or ""),
+            granted_by_username=granted_by_username,
+            expires_at=getattr(record, "expiresAt", None),
+            created_at=_coerce_utc_datetime(getattr(record, "createdAt", None)),
+            updated_at=_coerce_utc_datetime(getattr(record, "updatedAt", None)),
+        )
+
+    async def list_workspace_agent_grants(
+        self,
+        source_workspace_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> list[WorkspaceAgentGrant]:
+        """Return all active cross-workspace grants for the source workspace.
+
+        Caller must be owner of the source workspace (or admin).
+        """
+        await self._enforce_workspace_access(
+            source_workspace_id,
+            user_id,
+            required_role="owner",
+            is_admin=is_admin,
+        )
+
+        db = await get_db()
+        model = self._workspace_agent_grant_model(db)
+        if model is None:
+            return []
+
+        rows = await model.find_many(
+            where={"sourceWorkspaceId": source_workspace_id},
+            order={"createdAt": "asc"},
+        )
+
+        results: list[WorkspaceAgentGrant] = []
+        for row in rows:
+            target_workspace_name: str | None = None
+            granted_by_username: str | None = None
+            target_id = str(getattr(row, "targetWorkspaceId", "") or "")
+            granter_id = str(getattr(row, "grantedByUserId", "") or "")
+            if target_id:
+                target_record = await db.workspace.find_unique(
+                    where={"id": target_id}
+                )
+                if target_record is not None:
+                    target_workspace_name = str(
+                        getattr(target_record, "name", "") or ""
+                    )
+            if granter_id:
+                granter_record = await db.user.find_unique(where={"id": granter_id})
+                if granter_record is not None:
+                    granted_by_username = str(
+                        getattr(granter_record, "username", "") or ""
+                    )
+            results.append(
+                self._agent_grant_from_record(
+                    row,
+                    target_workspace_name=target_workspace_name,
+                    granted_by_username=granted_by_username,
+                )
+            )
+        return results
+
+    async def upsert_workspace_agent_grant(
+        self,
+        source_workspace_id: str,
+        request: UpsertWorkspaceAgentGrantRequest,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> WorkspaceAgentGrant:
+        """Create or update a cross-workspace agent grant.
+
+        Authorization model:
+        - Caller must be owner of the source workspace (the agent's home).
+        - Caller must additionally have at least 'editor' access on the target
+          workspace, so that owners cannot grant their agents access to
+          arbitrary workspaces they do not control.
+        """
+        target_workspace_id = (request.target_workspace_id or "").strip()
+        if not target_workspace_id:
+            raise HTTPException(
+                status_code=400, detail="target_workspace_id is required"
+            )
+        if target_workspace_id == source_workspace_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot grant a workspace cross-workspace access to itself",
+            )
+
+        await self._enforce_workspace_access(
+            source_workspace_id,
+            user_id,
+            required_role="owner",
+            is_admin=is_admin,
+        )
+        target_workspace = await self._enforce_workspace_access(
+            target_workspace_id,
+            user_id,
+            required_role="editor",
+            is_admin=is_admin,
+        )
+
+        db = await get_db()
+        model = self._workspace_agent_grant_model(db)
+        if model is None:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Workspace agent grants are not supported by the current "
+                    "database client. Run prisma generate after migration."
+                ),
+            )
+
+        access_mode: WorkspaceAgentGrantMode = (
+            "read_write" if request.access_mode == "read_write" else "read"
+        )
+
+        existing = await model.find_first(
+            where={
+                "sourceWorkspaceId": source_workspace_id,
+                "targetWorkspaceId": target_workspace_id,
+            }
+        )
+
+        now = _utc_now()
+        if existing is None:
+            record = await model.create(
+                data={
+                    "sourceWorkspaceId": source_workspace_id,
+                    "targetWorkspaceId": target_workspace_id,
+                    "accessMode": access_mode,
+                    "grantedByUserId": user_id,
+                    "createdAt": now,
+                    "updatedAt": now,
+                }
+            )
+            audit_event = "agent_grant.created"
+        else:
+            record = await model.update(
+                where={"id": existing.id},
+                data={
+                    "accessMode": access_mode,
+                    "grantedByUserId": user_id,
+                    "updatedAt": now,
+                },
+            )
+            audit_event = "agent_grant.updated"
+
+        # Audit on both source and target workspaces so admins can see flow.
+        try:
+            audit_payload = {
+                "source_workspace_id": source_workspace_id,
+                "target_workspace_id": target_workspace_id,
+                "access_mode": access_mode,
+            }
+            audit_model = self._runtime_audit_model(db)
+            await audit_model.create(
+                data={
+                    "workspaceId": source_workspace_id,
+                    "userId": user_id,
+                    "eventType": audit_event,
+                    "eventPayload": audit_payload,
+                }
+            )
+            await audit_model.create(
+                data={
+                    "workspaceId": target_workspace_id,
+                    "userId": user_id,
+                    "eventType": audit_event,
+                    "eventPayload": audit_payload,
+                }
+            )
+        except Exception:  # noqa: BLE001 - audit best-effort
+            logger.exception(
+                "Failed to record audit event for cross-workspace agent grant"
+            )
+
+        return self._agent_grant_from_record(
+            record,
+            target_workspace_name=target_workspace.name,
+        )
+
+    async def revoke_workspace_agent_grant(
+        self,
+        source_workspace_id: str,
+        target_workspace_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> bool:
+        await self._enforce_workspace_access(
+            source_workspace_id,
+            user_id,
+            required_role="owner",
+            is_admin=is_admin,
+        )
+
+        db = await get_db()
+        model = self._workspace_agent_grant_model(db)
+        if model is None:
+            return False
+
+        existing = await model.find_first(
+            where={
+                "sourceWorkspaceId": source_workspace_id,
+                "targetWorkspaceId": target_workspace_id,
+            }
+        )
+        if existing is None:
+            return False
+
+        await model.delete(where={"id": existing.id})
+
+        try:
+            audit_payload = {
+                "source_workspace_id": source_workspace_id,
+                "target_workspace_id": target_workspace_id,
+            }
+            audit_model = self._runtime_audit_model(db)
+            await audit_model.create(
+                data={
+                    "workspaceId": source_workspace_id,
+                    "userId": user_id,
+                    "eventType": "agent_grant.revoked",
+                    "eventPayload": audit_payload,
+                }
+            )
+            await audit_model.create(
+                data={
+                    "workspaceId": target_workspace_id,
+                    "userId": user_id,
+                    "eventType": "agent_grant.revoked",
+                    "eventPayload": audit_payload,
+                }
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to record audit event for cross-workspace agent grant revoke"
+            )
+        return True
+
+    async def get_active_cross_workspace_grant_modes(
+        self,
+        source_workspace_id: str,
+    ) -> dict[str, WorkspaceAgentGrantMode]:
+        """Return mapping of target_workspace_id -> mode for active grants.
+
+        Used by the chat runtime to know which other workspaces the agent in
+        this source workspace may currently access. Excludes expired grants.
+        """
+        if not source_workspace_id:
+            return {}
+        db = await get_db()
+        model = self._workspace_agent_grant_model(db)
+        if model is None:
+            return {}
+
+        rows = await model.find_many(
+            where={"sourceWorkspaceId": source_workspace_id}
+        )
+        now = _utc_now()
+        modes: dict[str, WorkspaceAgentGrantMode] = {}
+        for row in rows:
+            expires_at = getattr(row, "expiresAt", None)
+            if expires_at is not None and expires_at < now:
+                continue
+            target_id = str(getattr(row, "targetWorkspaceId", "") or "")
+            if not target_id:
+                continue
+            modes[target_id] = self._normalize_agent_grant_mode(
+                getattr(row, "accessMode", "read")
+            )
+        return modes
+
+    async def resolve_cross_workspace_target(
+        self,
+        *,
+        source_workspace_id: str,
+        target_workspace_id: str,
+        user_id: str,
+        accessible_modes: dict[str, str] | dict[str, WorkspaceAgentGrantMode],
+        action: Literal["read", "write"],
+    ) -> tuple[str, str]:
+        """Validate that an agent in `source_workspace_id` may perform `action`
+        on `target_workspace_id` and return the (workspace_id, user_id) tuple
+        to use for downstream service calls.
+
+        Raises ValueError on denial. The raised messages are deliberately
+        agent-readable so that LLM tool error handling can surface the cause.
+        """
+        normalized_target = (target_workspace_id or "").strip()
+        if not normalized_target or normalized_target == source_workspace_id:
+            return source_workspace_id, user_id
+
+        mode = accessible_modes.get(normalized_target)
+        if mode is None:
+            raise ValueError(
+                "Cross-workspace access denied: no active agent grant for "
+                f"workspace_id={normalized_target}. Ask the user to grant access "
+                "from the workspace settings."
+            )
+        if action == "write" and mode != "read_write":
+            raise ValueError(
+                "Cross-workspace write denied: workspace_id="
+                f"{normalized_target} is granted with read-only access. "
+                "Ask the user to upgrade the grant to read/write."
+            )
+
+        # Confirm the user still has access to the target workspace; this is a
+        # defense-in-depth check against grants outliving membership changes.
+        await self._enforce_workspace_access(
+            normalized_target,
+            user_id,
+            required_role="viewer" if action == "read" else "editor",
+        )
+
+        # Audit cross-workspace tool access (best-effort, async-safe).
+        try:
+            db = await get_db()
+            audit_model = self._runtime_audit_model(db)
+            await audit_model.create(
+                data={
+                    "workspaceId": normalized_target,
+                    "userId": user_id,
+                    "eventType": "agent_grant.tool_access",
+                    "eventPayload": {
+                        "source_workspace_id": source_workspace_id,
+                        "target_workspace_id": normalized_target,
+                        "action": action,
+                        "mode": mode,
+                    },
+                }
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to audit cross-workspace tool access")
+
+        return normalized_target, user_id
 
     async def list_workspace_env_vars(
         self,

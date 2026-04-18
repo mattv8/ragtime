@@ -34,6 +34,8 @@ export { OcrVectorStoreFields } from './OcrVectorStoreFields';
 export { IndexConfigFields } from './IndexConfigFields';
 export { ReindexIntervalSelect } from './ReindexIntervalSelect';
 export { ContextUsagePie } from './shared/ContextUsagePie';
+export { AgentAccessButton } from './shared/AgentAccessButton';
+export { AgentAccessModal } from './shared/AgentAccessModal';
 export { MemberManagementButton } from './shared/MemberManagementButton';
 export { MemberManagementModal } from './shared/MemberManagementModal';
 export { ToolSelectorDropdown } from './shared/ToolSelectorDropdown';

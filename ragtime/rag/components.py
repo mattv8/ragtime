@@ -18,11 +18,10 @@ import shutil
 import subprocess
 import time
 from pathlib import Path, PurePosixPath
-from typing import Any, List, Optional, Union, cast
+from typing import Any, List, Literal, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -38,6 +37,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_openai.chat_models.base import (
     _construct_responses_api_payload, _get_last_messages)
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from ragtime.config import settings
@@ -7106,8 +7106,35 @@ except Exception as e:
         self,
         workspace_id: str,
         user_id: str,
+        accessible_workspace_modes: Optional[dict[str, str]] = None,
     ) -> list[StructuredTool]:
         """Create request-scoped User Space file tools for agentic artifact editing."""
+
+        accessible_modes_local: dict[str, str] = dict(
+            accessible_workspace_modes or {}
+        )
+
+        async def _resolve_target_workspace(
+            requested_workspace_id: Optional[str],
+            action: Literal["read", "write"],
+        ) -> tuple[str, str]:
+            """Resolve the (workspace_id, user_id) to use for a given tool call.
+
+            When the agent passes an alternate workspace_id, validate against
+            the active cross-workspace grants for the source workspace and
+            return the target identifiers; otherwise return the primary
+            workspace_id/user_id captured by this builder.
+            """
+            requested_clean = (requested_workspace_id or "").strip()
+            if not requested_clean or requested_clean == workspace_id:
+                return workspace_id, user_id
+            return await userspace_service.resolve_cross_workspace_target(
+                source_workspace_id=workspace_id,
+                target_workspace_id=requested_clean,
+                user_id=user_id,
+                accessible_modes=cast(Any, accessible_modes_local),
+                action=action,
+            )
 
         def _create_userspace_tool(
             *,
@@ -7136,6 +7163,16 @@ except Exception as e:
                 return StructuredTool.from_function(**kwargs)
 
         class ListUserSpaceFilesInput(BaseModel):
+            workspace_id: Optional[str] = Field(
+                default=None,
+                description=(
+                    "Optional target workspace ID for cross-workspace access. "
+                    "Omit (or pass the primary workspace ID) to act on this "
+                    "workspace. Other workspaces are only accessible when the "
+                    "user has granted this workspace's agent access via "
+                    "workspace settings."
+                ),
+            )
             reason: str = Field(
                 default="",
                 description="Brief description of why files are being listed",
@@ -7194,6 +7231,13 @@ except Exception as e:
             )
 
         class ReadUserSpaceFileInput(BaseModel):
+            workspace_id: Optional[str] = Field(
+                default=None,
+                description=(
+                    "Optional target workspace ID for cross-workspace access. "
+                    "Omit to read from this workspace."
+                ),
+            )
             path: str = Field(
                 default="dashboard/main.ts",
                 description=(
@@ -7219,6 +7263,13 @@ except Exception as e:
             )
 
         class DeleteUserSpaceFileInput(BaseModel):
+            workspace_id: Optional[str] = Field(
+                default=None,
+                description=(
+                    "Optional target workspace ID for cross-workspace access. "
+                    "Requires read_write grant for non-primary workspaces."
+                ),
+            )
             path: str = Field(
                 description="Relative path from the workspace files root to delete.",
             )
@@ -7303,6 +7354,13 @@ except Exception as e:
                 description=(
                     "Relative path from the workspace files root to create/update "
                     "(for example: dashboard/main.ts)."
+                ),
+            )
+            workspace_id: Optional[str] = Field(
+                default=None,
+                description=(
+                    "Optional target workspace ID for cross-workspace access. "
+                    "Requires read_write grant for non-primary workspaces."
                 ),
             )
             content: str = Field(description="Full UTF-8 file content to write")
@@ -7477,6 +7535,13 @@ except Exception as e:
             )
 
         class CaptureUserSpaceScreenshotInput(BaseModel):
+            workspace_id: Optional[str] = Field(
+                default=None,
+                description=(
+                    "Optional target workspace ID for cross-workspace access. "
+                    "Omit to screenshot this workspace's runtime preview."
+                ),
+            )
             path: str = Field(
                 default="",
                 description=(
@@ -7550,6 +7615,13 @@ except Exception as e:
             )
 
         class RunTerminalCommandInput(BaseModel):
+            workspace_id: Optional[str] = Field(
+                default=None,
+                description=(
+                    "Optional target workspace ID for cross-workspace access. "
+                    "Requires read_write grant for non-primary workspaces."
+                ),
+            )
             command: str = Field(
                 description=(
                     "Shell command to execute in the workspace runtime container. "
@@ -7710,8 +7782,17 @@ except Exception as e:
 
             return compact_payload
 
-        async def list_userspace_files(reason: str = "", **_: Any) -> str:
+        async def list_userspace_files(
+            reason: str = "",
+            workspace_id: Optional[str] = None,
+            **_: Any,
+        ) -> str:
             del reason
+            target_ws, target_uid = await _resolve_target_workspace(
+                workspace_id, "read"
+            )
+            workspace_id = target_ws
+            user_id = target_uid
             files = await userspace_service.list_workspace_files(
                 workspace_id, user_id, include_dirs=True
             )
@@ -8017,9 +8098,15 @@ except Exception as e:
             end_line: Optional[int] = None,
             search_query: Optional[str] = None,
             reason: str = "",
+            workspace_id: Optional[str] = None,
             **_: Any,
         ) -> str:
             del reason
+            target_ws, target_uid = await _resolve_target_workspace(
+                workspace_id, "read"
+            )
+            workspace_id = target_ws
+            user_id = target_uid
             normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
             try:
                 file_data = await userspace_service.get_workspace_file(
@@ -8142,8 +8229,18 @@ except Exception as e:
                 diagnostics=meta,
             )
 
-        async def delete_userspace_file(path: str, reason: str = "", **_: Any) -> str:
+        async def delete_userspace_file(
+            path: str,
+            reason: str = "",
+            workspace_id: Optional[str] = None,
+            **_: Any,
+        ) -> str:
             del reason
+            target_ws, target_uid = await _resolve_target_workspace(
+                workspace_id, "write"
+            )
+            workspace_id = target_ws
+            user_id = target_uid
             await userspace_service.enforce_workspace_role(
                 workspace_id, user_id, "editor"
             )
@@ -8679,9 +8776,15 @@ except Exception as e:
             live_data_connections: list[Any] | None = None,
             live_data_checks: list[Any] | None = None,
             reason: str = "",
+            workspace_id: Optional[str] = None,
             **_: Any,
         ) -> str:
             del reason
+            target_ws, target_uid = await _resolve_target_workspace(
+                workspace_id, "write"
+            )
+            workspace_id = target_ws
+            user_id = target_uid
             await userspace_service.enforce_workspace_role(
                 workspace_id, user_id, "editor"
             )
@@ -9910,9 +10013,15 @@ except Exception as e:
             wait_after_load_ms: int = 1800,
             refresh_before_capture: bool = True,
             reason: str = "",
+            workspace_id: Optional[str] = None,
             **_: Any,
         ) -> str:
             del reason
+            target_ws, target_uid = await _resolve_target_workspace(
+                workspace_id, "read"
+            )
+            workspace_id = target_ws
+            user_id = target_uid
             try:
                 response_payload = (
                     await userspace_runtime_service.capture_workspace_screenshot(
@@ -9982,9 +10091,15 @@ except Exception as e:
             timeout_seconds: int = 30,
             cwd: str = ".",
             reason: str = "",
+            workspace_id: Optional[str] = None,
             **_: Any,
         ) -> str:
             del reason
+            target_ws, target_uid = await _resolve_target_workspace(
+                workspace_id, "write"
+            )
+            workspace_id = target_ws
+            user_id = target_uid
             command = (command or "").strip()
             if not command:
                 raise ToolException("command is required and must not be empty.")
@@ -10299,6 +10414,24 @@ except Exception as e:
                 runnable_ids.add(config_id)
         return runnable_ids
 
+    @staticmethod
+    def _build_cross_workspace_access_summary(
+        accessible_workspace_modes: dict[str, str],
+    ) -> str:
+        if not accessible_workspace_modes:
+            return ""
+        entries = sorted(accessible_workspace_modes.items())
+        lines = [
+            f"  - workspace_id={ws_id} (mode={mode})"
+            for ws_id, mode in entries
+        ]
+        return (
+            "\n\nCross-workspace access available. For file/runtime tools that accept "
+            "workspace_id, you may target one of these granted workspaces; omit "
+            "workspace_id to act on the primary workspace:\n"
+            + "\n".join(lines)
+        )
+
     async def _build_userspace_continuity_prompt(
         self,
         *,
@@ -10306,6 +10439,7 @@ except Exception as e:
         user_id: str,
         ep_status: Any,
         is_default_entrypoint: bool,
+        accessible_workspace_modes: Optional[dict[str, str]] = None,
     ) -> str:
         """Build a compact continuity block for userspace requests."""
         ws_files = await userspace_service.list_workspace_files(
@@ -10330,7 +10464,7 @@ except Exception as e:
             workspace_id
         )
 
-        return build_workspace_continuity_context(
+        continuity = build_workspace_continuity_context(
             file_count=len(ws_file_paths),
             key_files=ws_file_paths,
             framework=ep_status.framework if ep_status.state == "valid" else None,
@@ -10338,6 +10472,10 @@ except Exception as e:
             last_snapshot_message=last_snapshot_msg,
             recent_failure_summaries=recent_failure_summaries,
         )
+        continuity += self._build_cross_workspace_access_summary(
+            accessible_workspace_modes or {}
+        )
+        return continuity
 
     async def _build_request_runtime_context(
         self,
@@ -10345,7 +10483,7 @@ except Exception as e:
         is_ui: bool,
         executor: Optional[AgentExecutor],
         blocked_tool_names: Optional[set[str]],
-        workspace_context: Optional[dict[str, str]],
+        workspace_context: Optional[dict[str, Any]],
         add_chat_visualization_prompt: bool,
     ) -> dict[str, Any]:
         """Build request-scoped runtime tools, mode, and prompt additions once."""
@@ -10374,8 +10512,27 @@ except Exception as e:
             "tool_free_synthesis_used": False,
         }
 
-        workspace_id = (workspace_context or {}).get("workspace_id", "").strip()
-        user_id = (workspace_context or {}).get("user_id", "").strip()
+        workspace_id = (workspace_context or {}).get("workspace_id", "")
+        if not isinstance(workspace_id, str):
+            workspace_id = str(workspace_id or "")
+        workspace_id = workspace_id.strip()
+        user_id = (workspace_context or {}).get("user_id", "")
+        if not isinstance(user_id, str):
+            user_id = str(user_id or "")
+        user_id = user_id.strip()
+        raw_accessible_modes = (workspace_context or {}).get(
+            "accessible_workspace_modes", {}
+        )
+        accessible_workspace_modes: dict[str, str] = {}
+        if isinstance(raw_accessible_modes, dict):
+            for key, value in raw_accessible_modes.items():
+                key_str = str(key or "").strip()
+                if not key_str:
+                    continue
+                value_str = str(value or "read").strip().lower()
+                if value_str not in ("read", "read_write"):
+                    value_str = "read"
+                accessible_workspace_modes[key_str] = value_str
         has_workspace_context = bool(workspace_id and user_id)
 
         if has_workspace_context:
@@ -10419,6 +10576,7 @@ except Exception as e:
             userspace_tools = await self._create_userspace_file_tools(
                 workspace_id,
                 user_id,
+                accessible_workspace_modes=accessible_workspace_modes,
             )
             runtime_tools = [
                 tool
@@ -10458,6 +10616,7 @@ except Exception as e:
                 user_id=user_id,
                 ep_status=ep_status,
                 is_default_entrypoint=is_default,
+                accessible_workspace_modes=accessible_workspace_modes,
             )
 
             # Build prompt additions with userspace operating guidance first,
@@ -11079,7 +11238,7 @@ except Exception as e:
         user_message: Union[str, Any],
         chat_history: Optional[List[Any]] = None,
         blocked_tool_names: Optional[set[str]] = None,
-        workspace_context: Optional[dict[str, str]] = None,
+        workspace_context: Optional[dict[str, Any]] = None,
         conversation_model: Optional[str] = None,
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -11326,7 +11485,7 @@ except Exception as e:
         chat_history: Optional[List[Any]] = None,
         is_ui: bool = False,
         blocked_tool_names: Optional[set[str]] = None,
-        workspace_context: Optional[dict[str, str]] = None,
+        workspace_context: Optional[dict[str, Any]] = None,
         conversation_model: Optional[str] = None,
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,

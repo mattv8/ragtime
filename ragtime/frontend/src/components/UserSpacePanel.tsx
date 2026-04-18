@@ -16,11 +16,13 @@ import {
 import { useCodeMirrorLanguageExtension } from '@/utils/codemirrorLanguage';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
+import { AgentAccessButton } from './shared/AgentAccessButton';
+import { AgentAccessModal } from './shared/AgentAccessModal';
 import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
@@ -558,6 +560,14 @@ function getApiErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function sortWorkspaceAgentGrants(grants: WorkspaceAgentGrant[]): WorkspaceAgentGrant[] {
+  return [...grants].sort((left, right) => {
+    const leftLabel = left.target_workspace_name?.trim() || left.target_workspace_id;
+    const rightLabel = right.target_workspace_name?.trim() || right.target_workspace_id;
+    return leftLabel.localeCompare(rightLabel);
+  });
+}
+
 export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenChange, onNavigateToTools, onPreviewWarningChange }: UserSpacePanelProps) {
   const previewEntryPath = 'dashboard/main.ts';
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
@@ -668,10 +678,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [deleteConfirmWorkspaceId, setDeleteConfirmWorkspaceId] = useState<string | null>(null);
   const [isWorkspaceMenuOpen, setIsWorkspaceMenuOpen] = useState(false);
   const [showMembersModal, setShowMembersModal] = useState(false);
+  const [showAgentAccessModal, setShowAgentAccessModal] = useState(false);
   const [showAdminWorkspacesModal, setShowAdminWorkspacesModal] = useState(false);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [pendingMembers, setPendingMembers] = useState<UserSpaceWorkspaceMember[]>([]);
   const [savingMembers, setSavingMembers] = useState(false);
+  const [agentGrants, setAgentGrants] = useState<WorkspaceAgentGrant[]>([]);
+  const [agentGrantWorkspaces, setAgentGrantWorkspaces] = useState<UserSpaceWorkspace[]>([]);
+  const [agentGrantsLoading, setAgentGrantsLoading] = useState(false);
+  const [savingAgentGrantTargetId, setSavingAgentGrantTargetId] = useState<string | null>(null);
+  const [revokingAgentGrantTargetId, setRevokingAgentGrantTargetId] = useState<string | null>(null);
   const [showEnvVarsModal, setShowEnvVarsModal] = useState(false);
   const [envVars, setEnvVars] = useState<UserSpaceWorkspaceEnvVar[]>([]);
   const [envVarsLoading, setEnvVarsLoading] = useState(false);
@@ -4257,6 +4273,59 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspace, isOwner]);
 
+  const handleOpenAgentAccessModal = useCallback(async () => {
+    if (!activeWorkspace || !isOwner) return;
+    setShowAgentAccessModal(true);
+    setAgentGrantsLoading(true);
+    try {
+      const limit = Math.max(workspacesTotal || workspaces.length || 50, 50);
+      const [grants, workspacePage] = await Promise.all([
+        api.listUserSpaceWorkspaceAgentGrants(activeWorkspace.id),
+        api.listUserSpaceWorkspaces(0, limit),
+      ]);
+      setAgentGrants(sortWorkspaceAgentGrants(grants));
+      setAgentGrantWorkspaces(workspacePage.items);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load agent access settings');
+    } finally {
+      setAgentGrantsLoading(false);
+    }
+  }, [activeWorkspace, isOwner, workspaces.length, workspacesTotal]);
+
+  const handleUpsertAgentGrant = useCallback(async (request: UpsertWorkspaceAgentGrantRequest) => {
+    if (!activeWorkspace || !isOwner) return;
+    setSavingAgentGrantTargetId(request.target_workspace_id);
+    try {
+      const updated = await api.upsertUserSpaceWorkspaceAgentGrant(activeWorkspace.id, request);
+      setAgentGrants((current) => sortWorkspaceAgentGrants([
+        ...current.filter((grant) => grant.target_workspace_id !== updated.target_workspace_id),
+        updated,
+      ]));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save agent access');
+      throw err;
+    } finally {
+      setSavingAgentGrantTargetId(null);
+    }
+  }, [activeWorkspace, isOwner]);
+
+  const handleRevokeAgentGrant = useCallback(async (targetWorkspaceId: string) => {
+    if (!activeWorkspace || !isOwner) return;
+    setRevokingAgentGrantTargetId(targetWorkspaceId);
+    try {
+      await api.revokeUserSpaceWorkspaceAgentGrant(activeWorkspace.id, targetWorkspaceId);
+      setAgentGrants((current) => current.filter((grant) => grant.target_workspace_id !== targetWorkspaceId));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to revoke agent access');
+      throw err;
+    } finally {
+      setRevokingAgentGrantTargetId(null);
+    }
+  }, [activeWorkspace, isOwner]);
+
   const loadWorkspaceEnvVars = useCallback(async (workspaceId: string) => {
     const vars = await api.listUserSpaceWorkspaceEnvVars(workspaceId);
     setEnvVars(vars);
@@ -5782,6 +5851,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           {isOwner && (
             <>
               <MemberManagementButton onClick={handleOpenMembersModal} title="Manage members" />
+              <AgentAccessButton onClick={handleOpenAgentAccessModal} title="Manage cross-workspace agent access" />
               <button className="btn btn-secondary btn-sm" onClick={handleOpenEnvVarsModal} title="Environment variables">
                 <KeyRound size={14} />
               </button>
@@ -7447,6 +7517,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           entityType="workspace"
           formatUserLabel={formatUserLabel}
           saving={savingMembers}
+        />
+      )}
+
+      {showAgentAccessModal && activeWorkspace && (
+        <AgentAccessModal
+          isOpen={showAgentAccessModal}
+          onClose={() => setShowAgentAccessModal(false)}
+          sourceWorkspace={activeWorkspace}
+          availableWorkspaces={agentGrantWorkspaces}
+          grants={agentGrants}
+          onUpsert={handleUpsertAgentGrant}
+          onRevoke={handleRevokeAgentGrant}
+          loading={agentGrantsLoading}
+          savingTargetId={savingAgentGrantTargetId}
+          revokingTargetId={revokingAgentGrantTargetId}
         />
       )}
 
