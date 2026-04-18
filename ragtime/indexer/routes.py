@@ -30,10 +30,10 @@ from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
                      Query, UploadFile)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
-from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
 from ragtime.core.copilot_api import (COPILOT_DEFAULT_BASE_URL,
@@ -107,6 +107,7 @@ from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
                                     IndexInfo, IndexJobResponse, IndexStatus,
                                     InfluxdbDiscoverRequest,
                                     InfluxdbDiscoverResponse,
+                                    MessageSnapshotRestoreResponse,
                                     MssqlDiscoverRequest,
                                     MssqlDiscoverResponse,
                                     MysqlDiscoverRequest,
@@ -151,6 +152,7 @@ from ragtime.tools.datatable import create_datatable
 from ragtime.tools.influxdb import test_influxdb_connection
 from ragtime.tools.mssql import test_mssql_connection
 from ragtime.tools.mysql import test_mysql_connection
+from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
 if TYPE_CHECKING:
@@ -8856,6 +8858,22 @@ def _to_conversation_response(conv: Conversation) -> ConversationResponse:
     )
 
 
+async def _link_assistant_snapshot_tool_calls(
+    conv: Optional[Conversation],
+    workspace_id: Optional[str],
+) -> None:
+    """Best-effort wrapper around
+    :meth:`ChatRepository.link_assistant_snapshot_tool_calls` that swallows
+    errors so chat persistence is never blocked by link bookkeeping.
+    """
+    try:
+        await repository.link_assistant_snapshot_tool_calls(conv, workspace_id)
+    except Exception as e:
+        logger.warning(
+            f"Failed to link agent-created snapshot to assistant message: {e}"
+        )
+
+
 class WorkspaceConversationStateResponse(BaseModel):
     conversations: List[ConversationResponse] = Field(
         default_factory=list,
@@ -9475,6 +9493,97 @@ async def truncate_conversation(
     return _to_conversation_response(conv)
 
 
+@router.post(
+    "/conversations/{conversation_id}/messages/{message_id}/restore-snapshot",
+    response_model=MessageSnapshotRestoreResponse,
+)
+async def restore_message_snapshot(
+    conversation_id: str,
+    message_id: str,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Combined rollback: restore the workspace snapshot anchored to a chat
+    message and rewind the chat to the link's stored ``restore_message_count``.
+
+    Direct rollback semantics — no auto pre-preserve snapshot or branch is
+    created. The link is upserted with "latest snapshot wins" per message,
+    so repeat clicks resolve to the most recent snapshot for that message.
+    """
+    await _assert_workspace_access(workspace_id, user, "editor")
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    effective_workspace_id = workspace_id or conv.workspace_id
+    if not effective_workspace_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Snapshot restore is only supported for workspace conversations",
+        )
+
+    link = await repository.get_message_snapshot_link(conversation_id, message_id)
+    if not link:
+        raise HTTPException(
+            status_code=404,
+            detail="No snapshot link exists for this message",
+        )
+
+    link_workspace_id = link.get("workspace_id")
+    if link_workspace_id and link_workspace_id != effective_workspace_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Snapshot link belongs to a different workspace",
+        )
+
+    snapshot_id = link["snapshot_id"]
+    restore_count = int(link["restore_message_count"])
+
+    try:
+        await userspace_service.restore_snapshot(
+            effective_workspace_id, snapshot_id, user.id
+        )
+    except Exception as e:
+        logger.warning(f"Failed to restore snapshot {snapshot_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to restore snapshot: {e}"
+        ) from e
+
+    try:
+        await userspace_runtime_service.invalidate_workspace_runtime_state(
+            effective_workspace_id
+        )
+    except Exception as e:
+        logger.warning(
+            f"Failed to invalidate runtime state after message snapshot restore: {e}"
+        )
+
+    truncated = await repository.truncate_messages(conversation_id, restore_count)
+    if truncated is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Workspace was restored but chat truncation failed",
+        )
+    decorated = await repository.attach_message_snapshot_links(truncated)
+    if decorated is None:
+        decorated = truncated
+
+    return MessageSnapshotRestoreResponse(
+        conversation=_to_conversation_response(decorated),
+        restored_snapshot_id=snapshot_id,
+        restored_message_count=restore_count,
+    )
+
+
 # -------------------------------------------------------------------------
 # Conversation Branch Endpoints
 # -------------------------------------------------------------------------
@@ -9578,6 +9687,20 @@ async def create_conversation_branch(
     ):
         raise HTTPException(status_code=400, detail="Invalid message index")
 
+    # Branches are anchored on user messages only. If the requested anchor
+    # lands on an assistant/tool message, walk back to the nearest preceding
+    # user message so the branch nav surfaces on a single, predictable row
+    # and replay/delete/edit cannot collide by anchoring at assistant indices.
+    branch_point_index = request.from_message_index
+    if 0 <= branch_point_index < len(conv.messages):
+        anchor_role = getattr(conv.messages[branch_point_index], "role", None)
+        if anchor_role != "user":
+            walk = branch_point_index - 1
+            while walk >= 0 and getattr(conv.messages[walk], "role", None) != "user":
+                walk -= 1
+            if walk >= 0:
+                branch_point_index = walk
+
     # Auto-snapshot for workspace conversations
     associated_snapshot_id: Optional[str] = None
     if request.auto_snapshot and workspace_id:
@@ -9606,13 +9729,42 @@ async def create_conversation_branch(
 
     branch = await repository.create_conversation_branch(
         conversation_id=conversation_id,
-        branch_point_index=request.from_message_index,
+        branch_point_index=branch_point_index,
         user_id=user.id,
         parent_branch_id=conv.active_branch_id,
         associated_snapshot_id=associated_snapshot_id,
     )
     if not branch:
         raise HTTPException(status_code=500, detail="Failed to create branch")
+
+    # Per-message snapshot link: anchor the branch snapshot to the original
+    # branch-point message so the in-chat restore action can resolve it after
+    # a branch switch. Preserve any existing link on that message so a delete
+    # rollback continues to target the user-visible snapshot it was already
+    # associated with.
+    if associated_snapshot_id and workspace_id:
+        anchor_msg: Optional[ChatMessage] = None
+        if 0 <= request.from_message_index < len(conv.messages):
+            anchor_msg = conv.messages[request.from_message_index]
+        elif branch.preserved_messages:
+            anchor_msg = branch.preserved_messages[0]
+
+        if anchor_msg and anchor_msg.message_id and not anchor_msg.snapshot_restore:
+            keep_count = (
+                request.from_message_index + 1
+                if anchor_msg.role == "user"
+                else request.from_message_index
+            )
+            try:
+                await repository.upsert_message_snapshot_link(
+                    conversation_id=conversation_id,
+                    workspace_id=workspace_id,
+                    message_id=anchor_msg.message_id,
+                    snapshot_id=associated_snapshot_id,
+                    restore_message_count=max(keep_count, 0),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to link branch snapshot to anchor message: {e}")
 
     # Return summary
     branches = await repository.get_conversation_branches(conversation_id)
@@ -9656,7 +9808,8 @@ async def switch_conversation_branch(
     if not conv:
         raise HTTPException(status_code=404, detail="Branch not found")
 
-    return _to_conversation_response(conv)
+    decorated = await repository.attach_message_snapshot_links(conv)
+    return _to_conversation_response(decorated or conv)
 
 
 @router.delete(
@@ -10029,12 +10182,13 @@ async def send_message_stream(
                     yield f"data: {json.dumps(chunk)}\n\n"
 
             # Persist the full response using chronological events.
-            await repository.add_message(
+            persisted_conv = await repository.add_message(
                 conversation_id,
                 "assistant",
                 full_response,
                 events=chronological_events if chronological_events else None,
             )
+            await _link_assistant_snapshot_tool_calls(persisted_conv, workspace_id)
 
             # Finalize usage attempt on success
             output_est = _estimate_output_tokens(full_response, chronological_events)
@@ -10090,11 +10244,14 @@ async def send_message_stream(
                 )
 
             try:
-                await repository.add_message(
+                persisted_err_conv = await repository.add_message(
                     conversation_id,
                     "assistant",
                     combined_response,
                     events=chronological_events if chronological_events else None,
+                )
+                await _link_assistant_snapshot_tool_calls(
+                    persisted_err_conv, workspace_id
                 )
             except Exception:
                 logger.exception("Failed to persist assistant message after error")

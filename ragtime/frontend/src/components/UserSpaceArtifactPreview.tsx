@@ -25,6 +25,11 @@ interface UserSpaceArtifactPreviewProps {
   ownerUsername?: string;
   shareSlug?: string;
   onExecutionStateChange?: (isExecuting: boolean) => void;
+  previewNotice?: {
+    id: number;
+    message: string;
+    tone?: 'success' | 'error';
+  } | null;
 }
 
 export function UserSpaceArtifactPreview({
@@ -39,12 +44,18 @@ export function UserSpaceArtifactPreview({
   ownerUsername,
   shareSlug,
   onExecutionStateChange,
+  previewNotice,
 }: UserSpaceArtifactPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [pendingExecutions, setPendingExecutions] = useState(0);
   const [sandboxFlags, setSandboxFlags] = useState<string[]>([]);
   const [sandboxSettingsStatus, setSandboxSettingsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [sandboxBlockedMessage, setSandboxBlockedMessage] = useState<string | null>(null);
+  const [activePreviewNotice, setActivePreviewNotice] = useState<{
+    id: number;
+    message: string;
+    tone?: 'success' | 'error';
+  } | null>(null);
 
   const normalizeOrigin = useCallback((value: string | null | undefined): string => {
     const raw = (value || '').trim();
@@ -194,7 +205,25 @@ export function UserSpaceArtifactPreview({
   useEffect(() => {
     setPendingExecutions(0);
     setSandboxBlockedMessage(null);
+    setActivePreviewNotice(null);
   }, [previewInstanceKey, runtimePreviewUrl]);
+
+  useEffect(() => {
+    if (!previewNotice) {
+      return;
+    }
+
+    setActivePreviewNotice(previewNotice);
+    const timer = window.setTimeout(() => {
+      setActivePreviewNotice((current) => (
+        current?.id === previewNotice.id ? null : current
+      ));
+    }, 6000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [previewNotice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -271,6 +300,15 @@ export function UserSpaceArtifactPreview({
 
   return (
     <div className="userspace-preview-frame-wrap">
+      {activePreviewNotice ? (
+        <div
+          className={`userspace-preview-exec-notice userspace-preview-exec-notice-${activePreviewNotice.tone ?? 'success'}`}
+          role="status"
+          aria-live="polite"
+        >
+          {activePreviewNotice.message}
+        </div>
+      ) : null}
       {sandboxBlockedMessage ? (
         <div className="userspace-preview-exec-error" role="alert">
           {sandboxBlockedMessage}

@@ -2227,9 +2227,13 @@ interface ChatPanelProps {
   onTaskComplete?: () => void;
   onConversationStateChange?: (hasLive: boolean, hasInterrupted: boolean) => void;
   onActiveConversationChange?: (conversationId: string | null) => void;
-  onBranchSwitch?: (branchId: string, associatedSnapshotId: string | null) => void;
+  onBranchSwitch?: (branchId: string, associatedSnapshotId: string | null) => void | Promise<void>;
   onFullscreenChange?: (fullscreen: boolean) => void;
   onOpenWorkspaceFile?: (path: string) => void;
+  onMessageSnapshotRestored?: (details?: {
+    rolledBackSnapshot?: boolean;
+    requiresRuntimeRestart?: boolean;
+  }) => void;
   inputBanner?: ReactNode;
   embedded?: boolean;
   readOnly?: boolean;
@@ -2257,6 +2261,7 @@ export function ChatPanel({
   onBranchSwitch,
   onFullscreenChange,
   onOpenWorkspaceFile,
+  onMessageSnapshotRestored,
   inputBanner,
   embedded = false,
   readOnly = false,
@@ -2295,6 +2300,7 @@ export function ChatPanel({
   const [branchSwitching, setBranchSwitching] = useState(false);
   const [branchSelections, setBranchSelections] = useState<Record<number, string>>({});
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
+  const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
   const activeConversationId = activeConversation?.id ?? null;
   const branchPointsByIndex = useMemo(
     () => new Map(branchPoints.map((point) => [point.branch_point_index, point] as const)),
@@ -2317,6 +2323,10 @@ export function ChatPanel({
 
   // Inline confirmation for delete (conversation ID waiting for confirmation)
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPendingDeleteIdx(null);
+  }, [activeConversationId]);
 
   // Background task state
   const [activeTask, setActiveTask] = useState<ChatTask | null>(null);
@@ -4423,21 +4433,53 @@ export function ChatPanel({
     setEditMessageAttachments([]);
   };
 
-  const preserveConversationBranch = useCallback(async (conversationId: string, truncateAt: number) => {
-    try {
-      const createdBranch = await api.createConversationBranch(
-        conversationId,
-        { from_message_index: truncateAt, auto_snapshot: Boolean(workspaceId) },
-        workspaceId,
-      );
-      if (createdBranch.parent_branch_id) {
-        setBranchSelections((prev) => ({ ...prev, [truncateAt]: createdBranch.parent_branch_id! }));
-      }
-    } catch (branchErr) {
-      console.warn('Branch creation failed, falling back to truncate:', branchErr);
-      await api.truncateConversation(conversationId, truncateAt, workspaceId);
+  const createBranchForMessageMutation = useCallback(async (
+    conversationId: string,
+    branchPointIndex: number,
+    messageCount: number,
+  ) => {
+    if (branchPointIndex < 0 || branchPointIndex >= messageCount) {
+      return;
+    }
+
+    const createdBranch = await api.createConversationBranch(
+      conversationId,
+      { from_message_index: branchPointIndex, auto_snapshot: Boolean(workspaceId) },
+      workspaceId,
+    );
+
+    if (createdBranch.parent_branch_id) {
+      setBranchSelections((prev) => ({ ...prev, [branchPointIndex]: createdBranch.parent_branch_id! }));
     }
   }, [workspaceId]);
+
+  // Walk back from messageIdx to the nearest user message. Branches are
+  // always anchored at user messages so the branch nav appears on a single,
+  // predictable message and replay/delete/edit cannot collide by anchoring at
+  // assistant indices.
+  const findUserMessageIndexAtOrBefore = useCallback((
+    messages: ChatMessage[],
+    messageIdx: number,
+  ): number => {
+    let i = Math.min(messageIdx, messages.length - 1);
+    while (i >= 0 && messages[i]?.role !== 'user') {
+      i--;
+    }
+    return i;
+  }, []);
+
+  const getDeleteBranchPointIndex = useCallback((
+    messages: ChatMessage[],
+    messageIdx: number,
+  ): number => {
+    const messageCount = messages.length;
+    const maxBranchPointIndex = Math.max(messageCount - 1, 0);
+    const userIdx = findUserMessageIndexAtOrBefore(messages, messageIdx);
+    if (userIdx >= 0) {
+      return clampNumber(userIdx, 0, maxBranchPointIndex);
+    }
+    return clampNumber(messageIdx, 0, maxBranchPointIndex);
+  }, [findUserMessageIndexAtOrBefore]);
 
   const switchBranch = useCallback(async (branchId: string) => {
     if (!activeConversation || branchSwitching) return;
@@ -4482,24 +4524,26 @@ export function ChatPanel({
     } catch { /* ignore */ }
   }, []);
 
-  const retryFromMessage = useCallback(async (assistantIdx: number) => {
+  const replayFromMessage = useCallback(async (messageIdx: number) => {
     if (!activeConversation || isStreaming || isReadOnly) return;
     const conversationId = activeConversation.id;
-    // Find the user message that triggered this assistant reply.
-    let userIdx = assistantIdx - 1;
-    while (userIdx >= 0 && activeConversation.messages[userIdx]?.role !== 'user') {
-      userIdx--;
-    }
+    const selectedMessage = activeConversation.messages[messageIdx];
+    if (!selectedMessage) return;
+
+    // Find the user message that should be replayed from this point. Replay
+    // from an assistant message walks back to its driving user turn so the
+    // branch is always anchored on a user message.
+    const userIdx = findUserMessageIndexAtOrBefore(activeConversation.messages, messageIdx);
     if (userIdx < 0) return;
 
     const userMsg = activeConversation.messages[userIdx];
     const truncateAt = userIdx;
-    const hasDownstreamMessages = truncateAt < activeConversation.messages.length;
-
     try {
-      if (hasDownstreamMessages) {
-        await preserveConversationBranch(conversationId, truncateAt);
-      }
+      await createBranchForMessageMutation(
+        conversationId,
+        truncateAt,
+        activeConversation.messages.length,
+      );
 
       // Re-send the original user message content verbatim
       const rawContent = userMsg.content;
@@ -4538,7 +4582,69 @@ export function ChatPanel({
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to retry message');
     }
-  }, [activeConversation, isStreaming, isReadOnly, preserveConversationBranch, workspaceId, refreshBranchPoints, connectTaskStream, syncConversationActiveTaskId]);
+  }, [activeConversation, isStreaming, isReadOnly, createBranchForMessageMutation, findUserMessageIndexAtOrBefore, workspaceId, refreshBranchPoints, connectTaskStream, syncConversationActiveTaskId]);
+
+  const deleteFromMessage = useCallback(async (messageIdx: number) => {
+    if (!activeConversation || isStreaming || isReadOnly) return;
+    const conversationId = activeConversation.id;
+    const selectedMessage = activeConversation.messages[messageIdx];
+    if (!selectedMessage) return;
+    const selectedMessageId = selectedMessage.message_id;
+    const branchPointIndex = getDeleteBranchPointIndex(
+      activeConversation.messages,
+      messageIdx,
+    );
+    const rolledBackSnapshot = Boolean(
+      workspaceId && selectedMessageId && selectedMessage.snapshot_restore,
+    );
+
+    try {
+      await createBranchForMessageMutation(
+        conversationId,
+        branchPointIndex,
+        activeConversation.messages.length,
+      );
+
+      let updatedConversation: Conversation;
+
+      if (rolledBackSnapshot && selectedMessageId) {
+        const restored = await api.restoreConversationMessageSnapshot(
+          conversationId,
+          selectedMessageId!,
+          workspaceId,
+        );
+        updatedConversation = restored.conversation;
+
+        if (selectedMessage.role === 'user') {
+          updatedConversation = await api.truncateConversation(
+            conversationId,
+            messageIdx,
+            workspaceId,
+          );
+        }
+      } else {
+        updatedConversation = await api.truncateConversation(
+          conversationId,
+          messageIdx,
+          workspaceId,
+        );
+      }
+
+      setActiveConversation(updatedConversation);
+      setConversations(prev => prev.map(c => c.id === updatedConversation.id ? updatedConversation : c));
+      if (rolledBackSnapshot) {
+        onMessageSnapshotRestored?.({
+          rolledBackSnapshot: true,
+          requiresRuntimeRestart: true,
+        });
+      }
+      void refreshBranchPoints(conversationId);
+    } catch (err) {
+      console.error('Failed to delete from message:', err);
+      const message = err instanceof Error ? err.message : 'Failed to delete message';
+      alert(message);
+    }
+  }, [activeConversation, isStreaming, isReadOnly, createBranchForMessageMutation, getDeleteBranchPointIndex, onMessageSnapshotRestored, refreshBranchPoints, workspaceId]);
 
   const submitEditMessage = async () => {
     if (isReadOnly || !activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0)) return;
@@ -4572,10 +4678,11 @@ export function ChatPanel({
 
     try {
       // 1. Create a branch to preserve the original messages
-      const hasDownstreamMessages = truncateAt < activeConversation.messages.length;
-      if (hasDownstreamMessages) {
-        await preserveConversationBranch(conversationId, truncateAt);
-      }
+      await createBranchForMessageMutation(
+        conversationId,
+        truncateAt,
+        activeConversation.messages.length,
+      );
 
       // 2. Local Optimistic Update
       const messagesToKeep = activeConversation.messages.slice(0, truncateAt);
@@ -5202,7 +5309,7 @@ export function ChatPanel({
                 <>
                   {activeConversation.messages.map((msg, idx) => {
                     const bp = branchPointsByIndex.get(idx);
-                    const hasBranches = bp && bp.branches.length > 0;
+                    const hasBranches = !!(bp && bp.branches.length > 0 && msg.role === 'user');
                     const msgKey = `msg-${idx}`;
                     return (
                     <div key={msgKey} className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}${hasBranches ? ' chat-branch-wrapper-has-branches' : ''}`}>
@@ -5386,7 +5493,10 @@ export function ChatPanel({
                     {(() => {
                       const isEditing = editingMessageIdx === idx;
                       const activeBranchId = activeConversation.active_branch_id;
-                      const branchNav = hasBranches && bp ? (() => {
+                      // Branches are anchored on user messages only — never
+                      // render the nav on assistant rows even if a stale
+                      // assistant-indexed branch exists in the DB.
+                      const branchNav = hasBranches && bp && msg.role === 'user' ? (() => {
                         const livePathOptionId = `__current__:${bp.branch_point_index}`;
                         const hasLivePathOption = !activeBranchId && activeConversation.messages.length > bp.branch_point_index;
                         const allOptions = [
@@ -5483,10 +5593,33 @@ export function ChatPanel({
                                     <Pencil size={12} />
                                   </button>
                                 )}
+                                {!isStreaming && !isReadOnly && (
+                                  <button className="chat-action-icon-btn" onClick={() => replayFromMessage(idx)} title="Replay from this message">
+                                    <RefreshCw size={12} />
+                                  </button>
+                                )}
+                                {!isStreaming && !isReadOnly && (
+                                  <button
+                                    className="chat-action-icon-btn"
+                                    onClick={() => setPendingDeleteIdx(pendingDeleteIdx === idx ? null : idx)}
+                                    title={msg.snapshot_restore ? 'Delete message and restore workspace snapshot' : 'Delete message'}
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                )}
                               </span>
                             )}
                             {branchNav}
                           </div>
+                            {pendingDeleteIdx === idx && (
+                              <div className="chat-message-banner-row chat-message-banner-row-right">
+                                <div className="chat-branch-restore-banner">
+                                  <span>{msg.snapshot_restore ? 'Delete message and restore workspace snapshot?' : 'Delete this message and all messages after it?'}</span>
+                                  <button className="chat-branch-restore-btn confirm" onClick={() => { setPendingDeleteIdx(null); deleteFromMessage(idx); }}>Confirm</button>
+                                  <button className="chat-branch-restore-btn dismiss" onClick={() => setPendingDeleteIdx(null)}>Cancel</button>
+                                </div>
+                              </div>
+                            )}
                             {showBanner && (
                               <div className="chat-message-banner-row chat-message-banner-row-right">
                                 {inputBanner}
@@ -5503,8 +5636,17 @@ export function ChatPanel({
                                   {isCopied ? <Check size={12} /> : <Copy size={12} />}
                                 </button>
                                 {!isStreaming && !isReadOnly && (
-                                  <button className="chat-action-icon-btn" onClick={() => retryFromMessage(idx)} title="Retry">
+                                  <button className="chat-action-icon-btn" onClick={() => replayFromMessage(idx)} title="Replay from this message">
                                     <RefreshCw size={12} />
+                                  </button>
+                                )}
+                                {!isStreaming && !isReadOnly && (
+                                  <button
+                                    className="chat-action-icon-btn"
+                                    onClick={() => setPendingDeleteIdx(pendingDeleteIdx === idx ? null : idx)}
+                                    title={msg.snapshot_restore ? 'Delete reply and restore workspace snapshot' : 'Delete reply'}
+                                  >
+                                    <Trash2 size={12} />
                                   </button>
                                 )}
                                 {showPromptDebugButton && (
@@ -5516,6 +5658,15 @@ export function ChatPanel({
                               {branchNav && <span className="chat-message-actions-spacer" />}
                               {branchNav}
                             </div>
+                            {pendingDeleteIdx === idx && (
+                              <div className="chat-message-banner-row chat-message-banner-row-left">
+                                <div className="chat-branch-restore-banner">
+                                  <span>{msg.snapshot_restore ? 'Delete reply and restore workspace snapshot?' : 'Delete this reply and all messages after it?'}</span>
+                                  <button className="chat-branch-restore-btn confirm" onClick={() => { setPendingDeleteIdx(null); deleteFromMessage(idx); }}>Confirm</button>
+                                  <button className="chat-branch-restore-btn dismiss" onClick={() => setPendingDeleteIdx(null)}>Cancel</button>
+                                </div>
+                              </div>
+                            )}
                             {showBanner && (
                               <div className="chat-message-banner-row chat-message-banner-row-left">
                                 {inputBanner}

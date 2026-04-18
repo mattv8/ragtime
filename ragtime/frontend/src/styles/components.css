@@ -1926,8 +1926,27 @@ textarea:focus {
 
 .userspace-preview-exec-error {
   margin: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
   white-space: pre-wrap;
   word-break: break-word;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-error-border);
+  color: var(--color-error);
+  background: var(--color-error-light);
+}
+
+.userspace-preview-exec-notice {
+  margin: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: var(--radius-md);
+}
+
+.userspace-preview-exec-notice-success {
+  border: 1px solid var(--color-success-border);
+  color: var(--color-success);
+  background: var(--color-success-light);
 }
 
 .userspace-preview-frame {

@@ -1716,6 +1716,25 @@ export const api = {
   },
 
   /**
+   * Restore the workspace snapshot anchored to a chat message and rewind the
+   * chat to the link's stored restore_message_count.
+   */
+  async restoreConversationMessageSnapshot(
+    conversationId: string,
+    messageId: string,
+    workspaceId?: string,
+  ): Promise<import('@/types').MessageSnapshotRestoreResponse> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/messages/${messageId}/restore-snapshot`,
+        workspaceId,
+      ),
+      { method: 'POST' },
+    );
+    return handleResponse<import('@/types').MessageSnapshotRestoreResponse>(response);
+  },
+
+  /**
    * List branch points for a conversation (branches grouped by message index).
    */
   async getConversationBranchPoints(conversationId: string, workspaceId?: string): Promise<import('@/types').ConversationBranchPointInfo[]> {

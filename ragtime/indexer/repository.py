@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
+from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -22,7 +23,6 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
-from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
                                      decrypt_json_passwords, decrypt_secret,
@@ -38,6 +38,7 @@ from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
                                     Conversation, ConversationBranch,
                                     ConversationBranchSummary, IndexConfig,
                                     IndexJob, IndexStatus,
+                                    MessageSnapshotRestore,
                                     ProviderPromptDebugRecord, ToolCallRecord,
                                     ToolConfig, ToolGroup, ToolOutputMode,
                                     ToolType, VectorStoreType)
@@ -1815,7 +1816,8 @@ class IndexerRepository:
         if prisma_conv is None:
             return None
 
-        return self._prisma_conversation_to_model(prisma_conv)
+        conv = self._prisma_conversation_to_model(prisma_conv)
+        return await self.attach_message_snapshot_links(conv)
 
     async def list_conversations(
         self,
@@ -1873,7 +1875,8 @@ class IndexerRepository:
             include={"user": True},
         )
 
-        return [self._prisma_conversation_to_model(c) for c in prisma_convs]
+        conversations = [self._prisma_conversation_to_model(c) for c in prisma_convs]
+        return await self.attach_message_snapshot_links_many(conversations)
 
     async def list_conversations_by_ids(
         self, conversation_ids: list[str]
@@ -1888,7 +1891,8 @@ class IndexerRepository:
             order={"updatedAt": "desc"},
             include={"user": True},
         )
-        return [self._prisma_conversation_to_model(c) for c in prisma_convs]
+        conversations = [self._prisma_conversation_to_model(c) for c in prisma_convs]
+        return await self.attach_message_snapshot_links_many(conversations)
 
     async def add_message(
         self,
@@ -1920,6 +1924,7 @@ class IndexerRepository:
             "role": role,
             "content": content,
             "timestamp": datetime.utcnow().isoformat(),
+            "message_id": str(uuid.uuid4()),
         }
         # Store chronological events only; compatibility tool_calls are derived on read.
         if sanitized_events:
@@ -2253,6 +2258,194 @@ class IndexerRepository:
             logger.warning(f"Failed to delete conversation branch: {e}")
             return False
 
+    # -------------------------------------------------------------------------
+    # Per-Message Snapshot Link Operations
+    # -------------------------------------------------------------------------
+
+    async def upsert_message_snapshot_link(
+        self,
+        *,
+        conversation_id: str,
+        workspace_id: str,
+        message_id: str,
+        snapshot_id: str,
+        restore_message_count: int,
+    ) -> bool:
+        """Upsert a (conversation_id, message_id) → snapshot link.
+
+        Latest write wins: if a prior link exists for the same
+        (conversation_id, message_id), it is replaced.
+        Returns True on success, False on failure.
+        """
+        if not message_id or not snapshot_id or restore_message_count < 0:
+            return False
+        db = await self._get_db()
+        try:
+            now = datetime.utcnow()
+            await db.conversationmessagesnapshotlink.upsert(
+                where={
+                    "conversationId_messageId": {
+                        "conversationId": conversation_id,
+                        "messageId": message_id,
+                    }
+                },
+                data={
+                    "create": {
+                        "id": str(uuid.uuid4()),
+                        "conversationId": conversation_id,
+                        "workspaceId": workspace_id,
+                        "messageId": message_id,
+                        "snapshotId": snapshot_id,
+                        "restoreMessageCount": restore_message_count,
+                    },
+                    "update": {
+                        "snapshotId": snapshot_id,
+                        "restoreMessageCount": restore_message_count,
+                        "workspaceId": workspace_id,
+                        "updatedAt": now,
+                    },
+                },
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to upsert message snapshot link: {e}")
+            return False
+
+    async def get_message_snapshot_link(
+        self, conversation_id: str, message_id: str
+    ) -> Optional[dict[str, Any]]:
+        """Look up a single link by (conversation_id, message_id)."""
+        if not message_id:
+            return None
+        db = await self._get_db()
+        try:
+            link = await db.conversationmessagesnapshotlink.find_unique(
+                where={
+                    "conversationId_messageId": {
+                        "conversationId": conversation_id,
+                        "messageId": message_id,
+                    }
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to fetch message snapshot link: {e}")
+            return None
+        if not link:
+            return None
+        return {
+            "id": link.id,
+            "snapshot_id": link.snapshotId,
+            "workspace_id": link.workspaceId,
+            "restore_message_count": link.restoreMessageCount,
+            "created_at": link.createdAt,
+            "updated_at": link.updatedAt,
+        }
+
+    async def get_message_snapshot_links_for_conversation(
+        self, conversation_id: str
+    ) -> dict[str, MessageSnapshotRestore]:
+        """Return links keyed by message_id for one conversation."""
+        db = await self._get_db()
+        try:
+            links = await db.conversationmessagesnapshotlink.find_many(
+                where={"conversationId": conversation_id}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to list message snapshot links: {e}")
+            return {}
+        out: dict[str, MessageSnapshotRestore] = {}
+        for link in links:
+            out[link.messageId] = MessageSnapshotRestore(
+                snapshot_id=link.snapshotId,
+                restore_message_count=link.restoreMessageCount,
+                created_at=link.updatedAt or link.createdAt,
+            )
+        return out
+
+    async def attach_message_snapshot_links(
+        self, conversation: Optional[Conversation]
+    ) -> Optional[Conversation]:
+        """Decorate each message with its snapshot_restore metadata when present."""
+        if conversation is None or not conversation.messages:
+            return conversation
+        try:
+            links = await self.get_message_snapshot_links_for_conversation(
+                conversation.id
+            )
+        except Exception:
+            return conversation
+        if not links:
+            return conversation
+        for msg in conversation.messages:
+            if msg.message_id and msg.message_id in links:
+                msg.snapshot_restore = links[msg.message_id]
+        return conversation
+
+    async def attach_message_snapshot_links_many(
+        self, conversations: list[Conversation]
+    ) -> list[Conversation]:
+        """Decorate a list of conversations with snapshot link metadata."""
+        decorated: list[Conversation] = []
+        for conversation in conversations:
+            decorated.append(
+                await self.attach_message_snapshot_links(conversation) or conversation
+            )
+        return decorated
+
+    async def link_assistant_snapshot_tool_calls(
+        self,
+        conversation: Optional[Conversation],
+        workspace_id: Optional[str],
+    ) -> None:
+        """Inspect the most recently persisted assistant message for
+        ``create_userspace_snapshot`` tool calls and upsert a per-message
+        snapshot link (latest snapshot in the turn wins).
+
+        Best-effort: silently ignores parse/DB errors so chat persistence
+        is never blocked.
+        """
+        if not conversation or not workspace_id or not conversation.messages:
+            return
+        last_msg = conversation.messages[-1]
+        if (
+            last_msg.role != "assistant"
+            or not last_msg.message_id
+            or not last_msg.events
+        ):
+            return
+        snapshot_ids: list[str] = []
+        for event in last_msg.events:
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") != "tool_end":
+                continue
+            if event.get("tool") != "create_userspace_snapshot":
+                continue
+            output = event.get("output")
+            if not isinstance(output, str):
+                continue
+            try:
+                payload = json.loads(output)
+            except (TypeError, ValueError):
+                continue
+            snap = payload.get("snapshot") if isinstance(payload, dict) else None
+            if isinstance(snap, dict):
+                snap_id = snap.get("id")
+                if isinstance(snap_id, str) and snap_id:
+                    snapshot_ids.append(snap_id)
+        if not snapshot_ids:
+            return
+        # Anchor on the assistant message; restore excludes that reply
+        # ("before assistant reply" semantics).
+        keep_count = max(len(conversation.messages) - 1, 0)
+        await self.upsert_message_snapshot_link(
+            conversation_id=conversation.id,
+            workspace_id=workspace_id,
+            message_id=last_msg.message_id,
+            snapshot_id=snapshot_ids[-1],
+            restore_message_count=keep_count,
+        )
+
     def _prisma_branch_to_model(
         self, prisma_branch: Any
     ) -> Optional[ConversationBranch]:
@@ -2332,6 +2525,7 @@ class IndexerRepository:
                         if "timestamp" in m
                         else datetime.utcnow()
                     ),
+                    message_id=m.get("message_id"),
                     tool_calls=tool_calls,
                     events=events,
                 )
@@ -2475,6 +2669,7 @@ class IndexerRepository:
                         if "timestamp" in m
                         else datetime.utcnow()
                     ),
+                    message_id=m.get("message_id"),
                     tool_calls=tool_calls,
                     events=events,
                 )

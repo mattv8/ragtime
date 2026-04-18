@@ -896,6 +896,9 @@ model Conversation {
   // Chat branches
   branches ConversationBranch[]
 
+  // Per-message snapshot links for combined workspace + chat rollback
+  messageSnapshotLinks ConversationMessageSnapshotLink[]
+
   @@index([userId])
   @@index([activeTaskId])
   @@index([workspaceId, updatedAt])
@@ -990,6 +993,7 @@ model Workspace {
   snapshots                   UserSpaceSnapshot[]
   outgoingAgentGrants         WorkspaceAgentGrant[]                 @relation("AgentGrantSource")
   incomingAgentGrants         WorkspaceAgentGrant[]                 @relation("AgentGrantTarget")
+  messageSnapshotLinks        ConversationMessageSnapshotLink[]
 
   @@unique([ownerUserId, nameNormalized])
   @@unique([ownerUserId, shareSlug])
@@ -1151,11 +1155,35 @@ model UserSpaceSnapshot {
 
   workspace Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   branch    UserSpaceSnapshotBranch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  messageLinks ConversationMessageSnapshotLink[]
 
   @@unique([workspaceId, branchId, gitCommitHash])
   @@index([workspaceId, createdAt])
   @@index([branchId, createdAt])
   @@map("userspace_snapshots")
+}
+
+/// Hard relational anchor between a chat message and a userspace snapshot.
+/// One active link per (conversation, message) — newer writes upsert/replace older ones
+/// to implement "latest snapshot wins" semantics for per-message restore actions.
+model ConversationMessageSnapshotLink {
+  id                  String   @id @default(uuid())
+  conversationId      String   @map("conversation_id")
+  workspaceId         String   @map("workspace_id")
+  messageId           String   @map("message_id")
+  snapshotId          String   @map("snapshot_id")
+  restoreMessageCount Int      @map("restore_message_count")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at")
+
+  conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  workspace    Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  snapshot     UserSpaceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, messageId])
+  @@index([workspaceId])
+  @@index([snapshotId])
+  @@map("conversation_message_snapshot_links")
 }
 
 /// Per-user acknowledgement of a changedFile userspace file path.

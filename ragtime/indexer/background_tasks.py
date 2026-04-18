@@ -17,10 +17,10 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.core.usage_accounting import (
+    _estimate_output_tokens,
     bind_usage_attempt_task,
     finalize_stale_attempts_for_tasks,
     finalize_usage_attempt,
-    _estimate_output_tokens,
 )
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import (
@@ -95,12 +95,21 @@ async def _persist_partial_assistant_message(
     if not has_partial_text and not has_partial_activity:
         return False
 
-    await repository.add_message(
+    persisted = await repository.add_message(
         conversation_id,
         "assistant",
         full_response,
         events=events if events else None,
     )
+    try:
+        await repository.link_assistant_snapshot_tool_calls(
+            persisted,
+            getattr(persisted, "workspace_id", None) if persisted else None,
+        )
+    except Exception as link_err:
+        logger.warning(
+            f"Failed to link agent-created snapshot to assistant message: {link_err}"
+        )
     return True
 
 
@@ -1137,7 +1146,9 @@ class BackgroundTaskService:
                                 usage_attempt_id,
                                 status="failed",
                                 failure_reason=error_message,
-                                output_tokens=_estimate_output_tokens(full_response, events),
+                                output_tokens=_estimate_output_tokens(
+                                    full_response, events
+                                ),
                             )
                         return
 
@@ -1151,12 +1162,25 @@ class BackgroundTaskService:
                 )
 
                 # Add the assistant response to the conversation
-                await repository.add_message(
+                persisted_conv = await repository.add_message(
                     conversation_id,
                     "assistant",
                     full_response,
                     events=events if events else None,
                 )
+                try:
+                    await repository.link_assistant_snapshot_tool_calls(
+                        persisted_conv,
+                        (
+                            getattr(persisted_conv, "workspace_id", None)
+                            if persisted_conv
+                            else None
+                        ),
+                    )
+                except Exception as link_err:
+                    logger.warning(
+                        f"Failed to link agent-created snapshot to assistant message: {link_err}"
+                    )
                 partial_message_persisted = True
 
                 # Notify completion
@@ -1220,7 +1244,9 @@ class BackgroundTaskService:
                                 usage_attempt_id,
                                 status="interrupted",
                                 failure_reason="Server shutdown",
-                                output_tokens=_estimate_output_tokens(full_response, events),
+                                output_tokens=_estimate_output_tokens(
+                                    full_response, events
+                                ),
                             )
                     else:
                         await repository.cancel_chat_task(task_id)
@@ -1231,7 +1257,9 @@ class BackgroundTaskService:
                             await finalize_usage_attempt(
                                 usage_attempt_id,
                                 status="cancelled",
-                                output_tokens=_estimate_output_tokens(full_response, events),
+                                output_tokens=_estimate_output_tokens(
+                                    full_response, events
+                                ),
                             )
                 except Exception as db_err:
                     logger.warning(
@@ -1267,7 +1295,9 @@ class BackgroundTaskService:
                             usage_attempt_id,
                             status="failed",
                             failure_reason=str(e),
-                            output_tokens=_estimate_output_tokens(full_response, events),
+                            output_tokens=_estimate_output_tokens(
+                                full_response, events
+                            ),
                         )
                 except Exception as db_err:
                     logger.warning(

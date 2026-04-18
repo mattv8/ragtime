@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import (APIRouter, Depends, File, HTTPException, Query, Request,
-                     Response, UploadFile)
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 
 from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.database import get_db
@@ -11,49 +19,91 @@ from ragtime.core.encryption import decrypt_secret
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.security import (get_current_user, get_current_user_optional,
-                                   require_admin)
-from ragtime.indexer.models import (CheckRepoVisibilityRequest,
-                                    FetchBranchesRequest,
-                                    FetchBranchesResponse,
-                                    RepoVisibilityResponse)
+from ragtime.core.security import (
+    get_current_user,
+    get_current_user_optional,
+    require_admin,
+)
+from ragtime.indexer.models import (
+    CheckRepoVisibilityRequest,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    RepoVisibilityResponse,
+)
 from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
-    BrowseUserspaceMountSourceRequest, CreateSnapshotBranchRequest,
-    CreateSnapshotRequest, CreateUserspaceMountSourceRequest,
-    CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest, DeleteGlobalEnvVarResponse,
+    BrowseUserspaceMountSourceRequest,
+    CreateSnapshotBranchRequest,
+    CreateSnapshotRequest,
+    CreateUserspaceMountSourceRequest,
+    CreateUserSpaceObjectStorageBucketRequest,
+    CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest,
+    DeleteGlobalEnvVarResponse,
     DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse, DuplicateWorkspaceRequest,
-    ExecuteComponentRequest, ExecuteComponentResponse, MountableSource,
-    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
-    PromoteBranchToMainRequest, RestoreSnapshotResponse, SqliteImportResponse,
-    SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
+    DeleteUserSpaceObjectStorageBucketResponse,
+    DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse,
+    DuplicateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    MountableSource,
+    MountSourceAffectedWorkspacesResponse,
+    PaginatedWorkspacesResponse,
+    PromoteBranchToMainRequest,
+    RestoreSnapshotResponse,
+    SqliteImportResponse,
+    SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
-    UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest, UpdateWorkspaceShareSlugRequest,
-    UpsertGlobalEnvVarRequest, UpsertWorkspaceAgentGrantRequest,
-    UpsertWorkspaceEnvVarRequest, UpsertWorkspaceFileRequest,
-    UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceAvailableTool,
-    UserSpaceChangedFileStateResponse, UserSpaceFileInfo,
-    UserSpaceFileResponse, UserspaceMountSource, UserSpaceObjectStorageConfig,
-    UserSpaceRuntimeRestartBatchTask, UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot, UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace, UserSpaceWorkspaceCreateTask,
-    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask,
-    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceScmConnectionRequest,
+    UpdateUserSpaceObjectStorageBucketRequest,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpdateWorkspaceShareSlugRequest,
+    UpsertGlobalEnvVarRequest,
+    UpsertWorkspaceAgentGrantRequest,
+    UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceAcknowledgeChangedFilePathRequest,
+    UserSpaceAvailableTool,
+    UserSpaceChangedFileStateResponse,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserspaceMountSource,
+    UserSpaceObjectStorageConfig,
+    UserSpaceRuntimeRestartBatchTask,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceCreateTask,
+    UserSpaceWorkspaceDeleteTask,
+    UserSpaceWorkspaceDuplicateTask,
+    UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
-    UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
-    UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
-    UserSpaceWorkspaceScmSettingsRequest, UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceAgentGrant, WorkspaceMount, WorkspaceMountBrowseRequest,
-    WorkspaceMountBrowseResponse, WorkspaceMountSyncPreviewRequest,
-    WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest,
-    WorkspaceMountSyncResponse, WorkspaceShareSlugAvailabilityResponse)
+    UserSpaceWorkspaceScmExportRequest,
+    UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest,
+    UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmSettingsRequest,
+    UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceAgentGrant,
+    WorkspaceMount,
+    WorkspaceMountBrowseRequest,
+    WorkspaceMountBrowseResponse,
+    WorkspaceMountSyncPreviewRequest,
+    WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest,
+    WorkspaceMountSyncResponse,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 from ragtime.userspace.share_auth import share_auth_token_from_request
@@ -1504,6 +1554,35 @@ async def create_snapshot(
         workspace_id, user.id, request.message
     )
     await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
+
+    # Per-message snapshot link: anchor the new snapshot to the latest message
+    # in the active conversation when one was supplied. "Latest only" semantics
+    # are enforced by upsert on (conversation_id, message_id).
+    if request.conversation_id:
+        try:
+            conv = await repository.get_conversation(request.conversation_id)
+            if conv and (conv.workspace_id or "") == workspace_id and conv.messages:
+                last_msg = conv.messages[-1]
+                if last_msg.message_id:
+                    # User-side anchor includes the message; assistant-side anchor
+                    # excludes the assistant reply ("before assistant reply").
+                    keep_count = (
+                        len(conv.messages)
+                        if last_msg.role == "user"
+                        else len(conv.messages) - 1
+                    )
+                    if keep_count >= 0:
+                        await repository.upsert_message_snapshot_link(
+                            conversation_id=conv.id,
+                            workspace_id=workspace_id,
+                            message_id=last_msg.message_id,
+                            snapshot_id=result.id,
+                            restore_message_count=keep_count,
+                        )
+        except Exception:
+            # Link creation is best-effort; never block snapshot creation on it.
+            pass
+
     return result
 
 

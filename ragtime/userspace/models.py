@@ -725,6 +725,10 @@ class UserSpaceSnapshotTimelineResponse(BaseModel):
 
 class CreateSnapshotRequest(BaseModel):
     message: str | None = Field(default=None, max_length=5000)
+    conversation_id: str | None = Field(
+        default=None,
+        description="Optional active workspace conversation; when set, the new snapshot is linked to the latest message for per-message restore.",
+    )
 
 
 class UpdateSnapshotRequest(BaseModel):

@@ -1578,12 +1578,20 @@ export interface FileContent {
 
 export type ContentPart = TextContent | ImageContent | FileContent;
 
+export interface MessageSnapshotRestore {
+  snapshot_id: string;
+  restore_message_count: number;
+  created_at: string;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string | ContentPart[];  // Support both simple string and multimodal array
   timestamp: string;
+  message_id?: string;             // Stable per-message identifier (post-upgrade only)
   tool_calls?: ToolCallRecord[];  // Compatibility mirror derived from events when available
   events?: MessageEvent[];        // Preferred: chronological events
+  snapshot_restore?: MessageSnapshotRestore;  // Per-message snapshot link (when present)
 }
 
 // Streaming event types
@@ -1645,6 +1653,12 @@ export interface ConversationBranchPointInfo {
 export interface CreateConversationBranchRequest {
   from_message_index: number;
   auto_snapshot?: boolean;
+}
+
+export interface MessageSnapshotRestoreResponse {
+  conversation: Conversation;
+  restored_snapshot_id: string;
+  restored_message_count: number;
 }
 
 export interface SwitchConversationBranchRequest {
@@ -2368,6 +2382,7 @@ export interface UserSpaceSnapshotTimeline {
 
 export interface CreateUserSpaceSnapshotRequest {
   message?: string;
+  conversation_id?: string;
 }
 
 export interface UpdateUserSpaceSnapshotRequest {

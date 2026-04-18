@@ -614,6 +614,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [previewFrameUrl, setPreviewFrameUrl] = useState<string | null>(null);
   const [previewOrigin, setPreviewOrigin] = useState<string | null>(null);
   const [previewAuthorizationPending, setPreviewAuthorizationPending] = useState(false);
+  const [previewNotice, setPreviewNotice] = useState<{
+    id: number;
+    message: string;
+    tone?: 'success' | 'error';
+  } | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<UserSpaceRuntimeStatusResponse | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [activeRightTab, setActiveRightTab] = useState<'preview' | 'console'>('preview');
@@ -2841,13 +2846,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     if (!activeWorkspaceId || !canEditWorkspace) return;
     setCreatingSnapshot(true);
     try {
-      await api.createUserSpaceSnapshot(activeWorkspaceId, { message: 'Manual snapshot' });
+      await api.createUserSpaceSnapshot(activeWorkspaceId, {
+        message: 'Manual snapshot',
+        ...(activeWorkspaceConversationId ? { conversation_id: activeWorkspaceConversationId } : {}),
+      });
       // Reset all per-file changed/acknowledged markers after snapshot baseline resets.
       setChangedFiles(new Set());
       setAcknowledgedFiles(new Set());
       setFileDirty(false);
       // Refresh snapshots list if panel is open.
       setSnapshotsLoadedForWorkspace(null);
+      await refreshActiveWorkspaceState();
       await loadChangedFileState(activeWorkspaceId);
       if (showSnapshots) {
         await loadSnapshots(activeWorkspaceId);
@@ -2857,7 +2866,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } finally {
       setCreatingSnapshot(false);
     }
-  }, [activeWorkspaceId, canEditWorkspace, loadChangedFileState, loadSnapshots, showSnapshots]);
+  }, [activeWorkspaceId, activeWorkspaceConversationId, canEditWorkspace, loadChangedFileState, loadSnapshots, refreshActiveWorkspaceState, showSnapshots]);
 
   const handleSaveTreeFile = useCallback(async (filePath: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -3096,9 +3105,52 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspaceId, canEditWorkspace, currentSnapshotBranchId, loadChangedFileState, loadSnapshots, loadWorkspaceData]);
 
-  const handleBranchSwitch = useCallback((_branchId: string, associatedSnapshotId: string | null) => {
+  const handleMessageSnapshotRestored = useCallback(async (details?: {
+    rolledBackSnapshot?: boolean;
+    requiresRuntimeRestart?: boolean;
+  }) => {
+    if (!activeWorkspaceId) return;
+    // The chat panel already updated the conversation. Refresh workspace data,
+    // changed-file markers, and the snapshots timeline (cursor moves).
+    setChangedFiles(new Set());
+    setAcknowledgedFiles(new Set());
+    setFileDirty(false);
+    setSnapshotsLoadedForWorkspace(null);
+    if (details?.rolledBackSnapshot && details.requiresRuntimeRestart) {
+      setPreviewNotice({
+        id: Date.now(),
+        tone: 'success',
+        message: 'Snapshot rolled back. Restart the runtime container to reload the preview.',
+      });
+    }
+    try {
+      await Promise.all([
+        loadWorkspaceData(activeWorkspaceId),
+        loadChangedFileState(activeWorkspaceId),
+        loadSnapshots(activeWorkspaceId),
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to refresh after snapshot restore');
+    }
+  }, [activeWorkspaceId, loadChangedFileState, loadSnapshots, loadWorkspaceData]);
+
+  const handleBranchSwitch = useCallback((
+    _branchId: string,
+    associatedSnapshotId: string | null,
+  ) => {
+    if (!associatedSnapshotId) {
+      setBranchRestoreSnapshotId(null);
+      return;
+    }
+
+    if (canEditWorkspace) {
+      setBranchRestoreSnapshotId(null);
+      void handleRestoreSnapshot(associatedSnapshotId);
+      return;
+    }
+
     setBranchRestoreSnapshotId(associatedSnapshotId);
-  }, []);
+  }, [canEditWorkspace, handleRestoreSnapshot]);
 
   const handleConfirmBranchRestore = useCallback(() => {
     if (branchRestoreSnapshotId) {
@@ -6231,6 +6283,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 onActiveConversationChange={setActiveWorkspaceConversationId}
                 onBranchSwitch={handleBranchSwitch}
                 onOpenWorkspaceFile={handleSelectFile}
+                onMessageSnapshotRestored={handleMessageSnapshotRestored}
                 embedded
                 readOnly={false}
                 allowAdminReadOnlyBypass={isAdminImpersonating}
@@ -6274,6 +6327,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 previewInstanceKey={`${activeWorkspaceId ?? ''}:${previewRefreshCounter}`}
                 workspaceId={activeWorkspaceId ?? undefined}
                 onExecutionStateChange={setPreviewExecuting}
+                previewNotice={previewNotice}
               />
             </div>
           ) : (

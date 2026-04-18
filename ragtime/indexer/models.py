@@ -3,6 +3,7 @@ Indexer data models and schemas.
 """
 
 
+
 import hashlib
 import json
 from datetime import datetime
@@ -17,7 +18,6 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
     normalize_userspace_preview_sandbox_flags)
-
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -2149,12 +2149,28 @@ class ToolCallEvent(BaseModel):
     )
 
 
+class MessageSnapshotRestore(BaseModel):
+    """Per-message snapshot link metadata for combined workspace + chat restore."""
+
+    snapshot_id: str = Field(description="UserSpace snapshot anchored to this message")
+    restore_message_count: int = Field(
+        description="Conversation message count to keep when restoring (rewinds chat)"
+    )
+    created_at: datetime = Field(
+        description="When the link was created/last updated (latest-wins per message)"
+    )
+
+
 class ChatMessage(BaseModel):
     """A single message in a conversation."""
 
     role: str = Field(description="Role: 'user', 'assistant', or 'system'")
     content: str = Field(description="Message content")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+    message_id: Optional[str] = Field(
+        default=None,
+        description="Stable per-message identifier (UUID); present on post-upgrade messages only",
+    )
     tool_calls: Optional[List[ToolCallRecord]] = Field(
         default=None,
         description="Compatibility mirror of tool-call events when available",
@@ -2162,6 +2178,10 @@ class ChatMessage(BaseModel):
     events: Optional[List[dict]] = Field(
         default=None,
         description="Chronological events (content and tool calls interleaved)",
+    )
+    snapshot_restore: Optional[MessageSnapshotRestore] = Field(
+        default=None,
+        description="Snapshot restore metadata when this message has an active snapshot link",
     )
 
 
@@ -2281,6 +2301,14 @@ class ConversationResponse(BaseModel):
     tool_output_mode: ToolOutputMode = Field(default=ToolOutputMode.DEFAULT)
     created_at: datetime
     updated_at: datetime
+
+
+class MessageSnapshotRestoreResponse(BaseModel):
+    """Response from combined message-anchored snapshot restore."""
+
+    conversation: "ConversationResponse"
+    restored_snapshot_id: str
+    restored_message_count: int
 
 
 class CreateConversationRequest(BaseModel):
