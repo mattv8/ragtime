@@ -22,93 +22,156 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
+
 from prisma import Json
 from prisma import fields as prisma_fields
-
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
-                                     decrypt_json_passwords, decrypt_secret,
-                                     encrypt_json_passwords, encrypt_secret)
-from ragtime.core.entrypoint_status import (EntrypointStatus,
-                                            parse_entrypoint_config)
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_json_passwords,
+    encrypt_secret,
+)
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.git import create_repository, parse_git_url
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
-                              USERSPACE_MOUNT_WATCH_JITTER_SECONDS, SSHTunnel,
-                              build_ssh_tunnel_config,
-                              check_remote_rsync_available,
-                              execute_ssh_command, is_rsync_missing_error,
-                              preview_ssh_directory_sync, rsync_ssh_directory,
-                              ssh_config_from_dict,
-                              ssh_tunnel_config_from_dict, sync_ssh_directory)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
+    USERSPACE_MOUNT_WATCH_JITTER_SECONDS,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    check_remote_rsync_available,
+    execute_ssh_command,
+    is_rsync_missing_error,
+    preview_ssh_directory_sync,
+    rsync_ssh_directory,
+    ssh_config_from_dict,
+    ssh_tunnel_config_from_dict,
+    sync_ssh_directory,
+)
 from ragtime.core.workspace_ops import (
-    PLATFORM_MANAGED_GITIGNORE_PATTERNS, WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
-    compute_file_hash, deduplicate_ancestor_paths, sync_scope_relative_paths,
+    PLATFORM_MANAGED_GITIGNORE_PATTERNS,
+    WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
+    compute_file_hash,
+    deduplicate_ancestor_paths,
+    sync_scope_relative_paths,
     workspace_mount_target_repo_relative_path,
-    workspace_path_matches_mount_prefix)
+    workspace_path_matches_mount_prefix,
+)
 from ragtime.indexer.file_utils import build_authenticated_git_url
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
-from ragtime.indexer.repository import (_resolve_default_conversation_model,
-                                        repository)
+from ragtime.indexer.repository import _resolve_default_conversation_model, repository
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
 from ragtime.userspace.models import (
-    ArtifactType, BrowseUserspaceMountSourceRequest,
+    ArtifactType,
+    BrowseUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
-    CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest, DeleteGlobalEnvVarResponse,
+    CreateUserSpaceObjectStorageBucketRequest,
+    CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest,
+    DeleteGlobalEnvVarResponse,
     DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse, DuplicateWorkspaceRequest,
-    ExecuteComponentRequest, ExecuteComponentResponse, MountableSource,
-    MountSourceAffectedWorkspace, MountSourceAffectedWorkspacesResponse,
-    PaginatedWorkspacesResponse, RuntimeOperationPhase,
-    RuntimeRestartBatchTaskPhase, RuntimeRestartWorkspacePhase,
-    ShareAccessMode, SqliteImportResponse, SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
+    DeleteUserSpaceObjectStorageBucketResponse,
+    DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse,
+    DuplicateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    MountableSource,
+    MountSourceAffectedWorkspace,
+    MountSourceAffectedWorkspacesResponse,
+    PaginatedWorkspacesResponse,
+    RuntimeOperationPhase,
+    RuntimeRestartBatchTaskPhase,
+    RuntimeRestartWorkspacePhase,
+    ShareAccessMode,
+    SqliteImportResponse,
+    SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
-    UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest, UpsertGlobalEnvVarRequest,
-    UpsertWorkspaceAgentGrantRequest, UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest, UserSpaceFileInfo, UserSpaceFileResponse,
-    UserSpaceLiveDataCheck, UserSpaceLiveDataConnection, UserspaceMountBackend,
-    UserspaceMountSource, UserspaceMountSourceType,
-    UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig,
-    UserSpaceRuntimeRestartBatchTask, UserSpaceRuntimeRestartWorkspaceTask,
-    UserSpaceSharedPreviewResponse, UserSpaceSnapshot, UserSpaceSnapshotBranch,
-    UserSpaceSnapshotDiffFileSummary, UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace, UserSpaceWorkspaceCreateTask,
-    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask,
-    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceScmConnectionRequest,
+    UpdateUserSpaceObjectStorageBucketRequest,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertGlobalEnvVarRequest,
+    UpsertWorkspaceAgentGrantRequest,
+    UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserspaceMountBackend,
+    UserspaceMountSource,
+    UserspaceMountSourceType,
+    UserSpaceObjectStorageBucket,
+    UserSpaceObjectStorageConfig,
+    UserSpaceRuntimeRestartBatchTask,
+    UserSpaceRuntimeRestartWorkspaceTask,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceSnapshotBranch,
+    UserSpaceSnapshotDiffFileSummary,
+    UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceCreateTask,
+    UserSpaceWorkspaceDeleteTask,
+    UserSpaceWorkspaceDuplicateTask,
+    UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
-    UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
-    UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
-    UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceAgentGrant, WorkspaceAgentGrantMode, WorkspaceCreateTaskPhase,
-    WorkspaceDeleteTaskPhase, WorkspaceDuplicateTaskPhase, WorkspaceMember,
-    WorkspaceMount, WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
-    WorkspaceMountDirectoryEntry, WorkspaceMountSyncMode,
-    WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
-    WorkspaceScmDirection, WorkspaceScmPreviewState, WorkspaceScmProvider,
-    WorkspaceShareSlugAvailabilityResponse)
-from ragtime.userspace.preview_host import \
-    invalidate_preview_sessions_for_workspace
-from ragtime.userspace.sqlite_import import (_MAX_IMPORT_SIZE_BYTES,
-                                             SqlImportResult,
-                                             detect_binary_pg_dump,
-                                             detect_sql_dialect,
-                                             import_sql_to_sqlite)
+    UserSpaceWorkspaceScmExportRequest,
+    UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest,
+    UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmStatus,
+    UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceAgentGrant,
+    WorkspaceAgentGrantMode,
+    WorkspaceCreateTaskPhase,
+    WorkspaceDeleteTaskPhase,
+    WorkspaceDuplicateTaskPhase,
+    WorkspaceMember,
+    WorkspaceMount,
+    WorkspaceMountBrowseRequest,
+    WorkspaceMountBrowseResponse,
+    WorkspaceMountDirectoryEntry,
+    WorkspaceMountSyncMode,
+    WorkspaceMountSyncPreviewRequest,
+    WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest,
+    WorkspaceMountSyncResponse,
+    WorkspaceScmDirection,
+    WorkspaceScmPreviewState,
+    WorkspaceScmProvider,
+    WorkspaceShareSlugAvailabilityResponse,
+)
+from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
+from ragtime.userspace.sqlite_import import (
+    _MAX_IMPORT_SIZE_BYTES,
+    SqlImportResult,
+    detect_binary_pg_dump,
+    detect_sql_dialect,
+    import_sql_to_sqlite,
+)
 
 logger = get_logger(__name__)
 
@@ -482,7 +545,7 @@ _MODULE_SOURCE_EXTENSIONS = (
 )
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 7
-_RUNTIME_BRIDGE_VERSION = 8
+_RUNTIME_BRIDGE_VERSION = 9
 _RUNTIME_BRIDGE_VERSION_TAG = f"@ragtime/bridge v{_RUNTIME_BRIDGE_VERSION}"
 _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS = 310_000  # 300s + 10s buffer
 _USERSPACE_TEMPLATES_DIR = Path(__file__).with_name("templates")
@@ -1326,7 +1389,9 @@ class UserSpaceService:
 
         next_index = 1
         while True:
-            candidate = self._duplicate_workspace_name_candidate(source_name, next_index)
+            candidate = self._duplicate_workspace_name_candidate(
+                source_name, next_index
+            )
             normalized = _normalize_workspace_name_for_uniqueness(candidate)
             if normalized and normalized not in used:
                 return candidate
@@ -1431,9 +1496,11 @@ class UserSpaceService:
                 where={"conversationId": source_conversation.id},
                 order={"createdAt": "asc"},
             )
-            source_tool_group_selections = await db.conversationtoolgroupselection.find_many(
-                where={"conversationId": source_conversation.id},
-                order={"createdAt": "asc"},
+            source_tool_group_selections = (
+                await db.conversationtoolgroupselection.find_many(
+                    where={"conversationId": source_conversation.id},
+                    order={"createdAt": "asc"},
+                )
             )
             source_branches = await db.conversationbranch.find_many(
                 where={"conversationId": source_conversation.id},
@@ -1505,7 +1572,9 @@ class UserSpaceService:
                     }
                 )
 
-            source_active_branch_id = getattr(source_conversation, "activeBranchId", None)
+            source_active_branch_id = getattr(
+                source_conversation, "activeBranchId", None
+            )
             cloned_active_branch_id = branch_id_map.get(source_active_branch_id)
             if cloned_active_branch_id:
                 await db.conversation.update(
@@ -1555,11 +1624,10 @@ class UserSpaceService:
                     else self._workspace_duplicate_copy_mounts_default(app_settings)
                 )
                 target_name = (
-                    (request.name or "").strip()
-                    or await self._allocate_next_duplicate_workspace_name(
-                        user_id,
-                        source_workspace.name,
-                    )
+                    request.name or ""
+                ).strip() or await self._allocate_next_duplicate_workspace_name(
+                    user_id,
+                    source_workspace.name,
                 )
 
                 create_request_kwargs: dict[str, Any] = {"name": target_name}
@@ -1568,7 +1636,9 @@ class UserSpaceService:
                         {
                             "description": source_workspace.description,
                             "sqlite_persistence_mode": source_workspace.sqlite_persistence_mode,
-                            "selected_tool_ids": list(source_workspace.selected_tool_ids),
+                            "selected_tool_ids": list(
+                                source_workspace.selected_tool_ids
+                            ),
                             "selected_tool_group_ids": list(
                                 source_workspace.selected_tool_group_ids
                             ),
@@ -1663,7 +1733,9 @@ class UserSpaceService:
             )
             if created_workspace_id is not None:
                 try:
-                    await repository.delete_workspace_conversations(created_workspace_id)
+                    await repository.delete_workspace_conversations(
+                        created_workspace_id
+                    )
                     await self.delete_workspace(created_workspace_id, user_id)
                 except Exception as cleanup_exc:
                     logger.warning(
@@ -1789,11 +1861,10 @@ class UserSpaceService:
         app_settings = await repository.get_settings()
         resolved_model = _resolve_default_conversation_model(app_settings)
         target_name = (
-            (request.name or "").strip()
-            or await self._allocate_next_duplicate_workspace_name(
-                user_id,
-                source_workspace.name,
-            )
+            request.name or ""
+        ).strip() or await self._allocate_next_duplicate_workspace_name(
+            user_id,
+            source_workspace.name,
         )
 
         task_id = str(uuid4())
@@ -1879,9 +1950,7 @@ class UserSpaceService:
         task_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        task.add_done_callback(
-            partial(self._prune_runtime_restart_batch_task, task_id)
-        )
+        task.add_done_callback(partial(self._prune_runtime_restart_batch_task, task_id))
 
     def _prune_expired_runtime_restart_batch_task_statuses(self) -> None:
         cutoff = _utc_now() - timedelta(seconds=_RUNTIME_RESTART_BATCH_TASK_TTL_SECONDS)
@@ -1984,7 +2053,11 @@ class UserSpaceService:
         if record is None:
             return
         target = next(
-            (item for item in record.workspace_results if item.workspace_id == workspace_id),
+            (
+                item
+                for item in record.workspace_results
+                if item.workspace_id == workspace_id
+            ),
             None,
         )
         if target is None:
@@ -2106,8 +2179,13 @@ class UserSpaceService:
         async with self._runtime_restart_batch_tasks_lock:
             active_task_id = self._runtime_restart_active_task_id
             if active_task_id is not None:
-                active_record = self._runtime_restart_batch_task_statuses.get(active_task_id)
-                if active_record is not None and active_record.phase in {"queued", "restarting"}:
+                active_record = self._runtime_restart_batch_task_statuses.get(
+                    active_task_id
+                )
+                if active_record is not None and active_record.phase in {
+                    "queued",
+                    "restarting",
+                }:
                     return self._runtime_restart_batch_task_model(active_record)
 
             list_active_targets = getattr(
@@ -2157,7 +2235,9 @@ class UserSpaceService:
         self._prune_expired_runtime_restart_batch_task_statuses()
         record = self._runtime_restart_batch_task_statuses.get(task_id)
         if record is None:
-            raise HTTPException(status_code=404, detail="Runtime restart task not found")
+            raise HTTPException(
+                status_code=404, detail="Runtime restart task not found"
+            )
         return self._runtime_restart_batch_task_model(record)
 
     async def get_latest_runtime_restart_batch_task(
@@ -2166,7 +2246,9 @@ class UserSpaceService:
         self._prune_expired_runtime_restart_batch_task_statuses()
         task_id = self._runtime_restart_latest_task_id
         if task_id is None:
-            raise HTTPException(status_code=404, detail="Runtime restart task not found")
+            raise HTTPException(
+                status_code=404, detail="Runtime restart task not found"
+            )
         return await self.get_runtime_restart_batch_task(task_id)
 
     def _prune_workspace_delete_task(
@@ -2241,8 +2323,7 @@ class UserSpaceService:
         try:
             async with self._workspace_delete_semaphore:
                 self._set_workspace_delete_task_phase(task_id, "stopping_runtime")
-                from ragtime.userspace.runtime_service import \
-                    userspace_runtime_service
+                from ragtime.userspace.runtime_service import userspace_runtime_service
 
                 try:
                     await userspace_runtime_service.stop_runtime_session(
@@ -3812,8 +3893,9 @@ class UserSpaceService:
                     ),
                 )
                 try:
-                    from ragtime.userspace.runtime_service import \
-                        userspace_runtime_service
+                    from ragtime.userspace.runtime_service import (
+                        userspace_runtime_service,
+                    )
 
                     await userspace_runtime_service.bump_workspace_generation(
                         workspace_id,
@@ -3839,8 +3921,7 @@ class UserSpaceService:
                 allow_destructive_auto_sync_approval=True,
             )
             try:
-                from ragtime.userspace.runtime_service import \
-                    userspace_runtime_service
+                from ragtime.userspace.runtime_service import userspace_runtime_service
 
                 await userspace_runtime_service.bump_workspace_generation(
                     workspace_id,
@@ -6226,8 +6307,9 @@ class UserSpaceService:
         request: "UserSpaceWorkspaceScmSettingsRequest",
     ) -> UserSpaceWorkspaceScmStatus:
         """Update SCM relationship / policy settings without touching connection fields."""
-        from ragtime.userspace.models import \
-            UserSpaceWorkspaceScmSettingsRequest as _Req  # noqa: F811
+        from ragtime.userspace.models import (
+            UserSpaceWorkspaceScmSettingsRequest as _Req,
+        )  # noqa: F811
 
         await self._enforce_workspace_access(
             workspace_id, user_id, required_role="owner"
@@ -8438,9 +8520,7 @@ class UserSpaceService:
             target_id = str(getattr(row, "targetWorkspaceId", "") or "")
             granter_id = str(getattr(row, "grantedByUserId", "") or "")
             if target_id:
-                target_record = await db.workspace.find_unique(
-                    where={"id": target_id}
-                )
+                target_record = await db.workspace.find_unique(where={"id": target_id})
                 if target_record is not None:
                     target_workspace_name = str(
                         getattr(target_record, "name", "") or ""
@@ -8655,9 +8735,7 @@ class UserSpaceService:
         if model is None:
             return {}
 
-        rows = await model.find_many(
-            where={"sourceWorkspaceId": source_workspace_id}
-        )
+        rows = await model.find_many(where={"sourceWorkspaceId": source_workspace_id})
         now = _utc_now()
         modes: dict[str, WorkspaceAgentGrantMode] = {}
         for row in rows:
@@ -9730,8 +9808,7 @@ class UserSpaceService:
         mount_id: str,
     ) -> str | None:
         try:
-            from ragtime.userspace.runtime_service import \
-                userspace_runtime_service
+            from ragtime.userspace.runtime_service import userspace_runtime_service
 
             return await userspace_runtime_service.refresh_workspace_mount_after_sync(
                 workspace_id,

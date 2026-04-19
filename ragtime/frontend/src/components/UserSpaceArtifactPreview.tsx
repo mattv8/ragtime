@@ -105,6 +105,26 @@ export function UserSpaceArtifactPreview({
 
       if (!event.data || event.data.bridge !== USERSPACE_EXEC_BRIDGE) return;
 
+      if (event.data.type === USERSPACE_EXEC_MESSAGE_TYPES.HANDSHAKE) {
+        // Reachability probe from the bridge child. Reply immediately so the
+        // bridge can short-circuit its 5-minute postMessage timeout when the
+        // parent host is unreachable for any reason (origin mismatch, handler
+        // not yet registered, parent navigated, etc.).
+        try {
+          frameWindow.postMessage(
+            {
+              bridge: USERSPACE_EXEC_BRIDGE,
+              type: USERSPACE_EXEC_MESSAGE_TYPES.HANDSHAKE_ACK,
+              callId: typeof event.data.callId === 'string' ? event.data.callId : null,
+            },
+            '*',
+          );
+        } catch (postErr) {
+          console.warn('[UserSpacePreview] failed to ack bridge handshake:', postErr);
+        }
+        return;
+      }
+
       if (event.data.type === USERSPACE_EXEC_MESSAGE_TYPES.SANDBOX_BLOCKED) {
         const message = typeof event.data.message === 'string'
           ? event.data.message.trim()

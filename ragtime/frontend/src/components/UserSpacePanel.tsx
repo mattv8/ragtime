@@ -829,16 +829,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const launchPreviewSurface = useCallback(async (
     workspaceId: string,
-    options?: { clearOnError?: boolean },
+    options?: { clearOnError?: boolean; updateFrameUrl?: boolean },
   ): Promise<string> => {
     const requestId = ++previewLaunchRequestIdRef.current;
     const clearOnError = options?.clearOnError !== false;
+    // updateFrameUrl=false is used by routine session-warming refreshes so we
+    // mint a fresh bootstrap grant (preview cookie) without changing the
+    // iframe `src`/key, which would remount the iframe and destroy any
+    // in-flight live-data executions inside the running workspace app.
+    const updateFrameUrl = options?.updateFrameUrl !== false;
     const isCurrentRequest = () => (
       requestId === previewLaunchRequestIdRef.current
       && activeWorkspaceIdRef.current === workspaceId
     );
 
-    if (isCurrentRequest()) {
+    if (isCurrentRequest() && updateFrameUrl) {
       setPreviewAuthorizationPending(true);
     }
 
@@ -851,19 +856,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         return '';
       }
       previewLaunchExpiresAtMsRef.current = parseUtcTimestampMs(response.expires_at);
-      setPreviewFrameUrl(response.preview_url);
-      setPreviewOrigin(response.preview_origin);
+      if (updateFrameUrl) {
+        setPreviewFrameUrl(response.preview_url);
+        setPreviewOrigin(response.preview_origin);
+      }
       onPreviewWarningChange?.(response.preview_warning ?? null);
       return response.preview_url;
     } catch (err) {
       previewLaunchExpiresAtMsRef.current = 0;
-      if (clearOnError && isCurrentRequest()) {
+      if (clearOnError && updateFrameUrl && isCurrentRequest()) {
         setPreviewFrameUrl(null);
         setPreviewOrigin(null);
       }
       throw err;
     } finally {
-      if (isCurrentRequest()) {
+      if (isCurrentRequest() && updateFrameUrl) {
         setPreviewAuthorizationPending(false);
       }
     }
@@ -3463,7 +3470,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
         const shouldRefreshPreviewLaunch = previewLaunchExpiresAtMsRef.current <= (Date.now() + USERSPACE_PREVIEW_LAUNCH_REFRESH_LEAD_MS);
         if (shouldRefreshPreviewLaunch) {
-          await launchPreviewSurface(activeWorkspaceId, { clearOnError: false });
+          // Session-warming only: keep the existing iframe alive instead of
+          // remounting it, which would tear down the running workspace app
+          // and any in-flight live-data executions.
+          await launchPreviewSurface(activeWorkspaceId, {
+            clearOnError: false,
+            updateFrameUrl: false,
+          });
         }
       } catch (err) {
         if (!cancelled) {
