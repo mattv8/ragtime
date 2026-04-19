@@ -3145,19 +3145,27 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     _branchId: string,
     associatedSnapshotId: string | null,
   ) => {
+    // Switching branches MUST always prompt the user before restoring the
+    // associated workspace snapshot, even when the active user can edit the
+    // workspace. The snapshot restore is destructive (overwrites uncommitted
+    // workspace state) so we never auto-apply it.
     if (!associatedSnapshotId) {
       setBranchRestoreSnapshotId(null);
       return;
     }
-
-    if (canEditWorkspace) {
-      setBranchRestoreSnapshotId(null);
-      void handleRestoreSnapshot(associatedSnapshotId);
-      return;
-    }
-
     setBranchRestoreSnapshotId(associatedSnapshotId);
-  }, [canEditWorkspace, handleRestoreSnapshot]);
+  }, []);
+
+  // Triggered by the chat panel whenever something happens that may have
+  // produced or moved a userspace snapshot (chat-branch auto-snapshot,
+  // walkback restore, live agent `create_userspace_snapshot` tool calls).
+  // We refresh the snapshots timeline only when the snapshots panel is
+  // currently open, to avoid pointless network chatter.
+  const handleSnapshotsMaybeChanged = useCallback(() => {
+    if (!activeWorkspaceId) return;
+    if (!showSnapshots) return;
+    void loadSnapshots(activeWorkspaceId);
+  }, [activeWorkspaceId, loadSnapshots, showSnapshots]);
 
   const handleConfirmBranchRestore = useCallback(() => {
     if (branchRestoreSnapshotId) {
@@ -6297,6 +6305,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 onBranchSwitch={handleBranchSwitch}
                 onOpenWorkspaceFile={handleSelectFile}
                 onMessageSnapshotRestored={handleMessageSnapshotRestored}
+                onSnapshotsMaybeChanged={handleSnapshotsMaybeChanged}
                 embedded
                 readOnly={false}
                 allowAdminReadOnlyBypass={isAdminImpersonating}

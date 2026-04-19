@@ -2234,6 +2234,16 @@ interface ChatPanelProps {
     rolledBackSnapshot?: boolean;
     requiresRuntimeRestart?: boolean;
   }) => void;
+  /**
+   * Fired by the chat panel whenever something happened that may have
+   * created, mutated, or moved the workspace snapshot cursor:
+   *   - chat branch creation (auto-snapshot)
+   *   - per-message snapshot rollback (delete-with-restore)
+   *   - live agent `create_userspace_snapshot` tool calls observed during
+   *     a streaming assistant turn
+   * The parent decides whether to refresh the snapshots panel.
+   */
+  onSnapshotsMaybeChanged?: () => void;
   inputBanner?: ReactNode;
   embedded?: boolean;
   readOnly?: boolean;
@@ -2262,6 +2272,7 @@ export function ChatPanel({
   onFullscreenChange,
   onOpenWorkspaceFile,
   onMessageSnapshotRestored,
+  onSnapshotsMaybeChanged,
   inputBanner,
   embedded = false,
   readOnly = false,
@@ -2631,6 +2642,10 @@ export function ChatPanel({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const processingTaskRef = useRef<string | null>(null);
+  // Tracks which streaming `create_userspace_snapshot` tool_end events have
+  // already triggered an `onSnapshotsMaybeChanged` notification, keyed by
+  // a stable string per (taskId, eventIndex). Cleared when the task ends.
+  const notifiedSnapshotEventKeysRef = useRef<Set<string>>(new Set());
   const titleSourceRef = useRef<Map<string, EventSource>>(new Map());
   const workspaceConversationDropdownRef = useRef<HTMLDivElement>(null);
   const chatMainRef = useRef<HTMLDivElement>(null);
@@ -3081,6 +3096,39 @@ export function ChatPanel({
       messages: [...conversation.messages, fallback],
     };
   }, [buildFallbackAssistantFromStreaming]);
+
+  // Live notification: as the agent stream lands a completed
+  // `create_userspace_snapshot` tool call, tell the parent so the snapshots
+  // panel can refresh in real time. Dedup per (taskId, eventIndex) so we
+  // only fire once per snapshot, even across re-renders.
+  useEffect(() => {
+    if (!onSnapshotsMaybeChanged) return;
+    if (!streamingEvents.length) return;
+    const taskId = processingTaskRef.current ?? activeTask?.id ?? 'idle';
+    let fired = false;
+    streamingEvents.forEach((ev, idx) => {
+      if (ev.type !== 'tool') return;
+      if (ev.toolCall.tool !== 'create_userspace_snapshot') return;
+      if (ev.toolCall.status !== 'complete') return;
+      const key = `${taskId}:${idx}`;
+      if (notifiedSnapshotEventKeysRef.current.has(key)) return;
+      notifiedSnapshotEventKeysRef.current.add(key);
+      fired = true;
+    });
+    if (fired) {
+      try {
+        onSnapshotsMaybeChanged();
+      } catch (err) {
+        console.warn('onSnapshotsMaybeChanged threw:', err);
+      }
+    }
+  }, [streamingEvents, onSnapshotsMaybeChanged, activeTask?.id]);
+
+  // Reset the dedup set whenever the active task changes (or clears) so a
+  // new turn starts fresh.
+  useEffect(() => {
+    notifiedSnapshotEventKeysRef.current.clear();
+  }, [activeTask?.id]);
 
   // Memoized consolidated segments for streaming - groups adjacent content events
   // Merges ALL reasoning events into a single segment per turn for unified display
@@ -4451,11 +4499,21 @@ export function ChatPanel({
     if (createdBranch.parent_branch_id) {
       setBranchSelections((prev) => ({ ...prev, [branchPointIndex]: createdBranch.parent_branch_id! }));
     }
-  }, [workspaceId]);
+
+    // Branch creation with auto_snapshot may have created a new userspace
+    // snapshot. Notify parent so the snapshots panel can refresh.
+    if (workspaceId) {
+      try {
+        onSnapshotsMaybeChanged?.();
+      } catch (notifyErr) {
+        console.warn('onSnapshotsMaybeChanged threw:', notifyErr);
+      }
+    }
+  }, [workspaceId, onSnapshotsMaybeChanged]);
 
   // Walk back from messageIdx to the nearest user message. Branches are
   // always anchored at user messages so the branch nav appears on a single,
-  // predictable message and replay/delete/edit cannot collide by anchoring at
+  // predictable row and replay/edit/delete cannot collide by anchoring at
   // assistant indices.
   const findUserMessageIndexAtOrBefore = useCallback((
     messages: ChatMessage[],
@@ -4530,9 +4588,9 @@ export function ChatPanel({
     const selectedMessage = activeConversation.messages[messageIdx];
     if (!selectedMessage) return;
 
-    // Find the user message that should be replayed from this point. Replay
-    // from an assistant message walks back to its driving user turn so the
-    // branch is always anchored on a user message.
+    // Replay always anchors at the user message that drove the (possibly
+    // assistant) selected row, so the branch nav surfaces on the user row
+    // and a single replay creates exactly one new branch.
     const userIdx = findUserMessageIndexAtOrBefore(activeConversation.messages, messageIdx);
     if (userIdx < 0) return;
 
@@ -4590,6 +4648,10 @@ export function ChatPanel({
     const selectedMessage = activeConversation.messages[messageIdx];
     if (!selectedMessage) return;
     const selectedMessageId = selectedMessage.message_id;
+
+    // Always anchor the chat branch at the user message that drove this row.
+    // This guarantees the branch nav (X/N) renders on a single user row and
+    // each walkback creates exactly one branch.
     const branchPointIndex = getDeleteBranchPointIndex(
       activeConversation.messages,
       messageIdx,
@@ -4599,44 +4661,52 @@ export function ChatPanel({
     );
 
     try {
+      // 1. Preserve the original messages on a new branch (auto-snapshots
+      //    the current workspace state when running inside a workspace).
       await createBranchForMessageMutation(
         conversationId,
         branchPointIndex,
         activeConversation.messages.length,
       );
 
-      let updatedConversation: Conversation;
-
+      // 2. If this message has an explicit snapshot link, restore the
+      //    workspace files to that snapshot. The endpoint also truncates
+      //    the chat to the link's stored restore_message_count, but since
+      //    branch creation already truncated to branchPointIndex, that
+      //    second truncate is a no-op (truncate cannot grow the chat).
+      let updatedConversation: Conversation | null = null;
       if (rolledBackSnapshot && selectedMessageId) {
         const restored = await api.restoreConversationMessageSnapshot(
           conversationId,
-          selectedMessageId!,
+          selectedMessageId,
           workspaceId,
         );
         updatedConversation = restored.conversation;
+      }
 
-        if (selectedMessage.role === 'user') {
-          updatedConversation = await api.truncateConversation(
-            conversationId,
-            messageIdx,
-            workspaceId,
-          );
-        }
-      } else {
-        updatedConversation = await api.truncateConversation(
-          conversationId,
-          messageIdx,
-          workspaceId,
-        );
+      // 3. Source-of-truth resync: pull the conversation server-side so the
+      //    chat reflects the truncation done by branch creation (and any
+      //    further mutations the restore endpoint applied). This is one
+      //    extra GET but keeps the optimistic state honest in every code
+      //    path (delete-with-snapshot, delete-without-snapshot, both roles).
+      if (!updatedConversation) {
+        updatedConversation = await api.getConversation(conversationId, workspaceId);
       }
 
       setActiveConversation(updatedConversation);
-      setConversations(prev => prev.map(c => c.id === updatedConversation.id ? updatedConversation : c));
+      setConversations(prev => prev.map(c => c.id === updatedConversation!.id ? updatedConversation! : c));
+
       if (rolledBackSnapshot) {
         onMessageSnapshotRestored?.({
           rolledBackSnapshot: true,
           requiresRuntimeRestart: true,
         });
+        // Walkback moved the snapshot cursor; tell the snapshots panel.
+        try {
+          onSnapshotsMaybeChanged?.();
+        } catch (notifyErr) {
+          console.warn('onSnapshotsMaybeChanged threw:', notifyErr);
+        }
       }
       void refreshBranchPoints(conversationId);
     } catch (err) {
@@ -4644,7 +4714,7 @@ export function ChatPanel({
       const message = err instanceof Error ? err.message : 'Failed to delete message';
       alert(message);
     }
-  }, [activeConversation, isStreaming, isReadOnly, createBranchForMessageMutation, getDeleteBranchPointIndex, onMessageSnapshotRestored, refreshBranchPoints, workspaceId]);
+  }, [activeConversation, isStreaming, isReadOnly, createBranchForMessageMutation, getDeleteBranchPointIndex, onMessageSnapshotRestored, onSnapshotsMaybeChanged, refreshBranchPoints, workspaceId]);
 
   const submitEditMessage = async () => {
     if (isReadOnly || !activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0)) return;
@@ -5309,6 +5379,9 @@ export function ChatPanel({
                 <>
                   {activeConversation.messages.map((msg, idx) => {
                     const bp = branchPointsByIndex.get(idx);
+                    // Branches are anchored on user messages only — never
+                    // surface the nav on assistant rows even if a stale
+                    // assistant-indexed branch exists in the DB.
                     const hasBranches = !!(bp && bp.branches.length > 0 && msg.role === 'user');
                     const msgKey = `msg-${idx}`;
                     return (
@@ -5493,10 +5566,7 @@ export function ChatPanel({
                     {(() => {
                       const isEditing = editingMessageIdx === idx;
                       const activeBranchId = activeConversation.active_branch_id;
-                      // Branches are anchored on user messages only — never
-                      // render the nav on assistant rows even if a stale
-                      // assistant-indexed branch exists in the DB.
-                      const branchNav = hasBranches && bp && msg.role === 'user' ? (() => {
+                      const branchNav = hasBranches && bp ? (() => {
                         const livePathOptionId = `__current__:${bp.branch_point_index}`;
                         const hasLivePathOption = !activeBranchId && activeConversation.messages.length > bp.branch_point_index;
                         const allOptions = [
