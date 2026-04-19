@@ -4,16 +4,8 @@
   var E = 'ragtime-execute';
   var R = 'ragtime-execute-result';
   var S = 'ragtime-sandbox-blocked';
-  var H = 'ragtime-handshake';
-  var H_ACK = 'ragtime-handshake-ack';
   var T = __RAGTIME_RUNTIME_BRIDGE_TIMEOUT_MS__;
   var T_LABEL = '__RAGTIME_RUNTIME_BRIDGE_TIMEOUT_LABEL__';
-  // Parent-reachability probe timeout. Short by design: the parent only has
-  // to ack a handshake, no API call involved. If the iframe parent is broken
-  // (origin mismatch, handler not registered, parent navigated, sandbox
-  // restriction) we fall back to direct execution within this window instead
-  // of waiting the full T timeout.
-  var H_TIMEOUT_MS = 2500;
   var CHART_URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
   var JQUERY_URL = 'https://code.jquery.com/jquery-3.7.1.min.js';
   var DATATABLES_JS_URL = 'https://cdn.datatables.net/1.13.8/js/dataTables.min.js';
@@ -361,155 +353,62 @@
       });
   }
 
-  // Parent-reachability state machine. The first execute() call kicks off a
-  // handshake postMessage to the parent host. Until the handshake completes
-  // (ack received OR H_TIMEOUT_MS elapses), execute() calls are queued. After
-  // resolution, calls route through postMessage when reachable, or fall back
-  // to executeDirect when not — without ever waiting the full T timeout for
-  // every call against a broken parent.
-  var parentReachableState = 'unknown'; // 'unknown' | 'reachable' | 'unreachable'
-  var pendingHandshakeWaiters = [];
-  var handshakeStarted = false;
-
-  function resolveHandshake(state) {
-    if (parentReachableState !== 'unknown') return;
-    parentReachableState = state;
-    var waiters = pendingHandshakeWaiters;
-    pendingHandshakeWaiters = [];
-    for (var i = 0; i < waiters.length; i++) {
-      try { waiters[i](state); } catch (_e) { /* noop */ }
-    }
-  }
-
-  function startParentHandshake() {
-    if (handshakeStarted) return;
-    handshakeStarted = true;
-
-    var hasParentHost = !!(window.parent && window.parent !== window);
-    if (!hasParentHost) {
-      resolveHandshake('unreachable');
-      return;
-    }
-
-    var parentOrigin = getParentOrigin();
-    var expectedParentOrigin = parentOrigin === '*' ? '' : normalizeOrigin(parentOrigin);
-    var callId = '__handshake_' + Math.random().toString(36).slice(2) + '_' + Date.now();
-
-    function ackHandler(event) {
-      if (parentReachableState !== 'unknown') return;
-      if (event.source !== window.parent) return;
-      if (expectedParentOrigin && normalizeOrigin(event.origin) !== expectedParentOrigin) return;
-      if (
-        event.data &&
-        event.data.bridge === B &&
-        event.data.type === H_ACK
-      ) {
-        window.removeEventListener('message', ackHandler);
-        clearTimeout(probeTimer);
-        resolveHandshake('reachable');
-      }
-    }
-    window.addEventListener('message', ackHandler);
-
-    var probeTimer = setTimeout(function () {
-      window.removeEventListener('message', ackHandler);
-      resolveHandshake('unreachable');
-    }, H_TIMEOUT_MS);
-
-    try {
-      window.parent.postMessage(
-        { bridge: B, type: H, callId: callId },
-        parentOrigin
-      );
-    } catch (_error) {
-      window.removeEventListener('message', ackHandler);
-      clearTimeout(probeTimer);
-      resolveHandshake('unreachable');
-    }
-  }
-
-  function whenParentResolved(callback) {
-    if (parentReachableState !== 'unknown') {
-      callback(parentReachableState);
-      return;
-    }
-    pendingHandshakeWaiters.push(callback);
-    startParentHandshake();
-  }
-
-  function executeViaPostMessage(componentId, request, resolve) {
-    var parentOrigin = getParentOrigin();
-    var expectedParentOrigin = parentOrigin === '*' ? '' : normalizeOrigin(parentOrigin);
-    var callId = '__exec_' + Math.random().toString(36).slice(2) + '_' + Date.now();
-    var completed = false;
-
-    var timer = setTimeout(function () {
-      if (completed) return;
-      completed = true;
-      window.removeEventListener('message', handler);
-      // Safety net: even after a successful handshake the data execution may
-      // hang server-side. Fall back to direct execution rather than reporting
-      // an error so the workspace UI eventually receives a result.
-      executeDirect(componentId, request, resolve);
-    }, T);
-    function handler(event) {
-      if (completed) return;
-      if (event.source !== window.parent) return;
-      if (expectedParentOrigin && normalizeOrigin(event.origin) !== expectedParentOrigin) return;
-      if (
-        event.data &&
-        event.data.bridge === B &&
-        event.data.type === R &&
-        event.data.callId === callId
-      ) {
-        completed = true;
-        window.removeEventListener('message', handler);
-        clearTimeout(timer);
-        resolve(event.data.result || { rows: [], columns: [], row_count: 0, error: 'Empty response' });
-      }
-    }
-    window.addEventListener('message', handler);
-    try {
-      window.parent.postMessage(
-        { bridge: B, type: E, callId: callId, component_id: componentId, request: request || {} },
-        parentOrigin
-      );
-    } catch (error) {
-      if (completed) return;
-      completed = true;
-      window.removeEventListener('message', handler);
-      clearTimeout(timer);
-      executeDirect(componentId, request, resolve);
-    }
-  }
-
   function makeExecute(componentId) {
     return function execute(request) {
       // Lazily bootstrap viz libs on first execute call.
       bootstrapVizLibs();
       var hasParentHost = !!(window.parent && window.parent !== window);
+      var callId = '__exec_' + Math.random().toString(36).slice(2) + '_' + Date.now();
       return new Promise(function (resolve) {
         if (!hasParentHost) {
           executeDirect(componentId, request, resolve);
           return;
         }
-        whenParentResolved(function (state) {
-          if (state === 'reachable') {
-            executeViaPostMessage(componentId, request, resolve);
-          } else {
-            executeDirect(componentId, request, resolve);
+
+        var parentOrigin = getParentOrigin();
+        var expectedParentOrigin = parentOrigin === '*' ? '' : normalizeOrigin(parentOrigin);
+        var completed = false;
+
+        var timer = setTimeout(function () {
+          if (completed) return;
+          completed = true;
+          window.removeEventListener('message', handler);
+          // If parent-window bridge messaging is unavailable, fall back to
+          // same-origin direct execution using the preview session.
+          executeDirect(componentId, request, resolve);
+        }, T);
+        function handler(event) {
+          if (completed) return;
+          if (event.source !== window.parent) return;
+          if (expectedParentOrigin && normalizeOrigin(event.origin) !== expectedParentOrigin) return;
+          if (
+            event.data &&
+            event.data.bridge === B &&
+            event.data.type === R &&
+            event.data.callId === callId
+          ) {
+            completed = true;
+            window.removeEventListener('message', handler);
+            clearTimeout(timer);
+            resolve(event.data.result || { rows: [], columns: [], row_count: 0, error: 'Empty response' });
           }
-        });
+        }
+        window.addEventListener('message', handler);
+        try {
+          window.parent.postMessage(
+            { bridge: B, type: E, callId: callId, component_id: componentId, request: request || {} },
+            parentOrigin
+          );
+        } catch (error) {
+          if (completed) return;
+          completed = true;
+          window.removeEventListener('message', handler);
+          clearTimeout(timer);
+          executeDirect(componentId, request, resolve);
+        }
       });
     };
   }
-
-  // Kick off the handshake eagerly so the very first execute() call doesn't
-  // pay the H_TIMEOUT_MS detection cost on top of its own latency.
-  if (window.parent && window.parent !== window) {
-    startParentHandshake();
-  }
-
 
   var componentsProxy = new Proxy({}, {
     get: function (_, prop) {

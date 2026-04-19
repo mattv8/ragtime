@@ -93,10 +93,12 @@ Last updated: 2026-04-13 (codebase-scanned; concise agent-focused)
 ## Live Data Bridge Architecture
 
 - Bridge script is served on the preview origin at `/__ragtime/bridge.js` and rendered by `build_runtime_bridge_content()` in `ragtime/userspace/service.py`. Version tracked via `_RUNTIME_BRIDGE_VERSION`.
+- **Always bump `_RUNTIME_BRIDGE_VERSION` (in `ragtime/userspace/service.py`) whenever `ragtime/userspace/templates/runtime_bridge.js` changes — even for whitespace or comment-only edits.** The version embeds into the served script header and is checked when deciding whether to refresh cached bridge content; failing to bump it can leave preview iframes running stale bridge bytes after a deploy. Mirror any new postMessage `type` constants in `ragtime/frontend/src/utils/userspacePreview/constants.ts` and the parent-side handler in `UserSpaceArtifactPreview.tsx`.
 - Bridge provides `window.__ragtime_context` with a Proxy-based `components[componentId].execute(params)` that sends postMessage (`USERSPACE_EXEC_BRIDGE` channel) to the parent frame.
 - Parent-side handler in `UserSpaceArtifactPreview.tsx` listens for `ragtime-execute` messages, calls `api.executeWorkspaceComponent()`, and sends results back via `ragtime-execute-result` / `ragtime-execute-error`.
 - Preview responses auto-inject bridge metadata plus `<script src="/__ragtime/bridge.js?workspace_id=..."></script>` into HTML so workspaces never need to manually include it.
 - LLM prompt instructs passing `window.__ragtime_context` as the context argument to `render(container, context)`.
+- **The preview iframe is always cross-origin from the parent UI** (workspace served on `<workspace_id>.<host>`, parent on `<host>`). Workspace code that synchronously reads `window.parent[anything]` will throw `SecurityError` and abort module evaluation, leaving the loading shell visible forever. The bridge intentionally sets `window.__ragtime_context` only on the iframe's own window — workspace code must never scan `window.parent`/`window.top`/`window.opener` for context. This is documented in the LLM prompt (`USERSPACE_ENTRYPOINT_SETUP_PROMPT` in `ragtime/rag/prompts.py`); keep that guidance in sync if the bridge ever changes how context is exposed.
 
 ## Security + Proxy Rules (Do Not Violate)
 

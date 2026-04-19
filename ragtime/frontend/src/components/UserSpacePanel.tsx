@@ -3444,8 +3444,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
 
     // Runtime lifecycle transitions should invalidate stale preview bootstrap URLs.
+    // If a frame is already mounted, refresh preview auth in place to avoid
+    // tearing down iframe state during initial dashboard boot.
     if (nextState === 'running') {
-      setPreviewRefreshCounter((value) => value + 1);
+      if (previewFrameUrl) {
+        void launchPreviewSurface(activeWorkspaceId, {
+          clearOnError: false,
+          updateFrameUrl: false,
+        });
+      } else {
+        setPreviewRefreshCounter((value) => value + 1);
+      }
       return;
     }
 
@@ -3455,7 +3464,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setPreviewFrameUrl(null);
       setPreviewOrigin(null);
     }
-  }, [activeWorkspaceId, runtimeDisplayState]);
+  }, [
+    activeWorkspaceId,
+    launchPreviewSurface,
+    previewFrameUrl,
+    runtimeDisplayState,
+  ]);
 
   useEffect(() => {
     if (!activeWorkspaceId) {

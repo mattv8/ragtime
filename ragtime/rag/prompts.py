@@ -330,7 +330,9 @@ def build_workspace_scm_setup_prompt(
         "migration. A runnable devserver takes priority over secondary compatibility work."
     )
 
-    normalized_actions = [item.strip() for item in (normalization_actions or []) if item]
+    normalized_actions = [
+        item.strip() for item in (normalization_actions or []) if item
+    ]
     if normalized_actions:
         parts.append(
             "Deterministic import normalization already ran: "
@@ -793,6 +795,8 @@ USERSPACE_ENTRYPOINT_SETUP_PROMPT = """
   ```
 - Inside the module, use `context.components[componentId].execute(request)` for live data queries. Never construct the context object manually — always receive it from the caller via `window.__ragtime_context`.
 - Do NOT reference `window.__RAGTIME_COMPONENTS__` or other legacy globals. The only supported bridge is `window.__ragtime_context`.
+- **Do NOT scan `window.parent`, `window.top`, `window.opener`, or any other window references for context.** The preview iframe is **always** served on a dedicated subdomain origin (e.g. `<workspace_id>.ragtime.example.com`) and the parent UI lives on a different origin (e.g. `ragtime.example.com`), so reading **any** property on `window.parent` (including `window.parent.__ragtime_context`) throws a synchronous `SecurityError: Blocked a frame ... from accessing a cross-origin frame`. The bridge guarantees `window.__ragtime_context` is set on the iframe's own window before your `<script type="module">` runs, and `index.html` already passes it as the `context` argument to `render(container, context)`. Read it from those two sources only — never iterate or probe other windows. If you must traverse window references defensively, wrap each property read (`win[key]`) in its own `try { ... } catch { continue; }` block; the comparison `win.parent !== win` is safe but `win.parent[anything]` is not.
+- Do NOT add a custom `unhandledrejection` / `error` handler that calls helpers (e.g. `escapeHtml`) which you have not defined and imported in the same module. A fatal-handler that throws `ReferenceError` while reporting another error leaves the loading shell visible forever and masks the real problem in the console.
 - If preview probe reports HTTP 200 and no hard runtime error, treat runtime as available and continue with dashboard code fixes instead of runtime scaffolding changes.
 
 #### Dependencies and tooling

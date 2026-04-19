@@ -22,53 +22,79 @@ from typing import Any, List, Literal, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_openai.chat_models.base import (
-    _construct_responses_api_payload, _get_last_messages)
+    _construct_responses_api_payload,
+    _get_last_messages,
+)
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.copilot_api import (COPILOT_DEFAULT_BASE_URL,
-                                      build_copilot_headers)
+from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
-from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
-                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
-                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
+from ragtime.core.file_constants import (
+    USERSPACE_MODULE_SOURCE_EXTENSIONS,
+    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+    USERSPACE_THEME_AUDIT_EXTENSIONS,
+    USERSPACE_TYPESCRIPT_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (get_context_limit, get_output_limit,
-                                       register_model_reasoning_capabilities,
-                                       register_model_supported_endpoints,
-                                       requires_responses_api,
-                                       supports_reasoning,
-                                       supports_responses_api,
-                                       supports_thinking_budget)
-from ragtime.core.ollama import (DEFAULT_WARMUP_TIMEOUT_SECONDS, KEEP_ALIVE,
-                                 NUM_GPU, get_model_context_length,
-                                 get_model_details, has_capability,
-                                 warmup_embedding_model, warmup_model)
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.model_limits import (
+    get_context_limit,
+    get_output_limit,
+    register_model_reasoning_capabilities,
+    register_model_supported_endpoints,
+    requires_responses_api,
+    supports_reasoning,
+    supports_responses_api,
+    supports_thinking_budget,
+)
+from ragtime.core.ollama import (
+    DEFAULT_WARMUP_TIMEOUT_SECONDS,
+    KEEP_ALIVE,
+    NUM_GPU,
+    get_model_context_length,
+    get_model_details,
+    has_capability,
+    warmup_embedding_model,
+    warmup_model,
+)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
@@ -76,36 +102,52 @@ from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.rag.prompts import (
-    BASE_CHAT_SYSTEM_PROMPT, BASE_USERSPACE_SYSTEM_PROMPT,
-    SQLITE_INCLUDE_MODE_HINT, TOOL_OUTPUT_VISIBILITY_PROMPT,
-    TOOL_USAGE_REMINDER, UI_VISUALIZATION_CHAT_PROMPT,
-    UI_VISUALIZATION_COMMON_PROMPT, UI_VISUALIZATION_USERSPACE_PROMPT,
-    build_index_system_prompt, build_tool_system_prompt,
-    build_userspace_entrypoint_nudge, build_userspace_mode_prompt_addition,
+    BASE_CHAT_SYSTEM_PROMPT,
+    BASE_USERSPACE_SYSTEM_PROMPT,
+    SQLITE_INCLUDE_MODE_HINT,
+    TOOL_OUTPUT_VISIBILITY_PROMPT,
+    TOOL_USAGE_REMINDER,
+    UI_VISUALIZATION_CHAT_PROMPT,
+    UI_VISUALIZATION_COMMON_PROMPT,
+    UI_VISUALIZATION_USERSPACE_PROMPT,
+    build_index_system_prompt,
+    build_tool_system_prompt,
+    build_userspace_entrypoint_nudge,
+    build_userspace_mode_prompt_addition,
     build_userspace_mounts_prompt_fragment,
     build_userspace_object_storage_prompt_fragment,
-    build_userspace_turn_reminder, build_userspace_turn_reminder_with_env_vars,
-    build_workspace_continuity_context)
+    build_userspace_turn_reminder,
+    build_userspace_turn_reminder_with_env_vars,
+    build_workspace_continuity_context,
+)
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType,
-                                      UpsertWorkspaceEnvVarRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -541,6 +583,80 @@ _HARDCODED_DATA_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+# Cross-origin property access on parent/top/opener window handles.
+#
+# The preview iframe is always served on a dedicated subdomain origin
+# (<workspace_id>.<host>) while the parent UI lives on the root host, so any
+# property read on ``window.parent`` / ``window.top`` / ``window.opener`` throws
+# ``SecurityError: Blocked a frame ... from accessing a cross-origin frame``
+# synchronously. The only cross-origin-safe APIs are ``postMessage(...)`` and
+# identity comparisons against ``window`` itself (``=== window``, ``!== window``).
+#
+# Two patterns are needed:
+#
+# 1. Direct property access: ``window.parent.foo`` / ``window.parent[key]`` /
+#    ``opener.foo`` / ``parent[key]``. These throw immediately.
+# 2. Handle leak: ``window.parent`` / ``window.top`` / ``window.opener`` mentioned
+#    in any way other than ``.postMessage(...)`` or an identity comparison. This
+#    catches ``windows.push(window.parent as CandidateWindow)`` and
+#    ``const p = window.parent;`` — both legal JS, but the variable ``p`` will
+#    throw ``SecurityError`` the moment its properties are read downstream. Static
+#    analysis cannot follow the data flow, so treat the handle acquisition itself
+#    as the violation.
+_CROSS_ORIGIN_WINDOW_ACCESS_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_$.])(?:window\s*\.\s*)?(parent|top|opener)"
+    r"\s*"
+    r"(?:"
+    r"\[[^\]]+\]"  # subscript access: parent[key]
+    r"|"
+    r"\.\s*(?!postMessage\b)[A-Za-z_$][\w$]*"  # .prop access except postMessage
+    r")"
+)
+_CROSS_ORIGIN_WINDOW_HANDLE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_$.])window\s*\.\s*(parent|top|opener)\b"
+    r"(?!"
+    r"\s*\.\s*postMessage\b"
+    r"|\s*(?:!==|===|==|!=)\s*(?:window\b|self\b|globalThis\b)"
+    r")"
+)
+
+
+def find_cross_origin_window_access(content: str) -> list[str]:
+    """Detect property reads on ``window.parent`` / ``window.top`` / ``window.opener``.
+
+    Preview iframes are always cross-origin with the parent UI, so any such
+    read throws ``SecurityError`` at runtime. Returns a de-duplicated list of
+    the offending snippets (trimmed to a reasonable length for display).
+    """
+    if not content:
+        return []
+    findings: list[str] = []
+    seen: set[str] = set()
+    max_findings = 8
+
+    def add(snippet: str) -> None:
+        normalized = snippet.strip()[:120]
+        if not normalized:
+            return
+        key = normalized.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        findings.append(normalized)
+
+    for match in _CROSS_ORIGIN_WINDOW_ACCESS_PATTERN.finditer(content):
+        if len(findings) >= max_findings:
+            return findings
+        add(match.group(0))
+
+    for match in _CROSS_ORIGIN_WINDOW_HANDLE_PATTERN.finditer(content):
+        if len(findings) >= max_findings:
+            return findings
+        add(match.group(0))
+
+    return findings
+
+
 def find_hard_coded_hex_colors(content: str) -> list[str]:
     """Return unique hard-coded hex color literals found in content."""
     if not content:
@@ -593,7 +709,6 @@ def is_userspace_strict_frontend_path(path: str) -> bool:
 
 def validate_userspace_runtime_contract(content: str, file_path: str) -> list[str]:
     """Validate constraints required by the User Space runtime/tooling path."""
-    del file_path
     violations: list[str] = []
 
     # Do not reject package/bare imports here. Modern userspace workspaces can
@@ -605,6 +720,31 @@ def validate_userspace_runtime_contract(content: str, file_path: str) -> list[st
     # Avoid regex-only JSX heuristics here: template literals can contain
     # HTML-like text in valid .ts code and should not be flagged as JSX.
     # Syntax-level JSX issues are reported by the TypeScript validator.
+
+    # Cross-origin window access: reading any property on window.parent /
+    # window.top / window.opener throws SecurityError at runtime because the
+    # preview iframe is always on a different origin than the parent UI.
+    # Flag this before the agent ships code that silently leaves workspaces
+    # stuck on their loading shell. Scope to browser-served module sources
+    # so Node server files (server.mjs, etc.) are not incorrectly flagged.
+    normalized_file_path = (file_path or "").lower().replace("\\", "/")
+    if normalized_file_path.endswith(USERSPACE_TYPESCRIPT_EXTENSIONS) and (
+        normalized_file_path.startswith("dashboard/")
+        or normalized_file_path == "dashboard/main.ts"
+    ):
+        cross_origin_hits = find_cross_origin_window_access(content)
+        if cross_origin_hits:
+            violations.append(
+                "Cross-origin window access detected: "
+                + ", ".join(cross_origin_hits)
+                + ". The preview iframe is served on a dedicated subdomain and is "
+                "always cross-origin with the parent UI, so reading properties on "
+                "window.parent / window.top / window.opener throws SecurityError "
+                "at runtime. Use window.__ragtime_context (set by the bridge on "
+                "the iframe's own window) or the context argument passed into "
+                "render(container, context). postMessage is the only cross-origin-"
+                "safe API on those handles."
+            )
 
     return violations
 
@@ -1121,7 +1261,9 @@ class _CopilotChatOpenAI(ChatOpenAI):
         if _CopilotChatOpenAI._looks_like_responses_api_rejection(message):
             return True
         lowered_message = message.lower()
-        return "/chat/completions" in lowered_message and "/responses" in lowered_message
+        return (
+            "/chat/completions" in lowered_message and "/responses" in lowered_message
+        )
 
     @staticmethod
     def _looks_like_summary_error(exc: Exception) -> bool:
@@ -7110,9 +7252,7 @@ except Exception as e:
     ) -> list[StructuredTool]:
         """Create request-scoped User Space file tools for agentic artifact editing."""
 
-        accessible_modes_local: dict[str, str] = dict(
-            accessible_workspace_modes or {}
-        )
+        accessible_modes_local: dict[str, str] = dict(accessible_workspace_modes or {})
 
         async def _resolve_target_workspace(
             requested_workspace_id: Optional[str],
@@ -10421,15 +10561,11 @@ except Exception as e:
         if not accessible_workspace_modes:
             return ""
         entries = sorted(accessible_workspace_modes.items())
-        lines = [
-            f"  - workspace_id={ws_id} (mode={mode})"
-            for ws_id, mode in entries
-        ]
+        lines = [f"  - workspace_id={ws_id} (mode={mode})" for ws_id, mode in entries]
         return (
             "\n\nCross-workspace access available. For file/runtime tools that accept "
             "workspace_id, you may target one of these granted workspaces; omit "
-            "workspace_id to act on the primary workspace:\n"
-            + "\n".join(lines)
+            "workspace_id to act on the primary workspace:\n" + "\n".join(lines)
         )
 
     async def _build_userspace_continuity_prompt(
