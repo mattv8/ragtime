@@ -7,6 +7,7 @@ interface WorkspaceRowListProps {
   workspaces: UserSpaceWorkspace[];
   users: User[];
   disabled?: boolean;
+  deletingWorkspaceIds?: ReadonlySet<string>;
   renderMeta?: (ws: UserSpaceWorkspace) => ReactNode;
   onTransfer: (workspaceId: string, newOwnerId: string) => Promise<void>;
   onDelete: (workspaceId: string) => Promise<void>;
@@ -18,6 +19,7 @@ export function WorkspaceRowList({
   workspaces,
   users,
   disabled = false,
+  deletingWorkspaceIds,
   renderMeta,
   onTransfer,
   onDelete,
@@ -65,8 +67,9 @@ export function WorkspaceRowList({
     <div className="admin-ws-group-list">
       {workspaces.map((ws) => {
         const isConfirming = deleteConfirmId === ws.id;
-        const isDeleting = deletingId === ws.id;
+        const isDeleting = deletingId === ws.id || deletingWorkspaceIds?.has(ws.id) === true;
         const isTransferring = transferringId === ws.id;
+        const rowBusy = disabled || transferSaving || isDeleting;
 
         const nameContent = (
           <>
@@ -82,7 +85,7 @@ export function WorkspaceRowList({
                 <button
                   type="button"
                   className="admin-ws-item-select"
-                  disabled={busy}
+                  disabled={rowBusy}
                   onClick={() => onSelect(ws)}
                   title={`Open workspace: ${ws.name}`}
                 >
@@ -97,7 +100,7 @@ export function WorkspaceRowList({
                 <button
                   type="button"
                   className="chat-action-btn"
-                  disabled={busy}
+                  disabled={rowBusy}
                   onClick={(e) => {
                     e.stopPropagation();
                     if (isTransferring) {
@@ -118,7 +121,7 @@ export function WorkspaceRowList({
                     <button
                       type="button"
                       className="chat-action-btn confirm-delete"
-                      disabled={Boolean(deletingId)}
+                      disabled={busy}
                       onClick={(e) => { e.stopPropagation(); void handleDelete(ws.id); }}
                       title="Confirm delete"
                     >
@@ -127,7 +130,7 @@ export function WorkspaceRowList({
                     <button
                       type="button"
                       className="chat-action-btn cancel-delete"
-                      disabled={Boolean(deletingId)}
+                      disabled={busy}
                       onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(null); }}
                       title="Cancel"
                     >
@@ -138,11 +141,11 @@ export function WorkspaceRowList({
                   <button
                     type="button"
                     className="chat-action-btn"
-                    disabled={Boolean(deletingId)}
+                    disabled={busy || isDeleting}
                     onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(ws.id); }}
                     title="Delete workspace"
                   >
-                    <Trash2 size={12} />
+                    {isDeleting ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
                   </button>
                 )}
               </div>

@@ -2,8 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ChevronDown, ChevronRight, X } from 'lucide-react';
 import { MiniLoadingSpinner } from './MiniLoadingSpinner';
 import { WorkspaceRowList } from './WorkspaceRowList';
-import { api } from '@/api';
-import type { User, UserSpaceWorkspace } from '@/types';
+import { api, ApiError } from '@/api';
+import type {
+  User,
+  UserSpaceWorkspace,
+  UserSpaceWorkspaceDeleteTask,
+  UserSpaceWorkspaceDeleteTaskPhase,
+} from '@/types';
 import {
   clearInterruptDismiss,
   resolveWorkspaceInterruptStateFromSummary,
@@ -26,6 +31,46 @@ interface OwnerGroup {
   workspaces: UserSpaceWorkspace[];
 }
 
+function isWorkspaceDeleteTaskTerminal(phase: UserSpaceWorkspaceDeleteTaskPhase): boolean {
+  return phase === 'completed' || phase === 'failed';
+}
+
+function formatWorkspaceDeleteTaskStatus(task: UserSpaceWorkspaceDeleteTask | null): string | null {
+  if (!task) {
+    return null;
+  }
+
+  const label = task.workspace_name?.trim() || 'workspace';
+  switch (task.phase) {
+    case 'queued':
+      return `Preparing to delete ${label}...`;
+    case 'stopping_runtime':
+      return `Stopping runtime for ${label}...`;
+    case 'deleting_conversations':
+      return `Deleting conversations for ${label}...`;
+    case 'deleting_workspace':
+      return `Deleting ${label}...`;
+    case 'failed':
+      return task.error?.trim() || `Failed to delete ${label}.`;
+    default:
+      return null;
+  }
+}
+
+function formatWorkspaceDeleteTasksStatus(tasks: UserSpaceWorkspaceDeleteTask[]): string | null {
+  if (tasks.length === 0) {
+    return null;
+  }
+  if (tasks.length === 1) {
+    return formatWorkspaceDeleteTaskStatus(tasks[0]);
+  }
+
+  const queuedCount = tasks.filter((task) => task.phase === 'queued').length;
+  return queuedCount > 0
+    ? `Deleting ${tasks.length} workspaces (${queuedCount} queued)...`
+    : `Deleting ${tasks.length} workspaces...`;
+}
+
 export function AdminWorkspaceModal({
   isOpen,
   onClose,
@@ -41,6 +86,7 @@ export function AdminWorkspaceModal({
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [workspaceChatStates, setWorkspaceChatStates] = useState<Record<string, { hasLive: boolean; hasInterrupted: boolean }>>({});
+  const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDeleteTask>>({});
   // Track previous raw interrupted state per workspace so we can detect
   // false -> true transitions and clear stale dismiss cookies.
   const prevChatStateRef = useRef<Record<string, InterruptChatStateSnapshot>>({});
@@ -132,6 +178,23 @@ export function AdminWorkspaceModal({
     }
   }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const activeWorkspaceDeleteTasks = useMemo(
+    () => Object.values(deletingWorkspaceTasks)
+      .filter((task) => !isWorkspaceDeleteTaskTerminal(task.phase))
+      .sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at)),
+    [deletingWorkspaceTasks],
+  );
+
+  const deletingWorkspaceIds = useMemo(
+    () => new Set(activeWorkspaceDeleteTasks.map((task) => task.workspace_id)),
+    [activeWorkspaceDeleteTasks],
+  );
+
+  const deletingWorkspaceStatus = useMemo(
+    () => formatWorkspaceDeleteTasksStatus(activeWorkspaceDeleteTasks),
+    [activeWorkspaceDeleteTasks],
+  );
+
   const groupedWorkspaces = useMemo<OwnerGroup[]>(() => {
     const groups = workspaces.reduce<Record<string, { label: string; workspaces: UserSpaceWorkspace[] }>>((acc, ws) => {
       const key = ws.owner_username || ws.owner_user_id;
@@ -168,16 +231,124 @@ export function AdminWorkspaceModal({
   }, []);
 
   const handleDelete = useCallback(async (workspaceId: string) => {
+    setError(null);
     try {
-      await api.deleteUserSpaceWorkspace(workspaceId);
-      setWorkspaces((prev) => prev.filter((ws) => ws.id !== workspaceId));
-      setTotal((prev) => Math.max(0, prev - 1));
-      onWorkspaceDeleted(workspaceId);
+      const task = await api.queueUserSpaceWorkspaceDelete(workspaceId);
+      setDeletingWorkspaceTasks((current) => ({
+        ...current,
+        [workspaceId]: task,
+      }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete workspace');
+      setError(err instanceof Error ? err.message : 'Failed to queue workspace delete');
       throw err;
     }
-  }, [onWorkspaceDeleted]);
+  }, []);
+
+  useEffect(() => {
+    const tasks = Object.values(deletingWorkspaceTasks);
+    if (tasks.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    let pollInFlight = false;
+
+    const pollDeleteTasks = async () => {
+      if (pollInFlight) {
+        return;
+      }
+      pollInFlight = true;
+
+      try {
+        const results = await Promise.all(tasks.map(async (task) => {
+          try {
+            const status = await api.getUserSpaceWorkspaceDeleteTask(task.task_id);
+            return { task, status, error: null as Error | null };
+          } catch (pollError) {
+            return { task, status: null as UserSpaceWorkspaceDeleteTask | null, error: pollError as Error };
+          }
+        }));
+
+        if (cancelled) {
+          return;
+        }
+
+        const completedWorkspaceIds = new Set<string>();
+        const terminalWorkspaceIds = new Set<string>();
+        const updatedTasks: Record<string, UserSpaceWorkspaceDeleteTask> = {};
+        let nextError: string | null = null;
+
+        for (const result of results) {
+          if (result.status) {
+            if (isWorkspaceDeleteTaskTerminal(result.status.phase)) {
+              terminalWorkspaceIds.add(result.status.workspace_id);
+              if (result.status.phase === 'completed') {
+                completedWorkspaceIds.add(result.status.workspace_id);
+              } else if (!nextError) {
+                nextError = result.status.error?.trim() || `Failed to delete ${result.status.workspace_name}`;
+              }
+            } else {
+              updatedTasks[result.status.workspace_id] = result.status;
+            }
+            continue;
+          }
+
+          if (result.error instanceof ApiError && result.error.status === 404) {
+            terminalWorkspaceIds.add(result.task.workspace_id);
+            completedWorkspaceIds.add(result.task.workspace_id);
+            continue;
+          }
+
+          if (!nextError && result.error instanceof Error) {
+            nextError = result.error.message;
+          }
+        }
+
+        setDeletingWorkspaceTasks((current) => {
+          const next = { ...current };
+          for (const workspaceId of terminalWorkspaceIds) {
+            delete next[workspaceId];
+          }
+          for (const [workspaceId, task] of Object.entries(updatedTasks)) {
+            next[workspaceId] = task;
+          }
+          return next;
+        });
+
+        if (completedWorkspaceIds.size > 0) {
+          setWorkspaces((current) => current.filter((workspace) => !completedWorkspaceIds.has(workspace.id)));
+          setTotal((current) => Math.max(0, current - completedWorkspaceIds.size));
+          setWorkspaceChatStates((current) => {
+            const next = { ...current };
+            for (const workspaceId of completedWorkspaceIds) {
+              delete next[workspaceId];
+            }
+            return next;
+          });
+          for (const workspaceId of completedWorkspaceIds) {
+            delete prevChatStateRef.current[workspaceId];
+            onWorkspaceDeleted(workspaceId);
+          }
+        }
+
+        if (nextError) {
+          setError(nextError);
+        }
+      } finally {
+        pollInFlight = false;
+      }
+    };
+
+    void pollDeleteTasks();
+    const intervalId = window.setInterval(() => {
+      void pollDeleteTasks();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [deletingWorkspaceTasks, onWorkspaceDeleted]);
 
   const handleTransfer = useCallback(async (workspaceId: string, newOwnerId: string) => {
     try {
@@ -211,6 +382,12 @@ export function AdminWorkspaceModal({
           {error && (
             <div className="admin-ws-error">{error}</div>
           )}
+          {deletingWorkspaceStatus && (
+            <div className="admin-ws-loading">
+              <MiniLoadingSpinner variant="icon" size={16} />
+              <span>{deletingWorkspaceStatus}</span>
+            </div>
+          )}
 
           {loading ? (
             <div className="admin-ws-loading">
@@ -234,6 +411,7 @@ export function AdminWorkspaceModal({
                       <WorkspaceRowList
                         workspaces={group.workspaces}
                         users={allUsers}
+                        deletingWorkspaceIds={deletingWorkspaceIds}
                         onTransfer={handleTransfer}
                         onDelete={handleDelete}
                         onSelect={handleSelect}

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
-import { api } from '@/api';
+import { api, ApiError } from '@/api';
 import type {
   User,
   UserUsageSummary,
@@ -11,6 +11,7 @@ import type {
   McpDailyTrend,
   McpRouteUsage,
   UserSpaceWorkspace,
+  UserSpaceWorkspaceDeleteTask,
   WorkspaceConversationStateSummaryItem,
 } from '@/types';
 import {
@@ -147,6 +148,10 @@ interface UsageDataSnapshot {
   mcpRoutes: McpRouteUsage[];
 }
 
+function isWorkspaceDeleteTaskTerminal(task: UserSpaceWorkspaceDeleteTask): boolean {
+  return task.phase === 'completed' || task.phase === 'failed';
+}
+
 interface PagerProps {
   page: number;
   totalPages: number;
@@ -186,6 +191,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   const [users, setUsers] = useState<User[]>([]);
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
   const [workspaceStateById, setWorkspaceStateById] = useState<Record<string, WorkspaceConversationStateSummaryItem>>({});
+  const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDeleteTask>>({});
 
   const [loading, setLoading] = useState(true);
   const [toasts, toast] = useToast();
@@ -448,23 +454,124 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
 
   const handleDeleteWorkspace = async (workspaceId: string) => {
     try {
-      await api.deleteUserSpaceWorkspace(workspaceId);
-      setWorkspaces((prev) => prev.filter((w) => w.id !== workspaceId));
-      setWorkspaceStateById((prev) => {
-        const next = { ...prev };
-        delete next[workspaceId];
-        return next;
-      });
-      setStorageByWorkspaceId((prev) => {
-        const next = { ...prev };
-        delete next[workspaceId];
-        return next;
-      });
+      const task = await api.queueUserSpaceWorkspaceDelete(workspaceId);
+      setDeletingWorkspaceTasks((prev) => ({
+        ...prev,
+        [workspaceId]: task,
+      }));
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Failed to delete workspace');
+      toast.error(e instanceof Error ? e.message : 'Failed to queue workspace delete');
       throw e;
     }
   };
+
+  useEffect(() => {
+    const tasks = Object.values(deletingWorkspaceTasks);
+    if (tasks.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    let pollInFlight = false;
+
+    const pollDeleteTasks = async () => {
+      if (pollInFlight) {
+        return;
+      }
+      pollInFlight = true;
+
+      try {
+        const results = await Promise.all(tasks.map(async (task) => {
+          try {
+            const status = await api.getUserSpaceWorkspaceDeleteTask(task.task_id);
+            return { task, status, error: null as Error | null };
+          } catch (error) {
+            return { task, status: null as UserSpaceWorkspaceDeleteTask | null, error: error as Error };
+          }
+        }));
+
+        if (cancelled) {
+          return;
+        }
+
+        const completedWorkspaceIds = new Set<string>();
+        const terminalWorkspaceIds = new Set<string>();
+        const updatedTasks: Record<string, UserSpaceWorkspaceDeleteTask> = {};
+        let nextError: string | null = null;
+
+        for (const result of results) {
+          if (result.status) {
+            if (isWorkspaceDeleteTaskTerminal(result.status)) {
+              terminalWorkspaceIds.add(result.status.workspace_id);
+              if (result.status.phase === 'completed') {
+                completedWorkspaceIds.add(result.status.workspace_id);
+              } else if (!nextError) {
+                nextError = result.status.error?.trim() || `Failed to delete ${result.status.workspace_name}`;
+              }
+            } else {
+              updatedTasks[result.status.workspace_id] = result.status;
+            }
+            continue;
+          }
+
+          if (result.error instanceof ApiError && result.error.status === 404) {
+            terminalWorkspaceIds.add(result.task.workspace_id);
+            completedWorkspaceIds.add(result.task.workspace_id);
+            continue;
+          }
+
+          if (!nextError && result.error instanceof Error) {
+            nextError = result.error.message;
+          }
+        }
+
+        setDeletingWorkspaceTasks((prev) => {
+          const next = { ...prev };
+          for (const workspaceId of terminalWorkspaceIds) {
+            delete next[workspaceId];
+          }
+          for (const [workspaceId, task] of Object.entries(updatedTasks)) {
+            next[workspaceId] = task;
+          }
+          return next;
+        });
+
+        if (completedWorkspaceIds.size > 0) {
+          setWorkspaces((prev) => prev.filter((workspace) => !completedWorkspaceIds.has(workspace.id)));
+          setWorkspaceStateById((prev) => {
+            const next = { ...prev };
+            for (const workspaceId of completedWorkspaceIds) {
+              delete next[workspaceId];
+            }
+            return next;
+          });
+          setStorageByWorkspaceId((prev) => {
+            const next = { ...prev };
+            for (const workspaceId of completedWorkspaceIds) {
+              delete next[workspaceId];
+            }
+            return next;
+          });
+        }
+
+        if (nextError) {
+          toast.error(nextError);
+        }
+      } finally {
+        pollInFlight = false;
+      }
+    };
+
+    void pollDeleteTasks();
+    const intervalId = window.setInterval(() => {
+      void pollDeleteTasks();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [deletingWorkspaceTasks, toast]);
 
   const handleTransferWorkspace = async (workspaceId: string, newOwnerId: string) => {
     try {
@@ -511,6 +618,11 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       return acc;
     }, {});
   }, [usageSummary]);
+
+  const deletingWorkspaceIds = useMemo(
+    () => new Set(Object.keys(deletingWorkspaceTasks)),
+    [deletingWorkspaceTasks],
+  );
 
   const userStatsRows = useMemo<DerivedUserStats[]>(() => {
     const byUserOwned = workspaces.reduce<Record<string, UserSpaceWorkspace[]>>((acc, ws) => {
@@ -1574,6 +1686,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                                   <WorkspaceRowList
                                     workspaces={row.ownedWorkspaces}
                                     users={users}
+                                    deletingWorkspaceIds={deletingWorkspaceIds}
                                     onTransfer={handleTransferWorkspace}
                                     onDelete={handleDeleteWorkspace}
                                     emptyMessage="No owned workspaces."

@@ -540,32 +540,6 @@ async def fetch_workspace_scm_branches(
     )
 
 
-@router.delete("/workspaces/{workspace_id}")
-async def delete_workspace(
-    workspace_id: str,
-    user: Any = Depends(get_current_user),
-):
-    is_admin = user.role == "admin"
-    ws = await userspace_service.enforce_workspace_role(
-        workspace_id, user.id, "owner", is_admin=is_admin
-    )
-    if is_admin and ws.owner_user_id != user.id:
-        logger.info(
-            "Admin '%s' deleted workspace '%s' (owner: %s)",
-            user.username,
-            workspace_id,
-            ws.owner_user_id,
-        )
-    try:
-        await userspace_runtime_service.stop_runtime_session(workspace_id, user.id)
-    except HTTPException as exc:
-        if exc.status_code != 404:
-            raise
-    await repository.delete_workspace_conversations(workspace_id)
-    await userspace_service.delete_workspace(workspace_id, user.id, is_admin=is_admin)
-    return {"success": True}
-
-
 @router.post(
     "/workspaces/{workspace_id}/delete-task",
     response_model=UserSpaceWorkspaceDeleteTask,

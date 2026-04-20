@@ -2044,16 +2044,6 @@ export const api = {
     return handleResponse<UserSpaceWorkspace>(response);
   },
 
-  async deleteUserSpaceWorkspace(workspaceId: string): Promise<void> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}`, {
-      method: 'DELETE',
-    });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new ApiError(data.detail || 'Delete failed', response.status, data.detail);
-    }
-  },
-
   async queueUserSpaceWorkspaceDelete(workspaceId: string): Promise<UserSpaceWorkspaceDeleteTask> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/delete-task`, {
       method: 'POST',
