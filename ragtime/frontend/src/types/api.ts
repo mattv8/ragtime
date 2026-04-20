@@ -1781,6 +1781,9 @@ export interface UserSpaceWorkspaceScmStatus {
   has_stored_token: boolean;
   remote_role?: UserSpaceWorkspaceScmRemoteRole | null;
   auto_sync_policy?: UserSpaceWorkspaceScmAutoSyncPolicy | null;
+  auto_pull_enabled?: boolean;
+  auto_push_interval_seconds?: number;
+  auto_pull_interval_seconds?: number;
   sync_paused?: boolean;
   sync_paused_reason?: string | null;
   connected_at?: string | null;
@@ -1881,6 +1884,9 @@ export interface UserSpaceWorkspaceScmSyncResponse {
 export interface UserSpaceWorkspaceScmSettingsRequest {
   remote_role?: UserSpaceWorkspaceScmRemoteRole;
   auto_sync_policy?: UserSpaceWorkspaceScmAutoSyncPolicy;
+  auto_pull_enabled?: boolean;
+  auto_push_interval_seconds?: number;
+  auto_pull_interval_seconds?: number;
   clear_sync_paused?: boolean;
 }
 

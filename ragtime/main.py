@@ -179,6 +179,7 @@ async def lifespan(app: FastAPI):
     # Backfill userspace Git ignore policy for existing workspaces in the background.
     userspace_service.schedule_startup_git_drift_reconciliation()
     userspace_service.schedule_workspace_mount_watch()
+    userspace_service.schedule_workspace_scm_watch()
 
     # Start MCP session manager (enable/disable checked at request time)
     async with mcp_lifespan_manager():
@@ -187,6 +188,7 @@ async def lifespan(app: FastAPI):
     # Cleanup - cancel the startup Git policy reconciliation task
     await userspace_service.shutdown_git_drift_reconciliation()
     await userspace_service.shutdown_workspace_mount_watch()
+    await userspace_service.shutdown_workspace_scm_watch()
 
     # Cleanup - stop background services before disconnecting DB
     await background_task_service.stop()

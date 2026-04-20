@@ -29,149 +29,88 @@ from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.git import create_repository, parse_git_url
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
-    USERSPACE_MOUNT_WATCH_JITTER_SECONDS,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    check_remote_rsync_available,
-    execute_ssh_command,
-    is_rsync_missing_error,
-    preview_ssh_directory_sync,
-    rsync_ssh_directory,
-    ssh_config_from_dict,
-    ssh_tunnel_config_from_dict,
-    sync_ssh_directory,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
+                              USERSPACE_MOUNT_WATCH_JITTER_SECONDS, SSHTunnel,
+                              build_ssh_tunnel_config,
+                              check_remote_rsync_available,
+                              execute_ssh_command, is_rsync_missing_error,
+                              preview_ssh_directory_sync, rsync_ssh_directory,
+                              ssh_config_from_dict,
+                              ssh_tunnel_config_from_dict, sync_ssh_directory)
 from ragtime.core.workspace_ops import (
-    PLATFORM_MANAGED_GITIGNORE_PATTERNS,
-    WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
-    compute_file_hash,
-    deduplicate_ancestor_paths,
-    sync_scope_relative_paths,
+    PLATFORM_MANAGED_GITIGNORE_PATTERNS, WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
+    compute_file_hash, deduplicate_ancestor_paths, sync_scope_relative_paths,
     workspace_mount_target_repo_relative_path,
-    workspace_path_matches_mount_prefix,
-)
+    workspace_path_matches_mount_prefix)
 from ragtime.indexer.file_utils import build_authenticated_git_url
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
-from ragtime.indexer.repository import _resolve_default_conversation_model, repository
+from ragtime.indexer.repository import (_resolve_default_conversation_model,
+                                        repository)
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
 from ragtime.userspace.models import (
-    ArtifactType,
-    BrowseUserspaceMountSourceRequest,
+    ArtifactType, BrowseUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
-    CreateUserSpaceObjectStorageBucketRequest,
-    CreateWorkspaceMountRequest,
-    CreateWorkspaceRequest,
-    DeleteGlobalEnvVarResponse,
+    CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
+    CreateWorkspaceRequest, DeleteGlobalEnvVarResponse,
     DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse,
-    DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse,
-    DuplicateWorkspaceRequest,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    MountableSource,
-    MountSourceAffectedWorkspace,
-    MountSourceAffectedWorkspacesResponse,
-    PaginatedWorkspacesResponse,
-    RuntimeOperationPhase,
-    RuntimeRestartBatchTaskPhase,
-    RuntimeRestartWorkspacePhase,
-    ShareAccessMode,
-    SqliteImportResponse,
-    SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
+    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse, DuplicateWorkspaceRequest,
+    ExecuteComponentRequest, ExecuteComponentResponse, MountableSource,
+    MountSourceAffectedWorkspace, MountSourceAffectedWorkspacesResponse,
+    PaginatedWorkspacesResponse, RuntimeOperationPhase,
+    RuntimeRestartBatchTaskPhase, RuntimeRestartWorkspacePhase,
+    ShareAccessMode, SqliteImportResponse, SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
-    UpdateUserSpaceObjectStorageBucketRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceMountRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertGlobalEnvVarRequest,
-    UpsertWorkspaceAgentGrantRequest,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserspaceMountBackend,
-    UserspaceMountSource,
-    UserspaceMountSourceType,
-    UserSpaceObjectStorageBucket,
-    UserSpaceObjectStorageConfig,
-    UserSpaceRuntimeRestartBatchTask,
-    UserSpaceRuntimeRestartWorkspaceTask,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotBranch,
-    UserSpaceSnapshotDiffFileSummary,
-    UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceCreateTask,
-    UserSpaceWorkspaceDeleteTask,
-    UserSpaceWorkspaceDuplicateTask,
-    UserSpaceWorkspaceEnvVar,
-    UserSpaceWorkspaceScmConnectionRequest,
+    UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest, UpsertGlobalEnvVarRequest,
+    UpsertWorkspaceAgentGrantRequest, UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest, UserSpaceFileInfo, UserSpaceFileResponse,
+    UserSpaceLiveDataCheck, UserSpaceLiveDataConnection, UserspaceMountBackend,
+    UserspaceMountSource, UserspaceMountSourceType,
+    UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig,
+    UserSpaceRuntimeRestartBatchTask, UserSpaceRuntimeRestartWorkspaceTask,
+    UserSpaceSharedPreviewResponse, UserSpaceSnapshot, UserSpaceSnapshotBranch,
+    UserSpaceSnapshotDiffFileSummary, UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace, UserSpaceWorkspaceCreateTask,
+    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask,
+    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
-    UserSpaceWorkspaceScmExportRequest,
-    UserSpaceWorkspaceScmImportRequest,
-    UserSpaceWorkspaceScmPreviewRequest,
-    UserSpaceWorkspaceScmPreviewResponse,
-    UserSpaceWorkspaceScmStatus,
-    UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceAgentGrant,
-    WorkspaceAgentGrantMode,
-    WorkspaceCreateTaskPhase,
-    WorkspaceDeleteTaskPhase,
-    WorkspaceDuplicateTaskPhase,
-    WorkspaceMember,
-    WorkspaceMount,
-    WorkspaceMountBrowseRequest,
-    WorkspaceMountBrowseResponse,
-    WorkspaceMountDirectoryEntry,
-    WorkspaceMountSyncMode,
-    WorkspaceMountSyncPreviewRequest,
-    WorkspaceMountSyncPreviewResponse,
-    WorkspaceMountSyncRequest,
-    WorkspaceMountSyncResponse,
-    WorkspaceScmDirection,
-    WorkspaceScmPreviewState,
-    WorkspaceScmProvider,
-    WorkspaceShareSlugAvailabilityResponse,
-)
-from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
-from ragtime.userspace.sqlite_import import (
-    _MAX_IMPORT_SIZE_BYTES,
-    SqlImportResult,
-    detect_binary_pg_dump,
-    detect_sql_dialect,
-    import_sql_to_sqlite,
-)
+    UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
+    UserSpaceWorkspaceScmSettingsRequest, UserSpaceWorkspaceScmStatus,
+    UserSpaceWorkspaceScmSyncResponse, UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus, WorkspaceAgentGrant,
+    WorkspaceAgentGrantMode, WorkspaceCreateTaskPhase,
+    WorkspaceDeleteTaskPhase, WorkspaceDuplicateTaskPhase, WorkspaceMember,
+    WorkspaceMount, WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
+    WorkspaceMountDirectoryEntry, WorkspaceMountSyncMode,
+    WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
+    WorkspaceScmAutoSyncPolicy, WorkspaceScmDirection,
+    WorkspaceScmPreviewState, WorkspaceScmProvider, WorkspaceScmRemoteRole,
+    WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.preview_host import \
+    invalidate_preview_sessions_for_workspace
+from ragtime.userspace.sqlite_import import (_MAX_IMPORT_SIZE_BYTES,
+                                             SqlImportResult,
+                                             detect_binary_pg_dump,
+                                             detect_sql_dialect,
+                                             import_sql_to_sqlite)
 
 logger = get_logger(__name__)
 
@@ -528,6 +467,9 @@ _WORKSPACE_ENV_VAR_MAX_COUNT = 200
 _GLOBAL_ENV_VAR_MAX_COUNT = 200
 _WORKSPACE_SCM_PREVIEW_TTL_SECONDS = 300
 _WORKSPACE_SCM_PREVIEW_SAMPLE_LIMIT = 100
+_WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MIN_SECONDS = 300
+_WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MAX_SECONDS = 2_592_000
+_WORKSPACE_SCM_AUTO_SYNC_DEFAULT_INTERVAL_SECONDS = 3_600
 _WORKSPACE_CREATE_TASK_TTL_SECONDS = 300
 _WORKSPACE_DUPLICATE_TASK_TTL_SECONDS = 300
 _WORKSPACE_DELETE_TASK_TTL_SECONDS = 300
@@ -945,6 +887,15 @@ class UserSpaceService:
         self._workspace_scm_previews_lock = asyncio.Lock()
         self._workspace_scm_backfill_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_scm_backfill_tasks_lock = asyncio.Lock()
+        self._workspace_scm_sync_semaphore = asyncio.Semaphore(
+            self._positive_int_env("USERSPACE_SCM_SYNC_CONCURRENCY", 2)
+        )
+        self._workspace_scm_watch_task: asyncio.Task[Any] | None = None
+        self._workspace_scm_watch_task_lock = asyncio.Lock()
+        self._workspace_scm_watch_inflight: set[str] = set()
+        self._workspace_scm_watch_next_due_monotonic: dict[str, float] = {}
+        self._workspace_scm_operation_locks: dict[str, asyncio.Lock] = {}
+        self._workspace_scm_operation_locks_lock = asyncio.Lock()
         self._workspace_mount_watch_interval_seconds = (
             USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS
         )
@@ -2323,7 +2274,8 @@ class UserSpaceService:
         try:
             async with self._workspace_delete_semaphore:
                 self._set_workspace_delete_task_phase(task_id, "stopping_runtime")
-                from ragtime.userspace.runtime_service import userspace_runtime_service
+                from ragtime.userspace.runtime_service import \
+                    userspace_runtime_service
 
                 try:
                     await userspace_runtime_service.stop_runtime_session(
@@ -3748,6 +3700,95 @@ class UserSpaceService:
                 exc,
             )
 
+    @staticmethod
+    def _normalize_workspace_scm_interval_seconds(value: Any) -> int:
+        try:
+            parsed = int(value)
+        except Exception:
+            parsed = _WORKSPACE_SCM_AUTO_SYNC_DEFAULT_INTERVAL_SECONDS
+        return max(
+            _WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MIN_SECONDS,
+            min(_WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MAX_SECONDS, parsed),
+        )
+
+    @staticmethod
+    def _workspace_scm_watch_key(
+        workspace_id: str,
+        direction: WorkspaceScmDirection,
+    ) -> str:
+        return f"{workspace_id}:{direction}"
+
+    @staticmethod
+    def _workspace_scm_watch_stagger_seconds(
+        workspace_id: str,
+        direction: WorkspaceScmDirection,
+    ) -> float:
+        # Deterministic jitter smooths sync burst waves when many workspaces
+        # share identical intervals.
+        seed = f"{workspace_id}:{direction}"
+        return (abs(hash(seed)) % 90) / 10.0
+
+    def _nudge_workspace_scm_watch_due(
+        self,
+        workspace_id: str,
+        direction: WorkspaceScmDirection,
+    ) -> None:
+        """Request an earlier SCM watch pass for a workspace direction."""
+        key = self._workspace_scm_watch_key(workspace_id, direction)
+        self._workspace_scm_watch_next_due_monotonic[key] = 0.0
+
+    def _is_workspace_auto_push_enabled(self, workspace_record: Any) -> bool:
+        policy = self._normalize_scm_enum(
+            getattr(workspace_record, "scmAutoSyncPolicy", None),
+            ("manual", "auto_push"),
+        )
+        return bool(
+            getattr(workspace_record, "scmGitUrl", None)
+            and policy == "auto_push"
+            and not bool(getattr(workspace_record, "scmSyncPaused", False))
+        )
+
+    def _is_workspace_auto_pull_enabled(self, workspace_record: Any) -> bool:
+        remote_role = self._normalize_scm_enum(
+            getattr(workspace_record, "scmRemoteRole", None),
+            ("upstream", "publish"),
+        )
+        return bool(
+            getattr(workspace_record, "scmGitUrl", None)
+            and remote_role == "upstream"
+            and bool(getattr(workspace_record, "scmAutoPullEnabled", False))
+            and not bool(getattr(workspace_record, "scmSyncPaused", False))
+        )
+
+    def _workspace_scm_direction_interval_seconds(
+        self,
+        workspace_record: Any,
+        direction: WorkspaceScmDirection,
+    ) -> int:
+        field = (
+            "scmAutoPushIntervalSeconds"
+            if direction == "export"
+            else "scmAutoPullIntervalSeconds"
+        )
+        return self._normalize_workspace_scm_interval_seconds(
+            getattr(
+                workspace_record,
+                field,
+                _WORKSPACE_SCM_AUTO_SYNC_DEFAULT_INTERVAL_SECONDS,
+            )
+        )
+
+    async def _get_workspace_scm_operation_lock(
+        self,
+        workspace_id: str,
+    ) -> asyncio.Lock:
+        async with self._workspace_scm_operation_locks_lock:
+            existing = self._workspace_scm_operation_locks.get(workspace_id)
+            if existing is None:
+                existing = asyncio.Lock()
+                self._workspace_scm_operation_locks[workspace_id] = existing
+            return existing
+
     def schedule_startup_git_drift_reconciliation(self) -> None:
         """Start best-effort Git policy reconciliation for existing workspaces."""
         if (
@@ -3769,6 +3810,226 @@ class UserSpaceService:
         self._workspace_mount_watch_task = asyncio.create_task(
             self._workspace_mount_watch_loop(),
             name="userspace-mount-watch-loop",
+        )
+
+    def schedule_workspace_scm_watch(self) -> None:
+        """Start background loop that runs interval-based SCM auto push/pull."""
+        if (
+            self._workspace_scm_watch_task is not None
+            and not self._workspace_scm_watch_task.done()
+        ):
+            return
+        self._workspace_scm_watch_task = asyncio.create_task(
+            self._workspace_scm_watch_loop(),
+            name="userspace-scm-watch-loop",
+        )
+
+    async def _workspace_scm_watch_loop(self) -> None:
+        poll_seconds = 30.0
+        while True:
+            await asyncio.sleep(poll_seconds)
+            try:
+                await self._workspace_scm_watch_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Workspace SCM watch tick failed: %s", exc, exc_info=True)
+
+    async def _workspace_scm_watch_tick(self) -> None:
+        db = await get_db()
+        workspaces = await db.workspace.find_many(
+            where={"scmGitUrl": {"not": None}},
+            order={"updatedAt": "desc"},
+        )
+
+        active_job_keys: set[str] = set()
+        now_monotonic = _time.monotonic()
+
+        for workspace in workspaces:
+            workspace_id = str(getattr(workspace, "id", "") or "").strip()
+            if not workspace_id:
+                continue
+
+            for direction in (
+                cast(WorkspaceScmDirection, "export"),
+                cast(WorkspaceScmDirection, "import"),
+            ):
+                is_enabled = (
+                    self._is_workspace_auto_push_enabled(workspace)
+                    if direction == "export"
+                    else self._is_workspace_auto_pull_enabled(workspace)
+                )
+                if not is_enabled:
+                    continue
+
+                key = self._workspace_scm_watch_key(workspace_id, direction)
+                active_job_keys.add(key)
+                if key in self._workspace_scm_watch_inflight:
+                    continue
+                due_at = self._workspace_scm_watch_next_due_monotonic.get(key, 0.0)
+                if now_monotonic < due_at:
+                    continue
+
+                interval_seconds = self._workspace_scm_direction_interval_seconds(
+                    workspace,
+                    direction,
+                )
+                self._workspace_scm_watch_inflight.add(key)
+                asyncio.create_task(
+                    self._run_workspace_scm_auto_sync(
+                        workspace_id,
+                        direction,
+                        interval_seconds,
+                    ),
+                    name=f"userspace-scm-auto-sync:{workspace_id}:{direction}",
+                )
+
+        stale_keys = set(self._workspace_scm_watch_next_due_monotonic) - active_job_keys
+        for key in stale_keys:
+            self._workspace_scm_watch_next_due_monotonic.pop(key, None)
+            self._workspace_scm_watch_inflight.discard(key)
+
+    async def _run_workspace_scm_auto_sync(
+        self,
+        workspace_id: str,
+        direction: WorkspaceScmDirection,
+        interval_seconds: int,
+    ) -> None:
+        t0 = _time.monotonic()
+        key = self._workspace_scm_watch_key(workspace_id, direction)
+        try:
+            async with self._workspace_scm_sync_semaphore:
+                operation_lock = await self._get_workspace_scm_operation_lock(
+                    workspace_id
+                )
+                async with operation_lock:
+                    if direction == "export":
+                        await self._run_workspace_auto_push(workspace_id)
+                    else:
+                        await self._run_workspace_auto_pull(workspace_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                "Workspace %s auto-%s run failed: %s",
+                workspace_id,
+                "push" if direction == "export" else "pull",
+                exc,
+                exc_info=True,
+            )
+        finally:
+            elapsed = _time.monotonic() - t0
+            if elapsed > float(interval_seconds):
+                logger.warning(
+                    "Workspace %s auto-%s took %.1fs, exceeding configured interval of %.0fs",
+                    workspace_id,
+                    "push" if direction == "export" else "pull",
+                    elapsed,
+                    float(interval_seconds),
+                )
+            self._workspace_scm_watch_next_due_monotonic[key] = (
+                _time.monotonic()
+                + float(interval_seconds)
+                + self._workspace_scm_watch_stagger_seconds(workspace_id, direction)
+            )
+            self._workspace_scm_watch_inflight.discard(key)
+
+    async def _run_workspace_auto_push(self, workspace_id: str) -> None:
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record or not self._is_workspace_auto_push_enabled(
+            workspace_record
+        ):
+            return
+
+        rows = await db.query_raw(
+            f"""
+            SELECT s.id,
+                   s.workspace_id,
+                   s.branch_id,
+                   s.parent_snapshot_id,
+                   s.git_commit_hash,
+                   s.remote_commit_hash,
+                   s.message,
+                   s.file_count,
+                   s.created_at,
+                   b.name AS branch_name
+            FROM userspace_snapshots s
+            LEFT JOIN userspace_snapshot_branches b ON b.id = s.branch_id
+            WHERE s.workspace_id = {self._sql_quote(workspace_id)}
+              AND s.git_commit_hash IS NOT NULL
+              AND s.remote_commit_hash IS NULL
+            ORDER BY s.created_at DESC
+            LIMIT 1
+            """
+        )
+        if not rows:
+            return
+
+        current_snapshot_rows = await db.query_raw(
+            f"""
+            SELECT current_snapshot_id
+            FROM workspaces
+            WHERE id = {self._sql_quote(workspace_id)}
+            LIMIT 1
+            """
+        )
+        current_snapshot_id = (
+            str(current_snapshot_rows[0].get("current_snapshot_id"))
+            if current_snapshot_rows
+            and current_snapshot_rows[0].get("current_snapshot_id")
+            else None
+        )
+
+        branch_name_by_id = {
+            str(rows[0].get("branch_id") or ""): str(
+                rows[0].get("branch_name") or "Branch"
+            )
+        }
+        snapshot = self._snapshot_from_row(
+            rows[0],
+            current_snapshot_id,
+            branch_name_by_id,
+        )
+        await self._maybe_auto_push_snapshot_to_scm(workspace_id, snapshot)
+
+    async def _run_workspace_auto_pull(self, workspace_id: str) -> None:
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record or not self._is_workspace_auto_pull_enabled(
+            workspace_record
+        ):
+            return
+
+        owner_user_id = str(getattr(workspace_record, "ownerUserId", "") or "").strip()
+        if not owner_user_id:
+            return
+
+        preview_request = UserSpaceWorkspaceScmPreviewRequest()
+        preview, _ = await self._build_workspace_scm_preview(
+            workspace_id,
+            owner_user_id,
+            "import",
+            preview_request,
+            store_preview=False,
+        )
+        if preview.state in {"up_to_date", "missing_branch"}:
+            return
+        if preview.state != "safe":
+            logger.debug(
+                "Skipping auto-pull for workspace %s due to preview state %s",
+                workspace_id,
+                preview.state,
+            )
+            return
+
+        await self.import_workspace_from_scm(
+            workspace_id,
+            owner_user_id,
+            UserSpaceWorkspaceScmImportRequest(
+                git_url=preview.git_url,
+                git_branch=preview.git_branch,
+            ),
         )
 
     async def _workspace_mount_watch_loop(self) -> None:
@@ -3893,9 +4154,8 @@ class UserSpaceService:
                     ),
                 )
                 try:
-                    from ragtime.userspace.runtime_service import (
-                        userspace_runtime_service,
-                    )
+                    from ragtime.userspace.runtime_service import \
+                        userspace_runtime_service
 
                     await userspace_runtime_service.bump_workspace_generation(
                         workspace_id,
@@ -3921,7 +4181,8 @@ class UserSpaceService:
                 allow_destructive_auto_sync_approval=True,
             )
             try:
-                from ragtime.userspace.runtime_service import userspace_runtime_service
+                from ragtime.userspace.runtime_service import \
+                    userspace_runtime_service
 
                 await userspace_runtime_service.bump_workspace_generation(
                     workspace_id,
@@ -4017,6 +4278,18 @@ class UserSpaceService:
         self._workspace_mount_watch_task = None
         self._workspace_mount_watch_inflight.clear()
         self._workspace_mount_watch_next_due_monotonic.clear()
+
+    async def shutdown_workspace_scm_watch(self) -> None:
+        """Cancel interval-driven workspace SCM auto-sync watch loop."""
+        if self._workspace_scm_watch_task and not self._workspace_scm_watch_task.done():
+            self._workspace_scm_watch_task.cancel()
+            try:
+                await self._workspace_scm_watch_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._workspace_scm_watch_task = None
+        self._workspace_scm_watch_inflight.clear()
+        self._workspace_scm_watch_next_due_monotonic.clear()
 
     def _resolve_workspace_file_path(
         self, workspace_id: str, relative_path: str
@@ -5750,6 +6023,24 @@ class UserSpaceService:
             getattr(record, "scmProvider", None),
             getattr(record, "scmGitUrl", None),
         )
+        raw_remote_role = self._normalize_scm_enum(
+            getattr(record, "scmRemoteRole", None),
+            ("upstream", "publish"),
+        )
+        raw_auto_sync_policy = self._normalize_scm_enum(
+            getattr(record, "scmAutoSyncPolicy", None),
+            ("manual", "auto_push"),
+        )
+        remote_role = (
+            cast(WorkspaceScmRemoteRole, raw_remote_role)
+            if raw_remote_role in {"upstream", "publish"}
+            else None
+        )
+        auto_sync_policy = (
+            cast(WorkspaceScmAutoSyncPolicy, raw_auto_sync_policy)
+            if raw_auto_sync_policy in {"manual", "auto_push"}
+            else None
+        )
         scm = UserSpaceWorkspaceScmStatus(
             connected=bool(getattr(record, "scmGitUrl", None)),
             git_url=getattr(record, "scmGitUrl", None),
@@ -5757,13 +6048,36 @@ class UserSpaceService:
             provider=scm_provider,
             repo_visibility=getattr(record, "scmRepoVisibility", None),
             has_stored_token=bool(getattr(record, "scmToken", None)),
-            remote_role=self._normalize_scm_enum(
-                getattr(record, "scmRemoteRole", None),
-                ("upstream", "publish"),
+            remote_role=remote_role,
+            auto_sync_policy=auto_sync_policy,
+            auto_pull_enabled=bool(getattr(record, "scmAutoPullEnabled", False)),
+            auto_push_interval_seconds=max(
+                _WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MIN_SECONDS,
+                min(
+                    _WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MAX_SECONDS,
+                    int(
+                        getattr(
+                            record,
+                            "scmAutoPushIntervalSeconds",
+                            _WORKSPACE_SCM_AUTO_SYNC_DEFAULT_INTERVAL_SECONDS,
+                        )
+                        or _WORKSPACE_SCM_AUTO_SYNC_DEFAULT_INTERVAL_SECONDS
+                    ),
+                ),
             ),
-            auto_sync_policy=self._normalize_scm_enum(
-                getattr(record, "scmAutoSyncPolicy", None),
-                ("manual", "auto_push"),
+            auto_pull_interval_seconds=max(
+                _WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MIN_SECONDS,
+                min(
+                    _WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MAX_SECONDS,
+                    int(
+                        getattr(
+                            record,
+                            "scmAutoPullIntervalSeconds",
+                            _WORKSPACE_SCM_AUTO_SYNC_DEFAULT_INTERVAL_SECONDS,
+                        )
+                        or _WORKSPACE_SCM_AUTO_SYNC_DEFAULT_INTERVAL_SECONDS
+                    ),
+                ),
             ),
             sync_paused=bool(getattr(record, "scmSyncPaused", False)),
             sync_paused_reason=getattr(record, "scmSyncPausedReason", None),
@@ -6304,13 +6618,9 @@ class UserSpaceService:
         self,
         workspace_id: str,
         user_id: str,
-        request: "UserSpaceWorkspaceScmSettingsRequest",
+        request: UserSpaceWorkspaceScmSettingsRequest,
     ) -> UserSpaceWorkspaceScmStatus:
         """Update SCM relationship / policy settings without touching connection fields."""
-        from ragtime.userspace.models import (
-            UserSpaceWorkspaceScmSettingsRequest as _Req,
-        )  # noqa: F811
-
         await self._enforce_workspace_access(
             workspace_id, user_id, required_role="owner"
         )
@@ -6320,6 +6630,24 @@ class UserSpaceService:
             update_data["scmRemoteRole"] = request.remote_role
         if request.auto_sync_policy is not None:
             update_data["scmAutoSyncPolicy"] = request.auto_sync_policy
+        if request.auto_pull_enabled is not None:
+            update_data["scmAutoPullEnabled"] = request.auto_pull_enabled
+        if request.auto_push_interval_seconds is not None:
+            update_data["scmAutoPushIntervalSeconds"] = max(
+                _WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MIN_SECONDS,
+                min(
+                    _WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MAX_SECONDS,
+                    int(request.auto_push_interval_seconds),
+                ),
+            )
+        if request.auto_pull_interval_seconds is not None:
+            update_data["scmAutoPullIntervalSeconds"] = max(
+                _WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MIN_SECONDS,
+                min(
+                    _WORKSPACE_SCM_AUTO_SYNC_INTERVAL_MAX_SECONDS,
+                    int(request.auto_pull_interval_seconds),
+                ),
+            )
         if request.clear_sync_paused:
             update_data["scmSyncPaused"] = False
             update_data["scmSyncPausedReason"] = None
@@ -6333,6 +6661,10 @@ class UserSpaceService:
             where={"id": workspace_id},
             data=update_data,
         )
+        if request.auto_sync_policy == "auto_push" or request.auto_push_interval_seconds is not None:
+            self._nudge_workspace_scm_watch_due(workspace_id, "export")
+        if request.auto_pull_enabled is True or request.auto_pull_interval_seconds is not None:
+            self._nudge_workspace_scm_watch_due(workspace_id, "import")
         return self._workspace_from_record(updated).scm or UserSpaceWorkspaceScmStatus()
 
     async def _push_workspace_snapshot_commit(
@@ -9808,7 +10140,8 @@ class UserSpaceService:
         mount_id: str,
     ) -> str | None:
         try:
-            from ragtime.userspace.runtime_service import userspace_runtime_service
+            from ragtime.userspace.runtime_service import \
+                userspace_runtime_service
 
             return await userspace_runtime_service.refresh_workspace_mount_after_sync(
                 workspace_id,
@@ -12968,7 +13301,9 @@ class UserSpaceService:
                 file_count=file_count,
             )
         if auto_sync_to_scm:
-            await self._maybe_auto_push_snapshot_to_scm(workspace_id, created)
+            # Auto-sync runs in the SCM background watcher so snapshot creation
+            # stays low-latency and bounded under load.
+            self._nudge_workspace_scm_watch_due(workspace_id, "export")
         return created
 
     async def update_snapshot(

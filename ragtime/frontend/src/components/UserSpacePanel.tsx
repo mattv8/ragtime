@@ -5992,7 +5992,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                   activeWorkspace.scm.sync_paused
                     ? `Sync paused: ${activeWorkspace.scm.sync_paused_reason || 'conflict detected'}`
                     : activeWorkspace.scm.remote_role === 'upstream'
-                      ? `Upstream: ${activeWorkspace.scm.git_url || ''} (${activeWorkspace.scm.auto_sync_policy === 'auto_push' ? 'auto-push' : 'manual push'})`
+                      ? `Upstream: ${activeWorkspace.scm.git_url || ''} (${activeWorkspace.scm.auto_sync_policy === 'auto_push' ? 'auto-push' : 'manual push'}${activeWorkspace.scm.auto_pull_enabled ? ', auto-pull' : ''})`
                       : activeWorkspace.scm.git_url || 'Workspace SCM connection'
                 }
               >

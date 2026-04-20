@@ -970,6 +970,9 @@ model Workspace {
   scmLastSyncedSnapshotId String?                     @map("scm_last_synced_snapshot_id")
   scmRemoteRole           WorkspaceScmRemoteRole?     @map("scm_remote_role")
   scmAutoSyncPolicy       WorkspaceScmAutoSyncPolicy? @map("scm_auto_sync_policy")
+  scmAutoPullEnabled      Boolean                     @default(false) @map("scm_auto_pull_enabled")
+  scmAutoPushIntervalSeconds Int                      @default(3600) @map("scm_auto_push_interval_seconds")
+  scmAutoPullIntervalSeconds Int                      @default(3600) @map("scm_auto_pull_interval_seconds")
   scmSyncPaused           Boolean                     @default(false) @map("scm_sync_paused")
   scmSyncPausedReason     String?                     @map("scm_sync_paused_reason")
 

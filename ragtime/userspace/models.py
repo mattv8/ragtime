@@ -304,6 +304,9 @@ class UserSpaceWorkspaceScmStatus(BaseModel):
     has_stored_token: bool = False
     remote_role: WorkspaceScmRemoteRole | None = None
     auto_sync_policy: WorkspaceScmAutoSyncPolicy | None = None
+    auto_pull_enabled: bool = False
+    auto_push_interval_seconds: int = Field(default=3600, ge=300, le=2592000)
+    auto_pull_interval_seconds: int = Field(default=3600, ge=300, le=2592000)
     sync_paused: bool = False
     sync_paused_reason: str | None = None
     connected_at: datetime | None = None
@@ -392,6 +395,22 @@ class UserSpaceWorkspaceScmSettingsRequest(BaseModel):
     auto_sync_policy: WorkspaceScmAutoSyncPolicy | None = Field(
         default=None,
         description="Push policy: 'manual' or 'auto_push'.",
+    )
+    auto_pull_enabled: bool | None = Field(
+        default=None,
+        description="When true, upstream workspaces can auto-pull remote updates.",
+    )
+    auto_push_interval_seconds: int | None = Field(
+        default=None,
+        ge=300,
+        le=2592000,
+        description="Auto-push interval in seconds (5 minutes to 30 days).",
+    )
+    auto_pull_interval_seconds: int | None = Field(
+        default=None,
+        ge=300,
+        le=2592000,
+        description="Auto-pull interval in seconds (5 minutes to 30 days).",
     )
     clear_sync_paused: bool = Field(
         default=False,

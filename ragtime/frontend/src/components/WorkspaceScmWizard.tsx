@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ArrowDownToLine, ArrowUpToLine, Check, Database, GitBranch, Link2, RefreshCw, RefreshCcw, Upload, X } from 'lucide-react';
 
 import { api } from '@/api';
@@ -9,6 +9,7 @@ import type {
   UserSpaceWorkspaceScmExportRequest,
   UserSpaceWorkspaceScmImportRequest,
   UserSpaceWorkspaceScmPreviewResponse,
+  UserSpaceWorkspaceScmSettingsRequest,
   UserSpaceWorkspaceScmSyncResponse,
 } from '@/types';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
@@ -46,6 +47,42 @@ function formatSyncTimestamp(timestamp: string | null | undefined): string | nul
   return date.toLocaleString();
 }
 
+const SCM_SYNC_INTERVAL_MIN = 300;
+const SCM_SYNC_INTERVAL_MAX = 2592000;
+const SCM_SYNC_INTERVAL_SCALE = Math.log(SCM_SYNC_INTERVAL_MAX / SCM_SYNC_INTERVAL_MIN);
+
+function syncIntervalToSlider(seconds: number): number {
+  if (seconds >= SCM_SYNC_INTERVAL_MAX) return 100;
+  if (seconds <= SCM_SYNC_INTERVAL_MIN) return 0;
+  return Math.max(0, Math.min(100, (Math.log(seconds / SCM_SYNC_INTERVAL_MIN) / SCM_SYNC_INTERVAL_SCALE) * 100));
+}
+
+function sliderToSyncInterval(slider: number): number {
+  if (slider >= 100) return SCM_SYNC_INTERVAL_MAX;
+  if (slider <= 0) return SCM_SYNC_INTERVAL_MIN;
+  return Math.round(SCM_SYNC_INTERVAL_MIN * Math.exp((slider / 100) * SCM_SYNC_INTERVAL_SCALE));
+}
+
+function formatSyncInterval(seconds: number): string {
+  if (seconds < 3600) {
+    const minutes = Math.max(1, Math.round(seconds / 60));
+    return `${minutes}m`;
+  }
+  if (seconds < 86400) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  if (days >= 7 && hours === 0) {
+    const weeks = Math.floor(days / 7);
+    const remDays = days % 7;
+    return remDays > 0 ? `${weeks}w ${remDays}d` : `${weeks}w`;
+  }
+  return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+}
+
 export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAgent }: WorkspaceScmWizardProps) {
   const initialScm = workspace.scm;
   const [activeTab, setActiveTab] = useState<ModalTab>('git-source');
@@ -71,6 +108,8 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [sqlDragOver, setSqlDragOver] = useState(false);
   const [loadingAction, setLoadingAction] = useState<'pull' | 'push' | 'overwrite' | 'sync' | 'preview' | 'execute' | null>(null);
   const [showOverwriteMenu, setShowOverwriteMenu] = useState(false);
+  const [autoPushIntervalSeconds, setAutoPushIntervalSeconds] = useState(initialScm?.auto_push_interval_seconds ?? 3600);
+  const [autoPullIntervalSeconds, setAutoPullIntervalSeconds] = useState(initialScm?.auto_pull_interval_seconds ?? 3600);
   const sqlFileInputRef = useRef<HTMLInputElement>(null);
   const activeScm = result?.scm ?? initialScm ?? null;
   const hasConfiguredRemote = Boolean(activeScm?.connected || activeScm?.git_url);
@@ -102,6 +141,20 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   }, [activeScm]);
 
   const setupModeLabel = mode === 'import' ? 'Import' : 'Export';
+
+  useEffect(() => {
+    setAutoPushIntervalSeconds(activeScm?.auto_push_interval_seconds ?? 3600);
+    setAutoPullIntervalSeconds(activeScm?.auto_pull_interval_seconds ?? 3600);
+  }, [activeScm?.auto_pull_interval_seconds, activeScm?.auto_push_interval_seconds]);
+
+  const applyScmSettingsPatch = useCallback(async (
+    patch: UserSpaceWorkspaceScmSettingsRequest,
+    summary: string,
+    direction: 'import' | 'export',
+  ) => {
+    const resp = await api.updateUserSpaceWorkspaceScmSettings(workspace.id, patch);
+    await onSyncComplete({ workspace_id: workspace.id, direction, state: 'settings_updated', summary, scm: resp.scm });
+  }, [onSyncComplete, workspace.id]);
 
   useEffect(() => {
     if (hasConfiguredRemote) return;
@@ -372,33 +425,15 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', paddingTop: 8, borderTop: '1px solid var(--color-border-subtle)', flexWrap: 'wrap' }}>
                     <span className="userspace-muted" style={{ fontSize: 12, flex: 1 }}>
                       {activeScm.remote_role === 'upstream'
-                        ? activeScm.auto_sync_policy === 'auto_push'
-                          ? 'Snapshots are automatically pushed to the upstream remote.'
-                          : 'Snapshots stay local. Use Pull to fetch upstream changes, Push to send local changes.'
+                        ? activeScm.auto_sync_policy === 'auto_push' && activeScm.auto_pull_enabled
+                          ? 'Snapshots auto-push and upstream changes auto-pull when available.'
+                          : activeScm.auto_sync_policy === 'auto_push'
+                            ? 'Snapshots are automatically pushed to the upstream remote.'
+                            : activeScm.auto_pull_enabled
+                              ? 'Upstream changes auto-pull when available. Local snapshots stay local until you push.'
+                              : 'Snapshots stay local. Use Pull to fetch upstream changes, Push to send local changes.'
                         : 'Snapshots from this workspace are automatically synced to the remote.'}
                     </span>
-                    {activeScm.remote_role === 'upstream' && (
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={activeScm.auto_sync_policy === 'auto_push'}
-                          onChange={async (event) => {
-                            try {
-                              const nextPolicy = event.target.checked ? 'auto_push' : 'manual';
-                              const resp = await api.updateUserSpaceWorkspaceScmSettings(workspace.id, {
-                                auto_sync_policy: nextPolicy,
-                                clear_sync_paused: nextPolicy === 'auto_push' ? true : undefined,
-                              });
-                              await onSyncComplete({ workspace_id: workspace.id, direction: 'export', state: 'settings_updated', summary: `Auto-push ${nextPolicy === 'auto_push' ? 'enabled' : 'disabled'}`, scm: resp.scm });
-                            } catch (error) {
-                              setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update setting' });
-                            }
-                          }}
-                          disabled={isLoading}
-                        />
-                        Auto-push
-                      </label>
-                    )}
                     {activeScm.sync_paused && (
                       <button
                         className="btn btn-sm btn-secondary"
@@ -416,6 +451,156 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                       </button>
                     )}
                   </div>
+                  {activeScm.remote_role === 'upstream' && (
+                    <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+                      <div style={{ display: 'grid', gap: 8, padding: 10, border: '1px solid var(--color-border-subtle)', borderRadius: 8 }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={activeScm.auto_sync_policy === 'auto_push'}
+                            onChange={async (event) => {
+                              try {
+                                const nextPolicy = event.target.checked ? 'auto_push' : 'manual';
+                                await applyScmSettingsPatch({
+                                  auto_sync_policy: nextPolicy,
+                                  clear_sync_paused: nextPolicy === 'auto_push' ? true : undefined,
+                                }, `Auto-push ${nextPolicy === 'auto_push' ? 'enabled' : 'disabled'}`, 'export');
+                              } catch (error) {
+                                setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update setting' });
+                              }
+                            }}
+                            disabled={isLoading}
+                          />
+                          <strong style={{ fontSize: 12 }}>Auto-push</strong>
+                        </label>
+                        {activeScm.auto_sync_policy === 'auto_push' && (
+                          <>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span className="userspace-muted" style={{ fontSize: 11 }}>Interval</span>
+                              <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>{formatSyncInterval(autoPushIntervalSeconds)}</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                              <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>5m</span>
+                              <input
+                                type="range"
+                                min="0"
+                                max="100"
+                                step="1"
+                                value={syncIntervalToSlider(autoPushIntervalSeconds)}
+                                style={{ flex: 1 }}
+                                onChange={(event) => setAutoPushIntervalSeconds(sliderToSyncInterval(parseInt(event.target.value, 10)))}
+                                onMouseUp={() => {
+                                  if ((activeScm.auto_push_interval_seconds ?? 3600) === autoPushIntervalSeconds) return;
+                                  void applyScmSettingsPatch(
+                                    { auto_push_interval_seconds: autoPushIntervalSeconds },
+                                    `Auto-push interval set to ${formatSyncInterval(autoPushIntervalSeconds)}`,
+                                    'export',
+                                  ).catch((error) => {
+                                    setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update interval' });
+                                  });
+                                }}
+                                onTouchEnd={() => {
+                                  if ((activeScm.auto_push_interval_seconds ?? 3600) === autoPushIntervalSeconds) return;
+                                  void applyScmSettingsPatch(
+                                    { auto_push_interval_seconds: autoPushIntervalSeconds },
+                                    `Auto-push interval set to ${formatSyncInterval(autoPushIntervalSeconds)}`,
+                                    'export',
+                                  ).catch((error) => {
+                                    setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update interval' });
+                                  });
+                                }}
+                                onKeyUp={() => {
+                                  if ((activeScm.auto_push_interval_seconds ?? 3600) === autoPushIntervalSeconds) return;
+                                  void applyScmSettingsPatch(
+                                    { auto_push_interval_seconds: autoPushIntervalSeconds },
+                                    `Auto-push interval set to ${formatSyncInterval(autoPushIntervalSeconds)}`,
+                                    'export',
+                                  ).catch((error) => {
+                                    setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update interval' });
+                                  });
+                                }}
+                                disabled={isLoading}
+                              />
+                              <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>30d</span>
+                            </div>
+                          </>
+                        )}
+                      </div>
+
+                      <div style={{ display: 'grid', gap: 8, padding: 10, border: '1px solid var(--color-border-subtle)', borderRadius: 8 }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(activeScm.auto_pull_enabled)}
+                            onChange={async (event) => {
+                              try {
+                                const nextEnabled = event.target.checked;
+                                await applyScmSettingsPatch({
+                                  auto_pull_enabled: nextEnabled,
+                                }, `Auto-pull ${nextEnabled ? 'enabled' : 'disabled'}`, 'import');
+                              } catch (error) {
+                                setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update setting' });
+                              }
+                            }}
+                            disabled={isLoading}
+                          />
+                          <strong style={{ fontSize: 12 }}>Auto-pull</strong>
+                        </label>
+                        {Boolean(activeScm.auto_pull_enabled) && (
+                          <>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span className="userspace-muted" style={{ fontSize: 11 }}>Interval</span>
+                              <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>{formatSyncInterval(autoPullIntervalSeconds)}</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                              <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>5m</span>
+                              <input
+                                type="range"
+                                min="0"
+                                max="100"
+                                step="1"
+                                value={syncIntervalToSlider(autoPullIntervalSeconds)}
+                                style={{ flex: 1 }}
+                                onChange={(event) => setAutoPullIntervalSeconds(sliderToSyncInterval(parseInt(event.target.value, 10)))}
+                                onMouseUp={() => {
+                                  if ((activeScm.auto_pull_interval_seconds ?? 3600) === autoPullIntervalSeconds) return;
+                                  void applyScmSettingsPatch(
+                                    { auto_pull_interval_seconds: autoPullIntervalSeconds },
+                                    `Auto-pull interval set to ${formatSyncInterval(autoPullIntervalSeconds)}`,
+                                    'import',
+                                  ).catch((error) => {
+                                    setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update interval' });
+                                  });
+                                }}
+                                onTouchEnd={() => {
+                                  if ((activeScm.auto_pull_interval_seconds ?? 3600) === autoPullIntervalSeconds) return;
+                                  void applyScmSettingsPatch(
+                                    { auto_pull_interval_seconds: autoPullIntervalSeconds },
+                                    `Auto-pull interval set to ${formatSyncInterval(autoPullIntervalSeconds)}`,
+                                    'import',
+                                  ).catch((error) => {
+                                    setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update interval' });
+                                  });
+                                }}
+                                onKeyUp={() => {
+                                  if ((activeScm.auto_pull_interval_seconds ?? 3600) === autoPullIntervalSeconds) return;
+                                  void applyScmSettingsPatch(
+                                    { auto_pull_interval_seconds: autoPullIntervalSeconds },
+                                    `Auto-pull interval set to ${formatSyncInterval(autoPullIntervalSeconds)}`,
+                                    'import',
+                                  ).catch((error) => {
+                                    setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update interval' });
+                                  });
+                                }}
+                                disabled={isLoading}
+                              />
+                              <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>30d</span>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
