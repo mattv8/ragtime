@@ -153,6 +153,31 @@ from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
 
+
+def _format_exception_message(exc: BaseException) -> str:
+    """Return a stable human-readable detail for exceptions with empty ``str(exc)``."""
+    detail = str(exc).strip()
+    if detail:
+        return detail
+
+    return exc.__class__.__name__
+
+
+async def _terminate_subprocess_after_timeout(
+    process: asyncio.subprocess.Process,
+) -> None:
+    """Best-effort subprocess cleanup that tolerates already-exited processes."""
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
+
+    try:
+        await process.wait()
+    except ProcessLookupError:
+        pass
+
+
 # Maximum timeout for any tool execution (5 minutes)
 # AI can request up to this limit; configured per-tool timeout is the default
 MAX_TOOL_TIMEOUT_SECONDS = 300
@@ -875,8 +900,7 @@ async def validate_live_data_binding(
             timeout=timeout_seconds,
         )
     except TimeoutError:
-        process.kill()
-        await process.wait()
+        await _terminate_subprocess_after_timeout(process)
         return {**_default_fail, "message": "AST validation timed out"}
 
     if process.returncode != 0:
@@ -947,8 +971,7 @@ async def validate_userspace_typescript_content(
             timeout=timeout_seconds,
         )
     except TimeoutError:
-        process.kill()
-        await process.wait()
+        await _terminate_subprocess_after_timeout(process)
         return {
             "ok": False,
             "validator_available": False,
@@ -11613,7 +11636,10 @@ except Exception as e:
 
         except Exception as e:
             logger.exception("Error processing query")
-            return f"I encountered an error processing your request: {str(e)}"
+            return (
+                "I encountered an error processing your request: "
+                f"{_format_exception_message(e)}"
+            )
 
     async def process_query_stream(
         self,
@@ -12539,7 +12565,10 @@ except Exception as e:
 
         except Exception as e:
             logger.exception("Error in streaming query")
-            yield f"I encountered an error processing your request: {str(e)}"
+            yield (
+                "I encountered an error processing your request: "
+                f"{_format_exception_message(e)}"
+            )
 
 
 # Global RAG components instance

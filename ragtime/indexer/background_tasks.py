@@ -16,20 +16,16 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
-from ragtime.core.usage_accounting import (
-    _estimate_output_tokens,
-    bind_usage_attempt_task,
-    finalize_stale_attempts_for_tasks,
-    finalize_usage_attempt,
-)
+from ragtime.core.usage_accounting import (_estimate_output_tokens,
+                                           bind_usage_attempt_task,
+                                           finalize_stale_attempts_for_tasks,
+                                           finalize_usage_attempt)
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    ChatTaskStatus,
-    FilesystemConnectionConfig,
-    SchemaIndexConfig,
-)
+from ragtime.indexer.models import (ChatTaskStatus, FilesystemConnectionConfig,
+                                    SchemaIndexConfig)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 
@@ -39,6 +35,17 @@ logger = get_logger(__name__)
 DEV_SERVER_INTERRUPT_MESSAGE = (
     "Chat run interrupted by dev server reload or shutdown before it finished."
 )
+WRAPPED_PROCESSING_ERROR_PREFIX = "I encountered an error processing your request:"
+
+
+def _extract_wrapped_processing_error(full_response: str) -> Optional[str]:
+    """Return wrapped internal error detail if response is the generic error shell."""
+    text = (full_response or "").strip()
+    if not text.startswith(WRAPPED_PROCESSING_ERROR_PREFIX):
+        return None
+
+    detail = text[len(WRAPPED_PROCESSING_ERROR_PREFIX) :].strip()
+    return detail or "Internal processing error"
 
 
 def _synthesize_incomplete_response(
@@ -1182,6 +1189,50 @@ class BackgroundTaskService:
                                 ),
                             )
                         return
+
+                wrapped_error_detail = _extract_wrapped_processing_error(full_response)
+                if wrapped_error_detail is not None:
+                    if (
+                        not partial_message_persisted
+                        and await _persist_partial_assistant_message(
+                            conversation_id,
+                            full_response,
+                            events,
+                        )
+                    ):
+                        partial_message_persisted = True
+                    await repository.update_chat_task_status(
+                        task_id,
+                        ChatTaskStatus.interrupted,
+                        wrapped_error_detail,
+                    )
+                    await task_event_bus.publish(
+                        task_id,
+                        {
+                            "completed": True,
+                            "status": "interrupted",
+                            "error": wrapped_error_detail,
+                            "content": full_response,
+                            "events": events,
+                        },
+                    )
+                    logger.warning(
+                        "Background task %s produced wrapped internal error; "
+                        "marking interrupted (%s)",
+                        task_id,
+                        wrapped_error_detail,
+                    )
+                    if usage_attempt_id:
+                        await finalize_usage_attempt(
+                            usage_attempt_id,
+                            status="interrupted",
+                            failure_reason=wrapped_error_detail,
+                            output_tokens=_estimate_output_tokens(
+                                full_response,
+                                events,
+                            ),
+                        )
+                    return
 
                 await repository.complete_chat_task(
                     task_id,
