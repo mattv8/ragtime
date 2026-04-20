@@ -2286,6 +2286,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
     refreshRuntimeStatusInflightRef.current = true;
     const requestId = ++loadRuntimeStatusRequestIdRef.current;
+    const requestedConversationId = conversationId ?? null;
 
     try {
       const state = await api.getUserSpaceWorkspaceTabState(
@@ -2293,20 +2294,37 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         conversationId,
       );
 
-      if (
+      const isCurrentWorkspaceRequest = (
         requestId === loadRuntimeStatusRequestIdRef.current
         && activeWorkspaceIdRef.current === workspaceId
-      ) {
+      );
+      const isCurrentConversationRequest = (
+        isCurrentWorkspaceRequest
+        && activeWorkspaceConversationIdRef.current === requestedConversationId
+      );
+
+      if (isCurrentWorkspaceRequest) {
         setRuntimeStatus(state.runtime_status);
-        setActiveWorkspaceChatSnapshot(state.chat_state);
+        // Ignore tab-state chat snapshots for a conversation that is no longer selected.
+        if (isCurrentConversationRequest) {
+          setActiveWorkspaceChatSnapshot(state.chat_state);
+        }
       }
     } catch {
-      if (
+      const isCurrentWorkspaceRequest = (
         requestId === loadRuntimeStatusRequestIdRef.current
         && activeWorkspaceIdRef.current === workspaceId
-      ) {
+      );
+      const isCurrentConversationRequest = (
+        isCurrentWorkspaceRequest
+        && activeWorkspaceConversationIdRef.current === requestedConversationId
+      );
+
+      if (isCurrentWorkspaceRequest) {
         setRuntimeStatus(null);
-        setActiveWorkspaceChatSnapshot(null);
+        if (isCurrentConversationRequest) {
+          setActiveWorkspaceChatSnapshot(null);
+        }
       }
     } finally {
       refreshRuntimeStatusInflightRef.current = false;

@@ -2649,6 +2649,7 @@ export function ChatPanel({
   const titleSourceRef = useRef<Map<string, EventSource>>(new Map());
   const workspaceConversationDropdownRef = useRef<HTMLDivElement>(null);
   const chatMainRef = useRef<HTMLDivElement>(null);
+  const selectConversationRequestIdRef = useRef(0);
   const prevSidebarWidth = useRef(280);
   const prevInputAreaHeight = useRef(MIN_INPUT_AREA_HEIGHT);
   const prevInputLengthRef = useRef(0);
@@ -4131,6 +4132,7 @@ export function ChatPanel({
 
   const selectConversation = async (conversation: Conversation) => {
     const isSwitchingConversation = activeConversation?.id !== conversation.id;
+    const requestId = ++selectConversationRequestIdRef.current;
     try {
       if (!embedded && typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches) {
         setShowSidebar(false);
@@ -4144,6 +4146,9 @@ export function ChatPanel({
 
       // Refresh the conversation to get latest messages
       const fresh = await api.getConversation(conversation.id, workspaceId);
+      if (requestId !== selectConversationRequestIdRef.current) {
+        return;
+      }
       setActiveConversation(fresh);
       // Sync sidebar title in case it was updated while another conversation was active
       if (fresh.title !== conversation.title) {
@@ -4151,9 +4156,12 @@ export function ChatPanel({
       }
       setError(null);
     } catch (err) {
+      if (requestId !== selectConversationRequestIdRef.current) {
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Failed to load conversation');
     } finally {
-      if (isSwitchingConversation) {
+      if (requestId === selectConversationRequestIdRef.current && isSwitchingConversation) {
         setIsConversationSwitchLoading(false);
       }
     }
