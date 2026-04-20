@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, CopyPlus, Crown, Database, ExternalLink, File, GitBranch, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, CopyPlus, Crown, Database, ExternalLink, File, GitBranch, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { keymap } from '@codemirror/view';
 import { openSearchPanel } from '@codemirror/search';
@@ -5980,7 +5980,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 Connecting data...
               </span>
             )}
-            {activeWorkspace && !isAdminImpersonating && (
+            {activeWorkspace && !isAdminImpersonating && !isOwner && (
               <span className="userspace-status-pill userspace-status-pill-info">
                 {activeWorkspaceRole}{!canEditWorkspace ? ' (read-only)' : ''}
               </span>
@@ -6011,12 +6011,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 {activeWorkspace?.owner_display_name || activeWorkspace?.owner_username || 'unknown'}
               </span>
             )}
-            {activeWorkspaceId && (
+            {activeWorkspaceId && collabPresenceCount > 1 && (
               <span
-                className={`userspace-status-pill ${collabConnected ? 'userspace-status-pill-success' : 'userspace-status-pill-muted'}`}
-                title="Collaborative editor connection state"
+                className="userspace-collab-badge"
+                title={`${collabPresenceCount} collaborators viewing this workspace`}
               >
-                {collabConnected ? `collab (${collabPresenceCount})` : 'offline'}
+                <Users size={14} />
+                <span className="userspace-collab-badge-count">{collabPresenceCount}</span>
               </span>
             )}
             {runtimeStatus && (

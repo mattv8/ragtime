@@ -503,6 +503,7 @@
   .userspace-toolbar {
     gap: var(--space-xs);
     padding: var(--space-xs) var(--space-sm);
+    position: relative;
   }
 
   .userspace-toolbar-group-right {
@@ -512,11 +513,24 @@
 
   .userspace-toolbar-status-group {
     flex-wrap: wrap;
+    position: absolute;
+    top: 6px;
+    right: var(--space-sm);
+    z-index: 1;
+    justify-content: flex-end;
+    max-width: 60%;
   }
 
   .userspace-status-pill {
     font-size: 10px;
     padding: 1px 7px;
+  }
+
+  .userspace-collab-badge {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    min-height: 28px;
   }
 
   .userspace-toolbar-tabs {
@@ -551,11 +565,13 @@
 
   .userspace-left-pane {
     flex: 1 1 55%;
+    order: 1;
   }
 
   .userspace-right-pane {
     flex: 1 1 45%;
     border-top: 1px solid var(--color-border);
+    order: 0;
   }
 
   .userspace-editor-section {
@@ -802,6 +818,18 @@
     padding: 4px 24px 4px 8px;
   }
 
+  /* Widen the collapsed trigger when the interrupt alert is showing */
+  .chat-panel-workspace .chat-workspace-conversation-picker:has(.chat-workspace-interrupt-dismiss) {
+    min-width: 60px;
+    max-width: 60px;
+    flex-basis: 60px;
+  }
+  .chat-panel-workspace .chat-workspace-conversation-trigger:has(.chat-workspace-interrupt-dismiss) {
+    width: 60px;
+    max-width: 60px;
+    gap: 4px;
+  }
+
   .model-selector-trigger:not(.model-selector-trigger-full) {
     max-width: 120px;
     font-size: 0.65rem;
@@ -885,7 +913,8 @@
 
   .userspace-toolbar-actions,
   .userspace-toolbar-runtime-controls {
-    width: 100%;
+    width: auto;
+    flex-shrink: 0;
     justify-content: flex-start;
   }
 
