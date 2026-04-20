@@ -849,9 +849,40 @@ class BackgroundTaskService:
                     except StopAsyncIteration:
                         break
                     except asyncio.TimeoutError as exc:
+                        if full_response.strip():
+                            # Edge case: some provider streams can stall after
+                            # emitting usable assistant text (and occasionally
+                            # after a final tool start), never sending an
+                            # explicit stream end event.
+                            logger.warning(
+                                "Task %s stream inactive for %ss after partial output; "
+                                "treating as graceful stream end "
+                                "(content_chars=%d, events=%d, running_tools=%d)",
+                                task_id,
+                                _STREAM_INACTIVITY_TIMEOUT,
+                                len(full_response),
+                                len(events),
+                                len(running_tool_indices),
+                            )
+
+                            # Close any unresolved running tool rows so the
+                            # stored event log does not leave a perpetual
+                            # "running" tool bubble.
+                            for tool_idx in list(running_tool_indices.values()):
+                                if (
+                                    0 <= tool_idx < len(events)
+                                    and events[tool_idx].get("type") == "tool"
+                                    and "output" not in events[tool_idx]
+                                ):
+                                    events[tool_idx][
+                                        "output"
+                                    ] = "Tool completed or stream ended without a final tool_end event."
+                            running_tool_indices.clear()
+                            break
+
                         raise TimeoutError(
                             f"LLM/agent stream produced no output for "
-                            f"{_STREAM_INACTIVITY_TIMEOUT}s — possible hung API call"
+                            f"{_STREAM_INACTIVITY_TIMEOUT}s - possible hung API call"
                         ) from exc
 
                     if self._shutdown:
