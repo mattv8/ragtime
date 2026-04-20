@@ -16,16 +16,21 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
-from ragtime.core.usage_accounting import (_estimate_output_tokens,
-                                           bind_usage_attempt_task,
-                                           finalize_stale_attempts_for_tasks,
-                                           finalize_usage_attempt)
+from ragtime.core.usage_accounting import (
+    _estimate_output_tokens,
+    bind_usage_attempt_task,
+    finalize_stale_attempts_for_tasks,
+    finalize_usage_attempt,
+)
+from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (ChatTaskStatus, FilesystemConnectionConfig,
-                                    SchemaIndexConfig)
+from ragtime.indexer.models import (
+    ChatTaskStatus,
+    FilesystemConnectionConfig,
+    SchemaIndexConfig,
+)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 
@@ -816,6 +821,7 @@ class BackgroundTaskService:
                 events = []
                 tool_calls = []
                 partial_message_persisted = False
+                reasoning_block_started_at: Optional[datetime] = None
                 # Track running tools by run_id -> index in events list
                 running_tool_indices: dict[str, int] = {}
                 hit_max_iterations = False  # Track if we hit the iteration limit
@@ -1098,17 +1104,19 @@ class BackgroundTaskService:
                             # Reasoning/thinking content from LLM
                             reasoning_text = event.get("content", "")
                             if reasoning_text:
-                                # Append to events as reasoning block
-                                if events and events[-1].get("type") == "reasoning":
-                                    events[-1]["content"] += reasoning_text
-                                else:
-                                    events.append(
-                                        {"type": "reasoning", "content": reasoning_text}
-                                    )
+                                reasoning_block_started_at = append_reasoning_event(
+                                    events,
+                                    reasoning_text,
+                                    reasoning_block_started_at,
+                                )
                     else:
                         # Text token
                         token = event
                         full_response += token
+
+                        if reasoning_block_started_at is not None:
+                            finalize_reasoning_block(events, reasoning_block_started_at)
+                            reasoning_block_started_at = None
 
                         # Add to events
                         if events and events[-1].get("type") == "content":
@@ -1192,6 +1200,9 @@ class BackgroundTaskService:
 
                 wrapped_error_detail = _extract_wrapped_processing_error(full_response)
                 if wrapped_error_detail is not None:
+                    if reasoning_block_started_at is not None:
+                        finalize_reasoning_block(events, reasoning_block_started_at)
+                        reasoning_block_started_at = None
                     if (
                         not partial_message_persisted
                         and await _persist_partial_assistant_message(
@@ -1233,6 +1244,10 @@ class BackgroundTaskService:
                             ),
                         )
                     return
+
+                if reasoning_block_started_at is not None:
+                    finalize_reasoning_block(events, reasoning_block_started_at)
+                    reasoning_block_started_at = None
 
                 await repository.complete_chat_task(
                     task_id,
@@ -1289,6 +1304,9 @@ class BackgroundTaskService:
             except asyncio.CancelledError:
                 # Save partial response before cancelling
                 try:
+                    if reasoning_block_started_at is not None:
+                        finalize_reasoning_block(events, reasoning_block_started_at)
+                        reasoning_block_started_at = None
                     if (
                         not partial_message_persisted
                         and await _persist_partial_assistant_message(
@@ -1351,6 +1369,9 @@ class BackgroundTaskService:
             except Exception as e:
                 logger.exception(f"Background task {task_id} failed")
                 try:
+                    if reasoning_block_started_at is not None:
+                        finalize_reasoning_block(events, reasoning_block_started_at)
+                        reasoning_block_started_at = None
                     if (
                         not partial_message_persisted
                         and await _persist_partial_assistant_message(

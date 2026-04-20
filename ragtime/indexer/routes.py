@@ -114,6 +114,7 @@ from ragtime.indexer.background_tasks import (
     background_task_service,
     rebuild_tool_messages_from_events,
 )
+from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import (
     AnalyzeIndexRequest,
@@ -10077,6 +10078,7 @@ async def send_message_stream(
         current_tool_call: dict[str, Any] | None = (
             None  # Track current tool call being built
         )
+        reasoning_block_started_at: datetime | None = None
 
         try:
             # Use UI agent (with chart tool and enhanced prompt)
@@ -10151,16 +10153,11 @@ async def send_message_stream(
                         # Reasoning/thinking content from LLM
                         reasoning_text = event.get("content", "")
                         if reasoning_text:
-                            # Accumulate in chronological events
-                            if (
-                                chronological_events
-                                and chronological_events[-1].get("type") == "reasoning"
-                            ):
-                                chronological_events[-1]["content"] += reasoning_text
-                            else:
-                                chronological_events.append(
-                                    {"type": "reasoning", "content": reasoning_text}
-                                )
+                            reasoning_block_started_at = append_reasoning_event(
+                                chronological_events,
+                                reasoning_text,
+                                reasoning_block_started_at,
+                            )
 
                             reasoning_chunk = {
                                 "id": chunk_id,
@@ -10180,6 +10177,11 @@ async def send_message_stream(
                     # Handle regular text tokens
                     token = event
                     full_response += token
+                    if reasoning_block_started_at is not None:
+                        finalize_reasoning_block(
+                            chronological_events, reasoning_block_started_at
+                        )
+                        reasoning_block_started_at = None
                     # Add content events when we get text (batch them for efficiency)
                     if (
                         chronological_events
@@ -10207,6 +10209,11 @@ async def send_message_stream(
                         ],
                     }
                     yield f"data: {json.dumps(chunk)}\n\n"
+            if reasoning_block_started_at is not None:
+                finalize_reasoning_block(
+                    chronological_events, reasoning_block_started_at
+                )
+                reasoning_block_started_at = None
 
             # Persist the full response using chronological events.
             persisted_conv = await repository.add_message(
@@ -10260,6 +10267,12 @@ async def send_message_stream(
             if current_tool_call is not None:
                 current_tool_call["output"] = "(interrupted)"
                 chronological_events.append(current_tool_call)
+
+            if reasoning_block_started_at is not None:
+                finalize_reasoning_block(
+                    chronological_events, reasoning_block_started_at
+                )
+                reasoning_block_started_at = None
 
             # Persist whatever we have so far using chronological events only.
             combined_response = full_response.strip()

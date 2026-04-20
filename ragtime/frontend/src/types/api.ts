@@ -1549,6 +1549,7 @@ export interface ToolCallEvent {
 export interface ReasoningEvent {
   type: 'reasoning';
   content: string;
+  duration_seconds?: number;
 }
 
 export type MessageEvent = ContentEvent | ToolCallEvent | ReasoningEvent;

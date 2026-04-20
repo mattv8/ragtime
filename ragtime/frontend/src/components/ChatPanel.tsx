@@ -121,7 +121,7 @@ interface ActiveToolCall {
 type StreamingRenderEvent =
   | { type: 'content'; content: string }
   | { type: 'tool'; toolCall: ActiveToolCall }
-  | { type: 'reasoning'; content: string };
+  | { type: 'reasoning'; content: string; durationSeconds?: number };
 
 // Parse table metadata from SQL tool output
 // Format: <!--TABLEDATA:{"columns":[...],"rows":[...]}-->
@@ -1814,6 +1814,7 @@ interface StreamingSegment {
   content?: string;  // For content/reasoning segments - consolidated text
   toolCall?: ActiveToolCall;  // For tool segments
   isComplete?: boolean;  // For reasoning segments - whether thinking has finished
+  durationSeconds?: number;  // For reasoning segments - persisted final elapsed time
   embeddedToolCalls?: ActiveToolCall[];  // For reasoning segments - nested tool executions
   reasoningParts?: ReasoningPart[];  // For reasoning segments - ordered text/tool parts
 }
@@ -1832,6 +1833,7 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
   isComplete,
   parts,
   toolCalls,
+  durationSeconds,
   visibility = 'compact',
   workspaceId,
   conversationId,
@@ -1841,6 +1843,7 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
   isComplete: boolean;
   parts?: ReasoningPart[];
   toolCalls?: ActiveToolCall[];
+  durationSeconds?: number;
   visibility?: 'compact' | 'expanded' | 'hidden';
   workspaceId?: string;
   conversationId?: string;
@@ -1948,6 +1951,7 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
     if (s < 60) return `${s}s`;
     return `${Math.floor(s / 60)}m ${s % 60}s`;
   };
+  const resolvedElapsed = isComplete ? (durationSeconds ?? elapsed) : elapsed;
 
   const handleCopy = useCallback(async () => {
     try {
@@ -1990,9 +1994,9 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
           {isComplete ? 'Thought process' : 'Thinking...'}
         </span>
         <span className="reasoning-meta">
-          {!isComplete && elapsed > 0 && (
-            <span className="reasoning-meta-item" title="Elapsed time">
-              <Clock size={10} /> {formatElapsed(elapsed)}
+          {resolvedElapsed > 0 && (
+            <span className="reasoning-meta-item" title={isComplete ? 'Reasoning time' : 'Elapsed time'}>
+              <Clock size={10} /> {formatElapsed(resolvedElapsed)}
             </span>
           )}
           {toolCount > 0 && (
@@ -2073,6 +2077,7 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
       <ReasoningDisplay
         content={segment.content}
         isComplete={!!segment.isComplete}
+        durationSeconds={segment.durationSeconds}
         parts={segment.reasoningParts}
         toolCalls={segment.embeddedToolCalls}
         workspaceId={workspaceId}
@@ -3141,6 +3146,7 @@ export function ChatPanel({
     let currentReasoning = '';
     let currentReasoningParts: ReasoningPart[] = [];
     let reasoningToolCalls: ActiveToolCall[] = [];
+    let currentReasoningDurationSeconds: number | undefined;
 
     // Flush accumulated reasoning into a NEW reasoning segment (adjacent reasoning merges, non-adjacent stays separate)
     const flushReasoning = (isComplete: boolean) => {
@@ -3149,6 +3155,7 @@ export function ChatPanel({
         type: 'reasoning',
         content: currentReasoning,
         isComplete,
+        durationSeconds: currentReasoningDurationSeconds,
         embeddedToolCalls: reasoningToolCalls.length > 0 ? [...reasoningToolCalls] : [],
         reasoningParts: currentReasoningParts.length > 0 ? [...currentReasoningParts] : [{ type: 'text', text: currentReasoning }],
       };
@@ -3156,6 +3163,7 @@ export function ChatPanel({
       currentReasoning = '';
       currentReasoningParts = [];
       reasoningToolCalls = [];
+      currentReasoningDurationSeconds = undefined;
     };
 
     const flushContent = () => {
@@ -3170,6 +3178,9 @@ export function ChatPanel({
         flushContent();
         // Accumulate reasoning (adjacent reasoning events merge)
         currentReasoning += ev.content;
+        if (typeof ev.durationSeconds === 'number') {
+          currentReasoningDurationSeconds = ev.durationSeconds;
+        }
         const lastPart = currentReasoningParts[currentReasoningParts.length - 1];
         if (lastPart && lastPart.type === 'text') {
           lastPart.text = (lastPart.text || '') + ev.content;
@@ -3934,7 +3945,13 @@ export function ChatPanel({
                 // Convert to StreamingRenderEvent format
                 return events.map((ev: any) => {
                     if (ev.type === 'content') return { type: 'content' as const, content: ev.content || '' };
-                    if (ev.type === 'reasoning') return { type: 'reasoning' as const, content: ev.content || '' };
+                    if (ev.type === 'reasoning') {
+                      return {
+                        type: 'reasoning' as const,
+                        content: ev.content || '',
+                        durationSeconds: typeof ev.duration_seconds === 'number' ? ev.duration_seconds : undefined,
+                      };
+                    }
                   const hasOutput = ev && typeof ev === 'object' && Object.prototype.hasOwnProperty.call(ev, 'output');
                     return {
                         type: 'tool' as const,
@@ -5453,6 +5470,7 @@ export function ChatPanel({
                                   let pendingReasoning = '';
                                   let pendingReasoningParts: ReasoningPart[] = [];
                                   let pendingReasoningTools: ActiveToolCall[] = [];
+                                  let pendingReasoningDurationSeconds: number | undefined;
                                   let reasoningBlockCount = 0;
 
                                   const flushReasoning = () => {
@@ -5463,6 +5481,7 @@ export function ChatPanel({
                                         key={`reasoning-${reasoningBlockCount}`}
                                         content={pendingReasoning}
                                         isComplete={true}
+                                        durationSeconds={pendingReasoningDurationSeconds}
                                         parts={pendingReasoningParts.length > 0 ? pendingReasoningParts : undefined}
                                         toolCalls={pendingReasoningTools.length > 0 ? pendingReasoningTools : undefined}
                                         workspaceId={workspaceId}
@@ -5473,6 +5492,7 @@ export function ChatPanel({
                                     pendingReasoning = '';
                                     pendingReasoningParts = [];
                                     pendingReasoningTools = [];
+                                    pendingReasoningDurationSeconds = undefined;
                                   };
 
                                   for (let evIdx = 0; evIdx < msg.events.length; evIdx++) {
@@ -5480,6 +5500,9 @@ export function ChatPanel({
                                     if (ev.type === 'reasoning') {
                                       // Accumulate adjacent reasoning
                                       pendingReasoning += (pendingReasoning ? '\n\n' : '') + ev.content;
+                                      if (typeof ev.duration_seconds === 'number') {
+                                        pendingReasoningDurationSeconds = ev.duration_seconds;
+                                      }
                                       const lastPart = pendingReasoningParts[pendingReasoningParts.length - 1];
                                       if (lastPart && lastPart.type === 'text') {
                                         lastPart.text = (lastPart.text || '') + (lastPart.text ? '\n\n' : '') + ev.content;
