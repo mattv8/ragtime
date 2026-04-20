@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     HTTPException,
     Query,
     Request,
     Response,
     UploadFile,
 )
+from fastapi.responses import FileResponse
 
 from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.database import get_db
@@ -42,6 +48,7 @@ from ragtime.userspace.models import (
     DeleteGlobalEnvVarResponse,
     DeleteUserspaceMountSourceResponse,
     DeleteUserSpaceObjectStorageBucketResponse,
+    DeleteUserSpaceWorkspaceArchiveExportResponse,
     DeleteWorkspaceEnvVarResponse,
     DeleteWorkspaceMountResponse,
     DuplicateWorkspaceRequest,
@@ -80,6 +87,10 @@ from ragtime.userspace.models import (
     UserSpaceSnapshotFileDiffResponse,
     UserSpaceSnapshotTimelineResponse,
     UserSpaceWorkspace,
+    UserSpaceWorkspaceArchiveExportListResponse,
+    UserSpaceWorkspaceArchiveExportRequest,
+    UserSpaceWorkspaceArchiveExportTask,
+    UserSpaceWorkspaceArchiveImportTask,
     UserSpaceWorkspaceCreateTask,
     UserSpaceWorkspaceDeleteTask,
     UserSpaceWorkspaceDuplicateTask,
@@ -307,6 +318,152 @@ async def get_workspace_duplicate_task(
 ):
     is_admin = user.role == "admin"
     return await userspace_service.get_workspace_duplicate_task(
+        task_id,
+        user.id,
+        is_admin=is_admin,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/archive/export-task",
+    response_model=UserSpaceWorkspaceArchiveExportTask,
+    status_code=202,
+)
+async def queue_workspace_archive_export_task(
+    workspace_id: str,
+    request: UserSpaceWorkspaceArchiveExportRequest,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.enqueue_workspace_archive_export_task(
+        workspace_id,
+        request,
+        user.id,
+        is_admin=is_admin,
+    )
+
+
+@router.get(
+    "/workspace-archive-export-tasks/{task_id}",
+    response_model=UserSpaceWorkspaceArchiveExportTask,
+)
+async def get_workspace_archive_export_task(
+    task_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.get_workspace_archive_export_task(
+        task_id,
+        user.id,
+        is_admin=is_admin,
+    )
+
+
+@router.get("/workspace-archive-export-tasks/{task_id}/download")
+async def download_workspace_archive_export_task(
+    task_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    archive_path, archive_file_name = (
+        await userspace_service.get_workspace_archive_export_download(
+            task_id,
+            user.id,
+            is_admin=is_admin,
+        )
+    )
+    return FileResponse(path=archive_path, filename=archive_file_name)
+
+
+@router.get(
+    "/workspaces/{workspace_id}/archive-exports",
+    response_model=UserSpaceWorkspaceArchiveExportListResponse,
+)
+async def list_workspace_archive_exports(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.list_workspace_archive_exports(
+        workspace_id,
+        user.id,
+        is_admin=is_admin,
+    )
+
+
+@router.delete(
+    "/workspace-archive-export-tasks/{task_id}",
+    response_model=DeleteUserSpaceWorkspaceArchiveExportResponse,
+)
+async def delete_workspace_archive_export_task(
+    task_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.delete_workspace_archive_export_task(
+        task_id,
+        user.id,
+        is_admin=is_admin,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/archive/import-task",
+    response_model=UserSpaceWorkspaceArchiveImportTask,
+    status_code=202,
+)
+async def queue_workspace_archive_import_task(
+    workspace_id: str,
+    archive_file: UploadFile = File(...),
+    include_snapshots: bool = Form(default=False),
+    include_chat_history: bool = Form(default=False),
+    user: Any = Depends(get_current_user),
+):
+    suffix = ".zip"
+    normalized_file_name = str(archive_file.filename or "workspace-export.zip")
+    lowered_file_name = normalized_file_name.lower()
+    if lowered_file_name.endswith(".tar.gz") or lowered_file_name.endswith(".tgz"):
+        suffix = ".tar.gz"
+    temp_handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    temp_path = Path(temp_handle.name)
+    temp_handle.close()
+    try:
+
+        def _copy_upload_sync() -> None:
+            archive_file.file.seek(0)
+            with temp_path.open("wb") as output_handle:
+                shutil.copyfileobj(archive_file.file, output_handle, 1024 * 1024)
+
+        await asyncio.to_thread(_copy_upload_sync)
+    finally:
+        await archive_file.close()
+
+    try:
+        is_admin = user.role == "admin"
+        return await userspace_service.enqueue_workspace_archive_import_task(
+            workspace_id,
+            user.id,
+            temp_path,
+            normalized_file_name,
+            include_snapshots=include_snapshots,
+            include_chat_history=include_chat_history,
+            is_admin=is_admin,
+        )
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+@router.get(
+    "/workspace-archive-import-tasks/{task_id}",
+    response_model=UserSpaceWorkspaceArchiveImportTask,
+)
+async def get_workspace_archive_import_task(
+    task_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.get_workspace_archive_import_task(
         task_id,
         user.id,
         is_admin=is_admin,

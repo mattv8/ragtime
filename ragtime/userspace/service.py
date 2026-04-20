@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import io
 import json
 import os
 import posixpath
@@ -11,12 +12,14 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time as _time
+import zipfile
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Callable, Literal, TypedDict, cast
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -58,6 +61,7 @@ from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
 from ragtime.indexer.repository import (_resolve_default_conversation_model,
                                         repository)
+from ragtime.indexer.utils import safe_tool_name
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
 from ragtime.userspace.models import (
     ArtifactType, BrowseUserspaceMountSourceRequest,
@@ -65,14 +69,15 @@ from ragtime.userspace.models import (
     CreateUserSpaceObjectStorageBucketRequest, CreateWorkspaceMountRequest,
     CreateWorkspaceRequest, DeleteGlobalEnvVarResponse,
     DeleteUserspaceMountSourceResponse,
-    DeleteUserSpaceObjectStorageBucketResponse, DeleteWorkspaceEnvVarResponse,
-    DeleteWorkspaceMountResponse, DuplicateWorkspaceRequest,
-    ExecuteComponentRequest, ExecuteComponentResponse, MountableSource,
-    MountSourceAffectedWorkspace, MountSourceAffectedWorkspacesResponse,
-    PaginatedWorkspacesResponse, RuntimeOperationPhase,
-    RuntimeRestartBatchTaskPhase, RuntimeRestartWorkspacePhase,
-    ShareAccessMode, SqliteImportResponse, SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
+    DeleteUserSpaceObjectStorageBucketResponse,
+    DeleteUserSpaceWorkspaceArchiveExportResponse,
+    DeleteWorkspaceEnvVarResponse, DeleteWorkspaceMountResponse,
+    DuplicateWorkspaceRequest, ExecuteComponentRequest,
+    ExecuteComponentResponse, MountableSource, MountSourceAffectedWorkspace,
+    MountSourceAffectedWorkspacesResponse, PaginatedWorkspacesResponse,
+    RuntimeOperationPhase, RuntimeRestartBatchTaskPhase,
+    RuntimeRestartWorkspacePhase, ShareAccessMode, SqliteImportResponse,
+    SqlitePersistenceMode, SwitchSnapshotBranchRequest, UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
     UpdateUserSpaceObjectStorageBucketRequest, UpdateWorkspaceMembersRequest,
     UpdateWorkspaceMountRequest, UpdateWorkspaceRequest,
@@ -86,18 +91,24 @@ from ragtime.userspace.models import (
     UserSpaceSharedPreviewResponse, UserSpaceSnapshot, UserSpaceSnapshotBranch,
     UserSpaceSnapshotDiffFileSummary, UserSpaceSnapshotDiffSummaryResponse,
     UserSpaceSnapshotFileDiffResponse, UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace, UserSpaceWorkspaceCreateTask,
-    UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask,
-    UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceScmConnectionRequest,
+    UserSpaceWorkspace, UserSpaceWorkspaceArchiveExportListItem,
+    UserSpaceWorkspaceArchiveExportListResponse,
+    UserSpaceWorkspaceArchiveExportRequest,
+    UserSpaceWorkspaceArchiveExportTask, UserSpaceWorkspaceArchiveImportTask,
+    UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask,
+    UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspaceScmConnectionRequest,
     UserSpaceWorkspaceScmConnectionResponse,
     UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmImportRequest,
     UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse,
     UserSpaceWorkspaceScmSettingsRequest, UserSpaceWorkspaceScmStatus,
     UserSpaceWorkspaceScmSyncResponse, UserSpaceWorkspaceShareLink,
     UserSpaceWorkspaceShareLinkStatus, WorkspaceAgentGrant,
-    WorkspaceAgentGrantMode, WorkspaceCreateTaskPhase,
-    WorkspaceDeleteTaskPhase, WorkspaceDuplicateTaskPhase, WorkspaceMember,
-    WorkspaceMount, WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
+    WorkspaceAgentGrantMode, WorkspaceArchiveExportTaskPhase,
+    WorkspaceArchiveFormat, WorkspaceArchiveImportTaskPhase,
+    WorkspaceCreateTaskPhase, WorkspaceDeleteTaskPhase,
+    WorkspaceDuplicateTaskPhase, WorkspaceMember, WorkspaceMount,
+    WorkspaceMountBrowseRequest, WorkspaceMountBrowseResponse,
     WorkspaceMountDirectoryEntry, WorkspaceMountSyncMode,
     WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse,
     WorkspaceMountSyncRequest, WorkspaceMountSyncResponse,
@@ -332,6 +343,119 @@ class _WorkspaceDuplicateTaskRecord:
         self.updated_at = updated_at
 
 
+class _WorkspaceArchiveExportTaskRecord:
+    """In-memory status for an asynchronous workspace archive export task."""
+
+    __slots__ = (
+        "task_id",
+        "workspace_id",
+        "workspace_name",
+        "requested_by_user_id",
+        "archive_format",
+        "include_snapshots",
+        "include_chat_history",
+        "phase",
+        "warnings",
+        "archive_path",
+        "archive_file_name",
+        "archive_size_bytes",
+        "total_files",
+        "processed_files",
+        "total_bytes",
+        "processed_bytes",
+        "current_file_path",
+        "error",
+        "queued_at",
+        "updated_at",
+    )
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        workspace_id: str,
+        workspace_name: str,
+        requested_by_user_id: str,
+        archive_format: WorkspaceArchiveFormat,
+        include_snapshots: bool,
+        include_chat_history: bool,
+        phase: WorkspaceArchiveExportTaskPhase,
+        queued_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        self.task_id = task_id
+        self.workspace_id = workspace_id
+        self.workspace_name = workspace_name
+        self.requested_by_user_id = requested_by_user_id
+        self.archive_format = archive_format
+        self.include_snapshots = include_snapshots
+        self.include_chat_history = include_chat_history
+        self.phase = phase
+        self.warnings: list[str] = []
+        self.archive_path: Path | None = None
+        self.archive_file_name: str | None = None
+        self.archive_size_bytes: int | None = None
+        self.total_files: int = 0
+        self.processed_files: int = 0
+        self.total_bytes: int = 0
+        self.processed_bytes: int = 0
+        self.current_file_path: str | None = None
+        self.error: str | None = None
+        self.queued_at = queued_at
+        self.updated_at = updated_at
+
+
+class _WorkspaceArchiveImportTaskRecord:
+    """In-memory status for an asynchronous workspace archive import task."""
+
+    __slots__ = (
+        "task_id",
+        "workspace_id",
+        "workspace_name",
+        "requested_by_user_id",
+        "archive_format",
+        "include_snapshots",
+        "include_chat_history",
+        "phase",
+        "warnings",
+        "uploaded_archive_path",
+        "imported_chat_count",
+        "imported_snapshot_count",
+        "error",
+        "queued_at",
+        "updated_at",
+    )
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        workspace_id: str,
+        workspace_name: str,
+        requested_by_user_id: str,
+        include_snapshots: bool,
+        include_chat_history: bool,
+        phase: WorkspaceArchiveImportTaskPhase,
+        queued_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        self.task_id = task_id
+        self.workspace_id = workspace_id
+        self.workspace_name = workspace_name
+        self.requested_by_user_id = requested_by_user_id
+        self.archive_format: WorkspaceArchiveFormat | None = None
+        self.include_snapshots = include_snapshots
+        self.include_chat_history = include_chat_history
+        self.phase = phase
+        self.warnings: list[str] = []
+        self.uploaded_archive_path: Path | None = None
+        self.imported_chat_count = 0
+        self.imported_snapshot_count = 0
+        self.error: str | None = None
+        self.queued_at = queued_at
+        self.updated_at = updated_at
+
+
 class _RuntimeRestartWorkspaceTaskRecord:
     """In-memory status for one workspace in a runtime restart batch."""
 
@@ -473,6 +597,8 @@ _WORKSPACE_SCM_AUTO_SYNC_DEFAULT_INTERVAL_SECONDS = 3_600
 _WORKSPACE_CREATE_TASK_TTL_SECONDS = 300
 _WORKSPACE_DUPLICATE_TASK_TTL_SECONDS = 300
 _WORKSPACE_DELETE_TASK_TTL_SECONDS = 300
+_WORKSPACE_ARCHIVE_EXPORT_TASK_TTL_SECONDS = 900
+_WORKSPACE_ARCHIVE_IMPORT_TASK_TTL_SECONDS = 900
 _RUNTIME_RESTART_BATCH_TASK_TTL_SECONDS = 900
 
 _MODULE_SOURCE_EXTENSIONS = (
@@ -828,7 +954,9 @@ class UserSpaceService:
     def __init__(self) -> None:
         self._base_dir = Path(settings.index_data_path) / "_userspace"
         self._workspaces_dir = self._base_dir / "workspaces"
+        self._archive_tasks_dir = self._base_dir / "archive_tasks"
         self._workspaces_dir.mkdir(parents=True, exist_ok=True)
+        self._archive_tasks_dir.mkdir(parents=True, exist_ok=True)
         self._execution_proofs: dict[str, dict[str, _ExecutionProofRecord]] = {}
         # TTL-cached entrypoint status per workspace: {workspace_id: (EntrypointStatus, timestamp)}
         self._entrypoint_status_cache: dict[str, tuple[EntrypointStatus, float]] = {}
@@ -861,6 +989,22 @@ class UserSpaceService:
             str, _WorkspaceDuplicateTaskRecord
         ] = {}
         self._workspace_duplicate_tasks_lock = asyncio.Lock()
+        self._workspace_archive_semaphore = asyncio.Semaphore(
+            self._positive_int_env("USERSPACE_ARCHIVE_CONCURRENCY", 2)
+        )
+        self._workspace_archive_operation_locks: dict[str, asyncio.Lock] = {}
+        self._workspace_archive_operation_locks_lock = asyncio.Lock()
+        self._workspace_archive_export_tasks: dict[str, asyncio.Task[None]] = {}
+        self._workspace_archive_export_task_statuses: dict[
+            str, _WorkspaceArchiveExportTaskRecord
+        ] = {}
+        self._workspace_archive_export_active_task_ids_by_workspace: dict[str, str] = {}
+        self._workspace_archive_import_tasks: dict[str, asyncio.Task[None]] = {}
+        self._workspace_archive_import_task_statuses: dict[
+            str, _WorkspaceArchiveImportTaskRecord
+        ] = {}
+        self._workspace_archive_import_active_task_ids_by_workspace: dict[str, str] = {}
+        self._workspace_archive_tasks_lock = asyncio.Lock()
         self._runtime_restart_batch_tasks: dict[str, asyncio.Task[None]] = {}
         self._runtime_restart_batch_task_statuses: dict[
             str, _RuntimeRestartBatchTaskRecord
@@ -915,6 +1059,8 @@ class UserSpaceService:
         self._snapshot_operation_semaphore = asyncio.Semaphore(1)
         # Startup drift reconciliation runs in a single background task.
         self._git_drift_startup_task: asyncio.Task[Any] | None = None
+        # Rehydrate persistent archive export history from task sidecars.
+        self._rehydrate_workspace_archive_export_task_statuses()
 
     @staticmethod
     def _positive_int_env(name: str, default_value: int) -> int:
@@ -1289,6 +1435,657 @@ class UserSpaceService:
         if workspace_name is not None:
             record.workspace_name = workspace_name
 
+    async def _get_workspace_archive_operation_lock(
+        self,
+        workspace_id: str,
+    ) -> asyncio.Lock:
+        async with self._workspace_archive_operation_locks_lock:
+            existing = self._workspace_archive_operation_locks.get(workspace_id)
+            if existing is None:
+                existing = asyncio.Lock()
+                self._workspace_archive_operation_locks[workspace_id] = existing
+            return existing
+
+    def _workspace_archive_task_dir(self, task_id: str) -> Path:
+        return self._archive_tasks_dir / task_id
+
+    def _workspace_archive_export_task_sidecar_path(self, task_id: str) -> Path:
+        return self._workspace_archive_task_dir(task_id) / "task.json"
+
+    def _write_workspace_archive_export_task_sidecar(self, task_id: str) -> None:
+        record = self._workspace_archive_export_task_statuses.get(task_id)
+        if record is None:
+            return
+        sidecar_path = self._workspace_archive_export_task_sidecar_path(task_id)
+        archive_path_str = (
+            str(record.archive_path) if record.archive_path is not None else None
+        )
+        payload = {
+            "task_id": record.task_id,
+            "workspace_id": record.workspace_id,
+            "workspace_name": record.workspace_name,
+            "requested_by_user_id": record.requested_by_user_id,
+            "archive_format": record.archive_format,
+            "include_snapshots": record.include_snapshots,
+            "include_chat_history": record.include_chat_history,
+            "phase": record.phase,
+            "warnings": list(record.warnings),
+            "archive_path": archive_path_str,
+            "archive_file_name": record.archive_file_name,
+            "archive_size_bytes": record.archive_size_bytes,
+            "error": record.error,
+            "queued_at": record.queued_at.isoformat(),
+            "updated_at": record.updated_at.isoformat(),
+        }
+        try:
+            sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+            sidecar_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception:
+            logger.exception(
+                "Failed to persist archive export task sidecar %s", task_id
+            )
+
+    def _rehydrate_workspace_archive_export_task_statuses(self) -> None:
+        """Scan archive_tasks dir for sidecars and load completed/failed export records into memory."""
+        if not self._archive_tasks_dir.exists():
+            return
+        for task_dir in self._archive_tasks_dir.iterdir():
+            if not task_dir.is_dir():
+                continue
+            sidecar_path = task_dir / "task.json"
+            if not sidecar_path.is_file():
+                continue
+            try:
+                payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.warning(
+                    "Skipping unreadable archive export sidecar %s", sidecar_path
+                )
+                continue
+            try:
+                task_id = str(payload["task_id"])
+                workspace_id = str(payload["workspace_id"])
+                workspace_name = str(payload.get("workspace_name") or "")
+                requested_by_user_id = str(payload.get("requested_by_user_id") or "")
+                archive_format = cast(
+                    WorkspaceArchiveFormat,
+                    "zip" if payload.get("archive_format") == "zip" else "tar.gz",
+                )
+                phase = cast(
+                    WorkspaceArchiveExportTaskPhase,
+                    payload.get("phase") or "completed",
+                )
+                queued_at = datetime.fromisoformat(payload["queued_at"])
+                updated_at = datetime.fromisoformat(payload["updated_at"])
+            except (KeyError, ValueError, TypeError):
+                logger.warning(
+                    "Skipping malformed archive export sidecar %s", sidecar_path
+                )
+                continue
+            record = _WorkspaceArchiveExportTaskRecord(
+                task_id=task_id,
+                workspace_id=workspace_id,
+                workspace_name=workspace_name,
+                requested_by_user_id=requested_by_user_id,
+                archive_format=archive_format,
+                include_snapshots=bool(payload.get("include_snapshots")),
+                include_chat_history=bool(payload.get("include_chat_history")),
+                phase=phase,
+                queued_at=queued_at,
+                updated_at=updated_at,
+            )
+            record.warnings = list(payload.get("warnings") or [])
+            archive_path_str = payload.get("archive_path")
+            if archive_path_str:
+                archive_path_candidate = Path(archive_path_str)
+                if archive_path_candidate.is_file():
+                    record.archive_path = archive_path_candidate
+            record.archive_file_name = payload.get("archive_file_name")
+            size_value = payload.get("archive_size_bytes")
+            if isinstance(size_value, int):
+                record.archive_size_bytes = size_value
+            record.error = payload.get("error")
+            if phase == "completed":
+                record.total_files = record.processed_files = 0
+            self._workspace_archive_export_task_statuses[task_id] = record
+
+    @staticmethod
+    def _workspace_archive_extension(archive_format: WorkspaceArchiveFormat) -> str:
+        return ".zip" if archive_format == "zip" else ".tar.gz"
+
+    @staticmethod
+    def _workspace_archive_safe_name_component(value: str) -> str:
+        safe_value = safe_tool_name(value, separator="-", lowercase=False)
+        return safe_value or "workspace"
+
+    def _workspace_archive_export_file_name(
+        self,
+        workspace_name: str,
+        archive_format: WorkspaceArchiveFormat,
+    ) -> str:
+        safe_name = self._workspace_archive_safe_name_component(workspace_name)
+        return f"{safe_name}-userspace-export{self._workspace_archive_extension(archive_format)}"
+
+    @staticmethod
+    def _detect_workspace_archive_format(filename: str) -> WorkspaceArchiveFormat:
+        normalized = str(filename or "").strip().lower()
+        if normalized.endswith(".tar.gz") or normalized.endswith(".tgz"):
+            return "tar.gz"
+        if normalized.endswith(".zip"):
+            return "zip"
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported archive format. Use .zip or .tar.gz",
+        )
+
+    @staticmethod
+    def _remove_workspace_archive_dir_sync(path: Path) -> None:
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+
+    def _prune_workspace_archive_export_task(
+        self,
+        task_id: str,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._workspace_archive_export_tasks.get(task_id) is task:
+            self._workspace_archive_export_tasks.pop(task_id, None)
+        if (
+            self._workspace_archive_export_active_task_ids_by_workspace.get(
+                workspace_id
+            )
+            == task_id
+        ):
+            self._workspace_archive_export_active_task_ids_by_workspace.pop(
+                workspace_id, None
+            )
+
+    def _attach_workspace_archive_export_task_cleanup(
+        self,
+        task_id: str,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        task.add_done_callback(
+            partial(self._prune_workspace_archive_export_task, task_id, workspace_id)
+        )
+
+    def _prune_workspace_archive_import_task(
+        self,
+        task_id: str,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._workspace_archive_import_tasks.get(task_id) is task:
+            self._workspace_archive_import_tasks.pop(task_id, None)
+        if (
+            self._workspace_archive_import_active_task_ids_by_workspace.get(
+                workspace_id
+            )
+            == task_id
+        ):
+            self._workspace_archive_import_active_task_ids_by_workspace.pop(
+                workspace_id, None
+            )
+
+    def _attach_workspace_archive_import_task_cleanup(
+        self,
+        task_id: str,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        task.add_done_callback(
+            partial(self._prune_workspace_archive_import_task, task_id, workspace_id)
+        )
+
+    def _prune_expired_workspace_archive_export_task_statuses(self) -> None:
+        cutoff = _utc_now() - timedelta(
+            seconds=_WORKSPACE_ARCHIVE_EXPORT_TASK_TTL_SECONDS
+        )
+        for task_id, record in list(
+            self._workspace_archive_export_task_statuses.items()
+        ):
+            # Completed exports are kept as a persistent history (file-backed) until
+            # the user explicitly deletes them. Only prune failed exports on TTL.
+            if record.phase != "failed":
+                continue
+            if record.updated_at > cutoff:
+                continue
+            self._workspace_archive_export_task_statuses.pop(task_id, None)
+            self._remove_workspace_archive_dir_sync(
+                self._workspace_archive_task_dir(task_id)
+            )
+
+    def _prune_expired_workspace_archive_import_task_statuses(self) -> None:
+        cutoff = _utc_now() - timedelta(
+            seconds=_WORKSPACE_ARCHIVE_IMPORT_TASK_TTL_SECONDS
+        )
+        for task_id, record in list(
+            self._workspace_archive_import_task_statuses.items()
+        ):
+            if record.phase not in {"completed", "failed"}:
+                continue
+            if record.updated_at > cutoff:
+                continue
+            self._workspace_archive_import_task_statuses.pop(task_id, None)
+            self._remove_workspace_archive_dir_sync(
+                self._workspace_archive_task_dir(task_id)
+            )
+
+    @staticmethod
+    def _workspace_archive_export_task_model(
+        record: _WorkspaceArchiveExportTaskRecord,
+    ) -> UserSpaceWorkspaceArchiveExportTask:
+        archive_format: WorkspaceArchiveFormat = (
+            "zip" if record.archive_format == "zip" else "tar.gz"
+        )
+        return UserSpaceWorkspaceArchiveExportTask(
+            task_id=record.task_id,
+            workspace_id=record.workspace_id,
+            workspace_name=record.workspace_name,
+            archive_format=archive_format,
+            include_snapshots=record.include_snapshots,
+            include_chat_history=record.include_chat_history,
+            phase=cast(WorkspaceArchiveExportTaskPhase, record.phase),
+            warnings=list(record.warnings),
+            archive_file_name=record.archive_file_name,
+            archive_size_bytes=record.archive_size_bytes,
+            total_files=record.total_files,
+            processed_files=record.processed_files,
+            total_bytes=record.total_bytes,
+            processed_bytes=record.processed_bytes,
+            current_file_path=record.current_file_path,
+            error=record.error,
+            queued_at=record.queued_at,
+            updated_at=record.updated_at,
+        )
+
+    @staticmethod
+    def _workspace_archive_import_task_model(
+        record: _WorkspaceArchiveImportTaskRecord,
+    ) -> UserSpaceWorkspaceArchiveImportTask:
+        return UserSpaceWorkspaceArchiveImportTask(
+            task_id=record.task_id,
+            workspace_id=record.workspace_id,
+            workspace_name=record.workspace_name,
+            archive_format=record.archive_format,
+            include_snapshots=record.include_snapshots,
+            include_chat_history=record.include_chat_history,
+            phase=cast(WorkspaceArchiveImportTaskPhase, record.phase),
+            warnings=list(record.warnings),
+            imported_chat_count=record.imported_chat_count,
+            imported_snapshot_count=record.imported_snapshot_count,
+            error=record.error,
+            queued_at=record.queued_at,
+            updated_at=record.updated_at,
+        )
+
+    async def _persist_workspace_archive_export_task_reference(
+        self,
+        workspace_id: str,
+        task_id: str | None,
+        phase: WorkspaceArchiveExportTaskPhase | None,
+    ) -> None:
+        db = await get_db()
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={
+                "archiveExportTaskId": task_id,
+                "archiveExportTaskPhase": phase,
+            },
+        )
+
+    async def _persist_workspace_archive_import_task_reference(
+        self,
+        workspace_id: str,
+        task_id: str | None,
+        phase: WorkspaceArchiveImportTaskPhase | None,
+    ) -> None:
+        db = await get_db()
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={
+                "archiveImportTaskId": task_id,
+                "archiveImportTaskPhase": phase,
+            },
+        )
+
+    async def _clear_missing_workspace_archive_task_reference(
+        self,
+        task_kind: Literal["export", "import"],
+        task_id: str,
+    ) -> None:
+        db = await get_db()
+        if task_kind == "export":
+            await db.workspace.update_many(
+                where={"archiveExportTaskId": task_id},
+                data={
+                    "archiveExportTaskId": None,
+                    "archiveExportTaskPhase": None,
+                },
+            )
+            return
+        await db.workspace.update_many(
+            where={"archiveImportTaskId": task_id},
+            data={
+                "archiveImportTaskId": None,
+                "archiveImportTaskPhase": None,
+            },
+        )
+
+    @staticmethod
+    def _get_active_workspace_background_task_record(
+        workspace_id: str,
+        active_task_ids_by_workspace: dict[str, str],
+        task_statuses: dict[str, Any],
+    ) -> Any | None:
+        existing_task_id = active_task_ids_by_workspace.get(workspace_id)
+        if existing_task_id is None:
+            return None
+        return task_statuses.get(existing_task_id)
+
+    @staticmethod
+    def _register_background_task(
+        task_id: str,
+        record: Any,
+        task: asyncio.Task[None],
+        task_statuses: dict[str, Any],
+        tasks: dict[str, asyncio.Task[None]],
+        attach_cleanup: Any,
+    ) -> None:
+        attach_cleanup(task_id, task)
+        task_statuses[task_id] = record
+        tasks[task_id] = task
+
+    @classmethod
+    def _register_workspace_background_task(
+        cls,
+        workspace_id: str,
+        task_id: str,
+        record: Any,
+        task: asyncio.Task[None],
+        task_statuses: dict[str, Any],
+        tasks: dict[str, asyncio.Task[None]],
+        active_task_ids_by_workspace: dict[str, str],
+        attach_cleanup: Any,
+    ) -> None:
+        cls._register_background_task(
+            task_id,
+            record,
+            task,
+            task_statuses,
+            tasks,
+            attach_cleanup,
+        )
+        active_task_ids_by_workspace[workspace_id] = task_id
+
+    def _set_workspace_archive_export_task_phase(
+        self,
+        task_id: str,
+        phase: WorkspaceArchiveExportTaskPhase,
+        *,
+        warnings: list[str] | None = None,
+        archive_path: Path | None = None,
+        archive_file_name: str | None = None,
+        archive_size_bytes: int | None = None,
+        total_files: int | None = None,
+        processed_files: int | None = None,
+        total_bytes: int | None = None,
+        processed_bytes: int | None = None,
+        current_file_path: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        record = self._workspace_archive_export_task_statuses.get(task_id)
+        if record is None:
+            return
+        record.phase = phase
+        record.updated_at = _utc_now()
+        if warnings is not None:
+            record.warnings = list(warnings)
+        if archive_path is not None:
+            record.archive_path = archive_path
+        if archive_file_name is not None:
+            record.archive_file_name = archive_file_name
+        if archive_size_bytes is not None:
+            record.archive_size_bytes = archive_size_bytes
+        if total_files is not None:
+            record.total_files = total_files
+        if processed_files is not None:
+            record.processed_files = processed_files
+        if total_bytes is not None:
+            record.total_bytes = total_bytes
+        if processed_bytes is not None:
+            record.processed_bytes = processed_bytes
+        if current_file_path is not None:
+            record.current_file_path = current_file_path
+        record.error = error if phase == "failed" else None
+
+    def _set_workspace_archive_import_task_phase(
+        self,
+        task_id: str,
+        phase: WorkspaceArchiveImportTaskPhase,
+        *,
+        archive_format: WorkspaceArchiveFormat | None = None,
+        warnings: list[str] | None = None,
+        imported_chat_count: int | None = None,
+        imported_snapshot_count: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        record = self._workspace_archive_import_task_statuses.get(task_id)
+        if record is None:
+            return
+        record.phase = phase
+        record.updated_at = _utc_now()
+        if archive_format is not None:
+            record.archive_format = archive_format
+        if warnings is not None:
+            record.warnings = list(warnings)
+        if imported_chat_count is not None:
+            record.imported_chat_count = imported_chat_count
+        if imported_snapshot_count is not None:
+            record.imported_snapshot_count = imported_snapshot_count
+        record.error = error if phase == "failed" else None
+
+    async def _update_workspace_archive_export_task_phase(
+        self,
+        workspace_id: str,
+        task_id: str,
+        phase: WorkspaceArchiveExportTaskPhase,
+        *,
+        warnings: list[str] | None = None,
+        archive_path: Path | None = None,
+        archive_file_name: str | None = None,
+        archive_size_bytes: int | None = None,
+        total_files: int | None = None,
+        processed_files: int | None = None,
+        total_bytes: int | None = None,
+        processed_bytes: int | None = None,
+        current_file_path: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        self._set_workspace_archive_export_task_phase(
+            task_id,
+            phase,
+            warnings=warnings,
+            archive_path=archive_path,
+            archive_file_name=archive_file_name,
+            archive_size_bytes=archive_size_bytes,
+            total_files=total_files,
+            processed_files=processed_files,
+            total_bytes=total_bytes,
+            processed_bytes=processed_bytes,
+            current_file_path=current_file_path,
+            error=error,
+        )
+        if phase in {"completed", "failed"}:
+            self._write_workspace_archive_export_task_sidecar(task_id)
+        await self._persist_workspace_archive_export_task_reference(
+            workspace_id,
+            task_id,
+            phase,
+        )
+
+    async def _update_workspace_archive_import_task_phase(
+        self,
+        workspace_id: str,
+        task_id: str,
+        phase: WorkspaceArchiveImportTaskPhase,
+        *,
+        archive_format: WorkspaceArchiveFormat | None = None,
+        warnings: list[str] | None = None,
+        imported_chat_count: int | None = None,
+        imported_snapshot_count: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        self._set_workspace_archive_import_task_phase(
+            task_id,
+            phase,
+            archive_format=archive_format,
+            warnings=warnings,
+            imported_chat_count=imported_chat_count,
+            imported_snapshot_count=imported_snapshot_count,
+            error=error,
+        )
+        await self._persist_workspace_archive_import_task_reference(
+            workspace_id,
+            task_id,
+            phase,
+        )
+
+    @staticmethod
+    def _serialize_workspace_archive_scm_metadata(
+        scm: UserSpaceWorkspaceScmStatus | None,
+    ) -> dict[str, Any] | None:
+        if scm is None:
+            return None
+        return {
+            "git_url": scm.git_url,
+            "git_branch": scm.git_branch,
+            "repo_visibility": scm.repo_visibility,
+            "remote_role": scm.remote_role,
+            "auto_sync_policy": scm.auto_sync_policy,
+            "auto_pull_enabled": scm.auto_pull_enabled,
+            "auto_push_interval_seconds": scm.auto_push_interval_seconds,
+            "auto_pull_interval_seconds": scm.auto_pull_interval_seconds,
+        }
+
+    @staticmethod
+    def _workspace_archive_scm_connection_request(
+        scm_meta: dict[str, Any],
+    ) -> UserSpaceWorkspaceScmConnectionRequest | None:
+        git_url = str(scm_meta.get("git_url") or "").strip()
+        if not git_url:
+            return None
+        return UserSpaceWorkspaceScmConnectionRequest(
+            git_url=git_url,
+            git_branch=str(scm_meta.get("git_branch") or "main") or "main",
+            repo_visibility=(str(scm_meta.get("repo_visibility") or "") or None),
+        )
+
+    @staticmethod
+    def _workspace_archive_scm_settings_request(
+        scm_meta: dict[str, Any],
+    ) -> UserSpaceWorkspaceScmSettingsRequest:
+        return UserSpaceWorkspaceScmSettingsRequest(
+            remote_role=(
+                cast(WorkspaceScmRemoteRole, str(scm_meta.get("remote_role") or ""))
+                if scm_meta.get("remote_role")
+                else None
+            ),
+            auto_sync_policy=(
+                cast(
+                    WorkspaceScmAutoSyncPolicy,
+                    str(scm_meta.get("auto_sync_policy") or ""),
+                )
+                if scm_meta.get("auto_sync_policy")
+                else None
+            ),
+            auto_pull_enabled=(
+                bool(scm_meta.get("auto_pull_enabled"))
+                if scm_meta.get("auto_pull_enabled") is not None
+                else None
+            ),
+            auto_push_interval_seconds=(
+                int(scm_meta.get("auto_push_interval_seconds") or 0)
+                if scm_meta.get("auto_push_interval_seconds") is not None
+                else None
+            ),
+            auto_pull_interval_seconds=(
+                int(scm_meta.get("auto_pull_interval_seconds") or 0)
+                if scm_meta.get("auto_pull_interval_seconds") is not None
+                else None
+            ),
+        )
+
+    async def _restore_workspace_archive_scm_metadata(
+        self,
+        workspace_id: str,
+        user_id: str,
+        scm_meta: dict[str, Any],
+        warnings: list[str],
+    ) -> None:
+        connection_request = self._workspace_archive_scm_connection_request(scm_meta)
+        if connection_request is None:
+            return
+        try:
+            await self.update_workspace_scm_connection(
+                workspace_id,
+                user_id,
+                connection_request,
+            )
+            await self.update_workspace_scm_settings(
+                workspace_id,
+                user_id,
+                self._workspace_archive_scm_settings_request(scm_meta),
+            )
+        except Exception as exc:
+            detail = (
+                str(exc.detail)
+                if isinstance(exc, HTTPException)
+                else str(exc).strip() or "failed to restore SCM settings"
+            )
+            warnings.append(f"SCM settings were not restored: {detail}")
+
+    async def _run_guarded_workspace_archive_task(
+        self,
+        workspace_id: str,
+        user_id: str,
+        task_body: Any,
+        on_failure: Any,
+        *,
+        log_message: str,
+        persist_failure_message: str,
+    ) -> None:
+        try:
+            async with self._workspace_archive_semaphore:
+                operation_lock = await self._get_workspace_archive_operation_lock(
+                    workspace_id
+                )
+                async with operation_lock:
+                    workspace = await self._enforce_workspace_access(
+                        workspace_id,
+                        user_id,
+                        required_role="owner",
+                    )
+                    await task_body(workspace)
+        except Exception as exc:
+            detail = (
+                str(exc.detail)
+                if isinstance(exc, HTTPException)
+                else str(exc).strip() or log_message
+            )
+            logger.exception("%s for %s: %s", log_message, workspace_id, detail)
+            try:
+                await on_failure(detail)
+            except Exception:
+                logger.debug(
+                    "%s for %s",
+                    persist_failure_message,
+                    workspace_id,
+                    exc_info=True,
+                )
+
     @staticmethod
     def _workspace_duplicate_copy_files_default(app_settings: Any) -> bool:
         return bool(
@@ -1430,18 +2227,16 @@ class UserSpaceService:
                     UpdateWorkspaceMountRequest(enabled=False),
                 )
 
-    async def _copy_workspace_chats_for_duplicate(
+    async def _serialize_workspace_chat_payloads(
         self,
-        source_workspace_id: str,
-        target_workspace_id: str,
-        user_id: str,
-    ) -> int:
+        workspace_id: str,
+    ) -> list[dict[str, Any]]:
         db = await get_db()
         source_conversations = await db.conversation.find_many(
-            where={"workspaceId": source_workspace_id},
+            where={"workspaceId": workspace_id},
             order={"createdAt": "asc"},
         )
-        copied_count = 0
+        payloads: list[dict[str, Any]] = []
         for source_conversation in source_conversations:
             source_tool_selections = await db.conversationtoolselection.find_many(
                 where={"conversationId": source_conversation.id},
@@ -1457,11 +2252,9 @@ class UserSpaceService:
                 where={"conversationId": source_conversation.id},
                 order={"createdAt": "asc"},
             )
-
-            cloned_conversation_id = str(uuid4())
-            await db.conversation.create(
-                data={
-                    "id": cloned_conversation_id,
+            payloads.append(
+                {
+                    "id": str(source_conversation.id),
                     "title": str(
                         getattr(source_conversation, "title", "Untitled Chat")
                         or "Untitled Chat"
@@ -1471,71 +2264,197 @@ class UserSpaceService:
                         getattr(source_conversation, "messages", None),
                         [],
                     ),
-                    "totalTokens": int(
+                    "total_tokens": int(
                         getattr(source_conversation, "totalTokens", 0) or 0
                     ),
-                    "toolOutputMode": getattr(
-                        source_conversation,
-                        "toolOutputMode",
-                        "default",
+                    "tool_output_mode": str(
+                        getattr(source_conversation, "toolOutputMode", "default")
+                        or "default"
                     ),
+                    "active_branch_id": (
+                        str(getattr(source_conversation, "activeBranchId", "") or "")
+                        or None
+                    ),
+                    "tool_config_ids": [
+                        str(selection.toolConfigId)
+                        for selection in source_tool_selections
+                        if getattr(selection, "toolConfigId", None)
+                    ],
+                    "tool_group_ids": [
+                        str(selection.toolGroupId)
+                        for selection in source_tool_group_selections
+                        if getattr(selection, "toolGroupId", None)
+                    ],
+                    "branches": [
+                        {
+                            "id": str(source_branch.id),
+                            "parent_branch_id": (
+                                str(getattr(source_branch, "parentBranchId", "") or "")
+                                or None
+                            ),
+                            "branch_point_index": int(
+                                getattr(source_branch, "branchPointIndex", 0) or 0
+                            ),
+                            "preserved_messages": self._clone_json_value(
+                                getattr(source_branch, "preservedMessages", None),
+                                [],
+                            ),
+                        }
+                        for source_branch in source_branches
+                    ],
+                }
+            )
+        return payloads
+
+    async def _import_workspace_chat_payloads(
+        self,
+        workspace_id: str,
+        user_id: str,
+        chat_payloads: list[dict[str, Any]],
+    ) -> int:
+        def _rekey_chat_messages(
+            raw_messages: Any,
+            *,
+            id_map: dict[str, str] | None = None,
+        ) -> Any:
+            messages = self._clone_json_value(raw_messages, [])
+            if not isinstance(messages, list):
+                return messages
+
+            key_map = id_map if id_map is not None else {}
+            # First pass: assign fresh ids.
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                raw_id = str(message.get("id") or "").strip()
+                if raw_id:
+                    mapped = key_map.get(raw_id)
+                    if mapped is None:
+                        mapped = str(uuid4())
+                        key_map[raw_id] = mapped
+                    message["id"] = mapped
+                elif "id" in message:
+                    message["id"] = str(uuid4())
+
+            # Second pass: remap common message reference fields.
+            reference_fields = (
+                "parent_id",
+                "parentId",
+                "message_id",
+                "messageId",
+                "replaces_message_id",
+                "replacesMessageId",
+            )
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                for field in reference_fields:
+                    raw_ref = str(message.get(field) or "").strip()
+                    if not raw_ref:
+                        continue
+                    mapped_ref = key_map.get(raw_ref)
+                    if mapped_ref:
+                        message[field] = mapped_ref
+
+            return messages
+
+        db = await get_db()
+        copied_count = 0
+        for payload in chat_payloads:
+            cloned_conversation_id = str(uuid4())
+            message_id_map: dict[str, str] = {}
+            cloned_messages = _rekey_chat_messages(
+                payload.get("messages"),
+                id_map=message_id_map,
+            )
+            await db.conversation.create(
+                data={
+                    "id": cloned_conversation_id,
+                    "title": str(payload.get("title") or "Untitled Chat"),
+                    "model": str(payload.get("model") or ""),
+                    "messages": cloned_messages,
+                    "totalTokens": int(payload.get("total_tokens") or 0),
+                    "toolOutputMode": str(payload.get("tool_output_mode") or "default"),
                     "userId": user_id,
-                    "workspaceId": target_workspace_id,
+                    "workspaceId": workspace_id,
                     "activeTaskId": None,
                 }
             )
 
-            for selection in source_tool_selections:
+            for tool_config_id in payload.get("tool_config_ids") or []:
                 await db.conversationtoolselection.create(
                     data={
                         "conversationId": cloned_conversation_id,
-                        "toolConfigId": selection.toolConfigId,
+                        "toolConfigId": str(tool_config_id),
                     }
                 )
-            for selection in source_tool_group_selections:
+            for tool_group_id in payload.get("tool_group_ids") or []:
                 await db.conversationtoolgroupselection.create(
                     data={
                         "conversationId": cloned_conversation_id,
-                        "toolGroupId": selection.toolGroupId,
+                        "toolGroupId": str(tool_group_id),
                     }
                 )
 
+            branch_payloads = payload.get("branches") or []
             branch_id_map = {
-                source_branch.id: str(uuid4()) for source_branch in source_branches
+                str(branch_payload.get("id") or str(uuid4())): str(uuid4())
+                for branch_payload in branch_payloads
             }
-            for source_branch in source_branches:
+            for branch_payload in branch_payloads:
+                source_branch_id = str(branch_payload.get("id") or "")
+                cloned_branch_id = branch_id_map.get(source_branch_id)
+                if not cloned_branch_id:
+                    continue
+                parent_branch_id = (
+                    str(branch_payload.get("parent_branch_id") or "") or None
+                )
+                resolved_parent_branch_id: str | None = None
+                if parent_branch_id is not None:
+                    resolved_parent_branch_id = branch_id_map.get(parent_branch_id)
                 await db.conversationbranch.create(
                     data={
-                        "id": branch_id_map[source_branch.id],
+                        "id": cloned_branch_id,
                         "conversationId": cloned_conversation_id,
-                        "parentBranchId": branch_id_map.get(
-                            getattr(source_branch, "parentBranchId", None)
-                        ),
+                        "parentBranchId": resolved_parent_branch_id,
                         "branchPointIndex": int(
-                            getattr(source_branch, "branchPointIndex", 0) or 0
+                            branch_payload.get("branch_point_index") or 0
                         ),
-                        "preservedMessages": self._clone_json_value(
-                            getattr(source_branch, "preservedMessages", None),
-                            [],
+                        "preservedMessages": _rekey_chat_messages(
+                            branch_payload.get("preserved_messages"),
+                            id_map=message_id_map,
                         ),
                         "associatedSnapshotId": None,
                         "createdByUserId": user_id,
                     }
                 )
 
-            source_active_branch_id = getattr(
-                source_conversation, "activeBranchId", None
+            active_branch_id = branch_id_map.get(
+                str(payload.get("active_branch_id") or "") or ""
             )
-            cloned_active_branch_id = branch_id_map.get(source_active_branch_id)
-            if cloned_active_branch_id:
+            if active_branch_id:
                 await db.conversation.update(
                     where={"id": cloned_conversation_id},
-                    data={"activeBranchId": cloned_active_branch_id},
+                    data={"activeBranchId": active_branch_id},
                 )
 
             copied_count += 1
-
         return copied_count
+
+    async def _copy_workspace_chats_for_duplicate(
+        self,
+        source_workspace_id: str,
+        target_workspace_id: str,
+        user_id: str,
+    ) -> int:
+        chat_payloads = await self._serialize_workspace_chat_payloads(
+            source_workspace_id
+        )
+        return await self._import_workspace_chat_payloads(
+            target_workspace_id,
+            user_id,
+            chat_payloads,
+        )
 
     async def _run_workspace_duplicate_task(
         self,
@@ -1700,6 +2619,1314 @@ class UserSpaceService:
                 error=detail,
             )
 
+    @staticmethod
+    def _workspace_archive_member_path(name: str) -> PurePosixPath:
+        normalized = (name or "").strip().replace("\\", "/").lstrip("/")
+        path = PurePosixPath(normalized)
+        if not normalized or any(part in {"", ".", ".."} for part in path.parts):
+            raise HTTPException(
+                status_code=400, detail="Archive contains invalid paths"
+            )
+        return path
+
+    @staticmethod
+    def _json_safe_value(value: Any) -> Any:
+        if isinstance(value, datetime):
+            return _coerce_utc_datetime(value).isoformat()
+        return value
+
+    @classmethod
+    def _json_safe_clone(
+        cls,
+        value: Any,
+        seen: set[int] | None = None,
+    ) -> Any:
+        if seen is None:
+            seen = set()
+
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            return _coerce_utc_datetime(value).isoformat()
+
+        object_id = id(value)
+        if object_id in seen:
+            return None
+
+        if isinstance(value, dict):
+            seen.add(object_id)
+            try:
+                return {
+                    str(key): cls._json_safe_clone(item, seen)
+                    for key, item in value.items()
+                }
+            finally:
+                seen.discard(object_id)
+
+        if isinstance(value, (list, tuple, set)):
+            seen.add(object_id)
+            try:
+                return [cls._json_safe_clone(item, seen) for item in value]
+            finally:
+                seen.discard(object_id)
+
+        coerced = cls._json_safe_value(value)
+        if coerced is not value:
+            return cls._json_safe_clone(coerced, seen)
+        return str(value)
+
+    @staticmethod
+    def _serialize_workspace_mount_placeholder(mount: WorkspaceMount) -> dict[str, Any]:
+        return {
+            "source_name": mount.source_name,
+            "source_type": mount.source_type,
+            "mount_backend": mount.mount_backend,
+            "source_path": mount.source_path,
+            "target_path": mount.target_path,
+            "description": mount.description,
+            "sync_mode": mount.sync_mode,
+            "enabled": mount.enabled,
+            "auto_sync_enabled": mount.auto_sync_enabled,
+        }
+
+    async def _serialize_workspace_env_var_placeholders(
+        self,
+        workspace_id: str,
+    ) -> list[dict[str, Any]]:
+        db = await get_db()
+        model = self._workspace_env_var_model(db)
+        rows = await model.find_many(
+            where={"workspaceId": workspace_id},
+            order={"key": "asc"},
+        )
+        return [
+            {
+                "key": str(getattr(row, "key", "") or ""),
+                "description": getattr(row, "description", None) or None,
+                "has_value": bool(str(getattr(row, "value", "") or "")),
+            }
+            for row in rows
+            if str(getattr(row, "key", "") or "")
+        ]
+
+    async def _import_workspace_env_var_placeholders(
+        self,
+        workspace_id: str,
+        placeholders: list[dict[str, Any]],
+    ) -> tuple[int, int]:
+        db = await get_db()
+        model = self._workspace_env_var_model(db)
+        existing_rows = await model.find_many(where={"workspaceId": workspace_id})
+        existing_by_key = {
+            str(getattr(row, "key", "") or ""): row for row in existing_rows
+        }
+        created_count = 0
+        preserved_value_count = 0
+        for placeholder in placeholders:
+            key = self._normalize_workspace_env_var_key(
+                str(placeholder.get("key") or "")
+            )
+            description = str(placeholder.get("description") or "").strip()
+            existing = existing_by_key.get(key)
+            if existing is None:
+                await model.create(
+                    data={
+                        "id": str(uuid4()),
+                        "workspaceId": workspace_id,
+                        "key": key,
+                        "value": "",
+                        "description": description,
+                    }
+                )
+                created_count += 1
+                continue
+            current_value = str(getattr(existing, "value", "") or "")
+            if current_value:
+                preserved_value_count += 1
+                continue
+            await model.update(
+                where={"id": existing.id},
+                data={"description": description},
+            )
+        return created_count, preserved_value_count
+
+    async def _import_workspace_mount_placeholders(
+        self,
+        workspace_id: str,
+        user_id: str,
+        placeholders: list[dict[str, Any]],
+    ) -> list[str]:
+        db = await get_db()
+        mount_source_rows = await db.userspacemountsource.find_many(
+            where={"enabled": True},
+            order={"name": "asc"},
+        )
+        warnings: list[str] = []
+        for placeholder in placeholders:
+            source_name = str(placeholder.get("source_name") or "").strip()
+            source_path = str(placeholder.get("source_path") or "").strip()
+            target_path = str(placeholder.get("target_path") or "").strip()
+            if not source_name or not source_path or not target_path:
+                continue
+            matching_source = next(
+                (
+                    row
+                    for row in mount_source_rows
+                    if str(getattr(row, "name", "") or "") == source_name
+                    and str(getattr(row, "sourceType", "") or "")
+                    == str(placeholder.get("source_type") or "")
+                    and str(getattr(row, "mountBackend", "") or "")
+                    == str(placeholder.get("mount_backend") or "")
+                ),
+                None,
+            )
+            if matching_source is None:
+                warnings.append(
+                    f"Mount placeholder not resolved: {source_name} -> {target_path}"
+                )
+                continue
+            try:
+                created_mount = await self.create_workspace_mount(
+                    workspace_id,
+                    user_id,
+                    CreateWorkspaceMountRequest(
+                        mount_source_id=str(matching_source.id),
+                        source_path=source_path,
+                        target_path=target_path,
+                        description=str(placeholder.get("description") or "") or None,
+                        auto_sync_enabled=False,
+                        sync_mode=self._normalize_workspace_mount_sync_configuration_value(
+                            str(placeholder.get("sync_mode") or "merge")
+                        ),
+                    ),
+                )
+                if not bool(placeholder.get("enabled", True)):
+                    await self.update_workspace_mount(
+                        workspace_id,
+                        user_id,
+                        created_mount.id,
+                        UpdateWorkspaceMountRequest(enabled=False),
+                    )
+                if bool(placeholder.get("auto_sync_enabled")):
+                    warnings.append(
+                        f"Imported mount {target_path} with auto-sync disabled until credentials are configured"
+                    )
+            except Exception as exc:
+                detail = (
+                    str(exc.detail)
+                    if isinstance(exc, HTTPException)
+                    else str(exc).strip() or "failed to create mount"
+                )
+                warnings.append(
+                    f"Mount placeholder not resolved for {target_path}: {detail}"
+                )
+        return warnings
+
+    @staticmethod
+    def _normalize_workspace_mount_sync_configuration_value(
+        value: str,
+    ) -> WorkspaceMountSyncMode:
+        normalized = (value or "merge").strip()
+        if normalized in {"merge", "source_authoritative", "target_authoritative"}:
+            return cast(WorkspaceMountSyncMode, normalized)
+        return "merge"
+
+    @staticmethod
+    def _workspace_archive_preserved_prefixes_from_mounts(
+        mounts: list[WorkspaceMount],
+    ) -> list[str]:
+        prefixes: list[str] = [".ragtime/s3"]
+        for mount in mounts:
+            relative_target = workspace_mount_target_repo_relative_path(
+                mount.target_path
+            )
+            if not relative_target:
+                continue
+            prefixes.append(relative_target)
+        return deduplicate_ancestor_paths(prefixes)
+
+    @staticmethod
+    def _write_workspace_archive_sync(
+        source_root: Path,
+        archive_path: Path,
+        archive_format: WorkspaceArchiveFormat,
+        manifest: dict[str, Any],
+        ignored_prefixes: list[str],
+        extra_files: dict[str, Path],
+        progress_callback: (
+            Callable[[int, int, int, int, str | None], None] | None
+        ) = None,
+    ) -> None:
+        ignored_prefixes = deduplicate_ancestor_paths(ignored_prefixes)
+        staged_files = sync_scope_relative_paths(source_root)
+        archive_entries: list[tuple[str, Path]] = []
+        for relative_path, source_path in staged_files.items():
+            if any(
+                workspace_path_matches_mount_prefix(relative_path, prefix)
+                for prefix in ignored_prefixes
+            ):
+                continue
+            if relative_path == ".ragtime/.runtime-bootstrap.done":
+                continue
+            archive_entries.append((f"files/{relative_path}", source_path))
+        for extra_relative_path, extra_path in extra_files.items():
+            archive_entries.append((extra_relative_path, extra_path))
+
+        total_files = len(archive_entries)
+        total_bytes = 0
+        for _archive_name, source_path in archive_entries:
+            try:
+                total_bytes += source_path.stat().st_size
+            except OSError:
+                continue
+
+        safe_manifest = UserSpaceService._json_safe_clone(manifest)
+        manifest_bytes = json.dumps(
+            safe_manifest,
+            indent=2,
+            sort_keys=True,
+            default=UserSpaceService._json_safe_value,
+        ).encode("utf-8")
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _report(
+            processed_files: int,
+            processed_bytes: int,
+            current_file: str | None,
+        ) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(
+                    processed_files,
+                    total_files,
+                    processed_bytes,
+                    total_bytes,
+                    current_file,
+                )
+            except Exception:
+                pass
+
+        processed_files = 0
+        processed_bytes = 0
+        _report(processed_files, processed_bytes, None)
+
+        if archive_format == "zip":
+            with zipfile.ZipFile(
+                archive_path,
+                mode="w",
+                compression=zipfile.ZIP_DEFLATED,
+            ) as zip_archive:
+                zip_archive.writestr("manifest.json", manifest_bytes)
+                for archive_name, source_path in archive_entries:
+                    zip_archive.write(source_path, archive_name)
+                    processed_files += 1
+                    try:
+                        processed_bytes += source_path.stat().st_size
+                    except OSError:
+                        pass
+                    _report(processed_files, processed_bytes, archive_name)
+            return
+
+        with tarfile.open(archive_path, mode="w:gz") as tar_archive:
+            manifest_info = tarfile.TarInfo(name="manifest.json")
+            manifest_info.size = len(manifest_bytes)
+            manifest_info.mtime = int(_time.time())
+            tar_archive.addfile(manifest_info, io.BytesIO(manifest_bytes))
+            for archive_name, source_path in archive_entries:
+                tar_archive.add(source_path, arcname=archive_name, recursive=False)
+                processed_files += 1
+                try:
+                    processed_bytes += source_path.stat().st_size
+                except OSError:
+                    pass
+                _report(processed_files, processed_bytes, archive_name)
+
+    def _extract_workspace_archive_zip_sync(
+        self,
+        archive_path: Path,
+        extract_dir: Path,
+    ) -> None:
+        with zipfile.ZipFile(archive_path, mode="r") as zip_archive:
+            for member in zip_archive.infolist():
+                member_path = self._workspace_archive_member_path(member.filename)
+                target_path = extract_dir / member_path.as_posix()
+                if member.is_dir():
+                    target_path.mkdir(parents=True, exist_ok=True)
+                    continue
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with zip_archive.open(member, "r") as source_handle:
+                    with target_path.open("wb") as target_handle:
+                        shutil.copyfileobj(source_handle, target_handle)
+
+    def _extract_workspace_archive_tar_sync(
+        self,
+        archive_path: Path,
+        extract_dir: Path,
+    ) -> None:
+        with tarfile.open(archive_path, mode="r:gz") as tar_archive:
+            for tar_member in tar_archive.getmembers():
+                member_path = self._workspace_archive_member_path(tar_member.name)
+                target_path = extract_dir / member_path.as_posix()
+                if tar_member.isdir():
+                    target_path.mkdir(parents=True, exist_ok=True)
+                    continue
+                if not tar_member.isfile():
+                    continue
+                tar_source_handle = tar_archive.extractfile(tar_member)
+                if tar_source_handle is None:
+                    continue
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with tar_source_handle:
+                    with target_path.open("wb") as target_handle:
+                        shutil.copyfileobj(tar_source_handle, target_handle)
+
+    def _extract_workspace_archive_sync(
+        self,
+        archive_path: Path,
+        extract_dir: Path,
+    ) -> dict[str, Any]:
+        archive_format = self._detect_workspace_archive_format(archive_path.name)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        if archive_format == "zip":
+            self._extract_workspace_archive_zip_sync(archive_path, extract_dir)
+        else:
+            self._extract_workspace_archive_tar_sync(archive_path, extract_dir)
+
+        manifest_path = extract_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise HTTPException(
+                status_code=400, detail="Archive is missing manifest.json"
+            )
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail="Archive manifest is invalid"
+            ) from exc
+        if not isinstance(manifest, dict) or int(manifest.get("version") or 0) != 1:
+            raise HTTPException(
+                status_code=400, detail="Unsupported archive manifest version"
+            )
+        return manifest
+
+    @staticmethod
+    def _replace_workspace_files_from_archive_sync(
+        workspace_files_dir: Path,
+        extracted_files_dir: Path,
+        preserved_prefixes: list[str],
+    ) -> None:
+        preserved_prefixes = deduplicate_ancestor_paths(preserved_prefixes)
+        if workspace_files_dir.exists():
+            for existing_path in sorted(workspace_files_dir.rglob("*"), reverse=True):
+                relative_path_str = existing_path.relative_to(
+                    workspace_files_dir
+                ).as_posix()
+                if relative_path_str == ".git" or relative_path_str.startswith(".git/"):
+                    continue
+                if any(
+                    workspace_path_matches_mount_prefix(relative_path_str, prefix)
+                    for prefix in preserved_prefixes
+                ):
+                    continue
+                if existing_path.is_file() or existing_path.is_symlink():
+                    existing_path.unlink(missing_ok=True)
+                elif existing_path.is_dir():
+                    try:
+                        existing_path.rmdir()
+                    except OSError:
+                        pass
+        if not extracted_files_dir.exists():
+            return
+        for source_file_path in extracted_files_dir.rglob("*"):
+            if not source_file_path.is_file():
+                continue
+            relative_path = source_file_path.relative_to(extracted_files_dir)
+            destination_path = workspace_files_dir / relative_path
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_file_path, destination_path)
+
+    async def _reset_workspace_snapshot_state(self, workspace_id: str) -> None:
+        db = await get_db()
+        await db.execute_raw(
+            f"DELETE FROM userspace_snapshots WHERE workspace_id = {self._sql_quote(workspace_id)}"
+        )
+        await db.execute_raw(
+            f"DELETE FROM userspace_snapshot_branches WHERE workspace_id = {self._sql_quote(workspace_id)}"
+        )
+        await db.execute_raw(
+            f"UPDATE workspaces SET current_snapshot_id = NULL, current_snapshot_branch_id = NULL WHERE id = {self._sql_quote(workspace_id)}"
+        )
+        await asyncio.to_thread(
+            self._remove_workspace_archive_dir_sync,
+            self._workspace_files_dir(workspace_id) / ".git",
+        )
+
+    @staticmethod
+    def _restore_workspace_snapshot_bundle_sync(
+        bundle_path: Path,
+        workspace_files_dir: Path,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="ragtime-archive-bundle-") as temp_dir:
+            temp_repo = Path(temp_dir) / "repo"
+            result = subprocess.run(
+                ["git", "clone", str(bundle_path), str(temp_repo)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    result.stderr.strip() or "Failed to restore snapshot bundle"
+                )
+            source_git_dir = temp_repo / ".git"
+            if not source_git_dir.is_dir():
+                raise RuntimeError("Snapshot bundle did not contain a git repository")
+            target_git_dir = workspace_files_dir / ".git"
+            if target_git_dir.exists():
+                shutil.rmtree(target_git_dir, ignore_errors=True)
+            shutil.copytree(source_git_dir, target_git_dir, symlinks=True)
+
+    async def _build_workspace_snapshot_archive_payload(
+        self,
+        workspace_id: str,
+        task_dir: Path,
+    ) -> tuple[dict[str, Any] | None, Path | None, list[str]]:
+        warnings: list[str] = []
+        git_status = await self._run_git(
+            workspace_id,
+            ["status", "--porcelain"],
+            check=False,
+        )
+        if git_status.returncode != 0 or git_status.stdout.strip():
+            warnings.append(
+                "Snapshot history was skipped because the workspace has uncommitted changes"
+            )
+            return None, None, warnings
+        db = await get_db()
+        cursor_rows = await db.query_raw(
+            f"SELECT current_snapshot_id, current_snapshot_branch_id FROM workspaces WHERE id = {self._sql_quote(workspace_id)} LIMIT 1"
+        )
+        if not cursor_rows or not cursor_rows[0].get("current_snapshot_id"):
+            warnings.append(
+                "Snapshot history was skipped because the workspace has no snapshot timeline"
+            )
+            return None, None, warnings
+        branch_rows = await db.query_raw(
+            f"SELECT id, name, git_ref_name, base_snapshot_id, branched_from_snapshot_id, is_active, created_at FROM userspace_snapshot_branches WHERE workspace_id = {self._sql_quote(workspace_id)} ORDER BY created_at ASC"
+        )
+        snapshot_rows = await db.query_raw(
+            f"SELECT id, branch_id, git_commit_hash, message, remote_commit_hash, file_count, parent_snapshot_id, created_at FROM userspace_snapshots WHERE workspace_id = {self._sql_quote(workspace_id)} ORDER BY created_at ASC"
+        )
+        if not branch_rows or not snapshot_rows:
+            warnings.append(
+                "Snapshot history was skipped because the workspace snapshot records are incomplete"
+            )
+            return None, None, warnings
+        bundle_path = task_dir / "snapshots" / "workspace.bundle"
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        bundle_result = await self._run_git(
+            workspace_id,
+            ["bundle", "create", str(bundle_path), "--all"],
+            check=False,
+        )
+        if bundle_result.returncode != 0:
+            warnings.append(
+                bundle_result.stderr.strip()
+                or "Snapshot history was skipped because the git bundle could not be created"
+            )
+            return None, None, warnings
+        return (
+            {
+                "cursor": {
+                    "current_snapshot_id": str(
+                        cursor_rows[0].get("current_snapshot_id") or ""
+                    ),
+                    "current_snapshot_branch_id": str(
+                        cursor_rows[0].get("current_snapshot_branch_id") or ""
+                    ),
+                },
+                "branches": [
+                    {
+                        "id": str(row.get("id") or ""),
+                        "name": str(row.get("name") or "Branch"),
+                        "git_ref_name": str(row.get("git_ref_name") or ""),
+                        "base_snapshot_id": str(row.get("base_snapshot_id") or "")
+                        or None,
+                        "branched_from_snapshot_id": str(
+                            row.get("branched_from_snapshot_id") or ""
+                        )
+                        or None,
+                        "is_active": bool(row.get("is_active")),
+                        "created_at": _coerce_utc_datetime(
+                            row.get("created_at")
+                        ).isoformat(),
+                    }
+                    for row in branch_rows
+                ],
+                "snapshots": [
+                    {
+                        "id": str(row.get("id") or ""),
+                        "branch_id": str(row.get("branch_id") or ""),
+                        "git_commit_hash": str(row.get("git_commit_hash") or "")
+                        or None,
+                        "message": str(row.get("message") or "") or None,
+                        "remote_commit_hash": str(row.get("remote_commit_hash") or "")
+                        or None,
+                        "file_count": int(row.get("file_count") or 0),
+                        "parent_snapshot_id": str(row.get("parent_snapshot_id") or "")
+                        or None,
+                        "created_at": _coerce_utc_datetime(
+                            row.get("created_at")
+                        ).isoformat(),
+                    }
+                    for row in snapshot_rows
+                ],
+                "bundle_path": "snapshots/workspace.bundle",
+            },
+            bundle_path,
+            warnings,
+        )
+
+    async def _import_workspace_snapshot_archive_payload(
+        self,
+        workspace_id: str,
+        user_id: str,
+        snapshots_manifest: dict[str, Any] | None,
+        extract_dir: Path,
+    ) -> tuple[int, list[str]]:
+        warnings: list[str] = []
+        if not snapshots_manifest:
+            return 0, warnings
+        db = await get_db()
+        existing_rows = await db.query_raw(
+            f"SELECT id FROM userspace_snapshot_branches WHERE workspace_id = {self._sql_quote(workspace_id)} LIMIT 1"
+        )
+        if existing_rows:
+            warnings.append(
+                "Snapshot history was skipped because the target workspace already has snapshots"
+            )
+            return 0, warnings
+        bundle_relative_path = str(snapshots_manifest.get("bundle_path") or "").strip()
+        if not bundle_relative_path:
+            warnings.append(
+                "Snapshot history was skipped because the archive is missing the snapshot bundle"
+            )
+            return 0, warnings
+        bundle_path = extract_dir / bundle_relative_path
+        if not bundle_path.is_file():
+            warnings.append(
+                "Snapshot history was skipped because the snapshot bundle could not be extracted"
+            )
+            return 0, warnings
+        await asyncio.to_thread(
+            self._restore_workspace_snapshot_bundle_sync,
+            bundle_path,
+            self._workspace_files_dir(workspace_id),
+        )
+        raw_branches = list(snapshots_manifest.get("branches") or [])
+        raw_snapshots = list(snapshots_manifest.get("snapshots") or [])
+
+        branch_id_map: dict[str, str] = {}
+        for branch in raw_branches:
+            source_branch_id = str(branch.get("id") or "").strip() or str(uuid4())
+            if source_branch_id not in branch_id_map:
+                branch_id_map[source_branch_id] = str(uuid4())
+
+        snapshot_id_map: dict[str, str] = {}
+        for snapshot in raw_snapshots:
+            source_snapshot_id = str(snapshot.get("id") or "").strip() or str(uuid4())
+            if source_snapshot_id not in snapshot_id_map:
+                snapshot_id_map[source_snapshot_id] = str(uuid4())
+
+        for branch in raw_branches:
+            source_branch_id = str(branch.get("id") or "").strip()
+            if not source_branch_id:
+                continue
+            cloned_branch_id = branch_id_map.get(source_branch_id)
+            if not cloned_branch_id:
+                continue
+            base_snapshot_id = str(branch.get("base_snapshot_id") or "").strip()
+            branched_from_snapshot_id = str(
+                branch.get("branched_from_snapshot_id") or ""
+            ).strip()
+            await db.execute_raw(
+                f"""
+                INSERT INTO userspace_snapshot_branches
+                (id, workspace_id, name, git_ref_name, base_snapshot_id, branched_from_snapshot_id, is_active, created_at, updated_at)
+                VALUES
+                (
+                    {self._sql_quote(cloned_branch_id)},
+                    {self._sql_quote(workspace_id)},
+                    {self._sql_quote(str(branch.get('name') or 'Branch'))},
+                    {self._sql_quote(str(branch.get('git_ref_name') or ''))},
+                    {self._sql_quote(snapshot_id_map.get(base_snapshot_id) if base_snapshot_id else None)},
+                    {self._sql_quote(snapshot_id_map.get(branched_from_snapshot_id) if branched_from_snapshot_id else None)},
+                    {'TRUE' if bool(branch.get('is_active')) else 'FALSE'},
+                    {self._sql_quote(str(branch.get('created_at') or _utc_now().isoformat()))},
+                    NOW()
+                )
+                """
+            )
+        imported_snapshot_count = 0
+        for snapshot in raw_snapshots:
+            source_snapshot_id = str(snapshot.get("id") or "").strip()
+            source_branch_id = str(snapshot.get("branch_id") or "").strip()
+            if not source_snapshot_id or not source_branch_id:
+                continue
+            cloned_snapshot_id = snapshot_id_map.get(source_snapshot_id)
+            cloned_branch_id = branch_id_map.get(source_branch_id)
+            if not cloned_snapshot_id or not cloned_branch_id:
+                continue
+            parent_snapshot_id = str(snapshot.get("parent_snapshot_id") or "").strip()
+            await db.execute_raw(
+                f"""
+                INSERT INTO userspace_snapshots
+                (id, workspace_id, branch_id, git_commit_hash, message, remote_commit_hash, file_count, parent_snapshot_id, created_by_user_id, created_at, updated_at)
+                VALUES
+                (
+                    {self._sql_quote(cloned_snapshot_id)},
+                    {self._sql_quote(workspace_id)},
+                    {self._sql_quote(cloned_branch_id)},
+                    {self._sql_quote(str(snapshot.get('git_commit_hash') or '') or None)},
+                    {self._sql_quote(str(snapshot.get('message') or '') or None)},
+                    {self._sql_quote(str(snapshot.get('remote_commit_hash') or '') or None)},
+                    {int(snapshot.get('file_count') or 0)},
+                    {self._sql_quote(snapshot_id_map.get(parent_snapshot_id) if parent_snapshot_id else None)},
+                    {self._sql_quote(user_id)},
+                    {self._sql_quote(str(snapshot.get('created_at') or _utc_now().isoformat()))},
+                    NOW()
+                )
+                """
+            )
+            imported_snapshot_count += 1
+        cursor = snapshots_manifest.get("cursor") or {}
+        source_current_snapshot_id = (
+            str(cursor.get("current_snapshot_id") or "").strip() or None
+        )
+        source_current_branch_id = (
+            str(cursor.get("current_snapshot_branch_id") or "").strip() or None
+        )
+        current_snapshot_id = (
+            snapshot_id_map.get(source_current_snapshot_id)
+            if source_current_snapshot_id
+            else None
+        )
+        current_branch_id = (
+            branch_id_map.get(source_current_branch_id)
+            if source_current_branch_id
+            else None
+        )
+        await self._set_current_snapshot_cursor(
+            workspace_id,
+            current_snapshot_id,
+            current_branch_id,
+        )
+        if current_branch_id:
+            await self._activate_branch(workspace_id, current_branch_id)
+        return imported_snapshot_count, warnings
+
+    async def _apply_workspace_archive_manifest(
+        self,
+        workspace_id: str,
+        user_id: str,
+        manifest: dict[str, Any],
+        *,
+        include_snapshots: bool,
+        include_chat_history: bool,
+        extract_dir: Path,
+    ) -> tuple[list[str], int, int]:
+        warnings: list[str] = []
+        workspace_meta = cast(dict[str, Any], manifest.get("workspace") or {})
+        update_request = UpdateWorkspaceRequest(
+            name=None,
+            description=workspace_meta.get("description"),
+            sqlite_persistence_mode=cast(
+                SqlitePersistenceMode,
+                str(workspace_meta.get("sqlite_persistence_mode") or "include"),
+            ),
+            selected_tool_ids=[
+                str(value) for value in (workspace_meta.get("selected_tool_ids") or [])
+            ],
+            selected_tool_group_ids=[
+                str(value)
+                for value in (workspace_meta.get("selected_tool_group_ids") or [])
+            ],
+        )
+        await self.update_workspace(workspace_id, update_request, user_id)
+
+        env_created_count, env_preserved_count = (
+            await self._import_workspace_env_var_placeholders(
+                workspace_id,
+                cast(list[dict[str, Any]], manifest.get("env_vars") or []),
+            )
+        )
+        if env_created_count:
+            warnings.append(
+                f"Imported {env_created_count} workspace env var placeholders without secret values"
+            )
+        if env_preserved_count:
+            warnings.append(
+                f"Kept {env_preserved_count} existing workspace env var values"
+            )
+
+        warnings.extend(
+            await self._import_workspace_mount_placeholders(
+                workspace_id,
+                user_id,
+                cast(list[dict[str, Any]], manifest.get("mounts") or []),
+            )
+        )
+
+        await self._restore_workspace_archive_scm_metadata(
+            workspace_id,
+            user_id,
+            cast(dict[str, Any], manifest.get("scm") or {}),
+            warnings,
+        )
+
+        imported_snapshot_count = 0
+        if include_snapshots:
+            imported_snapshot_count, snapshot_warnings = (
+                await self._import_workspace_snapshot_archive_payload(
+                    workspace_id,
+                    user_id,
+                    cast(dict[str, Any] | None, manifest.get("snapshots")),
+                    extract_dir,
+                )
+            )
+            warnings.extend(snapshot_warnings)
+        imported_chat_count = 0
+        if include_chat_history:
+            imported_chat_count = await self._import_workspace_chat_payloads(
+                workspace_id,
+                user_id,
+                cast(list[dict[str, Any]], manifest.get("chats") or []),
+            )
+        return warnings, imported_snapshot_count, imported_chat_count
+
+    async def _run_workspace_archive_export_task(
+        self,
+        task_id: str,
+        workspace_id: str,
+        request: UserSpaceWorkspaceArchiveExportRequest,
+        user_id: str,
+    ) -> None:
+        task_dir = self._workspace_archive_task_dir(task_id)
+        warnings: list[str] = []
+
+        async def _task_body(workspace: Any) -> None:
+            mounts = await self.list_workspace_mounts(workspace_id, user_id)
+            await self._update_workspace_archive_export_task_phase(
+                workspace_id,
+                task_id,
+                "collecting_workspace",
+            )
+            manifest: dict[str, Any] = {
+                "version": 1,
+                "exported_at": _utc_now().isoformat(),
+                "workspace": {
+                    "name": workspace.name,
+                    "description": workspace.description,
+                    "sqlite_persistence_mode": workspace.sqlite_persistence_mode,
+                    "selected_tool_ids": list(workspace.selected_tool_ids),
+                    "selected_tool_group_ids": list(workspace.selected_tool_group_ids),
+                },
+                "env_vars": await self._serialize_workspace_env_var_placeholders(
+                    workspace_id
+                ),
+                "mounts": [
+                    self._serialize_workspace_mount_placeholder(mount)
+                    for mount in mounts
+                ],
+            }
+            scm_metadata = self._serialize_workspace_archive_scm_metadata(workspace.scm)
+            if scm_metadata is not None:
+                manifest["scm"] = scm_metadata
+            if request.include_chat_history:
+                manifest["chats"] = await self._serialize_workspace_chat_payloads(
+                    workspace_id
+                )
+            extra_files: dict[str, Path] = {}
+            if request.include_snapshots:
+                snapshot_manifest, bundle_path, snapshot_warnings = (
+                    await self._build_workspace_snapshot_archive_payload(
+                        workspace_id,
+                        task_dir,
+                    )
+                )
+                warnings.extend(snapshot_warnings)
+                if snapshot_manifest is not None:
+                    manifest["snapshots"] = snapshot_manifest
+                    if bundle_path is not None:
+                        extra_files[
+                            str(
+                                snapshot_manifest.get("bundle_path")
+                                or "snapshots/workspace.bundle"
+                            )
+                        ] = bundle_path
+
+            archive_file_name = self._workspace_archive_export_file_name(
+                workspace.name,
+                request.archive_format,
+            )
+            archive_path = task_dir / archive_file_name
+            await self._update_workspace_archive_export_task_phase(
+                workspace_id,
+                task_id,
+                "building_archive",
+                warnings=warnings,
+            )
+
+            def _on_progress(
+                processed_files: int,
+                total_files: int,
+                processed_bytes: int,
+                total_bytes: int,
+                current_file: str | None,
+            ) -> None:
+                record = self._workspace_archive_export_task_statuses.get(task_id)
+                if record is None:
+                    return
+                record.total_files = total_files
+                record.processed_files = processed_files
+                record.total_bytes = total_bytes
+                record.processed_bytes = processed_bytes
+                record.current_file_path = current_file
+                record.updated_at = _utc_now()
+
+            await asyncio.to_thread(
+                self._write_workspace_archive_sync,
+                self._workspace_files_dir(workspace_id),
+                archive_path,
+                request.archive_format,
+                manifest,
+                self._workspace_archive_preserved_prefixes_from_mounts(mounts),
+                extra_files,
+                _on_progress,
+            )
+            await self._update_workspace_archive_export_task_phase(
+                workspace_id,
+                task_id,
+                "completed",
+                warnings=warnings,
+                archive_path=archive_path,
+                archive_file_name=archive_file_name,
+                archive_size_bytes=archive_path.stat().st_size,
+                current_file_path=None,
+            )
+
+        async def _on_failure(detail: str) -> None:
+            await self._update_workspace_archive_export_task_phase(
+                workspace_id,
+                task_id,
+                "failed",
+                warnings=warnings,
+                error=detail,
+            )
+
+        await self._run_guarded_workspace_archive_task(
+            workspace_id,
+            user_id,
+            _task_body,
+            _on_failure,
+            log_message="Workspace archive export task failed",
+            persist_failure_message="Failed to persist archive export failure state",
+        )
+
+    async def _run_workspace_archive_import_task(
+        self,
+        task_id: str,
+        workspace_id: str,
+        user_id: str,
+        include_snapshots: bool,
+        include_chat_history: bool,
+        uploaded_archive_path: Path,
+    ) -> None:
+        warnings: list[str] = []
+        task_dir = self._workspace_archive_task_dir(task_id)
+        extract_dir = task_dir / "extracted"
+
+        async def _task_body(_: Any) -> None:
+            archive_format = self._detect_workspace_archive_format(
+                uploaded_archive_path.name
+            )
+            await self._update_workspace_archive_import_task_phase(
+                workspace_id,
+                task_id,
+                "extracting_archive",
+                archive_format=archive_format,
+            )
+            manifest = await asyncio.to_thread(
+                self._extract_workspace_archive_sync,
+                uploaded_archive_path,
+                extract_dir,
+            )
+            workspace_mounts = await self.list_workspace_mounts(
+                workspace_id,
+                user_id,
+            )
+            await self._update_workspace_archive_import_task_phase(
+                workspace_id,
+                task_id,
+                "importing_files",
+                archive_format=archive_format,
+            )
+            await asyncio.to_thread(
+                self._replace_workspace_files_from_archive_sync,
+                self._workspace_files_dir(workspace_id),
+                extract_dir / "files",
+                self._workspace_archive_preserved_prefixes_from_mounts(
+                    workspace_mounts
+                ),
+            )
+            await self._reset_workspace_snapshot_state(workspace_id)
+            self.invalidate_entrypoint_cache(workspace_id)
+            await self.clear_workspace_changed_file_acknowledgements_for_all_users(
+                workspace_id
+            )
+
+            await self._update_workspace_archive_import_task_phase(
+                workspace_id,
+                task_id,
+                "importing_metadata",
+                archive_format=archive_format,
+            )
+            imported_warnings, imported_snapshot_count, imported_chat_count = (
+                await self._apply_workspace_archive_manifest(
+                    workspace_id,
+                    user_id,
+                    manifest,
+                    include_snapshots=include_snapshots,
+                    include_chat_history=include_chat_history,
+                    extract_dir=extract_dir,
+                )
+            )
+            warnings[:] = imported_warnings
+            if imported_snapshot_count == 0:
+                await self._ensure_workspace_git_repo(workspace_id)
+            await self._touch_workspace(workspace_id)
+            from ragtime.userspace.runtime_service import \
+                userspace_runtime_service
+
+            await userspace_runtime_service.invalidate_workspace_runtime_state(
+                workspace_id
+            )
+            await userspace_runtime_service.bump_workspace_generation(
+                workspace_id,
+                "archive_import",
+            )
+            await self._update_workspace_archive_import_task_phase(
+                workspace_id,
+                task_id,
+                "completed",
+                archive_format=archive_format,
+                warnings=warnings,
+                imported_chat_count=imported_chat_count,
+                imported_snapshot_count=imported_snapshot_count,
+            )
+
+        async def _on_failure(detail: str) -> None:
+            await self._update_workspace_archive_import_task_phase(
+                workspace_id,
+                task_id,
+                "failed",
+                warnings=warnings,
+                error=detail,
+            )
+
+        await self._run_guarded_workspace_archive_task(
+            workspace_id,
+            user_id,
+            _task_body,
+            _on_failure,
+            log_message="Workspace archive import task failed",
+            persist_failure_message="Failed to persist archive import failure state",
+        )
+
+    async def enqueue_workspace_archive_export_task(
+        self,
+        workspace_id: str,
+        request: UserSpaceWorkspaceArchiveExportRequest,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceArchiveExportTask:
+        workspace = await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="owner",
+            is_admin=is_admin,
+        )
+        self._prune_expired_workspace_archive_export_task_statuses()
+        async with self._workspace_archive_tasks_lock:
+            existing_record = self._get_active_workspace_background_task_record(
+                workspace_id,
+                self._workspace_archive_export_active_task_ids_by_workspace,
+                self._workspace_archive_export_task_statuses,
+            )
+            if existing_record is not None:
+                return self._workspace_archive_export_task_model(existing_record)
+            task_id = str(uuid4())
+            now = _utc_now()
+            record = _WorkspaceArchiveExportTaskRecord(
+                task_id=task_id,
+                workspace_id=workspace_id,
+                workspace_name=workspace.name,
+                requested_by_user_id=user_id,
+                archive_format=request.archive_format,
+                include_snapshots=request.include_snapshots,
+                include_chat_history=request.include_chat_history,
+                phase="queued",
+                queued_at=now,
+                updated_at=now,
+            )
+            task = asyncio.create_task(
+                self._run_workspace_archive_export_task(
+                    task_id,
+                    workspace_id,
+                    request.model_copy(deep=True),
+                    user_id,
+                ),
+                name=f"userspace-workspace-archive-export:{workspace_id}",
+            )
+            self._register_workspace_background_task(
+                workspace_id,
+                task_id,
+                record,
+                task,
+                self._workspace_archive_export_task_statuses,
+                self._workspace_archive_export_tasks,
+                self._workspace_archive_export_active_task_ids_by_workspace,
+                lambda current_task_id, current_task: self._attach_workspace_archive_export_task_cleanup(
+                    current_task_id,
+                    workspace_id,
+                    current_task,
+                ),
+            )
+            await self._persist_workspace_archive_export_task_reference(
+                workspace_id,
+                task_id,
+                "queued",
+            )
+            return self._workspace_archive_export_task_model(record)
+
+    async def get_workspace_archive_export_task(
+        self,
+        task_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceArchiveExportTask:
+        self._prune_expired_workspace_archive_export_task_statuses()
+        record = self._workspace_archive_export_task_statuses.get(task_id)
+        if record is None:
+            await self._clear_missing_workspace_archive_task_reference(
+                "export", task_id
+            )
+            raise HTTPException(status_code=404, detail="Archive export task not found")
+        if record.requested_by_user_id != user_id and not is_admin:
+            raise HTTPException(status_code=404, detail="Archive export task not found")
+        return self._workspace_archive_export_task_model(record)
+
+    async def get_workspace_archive_export_download(
+        self,
+        task_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> tuple[Path, str]:
+        task = await self.get_workspace_archive_export_task(
+            task_id,
+            user_id,
+            is_admin=is_admin,
+        )
+        record = self._workspace_archive_export_task_statuses.get(task_id)
+        if task.phase != "completed" or record is None or record.archive_path is None:
+            raise HTTPException(
+                status_code=409, detail="Archive export is not ready yet"
+            )
+        if not record.archive_path.is_file():
+            raise HTTPException(
+                status_code=404, detail="Archive file is no longer available"
+            )
+        return record.archive_path, record.archive_file_name or record.archive_path.name
+
+    async def list_workspace_archive_exports(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceArchiveExportListResponse:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="owner",
+            is_admin=is_admin,
+        )
+        self._prune_expired_workspace_archive_export_task_statuses()
+        items: list[UserSpaceWorkspaceArchiveExportListItem] = []
+        for record in self._workspace_archive_export_task_statuses.values():
+            if record.workspace_id != workspace_id:
+                continue
+            if record.phase != "completed":
+                continue
+            if record.requested_by_user_id != user_id and not is_admin:
+                continue
+            if record.archive_path is None or not record.archive_path.is_file():
+                continue
+            if not record.archive_file_name or record.archive_size_bytes is None:
+                continue
+            archive_format: WorkspaceArchiveFormat = (
+                "zip" if record.archive_format == "zip" else "tar.gz"
+            )
+            items.append(
+                UserSpaceWorkspaceArchiveExportListItem(
+                    task_id=record.task_id,
+                    workspace_id=record.workspace_id,
+                    workspace_name=record.workspace_name,
+                    archive_format=archive_format,
+                    include_snapshots=record.include_snapshots,
+                    include_chat_history=record.include_chat_history,
+                    archive_file_name=record.archive_file_name,
+                    archive_size_bytes=record.archive_size_bytes,
+                    created_at=record.updated_at,
+                    warnings=list(record.warnings),
+                )
+            )
+        items.sort(key=lambda item: item.created_at, reverse=True)
+        return UserSpaceWorkspaceArchiveExportListResponse(
+            workspace_id=workspace_id,
+            exports=items,
+        )
+
+    async def delete_workspace_archive_export_task(
+        self,
+        task_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> DeleteUserSpaceWorkspaceArchiveExportResponse:
+        record = self._workspace_archive_export_task_statuses.get(task_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Archive export task not found")
+        if record.requested_by_user_id != user_id and not is_admin:
+            raise HTTPException(status_code=404, detail="Archive export task not found")
+        if record.phase not in {"completed", "failed"}:
+            raise HTTPException(
+                status_code=409,
+                detail="Archive export is still running and cannot be deleted",
+            )
+        self._workspace_archive_export_task_statuses.pop(task_id, None)
+        await asyncio.to_thread(
+            self._remove_workspace_archive_dir_sync,
+            self._workspace_archive_task_dir(task_id),
+        )
+        await self._clear_missing_workspace_archive_task_reference("export", task_id)
+        return DeleteUserSpaceWorkspaceArchiveExportResponse(
+            success=True,
+            task_id=task_id,
+        )
+
+    async def enqueue_workspace_archive_import_task(
+        self,
+        workspace_id: str,
+        user_id: str,
+        uploaded_archive_path: Path,
+        uploaded_file_name: str,
+        *,
+        include_snapshots: bool,
+        include_chat_history: bool,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceArchiveImportTask:
+        workspace = await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="owner",
+            is_admin=is_admin,
+        )
+        archive_format = self._detect_workspace_archive_format(uploaded_file_name)
+        self._prune_expired_workspace_archive_import_task_statuses()
+        async with self._workspace_archive_tasks_lock:
+            existing_record = self._get_active_workspace_background_task_record(
+                workspace_id,
+                self._workspace_archive_import_active_task_ids_by_workspace,
+                self._workspace_archive_import_task_statuses,
+            )
+            if existing_record is not None:
+                return self._workspace_archive_import_task_model(existing_record)
+            task_id = str(uuid4())
+            now = _utc_now()
+            task_dir = self._workspace_archive_task_dir(task_id)
+            task_dir.mkdir(parents=True, exist_ok=True)
+            final_archive_path = (
+                task_dir / f"upload{self._workspace_archive_extension(archive_format)}"
+            )
+            shutil.move(str(uploaded_archive_path), str(final_archive_path))
+            record = _WorkspaceArchiveImportTaskRecord(
+                task_id=task_id,
+                workspace_id=workspace_id,
+                workspace_name=workspace.name,
+                requested_by_user_id=user_id,
+                include_snapshots=include_snapshots,
+                include_chat_history=include_chat_history,
+                phase="queued",
+                queued_at=now,
+                updated_at=now,
+            )
+            record.archive_format = archive_format
+            record.uploaded_archive_path = final_archive_path
+            task = asyncio.create_task(
+                self._run_workspace_archive_import_task(
+                    task_id,
+                    workspace_id,
+                    user_id,
+                    include_snapshots,
+                    include_chat_history,
+                    final_archive_path,
+                ),
+                name=f"userspace-workspace-archive-import:{workspace_id}",
+            )
+            self._register_workspace_background_task(
+                workspace_id,
+                task_id,
+                record,
+                task,
+                self._workspace_archive_import_task_statuses,
+                self._workspace_archive_import_tasks,
+                self._workspace_archive_import_active_task_ids_by_workspace,
+                lambda current_task_id, current_task: self._attach_workspace_archive_import_task_cleanup(
+                    current_task_id,
+                    workspace_id,
+                    current_task,
+                ),
+            )
+            await self._persist_workspace_archive_import_task_reference(
+                workspace_id,
+                task_id,
+                "queued",
+            )
+            return self._workspace_archive_import_task_model(record)
+
+    async def get_workspace_archive_import_task(
+        self,
+        task_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceArchiveImportTask:
+        self._prune_expired_workspace_archive_import_task_statuses()
+        record = self._workspace_archive_import_task_statuses.get(task_id)
+        if record is None:
+            await self._clear_missing_workspace_archive_task_reference(
+                "import", task_id
+            )
+            raise HTTPException(status_code=404, detail="Archive import task not found")
+        if record.requested_by_user_id != user_id and not is_admin:
+            raise HTTPException(status_code=404, detail="Archive import task not found")
+        return self._workspace_archive_import_task_model(record)
+
     async def _run_workspace_create_task(
         self,
         task_id: str,
@@ -1790,9 +4017,14 @@ class UserSpaceService:
         )
 
         async with self._workspace_create_tasks_lock:
-            self._attach_workspace_create_task_cleanup(task_id, task)
-            self._workspace_create_task_statuses[task_id] = record
-            self._workspace_create_tasks[task_id] = task
+            self._register_background_task(
+                task_id,
+                record,
+                task,
+                self._workspace_create_task_statuses,
+                self._workspace_create_tasks,
+                self._attach_workspace_create_task_cleanup,
+            )
 
         return self._workspace_create_task_model(record)
 
@@ -1845,9 +4077,14 @@ class UserSpaceService:
         )
 
         async with self._workspace_duplicate_tasks_lock:
-            self._attach_workspace_duplicate_task_cleanup(task_id, task)
-            self._workspace_duplicate_task_statuses[task_id] = record
-            self._workspace_duplicate_tasks[task_id] = task
+            self._register_background_task(
+                task_id,
+                record,
+                task,
+                self._workspace_duplicate_task_statuses,
+                self._workspace_duplicate_tasks,
+                self._attach_workspace_duplicate_task_cleanup,
+            )
 
         return self._workspace_duplicate_task_model(record)
 
@@ -2311,15 +4548,13 @@ class UserSpaceService:
         self._prune_expired_workspace_delete_task_statuses()
 
         async with self._workspace_delete_tasks_lock:
-            existing_task_id = self._workspace_delete_active_task_ids_by_workspace.get(
-                workspace_id
+            existing_record = self._get_active_workspace_background_task_record(
+                workspace_id,
+                self._workspace_delete_active_task_ids_by_workspace,
+                self._workspace_delete_task_statuses,
             )
-            if existing_task_id is not None:
-                existing_record = self._workspace_delete_task_statuses.get(
-                    existing_task_id
-                )
-                if existing_record is not None:
-                    return self._workspace_delete_task_model(existing_record)
+            if existing_record is not None:
+                return self._workspace_delete_task_model(existing_record)
 
             task_id = str(uuid4())
             now = _utc_now()
@@ -2341,10 +4576,20 @@ class UserSpaceService:
                 ),
                 name=f"userspace-workspace-delete:{workspace_id}",
             )
-            self._attach_workspace_delete_task_cleanup(task_id, workspace_id, task)
-            self._workspace_delete_task_statuses[task_id] = record
-            self._workspace_delete_tasks[task_id] = task
-            self._workspace_delete_active_task_ids_by_workspace[workspace_id] = task_id
+            self._register_workspace_background_task(
+                workspace_id,
+                task_id,
+                record,
+                task,
+                self._workspace_delete_task_statuses,
+                self._workspace_delete_tasks,
+                self._workspace_delete_active_task_ids_by_workspace,
+                lambda current_task_id, current_task: self._attach_workspace_delete_task_cleanup(
+                    current_task_id,
+                    workspace_id,
+                    current_task,
+                ),
+            )
             return self._workspace_delete_task_model(record)
 
     async def get_workspace_delete_task(
@@ -6110,6 +8355,10 @@ class UserSpaceService:
             conversation_ids=conversation_ids,
             members=members,
             scm=scm,
+            archive_export_task_id=getattr(record, "archiveExportTaskId", None),
+            archive_export_task_phase=getattr(record, "archiveExportTaskPhase", None),
+            archive_import_task_id=getattr(record, "archiveImportTaskId", None),
+            archive_import_task_phase=getattr(record, "archiveImportTaskPhase", None),
             created_at=record.createdAt,
             updated_at=record.updatedAt,
         )
@@ -6661,9 +8910,15 @@ class UserSpaceService:
             where={"id": workspace_id},
             data=update_data,
         )
-        if request.auto_sync_policy == "auto_push" or request.auto_push_interval_seconds is not None:
+        if (
+            request.auto_sync_policy == "auto_push"
+            or request.auto_push_interval_seconds is not None
+        ):
             self._nudge_workspace_scm_watch_due(workspace_id, "export")
-        if request.auto_pull_enabled is True or request.auto_pull_interval_seconds is not None:
+        if (
+            request.auto_pull_enabled is True
+            or request.auto_pull_interval_seconds is not None
+        ):
             self._nudge_workspace_scm_watch_due(workspace_id, "import")
         return self._workspace_from_record(updated).scm or UserSpaceWorkspaceScmStatus()
 
@@ -14865,5 +17120,6 @@ class UserSpaceService:
         )
 
 
+userspace_service = UserSpaceService()
 userspace_service = UserSpaceService()
 userspace_service = UserSpaceService()

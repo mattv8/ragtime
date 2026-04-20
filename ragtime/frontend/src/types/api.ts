@@ -1748,6 +1748,22 @@ export type UserSpaceWorkspaceDuplicateTaskPhase =
   | 'creating_conversation'
   | 'completed'
   | 'failed';
+export type UserSpaceWorkspaceArchiveFormat = 'zip' | 'tar.gz';
+export type UserSpaceWorkspaceArchiveExportTaskPhase =
+  | 'queued'
+  | 'collecting_workspace'
+  | 'building_archive'
+  | 'completed'
+  | 'failed';
+export type UserSpaceWorkspaceArchiveImportTaskPhase =
+  | 'queued'
+  | 'extracting_archive'
+  | 'importing_files'
+  | 'importing_metadata'
+  | 'importing_snapshots'
+  | 'importing_chats'
+  | 'completed'
+  | 'failed';
 export type UserSpaceRuntimeRestartBatchTaskPhase =
   | 'queued'
   | 'restarting'
@@ -1808,6 +1824,10 @@ export interface UserSpaceWorkspace {
   conversation_ids: string[];
   members: UserSpaceWorkspaceMember[];
   scm?: UserSpaceWorkspaceScmStatus | null;
+  archive_export_task_id?: string | null;
+  archive_export_task_phase?: UserSpaceWorkspaceArchiveExportTaskPhase | null;
+  archive_import_task_id?: string | null;
+  archive_import_task_phase?: UserSpaceWorkspaceArchiveImportTaskPhase | null;
   created_at: string;
   updated_at: string;
 }
@@ -1890,6 +1910,12 @@ export interface UserSpaceWorkspaceScmSettingsRequest {
   clear_sync_paused?: boolean;
 }
 
+export interface UserSpaceWorkspaceArchiveExportRequest {
+  archive_format?: UserSpaceWorkspaceArchiveFormat;
+  include_snapshots?: boolean;
+  include_chat_history?: boolean;
+}
+
 export interface UserSpaceWorkspaceDeleteTask {
   task_id: string;
   workspace_id: string;
@@ -1917,6 +1943,66 @@ export interface UserSpaceWorkspaceDuplicateTask {
   workspace_id?: string | null;
   workspace_name?: string | null;
   phase: UserSpaceWorkspaceDuplicateTaskPhase;
+  error?: string | null;
+  queued_at: string;
+  updated_at: string;
+}
+
+export interface UserSpaceWorkspaceArchiveExportTask {
+  task_id: string;
+  workspace_id: string;
+  workspace_name: string;
+  archive_format: UserSpaceWorkspaceArchiveFormat;
+  include_snapshots: boolean;
+  include_chat_history: boolean;
+  phase: UserSpaceWorkspaceArchiveExportTaskPhase;
+  warnings: string[];
+  archive_file_name?: string | null;
+  archive_size_bytes?: number | null;
+  total_files: number;
+  processed_files: number;
+  total_bytes: number;
+  processed_bytes: number;
+  current_file_path?: string | null;
+  error?: string | null;
+  queued_at: string;
+  updated_at: string;
+}
+
+export interface UserSpaceWorkspaceArchiveExportListItem {
+  task_id: string;
+  workspace_id: string;
+  workspace_name: string;
+  archive_format: UserSpaceWorkspaceArchiveFormat;
+  include_snapshots: boolean;
+  include_chat_history: boolean;
+  archive_file_name: string;
+  archive_size_bytes: number;
+  created_at: string;
+  warnings: string[];
+}
+
+export interface UserSpaceWorkspaceArchiveExportListResponse {
+  workspace_id: string;
+  exports: UserSpaceWorkspaceArchiveExportListItem[];
+}
+
+export interface DeleteUserSpaceWorkspaceArchiveExportResponse {
+  success: boolean;
+  task_id: string;
+}
+
+export interface UserSpaceWorkspaceArchiveImportTask {
+  task_id: string;
+  workspace_id: string;
+  workspace_name: string;
+  archive_format?: UserSpaceWorkspaceArchiveFormat | null;
+  include_snapshots: boolean;
+  include_chat_history: boolean;
+  phase: UserSpaceWorkspaceArchiveImportTaskPhase;
+  warnings: string[];
+  imported_chat_count: number;
+  imported_snapshot_count: number;
   error?: string | null;
   queued_at: string;
   updated_at: string;

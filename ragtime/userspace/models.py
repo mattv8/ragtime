@@ -85,6 +85,24 @@ WorkspaceDuplicateTaskPhase = Literal[
     "completed",
     "failed",
 ]
+WorkspaceArchiveFormat = Literal["zip", "tar.gz"]
+WorkspaceArchiveExportTaskPhase = Literal[
+    "queued",
+    "collecting_workspace",
+    "building_archive",
+    "completed",
+    "failed",
+]
+WorkspaceArchiveImportTaskPhase = Literal[
+    "queued",
+    "extracting_archive",
+    "importing_files",
+    "importing_metadata",
+    "importing_snapshots",
+    "importing_chats",
+    "completed",
+    "failed",
+]
 RuntimeRestartBatchTaskPhase = Literal[
     "queued",
     "restarting",
@@ -179,6 +197,10 @@ class UserSpaceWorkspace(BaseModel):
     conversation_ids: list[str] = Field(default_factory=list)
     members: list[WorkspaceMember] = Field(default_factory=list)
     scm: "UserSpaceWorkspaceScmStatus | None" = None
+    archive_export_task_id: str | None = None
+    archive_export_task_phase: WorkspaceArchiveExportTaskPhase | None = None
+    archive_import_task_id: str | None = None
+    archive_import_task_phase: WorkspaceArchiveImportTaskPhase | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -210,6 +232,68 @@ class UserSpaceWorkspaceDuplicateTask(BaseModel):
     workspace_id: str | None = None
     workspace_name: str | None = None
     phase: WorkspaceDuplicateTaskPhase
+    error: str | None = None
+    queued_at: datetime
+    updated_at: datetime
+
+
+class UserSpaceWorkspaceArchiveExportTask(BaseModel):
+    task_id: str
+    workspace_id: str
+    workspace_name: str
+    archive_format: WorkspaceArchiveFormat
+    include_snapshots: bool = False
+    include_chat_history: bool = False
+    phase: WorkspaceArchiveExportTaskPhase
+    warnings: list[str] = Field(default_factory=list)
+    archive_file_name: str | None = None
+    archive_size_bytes: int | None = None
+    total_files: int = 0
+    processed_files: int = 0
+    total_bytes: int = 0
+    processed_bytes: int = 0
+    current_file_path: str | None = None
+    error: str | None = None
+    queued_at: datetime
+    updated_at: datetime
+
+
+class UserSpaceWorkspaceArchiveExportListItem(BaseModel):
+    task_id: str
+    workspace_id: str
+    workspace_name: str
+    archive_format: WorkspaceArchiveFormat
+    include_snapshots: bool = False
+    include_chat_history: bool = False
+    archive_file_name: str
+    archive_size_bytes: int
+    created_at: datetime
+    warnings: list[str] = Field(default_factory=list)
+
+
+class UserSpaceWorkspaceArchiveExportListResponse(BaseModel):
+    workspace_id: str
+    exports: list[UserSpaceWorkspaceArchiveExportListItem] = Field(
+        default_factory=list
+    )
+
+
+class DeleteUserSpaceWorkspaceArchiveExportResponse(BaseModel):
+    success: bool = True
+    task_id: str
+
+
+class UserSpaceWorkspaceArchiveImportTask(BaseModel):
+    task_id: str
+    workspace_id: str
+    workspace_name: str
+    archive_format: WorkspaceArchiveFormat | None = None
+    include_snapshots: bool = False
+    include_chat_history: bool = False
+    phase: WorkspaceArchiveImportTaskPhase
+    warnings: list[str] = Field(default_factory=list)
+    imported_chat_count: int = 0
+    imported_snapshot_count: int = 0
     error: str | None = None
     queued_at: datetime
     updated_at: datetime
@@ -281,6 +365,21 @@ class DuplicateWorkspaceRequest(BaseModel):
     copy_mounts: bool | None = Field(
         default=None,
         description="Override whether duplication copies workspace mounts.",
+    )
+
+
+class UserSpaceWorkspaceArchiveExportRequest(BaseModel):
+    archive_format: WorkspaceArchiveFormat = Field(
+        default="zip",
+        description="Portable archive format.",
+    )
+    include_snapshots: bool = Field(
+        default=False,
+        description="Include snapshot history when the workspace snapshot state is exportable.",
+    )
+    include_chat_history: bool = Field(
+        default=False,
+        description="Include workspace chat history.",
     )
 
 

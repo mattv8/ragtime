@@ -622,7 +622,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [runtimeStatus, setRuntimeStatus] = useState<UserSpaceRuntimeStatusResponse | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [activeRightTab, setActiveRightTab] = useState<'preview' | 'console'>('preview');
-  const [collabConnected, setCollabConnected] = useState(false);
   const [collabReadOnly, setCollabReadOnly] = useState(false);
   const [collabVersion, setCollabVersion] = useState(0);
   const [collabPresenceCount, setCollabPresenceCount] = useState(0);
@@ -1160,6 +1159,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const canEditWorkspace = activeWorkspaceRole === 'owner' || activeWorkspaceRole === 'editor';
   const isOwner = activeWorkspaceRole === 'owner';
   const isAdminImpersonating = currentUser.role === 'admin' && activeWorkspace != null && activeWorkspace.owner_user_id !== currentUser.id;
+  const archiveExportInProgress = Boolean(
+    activeWorkspace?.archive_export_task_id
+      && activeWorkspace.archive_export_task_phase
+      && !['completed', 'failed'].includes(activeWorkspace.archive_export_task_phase)
+  );
+  const archiveImportInProgress = Boolean(
+    activeWorkspace?.archive_import_task_id
+      && activeWorkspace.archive_import_task_phase
+      && !['completed', 'failed'].includes(activeWorkspace.archive_import_task_phase)
+  );
   const workspaceChatShareableUserIds = useMemo(() => {
     if (!activeWorkspace) return [];
     return Array.from(new Set([
@@ -3544,7 +3553,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
     collabSocketRef.current?.close();
     collabSocketRef.current = null;
-    setCollabConnected(false);
     setCollabReadOnly(false);
     setCollabVersion(0);
     setCollabPresenceCount(0);
@@ -3583,7 +3591,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         collabSocketRef.current = socket;
 
         socket.onopen = () => {
-          setCollabConnected(true);
           collabReconnectAttemptsRef.current = 0;
           if (collabReconnectTimerRef.current !== null) {
             window.clearTimeout(collabReconnectTimerRef.current);
@@ -3655,7 +3662,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         };
 
         socket.onclose = (closeEvent) => {
-          setCollabConnected(false);
           setCollabPresenceCount(0);
 
           // Do not retry for intentional/auth/path failures.
@@ -3666,7 +3672,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         };
 
         socket.onerror = () => {
-          setCollabConnected(false);
           setCollabPresenceCount(0);
           // onclose usually follows and controls reconnect behavior.
         };
@@ -5950,7 +5955,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           </button>
           {canEditWorkspace && activeWorkspaceId && (
             <button className="btn btn-secondary btn-sm" onClick={() => setShowScmWizard(true)} title="Import or export this workspace with Git">
-              <GitBranch size={14} />
+              {(archiveExportInProgress || archiveImportInProgress)
+                ? <MiniLoadingSpinner variant="icon" size={14} />
+                : <GitBranch size={14} />}
             </button>
           )}
           {isOwner && (
@@ -6001,6 +6008,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                   : activeWorkspace.scm.remote_role === 'upstream'
                     ? `upstream:${activeWorkspace.scm.git_branch || 'main'}`
                     : `git:${activeWorkspace.scm.git_branch || 'main'}`}
+              </span>
+            )}
+            {activeWorkspace?.archive_export_task_phase && (
+              <span className="userspace-status-pill userspace-status-pill-info" title="Workspace archive export status">
+                Archive export: {activeWorkspace.archive_export_task_phase.replace(/_/g, ' ')}
+              </span>
+            )}
+            {activeWorkspace?.archive_import_task_phase && (
+              <span className="userspace-status-pill userspace-status-pill-info" title="Workspace archive import status">
+                Archive import: {activeWorkspace.archive_import_task_phase.replace(/_/g, ' ')}
               </span>
             )}
             {isAdminImpersonating && (
@@ -6805,6 +6822,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           onClose={() => setShowScmWizard(false)}
           onSyncComplete={handleWorkspaceScmSyncComplete}
           onAskAgent={handleAskAgentToPrepareWorkspace}
+          onWorkspaceChanged={async () => {
+            const refreshedWorkspace = await api.getUserSpaceWorkspace(activeWorkspace.id);
+            setWorkspaces((current) => current.map((workspace) => (
+              workspace.id === refreshedWorkspace.id ? refreshedWorkspace : workspace
+            )));
+            await Promise.all([
+              loadWorkspaceData(activeWorkspace.id),
+              loadChangedFileState(activeWorkspace.id),
+              loadSnapshots(activeWorkspace.id),
+            ]);
+          }}
         />
       )}
 

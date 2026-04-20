@@ -5,6 +5,10 @@ import { api } from '@/api';
 import type {
   RepoVisibilityResponse,
   SqliteImportResponse,
+  UserSpaceWorkspaceArchiveExportListItem,
+  UserSpaceWorkspaceArchiveExportTask,
+  UserSpaceWorkspaceArchiveFormat,
+  UserSpaceWorkspaceArchiveImportTask,
   UserSpaceWorkspace,
   UserSpaceWorkspaceScmExportRequest,
   UserSpaceWorkspaceScmImportRequest,
@@ -14,17 +18,24 @@ import type {
 } from '@/types';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
+import { ToastContainer, useToast } from './shared/Toast';
 
-type ModalTab = 'git-source' | 'sql-import';
+type ModalTab = 'git-source' | 'archive' | 'sql-import';
 type WizardMode = 'import' | 'export' | 'sql-import';
 type WizardStep = 'input' | 'review' | 'result';
 type StatusType = 'info' | 'success' | 'error' | null;
+type ArchiveMode = 'export' | 'import';
+type ArchiveStep = 'choose' | 'configure';
+
+const EMPTY_STATUS = { type: null, message: '' } as const;
+const ARCHIVE_POLL_INTERVAL_MS = 1000;
 
 interface WorkspaceScmWizardProps {
   workspace: UserSpaceWorkspace;
   onClose: () => void;
   onSyncComplete: (response: UserSpaceWorkspaceScmSyncResponse) => Promise<void> | void;
   onAskAgent?: (prompt: string) => Promise<void> | void;
+  onWorkspaceChanged?: () => Promise<void> | void;
 }
 
 function getDefaultBranch(branches: string[], fallback: string): string {
@@ -83,9 +94,112 @@ function formatSyncInterval(seconds: number): string {
   return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
 }
 
-export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAgent }: WorkspaceScmWizardProps) {
+function isArchiveExportTaskTerminal(phase: UserSpaceWorkspaceArchiveExportTask['phase']): boolean {
+  return phase === 'completed' || phase === 'failed';
+}
+
+function isArchiveImportTaskTerminal(phase: UserSpaceWorkspaceArchiveImportTask['phase']): boolean {
+  return phase === 'completed' || phase === 'failed';
+}
+
+function isArchiveExportPhaseInProgress(phase: UserSpaceWorkspaceArchiveExportTask['phase'] | null | undefined): boolean {
+  return Boolean(phase && !isArchiveExportTaskTerminal(phase));
+}
+
+function isArchiveImportPhaseInProgress(phase: UserSpaceWorkspaceArchiveImportTask['phase'] | null | undefined): boolean {
+  return Boolean(phase && !isArchiveImportTaskTerminal(phase));
+}
+
+function getArchiveImportProgress(task: UserSpaceWorkspaceArchiveImportTask): { currentStep: number; totalSteps: number; percent: number } | null {
+  if (isArchiveImportTaskTerminal(task.phase)) {
+    return null;
+  }
+  const steps: UserSpaceWorkspaceArchiveImportTask['phase'][] = [
+    'queued',
+    'extracting_archive',
+    'importing_files',
+    'importing_metadata',
+    'importing_snapshots',
+    'importing_chats',
+  ];
+  const index = steps.indexOf(task.phase);
+  const currentStep = index >= 0 ? index + 1 : 1;
+  const totalSteps = steps.length;
+  const percent = Math.min(100, Math.round((currentStep / totalSteps) * 100));
+  return { currentStep, totalSteps, percent };
+}
+
+function formatArchiveTaskPhase(phase: string): string {
+  return phase.replace(/_/g, ' ');
+}
+
+function formatArchiveSize(bytes: number | null | undefined): string | null {
+  if (!bytes || bytes <= 0) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function isApiErrorWithStatus(error: unknown, status: number): error is { status: number } {
+  return typeof error === 'object' && error !== null && 'status' in error && error.status === status;
+}
+
+function buildArchiveExportTaskPlaceholder(workspace: UserSpaceWorkspace): UserSpaceWorkspaceArchiveExportTask | null {
+  if (!workspace.archive_export_task_id) {
+    return null;
+  }
+  return {
+    task_id: workspace.archive_export_task_id,
+    workspace_id: workspace.id,
+    workspace_name: workspace.name,
+    archive_format: 'zip',
+    include_snapshots: false,
+    include_chat_history: false,
+    phase: workspace.archive_export_task_phase ?? 'queued',
+    warnings: [],
+    archive_file_name: null,
+    archive_size_bytes: null,
+    total_files: 0,
+    processed_files: 0,
+    total_bytes: 0,
+    processed_bytes: 0,
+    current_file_path: null,
+    error: null,
+    queued_at: workspace.updated_at,
+    updated_at: workspace.updated_at,
+  };
+}
+
+function buildArchiveImportTaskPlaceholder(workspace: UserSpaceWorkspace): UserSpaceWorkspaceArchiveImportTask | null {
+  if (!workspace.archive_import_task_id) {
+    return null;
+  }
+  return {
+    task_id: workspace.archive_import_task_id,
+    workspace_id: workspace.id,
+    workspace_name: workspace.name,
+    archive_format: null,
+    include_snapshots: false,
+    include_chat_history: false,
+    phase: workspace.archive_import_task_phase ?? 'queued',
+    warnings: [],
+    imported_chat_count: 0,
+    imported_snapshot_count: 0,
+    error: null,
+    queued_at: workspace.updated_at,
+    updated_at: workspace.updated_at,
+  };
+}
+
+export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAgent, onWorkspaceChanged }: WorkspaceScmWizardProps) {
   const initialScm = workspace.scm;
-  const [activeTab, setActiveTab] = useState<ModalTab>('git-source');
+  const hasActiveArchiveExportTask = Boolean(workspace.archive_export_task_id) && isArchiveExportPhaseInProgress(workspace.archive_export_task_phase);
+  const hasActiveArchiveImportTask = Boolean(workspace.archive_import_task_id) && isArchiveImportPhaseInProgress(workspace.archive_import_task_phase);
+  const shouldOpenArchiveByDefault = hasActiveArchiveExportTask || hasActiveArchiveImportTask;
+  const defaultArchiveMode: ArchiveMode = hasActiveArchiveImportTask ? 'import' : 'export';
+  const [toasts, toast] = useToast();
+  const [activeTab, setActiveTab] = useState<ModalTab>(shouldOpenArchiveByDefault ? 'archive' : 'git-source');
   const [mode, setMode] = useState<WizardMode>('import');
   const [step, setStep] = useState<WizardStep>('input');
   const [status, setStatus] = useState<{ type: StatusType; message: string }>({ type: null, message: '' });
@@ -106,13 +220,67 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [sqlFile, setSqlFile] = useState<File | null>(null);
   const [sqlImportResult, setSqlImportResult] = useState<SqliteImportResponse | null>(null);
   const [sqlDragOver, setSqlDragOver] = useState(false);
+  const [archiveMode, setArchiveMode] = useState<ArchiveMode>(defaultArchiveMode);
+  const [archiveStep, setArchiveStep] = useState<ArchiveStep>(shouldOpenArchiveByDefault ? 'configure' : 'choose');
+  const [archiveFormat, setArchiveFormat] = useState<UserSpaceWorkspaceArchiveFormat>('zip');
+  const [archiveIncludeSnapshots, setArchiveIncludeSnapshots] = useState(false);
+  const [archiveIncludeChatHistory, setArchiveIncludeChatHistory] = useState(false);
+  const [archiveFile, setArchiveFile] = useState<File | null>(null);
+  const [archiveDragOver, setArchiveDragOver] = useState(false);
+  const [archiveExportTask, setArchiveExportTask] = useState<UserSpaceWorkspaceArchiveExportTask | null>(null);
+  const [archiveImportTask, setArchiveImportTask] = useState<UserSpaceWorkspaceArchiveImportTask | null>(null);
+  const [archiveExports, setArchiveExports] = useState<UserSpaceWorkspaceArchiveExportListItem[]>([]);
+  const [archiveExportsScanned, setArchiveExportsScanned] = useState(false);
+  const [deletingExportTaskId, setDeletingExportTaskId] = useState<string | null>(null);
+  const [downloadedExportTaskIds, setDownloadedExportTaskIds] = useState<Set<string>>(new Set());
   const [loadingAction, setLoadingAction] = useState<'pull' | 'push' | 'overwrite' | 'sync' | 'preview' | 'execute' | null>(null);
   const [showOverwriteMenu, setShowOverwriteMenu] = useState(false);
   const [autoPushIntervalSeconds, setAutoPushIntervalSeconds] = useState(initialScm?.auto_push_interval_seconds ?? 3600);
   const [autoPullIntervalSeconds, setAutoPullIntervalSeconds] = useState(initialScm?.auto_pull_interval_seconds ?? 3600);
   const sqlFileInputRef = useRef<HTMLInputElement>(null);
+  const archiveFileInputRef = useRef<HTMLInputElement>(null);
+  const lastDownloadedArchiveTaskIdRef = useRef<string | null>(null);
+  const lastNotifiedArchiveExportTaskIdRef = useRef<string | null>(null);
+  const lastNotifiedArchiveImportTaskIdRef = useRef<string | null>(null);
   const activeScm = result?.scm ?? initialScm ?? null;
   const hasConfiguredRemote = Boolean(activeScm?.connected || activeScm?.git_url);
+  const clearStatus = useCallback(() => setStatus(EMPTY_STATUS), []);
+
+  useEffect(() => {
+    if (archiveExportTask) {
+      return;
+    }
+    const nextTask = buildArchiveExportTaskPlaceholder(workspace);
+    if (nextTask) {
+      setArchiveExportTask(nextTask);
+    }
+  }, [archiveExportTask, workspace.archive_export_task_id, workspace.archive_export_task_phase, workspace.id, workspace.name, workspace.updated_at]);
+
+  useEffect(() => {
+    if (archiveImportTask) {
+      return;
+    }
+    const nextTask = buildArchiveImportTaskPlaceholder(workspace);
+    if (nextTask) {
+      setArchiveImportTask(nextTask);
+    }
+  }, [archiveImportTask, workspace.archive_import_task_id, workspace.archive_import_task_phase, workspace.id, workspace.name, workspace.updated_at]);
+
+  useEffect(() => {
+    setArchiveExports([]);
+    setArchiveExportsScanned(false);
+    setDownloadedExportTaskIds(new Set());
+  }, [workspace.id]);
+
+  useEffect(() => {
+    if (!hasActiveArchiveExportTask && !hasActiveArchiveImportTask) {
+      return;
+    }
+    setActiveTab('archive');
+    setArchiveStep('configure');
+    setArchiveMode(hasActiveArchiveImportTask ? 'import' : 'export');
+    setStep('input');
+  }, [hasActiveArchiveExportTask, hasActiveArchiveImportTask, workspace.id]);
 
   const tokenRequired = useMemo(() => {
     if (mode === 'export') {
@@ -311,8 +479,204 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     }
   }
 
+  async function handleQueueArchiveExport(): Promise<void> {
+    setIsLoading(true);
+    try {
+      const task = await api.queueUserSpaceWorkspaceArchiveExport(workspace.id, {
+        archive_format: archiveFormat,
+        include_snapshots: archiveIncludeSnapshots,
+        include_chat_history: archiveIncludeChatHistory,
+      });
+      setArchiveExportTask(task);
+      setArchiveImportTask(null);
+      lastDownloadedArchiveTaskIdRef.current = null;
+      lastNotifiedArchiveExportTaskIdRef.current = null;
+      clearStatus();
+      toast.success('Workspace archive export queued.');
+      await onWorkspaceChanged?.();
+    } catch (error) {
+      clearStatus();
+      toast.error(error instanceof Error ? error.message : 'Failed to queue workspace export.');
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleQueueArchiveImport(): Promise<void> {
+    if (!archiveFile) {
+      clearStatus();
+      toast.error('Select an archive file to import.');
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('archive_file', archiveFile);
+      formData.append('include_snapshots', String(archiveIncludeSnapshots));
+      formData.append('include_chat_history', String(archiveIncludeChatHistory));
+      const task = await api.queueUserSpaceWorkspaceArchiveImport(workspace.id, formData);
+      setArchiveImportTask(task);
+      setArchiveExportTask(null);
+      lastNotifiedArchiveImportTaskIdRef.current = null;
+      clearStatus();
+      toast.success('Workspace archive import queued.');
+      await onWorkspaceChanged?.();
+    } catch (error) {
+      clearStatus();
+      toast.error(error instanceof Error ? error.message : 'Failed to queue workspace import.');
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleDownloadArchive(taskId: string): Promise<void> {
+    try {
+      await api.downloadUserSpaceWorkspaceArchiveExportTask(taskId);
+      lastDownloadedArchiveTaskIdRef.current = taskId;
+      setDownloadedExportTaskIds(prev => {
+        const next = new Set(prev);
+        next.add(taskId);
+        return next;
+      });
+      clearStatus();
+      toast.success('Workspace archive downloaded.');
+    } catch (error) {
+      clearStatus();
+      toast.error(error instanceof Error ? error.message : 'Failed to download workspace archive.');
+    }
+  }
+
+  const loadArchiveExports = useCallback(async (options?: { force?: boolean }): Promise<void> => {
+    if (archiveExportsScanned && !options?.force) {
+      return;
+    }
+    try {
+      const response = await api.listUserSpaceWorkspaceArchiveExports(workspace.id);
+      setArchiveExports(response.exports);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to load workspace exports.');
+    } finally {
+      setArchiveExportsScanned(true);
+    }
+  }, [archiveExportsScanned, workspace.id, toast]);
+
+  async function handleDeleteArchiveExport(taskId: string): Promise<void> {
+    setDeletingExportTaskId(taskId);
+    try {
+      await api.deleteUserSpaceWorkspaceArchiveExportTask(taskId);
+      setArchiveExports(prev => prev.filter(item => item.task_id !== taskId));
+      if (archiveExportTask?.task_id === taskId) {
+        setArchiveExportTask(null);
+      }
+      toast.success('Workspace archive deleted.');
+      await onWorkspaceChanged?.();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to delete workspace archive.');
+    } finally {
+      setDeletingExportTaskId(null);
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab !== 'archive' || archiveExportsScanned) return;
+    void loadArchiveExports();
+  }, [activeTab, archiveExportsScanned, loadArchiveExports]);
+
+  useEffect(() => {
+    if (!archiveExportTask || isArchiveExportTaskTerminal(archiveExportTask.phase)) {
+      return;
+    }
+
+    let cancelled = false;
+    let pollInFlight = false;
+
+    const pollTask = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
+      try {
+        const nextTask = await api.getUserSpaceWorkspaceArchiveExportTask(archiveExportTask.task_id);
+        if (cancelled) return;
+        setArchiveExportTask(nextTask);
+        if (nextTask.phase === 'completed' && lastNotifiedArchiveExportTaskIdRef.current !== nextTask.task_id) {
+          await loadArchiveExports({ force: true });
+          toast.success(nextTask.warnings.length > 0 ? 'Archive export completed with warnings.' : 'Archive export completed.');
+          lastNotifiedArchiveExportTaskIdRef.current = nextTask.task_id;
+        } else if (nextTask.phase === 'failed' && lastNotifiedArchiveExportTaskIdRef.current !== nextTask.task_id) {
+          toast.error(nextTask.error?.trim() || 'Workspace archive export failed.');
+          lastNotifiedArchiveExportTaskIdRef.current = nextTask.task_id;
+        }
+      } catch (error) {
+        if (!cancelled) {
+          if (isApiErrorWithStatus(error, 404)) {
+            setArchiveExportTask(null);
+            await onWorkspaceChanged?.();
+            return;
+          }
+          toast.error(error instanceof Error ? error.message : 'Failed to refresh export task.');
+        }
+      } finally {
+        pollInFlight = false;
+      }
+    };
+
+    void pollTask();
+    const intervalId = window.setInterval(() => { void pollTask(); }, ARCHIVE_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [archiveExportTask, loadArchiveExports, onWorkspaceChanged, toast]);
+
+  useEffect(() => {
+    if (!archiveImportTask || isArchiveImportTaskTerminal(archiveImportTask.phase)) {
+      return;
+    }
+
+    let cancelled = false;
+    let pollInFlight = false;
+
+    const pollTask = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
+      try {
+        const nextTask = await api.getUserSpaceWorkspaceArchiveImportTask(archiveImportTask.task_id);
+        if (cancelled) return;
+        setArchiveImportTask(nextTask);
+        if (nextTask.phase === 'completed' && lastNotifiedArchiveImportTaskIdRef.current !== nextTask.task_id) {
+          toast.success(nextTask.warnings.length > 0 ? 'Archive import completed with warnings.' : 'Archive import completed.');
+          lastNotifiedArchiveImportTaskIdRef.current = nextTask.task_id;
+          if (onWorkspaceChanged) {
+            await onWorkspaceChanged();
+          }
+        } else if (nextTask.phase === 'failed' && lastNotifiedArchiveImportTaskIdRef.current !== nextTask.task_id) {
+          toast.error(nextTask.error?.trim() || 'Workspace archive import failed.');
+          lastNotifiedArchiveImportTaskIdRef.current = nextTask.task_id;
+        }
+      } catch (error) {
+        if (!cancelled) {
+          if (isApiErrorWithStatus(error, 404)) {
+            setArchiveImportTask(null);
+            await onWorkspaceChanged?.();
+            return;
+          }
+          toast.error(error instanceof Error ? error.message : 'Failed to refresh import task.');
+        }
+      } finally {
+        pollInFlight = false;
+      }
+    };
+
+    void pollTask();
+    const intervalId = window.setInterval(() => { void pollTask(); }, ARCHIVE_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [archiveImportTask, onWorkspaceChanged, toast]);
+
   const sqliteEnabled = workspace.sqlite_persistence_mode === 'include';
   const SQL_ACCEPT = '.sql,.dump,.pg,.pgsql,.mysql';
+  const ARCHIVE_ACCEPT = '.zip,.tar.gz,.tgz';
 
   function handleTabSwitch(tab: ModalTab) {
     if (isLoading) return;
@@ -321,6 +685,10 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
       setMode('sql-import');
       setStep('input');
       setSqlImportResult(null);
+      setStatus({ type: null, message: '' });
+    } else if (tab === 'archive') {
+      setStep('input');
+      setArchiveStep('choose');
       setStatus({ type: null, message: '' });
     } else {
       setMode(hasConfiguredRemote ? 'import' : mode === 'sql-import' ? 'import' : mode);
@@ -332,6 +700,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content modal-large" onClick={(event) => event.stopPropagation()}>
+        <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
         <div className="modal-header" style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
           <div style={{ display: 'flex', gap: 0, flex: 1 }}>
             <button
@@ -351,6 +720,24 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
               disabled={isLoading}
             >
               Git Source
+            </button>
+            <button
+              type="button"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                borderBottom: activeTab === 'archive' ? '2px solid var(--color-accent)' : '2px solid transparent',
+                padding: '8px 16px',
+                cursor: isLoading ? 'default' : 'pointer',
+                color: activeTab === 'archive' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                fontSize: 14,
+                fontWeight: 600,
+                transition: 'color 0.15s, border-color 0.15s',
+              }}
+              onClick={() => handleTabSwitch('archive')}
+              disabled={isLoading}
+            >
+              Archive
             </button>
             <button
               type="button"
@@ -384,6 +771,314 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
               <button className={`btn btn-sm ${mode === 'export' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setMode('export'); setStep('input'); }} disabled={isLoading}>
                 <ArrowUpToLine size={14} /> Export
               </button>
+            </div>
+          )}
+
+          {activeTab === 'archive' && archiveStep === 'choose' && (
+            <div style={{ display: 'grid', gap: 20 }}>
+              <p className="userspace-muted" style={{ fontSize: 13, margin: 0 }}>
+                Export packages this workspace's files and metadata as a portable archive. Import replaces this workspace with an archive exported from another server.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <button
+                  type="button"
+                  style={{
+                    display: 'grid', gap: 10, padding: '24px 20px',
+                    textAlign: 'center', cursor: 'pointer', borderRadius: 10,
+                    border: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)',
+                    color: 'inherit', transition: 'border-color 0.15s, background 0.15s',
+                  }}
+                  onClick={() => { setArchiveMode('export'); setArchiveStep('configure'); setStatus({ type: null, message: '' }); }}
+                >
+                  <ArrowUpToLine size={32} style={{ margin: '0 auto', opacity: 0.75 }} />
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>Export Archive</div>
+                  <div className="userspace-muted" style={{ fontSize: 12 }}>
+                    Download workspace files and metadata as a portable ZIP or tar.gz
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    display: 'grid', gap: 10, padding: '24px 20px',
+                    textAlign: 'center', cursor: 'pointer', borderRadius: 10,
+                    border: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)',
+                    color: 'inherit', transition: 'border-color 0.15s, background 0.15s',
+                  }}
+                  onClick={() => { setArchiveMode('import'); setArchiveStep('configure'); setStatus({ type: null, message: '' }); }}
+                >
+                  <ArrowDownToLine size={32} style={{ margin: '0 auto', opacity: 0.75 }} />
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>Import Archive</div>
+                  <div className="userspace-muted" style={{ fontSize: 12 }}>
+                    Restore workspace files and metadata from an exported archive
+                  </div>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'archive' && archiveStep === 'configure' && (
+            <div style={{ display: 'grid', gap: 16 }}>
+              {archiveMode === 'export' && (
+                <div style={{ display: 'grid', gap: 14 }}>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    <strong style={{ fontSize: 13 }}>Archive Format</strong>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button className={`btn btn-sm ${archiveFormat === 'zip' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setArchiveFormat('zip')} disabled={isLoading}>ZIP</button>
+                      <button className={`btn btn-sm ${archiveFormat === 'tar.gz' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setArchiveFormat('tar.gz')} disabled={isLoading}>tar.gz</button>
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gap: 10, padding: 14, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg-tertiary)' }}>
+                    <strong style={{ fontSize: 13 }}>Optional Content</strong>
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                      <input type="checkbox" style={{ marginTop: 2 }} checked={archiveIncludeSnapshots} onChange={(event) => setArchiveIncludeSnapshots(event.target.checked)} disabled={isLoading} />
+                      <div>
+                        <div style={{ fontWeight: 500 }}>Snapshot history</div>
+                        <div className="userspace-muted" style={{ fontSize: 12, marginTop: 2 }}>Included only when the workspace has a clean, committed snapshot timeline</div>
+                      </div>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                      <input type="checkbox" style={{ marginTop: 2 }} checked={archiveIncludeChatHistory} onChange={(event) => setArchiveIncludeChatHistory(event.target.checked)} disabled={isLoading} />
+                      <div style={{ fontWeight: 500 }}>Chat history</div>
+                    </label>
+                  </div>
+                  <p className="userspace-muted" style={{ fontSize: 12, margin: 0 }}>
+                    Secret values are not included. Env vars and mount configuration are carried as placeholders.
+                  </p>
+                </div>
+              )}
+
+              {archiveMode === 'import' && (
+                <div style={{ display: 'grid', gap: 14 }}>
+                  <div
+                    style={{
+                      padding: 28,
+                      border: `2px dashed ${archiveDragOver ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                      borderRadius: 8,
+                      textAlign: 'center',
+                      cursor: isLoading ? 'default' : 'pointer',
+                      background: archiveDragOver ? 'rgba(var(--color-primary-rgb, 59, 130, 246), 0.05)' : 'transparent',
+                      transition: 'border-color 0.15s, background 0.15s',
+                    }}
+                    onClick={() => !isLoading && archiveFileInputRef.current?.click()}
+                    onDragOver={(event) => { event.preventDefault(); setArchiveDragOver(true); }}
+                    onDragLeave={() => setArchiveDragOver(false)}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      setArchiveDragOver(false);
+                      const droppedFile = event.dataTransfer.files[0];
+                      if (droppedFile) {
+                        setArchiveFile(droppedFile);
+                        setStatus({ type: null, message: '' });
+                      }
+                    }}
+                  >
+                    <input
+                      ref={archiveFileInputRef}
+                      type="file"
+                      accept={ARCHIVE_ACCEPT}
+                      style={{ display: 'none' }}
+                      onChange={(event) => {
+                        const selectedFile = event.target.files?.[0] || null;
+                        setArchiveFile(selectedFile);
+                        setStatus({ type: null, message: '' });
+                      }}
+                      disabled={isLoading}
+                    />
+                    {archiveFile ? (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                        <Check size={16} style={{ color: 'var(--color-success, #2b7a2b)' }} />
+                        <span>{archiveFile.name}</span>
+                        <span className="userspace-muted" style={{ fontSize: 12 }}>
+                          ({(archiveFile.size / 1024).toFixed(1)} KB)
+                        </span>
+                        <button
+                          className="btn btn-sm btn-secondary"
+                          style={{ marginLeft: 8, padding: '2px 6px' }}
+                          onClick={(event) => { event.stopPropagation(); setArchiveFile(null); }}
+                          disabled={isLoading}
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ) : (
+                      <div>
+                        <Upload size={28} style={{ marginBottom: 10, opacity: 0.45 }} />
+                        <div style={{ fontWeight: 500 }}>Drop a workspace archive here or click to browse</div>
+                        <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                          Accepts .zip, .tar.gz, .tgz
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'grid', gap: 10, padding: 14, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg-tertiary)' }}>
+                    <strong style={{ fontSize: 13 }}>Restore from Archive</strong>
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                      <input type="checkbox" style={{ marginTop: 2 }} checked={archiveIncludeSnapshots} onChange={(event) => setArchiveIncludeSnapshots(event.target.checked)} disabled={isLoading} />
+                      <div>
+                        <div style={{ fontWeight: 500 }}>Snapshot history</div>
+                        <div className="userspace-muted" style={{ fontSize: 12, marginTop: 2 }}>Restored only when the archive contains snapshot data and this workspace has no existing timeline</div>
+                      </div>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                      <input type="checkbox" style={{ marginTop: 2 }} checked={archiveIncludeChatHistory} onChange={(event) => setArchiveIncludeChatHistory(event.target.checked)} disabled={isLoading} />
+                      <div style={{ fontWeight: 500 }}>Chat history</div>
+                    </label>
+                  </div>
+
+                  <p className="userspace-muted" style={{ fontSize: 12, margin: 0 }}>
+                    Import replaces workspace files and metadata. Existing env var secret values are preserved when keys match.
+                  </p>
+                </div>
+              )}
+
+              {(archiveExportTask || archiveImportTask) && (
+                <div style={{ display: 'grid', gap: 10, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
+                  {archiveExportTask && (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <strong>Export task</strong>
+                        <span className="userspace-status-pill userspace-status-pill-info">{formatArchiveTaskPhase(archiveExportTask.phase)}</span>
+                        {archiveExportTask.archive_size_bytes ? (
+                          <span className="userspace-muted" style={{ fontSize: 12 }}>{formatArchiveSize(archiveExportTask.archive_size_bytes)}</span>
+                        ) : null}
+                      </div>
+                      {!isArchiveExportTaskTerminal(archiveExportTask.phase) && archiveExportTask.total_files > 0 && (
+                        <div style={{ display: 'grid', gap: 4 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }} className="userspace-muted">
+                            <span>
+                              {archiveExportTask.processed_files} / {archiveExportTask.total_files} files
+                              {archiveExportTask.total_bytes > 0 ? ` · ${formatArchiveSize(archiveExportTask.processed_bytes)} / ${formatArchiveSize(archiveExportTask.total_bytes)}` : ''}
+                            </span>
+                            <span>
+                              {Math.min(100, Math.round((archiveExportTask.processed_files / Math.max(1, archiveExportTask.total_files)) * 100))}%
+                            </span>
+                          </div>
+                          <div style={{ width: '100%', height: 6, background: 'var(--color-bg-tertiary)', borderRadius: 3, overflow: 'hidden' }}>
+                            <div style={{
+                              width: `${Math.min(100, Math.round((archiveExportTask.processed_files / Math.max(1, archiveExportTask.total_files)) * 100))}%`,
+                              height: '100%',
+                              background: 'var(--color-accent, #3b82f6)',
+                              transition: 'width 0.2s linear',
+                            }} />
+                          </div>
+                          {archiveExportTask.current_file_path && (
+                            <div className="userspace-muted" style={{ fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {archiveExportTask.current_file_path}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {archiveExportTask.warnings.length > 0 && (
+                        <div style={{ display: 'grid', gap: 4 }}>
+                          {archiveExportTask.warnings.map((warning) => (
+                            <div key={warning} className="userspace-muted" style={{ fontSize: 12 }}>{warning}</div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {archiveImportTask && (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <strong>Import task</strong>
+                        <span className="userspace-status-pill userspace-status-pill-info">{formatArchiveTaskPhase(archiveImportTask.phase)}</span>
+                        {(archiveImportTask.imported_snapshot_count > 0 || archiveImportTask.imported_chat_count > 0) && (
+                          <span className="userspace-muted" style={{ fontSize: 12 }}>
+                            {archiveImportTask.imported_snapshot_count} snapshots, {archiveImportTask.imported_chat_count} chats
+                          </span>
+                        )}
+                      </div>
+                      {(() => {
+                        const progress = getArchiveImportProgress(archiveImportTask);
+                        if (!progress) {
+                          return null;
+                        }
+                        return (
+                          <div style={{ display: 'grid', gap: 4 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }} className="userspace-muted">
+                              <span>
+                                Step {progress.currentStep} / {progress.totalSteps}
+                              </span>
+                              <span>{progress.percent}%</span>
+                            </div>
+                            <div style={{ width: '100%', height: 6, background: 'var(--color-bg-tertiary)', borderRadius: 3, overflow: 'hidden' }}>
+                              <div style={{
+                                width: `${progress.percent}%`,
+                                height: '100%',
+                                background: 'var(--color-accent, #3b82f6)',
+                                transition: 'width 0.2s linear',
+                              }} />
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      {archiveImportTask.warnings.length > 0 && (
+                        <div style={{ display: 'grid', gap: 4 }}>
+                          {archiveImportTask.warnings.map((warning) => (
+                            <div key={warning} className="userspace-muted" style={{ fontSize: 12 }}>{warning}</div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {archiveMode === 'export' && archiveExports.length > 0 && (
+                <div style={{ display: 'grid', gap: 8, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <strong style={{ fontSize: 13 }}>Previous exports</strong>
+                  </div>
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    {archiveExports.map((item) => {
+                      const hasDownloaded = downloadedExportTaskIds.has(item.task_id) || lastDownloadedArchiveTaskIdRef.current === item.task_id;
+                      const isDeleting = deletingExportTaskId === item.task_id;
+                      return (
+                        <div
+                          key={item.task_id}
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: '1fr auto auto',
+                            gap: 8,
+                            alignItems: 'center',
+                            padding: '8px 10px',
+                            border: '1px solid var(--color-border-subtle)',
+                            borderRadius: 6,
+                            background: 'var(--color-bg-tertiary)',
+                          }}
+                        >
+                          <div style={{ display: 'grid', gap: 2, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.archive_file_name}</div>
+                            <div className="userspace-muted" style={{ fontSize: 11, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <span>{formatArchiveSize(item.archive_size_bytes)}</span>
+                              <span>{new Date(item.created_at).toLocaleString()}</span>
+                              {item.include_snapshots && <span>+ snapshots</span>}
+                              {item.include_chat_history && <span>+ chats</span>}
+                            </div>
+                          </div>
+                          <button
+                            className="btn btn-sm btn-secondary"
+                            onClick={() => void handleDownloadArchive(item.task_id)}
+                            disabled={isDeleting}
+                            title="Download archive"
+                          >
+                            <ArrowDownToLine size={12} /> {hasDownloaded ? 'Downloaded' : 'Download'}
+                          </button>
+                          <DeleteConfirmButton
+                            onDelete={() => handleDeleteArchiveExport(item.task_id)}
+                            disabled={isDeleting}
+                            deleting={isDeleting}
+                            className="btn btn-sm btn-danger"
+                            title="Delete archive"
+                            buttonText="Delete"
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -894,6 +1589,11 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                 Import Another
               </button>
             )}
+            {activeTab === 'archive' && archiveStep === 'configure' && (
+              <button className="btn btn-secondary" onClick={() => { setArchiveStep('choose'); setStatus({ type: null, message: '' }); }} disabled={isLoading}>
+                Back
+              </button>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-secondary" onClick={onClose} disabled={isLoading}>
@@ -903,6 +1603,26 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
               <button className="btn btn-primary" onClick={() => void handleSqlImport()} disabled={isLoading || !sqlFile}>
                 {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : <Database size={14} />}
                 Import to SQLite
+              </button>
+            )}
+            {activeTab === 'archive' && archiveStep === 'configure' && archiveMode === 'export' && (
+              <>
+                {archiveExportTask?.phase === 'completed' && archiveExportTask.archive_file_name && (
+                  <button className="btn btn-secondary" onClick={() => void handleDownloadArchive(archiveExportTask.task_id)} disabled={isLoading || lastDownloadedArchiveTaskIdRef.current === archiveExportTask.task_id}>
+                    <ArrowDownToLine size={14} />
+                    {lastDownloadedArchiveTaskIdRef.current === archiveExportTask.task_id ? 'Downloaded' : 'Download Archive'}
+                  </button>
+                )}
+                <button className="btn btn-primary" onClick={() => void handleQueueArchiveExport()} disabled={isLoading || Boolean(archiveExportTask && !isArchiveExportTaskTerminal(archiveExportTask.phase))}>
+                  {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : <ArrowUpToLine size={14} />}
+                  Export
+                </button>
+              </>
+            )}
+            {activeTab === 'archive' && archiveStep === 'configure' && archiveMode === 'import' && (
+              <button className="btn btn-primary" onClick={() => void handleQueueArchiveImport()} disabled={isLoading || !archiveFile || Boolean(archiveImportTask && !isArchiveImportTaskTerminal(archiveImportTask.phase))}>
+                {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : <ArrowDownToLine size={14} />}
+                Import
               </button>
             )}
             {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && !hasConfiguredRemote && (

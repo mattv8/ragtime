@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, DuplicateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, WorkspaceAgentGrant, UpsertWorkspaceAgentGrantRequest, RevokeWorkspaceAgentGrantResponse, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, UpsertUserSpaceGlobalEnvVarRequest, DeleteUserSpaceGlobalEnvVarResponse, UserSpaceObjectStorageConfig, CreateUserSpaceObjectStorageBucketRequest, UpdateUserSpaceObjectStorageBucketRequest, DeleteUserSpaceObjectStorageBucketResponse, UserspaceMountSource, CreateUserspaceMountSourceRequest, UpdateUserspaceMountSourceRequest, BrowseUserspaceMountSourceRequest, DeleteUserspaceMountSourceResponse, WorkspaceMount, MountableSource, BrowseWorkspaceMountSourceRequest, WorkspaceMountBrowseResponse, CreateWorkspaceMountRequest, UpdateWorkspaceMountRequest, DeleteWorkspaceMountResponse, WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest, WorkspaceMountSyncResponse, MountSourceAffectedWorkspacesResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, CreateUserSpaceSnapshotBranchRequest, PromoteUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask, UserSpaceRuntimeRestartBatchTask, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, UserSpaceBrowserAuthResponse, UserSpaceBrowserSurface, UserSpacePreviewLaunchRequest, UserSpacePreviewLaunchResponse, UserSpaceWorkspaceTabStateResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState, UserSpacePreviewSettingsResponse, UserSpaceWorkspaceScmConnectionRequest, UserSpaceWorkspaceScmConnectionResponse, UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse, UserSpaceWorkspaceScmImportRequest, UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmSyncResponse, UserSpaceWorkspaceScmSettingsRequest, SqliteImportResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, DuplicateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, WorkspaceAgentGrant, UpsertWorkspaceAgentGrantRequest, RevokeWorkspaceAgentGrantResponse, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, UpsertUserSpaceGlobalEnvVarRequest, DeleteUserSpaceGlobalEnvVarResponse, UserSpaceObjectStorageConfig, CreateUserSpaceObjectStorageBucketRequest, UpdateUserSpaceObjectStorageBucketRequest, DeleteUserSpaceObjectStorageBucketResponse, UserspaceMountSource, CreateUserspaceMountSourceRequest, UpdateUserspaceMountSourceRequest, BrowseUserspaceMountSourceRequest, DeleteUserspaceMountSourceResponse, WorkspaceMount, MountableSource, BrowseWorkspaceMountSourceRequest, WorkspaceMountBrowseResponse, CreateWorkspaceMountRequest, UpdateWorkspaceMountRequest, DeleteWorkspaceMountResponse, WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest, WorkspaceMountSyncResponse, MountSourceAffectedWorkspacesResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, CreateUserSpaceSnapshotBranchRequest, PromoteUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceArchiveExportRequest, UserSpaceWorkspaceArchiveExportTask, UserSpaceWorkspaceArchiveImportTask, UserSpaceWorkspaceArchiveExportListResponse, DeleteUserSpaceWorkspaceArchiveExportResponse, UserSpaceRuntimeRestartBatchTask, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, UserSpaceBrowserAuthResponse, UserSpaceBrowserSurface, UserSpacePreviewLaunchRequest, UserSpacePreviewLaunchResponse, UserSpaceWorkspaceTabStateResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState, UserSpacePreviewSettingsResponse, UserSpaceWorkspaceScmConnectionRequest, UserSpaceWorkspaceScmConnectionResponse, UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse, UserSpaceWorkspaceScmImportRequest, UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmSyncResponse, UserSpaceWorkspaceScmSettingsRequest, SqliteImportResponse } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -2028,6 +2028,91 @@ export const api = {
   async getUserSpaceWorkspaceDuplicateTask(taskId: string): Promise<UserSpaceWorkspaceDuplicateTask> {
     const response = await apiFetch(`${API_BASE}/userspace/workspace-duplicate-tasks/${encodeURIComponent(taskId)}`);
     return handleResponse<UserSpaceWorkspaceDuplicateTask>(response);
+  },
+
+  async queueUserSpaceWorkspaceArchiveExport(
+    workspaceId: string,
+    request: UserSpaceWorkspaceArchiveExportRequest,
+  ): Promise<UserSpaceWorkspaceArchiveExportTask> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/archive/export-task`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<UserSpaceWorkspaceArchiveExportTask>(response);
+  },
+
+  async getUserSpaceWorkspaceArchiveExportTask(taskId: string): Promise<UserSpaceWorkspaceArchiveExportTask> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspace-archive-export-tasks/${encodeURIComponent(taskId)}`);
+    return handleResponse<UserSpaceWorkspaceArchiveExportTask>(response);
+  },
+
+  async downloadUserSpaceWorkspaceArchiveExportTask(taskId: string): Promise<void> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspace-archive-export-tasks/${encodeURIComponent(taskId)}/download`);
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(
+        data.detail || 'Archive download failed',
+        response.status,
+        data.detail,
+      );
+    }
+
+    const contentDisposition = response.headers.get('content-disposition') || '';
+    // Prefer RFC 5987 filename*=UTF-8''... when present; fall back to quoted or bare filename=.
+    const extendedMatch = contentDisposition.match(/filename\*=(?:UTF-8'')?([^;]+)/i);
+    const plainMatch = contentDisposition.match(/(?:^|;)\s*filename=("[^"]*"|[^;]+)/i);
+    let filename = `workspace-export-${taskId}.zip`;
+    if (extendedMatch?.[1]) {
+      try {
+        filename = decodeURIComponent(extendedMatch[1].trim());
+      } catch {
+        filename = extendedMatch[1].trim();
+      }
+    } else if (plainMatch?.[1]) {
+      filename = plainMatch[1].trim().replace(/^"(.*)"$/, '$1');
+    }
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  },
+
+  async listUserSpaceWorkspaceArchiveExports(
+    workspaceId: string,
+  ): Promise<UserSpaceWorkspaceArchiveExportListResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/archive-exports`);
+    return handleResponse<UserSpaceWorkspaceArchiveExportListResponse>(response);
+  },
+
+  async deleteUserSpaceWorkspaceArchiveExportTask(
+    taskId: string,
+  ): Promise<DeleteUserSpaceWorkspaceArchiveExportResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspace-archive-export-tasks/${encodeURIComponent(taskId)}`, {
+      method: 'DELETE',
+    });
+    return handleResponse<DeleteUserSpaceWorkspaceArchiveExportResponse>(response);
+  },
+
+  async queueUserSpaceWorkspaceArchiveImport(
+    workspaceId: string,
+    formData: FormData,
+  ): Promise<UserSpaceWorkspaceArchiveImportTask> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/archive/import-task`, {
+      method: 'POST',
+      body: formData,
+    });
+    return handleResponse<UserSpaceWorkspaceArchiveImportTask>(response);
+  },
+
+  async getUserSpaceWorkspaceArchiveImportTask(taskId: string): Promise<UserSpaceWorkspaceArchiveImportTask> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspace-archive-import-tasks/${encodeURIComponent(taskId)}`);
+    return handleResponse<UserSpaceWorkspaceArchiveImportTask>(response);
   },
 
   async getUserSpaceWorkspace(workspaceId: string): Promise<UserSpaceWorkspace> {
