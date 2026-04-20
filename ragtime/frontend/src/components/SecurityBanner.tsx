@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import type { AuthStatus } from '@/types';
+import { API_KEY_INFO_HIGHLIGHT, renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
 
 const DISMISS_KEY = 'ragtime_security_banner_dismissed';
 const DISMISSED_NOTICES_KEY = 'ragtime_security_banner_dismissed_notices';
@@ -132,13 +133,8 @@ export function SecurityBanner({ authStatus, isAdmin, hidden, onNavigateToSettin
     {
       id: NOTICE_API_KEY,
       title: 'Security',
-      message: (
-        <>
-          The API endpoint accepts an API Key for authentication (set via <code>API_KEY</code> environment variable).
-          Without an API key, anyone with network access can use your LLM and tools.
-        </>
-      ),
-      highlightSetting: 'api_key_info',
+      message: renderApiKeySecurityWarning(),
+      highlightSetting: API_KEY_INFO_HIGHLIGHT,
       visible: showApiKeyWarning && !dismissedNoticeIds.includes(NOTICE_API_KEY),
     },
     {
@@ -150,19 +146,14 @@ export function SecurityBanner({ authStatus, isAdmin, hidden, onNavigateToSettin
           Consider restricting to specific domains.
         </>
       ),
-      highlightSetting: 'api_key_info',
+      highlightSetting: API_KEY_INFO_HIGHLIGHT,
       visible: showCorsWarning && !dismissedNoticeIds.includes(NOTICE_CORS),
     },
     {
       id: NOTICE_HTTP,
       title: 'Security',
-      message: (
-        <>
-          You are accessing over HTTP - credentials will be transmitted in plaintext.
-          Consider <code>ENABLE_HTTPS=true</code> or using a reverse proxy.
-        </>
-      ),
-      highlightSetting: 'api_key_info',
+      message: renderHttpSecurityWarning(),
+      highlightSetting: API_KEY_INFO_HIGHLIGHT,
       visible: isHttp && !dismissedNoticeIds.includes(NOTICE_HTTP),
     },
   ];

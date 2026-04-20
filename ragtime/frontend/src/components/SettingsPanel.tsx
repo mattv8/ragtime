@@ -8,6 +8,7 @@ import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
+import { renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
 import { useToast, ToastContainer } from './shared/Toast';
 
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
@@ -1930,12 +1931,10 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           <div className="field-warning" style={{ marginTop: '0.75rem', padding: '0.75rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px' }}>
             <strong>Security:</strong>
             {!authStatus?.api_key_configured && (
-              <span> The API endpoint accepts an API Key for authentication (set via <code>API_KEY</code> environment variable).
-                Without an API key, anyone with network access can use your LLM and tools.</span>
+              <span> {renderApiKeySecurityWarning()}</span>
             )}
             {window.location.protocol === 'http:' && (
-              <span> {authStatus?.api_key_configured ? '' : 'Additionally, y'}ou are currently accessing over HTTP - API keys and credentials will be transmitted in plaintext.
-                Consider using HTTPS via a reverse proxy or setting <code>ENABLE_HTTPS=true</code>.</span>
+              <span> {renderHttpSecurityWarning(!authStatus?.api_key_configured)}</span>
             )}
           </div>
         )}

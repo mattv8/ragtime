@@ -236,6 +236,23 @@ export function App() {
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
+
+    // Refresh auth posture flags now that session auth is established.
+    void (async () => {
+      try {
+        const status = await api.getAuthStatus();
+        setAuthStatus(status);
+
+        const authServerName = (status.server_name || '').trim();
+        if (authServerName) {
+          setServerName(authServerName);
+          document.title = authServerName;
+        }
+      } catch (err) {
+        console.error('Failed to refresh auth status after login:', err);
+      }
+    })();
+
     // If non-admin tried to access admin view via URL, redirect to chat
     if (user.role !== 'admin' && activeView !== 'chat' && activeView !== 'userspace') {
       setActiveView('userspace');
