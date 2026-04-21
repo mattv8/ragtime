@@ -271,6 +271,82 @@ textarea:focus {
   background: var(--color-bg-primary);
 }
 
+/* --- Popover (portal-based, fixed positioning) --- */
+
+.popover-container {
+  display: inline-flex;
+  align-items: center;
+}
+
+.popover {
+  position: fixed;
+  z-index: var(--z-tooltip);
+  max-width: 320px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--text-xs);
+  color: var(--color-text-primary);
+  line-height: 1.5;
+  animation: popover-in 0.1s ease;
+}
+
+@keyframes popover-in {
+  from { opacity: 0; transform-origin: center; scale: 0.96; }
+  to   { opacity: 1; scale: 1; }
+}
+
+.popover-content {
+  padding: var(--space-sm) 10px;
+}
+
+/* --- Arrow (rotated square caret) --- */
+
+.popover-arrow {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+
+/* Bottom popover: arrow at top, pointing up */
+.popover-bottom .popover-arrow {
+  top: -5px;
+  left: calc(var(--popover-arrow-left, 50%) - 5px);
+  border-bottom: none;
+  border-right: none;
+  transform: rotate(45deg);
+}
+
+/* Top popover: arrow at bottom, pointing down */
+.popover-top .popover-arrow {
+  bottom: -5px;
+  left: calc(var(--popover-arrow-left, 50%) - 5px);
+  border-top: none;
+  border-left: none;
+  transform: rotate(45deg);
+}
+
+/* Right popover: arrow at left, pointing left */
+.popover-right .popover-arrow {
+  left: -5px;
+  top: calc(var(--popover-arrow-top, 50%) - 5px);
+  border-top: none;
+  border-right: none;
+  transform: rotate(45deg);
+}
+
+/* Left popover: arrow at right, pointing right */
+.popover-left .popover-arrow {
+  right: -5px;
+  top: calc(var(--popover-arrow-top, 50%) - 5px);
+  border-bottom: none;
+  border-left: none;
+  transform: rotate(45deg);
+}
+
 /* --- Toolbar --- */
 
 .userspace-toolbar {
@@ -864,6 +940,13 @@ textarea:focus {
   background: var(--color-surface-hover);
   border-color: var(--color-accent);
   color: var(--color-accent);
+}
+
+.userspace-collab-badge:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 
 .userspace-collab-badge-count {

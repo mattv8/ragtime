@@ -629,6 +629,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [collabPresenceUsers, setCollabPresenceUsers] = useState<UserSpaceCollabPresenceUser[]>([]);
   const [collabPresenceLoading, setCollabPresenceLoading] = useState(false);
   const [collabPresenceError, setCollabPresenceError] = useState<string | null>(null);
+  const collabPresenceWorkspaceRef = useRef<string | null>(null);
+  const collabPresenceRequestRef = useRef(0);
   const [collabReconnectNonce, setCollabReconnectNonce] = useState(0);
   const [workspaceEventsReconnectNonce, setWorkspaceEventsReconnectNonce] = useState(0);
   const [terminalReadOnly, setTerminalReadOnly] = useState(false);
@@ -1464,6 +1466,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const showStartRuntimeButton = runtimeDisplayState === 'stopped' || runtimeDisplayState === 'error';
   const showRestartRuntimeButton = runtimeDisplayState === 'running';
   const showStopRuntimeButton = runtimeDisplayState === 'running' || runtimeDisplayState === 'starting';
+  const allUsersById = useMemo(
+    () => new Map(allUsers.map((user) => [user.id, user])),
+    [allUsers],
+  );
 
   const formatUserLabel = useCallback((user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
     const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
@@ -1474,18 +1480,59 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     return `@${username}`;
   }, []);
 
+  const getCollabUserLabel = useCallback(
+    (presenceUser: UserSpaceCollabPresenceUser) => {
+      const fallback = allUsersById.get(presenceUser.user_id);
+      return formatUserLabel(
+        {
+          username: presenceUser.username ?? fallback?.username ?? '',
+          display_name: presenceUser.display_name ?? fallback?.display_name ?? null,
+        },
+        presenceUser.user_id,
+      );
+    },
+    [allUsersById, formatUserLabel],
+  );
+
+  useEffect(() => {
+    collabPresenceWorkspaceRef.current = activeWorkspaceId ?? null;
+    setCollabPresenceUsers([]);
+    setCollabPresenceError(null);
+    setCollabPresenceLoading(false);
+  }, [activeWorkspaceId]);
+
   const loadCollabPresence = useCallback(async () => {
     if (!activeWorkspaceId) return;
+    const workspaceId = activeWorkspaceId;
+    const requestId = collabPresenceRequestRef.current + 1;
+    collabPresenceRequestRef.current = requestId;
     setCollabPresenceLoading(true);
     setCollabPresenceError(null);
     try {
-      const response = await api.getUserSpaceWorkspaceCollabPresence(activeWorkspaceId);
+      const response = await api.getUserSpaceWorkspaceCollabPresence(workspaceId);
+      if (
+        collabPresenceRequestRef.current !== requestId
+        || collabPresenceWorkspaceRef.current !== workspaceId
+      ) {
+        return;
+      }
       setCollabPresenceUsers(response.users || []);
     } catch (err) {
+      if (
+        collabPresenceRequestRef.current !== requestId
+        || collabPresenceWorkspaceRef.current !== workspaceId
+      ) {
+        return;
+      }
       setCollabPresenceError(err instanceof Error ? err.message : 'Failed to load collaborators');
       setCollabPresenceUsers([]);
     } finally {
-      setCollabPresenceLoading(false);
+      if (
+        collabPresenceRequestRef.current === requestId
+        && collabPresenceWorkspaceRef.current === workspaceId
+      ) {
+        setCollabPresenceLoading(false);
+      }
     }
   }, [activeWorkspaceId]);
 
@@ -5533,6 +5580,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 </span>
                 <span className={`userspace-folder-label${isMount ? ' userspace-tree-mount-label' : ''}`}>{node.name}</span>
                 {hasChangedFileDescendant && <span className="userspace-tree-folder-changed-file-dot" title="Contains changed files" />}
+                  tabIndex={0}
                 {isMount && (
                   <span
                     className={`userspace-tree-mount-badge${isMountDisconnected ? ' userspace-tree-mount-badge-disconnected' : isMountDisabled ? ' userspace-tree-mount-badge-disabled' : isSshMount && (isMountSyncInProgress || mountInfo?.syncStatus !== 'synced') ? ` userspace-tree-mount-badge-sync ${mountStatusClass}` : ''}`}
@@ -6086,22 +6134,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                     )}
                     {!collabPresenceLoading && !collabPresenceError && collabPresenceUsers.length > 0 && (
                       <ul className="userspace-collab-popover-list">
-                        {collabPresenceUsers.map((pu) => {
-                          const fallback = allUsers.find((u) => u.id === pu.user_id);
-                          const label = formatUserLabel(
-                            {
-                              username: pu.username ?? fallback?.username ?? '',
-                              display_name: pu.display_name ?? fallback?.display_name ?? null,
-                            },
-                            pu.user_id,
-                          );
-                          return (
-                            <li key={pu.user_id} className="userspace-collab-popover-item">
-                              <Users size={12} />
-                              <span>{label}</span>
-                            </li>
-                          );
-                        })}
+                        {collabPresenceUsers.map((pu) => (
+                          <li key={pu.user_id} className="userspace-collab-popover-item">
+                            <Users size={12} />
+                            <span>{getCollabUserLabel(pu)}</span>
+                          </li>
+                        ))}
                       </ul>
                     )}
                   </div>
@@ -6111,7 +6149,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                   className="userspace-collab-badge"
                   title={`${collabPresenceCount} collaborators viewing this workspace`}
                   onMouseEnter={() => { void loadCollabPresence(); }}
-                  onFocus={() => { void loadCollabPresence(); }}
                 >
                   <Users size={14} />
                   <span className="userspace-collab-badge-count">{collabPresenceCount}</span>
