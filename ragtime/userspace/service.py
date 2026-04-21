@@ -9310,6 +9310,25 @@ class UserSpaceService:
         )
         return git_url, git_branch, git_token, provider, repo_visibility
 
+    async def _maybe_store_workspace_scm_token(
+        self,
+        workspace_id: str,
+        git_token: str | None,
+    ) -> None:
+        """Persist a provided PAT for subsequent auto-pull/auto-push operations."""
+        normalized_token = (git_token or "").strip()
+        if not normalized_token:
+            return
+
+        db = await get_db()
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={
+                "scmToken": encrypt_secret(normalized_token),
+                "updatedAt": _utc_now(),
+            },
+        )
+
     async def _build_workspace_scm_preview(
         self,
         workspace_id: str,
@@ -9740,6 +9759,7 @@ class UserSpaceService:
             request,
             store_preview=False,
         )
+        await self._maybe_store_workspace_scm_token(workspace_id, request.git_token)
         if preview.state == "up_to_date":
             return await self._workspace_scm_noop_response(
                 workspace_id,
@@ -9936,6 +9956,7 @@ class UserSpaceService:
             request,
             store_preview=False,
         )
+        await self._maybe_store_workspace_scm_token(workspace_id, request.git_token)
         if preview.state == "up_to_date":
             return await self._workspace_scm_noop_response(
                 workspace_id,
@@ -17120,6 +17141,4 @@ class UserSpaceService:
         )
 
 
-userspace_service = UserSpaceService()
-userspace_service = UserSpaceService()
 userspace_service = UserSpaceService()

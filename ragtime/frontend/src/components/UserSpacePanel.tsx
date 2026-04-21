@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, CopyPlus, Crown, Database, ExternalLink, File, GitBranch, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, CopyPlus, Crown, Database, ExternalLink, File, FolderGit2Icon, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { keymap } from '@codemirror/view';
 import { openSearchPanel } from '@codemirror/search';
@@ -5954,10 +5954,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             {creatingWorkspace ? <MiniLoadingSpinner variant="icon" size={14} /> : <Plus size={14} />}
           </button>
           {canEditWorkspace && activeWorkspaceId && (
-            <button className="btn btn-secondary btn-sm" onClick={() => setShowScmWizard(true)} title="Import or export this workspace with Git">
+            <button className="btn btn-secondary btn-sm" onClick={() => setShowScmWizard(true)} title="Import or export this workspace">
               {(archiveExportInProgress || archiveImportInProgress)
                 ? <MiniLoadingSpinner variant="icon" size={14} />
-                : <GitBranch size={14} />}
+                : <FolderGit2Icon size={14} />}
             </button>
           )}
           {isOwner && (

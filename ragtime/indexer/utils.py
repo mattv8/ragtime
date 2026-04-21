@@ -18,4 +18,3 @@ def safe_tool_name(
     if lowercase:
         normalized = normalized.lower()
     return normalized
-    return normalized
