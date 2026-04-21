@@ -273,9 +273,7 @@ class UserSpaceWorkspaceArchiveExportListItem(BaseModel):
 
 class UserSpaceWorkspaceArchiveExportListResponse(BaseModel):
     workspace_id: str
-    exports: list[UserSpaceWorkspaceArchiveExportListItem] = Field(
-        default_factory=list
-    )
+    exports: list[UserSpaceWorkspaceArchiveExportListItem] = Field(default_factory=list)
 
 
 class DeleteUserSpaceWorkspaceArchiveExportResponse(BaseModel):
@@ -737,6 +735,18 @@ class UserSpaceWorkspaceShareLinkStatus(BaseModel):
     selected_user_ids: list[str] = Field(default_factory=list)
     selected_ldap_groups: list[str] = Field(default_factory=list)
     has_password: bool = False
+
+
+class UserSpaceCollabPresenceUser(BaseModel):
+    user_id: str
+    username: str | None = None
+    display_name: str | None = None
+    updated_at: str | None = None
+
+
+class UserSpaceCollabPresenceResponse(BaseModel):
+    workspace_id: str
+    users: list[UserSpaceCollabPresenceUser] = Field(default_factory=list)
 
 
 class UpdateWorkspaceShareAccessRequest(BaseModel):

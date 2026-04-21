@@ -22,7 +22,7 @@ import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceCollabPresenceUser, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
@@ -33,6 +33,7 @@ import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
 import { FileDiffOverlay } from './shared/FileDiffOverlay';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
+import { Popover } from './Popover';
 import { WorkspaceObjectStorageWizard } from './MountSourceWizard';
 import { WorkspaceScmWizard } from './WorkspaceScmWizard';
 
@@ -625,6 +626,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [collabReadOnly, setCollabReadOnly] = useState(false);
   const [collabVersion, setCollabVersion] = useState(0);
   const [collabPresenceCount, setCollabPresenceCount] = useState(0);
+  const [collabPresenceUsers, setCollabPresenceUsers] = useState<UserSpaceCollabPresenceUser[]>([]);
+  const [collabPresenceLoading, setCollabPresenceLoading] = useState(false);
+  const [collabPresenceError, setCollabPresenceError] = useState<string | null>(null);
   const [collabReconnectNonce, setCollabReconnectNonce] = useState(0);
   const [workspaceEventsReconnectNonce, setWorkspaceEventsReconnectNonce] = useState(0);
   const [terminalReadOnly, setTerminalReadOnly] = useState(false);
@@ -1469,6 +1473,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
     return `@${username}`;
   }, []);
+
+  const loadCollabPresence = useCallback(async () => {
+    if (!activeWorkspaceId) return;
+    setCollabPresenceLoading(true);
+    setCollabPresenceError(null);
+    try {
+      const response = await api.getUserSpaceWorkspaceCollabPresence(activeWorkspaceId);
+      setCollabPresenceUsers(response.users || []);
+    } catch (err) {
+      setCollabPresenceError(err instanceof Error ? err.message : 'Failed to load collaborators');
+      setCollabPresenceUsers([]);
+    } finally {
+      setCollabPresenceLoading(false);
+    }
+  }, [activeWorkspaceId]);
 
   const loadWorkspaces = useCallback(async (append = false) => {
     if (append) {
@@ -6050,13 +6069,54 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               </span>
             )}
             {activeWorkspaceId && collabPresenceCount > 1 && (
-              <span
-                className="userspace-collab-badge"
-                title={`${collabPresenceCount} collaborators viewing this workspace`}
+              <Popover
+                trigger="hover"
+                position="bottom"
+                content={
+                  <div className="userspace-collab-popover">
+                    <div className="userspace-collab-popover-header">Collaborators viewing this workspace</div>
+                    {collabPresenceLoading && (
+                      <div className="userspace-collab-popover-status">Loading...</div>
+                    )}
+                    {!collabPresenceLoading && collabPresenceError && (
+                      <div className="userspace-collab-popover-status userspace-collab-popover-error">{collabPresenceError}</div>
+                    )}
+                    {!collabPresenceLoading && !collabPresenceError && collabPresenceUsers.length === 0 && (
+                      <div className="userspace-collab-popover-status">No active collaborators.</div>
+                    )}
+                    {!collabPresenceLoading && !collabPresenceError && collabPresenceUsers.length > 0 && (
+                      <ul className="userspace-collab-popover-list">
+                        {collabPresenceUsers.map((pu) => {
+                          const fallback = allUsers.find((u) => u.id === pu.user_id);
+                          const label = formatUserLabel(
+                            {
+                              username: pu.username ?? fallback?.username ?? '',
+                              display_name: pu.display_name ?? fallback?.display_name ?? null,
+                            },
+                            pu.user_id,
+                          );
+                          return (
+                            <li key={pu.user_id} className="userspace-collab-popover-item">
+                              <Users size={12} />
+                              <span>{label}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                }
               >
-                <Users size={14} />
-                <span className="userspace-collab-badge-count">{collabPresenceCount}</span>
-              </span>
+                <span
+                  className="userspace-collab-badge"
+                  title={`${collabPresenceCount} collaborators viewing this workspace`}
+                  onMouseEnter={() => { void loadCollabPresence(); }}
+                  onFocus={() => { void loadCollabPresence(); }}
+                >
+                  <Users size={14} />
+                  <span className="userspace-collab-badge-count">{collabPresenceCount}</span>
+                </span>
+              </Popover>
             )}
             {runtimeStatus && (
               <span

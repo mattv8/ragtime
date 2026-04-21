@@ -17,10 +17,10 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
@@ -2858,6 +2858,31 @@ class UserSpaceRuntimeService:
         key = (workspace_id, normalized_path)
         async with self._collab_lock:
             return list(self._collab_presence.get(key, {}).values())
+
+    async def get_workspace_collab_presence(
+        self,
+        workspace_id: str,
+    ) -> list[dict[str, Any]]:
+        """Aggregate collab presence across all open files for a workspace.
+
+        Returns one entry per user_id, preferring the most recently updated
+        entry when the same user is viewing multiple files.
+        """
+        async with self._collab_lock:
+            aggregated: dict[str, dict[str, Any]] = {}
+            for (ws_id, _file_path), presence_for_doc in self._collab_presence.items():
+                if ws_id != workspace_id:
+                    continue
+                for user_id, entry in presence_for_doc.items():
+                    existing = aggregated.get(user_id)
+                    if existing is None:
+                        aggregated[user_id] = dict(entry)
+                        continue
+                    if str(entry.get("updated_at") or "") > str(
+                        existing.get("updated_at") or ""
+                    ):
+                        aggregated[user_id] = dict(entry)
+            return list(aggregated.values())
 
     async def get_collab_clients(
         self,

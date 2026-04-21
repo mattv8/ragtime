@@ -848,11 +848,11 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   position: relative;
-  width: 30px;
-  height: 30px;
-  min-width: 30px;
-  min-height: 30px;
-  border-radius: var(--radius-md);
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  border-radius: 50%;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   color: var(--color-text-secondary);
@@ -885,6 +885,51 @@ textarea:focus {
 
 .userspace-save-btn {
   margin-left: 0;
+}
+
+.userspace-collab-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+  max-width: 320px;
+  padding: 8px 10px;
+  font-size: var(--text-xs);
+  color: var(--color-text-primary);
+}
+
+.userspace-collab-popover-header {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 4px;
+}
+
+.userspace-collab-popover-status {
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.userspace-collab-popover-error {
+  color: var(--color-error);
+  font-style: normal;
+}
+
+.userspace-collab-popover-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.userspace-collab-popover-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-primary);
+  line-height: 1.4;
 }
 
 .userspace-tool-dropdown {

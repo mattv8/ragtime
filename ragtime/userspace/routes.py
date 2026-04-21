@@ -76,6 +76,8 @@ from ragtime.userspace.models import (
     UserSpaceAcknowledgeChangedFilePathRequest,
     UserSpaceAvailableTool,
     UserSpaceChangedFileStateResponse,
+    UserSpaceCollabPresenceResponse,
+    UserSpaceCollabPresenceUser,
     UserSpaceFileInfo,
     UserSpaceFileResponse,
     UserspaceMountSource,
@@ -473,6 +475,54 @@ async def get_workspace_archive_import_task(
 @router.get("/workspaces/{workspace_id}", response_model=UserSpaceWorkspace)
 async def get_workspace(workspace_id: str, user: Any = Depends(get_current_user)):
     return await userspace_service.get_workspace(workspace_id, user.id)
+
+
+@router.get(
+    "/workspaces/{workspace_id}/collab/presence",
+    response_model=UserSpaceCollabPresenceResponse,
+)
+async def get_workspace_collab_presence(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    # Enforce access to the workspace (any viewer role is sufficient).
+    await userspace_service.get_workspace(workspace_id, user.id)
+
+    presence_entries = await userspace_runtime_service.get_workspace_collab_presence(
+        workspace_id
+    )
+
+    user_ids = [str(entry.get("user_id") or "") for entry in presence_entries]
+    user_ids = [uid for uid in user_ids if uid]
+
+    user_lookup: dict[str, Any] = {}
+    if user_ids:
+        db = await get_db()
+        try:
+            rows = await db.user.find_many(where={"id": {"in": user_ids}})
+        except Exception:
+            rows = []
+        for row in rows:
+            user_lookup[str(getattr(row, "id", "") or "")] = row
+
+    users: list[UserSpaceCollabPresenceUser] = []
+    for entry in presence_entries:
+        uid = str(entry.get("user_id") or "")
+        if not uid:
+            continue
+        row = user_lookup.get(uid)
+        username = str(getattr(row, "username", "") or "") if row else None
+        display_name = str(getattr(row, "displayName", "") or "") if row else None
+        users.append(
+            UserSpaceCollabPresenceUser(
+                user_id=uid,
+                username=username or None,
+                display_name=display_name or None,
+                updated_at=str(entry.get("updated_at") or "") or None,
+            )
+        )
+
+    return UserSpaceCollabPresenceResponse(workspace_id=workspace_id, users=users)
 
 
 @router.get(

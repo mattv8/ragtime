@@ -2762,6 +2762,18 @@ export type UserSpaceCollabMessage =
   | UserSpaceCollabFileCreatedMessage
   | UserSpaceCollabFileRenamedMessage;
 
+export interface UserSpaceCollabPresenceUser {
+  user_id: string;
+  username: string | null;
+  display_name: string | null;
+  updated_at: string | null;
+}
+
+export interface UserSpaceCollabPresenceResponse {
+  workspace_id: string;
+  users: UserSpaceCollabPresenceUser[];
+}
+
 // Retry visualization request/response
 export interface RetryVisualizationRequest {
   tool_type: 'datatable' | 'chart';
