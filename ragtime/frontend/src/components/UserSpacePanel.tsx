@@ -875,6 +875,27 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [onPreviewWarningChange]);
 
+  const handleSelectPreviewTab = useCallback(() => {
+    if (activeRightTab === 'preview') {
+      return;
+    }
+
+    setActiveRightTab('preview');
+    if (!activeWorkspaceId) {
+      return;
+    }
+
+    // Reopening Preview remounts the iframe. The bootstrap URL is single-use,
+    // so always mint a fresh launch before the next iframe mount consumes it.
+    previewLaunchExpiresAtMsRef.current = 0;
+    setError(null);
+    setPreviewFrameUrl(null);
+    setPreviewAuthorizationPending(true);
+    void launchPreviewSurface(activeWorkspaceId).catch((err) => {
+      setError(err instanceof Error ? err.message : 'Failed to launch preview access');
+    });
+  }, [activeRightTab, activeWorkspaceId, launchPreviewSurface]);
+
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(180);
   const [leftPaneFraction, setLeftPaneFraction] = useState(0.5);
@@ -6063,7 +6084,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             <div className="userspace-toolbar-tabs" role="tablist" aria-label="Right pane tabs">
               <button
                 className={`userspace-toolbar-tab ${activeRightTab === 'preview' ? 'active' : ''}`}
-                onClick={() => setActiveRightTab('preview')}
+                onClick={handleSelectPreviewTab}
                 role="tab"
                 aria-selected={activeRightTab === 'preview'}
               >
