@@ -5312,7 +5312,7 @@ export function ChatPanel({
                   contextLimit={contextUsage.contextLimit}
                   loading={modelsLoading}
                 />
-                {canManageConversationMembers && (
+                {!embedded && canManageConversationMembers && (
                   <MemberManagementButton
                     className="btn btn-secondary btn-sm btn-icon"
                     onClick={handleOpenMembersModal}

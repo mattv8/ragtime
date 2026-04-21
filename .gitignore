@@ -91,6 +91,7 @@ secrets/
 # Frontend artifacts
 ragtime/frontend/node_modules/
 ragtime/frontend/dist/
+ragtime/frontend/dist-build-check/
 ragtime/frontend/.vite/
 ragtime/frontend/tsconfig.tsbuildinfo
 ragtime/indexer/static/dist/

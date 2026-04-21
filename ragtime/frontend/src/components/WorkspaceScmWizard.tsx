@@ -233,8 +233,10 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [archiveExportsScanned, setArchiveExportsScanned] = useState(false);
   const [deletingExportTaskId, setDeletingExportTaskId] = useState<string | null>(null);
   const [downloadedExportTaskIds, setDownloadedExportTaskIds] = useState<Set<string>>(new Set());
-  const [loadingAction, setLoadingAction] = useState<'pull' | 'push' | 'overwrite' | 'sync' | 'preview' | 'execute' | null>(null);
+  const [loadingAction, setLoadingAction] = useState<'pull' | 'push' | 'overwrite' | 'sync' | 'preview' | 'execute' | 'save-settings' | null>(null);
   const [showOverwriteMenu, setShowOverwriteMenu] = useState(false);
+  const [autoPushEnabled, setAutoPushEnabled] = useState(initialScm?.auto_sync_policy === 'auto_push');
+  const [autoPullEnabled, setAutoPullEnabled] = useState(Boolean(initialScm?.auto_pull_enabled));
   const [autoPushIntervalSeconds, setAutoPushIntervalSeconds] = useState(initialScm?.auto_push_interval_seconds ?? 3600);
   const [autoPullIntervalSeconds, setAutoPullIntervalSeconds] = useState(initialScm?.auto_pull_interval_seconds ?? 3600);
   const sqlFileInputRef = useRef<HTMLInputElement>(null);
@@ -311,9 +313,39 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const setupModeLabel = mode === 'import' ? 'Import' : 'Export';
 
   useEffect(() => {
+    setAutoPushEnabled(activeScm?.auto_sync_policy === 'auto_push');
+    setAutoPullEnabled(Boolean(activeScm?.auto_pull_enabled));
     setAutoPushIntervalSeconds(activeScm?.auto_push_interval_seconds ?? 3600);
     setAutoPullIntervalSeconds(activeScm?.auto_pull_interval_seconds ?? 3600);
-  }, [activeScm?.auto_pull_interval_seconds, activeScm?.auto_push_interval_seconds]);
+  }, [activeScm?.auto_pull_enabled, activeScm?.auto_pull_interval_seconds, activeScm?.auto_push_interval_seconds, activeScm?.auto_sync_policy]);
+
+  const hasPendingPatToken = useMemo(() => hasConfiguredRemote && gitToken.trim().length > 0, [gitToken, hasConfiguredRemote]);
+
+  const hasDirtyUpstreamSyncSettings = useMemo(() => {
+    if (!hasConfiguredRemote || activeScm?.remote_role !== 'upstream') {
+      return false;
+    }
+    const savedAutoPushEnabled = activeScm.auto_sync_policy === 'auto_push';
+    const savedAutoPullEnabled = Boolean(activeScm.auto_pull_enabled);
+    const savedAutoPushInterval = activeScm.auto_push_interval_seconds ?? 3600;
+    const savedAutoPullInterval = activeScm.auto_pull_interval_seconds ?? 3600;
+
+    if (autoPushEnabled !== savedAutoPushEnabled) {
+      return true;
+    }
+    if (autoPullEnabled !== savedAutoPullEnabled) {
+      return true;
+    }
+    if (autoPushEnabled && autoPushIntervalSeconds !== savedAutoPushInterval) {
+      return true;
+    }
+    if (autoPullEnabled && autoPullIntervalSeconds !== savedAutoPullInterval) {
+      return true;
+    }
+    return false;
+  }, [activeScm, autoPullEnabled, autoPullIntervalSeconds, autoPushEnabled, autoPushIntervalSeconds, hasConfiguredRemote]);
+
+  const hasScmSettingsMutations = hasPendingPatToken || hasDirtyUpstreamSyncSettings;
 
   const applyScmSettingsPatch = useCallback(async (
     patch: UserSpaceWorkspaceScmSettingsRequest,
@@ -323,6 +355,78 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     const resp = await api.updateUserSpaceWorkspaceScmSettings(workspace.id, patch);
     await onSyncComplete({ workspace_id: workspace.id, direction, state: 'settings_updated', summary, scm: resp.scm });
   }, [onSyncComplete, workspace.id]);
+
+  async function handleSaveScmSettings(): Promise<void> {
+    if (!hasConfiguredRemote || !activeScm) {
+      return;
+    }
+
+    const trimmedToken = gitToken.trim();
+    if (!trimmedToken && !hasDirtyUpstreamSyncSettings) {
+      return;
+    }
+
+    setIsLoading(true);
+    setLoadingAction('save-settings');
+    try {
+      let savedTokenOnly = false;
+      if (trimmedToken) {
+        if (!activeScm.git_url) {
+          throw new Error('Missing configured repository URL.');
+        }
+        const connResp = await api.updateUserSpaceWorkspaceScm(workspace.id, {
+          git_url: activeScm.git_url,
+          git_branch: activeScm.git_branch || gitBranch || 'main',
+          git_token: trimmedToken,
+          repo_visibility: activeScm.repo_visibility || undefined,
+        });
+        savedTokenOnly = true;
+        setHasStoredToken(true);
+        setStoredTokenValid(true);
+        if (!hasDirtyUpstreamSyncSettings) {
+          await onSyncComplete({
+            workspace_id: workspace.id,
+            direction: 'export',
+            state: 'settings_updated',
+            summary: 'Personal access token saved.',
+            scm: connResp.scm,
+          });
+        }
+      }
+
+      if (hasDirtyUpstreamSyncSettings && activeScm.remote_role === 'upstream') {
+        const nextAutoSyncPolicy = autoPushEnabled ? 'auto_push' : 'manual';
+        const patch: UserSpaceWorkspaceScmSettingsRequest = {
+          auto_sync_policy: nextAutoSyncPolicy,
+          auto_pull_enabled: autoPullEnabled,
+        };
+        if (autoPushEnabled) {
+          patch.auto_push_interval_seconds = autoPushIntervalSeconds;
+        }
+        if (autoPullEnabled) {
+          patch.auto_pull_interval_seconds = autoPullIntervalSeconds;
+        }
+        if (nextAutoSyncPolicy === 'auto_push') {
+          patch.clear_sync_paused = true;
+        }
+        await applyScmSettingsPatch(
+          patch,
+          savedTokenOnly ? 'SCM settings and token saved.' : 'SCM settings saved.',
+          'export',
+        );
+      }
+
+      setGitToken('');
+      clearStatus();
+      toast.success('SCM settings saved.');
+    } catch (error) {
+      clearStatus();
+      toast.error(error instanceof Error ? error.message : 'Failed to save SCM settings.');
+    } finally {
+      setIsLoading(false);
+      setLoadingAction(null);
+    }
+  }
 
   useEffect(() => {
     if (hasConfiguredRemote) return;
@@ -601,9 +705,15 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
           await loadArchiveExports({ force: true });
           toast.success(nextTask.warnings.length > 0 ? 'Archive export completed with warnings.' : 'Archive export completed.');
           lastNotifiedArchiveExportTaskIdRef.current = nextTask.task_id;
+          if (onWorkspaceChanged) {
+            await onWorkspaceChanged();
+          }
         } else if (nextTask.phase === 'failed' && lastNotifiedArchiveExportTaskIdRef.current !== nextTask.task_id) {
           toast.error(nextTask.error?.trim() || 'Workspace archive export failed.');
           lastNotifiedArchiveExportTaskIdRef.current = nextTask.task_id;
+          if (onWorkspaceChanged) {
+            await onWorkspaceChanged();
+          }
         }
       } catch (error) {
         if (!cancelled) {
@@ -737,7 +847,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
               onClick={() => handleTabSwitch('archive')}
               disabled={isLoading}
             >
-              Archive
+              Backup/Restore
             </button>
             <button
               type="button"
@@ -791,7 +901,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                   onClick={() => { setArchiveMode('export'); setArchiveStep('configure'); setStatus({ type: null, message: '' }); }}
                 >
                   <ArrowUpToLine size={32} style={{ margin: '0 auto', opacity: 0.75 }} />
-                  <div style={{ fontWeight: 700, fontSize: 15 }}>Export Archive</div>
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>Export Workspace</div>
                   <div className="userspace-muted" style={{ fontSize: 12 }}>
                     Download workspace files and metadata as a portable ZIP or tar.gz
                   </div>
@@ -807,7 +917,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                   onClick={() => { setArchiveMode('import'); setArchiveStep('configure'); setStatus({ type: null, message: '' }); }}
                 >
                   <ArrowDownToLine size={32} style={{ margin: '0 auto', opacity: 0.75 }} />
-                  <div style={{ fontWeight: 700, fontSize: 15 }}>Import Archive</div>
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>Import Workspace</div>
                   <div className="userspace-muted" style={{ fontSize: 12 }}>
                     Restore workspace files and metadata from an exported archive
                   </div>
@@ -1152,23 +1262,13 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
                           <input
                             type="checkbox"
-                            checked={activeScm.auto_sync_policy === 'auto_push'}
-                            onChange={async (event) => {
-                              try {
-                                const nextPolicy = event.target.checked ? 'auto_push' : 'manual';
-                                await applyScmSettingsPatch({
-                                  auto_sync_policy: nextPolicy,
-                                  clear_sync_paused: nextPolicy === 'auto_push' ? true : undefined,
-                                }, `Auto-push ${nextPolicy === 'auto_push' ? 'enabled' : 'disabled'}`, 'export');
-                              } catch (error) {
-                                setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update setting' });
-                              }
-                            }}
+                            checked={autoPushEnabled}
+                            onChange={(event) => setAutoPushEnabled(event.target.checked)}
                             disabled={isLoading}
                           />
                           <strong style={{ fontSize: 12 }}>Auto-push</strong>
                         </label>
-                        {activeScm.auto_sync_policy === 'auto_push' && (
+                        {autoPushEnabled && (
                           <>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span className="userspace-muted" style={{ fontSize: 11 }}>Interval</span>
@@ -1184,36 +1284,6 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                                 value={syncIntervalToSlider(autoPushIntervalSeconds)}
                                 style={{ flex: 1 }}
                                 onChange={(event) => setAutoPushIntervalSeconds(sliderToSyncInterval(parseInt(event.target.value, 10)))}
-                                onMouseUp={() => {
-                                  if ((activeScm.auto_push_interval_seconds ?? 3600) === autoPushIntervalSeconds) return;
-                                  void applyScmSettingsPatch(
-                                    { auto_push_interval_seconds: autoPushIntervalSeconds },
-                                    `Auto-push interval set to ${formatSyncInterval(autoPushIntervalSeconds)}`,
-                                    'export',
-                                  ).catch((error) => {
-                                    setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update interval' });
-                                  });
-                                }}
-                                onTouchEnd={() => {
-                                  if ((activeScm.auto_push_interval_seconds ?? 3600) === autoPushIntervalSeconds) return;
-                                  void applyScmSettingsPatch(
-                                    { auto_push_interval_seconds: autoPushIntervalSeconds },
-                                    `Auto-push interval set to ${formatSyncInterval(autoPushIntervalSeconds)}`,
-                                    'export',
-                                  ).catch((error) => {
-                                    setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update interval' });
-                                  });
-                                }}
-                                onKeyUp={() => {
-                                  if ((activeScm.auto_push_interval_seconds ?? 3600) === autoPushIntervalSeconds) return;
-                                  void applyScmSettingsPatch(
-                                    { auto_push_interval_seconds: autoPushIntervalSeconds },
-                                    `Auto-push interval set to ${formatSyncInterval(autoPushIntervalSeconds)}`,
-                                    'export',
-                                  ).catch((error) => {
-                                    setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update interval' });
-                                  });
-                                }}
                                 disabled={isLoading}
                               />
                               <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>30d</span>
@@ -1226,22 +1296,13 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
                           <input
                             type="checkbox"
-                            checked={Boolean(activeScm.auto_pull_enabled)}
-                            onChange={async (event) => {
-                              try {
-                                const nextEnabled = event.target.checked;
-                                await applyScmSettingsPatch({
-                                  auto_pull_enabled: nextEnabled,
-                                }, `Auto-pull ${nextEnabled ? 'enabled' : 'disabled'}`, 'import');
-                              } catch (error) {
-                                setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update setting' });
-                              }
-                            }}
+                            checked={autoPullEnabled}
+                            onChange={(event) => setAutoPullEnabled(event.target.checked)}
                             disabled={isLoading}
                           />
                           <strong style={{ fontSize: 12 }}>Auto-pull</strong>
                         </label>
-                        {Boolean(activeScm.auto_pull_enabled) && (
+                        {autoPullEnabled && (
                           <>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span className="userspace-muted" style={{ fontSize: 11 }}>Interval</span>
@@ -1257,36 +1318,6 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                                 value={syncIntervalToSlider(autoPullIntervalSeconds)}
                                 style={{ flex: 1 }}
                                 onChange={(event) => setAutoPullIntervalSeconds(sliderToSyncInterval(parseInt(event.target.value, 10)))}
-                                onMouseUp={() => {
-                                  if ((activeScm.auto_pull_interval_seconds ?? 3600) === autoPullIntervalSeconds) return;
-                                  void applyScmSettingsPatch(
-                                    { auto_pull_interval_seconds: autoPullIntervalSeconds },
-                                    `Auto-pull interval set to ${formatSyncInterval(autoPullIntervalSeconds)}`,
-                                    'import',
-                                  ).catch((error) => {
-                                    setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update interval' });
-                                  });
-                                }}
-                                onTouchEnd={() => {
-                                  if ((activeScm.auto_pull_interval_seconds ?? 3600) === autoPullIntervalSeconds) return;
-                                  void applyScmSettingsPatch(
-                                    { auto_pull_interval_seconds: autoPullIntervalSeconds },
-                                    `Auto-pull interval set to ${formatSyncInterval(autoPullIntervalSeconds)}`,
-                                    'import',
-                                  ).catch((error) => {
-                                    setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update interval' });
-                                  });
-                                }}
-                                onKeyUp={() => {
-                                  if ((activeScm.auto_pull_interval_seconds ?? 3600) === autoPullIntervalSeconds) return;
-                                  void applyScmSettingsPatch(
-                                    { auto_pull_interval_seconds: autoPullIntervalSeconds },
-                                    `Auto-pull interval set to ${formatSyncInterval(autoPullIntervalSeconds)}`,
-                                    'import',
-                                  ).catch((error) => {
-                                    setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to update interval' });
-                                  });
-                                }}
                                 disabled={isLoading}
                               />
                               <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>30d</span>
@@ -1599,6 +1630,12 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
             <button className="btn btn-secondary" onClick={onClose} disabled={isLoading}>
               <X size={14} /> Close
             </button>
+            {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && hasConfiguredRemote && hasScmSettingsMutations && (
+              <button className="btn btn-primary" onClick={() => void handleSaveScmSettings()} disabled={isLoading || loadingAction === 'save-settings'}>
+                {loadingAction === 'save-settings' ? <MiniLoadingSpinner variant="icon" size={14} /> : <Check size={14} />}
+                Save
+              </button>
+            )}
             {activeTab === 'sql-import' && step === 'input' && mode === 'sql-import' && (
               <button className="btn btn-primary" onClick={() => void handleSqlImport()} disabled={isLoading || !sqlFile}>
                 {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : <Database size={14} />}

@@ -5954,7 +5954,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             {creatingWorkspace ? <MiniLoadingSpinner variant="icon" size={14} /> : <Plus size={14} />}
           </button>
           {canEditWorkspace && activeWorkspaceId && (
-            <button className="btn btn-secondary btn-sm" onClick={() => setShowScmWizard(true)} title="Import or export this workspace">
+            <button className="btn btn-secondary btn-sm" onClick={() => setShowScmWizard(true)} title="Backup or restore this workspace">
               {(archiveExportInProgress || archiveImportInProgress)
                 ? <MiniLoadingSpinner variant="icon" size={14} />
                 : <FolderGit2Icon size={14} />}
