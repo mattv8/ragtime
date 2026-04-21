@@ -120,9 +120,9 @@ jobs:
         with:
           repositories: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # Match all tags, but exclude 'latest' and 'legacy' from deletion
+          # Match all tags, but exclude 'latest', 'legacy', and 'buildcache' from deletion
           tagPattern: '.'
-          excludePattern: ':latest$|:legacy$|-legacy$'
+          excludePattern: ':latest$|:legacy$|-legacy$|:buildcache$'
           keep: '3'
 
   build-runtime:
@@ -192,7 +192,7 @@ jobs:
           repositories: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}
           tagPattern: '.'
-          excludePattern: ':latest$'
+          excludePattern: ':latest$|:buildcache$'
           keep: '3'
 
   # Build legacy image for older CPUs without X86_V2 support
