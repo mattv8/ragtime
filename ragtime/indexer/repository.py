@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,6 +22,7 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -105,6 +105,13 @@ def _safe_serialize(value: Any) -> str:
         return json.dumps(value, default=str)
     except Exception:
         return str(value) if value is not None else ""
+
+
+def _sql_quote_literal(value: Any) -> str:
+    """Quote a scalar value for trusted raw SQL construction."""
+    if value is None:
+        return "NULL"
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 def _identifier_in_allowed_models(
@@ -2835,43 +2842,58 @@ class IndexerRepository:
     async def get_last_interrupted_task_for_conversation(
         self, conversation_id: str
     ) -> Optional[ChatTask]:
-        """Get the last interrupted task for a conversation (if any)."""
+        """Get an interrupted task only when it is the latest task for a conversation."""
         db = await self._get_db()
 
-        prisma_task = await db.chattask.find_first(
-            where=cast(
-                Any,
-                {
-                    "conversationId": conversation_id,
-                    "status": PrismaChatTaskStatus.interrupted,
-                },
-            ),
-            order={"createdAt": "desc"},
-        )  # type: ignore[arg-type]
-
-        if prisma_task is None:
+        rows = await db.query_raw(
+            f"""
+            SELECT id, status
+            FROM chat_tasks
+            WHERE conversation_id = {_sql_quote_literal(conversation_id)}
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """
+        )
+        if not rows:
             return None
 
-        return self._prisma_task_to_model(prisma_task)
+        latest_row = rows[0]
+        if str(latest_row.get("status") or "") != ChatTaskStatus.interrupted.value:
+            return None
+
+        latest_task_id = str(latest_row.get("id") or "").strip()
+        if not latest_task_id:
+            return None
+
+        return await self.get_chat_task(latest_task_id)
 
     async def get_interrupted_conversation_ids_for_workspace(
         self, workspace_id: str
     ) -> list[str]:
-        """Return conversation IDs that have at least one interrupted task in a workspace."""
+        """Return conversation IDs whose latest task is interrupted in a workspace."""
         db = await self._get_db()
 
-        tasks = await db.chattask.find_many(
-            where=cast(
-                Any,
-                {
-                    "status": PrismaChatTaskStatus.interrupted,
-                    "conversation": {"workspaceId": workspace_id},
-                },
-            ),
-            distinct=["conversationId"],
-        )  # type: ignore[arg-type]
+        rows = await db.query_raw(
+            f"""
+            SELECT latest.conversation_id
+            FROM (
+                SELECT DISTINCT ON (ct.conversation_id)
+                    ct.conversation_id,
+                    ct.status
+                FROM chat_tasks ct
+                INNER JOIN conversations c ON c.id = ct.conversation_id
+                WHERE c.workspace_id = {_sql_quote_literal(workspace_id)}
+                ORDER BY ct.conversation_id, ct.created_at DESC, ct.id DESC
+            ) latest
+            WHERE latest.status = {_sql_quote_literal(ChatTaskStatus.interrupted.value)}
+            """
+        )
 
-        return [t.conversationId for t in tasks]
+        return [
+            str(row.get("conversation_id") or "").strip()
+            for row in rows
+            if str(row.get("conversation_id") or "").strip()
+        ]
 
     async def get_workspace_task_state_summary(
         self, workspace_ids: list[str]
@@ -2896,34 +2918,25 @@ class IndexerRepository:
             distinct=["workspaceId"],
         )  # type: ignore[arg-type]
 
-        interrupted_task_rows = await db.chattask.find_many(
-            where=cast(
-                Any,
-                {
-                    "status": PrismaChatTaskStatus.interrupted,
-                },
-            ),
-            distinct=["conversationId"],
-        )  # type: ignore[arg-type]
-
-        interrupted_conversation_ids = [
-            str(getattr(row, "conversationId", "") or "")
-            for row in interrupted_task_rows
-            if getattr(row, "conversationId", None)
-        ]
-
-        interrupted_rows = []
-        if interrupted_conversation_ids:
-            interrupted_rows = await db.conversation.find_many(
-                where=cast(
-                    Any,
-                    {
-                        "id": {"in": interrupted_conversation_ids},
-                        "workspaceId": {"in": deduped_workspace_ids},
-                    },
-                ),
-                distinct=["workspaceId"],
-            )  # type: ignore[arg-type]
+        workspace_id_clause = ", ".join(
+            _sql_quote_literal(workspace_id) for workspace_id in deduped_workspace_ids
+        )
+        interrupted_rows = await db.query_raw(
+            f"""
+            SELECT DISTINCT latest.workspace_id
+            FROM (
+                SELECT DISTINCT ON (ct.conversation_id)
+                    ct.conversation_id,
+                    c.workspace_id,
+                    ct.status
+                FROM chat_tasks ct
+                INNER JOIN conversations c ON c.id = ct.conversation_id
+                WHERE c.workspace_id IN ({workspace_id_clause})
+                ORDER BY ct.conversation_id, ct.created_at DESC, ct.id DESC
+            ) latest
+            WHERE latest.status = {_sql_quote_literal(ChatTaskStatus.interrupted.value)}
+            """
+        )
 
         live_workspace_ids = {
             str(getattr(row, "workspaceId", "") or "")
@@ -2931,9 +2944,9 @@ class IndexerRepository:
             if getattr(row, "workspaceId", None)
         }
         interrupted_workspace_ids = {
-            str(getattr(row, "workspaceId", "") or "")
+            str((row.get("workspace_id") if isinstance(row, dict) else None) or "")
             for row in interrupted_rows
-            if getattr(row, "workspaceId", None)
+            if (row.get("workspace_id") if isinstance(row, dict) else None)
         }
 
         return live_workspace_ids, interrupted_workspace_ids
