@@ -365,10 +365,17 @@ def build_workspace_scm_setup_prompt(
             "Audit and correct it as part of the import fix-up. In particular, "
             "replace any paths that still depend on Replit sidecars or Google "
             "Cloud Storage helpers (for example @google-cloud/storage, "
-            "127.0.0.1:1106, or old signed-object-url flows) with Ragtime's "
-            "current workspace-native object storage compatibility path, including "
-            "preview-safe upload and object fetch routes. Do not stop at getting "
-            "the app to boot if these compatibility shims are still broken."
+            "127.0.0.1:1106, bucket-signing helpers, or old signed-object-url "
+            "flows) with Ragtime's current workspace-native object storage "
+            "compatibility path. Prefer the platform-provided runtime contract "
+            "(RAGTIME_OBJECT_STORAGE_* plus compatibility env such as "
+            "PUBLIC_OBJECT_SEARCH_PATHS and PRIVATE_OBJECT_DIR) over any "
+            "Replit-specific sidecar assumptions. Preserve the app's existing "
+            "upload/display behavior, but make uploads and preview object fetches "
+            "work through the workspace's own routes on Ragtime; verify object "
+            "requests return content or a clean 404 for missing objects rather "
+            "than a generic 500. Do not stop at getting the app to boot if these "
+            "compatibility shims are still broken."
         )
 
     parts.append(
