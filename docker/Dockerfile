@@ -57,7 +57,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
         pip install --no-cache-dir --force-reinstall --no-deps -r /tmp/requirements.legacy.txt; \
     else \
         pip install --no-cache-dir -r /tmp/requirements.app.txt; \
-    fi
+    fi && \
+    python -c "import chonkie, pandas"
 
 # =============================================================================
 # Stage 3: Production image
