@@ -25,9 +25,9 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
+
 from prisma import Json
 from prisma import fields as prisma_fields
-
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -5324,6 +5324,40 @@ class UserSpaceService:
             updated_at=getattr(record, "updatedAt"),
         )
 
+    async def _record_runtime_audit_event(
+        self,
+        workspace_id: str,
+        user_id: str | None,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        session_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> bool:
+        db = await get_db()
+        model = self._runtime_audit_model(db)
+        payload_json = prisma_fields.Json(json.loads(json.dumps(payload, default=str)))
+        data: dict[str, Any] = {
+            "workspace": {"connect": {"id": workspace_id}},
+            "eventType": event_type,
+            "eventPayload": payload_json,
+            "createdAt": created_at or _utc_now(),
+        }
+        if user_id:
+            data["user"] = {"connect": {"id": user_id}}
+        if session_id:
+            data["sessionId"] = session_id
+        try:
+            await model.create(data=data)
+            return True
+        except Exception:
+            logger.exception(
+                "Failed to persist runtime audit event for workspace %s (event=%s)",
+                workspace_id,
+                event_type,
+            )
+            return False
+
     async def _audit_workspace_env_var_event(
         self,
         workspace_id: str,
@@ -5331,35 +5365,16 @@ class UserSpaceService:
         event_type: str,
         payload: dict[str, Any],
     ) -> None:
-        db = await get_db()
-        model = self._runtime_audit_model(db)
-        payload_json = prisma_fields.Json(json.loads(json.dumps(payload, default=str)))
-        now = _utc_now()
-        shapes: list[dict[str, Any]] = [
-            {
-                "workspaceId": workspace_id,
-                "userId": user_id,
-                "eventType": event_type,
-                "eventPayload": payload_json,
-                "createdAt": now,
-            },
-            {
-                "workspace_id": workspace_id,
-                "user_id": user_id,
-                "event_type": event_type,
-                "event_payload": payload_json,
-                "created_at": now,
-            },
-        ]
-        for data in shapes:
-            try:
-                await model.create(data=data)
-                return
-            except Exception:
-                continue
-        logger.debug(
-            "Failed to persist env-var audit event for workspace %s", workspace_id
+        recorded = await self._record_runtime_audit_event(
+            workspace_id,
+            user_id,
+            event_type,
+            payload,
         )
+        if not recorded:
+            logger.debug(
+                "Failed to persist env-var audit event for workspace %s", workspace_id
+            )
 
     @staticmethod
     def _sanitize_workspace_env_map(raw_items: list[Any]) -> dict[str, str]:
@@ -11261,22 +11276,17 @@ class UserSpaceService:
                 "target_workspace_id": target_workspace_id,
                 "access_mode": access_mode,
             }
-            audit_model = self._runtime_audit_model(db)
-            await audit_model.create(
-                data={
-                    "workspaceId": source_workspace_id,
-                    "userId": user_id,
-                    "eventType": audit_event,
-                    "eventPayload": audit_payload,
-                }
+            await self._record_runtime_audit_event(
+                source_workspace_id,
+                user_id,
+                audit_event,
+                audit_payload,
             )
-            await audit_model.create(
-                data={
-                    "workspaceId": target_workspace_id,
-                    "userId": user_id,
-                    "eventType": audit_event,
-                    "eventPayload": audit_payload,
-                }
+            await self._record_runtime_audit_event(
+                target_workspace_id,
+                user_id,
+                audit_event,
+                audit_payload,
             )
         except Exception:  # noqa: BLE001 - audit best-effort
             logger.exception(
@@ -11324,22 +11334,17 @@ class UserSpaceService:
                 "source_workspace_id": source_workspace_id,
                 "target_workspace_id": target_workspace_id,
             }
-            audit_model = self._runtime_audit_model(db)
-            await audit_model.create(
-                data={
-                    "workspaceId": source_workspace_id,
-                    "userId": user_id,
-                    "eventType": "agent_grant.revoked",
-                    "eventPayload": audit_payload,
-                }
+            await self._record_runtime_audit_event(
+                source_workspace_id,
+                user_id,
+                "agent_grant.revoked",
+                audit_payload,
             )
-            await audit_model.create(
-                data={
-                    "workspaceId": target_workspace_id,
-                    "userId": user_id,
-                    "eventType": "agent_grant.revoked",
-                    "eventPayload": audit_payload,
-                }
+            await self._record_runtime_audit_event(
+                target_workspace_id,
+                user_id,
+                "agent_grant.revoked",
+                audit_payload,
             )
         except Exception:  # noqa: BLE001
             logger.exception(
@@ -11422,20 +11427,16 @@ class UserSpaceService:
 
         # Audit cross-workspace tool access (best-effort, async-safe).
         try:
-            db = await get_db()
-            audit_model = self._runtime_audit_model(db)
-            await audit_model.create(
-                data={
-                    "workspaceId": normalized_target,
-                    "userId": user_id,
-                    "eventType": "agent_grant.tool_access",
-                    "eventPayload": {
-                        "source_workspace_id": source_workspace_id,
-                        "target_workspace_id": normalized_target,
-                        "action": action,
-                        "mode": mode,
-                    },
-                }
+            await self._record_runtime_audit_event(
+                normalized_target,
+                user_id,
+                "agent_grant.tool_access",
+                {
+                    "source_workspace_id": source_workspace_id,
+                    "target_workspace_id": normalized_target,
+                    "action": action,
+                    "mode": mode,
+                },
             )
         except Exception:  # noqa: BLE001
             logger.exception("Failed to audit cross-workspace tool access")
