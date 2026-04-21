@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import re
 import sys
 import textwrap
 from collections import deque
@@ -93,6 +94,7 @@ class FileReport:
     inline_promoted_count: int
     inline_kept_count: int
     skipped_guarded: int
+    tail_duplicates_removed: int
     rewritten: bool
 
 
@@ -109,7 +111,13 @@ class ImportItem:
 class ModuleIndex:
     module_for_path: dict[Path, str]
     path_for_module: dict[str, Path]
+    module_names: set[str]
     local_import_graph: dict[str, set[str]]
+
+
+_DUPLICATE_TAIL_LINE_RE = re.compile(
+    r"(?P<line>[^\n]*\S[^\n]*)(?:\n(?P=line)){1,2}\n?\Z"
+)
 
 
 def main() -> None:
@@ -178,6 +186,7 @@ def main() -> None:
     total_inline_promoted = sum(r.inline_promoted_count for r in reports)
     total_inline_kept = sum(r.inline_kept_count for r in reports)
     total_skipped = sum(r.skipped_guarded for r in reports)
+    total_tail_duplicates_removed = sum(r.tail_duplicates_removed for r in reports)
     rewritten = sum(1 for r in reports if r.rewritten)
 
     for report in reports:
@@ -185,7 +194,8 @@ def main() -> None:
         print(
             f"[{status}] {report.path}: inline detected={report.inline_count}, "
             f"inline promoted={report.inline_promoted_count}, inline kept={report.inline_kept_count}, "
-            f"final import lines={report.promoted_count}, skipped guarded={report.skipped_guarded}."
+            f"final import lines={report.promoted_count}, skipped guarded={report.skipped_guarded}, "
+            f"tail duplicates removed={report.tail_duplicates_removed}."
         )
 
     mode = "applied" if args.apply else "dry-run"
@@ -193,7 +203,8 @@ def main() -> None:
         f"\nSummary ({mode}): Processed {len(reports)} files ({rewritten} rewritten). "
         f"Detected {total_inline} inline imports. "
         f"Promoted {total_inline_promoted}, kept {total_inline_kept}, "
-        f"skipped guarded {total_skipped}, organized into {total_promoted} top-level import lines."
+        f"skipped guarded {total_skipped}, organized into {total_promoted} top-level import lines, "
+        f"removed {total_tail_duplicates_removed} duplicate tail line(s)."
     )
     if not args.apply:
         print("Run again with --apply to rewrite files.")
@@ -206,14 +217,33 @@ def process_file(
     protect_local_cycles: bool,
     module_index: ModuleIndex,
 ) -> FileReport | None:
-    text = path.read_text(encoding="utf-8")
+    original_text = path.read_text(encoding="utf-8")
+    text, tail_duplicates_removed = collapse_duplicate_tail_lines(original_text)
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return None
+        if tail_duplicates_removed == 0:
+            return None
+
+        rewritten = False
+        if apply_changes and text != original_text:
+            path.write_text(text, encoding="utf-8")
+            rewritten = True
+
+        return FileReport(
+            path=path,
+            inline_count=0,
+            promoted_count=0,
+            inline_promoted_count=0,
+            inline_kept_count=0,
+            skipped_guarded=0,
+            tail_duplicates_removed=tail_duplicates_removed,
+            rewritten=rewritten,
+        )
 
     parent_map = build_parent_map(tree)
     lines = text.splitlines(keepends=True)
+    current_module = module_index.module_for_path.get(path)
 
     # Identify imports to normalize. Top-level imports are always normalized.
     # Inline imports are only promoted when explicitly enabled and safe.
@@ -239,7 +269,7 @@ def process_file(
                     parent_map,
                     promote_inline=promote_inline,
                     protect_local_cycles=protect_local_cycles,
-                    current_path=path,
+                    current_module=current_module,
                     module_index=module_index,
                 ):
                     inline_kept_count += 1
@@ -251,7 +281,7 @@ def process_file(
             if not source:
                 continue
 
-            cat = categorize_import(node)
+            cat = categorize_import(node, module_index)
             imp_type = 0 if isinstance(node, ast.Import) else 1
             mod_name = get_module_name(node)
 
@@ -271,60 +301,64 @@ def process_file(
                 end = end if end is not None else start
                 removal_spans.append((start - 1, end))
 
-    if not movable_items:
+    if not movable_items and tail_duplicates_removed == 0:
         return None
 
-    # Remove the old import lines
-    updated_lines = remove_spans(lines, removal_spans)
+    new_text = text
+    unique_items: list[ImportItem] = []
+    if movable_items:
+        # Remove the old import lines
+        updated_lines = remove_spans(lines, removal_spans)
 
-    # Deduplicate and Sort
-    # Deduplicate by source string
-    seen_sources = set()
-    unique_items = []
-    for item in movable_items:
-        if item.source not in seen_sources:
-            unique_items.append(item)
-            seen_sources.add(item.source)
+        # Deduplicate and sort by source string
+        seen_sources = set()
+        for item in movable_items:
+            if item.source not in seen_sources:
+                unique_items.append(item)
+                seen_sources.add(item.source)
 
-    # Sort: Category -> ImportType -> ModuleName -> Source (for stability)
-    unique_items.sort(
-        key=lambda x: (x.category, x.import_type, x.module_name, x.source)
-    )
+        # Sort: Category -> ImportType -> ModuleName -> Source (for stability)
+        unique_items.sort(
+            key=lambda x: (x.category, x.import_type, x.module_name, x.source)
+        )
 
-    # Build text blocks with spacing
-    new_import_block: list[str] = []
-    last_category = -1
+        # Build text blocks with spacing
+        new_import_block: list[str] = []
+        last_category = -1
 
-    for item in unique_items:
-        if last_category != -1 and item.category != last_category:
-            new_import_block.append("\n")  # Blank line between groups
-        new_import_block.append(f"{item.source}\n")
-        last_category = item.category
+        for item in unique_items:
+            if last_category != -1 and item.category != last_category:
+                new_import_block.append("\n")  # Blank line between groups
+            new_import_block.append(f"{item.source}\n")
+            last_category = item.category
 
-    real_insert_idx = find_insertion_idx_in_lines(updated_lines)
+        real_insert_idx = find_insertion_idx_in_lines(updated_lines)
 
-    # If the insertion point points to blank lines, skip over them so they appear
-    # BEFORE the imports (preserving separation from docstring/header).
-    while (
-        real_insert_idx < len(updated_lines)
-        and not updated_lines[real_insert_idx].strip()
-    ):
-        real_insert_idx += 1
+        # If the insertion point points to blank lines, skip over them so they appear
+        # BEFORE the imports (preserving separation from docstring/header).
+        while (
+            real_insert_idx < len(updated_lines)
+            and not updated_lines[real_insert_idx].strip()
+        ):
+            real_insert_idx += 1
 
-    final_lines = (
-        updated_lines[:real_insert_idx]
-        + new_import_block
-        + updated_lines[real_insert_idx:]
-    )
+        final_lines = (
+            updated_lines[:real_insert_idx]
+            + new_import_block
+            + updated_lines[real_insert_idx:]
+        )
 
-    # Ensure reasonable blank lines around block
-    if real_insert_idx < len(updated_lines) and updated_lines[real_insert_idx].strip():
-        final_lines.insert(real_insert_idx + len(new_import_block), "\n")
+        # Ensure reasonable blank lines around block
+        if (
+            real_insert_idx < len(updated_lines)
+            and updated_lines[real_insert_idx].strip()
+        ):
+            final_lines.insert(real_insert_idx + len(new_import_block), "\n")
 
-    new_text = "".join(final_lines)
+        new_text = "".join(final_lines)
 
     rewritten = False
-    if apply_changes and new_text != text:
+    if apply_changes and new_text != original_text:
         path.write_text(new_text, encoding="utf-8")
         rewritten = True
 
@@ -335,6 +369,7 @@ def process_file(
         inline_promoted_count=inline_promoted_count,
         inline_kept_count=inline_kept_count,
         skipped_guarded=skipped_count,
+        tail_duplicates_removed=tail_duplicates_removed,
         rewritten=rewritten,
     )
 
@@ -345,7 +380,7 @@ def should_promote_inline(
     *,
     promote_inline: bool,
     protect_local_cycles: bool,
-    current_path: Path,
+    current_module: str | None,
     module_index: ModuleIndex,
 ) -> bool:
     if not promote_inline:
@@ -357,13 +392,8 @@ def should_promote_inline(
 
     # Protect likely cycle-breaker imports: local inline imports that would
     # participate in a local import cycle if promoted to module top-level.
-    if protect_local_cycles and categorize_import(node) == 3:
-        current_module = module_index.module_for_path.get(current_path)
-        if not current_module:
-            return False
+    if protect_local_cycles and current_module:
         local_targets = resolve_local_targets(node, current_module, module_index)
-        if not local_targets:
-            return False
         for target in local_targets:
             if has_path(module_index.local_import_graph, target, current_module):
                 return False
@@ -397,7 +427,12 @@ def build_module_index(root: Path, python_files: list[Path]) -> ModuleIndex:
             for target in resolve_local_targets(
                 stmt,
                 module,
-                ModuleIndex(module_for_path, path_for_module, {}),
+                ModuleIndex(
+                    module_for_path=module_for_path,
+                    path_for_module=path_for_module,
+                    module_names=module_names,
+                    local_import_graph={},
+                ),
                 module_names,
             ):
                 graph[module].add(target)
@@ -405,6 +440,7 @@ def build_module_index(root: Path, python_files: list[Path]) -> ModuleIndex:
     return ModuleIndex(
         module_for_path=module_for_path,
         path_for_module=path_for_module,
+        module_names=module_names,
         local_import_graph=graph,
     )
 
@@ -533,19 +569,22 @@ def has_path(graph: dict[str, set[str]], start: str, target: str) -> bool:
     return False
 
 
-def categorize_import(node: ast.AST) -> int:
+def categorize_import(node: ast.AST, module_index: ModuleIndex | None = None) -> int:
     # 0=Future, 1=StdLib, 2=ThirdParty, 3=Local
     name = get_module_name(node)
 
     if name == "__future__":
         return 0
 
+    if name.startswith("."):
+        return 3
+
     base_module = name.split(".")[0]
 
     if base_module in STDLIB_MODULES:
         return 1
 
-    if name.startswith("."):
+    if module_index and resolve_known_module(name, module_index.module_names):
         return 3
 
     if base_module == "ragtime":
@@ -638,6 +677,20 @@ def remove_spans(lines: Sequence[str], spans: Sequence[Tuple[int, int]]) -> list
             keep[end] = False
 
     return [line for i, line in enumerate(lines) if keep[i]]
+
+
+def collapse_duplicate_tail_lines(text: str) -> tuple[str, int]:
+    match = _DUPLICATE_TAIL_LINE_RE.search(text)
+    if not match:
+        return text, 0
+
+    block = match.group(0)
+    line = match.group("line")
+    duplicates_removed = len(block.rstrip("\n").split("\n")) - 1
+    cleaned = text[: match.start()] + line
+    if block.endswith("\n"):
+        cleaned += "\n"
+    return cleaned, duplicates_removed
 
 
 def find_insertion_idx_in_lines(lines: List[str]) -> int:
