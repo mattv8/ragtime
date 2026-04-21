@@ -24,24 +24,41 @@ from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
-                                     decrypt_json_passwords, decrypt_secret,
-                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_json_passwords,
+    encrypt_secret,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
-    normalize_userspace_preview_sandbox_flags)
-from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
-                                    AppSettings, ChatMessage, ChatTask,
-                                    ChatTaskStatus, ChatTaskStreamingState,
-                                    Conversation, ConversationBranch,
-                                    ConversationBranchSummary, IndexConfig,
-                                    IndexJob, IndexStatus,
-                                    MessageSnapshotRestore,
-                                    ProviderPromptDebugRecord, ToolCallRecord,
-                                    ToolConfig, ToolGroup, ToolOutputMode,
-                                    ToolType, VectorStoreType)
+    normalize_userspace_preview_sandbox_flags,
+)
+from ragtime.indexer.models import (
+    SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
+    AppSettings,
+    ChatMessage,
+    ChatTask,
+    ChatTaskStatus,
+    ChatTaskStreamingState,
+    Conversation,
+    ConversationBranch,
+    ConversationBranchSummary,
+    IndexConfig,
+    IndexJob,
+    IndexStatus,
+    MessageSnapshotRestore,
+    ProviderPromptDebugRecord,
+    ToolCallRecord,
+    ToolConfig,
+    ToolGroup,
+    ToolOutputMode,
+    ToolType,
+    VectorStoreType,
+)
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.utils import safe_tool_name
@@ -186,9 +203,12 @@ def _normalize_message_events(
 
 
 def _synthesize_events_from_legacy_message(
-    message: dict[str, Any],
+    message: Any,
 ) -> list[dict[str, Any]] | None:
     """Build chronological events for legacy assistant messages that only stored tool_calls."""
+    if not isinstance(message, dict):
+        return None
+
     legacy_tool_calls = message.get("tool_calls")
     if not isinstance(legacy_tool_calls, list) or not legacy_tool_calls:
         return None
@@ -218,6 +238,55 @@ def _synthesize_events_from_legacy_message(
         events.append({"type": "content", "content": content})
 
     return events or None
+
+
+def _coerce_legacy_message_entry(message: Any) -> dict[str, Any] | None:
+    """Normalize a persisted message entry into a dictionary payload."""
+    if isinstance(message, dict):
+        return message
+
+    if isinstance(message, str):
+        stripped = message.strip()
+        if not stripped:
+            return None
+
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            parsed = None
+
+        if isinstance(parsed, dict):
+            return parsed
+
+        if isinstance(parsed, str):
+            parsed = parsed.strip()
+            if parsed:
+                return {"role": "assistant", "content": parsed}
+            return None
+
+        return {"role": "assistant", "content": stripped}
+
+    return None
+
+
+def _normalize_message_payloads(messages_data: Any) -> list[dict[str, Any]]:
+    """Normalize persisted conversation messages into a list of dict entries."""
+    raw_entries: list[Any]
+    if messages_data is None:
+        raw_entries = []
+    elif isinstance(messages_data, list):
+        raw_entries = messages_data
+    elif isinstance(messages_data, tuple):
+        raw_entries = list(messages_data)
+    else:
+        raw_entries = [messages_data]
+
+    normalized: list[dict[str, Any]] = []
+    for entry in raw_entries:
+        message = _coerce_legacy_message_entry(entry)
+        if message is not None:
+            normalized.append(message)
+    return normalized
 
 
 def _estimate_text_tokens(text: str) -> int:
@@ -1916,9 +1985,8 @@ class IndexerRepository:
             return None
 
         # Add new message
-        messages: List[dict[str, Any]] = cast(
-            List[dict[str, Any]],
-            list(prisma_conv.messages) if prisma_conv.messages else [],
+        messages: List[dict[str, Any]] = _normalize_message_payloads(
+            prisma_conv.messages
         )
         new_message: dict[str, Any] = {
             "role": role,
@@ -2014,9 +2082,8 @@ class IndexerRepository:
             if not prisma_conv:
                 return None
 
-            messages: List[dict[str, Any]] = cast(
-                List[dict[str, Any]],
-                list(prisma_conv.messages) if prisma_conv.messages else [],
+            messages: List[dict[str, Any]] = _normalize_message_payloads(
+                prisma_conv.messages
             )
             truncated = messages[:keep_count]
 
@@ -2065,9 +2132,8 @@ class IndexerRepository:
                     if not prisma_conv:
                         return None
 
-                    messages: List[dict[str, Any]] = cast(
-                        List[dict[str, Any]],
-                        list(prisma_conv.messages) if prisma_conv.messages else [],
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(
+                        prisma_conv.messages
                     )
 
                     if branch_point_index < 0 or branch_point_index > len(messages):
@@ -2145,9 +2211,8 @@ class IndexerRepository:
                     ):
                         return None
 
-                    messages: List[dict[str, Any]] = cast(
-                        List[dict[str, Any]],
-                        list(prisma_conv.messages) if prisma_conv.messages else [],
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(
+                        prisma_conv.messages
                     )
 
                     branch_point = target_branch.branchPointIndex
@@ -2179,13 +2244,8 @@ class IndexerRepository:
                             )
 
                     base_messages = messages[:branch_point]
-                    target_preserved: List[dict[str, Any]] = cast(
-                        List[dict[str, Any]],
-                        (
-                            list(target_branch.preservedMessages)
-                            if target_branch.preservedMessages
-                            else []
-                        ),
+                    target_preserved: List[dict[str, Any]] = (
+                        _normalize_message_payloads(target_branch.preservedMessages)
                     )
                     new_messages = base_messages + target_preserved
                     total_tokens = _estimate_conversation_tokens(new_messages)
@@ -2494,7 +2554,8 @@ class IndexerRepository:
         if not messages_data:
             return []
         result: List[ChatMessage] = []
-        for m in messages_data:
+        for m in _normalize_message_payloads(messages_data):
+
             events = None
             if "events" in m and m["events"]:
                 events = _normalize_message_events(m["events"])
@@ -2515,6 +2576,7 @@ class IndexerRepository:
                         ),
                     )
                     for tc in m["tool_calls"]
+                    if isinstance(tc, dict)
                 ]
             result.append(
                 ChatMessage(
@@ -2632,9 +2694,10 @@ class IndexerRepository:
     def _prisma_conversation_to_model(self, prisma_conv: Any) -> Conversation:
         """Convert Prisma Conversation to Pydantic model."""
         # Parse messages from JSON
-        messages_data = prisma_conv.messages if prisma_conv.messages else []
+        messages_data = _normalize_message_payloads(prisma_conv.messages)
         messages: List[ChatMessage] = []
         for m in messages_data:
+
             # Parse events if present; synthesize them for legacy tool_calls-only messages.
             events = None
             if "events" in m and m["events"]:
@@ -2658,6 +2721,7 @@ class IndexerRepository:
                         ),
                     )
                     for tc in m["tool_calls"]
+                    if isinstance(tc, dict)
                 ]
 
             messages.append(

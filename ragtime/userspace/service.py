@@ -25,9 +25,9 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-
 from prisma import Json
 from prisma import fields as prisma_fields
+
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -2168,10 +2168,6 @@ class UserSpaceService:
 
         await asyncio.to_thread(_copy)
 
-    @staticmethod
-    def _clone_json_value(value: Any, fallback: Any) -> Json:
-        return Json(json.loads(json.dumps(value if value is not None else fallback)))
-
     async def _is_admin_user(self, user_id: str) -> bool:
         db = await get_db()
         user_record = await db.user.find_unique(where={"id": user_id})
@@ -2260,9 +2256,8 @@ class UserSpaceService:
                         or "Untitled Chat"
                     ),
                     "model": str(getattr(source_conversation, "model", "") or ""),
-                    "messages": self._clone_json_value(
-                        getattr(source_conversation, "messages", None),
-                        [],
+                    "messages": self._json_safe_clone(
+                        getattr(source_conversation, "messages", None) or []
                     ),
                     "total_tokens": int(
                         getattr(source_conversation, "totalTokens", 0) or 0
@@ -2295,9 +2290,8 @@ class UserSpaceService:
                             "branch_point_index": int(
                                 getattr(source_branch, "branchPointIndex", 0) or 0
                             ),
-                            "preserved_messages": self._clone_json_value(
-                                getattr(source_branch, "preservedMessages", None),
-                                [],
+                            "preserved_messages": self._json_safe_clone(
+                                getattr(source_branch, "preservedMessages", None) or []
                             ),
                         }
                         for source_branch in source_branches
@@ -2317,9 +2311,31 @@ class UserSpaceService:
             *,
             id_map: dict[str, str] | None = None,
         ) -> Any:
-            messages = self._clone_json_value(raw_messages, [])
+            messages = self._json_safe_clone(
+                raw_messages if raw_messages is not None else []
+            )
+            if isinstance(messages, str):
+                stripped = messages.strip()
+                if not stripped:
+                    return []
+                try:
+                    parsed = json.loads(stripped)
+                except Exception:
+                    parsed = None
+
+                if isinstance(parsed, list):
+                    messages = parsed
+                elif isinstance(parsed, dict):
+                    messages = [parsed]
+                elif isinstance(parsed, str) and parsed.strip():
+                    messages = [{"role": "assistant", "content": parsed.strip()}]
+                else:
+                    messages = [{"role": "assistant", "content": stripped}]
+            elif isinstance(messages, dict):
+                messages = [messages]
+
             if not isinstance(messages, list):
-                return messages
+                return []
 
             key_map = id_map if id_map is not None else {}
             # First pass: assign fresh ids.
@@ -2372,7 +2388,7 @@ class UserSpaceService:
                     "id": cloned_conversation_id,
                     "title": str(payload.get("title") or "Untitled Chat"),
                     "model": str(payload.get("model") or ""),
-                    "messages": cloned_messages,
+                    "messages": Json(cloned_messages),
                     "totalTokens": int(payload.get("total_tokens") or 0),
                     "toolOutputMode": str(payload.get("tool_output_mode") or "default"),
                     "userId": user_id,
@@ -2420,9 +2436,11 @@ class UserSpaceService:
                         "branchPointIndex": int(
                             branch_payload.get("branch_point_index") or 0
                         ),
-                        "preservedMessages": _rekey_chat_messages(
-                            branch_payload.get("preserved_messages"),
-                            id_map=message_id_map,
+                        "preservedMessages": Json(
+                            _rekey_chat_messages(
+                                branch_payload.get("preserved_messages"),
+                                id_map=message_id_map,
+                            )
                         ),
                         "associatedSnapshotId": None,
                         "createdByUserId": user_id,
@@ -2648,6 +2666,8 @@ class UserSpaceService:
             return value
         if isinstance(value, datetime):
             return _coerce_utc_datetime(value).isoformat()
+        if isinstance(value, Json):
+            return cls._json_safe_clone(value.data, seen)
 
         object_id = id(value)
         if object_id in seen:
