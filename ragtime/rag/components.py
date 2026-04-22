@@ -1084,7 +1084,13 @@ class _CopilotChatOpenAI(ChatOpenAI):
         """Return True when provider text says the model cannot use Responses API."""
         return bool(
             re.search(
-                r"not supported (?:via|by|through) (?:the )?responses api",
+                (
+                    r"(?:"
+                    r"does(?:\s+not|n't)\s+support\s+(?:the\s+)?responses\s+api"
+                    r"|"
+                    r"not\s+supported\s+(?:via|by|through)\s+(?:the\s+)?responses\s+api"
+                    r")"
+                ),
                 text.lower(),
             )
         )
