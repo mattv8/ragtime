@@ -37,10 +37,10 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
@@ -10343,6 +10343,18 @@ class RetryTerminalToolResponse(BaseModel):
     error: Optional[str] = None
 
 
+RERUNNABLE_TOOL_TYPES = frozenset(
+    {
+        ToolType.SSH_SHELL,
+        ToolType.ODOO_SHELL,
+        ToolType.POSTGRES,
+        ToolType.MYSQL,
+        ToolType.MSSQL,
+        ToolType.INFLUXDB,
+    }
+)
+
+
 @router.post("/conversations/{conversation_id}/retry-visualization")
 async def retry_visualization(
     conversation_id: str,
@@ -10440,7 +10452,7 @@ async def retry_terminal_tool(
     workspace_id: Optional[str] = None,
     user: User = Depends(get_current_user),
 ):
-    """Replay a terminal-classified runtime tool with its captured input."""
+    """Replay a runtime shell or SQL tool with its captured input."""
     await _assert_workspace_access(
         workspace_id, user, _workspace_chat_required_role(workspace_id)
     )
@@ -10475,8 +10487,8 @@ async def retry_terminal_tool(
     if not tool_config or not tool_config.enabled:
         raise HTTPException(status_code=404, detail="Tool not found")
 
-    if tool_config.tool_type not in {"ssh_shell", "odoo_shell"}:
-        raise HTTPException(status_code=400, detail="Tool is not terminal-rerunnable")
+    if tool_config.tool_type not in RERUNNABLE_TOOL_TYPES:
+        raise HTTPException(status_code=400, detail="Tool is not replayable")
 
     try:
         tool = await rag.build_primary_runtime_tool_from_config(
@@ -10490,7 +10502,7 @@ async def retry_terminal_tool(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Error retrying terminal tool: {e}")
+        logger.exception(f"Error replaying tool call: {e}")
         return RetryTerminalToolResponse(success=False, error=str(e))
 
 

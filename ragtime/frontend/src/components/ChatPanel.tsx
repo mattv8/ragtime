@@ -1223,6 +1223,7 @@ interface ParsedTerminalOutput {
 
 const TERMINAL_TOOL_NAMES = new Set(['run_terminal_command']);
 const TERMINAL_TOOL_CONNECTION_TYPES = new Set(['ssh_shell']);
+const SQL_TOOL_CONNECTION_TYPES = new Set(['postgres', 'mysql', 'mssql', 'influxdb']);
 const TERMINAL_PRESENTATION_KIND = 'terminal';
 const USERSPACE_EXEC_RERUN_KIND = 'userspace_exec';
 const CONVERSATION_TOOL_RERUN_KIND = 'conversation_tool';
@@ -1246,6 +1247,24 @@ function isTerminalToolCall(toolCall: ActiveToolCall): boolean {
   );
 }
 
+function isSqlToolCall(toolCall: ActiveToolCall): boolean {
+  const toolType = toolCall.connection?.tool_type?.trim().toLowerCase();
+  return Boolean(toolType && SQL_TOOL_CONNECTION_TYPES.has(toolType));
+}
+
+function isConversationToolRerunnable(toolCall: ActiveToolCall): boolean {
+  const toolType = toolCall.connection?.tool_type?.trim().toLowerCase();
+  const connectionMode = normalizedPresentationValue(toolCall.connection?.connection_mode);
+  return Boolean(
+    toolCall.connection?.tool_config_id
+    && (
+      (toolType && TERMINAL_TOOL_CONNECTION_TYPES.has(toolType))
+      || (toolType === 'odoo_shell' && connectionMode === 'ssh')
+      || (toolType && SQL_TOOL_CONNECTION_TYPES.has(toolType))
+    )
+  );
+}
+
 function canRerunToolCall(toolCall: ActiveToolCall): boolean {
   if (normalizedPresentationValue(toolCall.presentation?.rerun_kind) === USERSPACE_EXEC_RERUN_KIND) {
     return true;
@@ -1253,13 +1272,7 @@ function canRerunToolCall(toolCall: ActiveToolCall): boolean {
   if (normalizedPresentationValue(toolCall.presentation?.rerun_kind) === CONVERSATION_TOOL_RERUN_KIND) {
     return true;
   }
-  const toolType = toolCall.connection?.tool_type?.trim().toLowerCase();
-  const connectionMode = normalizedPresentationValue(toolCall.connection?.connection_mode);
-  if (
-    ((toolType && TERMINAL_TOOL_CONNECTION_TYPES.has(toolType))
-      || (toolType === 'odoo_shell' && connectionMode === 'ssh'))
-    && toolCall.connection?.tool_config_id
-  ) {
+  if (isConversationToolRerunnable(toolCall)) {
     return true;
   }
   return toolCall.tool === 'run_terminal_command';
@@ -1270,13 +1283,7 @@ function getTerminalRerunKind(toolCall: ActiveToolCall): string | null {
   if (presentationKind === USERSPACE_EXEC_RERUN_KIND || presentationKind === CONVERSATION_TOOL_RERUN_KIND) {
     return presentationKind;
   }
-  const toolType = toolCall.connection?.tool_type?.trim().toLowerCase();
-  const connectionMode = normalizedPresentationValue(toolCall.connection?.connection_mode);
-  if (
-    ((toolType && TERMINAL_TOOL_CONNECTION_TYPES.has(toolType))
-      || (toolType === 'odoo_shell' && connectionMode === 'ssh'))
-    && toolCall.connection?.tool_config_id
-  ) {
+  if (isConversationToolRerunnable(toolCall)) {
     return CONVERSATION_TOOL_RERUN_KIND;
   }
   return toolCall.tool === 'run_terminal_command' ? USERSPACE_EXEC_RERUN_KIND : null;
@@ -1336,11 +1343,13 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   const [userspaceFileDiffKey, setUserspaceFileDiffKey] = useState<string | null>(null);
   const [showUserspaceDiffOverlay, setShowUserspaceDiffOverlay] = useState(false);
   const latestOutput = retryOutput || toolCall.output;
+  const activeOutput = isRerunning ? retryOutput : latestOutput;
   const parsedTerminalOutput = useMemo(() => parseTerminalOutput(latestOutput), [latestOutput]);
 
   // Check if this is a visualization tool that can be retried
   const isVisualizationTool = toolCall.tool === 'create_chart' || toolCall.tool === 'create_datatable';
   const isTerminalCommand = isTerminalToolCall(toolCall) || Boolean(parsedTerminalOutput);
+  const isSqlTool = isSqlToolCall(toolCall);
   const rerunKind = getTerminalRerunKind(toolCall);
   const canRerun = canRerunToolCall(toolCall);
   const hasRerunContext = rerunKind === USERSPACE_EXEC_RERUN_KIND
@@ -1348,7 +1357,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
     : rerunKind === CONVERSATION_TOOL_RERUN_KIND
       ? Boolean(conversationId && toolCall.connection?.tool_config_id)
       : false;
-  const activeTerminalOutput = isTerminalCommand && isRerunning ? retryOutput : latestOutput;
+  const activeTerminalOutput = activeOutput;
 
   // Parse terminal output for terminal-style rendering
   const terminalOutput = useMemo(() => {
@@ -1358,7 +1367,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
 
   // Check if this tool call failed based on output content
   const hasErrorInOutput = useMemo(() => {
-    const output = isTerminalCommand && isRerunning ? retryOutput : latestOutput;
+    const output = activeOutput;
     if (!output) return false;
 
     // Prefer structured JSON status checks (avoids false positives on keys like "error_count": 0)
@@ -1389,10 +1398,10 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
       outputLower.includes('tool error') ||
       outputLower.includes('failed')
     );
-  }, [isTerminalCommand, isRerunning, latestOutput, retryOutput]);
+  }, [activeOutput]);
 
   // Effective output (use retry output if available)
-  const effectiveOutput = isTerminalCommand && isRerunning ? (retryOutput || '') : latestOutput;
+  const effectiveOutput = activeOutput || '';
 
   const userspaceWriteResult = useMemo(() => {
     if (hasErrorInOutput) {
@@ -1585,9 +1594,9 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
 
   // Parse table metadata from output if present (for SQL results)
   const { tableData, displayText } = useMemo(() => {
-    if (!toolCall.output) return { tableData: null, displayText: '' };
-    return parseTableMetadata(toolCall.output);
-  }, [toolCall.output]);
+    if (!effectiveOutput) return { tableData: null, displayText: '' };
+    return parseTableMetadata(effectiveOutput);
+  }, [effectiveOutput]);
 
   // Memoize formatted input to avoid recalculating on every render
   const inputDisplay = useMemo(() => {
@@ -1942,7 +1951,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
               <span className="tool-call-section-label">Result:</span>
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(displayText || toolCall.output!, 'result')}
+                onClick={() => copyToClipboard(displayText || effectiveOutput, 'result')}
                 title="Copy result"
               >
                 {copiedResult ? <Check size={12} /> : <Copy size={12} />}
@@ -2014,13 +2023,25 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
             <div className="tool-call-section">
               <div className="tool-call-section-header">
                 <span className="tool-call-section-label">Query:</span>
-                <button
-                  className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(inputDisplay, 'query')}
-                  title="Copy query"
-                >
-                  {copiedQuery ? <Check size={12} /> : <Copy size={12} />}
-                </button>
+                <div className="tool-call-terminal-header-actions">
+                  <button
+                    className="tool-call-copy-btn"
+                    onClick={() => copyToClipboard(inputDisplay, 'query')}
+                    title="Copy query"
+                  >
+                    {copiedQuery ? <Check size={12} /> : <Copy size={12} />}
+                  </button>
+                  {isSqlTool && canRerun && hasRerunContext && (
+                    <button
+                      className="tool-call-copy-btn tool-call-terminal-rerun-btn"
+                      onClick={handleRerunCommand}
+                      title="Replay query"
+                      disabled={isRerunning}
+                    >
+                      {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                    </button>
+                  )}
+                </div>
               </div>
               <pre className="tool-call-code">{inputDisplay}</pre>
             </div>
@@ -2122,7 +2143,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
               </div>
             </div>
           ) : null}
-          {toolCall.output && !isTerminalCommand && (
+          {effectiveOutput && !isTerminalCommand && (
             screenshotPreview && !hasErrorInOutput ? (
               <div className="tool-call-section">
                 <div className="tool-call-screenshot-meta">
