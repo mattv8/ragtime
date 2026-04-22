@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
+from ragtime.core.sql_utils import strip_table_metadata
 from ragtime.core.usage_accounting import (
     _estimate_output_tokens,
     bind_usage_attempt_task,
@@ -210,6 +211,7 @@ def _truncate_tool_output(output: str, max_chars: int = 5000) -> str:
     """Truncate tool output for inclusion in chat history."""
     if not output:
         return "(no output)"
+    output = strip_table_metadata(output)
     if len(output) > max_chars:
         return output[:max_chars] + "... (truncated)"
     return output

@@ -22,6 +22,7 @@ from typing import Any, List, Literal, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
+from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -37,7 +38,6 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_openai.chat_models.base import (
     _construct_responses_api_payload, _get_last_messages)
-from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from ragtime.config import settings
@@ -65,7 +65,8 @@ from ragtime.core.ollama import (DEFAULT_WARMUP_TIMEOUT_SECONDS, KEEP_ALIVE,
 from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
                                    validate_odoo_code, validate_sql_query,
                                    validate_ssh_command)
-from ragtime.core.sql_utils import add_table_metadata_to_psql_output
+from ragtime.core.sql_utils import (add_table_metadata_to_psql_output,
+                                    strip_table_metadata)
 from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
                               execute_ssh_command, expand_env_vars_via_ssh,
                               ssh_tunnel_config_from_dict)
@@ -6181,7 +6182,23 @@ except Exception as e:
                         step[1] if isinstance(step, tuple) and len(step) > 1 else None
                     )
 
-        formatted_messages = list(format_to_tool_messages(intermediate_steps))
+        formatted_messages: list[BaseMessage] = []
+        for msg in format_to_tool_messages(intermediate_steps):
+            if isinstance(msg, ToolMessage) and isinstance(msg.content, str):
+                formatted_messages.append(
+                    ToolMessage(
+                        content=strip_table_metadata(msg.content),
+                        tool_call_id=msg.tool_call_id,
+                        additional_kwargs=(
+                            dict(msg.additional_kwargs)
+                            if getattr(msg, "additional_kwargs", None)
+                            else None
+                        ),
+                    )
+                )
+                continue
+            formatted_messages.append(msg)
+
         reference_content = self._build_screenshot_reference_content(
             latest_screenshot_observation
         )
@@ -6271,7 +6288,7 @@ except Exception as e:
         max_chars: int = 800,
     ) -> str:
         """Convert raw tool output into synthesis-friendly plain text."""
-        text = sanitize_output(str(output or "")).strip()
+        text = strip_table_metadata(sanitize_output(str(output or ""))).strip()
         if not text:
             return "(no output)"
 
@@ -12464,5 +12481,4 @@ except Exception as e:
 
 
 # Global RAG components instance
-rag = RAGComponents()
 rag = RAGComponents()

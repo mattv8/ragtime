@@ -131,28 +131,31 @@ interface TableData {
 }
 
 function parseTableMetadata(output: string): { tableData: TableData | null; displayText: string } {
-  // Match from <!--TABLEDATA: to --> but use greedy .* since JSON may contain }
-  // The --> acts as a reliable terminator
   const startMarker = '<!--TABLEDATA:';
   const endMarker = '-->';
-  const startIdx = output.indexOf(startMarker);
-  if (startIdx === -1) {
+  if (!output.startsWith(startMarker)) {
     return { tableData: null, displayText: output };
   }
 
-  const jsonStart = startIdx + startMarker.length;
-  const endIdx = output.indexOf(endMarker, jsonStart);
-  if (endIdx === -1) {
+  const lineEndIdx = output.indexOf('\n');
+  const metadataSearchEnd = lineEndIdx === -1 ? output.length - 1 : lineEndIdx - 1;
+  const endIdx = output.lastIndexOf(endMarker, metadataSearchEnd);
+  if (endIdx < startMarker.length) {
     return { tableData: null, displayText: output };
   }
 
-  const jsonStr = output.substring(jsonStart, endIdx);
+  const jsonStr = output.substring(startMarker.length, endIdx);
 
   try {
     const tableData = JSON.parse(jsonStr) as TableData;
-    // Remove the metadata from display text
-    const fullMarker = output.substring(startIdx, endIdx + endMarker.length);
-    const displayText = output.replace(fullMarker, '').replace(/^\n/, '');
+    let contentStart = endIdx + endMarker.length;
+    if (output.startsWith('\r\n', contentStart)) {
+      contentStart += 2;
+    } else if (output[contentStart] === '\r' || output[contentStart] === '\n') {
+      contentStart += 1;
+    }
+
+    const displayText = output.slice(contentStart);
     return { tableData, displayText };
   } catch {
     return { tableData: null, displayText: output };

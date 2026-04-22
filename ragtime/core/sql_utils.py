@@ -19,6 +19,9 @@ from ragtime.core.security import validate_sql_query as _validate_sql_query
 
 logger = get_logger(__name__)
 
+TABLE_METADATA_START = "<!--TABLEDATA:"
+TABLE_METADATA_END = "-->"
+
 
 # =============================================================================
 # DATABASE TYPE DEFINITIONS
@@ -476,6 +479,33 @@ def format_query_result(
     result = metadata_line + ascii_table
 
     return sanitize_output(result, max_output_length)
+
+
+def strip_table_metadata(output: str) -> str:
+    """Remove embedded TABLEDATA metadata while preserving readable text."""
+    if not output:
+        return output
+
+    if not output.startswith(TABLE_METADATA_START):
+        return output
+
+    line_end = output.find("\n")
+    metadata_search_end = len(output) if line_end == -1 else line_end
+    end = output.rfind(
+        TABLE_METADATA_END,
+        len(TABLE_METADATA_START),
+        metadata_search_end,
+    )
+    if end == -1:
+        return output
+
+    content_start = end + len(TABLE_METADATA_END)
+    if output.startswith("\r\n", content_start):
+        content_start += 2
+    elif content_start < len(output) and output[content_start] in {"\r", "\n"}:
+        content_start += 1
+
+    return output[content_start:]
 
 
 def add_table_metadata_to_psql_output(
