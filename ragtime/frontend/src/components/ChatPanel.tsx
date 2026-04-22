@@ -717,20 +717,6 @@ const DataTableDisplay = memo(function DataTableDisplay({ tableData }: { tableDa
   );
 });
 
-interface UserSpaceWriteToolPayload {
-  status?: string;
-  path?: string;
-  message?: string;
-  error?: string;
-  action_required?: string;
-  persisted?: boolean;
-  rejected?: boolean;
-  write_signature?: string;
-  contract_violations?: string[];
-  warnings?: string[];
-  file?: UserSpaceFile;
-}
-
 interface ParsedUserSpaceWriteResult {
   toolName: 'upsert_userspace_file' | 'patch_userspace_file';
   status: string;
@@ -748,6 +734,344 @@ interface ParsedUserSpaceWriteResult {
 
 const USERSPACE_WRITE_TOOL_NAMES = new Set(['upsert_userspace_file', 'patch_userspace_file']);
 const USERSPACE_WRITE_DIFF_CACHE_MAX_ENTRIES = 100;
+
+interface ParsedUserSpaceReadResult {
+  path: string;
+  message: string;
+  content: string | null;
+  isRejected: boolean;
+  status: string;
+  startLine: number | null;
+  endLine: number | null;
+  totalLines: number | null;
+}
+
+interface ParsedUserspaceToolPayload {
+  toolName: string;
+  status: string;
+  path: string;
+  message: string;
+  error: string | null;
+  rejected: boolean;
+  persisted: boolean;
+  persistedWithViolations: boolean;
+  retryable: boolean;
+  failureClass: string;
+  nextBestTool: string;
+  actionRequired: string | null;
+  writeSignature: string | null;
+  filePath: string | null;
+  fileContent: string | null;
+  startLine: number | null;
+  endLine: number | null;
+  totalLines: number | null;
+  details: string[];
+}
+
+function findJsonKeyIndex(source: string, key: string, fromIndex = 0): number {
+  return source.indexOf(`"${key}"`, fromIndex);
+}
+
+function findValueStart(source: string, key: string, fromIndex = 0): number {
+  const keyIndex = findJsonKeyIndex(source, key, fromIndex);
+  if (keyIndex === -1) return -1;
+  const colonIndex = source.indexOf(':', keyIndex);
+  return colonIndex === -1 ? -1 : colonIndex + 1;
+}
+
+function readJsonStringLiteral(source: string, fromIndex: number): { value: string; nextIndex: number } | null {
+  const quoteIndex = source.indexOf('"', fromIndex);
+  if (quoteIndex === -1) return null;
+
+  let value = '';
+  let escaped = false;
+
+  for (let index = quoteIndex + 1; index < source.length; index += 1) {
+    const ch = source[index];
+
+    if (escaped) {
+      switch (ch) {
+        case 'n': value += '\n'; break;
+        case 'r': value += '\r'; break;
+        case 't': value += '\t'; break;
+        case 'b': value += '\b'; break;
+        case 'f': value += '\f'; break;
+        case '"': value += '"'; break;
+        case '\\': value += '\\'; break;
+        case 'u': {
+          const hex = source.slice(index + 1, index + 5);
+          if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+            value += String.fromCharCode(Number.parseInt(hex, 16));
+            index += 4;
+          }
+          break;
+        }
+        default:
+          value += ch;
+          break;
+      }
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      return { value, nextIndex: index + 1 };
+    }
+
+    value += ch;
+  }
+
+  return { value, nextIndex: source.length };
+}
+
+function readJsonLiteral(source: string, fromIndex: number): { value: string; nextIndex: number } | null {
+  let index = fromIndex;
+  while (index < source.length && /\s/.test(source[index])) index += 1;
+  if (index >= source.length) return null;
+
+  const terminators = new Set([',', '}', '\n', '\r']);
+  let value = '';
+  while (index < source.length) {
+    const ch = source[index];
+    if (terminators.has(ch)) break;
+    value += ch;
+    index += 1;
+  }
+
+  return { value: value.trim(), nextIndex: index };
+}
+
+function readJsonBoolean(source: string, fromIndex: number): boolean | null {
+  const literal = readJsonLiteral(source, fromIndex);
+  if (!literal) return null;
+  if (literal.value === 'true') return true;
+  if (literal.value === 'false') return false;
+  return null;
+}
+
+function readJsonNumber(source: string, fromIndex: number): number | null {
+  const literal = readJsonLiteral(source, fromIndex);
+  if (!literal) return null;
+  const value = Number(literal.value);
+  return Number.isFinite(value) ? value : null;
+}
+
+function extractJsonObjectSource(source: string, key: string): string | null {
+  const startIndex = findValueStart(source, key);
+  if (startIndex === -1) return null;
+
+  const objectStart = source.indexOf('{', startIndex);
+  if (objectStart === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = objectStart; index < source.length; index += 1) {
+    const ch = source[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(objectStart, index + 1);
+      }
+    }
+  }
+
+  return source.slice(objectStart);
+}
+
+function readJsonStringField(source: string, key: string): string | null {
+  const valueStart = findValueStart(source, key);
+  if (valueStart === -1) return null;
+  const parsed = readJsonStringLiteral(source, valueStart);
+  return parsed ? parsed.value : null;
+}
+
+function readJsonBooleanField(source: string, key: string): boolean | null {
+  const valueStart = findValueStart(source, key);
+  if (valueStart === -1) return null;
+  return readJsonBoolean(source, valueStart);
+}
+
+function readJsonNumberField(source: string, key: string): number | null {
+  const valueStart = findValueStart(source, key);
+  if (valueStart === -1) return null;
+  return readJsonNumber(source, valueStart);
+}
+
+function readJsonStringArrayField(source: string, key: string): string[] {
+  const arrayStart = findValueStart(source, key);
+  if (arrayStart === -1) return [];
+
+  const bracketStart = source.indexOf('[', arrayStart);
+  if (bracketStart === -1) return [];
+
+  const values: string[] = [];
+  let index = bracketStart + 1;
+
+  while (index < source.length) {
+    while (index < source.length && /[\s,]/.test(source[index])) index += 1;
+    if (index >= source.length || source[index] === ']') break;
+
+    if (source[index] === '"') {
+      const parsed = readJsonStringLiteral(source, index);
+      if (!parsed) break;
+      if (parsed.value.trim().length > 0) values.push(parsed.value);
+      index = parsed.nextIndex;
+      continue;
+    }
+
+    const literal = readJsonLiteral(source, index);
+    if (!literal) break;
+    if (literal.value.trim().length > 0) values.push(literal.value.trim());
+    index = literal.nextIndex;
+  }
+
+  return values;
+}
+
+function parseUserspaceToolPayload(output?: string | null): ParsedUserspaceToolPayload | null {
+  if (!output) return null;
+
+  try {
+    const parsed = JSON.parse(output) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    const file = parsed.file && typeof parsed.file === 'object' ? parsed.file as Record<string, unknown> : null;
+    const diagnostics = parsed.diagnostics && typeof parsed.diagnostics === 'object'
+      ? parsed.diagnostics as Record<string, unknown>
+      : null;
+    const path = typeof parsed.path === 'string' && parsed.path.trim()
+      ? parsed.path.trim()
+      : typeof file?.path === 'string' && file.path.trim()
+        ? file.path.trim()
+        : '';
+
+    return {
+      toolName: typeof parsed.tool === 'string' ? parsed.tool : '',
+      status: typeof parsed.status === 'string' ? parsed.status : '',
+      path,
+      message: typeof parsed.message === 'string' ? parsed.message.trim() : '',
+      error: typeof parsed.error === 'string' && parsed.error.trim() ? parsed.error.trim() : null,
+      rejected: parsed.rejected === true,
+      persisted: parsed.persisted === true,
+      persistedWithViolations: parsed.persisted_with_violations === true,
+      retryable: parsed.retryable !== false,
+      failureClass: typeof parsed.failure_class === 'string' ? parsed.failure_class : '',
+      nextBestTool: typeof parsed.next_best_tool === 'string' ? parsed.next_best_tool : '',
+      actionRequired: typeof parsed.action_required === 'string' && parsed.action_required.trim()
+        ? parsed.action_required.trim()
+        : null,
+      writeSignature: typeof parsed.write_signature === 'string' && parsed.write_signature.trim()
+        ? parsed.write_signature.trim()
+        : null,
+      filePath: typeof file?.path === 'string' && file.path.trim() ? file.path.trim() : null,
+      fileContent: typeof file?.content === 'string' ? file.content : null,
+      startLine: typeof diagnostics?.start_line === 'number' ? diagnostics.start_line : null,
+      endLine: typeof diagnostics?.end_line === 'number' ? diagnostics.end_line : null,
+      totalLines: typeof diagnostics?.total_lines === 'number' ? diagnostics.total_lines : null,
+      details: [
+        ...(Array.isArray(parsed.contract_violations)
+          ? parsed.contract_violations.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          : []),
+        ...(Array.isArray(parsed.warnings)
+          ? parsed.warnings.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          : []),
+      ],
+    };
+  } catch {
+    // Fall through to tolerant field extraction for truncated payloads.
+  }
+
+  const parsedFile = extractJsonObjectSource(output, 'file');
+  const parsedDiagnostics = extractJsonObjectSource(output, 'diagnostics');
+
+  const path = readJsonStringField(output, 'path') || (parsedFile ? readJsonStringField(parsedFile, 'path') : null) || '';
+  if (!path) return null;
+
+  return {
+    toolName: readJsonStringField(output, 'tool') || '',
+    status: readJsonStringField(output, 'status') || '',
+    path,
+    message: readJsonStringField(output, 'message') || '',
+    error: readJsonStringField(output, 'error'),
+    rejected: readJsonBooleanField(output, 'rejected') === true,
+    persisted: readJsonBooleanField(output, 'persisted') === true,
+    persistedWithViolations: readJsonBooleanField(output, 'persisted_with_violations') === true,
+    retryable: readJsonBooleanField(output, 'retryable') !== false,
+    failureClass: readJsonStringField(output, 'failure_class') || '',
+    nextBestTool: readJsonStringField(output, 'next_best_tool') || '',
+    actionRequired: readJsonStringField(output, 'action_required'),
+    writeSignature: readJsonStringField(output, 'write_signature'),
+    filePath: parsedFile ? (readJsonStringField(parsedFile, 'path') ?? null) : null,
+    fileContent: parsedFile ? (readJsonStringField(parsedFile, 'content') ?? null) : null,
+    startLine: parsedDiagnostics ? readJsonNumberField(parsedDiagnostics, 'start_line') : null,
+    endLine: parsedDiagnostics ? readJsonNumberField(parsedDiagnostics, 'end_line') : null,
+    totalLines: parsedDiagnostics ? readJsonNumberField(parsedDiagnostics, 'total_lines') : null,
+    details: [
+      ...readJsonStringArrayField(output, 'contract_violations'),
+      ...readJsonStringArrayField(output, 'warnings'),
+    ],
+  };
+}
+
+function parseUserspaceReadToolResult(toolName: string, output?: string | null): ParsedUserSpaceReadResult | null {
+  if (toolName !== 'read_userspace_file') return null;
+  const parsed = parseUserspaceToolPayload(output);
+  if (!parsed) return null;
+
+  const fileContent = parsed.fileContent;
+  const path = parsed.path || parsed.filePath || '';
+  if (!path) return null;
+
+  return {
+    path,
+    message: parsed.message,
+    content: fileContent,
+    isRejected: parsed.rejected || parsed.status.includes('rejected'),
+    status: parsed.status,
+    startLine: parsed.startLine,
+    endLine: parsed.endLine,
+    totalLines: parsed.totalLines,
+  };
+}
+
+function normalizeUserspaceSnippetContent(content: string): string {
+  const lines = content.split('\n');
+  if (lines.length === 0) return content;
+
+  const numberedLineCount = lines.filter((line) => /^\s*\d+\s*\|\s?/.test(line)).length;
+  if (numberedLineCount === 0 || numberedLineCount < Math.ceil(lines.length / 2)) {
+    return content;
+  }
+
+  return lines.map((line) => line.replace(/^\s*\d+\s*\|\s?/, '')).join('\n');
+}
+
 const userspaceWriteDiffCache = new Map<string, UserSpaceSnapshotFileDiff>();
 
 function trimUserspaceWriteDiffCache(): void {
@@ -761,87 +1085,39 @@ function trimUserspaceWriteDiffCache(): void {
 }
 
 function parseUserspaceWriteToolResult(toolName: string, output?: string | null): ParsedUserSpaceWriteResult | null {
-  if (!output || !USERSPACE_WRITE_TOOL_NAMES.has(toolName)) {
+  if (!USERSPACE_WRITE_TOOL_NAMES.has(toolName)) {
     return null;
   }
 
-  try {
-    const parsed = JSON.parse(output) as UserSpaceWriteToolPayload;
-    if (!parsed || typeof parsed !== 'object') {
-      return null;
-    }
-
-    const status = typeof parsed.status === 'string' ? parsed.status : '';
-    const file = parsed.file && typeof parsed.file === 'object' ? parsed.file : null;
-    const path = typeof parsed.path === 'string' && parsed.path.trim()
-      ? parsed.path.trim()
-      : typeof file?.path === 'string' && file.path.trim()
-        ? file.path.trim()
-        : '';
-    if (!path) {
-      return null;
-    }
-
-    return {
-      toolName: toolName as 'upsert_userspace_file' | 'patch_userspace_file',
-      status,
-      path,
-      message: typeof parsed.message === 'string' ? parsed.message.trim() : '',
-      error: typeof parsed.error === 'string' && parsed.error.trim() ? parsed.error.trim() : null,
-      actionRequired: typeof parsed.action_required === 'string' && parsed.action_required.trim()
-        ? parsed.action_required.trim()
-        : null,
-      writeSignature: typeof parsed.write_signature === 'string' && parsed.write_signature.trim()
-        ? parsed.write_signature.trim()
-        : null,
-      persisted: parsed.persisted === true || status.startsWith('persisted'),
-      rejected: parsed.rejected === true || status.includes('rejected'),
-      noChanges: status === 'no_changes',
-      file,
-      details: [
-        ...(Array.isArray(parsed.contract_violations)
-          ? parsed.contract_violations.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-          : []),
-        ...(Array.isArray(parsed.warnings)
-          ? parsed.warnings.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-          : []),
-      ],
-    };
-  } catch {
-    // JSON.parse failed — output is likely truncated (> 2000 chars).
-    // Extract key fields via regex so the write summary + diff still render.
-    return parseUserspaceWriteToolResultFromTruncated(toolName, output);
+  const parsed = parseUserspaceToolPayload(output);
+  if (!parsed) {
+    return null;
   }
-}
 
-/** Regex fallback for truncated (invalid JSON) tool output. */
-function parseUserspaceWriteToolResultFromTruncated(
-  toolName: string,
-  output: string,
-): ParsedUserSpaceWriteResult | null {
-  const str = (pattern: RegExp): string => {
-    const m = output.match(pattern);
-    return m ? m[1] : '';
-  };
-  const bool = (pattern: RegExp): boolean => pattern.test(output);
-
-  const path = str(/"path"\s*:\s*"([^"]+)"/);
+  const status = parsed.status;
+  const file = parsed.fileContent != null
+    ? {
+        path: parsed.filePath || parsed.path,
+        content: parsed.fileContent,
+        updated_at: parsed.writeSignature || '',
+      } as UserSpaceFile
+    : null;
+  const path = parsed.path;
   if (!path) return null;
 
-  const status = str(/"status"\s*:\s*"([^"]+)"/);
   return {
     toolName: toolName as 'upsert_userspace_file' | 'patch_userspace_file',
     status,
     path,
-    message: str(/"message"\s*:\s*"([^"]*)"/) || '',
-    error: null,
-    actionRequired: null,
-    writeSignature: str(/"write_signature"\s*:\s*"([^"]+)"/) || null,
-    persisted: bool(/"persisted"\s*:\s*true/) || status.startsWith('persisted'),
-    rejected: bool(/"rejected"\s*:\s*true/) || status.includes('rejected'),
+    message: parsed.message,
+    error: parsed.error,
+    actionRequired: parsed.actionRequired,
+    writeSignature: parsed.writeSignature,
+    persisted: parsed.persisted || status.startsWith('persisted'),
+    rejected: parsed.rejected || status.includes('rejected'),
     noChanges: status === 'no_changes',
-    file: null,
-    details: [],
+    file,
+    details: parsed.details,
   };
 }
 
@@ -1221,6 +1497,30 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
     };
   }, [expanded, userspaceDiffReady, workspaceId, userspaceWriteResult]);
 
+  const userspaceReadResult = useMemo(() => {
+    if (toolCall.tool !== 'read_userspace_file') return null;
+    return parseUserspaceReadToolResult(toolCall.tool, effectiveOutput);
+  }, [effectiveOutput, toolCall.tool]);
+
+  const userspaceReadDiff = useMemo((): UserSpaceSnapshotFileDiff | null => {
+    if (!userspaceReadResult || userspaceReadResult.isRejected || userspaceReadResult.content == null) return null;
+    const normalizedContent = normalizeUserspaceSnippetContent(userspaceReadResult.content);
+    const lines = normalizedContent.split('\n').length;
+    return {
+      workspace_id: '',
+      snapshot_id: '',
+      path: userspaceReadResult.path,
+      status: 'R',
+      before_content: '',
+      after_content: normalizedContent,
+      additions: lines,
+      deletions: 0,
+      is_binary: false,
+      is_deleted_in_current: false,
+      is_untracked_in_current: false,
+    };
+  }, [userspaceReadResult]);
+
   const screenshotPreview = useMemo(() => {
     if (toolCall.tool !== 'capture_userspace_screenshot' || !effectiveOutput) {
       return null;
@@ -1489,6 +1789,172 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   const toolIcon = getToolIcon();
   const userspaceWriteSummary = userspaceWriteResult ? formatUserspaceWriteSummary(userspaceWriteResult) : '';
   const userspaceDiffStatus = userspaceFileDiff ? formatDiffStatus(userspaceFileDiff.status) : null;
+  const userspaceReadRangeSummary = userspaceReadResult
+    ? (() => {
+        const { startLine, endLine, totalLines } = userspaceReadResult;
+        if (startLine != null && endLine != null && totalLines != null) {
+          return `Lines ${startLine}-${endLine} of ${totalLines}`;
+        }
+        if (startLine != null && endLine != null) {
+          return `Lines ${startLine}-${endLine}`;
+        }
+        return null;
+      })()
+    : null;
+
+  const renderUserspaceResultBody = (): ReactNode => {
+    switch (toolCall.tool) {
+      case 'upsert_userspace_file':
+      case 'patch_userspace_file': {
+        if (!userspaceWriteResult) return null;
+
+        return (
+          <>
+            <div className="tool-call-section">
+              <div className="tool-call-section-header">
+                <span className="tool-call-section-label">Result:</span>
+                {userspaceFileDiff ? (
+                  <button
+                    type="button"
+                    className="tool-call-retry-btn"
+                    onClick={() => setShowUserspaceDiffOverlay(true)}
+                    title="Open full diff"
+                  >
+                    <Diff size={12} />
+                    <span>Full Diff</span>
+                  </button>
+                ) : (
+                  <button
+                    className="tool-call-copy-btn"
+                    onClick={() => copyToClipboard(userspaceWriteSummary || displayText || toolCall.output!, 'result')}
+                    title="Copy result"
+                  >
+                    {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                  </button>
+                )}
+              </div>
+              <div className="tool-call-userspace-write-summary">
+                <div className="tool-call-userspace-write-summary-row">
+                  {onOpenWorkspaceFile ? (
+                    <button
+                      className="tool-call-userspace-write-path tool-call-userspace-write-path-link"
+                      title={userspaceWriteResult.path}
+                      onClick={() => onOpenWorkspaceFile(userspaceWriteResult.path)}
+                    >
+                      {userspaceWriteResult.path}
+                    </button>
+                  ) : (
+                    <span className="tool-call-userspace-write-path" title={userspaceWriteResult.path}>{userspaceWriteResult.path}</span>
+                  )}
+                  <span className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${(userspaceFileDiff?.status ?? 'm').toLowerCase()}`}>
+                    {userspaceFileDiff?.status ?? 'M'}
+                  </span>
+                </div>
+                <div className="tool-call-userspace-write-meta">
+                  {userspaceDiffStatus || userspaceWriteResult.message || 'Updated'}
+                  {userspaceFileDiff ? ` | +${userspaceFileDiff.additions} -${userspaceFileDiff.deletions}` : ''}
+                </div>
+              </div>
+              {userspaceFileDiffLoading && (
+                <div className="tool-call-userspace-diff-loading">
+                  <MiniLoadingSpinner variant="icon" size={14} />
+                  <span>Loading diff from current snapshot...</span>
+                </div>
+              )}
+              {!userspaceFileDiffLoading && !userspaceFileDiff && (
+                <pre className="tool-call-code">{userspaceWriteSummary || displayText || toolCall.output}</pre>
+              )}
+              {userspaceFileDiffError && (
+                <div className="tool-call-userspace-diff-error">{userspaceFileDiffError}</div>
+              )}
+            </div>
+            {!userspaceFileDiffLoading && userspaceFileDiff && (
+              <div className="tool-call-userspace-diff-card">
+                <UserSpaceFileDiffView
+                  diff={userspaceFileDiff}
+                  beforeLabel="Last Snapshot"
+                  afterLabel="Tool Result"
+                  compact
+                />
+              </div>
+            )}
+          </>
+        );
+      }
+
+      case 'read_userspace_file': {
+        if (!userspaceReadResult || !userspaceReadDiff) return null;
+
+        return (
+          <>
+            <div className="tool-call-section">
+              <div className="tool-call-section-header">
+                <span className="tool-call-section-label">Result:</span>
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={() => copyToClipboard(userspaceReadResult.content ?? displayText ?? toolCall.output!, 'result')}
+                  title="Copy result"
+                >
+                  {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
+              <div className="tool-call-userspace-write-summary">
+                <div className="tool-call-userspace-write-summary-row">
+                  {onOpenWorkspaceFile ? (
+                    <button
+                      className="tool-call-userspace-write-path tool-call-userspace-write-path-link"
+                      title={userspaceReadResult.path}
+                      onClick={() => onOpenWorkspaceFile(userspaceReadResult.path)}
+                    >
+                      {userspaceReadResult.path}
+                    </button>
+                  ) : (
+                    <span className="tool-call-userspace-write-path" title={userspaceReadResult.path}>{userspaceReadResult.path}</span>
+                  )}
+                  <span className="userspace-snapshot-diff-status userspace-snapshot-diff-status-r">R</span>
+                </div>
+                <div className="tool-call-userspace-write-meta">
+                  {userspaceReadResult.message || 'Read'}
+                  {userspaceReadRangeSummary ? ` | ${userspaceReadRangeSummary}` : ''}
+                </div>
+              </div>
+            </div>
+            <div className="tool-call-userspace-diff-card">
+              <UserSpaceFileDiffView
+                diff={userspaceReadDiff}
+                beforeLabel="Read Snippet"
+                afterLabel="Read Snippet"
+                compact
+                highlightSingleColumnChanges={false}
+              />
+            </div>
+          </>
+        );
+      }
+
+      default: {
+        return (
+          <div className="tool-call-section">
+            <div className="tool-call-section-header">
+              <span className="tool-call-section-label">Result:</span>
+              <button
+                className="tool-call-copy-btn"
+                onClick={() => copyToClipboard(displayText || toolCall.output!, 'result')}
+                title="Copy result"
+              >
+                {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+            </div>
+            {tableData ? (
+              <DataTable data={tableData} />
+            ) : (
+              <pre className="tool-call-code">{displayText}</pre>
+            )}
+          </div>
+        );
+      }
+    }
+  };
 
   return (
   <>
@@ -1541,7 +2007,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
               <pre className="tool-call-code tool-call-error-text">{retryError}</pre>
             </div>
           )}
-          {inputDisplay && !userspaceWriteResult && !isTerminalCommand && (
+          {inputDisplay && !userspaceWriteResult && !userspaceReadResult && !isTerminalCommand && (
             <div className="tool-call-section">
               <div className="tool-call-section-header">
                 <span className="tool-call-section-label">Query:</span>
@@ -1673,96 +2139,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
                   style={{ cursor: 'zoom-in' }}
                 />
               </div>
-            ) : userspaceWriteResult ? (
-              <>
-                <div className="tool-call-section">
-                  <div className="tool-call-section-header">
-                    <span className="tool-call-section-label">Result:</span>
-                    {userspaceFileDiff ? (
-                      <button
-                        type="button"
-                        className="tool-call-retry-btn"
-                        onClick={() => setShowUserspaceDiffOverlay(true)}
-                        title="Open full diff"
-                      >
-                        <Diff size={12} />
-                        <span>Full Diff</span>
-                      </button>
-                    ) : (
-                      <button
-                        className="tool-call-copy-btn"
-                        onClick={() => copyToClipboard(userspaceWriteSummary || displayText || toolCall.output!, 'result')}
-                        title="Copy result"
-                      >
-                        {copiedResult ? <Check size={12} /> : <Copy size={12} />}
-                      </button>
-                    )}
-                  </div>
-                  <div className="tool-call-userspace-write-summary">
-                    <div className="tool-call-userspace-write-summary-row">
-                      {onOpenWorkspaceFile ? (
-                        <button
-                          className="tool-call-userspace-write-path tool-call-userspace-write-path-link"
-                          title={userspaceWriteResult.path}
-                          onClick={() => onOpenWorkspaceFile(userspaceWriteResult.path)}
-                        >
-                          {userspaceWriteResult.path}
-                        </button>
-                      ) : (
-                        <span className="tool-call-userspace-write-path" title={userspaceWriteResult.path}>{userspaceWriteResult.path}</span>
-                      )}
-                      <span className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${(userspaceFileDiff?.status ?? 'm').toLowerCase()}`}>
-                        {userspaceFileDiff?.status ?? 'M'}
-                      </span>
-                    </div>
-                    <div className="tool-call-userspace-write-meta">
-                      {userspaceDiffStatus || userspaceWriteResult.message || 'Updated'}
-                      {userspaceFileDiff ? ` | +${userspaceFileDiff.additions} -${userspaceFileDiff.deletions}` : ''}
-                    </div>
-                  </div>
-                  {userspaceFileDiffLoading && (
-                    <div className="tool-call-userspace-diff-loading">
-                      <MiniLoadingSpinner variant="icon" size={14} />
-                      <span>Loading diff from current snapshot...</span>
-                    </div>
-                  )}
-                  {!userspaceFileDiffLoading && !userspaceFileDiff && (
-                    <pre className="tool-call-code">{userspaceWriteSummary || displayText || toolCall.output}</pre>
-                  )}
-                  {userspaceFileDiffError && (
-                    <div className="tool-call-userspace-diff-error">{userspaceFileDiffError}</div>
-                  )}
-                </div>
-                {!userspaceFileDiffLoading && userspaceFileDiff && (
-                  <div className="tool-call-userspace-diff-card">
-                    <UserSpaceFileDiffView
-                      diff={userspaceFileDiff}
-                      beforeLabel="Last Snapshot"
-                      afterLabel="Tool Result"
-                      compact
-                    />
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="tool-call-section">
-                <div className="tool-call-section-header">
-                  <span className="tool-call-section-label">Result:</span>
-                  <button
-                    className="tool-call-copy-btn"
-                    onClick={() => copyToClipboard(displayText || toolCall.output!, 'result')}
-                    title="Copy result"
-                  >
-                    {copiedResult ? <Check size={12} /> : <Copy size={12} />}
-                  </button>
-                </div>
-                {tableData ? (
-                  <DataTable data={tableData} />
-                ) : (
-                  <pre className="tool-call-code">{displayText}</pre>
-                )}
-              </div>
-            )
+            ) : renderUserspaceResultBody()
           )}
         </div>
       )}

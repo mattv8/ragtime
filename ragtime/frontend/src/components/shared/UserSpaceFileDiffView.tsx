@@ -145,6 +145,7 @@ export interface UserSpaceFileDiffViewProps {
   afterLabel: string;
   compact?: boolean;
   syncScroll?: boolean;
+  highlightSingleColumnChanges?: boolean;
 }
 
 export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
@@ -153,6 +154,7 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
   afterLabel,
   compact = false,
   syncScroll = true,
+  highlightSingleColumnChanges = true,
 }: UserSpaceFileDiffViewProps) {
   const beforeWrapRef = useRef<HTMLDivElement | null>(null);
   const afterWrapRef = useRef<HTMLDivElement | null>(null);
@@ -268,7 +270,9 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
     const singleContent = isPureAdd ? alignedDiff.afterText : alignedDiff.beforeText;
     const singleLabel = isPureAdd ? afterLabel : beforeLabel;
     const singlePath = isPureAdd ? (diff.after_path ?? diff.path) : (diff.before_path ?? diff.path);
-    const singleExtensions = isPureAdd ? afterExtensions : beforeExtensions;
+    const singleExtensions = highlightSingleColumnChanges
+      ? (isPureAdd ? afterExtensions : beforeExtensions)
+      : languageExtensions;
 
     return (
       <div className={`userspace-snapshot-diff-columns userspace-snapshot-diff-columns-single${compact ? ' userspace-snapshot-diff-columns-compact' : ''}`}>

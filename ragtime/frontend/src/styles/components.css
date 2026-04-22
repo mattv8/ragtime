@@ -2644,6 +2644,24 @@ textarea:focus {
   border-color: transparent;
 }
 
+.tool-call-userspace-diff-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-primary);
+  overflow: hidden;
+}
+
+.tool-call-userspace-diff-card .userspace-snapshot-diff-columns {
+  background: var(--color-bg-primary);
+}
+
+.tool-call-userspace-diff-card .userspace-snapshot-diff-column-header {
+  background: var(--color-bg-primary);
+}
+
 .userspace-snapshot-diff-column-header {
   display: flex;
   align-items: center;
@@ -2722,9 +2740,19 @@ textarea:focus {
 }
 
 .userspace-snapshot-diff-editor-wrap .cm-editor .cm-gutters {
-  background-color: color-mix(in srgb, var(--color-surface-hover) 40%, var(--color-bg-primary)) !important;
+  background-color: var(--color-bg-primary) !important;
   border-right: 1px solid var(--color-border);
   color: var(--color-text-muted);
+}
+
+.tool-call-userspace-diff-card .userspace-snapshot-diff-editor-wrap .cm-editor .cm-activeLineGutter,
+.tool-call-userspace-diff-card .userspace-snapshot-diff-editor-wrap .cm-editor .cm-activeLine {
+  background-color: var(--color-surface-hover) !important;
+}
+
+.tool-call-userspace-diff-card .userspace-snapshot-diff-editor-wrap .cm-editor .cm-selectionBackground,
+.tool-call-userspace-diff-card .userspace-snapshot-diff-editor-wrap .cm-editor .cm-content ::selection {
+  background-color: var(--color-primary-light) !important;
 }
 
 .userspace-snapshot-diff-editor-wrap .cm-lineNumbers .cm-gutterElement {
