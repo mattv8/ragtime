@@ -131,6 +131,9 @@ _USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
 - If multiple searches or reads are returning overlapping results, proceed to implementation instead of gathering more context.
 - Live data bridge contract: use only the passed `context` argument or `window.__ragtime_context`/`window.context` inside preview code. Never scan `window.parent`, `window.top`, `window.opener`, or legacy globals to discover components.
 - If live data appears missing, verify workspace selected tools/live_data_connections before blaming the platform. When selections exist, treat preview binding failures as workspace-code or contract-usage issues unless the bridge itself is demonstrably absent.
+- If a workspace file already declares `live_data_connections`, treat those `component_id` values as the source of truth. Reuse them directly in `context.components[componentId].execute()`; do not add fallback component-discovery logic that scans names, globals, or arbitrary component lists.
+- Before concluding that a workspace has no usable tools, prove it from the available evidence: check selected tool IDs, inspect existing `.artifact.json` live_data_connections, and prefer a direct execute-component/workspace tool call for the declared `component_id`. If that call succeeds, the bug is not missing tool access.
+- When preview code consumes `context.components[componentId].execute()` results, handle the platform's native JSON payloads directly. A successful response may arrive as `{ rows: [{...}], columns: [...], row_count, error }`; if `rows` is already an array of objects, use it as-is instead of assuming array-of-arrays or HTML comment wrappers.
 - Before finalizing, run validate_userspace_code on EVERY changed source file
     (including .ts/.tsx, .py, .js, .html, and the entrypoint), then fix all reported errors.
 - Persist implementation changes via userspace file tools (not chat-only prose).
@@ -447,6 +450,8 @@ _USERSPACE_DATA_WIRING_BLOCK = """
 - Each `live_data_connections` entry must include at least `component_kind=tool_config`, `component_id`, and `request`.
 - Include `live_data_checks` for each connection with `connection_check_passed=true` and `transformation_check_passed=true`.
 - Never invent or guess `component_id` values. Use only IDs from ACTIVE TOOL CONNECTIONS FOR THIS REQUEST.
+- If the target file already has persisted `live_data_connections`, reuse those exact `component_id` values instead of re-discovering components by name or adding fallback search logic in code.
+- Expect live data execution results to be ordinary JSON objects. If a tool returns `rows` as an array of row objects, consume that directly; do not require HTML comment payloads or `columns` + array-of-arrays to treat the result as valid data.
 - Do not persist `dashboard/main.ts` without connection metadata when workspace has tools. If the file is persisted with contract violations, fix the violations via `patch_userspace_file` rather than regenerating the entire file.
 - Data connections are internal components, abstracted from end users.
 - These components map to admin-configured tools from Settings.
