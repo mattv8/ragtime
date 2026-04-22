@@ -4958,12 +4958,8 @@ export function ChatPanel({
   ): number => {
     const messageCount = messages.length;
     const maxBranchPointIndex = Math.max(messageCount - 1, 0);
-    const userIdx = findUserMessageIndexAtOrBefore(messages, messageIdx);
-    if (userIdx >= 0) {
-      return clampNumber(userIdx, 0, maxBranchPointIndex);
-    }
     return clampNumber(messageIdx, 0, maxBranchPointIndex);
-  }, [findUserMessageIndexAtOrBefore]);
+  }, []);
 
   const switchBranch = useCallback(async (branchId: string) => {
     if (!activeConversation || branchSwitching) return;
@@ -5075,9 +5071,8 @@ export function ChatPanel({
     if (!selectedMessage) return;
     const selectedMessageId = selectedMessage.message_id;
 
-    // Always anchor the chat branch at the user message that drove this row.
-    // This guarantees the branch nav (X/N) renders on a single user row and
-    // each walkback creates exactly one branch.
+    // Delete truncates the conversation exactly at the requested message index
+    // so the message and all following messages are moved to a branch.
     const branchPointIndex = getDeleteBranchPointIndex(
       activeConversation.messages,
       messageIdx,
