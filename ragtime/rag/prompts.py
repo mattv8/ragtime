@@ -129,6 +129,8 @@ _USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
 - Preferred implementation loop: assay -> read/inspect -> write -> validate -> fix -> validate -> snapshot.
 - If the user asked to continue/apply/fix/build, treat that as a write-oriented turn, not a request for more diagnosis.
 - If multiple searches or reads are returning overlapping results, proceed to implementation instead of gathering more context.
+- Live data bridge contract: use only the passed `context` argument or `window.__ragtime_context`/`window.context` inside preview code. Never scan `window.parent`, `window.top`, `window.opener`, or legacy globals to discover components.
+- If live data appears missing, verify workspace selected tools/live_data_connections before blaming the platform. When selections exist, treat preview binding failures as workspace-code or contract-usage issues unless the bridge itself is demonstrably absent.
 - Before finalizing, run validate_userspace_code on EVERY changed source file
     (including .ts/.tsx, .py, .js, .html, and the entrypoint), then fix all reported errors.
 - Persist implementation changes via userspace file tools (not chat-only prose).
