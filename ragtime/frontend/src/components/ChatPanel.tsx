@@ -2259,6 +2259,7 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
   const userToggledRef = useRef(false);
   const [copied, setCopied] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollContentRef = useRef(true);
   const startTimeRef = useRef<number>(Date.now());
   const [elapsed, setElapsed] = useState(0);
 
@@ -2312,12 +2313,24 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
     return () => clearInterval(interval);
   }, [isComplete]);
 
+  const handleContentScroll = useCallback(() => {
+    if (!contentRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = contentRef.current;
+    shouldAutoScrollContentRef.current = scrollHeight - scrollTop - clientHeight < 24;
+  }, []);
+
   // Auto-scroll reasoning content while streaming
   useEffect(() => {
-    if (!isComplete && isExpanded && contentRef.current) {
+    if (!isComplete && isExpanded && contentRef.current && shouldAutoScrollContentRef.current) {
       contentRef.current.scrollTop = contentRef.current.scrollHeight;
     }
   }, [content, isComplete, isExpanded]);
+
+  useEffect(() => {
+    if (!isComplete && isExpanded) {
+      shouldAutoScrollContentRef.current = true;
+    }
+  }, [isComplete, isExpanded]);
 
   // Auto-collapse when thinking completes (compact mode) — but never override a manual toggle
   useEffect(() => {
@@ -2420,7 +2433,7 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
         <div className="reasoning-summary">{summaryLine}</div>
       )}
       <div className={`reasoning-content ${isExpanded ? 'reasoning-content-expanded' : 'reasoning-content-collapsed'}`}>
-        <div className="reasoning-content-inner" ref={contentRef}>
+        <div className="reasoning-content-inner" ref={contentRef} onScroll={handleContentScroll}>
           {hasToolCalls ? renderedParts.map((part, i) => {
             if (part.type === 'text') {
               return (
@@ -5071,8 +5084,9 @@ export function ChatPanel({
     if (!selectedMessage) return;
     const selectedMessageId = selectedMessage.message_id;
 
-    // Delete truncates the conversation exactly at the requested message index
-    // so the message and all following messages are moved to a branch.
+    // Always anchor the chat branch at the user message that drove this row.
+    // This guarantees the branch nav (X/N) renders on a single user row and
+    // each walkback creates exactly one branch.
     const branchPointIndex = getDeleteBranchPointIndex(
       activeConversation.messages,
       messageIdx,
