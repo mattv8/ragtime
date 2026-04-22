@@ -5580,7 +5580,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 </span>
                 <span className={`userspace-folder-label${isMount ? ' userspace-tree-mount-label' : ''}`}>{node.name}</span>
                 {hasChangedFileDescendant && <span className="userspace-tree-folder-changed-file-dot" title="Contains changed files" />}
-                  tabIndex={0}
                 {isMount && (
                   <span
                     className={`userspace-tree-mount-badge${isMountDisconnected ? ' userspace-tree-mount-badge-disconnected' : isMountDisabled ? ' userspace-tree-mount-badge-disabled' : isSshMount && (isMountSyncInProgress || mountInfo?.syncStatus !== 'synced') ? ` userspace-tree-mount-badge-sync ${mountStatusClass}` : ''}`}
