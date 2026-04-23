@@ -113,30 +113,30 @@ flowchart LR
    # API port (default: 8000)
    PORT=8000
 
-  # CORS allowed origins (comma-separated)
-  # Leave empty to allow loopback-only origins.
-  # Example: https://ragtime.example.com,https://chat.example.com
-  ALLOWED_ORIGINS=
+   # CORS allowed origins (comma-separated)
+   # Leave empty to allow loopback-only origins.
+   # Example: https://ragtime.example.com,https://chat.example.com
+   ALLOWED_ORIGINS=
 
-    # Canonical public Ragtime origin (scheme + host, no trailing slash), for example:
-    # https://ragtime.example.com
-    # Set it only when Ragtime sees a different origin than users do
-    # (for example behind TLS termination) or public URLs must stay fixed.
-    # EXTERNAL_BASE_URL=https://ragtime.example.com
+   # Canonical public Ragtime origin (scheme + host, no trailing slash), for example:
+   # https://ragtime.example.com
+   # Set it only when Ragtime sees a different origin than users do
+   # (for example behind TLS termination) or public URLs must stay fixed.
+   # EXTERNAL_BASE_URL=https://ragtime.example.com
 
-    # Optional preview base-domain override for userspace subdomain previews.
-    # Leave unset to derive preview hosts from the current Ragtime origin
-    # (for example https://ragtime.example.com -> https://<workspace>.ragtime.example.com).
-    # Set this when previews should use a separate wildcard host family such as
-    # example-userspaces.com. Wildcard DNS/TLS must route *.example-userspaces.com
-    # back to Ragtime.
-    # USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com
+   # Optional preview base-domain override for userspace subdomain previews.
+   # Leave unset to derive preview hosts from the current Ragtime origin
+   # (for example https://ragtime.example.com -> https://<workspace>.ragtime.example.com).
+   # Set this when previews should use a separate wildcard host family such as
+   # example-userspaces.com. Wildcard DNS/TLS must route *.example-userspaces.com
+   # back to Ragtime.
+   # USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com
 
    # -----------------------------------------------------------------------------
    # Security Configuration
    # -----------------------------------------------------------------------------
-  # API Key for OpenAI-compatible endpoint authentication (strongly recommended
-  # for non-local deployments)
+   # API Key for OpenAI-compatible endpoint authentication (strongly recommended
+   # for non-local deployments)
    # Generate with: openssl rand -base64 32
    API_KEY=
 
@@ -154,15 +154,15 @@ flowchart LR
    # This marks cookies as Secure. Auto-enabled when ENABLE_HTTPS=true.
    SESSION_COOKIE_SECURE=false
 
-    # -----------------------------------------------------------------------------
-    # Runtime Configuration
-    # -----------------------------------------------------------------------------
+   # -----------------------------------------------------------------------------
+   # Runtime Configuration
+   # -----------------------------------------------------------------------------
 
-    # Base URL Ragtime uses for outbound calls to the runtime-manager API that
-    # creates and controls userspace runtime sessions. In the default Docker setup,
-    # this should stay pointed at the internal runtime service.
-    # Set to blank/non-http to force local placeholder runtime mode.
-    # RUNTIME_MANAGER_URL=http://runtime:8090
+   # Base URL Ragtime uses for outbound calls to the runtime-manager API that
+   # creates and controls userspace runtime sessions. In the default Docker setup,
+   # this should stay pointed at the internal runtime service.
+   # Set to blank/non-http to force local placeholder runtime mode.
+   # RUNTIME_MANAGER_URL=http://runtime:8090
 
    # Optional bearer token for runtime-manager calls
    # RUNTIME_MANAGER_AUTH_TOKEN=
@@ -178,18 +178,18 @@ flowchart LR
    # RUNTIME_MAX_SESSIONS=12
    # Session lease duration before idle sessions are reclaimed
    # RUNTIME_LEASE_TTL_SECONDS=3600
-  # Reconcile interval for heartbeat and lease cleanup
-  # RUNTIME_RECONCILE_INTERVAL_SECONDS=15
+   # Reconcile interval for heartbeat and lease cleanup
+   # RUNTIME_RECONCILE_INTERVAL_SECONDS=15
 
-    ############################################################
-    # Developer Only - Typically do not modify below this line #
-    ############################################################
+   ############################################################
+   # Developer Only - Typically do not modify below this line #
+   ############################################################
 
-    # Debug mode (enables verbose logging and hot-reload)
-    DEBUG_MODE=false
+   # Debug mode (enables verbose logging and hot-reload)
+   DEBUG_MODE=false
 
-    # Database URL (auto-configured by docker-compose, override for external DB)
-    # DATABASE_URL=postgresql://ragtime:password@hostname:5432/ragtime
+   # Database URL (auto-configured by docker-compose, override for external DB)
+   # DATABASE_URL=postgresql://ragtime:password@hostname:5432/ragtime
    ```
 
    </details>
