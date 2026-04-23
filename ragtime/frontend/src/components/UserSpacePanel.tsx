@@ -612,6 +612,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
   const [previewExecuting, setPreviewExecuting] = useState(false);
   const [previewRefreshCounter, setPreviewRefreshCounter] = useState(0);
+  const lastPreviewSessionExpiredRefreshRef = useRef<number>(0);
   const [previewFrameUrl, setPreviewFrameUrl] = useState<string | null>(null);
   const [previewOrigin, setPreviewOrigin] = useState<string | null>(null);
   const [previewAuthorizationPending, setPreviewAuthorizationPending] = useState(false);
@@ -6517,6 +6518,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 workspaceId={activeWorkspaceId ?? undefined}
                 onExecutionStateChange={setPreviewExecuting}
                 previewNotice={previewNotice}
+                onPreviewSessionExpired={useCallback(() => {
+                  const now = Date.now();
+                  if (now - lastPreviewSessionExpiredRefreshRef.current < 5000) {
+                    console.warn('[UserSpacePanel] Suppressing rapid preview session refresh');
+                    return;
+                  }
+                  lastPreviewSessionExpiredRefreshRef.current = now;
+
+                  if (activeWorkspaceId) {
+                    void launchPreviewSurface(activeWorkspaceId, {
+                      clearOnError: false,
+                      updateFrameUrl: true,
+                    });
+                  }
+                }, [activeWorkspaceId, launchPreviewSurface])}
               />
             </div>
           ) : (

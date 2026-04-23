@@ -25,6 +25,7 @@ interface UserSpaceArtifactPreviewProps {
   ownerUsername?: string;
   shareSlug?: string;
   onExecutionStateChange?: (isExecuting: boolean) => void;
+  onPreviewSessionExpired?: () => void;
   previewNotice?: {
     id: number;
     message: string;
@@ -44,6 +45,7 @@ export function UserSpaceArtifactPreview({
   ownerUsername,
   shareSlug,
   onExecutionStateChange,
+  onPreviewSessionExpired,
   previewNotice,
 }: UserSpaceArtifactPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -123,6 +125,11 @@ export function UserSpaceArtifactPreview({
         return;
       }
 
+      if (event.data.type === USERSPACE_EXEC_MESSAGE_TYPES.SESSION_EXPIRED) {
+        onPreviewSessionExpired?.();
+        return;
+      }
+
       if (event.data.type !== USERSPACE_EXEC_MESSAGE_TYPES.EXECUTE) return;
 
       const { callId, component_id, request } = event.data;
@@ -190,7 +197,7 @@ export function UserSpaceArtifactPreview({
         });
       }
     },
-    [normalizeOrigin, normalizedExpectedPreviewOrigin, workspaceId, shareToken, ownerUsername, shareSlug],
+    [normalizeOrigin, normalizedExpectedPreviewOrigin, workspaceId, shareToken, ownerUsername, shareSlug, onPreviewSessionExpired],
   );
 
   useEffect(() => {

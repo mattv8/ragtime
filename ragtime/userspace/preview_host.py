@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import heapq
+import json
 from collections import OrderedDict
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
@@ -13,7 +14,7 @@ from urllib.parse import quote, urlsplit
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import RedirectResponse
 from starlette.requests import Request as StarletteRequest
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse
 
 from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse
 from ragtime.userspace.preview_probe import (
@@ -59,10 +60,14 @@ async def _handle_preview_auth_error(request: StarletteRequest, exc: HTTPExcepti
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     if getattr(request, "scope", {}).get("type") != "http":
         return JSONResponse(status_code=401, content={"detail": exc.detail})
-    if request.method != "GET" or request.url.path.startswith("/__ragtime/"):
+
+    if request.method != "GET":
         return JSONResponse(status_code=401, content={"detail": exc.detail})
+
+    is_bootstrap = request.url.path.startswith("/__ragtime/bootstrap")
     workspace_id = _workspace_id_from_preview_host(request.headers.get("host"))
-    if workspace_id:
+
+    if workspace_id and not request.url.path.startswith("/__ragtime/"):
         share_token = await _userspace_service().get_share_token(workspace_id)
         if share_token:
             # Derive control-plane origin from the subdomain host header:
@@ -73,6 +78,26 @@ async def _handle_preview_auth_error(request: StarletteRequest, exc: HTTPExcepti
             port_suffix = f":{port}" if port else ""
             share_url = f"{scheme}://{base_domain}{port_suffix}/shared/{quote(share_token, safe='')}"
             return RedirectResponse(url=share_url, status_code=302)
+
+    wants_html = "text/html" in str(request.headers.get("accept", "")).lower()
+
+    if is_bootstrap or wants_html:
+        safe_detail = json.dumps({"detail": exc.detail})
+        script = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body>
+<script>
+window.parent.postMessage({{
+    "bridge": "userspace-exec-v1",
+    "type": "ragtime-preview-session-expired",
+    "error": {safe_detail}
+}}, "*");
+</script>
+</body>
+</html>"""
+        return HTMLResponse(content=script, status_code=401)
+
     return JSONResponse(status_code=401, content={"detail": exc.detail})
 
 

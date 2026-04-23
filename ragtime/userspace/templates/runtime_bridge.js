@@ -323,10 +323,21 @@
         return response
           .json()
           .catch(function () { return {}; })
-          .then(function (payload) { return { ok: response.ok, payload: payload }; });
+          .then(function (payload) { return { status: response.status, ok: response.ok, payload: payload }; });
       })
       .then(function (result) {
         if (abortTimer) { clearTimeout(abortTimer); abortTimer = null; }
+
+        if (result.status === 401) {
+          try {
+            window.parent.postMessage({
+              bridge: B,
+              type: 'ragtime-preview-session-expired',
+              error: result.payload && (result.payload.detail || result.payload.error)
+            }, '*');
+          } catch (_e) { /* ignore */ }
+        }
+
         if (result.ok) {
           resolve(result.payload || { rows: [], columns: [], row_count: 0 });
           return;
