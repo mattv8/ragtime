@@ -2146,7 +2146,41 @@ class IndexerRepository:
                     if branch_point_index < 0 or branch_point_index > len(messages):
                         return None
 
-                    preserved = messages[branch_point_index:]
+                    # Absorb existing sibling branches anchored AFTER this
+                    # new branch point that share the same parent lineage.
+                    # Their preserved content describes the same pre-delete
+                    # tail, so consolidating them into this new branch keeps
+                    # restoration coherent when the user has stacked
+                    # consecutive deletes on adjacent turn messages. Without
+                    # this, each delete leaves an orphan branch whose own
+                    # `messages[:K]` base no longer contains the context it
+                    # was created from, causing duplicate rows and split
+                    # X/N nav handles on restore.
+                    sibling_branches = await tx.conversationbranch.find_many(
+                        where={
+                            "conversationId": conversation_id,
+                            "branchPointIndex": {"gt": branch_point_index},
+                            "parentBranchId": parent_branch_id,
+                        },
+                        order=[{"branchPointIndex": "asc"}],
+                    )
+
+                    preserved: list[dict[str, Any]] = list(
+                        messages[branch_point_index:]
+                    )
+                    absorbed_ids: list[str] = []
+                    for sib in sibling_branches:
+                        sib_preserved = _normalize_message_payloads(
+                            sib.preservedMessages
+                        )
+                        preserved.extend(sib_preserved)
+                        absorbed_ids.append(sib.id)
+
+                    if absorbed_ids:
+                        await tx.conversationbranch.delete_many(
+                            where={"id": {"in": absorbed_ids}}
+                        )
+
                     branch_id = str(uuid.uuid4())
                     await tx.conversationbranch.create(
                         data={
@@ -2289,6 +2323,83 @@ class IndexerRepository:
         except Exception as e:
             logger.warning(f"Failed to list conversation branches: {e}")
             return []
+
+    async def release_conversation_branch(
+        self,
+        conversation_id: str,
+    ) -> Optional[Conversation]:
+        """Release the active branch: stash current downstream back into it
+        and return the conversation to the live (pre-branch) view.
+
+        Used by the UI "Current" option in the branch nav so users can
+        toggle between the restored state and the post-delete/live state
+        without having to refresh or hunt for the original branch_id.
+        """
+        db = await self._get_db()
+        try:
+            async with self._get_conversation_branch_lock(conversation_id):
+                async with db.tx() as tx:
+                    prisma_conv = await tx.conversation.find_unique(
+                        where={"id": conversation_id},
+                        include={"user": True},
+                    )
+                    if not prisma_conv:
+                        return None
+
+                    active_branch_id = getattr(prisma_conv, "activeBranchId", None)
+                    if not active_branch_id:
+                        return self._prisma_conversation_to_model(prisma_conv)
+
+                    active_branch = await tx.conversationbranch.find_unique(
+                        where={"id": active_branch_id}
+                    )
+                    if (
+                        not active_branch
+                        or active_branch.conversationId != conversation_id
+                    ):
+                        # Active branch pointer is stale; just clear it.
+                        updated = await tx.conversation.update(
+                            where={"id": conversation_id},
+                            data={
+                                "activeBranchId": None,
+                                "updatedAt": datetime.utcnow(),
+                            },
+                            include={"user": True},
+                        )
+                        return self._prisma_conversation_to_model(updated)
+
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(
+                        prisma_conv.messages
+                    )
+                    branch_point = active_branch.branchPointIndex
+                    downstream = messages[branch_point:]
+
+                    if downstream:
+                        await tx.conversationbranch.update(
+                            where={"id": active_branch_id},
+                            data={
+                                "preservedMessages": Json(downstream),
+                                "updatedAt": datetime.utcnow(),
+                            },
+                        )
+
+                    truncated = messages[:branch_point]
+                    total_tokens = _estimate_conversation_tokens(truncated)
+                    updated = await tx.conversation.update(
+                        where={"id": conversation_id},
+                        data={
+                            "messages": Json(truncated),
+                            "totalTokens": total_tokens,
+                            "activeBranchId": None,
+                            "updatedAt": datetime.utcnow(),
+                        },
+                        include={"user": True},
+                    )
+
+                return self._prisma_conversation_to_model(updated)
+        except Exception as e:
+            logger.warning(f"Failed to release conversation branch: {e}")
+            return None
 
     async def delete_conversation_branch(
         self,

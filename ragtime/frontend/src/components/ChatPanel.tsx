@@ -239,33 +239,6 @@ function mergeConversationFromWorkspaceSnapshot(
   };
 }
 
-type BranchLookup = {
-  branch_point_index: number;
-  parent_branch_id?: string | null;
-};
-
-function findLineageBranchIdForPoint(
-  branchesById: ReadonlyMap<string, BranchLookup>,
-  activeBranchId: string | null | undefined,
-  branchPointIndex: number,
-): string | null {
-  if (!activeBranchId) return null;
-
-  const visited = new Set<string>();
-  let currentBranchId: string | null = activeBranchId;
-  while (currentBranchId && !visited.has(currentBranchId)) {
-    visited.add(currentBranchId);
-    const branch = branchesById.get(currentBranchId);
-    if (!branch) return null;
-    if (branch.branch_point_index === branchPointIndex) {
-      return currentBranchId;
-    }
-    currentBranchId = branch.parent_branch_id ?? null;
-  }
-
-  return null;
-}
-
 function findProviderState(
   providerStates: ProviderModelState[] | undefined,
   provider: string | null,
@@ -2646,7 +2619,7 @@ interface ChatPanelProps {
   onTaskComplete?: () => void;
   onConversationStateChange?: (hasLive: boolean, hasInterrupted: boolean) => void;
   onActiveConversationChange?: (conversationId: string | null) => void;
-  onBranchSwitch?: (branchId: string, associatedSnapshotId: string | null) => void | Promise<void>;
+  onBranchSwitch?: (branchId: string | null, associatedSnapshotId: string | null) => void | Promise<void>;
   onFullscreenChange?: (fullscreen: boolean) => void;
   onOpenWorkspaceFile?: (path: string) => void;
   onMessageSnapshotRestored?: (details?: {
@@ -2732,10 +2705,34 @@ export function ChatPanel({
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
   const activeConversationId = activeConversation?.id ?? null;
-  const branchPointsByIndex = useMemo(
-    () => new Map(branchPoints.map((point) => [point.branch_point_index, point] as const)),
-    [branchPoints],
-  );
+  const branchPointsByIndex = useMemo(() => {
+    // Anchor each branch on the row immediately preceding branch_point_index
+    // so the X/N nav sits on the "last message before the fork". That row
+    // (msg[bp - 1]) exists in both the deleted/inactive view and the
+    // restored/active view, so switching branches never causes the nav to
+    // jump to a different row. For bp <= 0 we clamp to the first rendered
+    // row; for messageCount == 0 we return early in the render path.
+    const messages = activeConversation?.messages ?? [];
+    const messageCount = messages.length;
+    const findAnchorIdx = (bp: number): number => {
+      if (messageCount === 0) return 0;
+      return Math.max(0, Math.min(bp - 1, messageCount - 1));
+    };
+    const merged = new Map<number, ConversationBranchPointInfo>();
+    for (const point of branchPoints) {
+      const anchor = findAnchorIdx(point.branch_point_index);
+      const existing = merged.get(anchor);
+      if (existing) {
+        merged.set(anchor, {
+          ...existing,
+          branches: [...existing.branches, ...point.branches],
+        });
+      } else {
+        merged.set(anchor, { ...point, branch_point_index: anchor });
+      }
+    }
+    return merged;
+  }, [branchPoints, activeConversation?.messages]);
   const branchesById = useMemo(
     () => new Map(branchPoints.flatMap((point) => point.branches.map((branch) => [branch.id, branch] as const))),
     [branchPoints],
@@ -4965,19 +4962,14 @@ export function ChatPanel({
     return i;
   }, []);
 
-  const getDeleteBranchPointIndex = useCallback((
-    messages: ChatMessage[],
-    messageIdx: number,
-  ): number => {
-    const messageCount = messages.length;
-    const maxBranchPointIndex = Math.max(messageCount - 1, 0);
-    return clampNumber(messageIdx, 0, maxBranchPointIndex);
+  const getDeleteBranchPointIndex = useCallback((messageIdx: number): number => {
+    return Math.max(messageIdx, 0);
   }, []);
 
   const switchBranch = useCallback(async (branchId: string) => {
     if (!activeConversation || branchSwitching) return;
-    if (branchId.startsWith('__current__:')) return;
     const conversationId = activeConversation.id;
+    const isLiveTarget = branchId.startsWith('__current__:');
     setBranchSwitching(true);
     try {
       // Remember the old active branch's position before switching
@@ -4989,16 +4981,30 @@ export function ChatPanel({
         }
       }
 
-      const updated = await api.switchConversationBranch(conversationId, branchId, workspaceId);
+      let updated: Conversation;
+      if (isLiveTarget) {
+        // No active branch to release → UI is already on live; no-op.
+        if (!oldActiveBranchId) {
+          setBranchSwitching(false);
+          return;
+        }
+        updated = await api.releaseConversationBranch(conversationId, workspaceId);
+      } else {
+        updated = await api.switchConversationBranch(conversationId, branchId, workspaceId);
+      }
       setActiveConversation(updated);
       setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
       const refreshedPoints = await refreshBranchPoints(conversationId);
 
       // Notify parent (UserSpacePanel) about the branch switch with associated snapshot
       if (onBranchSwitch) {
-        const allBranches = refreshedPoints.flatMap(bp => bp.branches);
-        const targetBranch = allBranches.find(b => b.id === branchId);
-        onBranchSwitch(branchId, targetBranch?.associated_snapshot_id ?? null);
+        if (isLiveTarget) {
+          onBranchSwitch(null, null);
+        } else {
+          const allBranches = refreshedPoints.flatMap(bp => bp.branches);
+          const targetBranch = allBranches.find(b => b.id === branchId);
+          onBranchSwitch(branchId, targetBranch?.associated_snapshot_id ?? null);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to switch branch');
@@ -5084,13 +5090,10 @@ export function ChatPanel({
     if (!selectedMessage) return;
     const selectedMessageId = selectedMessage.message_id;
 
-    // Always anchor the chat branch at the user message that drove this row.
-    // This guarantees the branch nav (X/N) renders on a single user row and
-    // each walkback creates exactly one branch.
-    const branchPointIndex = getDeleteBranchPointIndex(
-      activeConversation.messages,
-      messageIdx,
-    );
+    // Anchor the branch at the deleted message itself so the backend
+    // preserves the truncated tail and truncates the live path to
+    // [:messageIdx]. The UI surfaces the restore nav on that same row.
+    const branchPointIndex = getDeleteBranchPointIndex(messageIdx);
     const rolledBackSnapshot = Boolean(
       workspaceId && selectedMessageId && selectedMessage.snapshot_restore,
     );
@@ -5814,10 +5817,12 @@ export function ChatPanel({
                 <>
                   {activeConversation.messages.map((msg, idx) => {
                     const bp = branchPointsByIndex.get(idx);
-                    // Branches are anchored on user messages only — never
-                    // surface the nav on assistant rows even if a stale
-                    // assistant-indexed branch exists in the DB.
-                    const hasBranches = !!(bp && bp.branches.length > 0 && msg.role === 'user');
+                    // Branch points are anchored on the row closest to the
+                    // branch_point_index (see branchPointsByIndex). Nav
+                    // surfaces on whichever row hosts the anchor, which
+                    // may be a user or assistant row depending on what was
+                    // deleted.
+                    const hasBranches = !!(bp && bp.branches.length > 0);
                     const msgKey = `msg-${idx}`;
                     return (
                     <div key={msgKey} className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}${hasBranches ? ' chat-branch-wrapper-has-branches' : ''}`}>
@@ -6009,14 +6014,37 @@ export function ChatPanel({
                       const activeBranchId = activeConversation.active_branch_id;
                       const branchNav = hasBranches && bp ? (() => {
                         const livePathOptionId = `__current__:${bp.branch_point_index}`;
-                        const hasLivePathOption = !activeBranchId && activeConversation.messages.length > bp.branch_point_index;
+                        // Always offer a "Current (live path)" option at a
+                        // branch point so users can round-trip between the
+                        // restored state (a branch) and the post-delete
+                        // state (the live path). For retry-style branches
+                        // this matches the original behavior; for
+                        // delete-style branches it is the only way back to
+                        // the deleted view.
+                        const hasLivePathOption = true;
                         const allOptions = [
                           ...bp.branches.map(b => ({ id: b.id, label: b.created_by_username || 'Branch' })),
                           ...(hasLivePathOption ? [{ id: livePathOptionId, label: 'Current' }] : []),
                         ];
                         const newestBranch = bp.branches.length > 0 ? bp.branches[bp.branches.length - 1] : null;
                         const inferredCurrentBranchId = newestBranch?.parent_branch_id ?? null;
-                        const lineageBranchId = findLineageBranchIdForPoint(branchesById, activeBranchId, bp.branch_point_index);
+                        // Match the active branch (or any ancestor) against
+                        // the set of branches rendered on this anchor. We
+                        // cannot rely on findLineageBranchIdForPoint here
+                        // because the merged bp.branch_point_index is the
+                        // render anchor, not the DB branch_point_index.
+                        const branchIdsOnThisAnchor = new Set(bp.branches.map(b => b.id));
+                        let lineageBranchId: string | null = null;
+                        if (activeBranchId) {
+                          const visited = new Set<string>();
+                          let curr: string | null = activeBranchId;
+                          while (curr && !visited.has(curr)) {
+                            visited.add(curr);
+                            if (branchIdsOnThisAnchor.has(curr)) { lineageBranchId = curr; break; }
+                            const parent = branchesById.get(curr);
+                            curr = parent?.parent_branch_id ?? null;
+                          }
+                        }
                         // 1. Active branch matches this point → use it
                         // 2. Active branch ancestry reaches this point → use that ancestor branch
                         // 3. If on the live path, show the synthetic current option
@@ -6142,6 +6170,8 @@ export function ChatPanel({
                         return (
                           <>
                             <div className="chat-message-actions chat-message-actions-left">
+                              {branchNav}
+                              {branchNav && <span className="chat-message-actions-spacer" />}
                               <span className="chat-message-hover-actions">
                                 <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
                                   {isCopied ? <Check size={12} /> : <Copy size={12} />}
@@ -6166,8 +6196,6 @@ export function ChatPanel({
                                   </button>
                                 )}
                               </span>
-                              {branchNav && <span className="chat-message-actions-spacer" />}
-                              {branchNav}
                             </div>
                             {pendingDeleteIdx === idx && (
                               <div className="chat-message-banner-row chat-message-banner-row-left">

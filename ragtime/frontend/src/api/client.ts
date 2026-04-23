@@ -1767,6 +1767,19 @@ export const api = {
   },
 
   /**
+   * Release the active branch and return to the live path.
+   * Stashes current downstream into the active branch so the user can
+   * toggle between the restored state and the post-delete "Current" state.
+   */
+  async releaseConversationBranch(conversationId: string, workspaceId?: string): Promise<Conversation> {
+    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/branches/release`, workspaceId), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return handleResponse<Conversation>(response);
+  },
+
+  /**
    * Delete a conversation branch.
    */
   async deleteConversationBranch(conversationId: string, branchId: string, workspaceId?: string): Promise<void> {

@@ -3256,7 +3256,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   }, [activeWorkspaceId, loadChangedFileState, loadSnapshots, loadWorkspaceData]);
 
   const handleBranchSwitch = useCallback((
-    _branchId: string,
+    _branchId: string | null,
     associatedSnapshotId: string | null,
   ) => {
     // Switching branches MUST always prompt the user before restoring the

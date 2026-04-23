@@ -9840,6 +9840,41 @@ async def switch_conversation_branch(
     return _to_conversation_response(decorated or conv)
 
 
+@router.post(
+    "/conversations/{conversation_id}/branches/release",
+    response_model=ConversationResponse,
+)
+async def release_conversation_branch(
+    conversation_id: str,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Release the active branch and return the conversation to the live path.
+
+    Stashes the current downstream messages back into the active branch so
+    the user can round-trip between the restored and post-delete views via
+    the "Current" option in the branch nav.
+    """
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conv = await repository.release_conversation_branch(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    decorated = await repository.attach_message_snapshot_links(conv)
+    return _to_conversation_response(decorated or conv)
+
+
 @router.delete(
     "/conversations/{conversation_id}/branches/{branch_id}",
 )
