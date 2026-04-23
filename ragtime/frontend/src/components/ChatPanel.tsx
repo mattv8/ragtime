@@ -2702,21 +2702,34 @@ export function ChatPanel({
   const [branchPoints, setBranchPoints] = useState<ConversationBranchPointInfo[]>([]);
   const [branchSwitching, setBranchSwitching] = useState(false);
   const [branchSelections, setBranchSelections] = useState<Record<number, string>>({});
+  // Sticky per-branch-point anchor override. Populated at branch creation
+  // time so the X/N nav row depends on the operation that created it:
+  //   - Delete  → bp - 1   (msg[bp] is gone from live; controls sit on the
+  //                         last surviving row before the fork)
+  //   - Edit    → bp       (msg[bp] is the edited user message; controls
+  //                         sit on it directly)
+  //   - Replay  → bp       (msg[bp] is the user message being replayed)
+  // The override survives branch switches so the nav row stays put when
+  // toggling between the live and restored views of the same branch.
+  const [branchAnchorOverrides, setBranchAnchorOverrides] = useState<Record<number, number>>({});
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
   const activeConversationId = activeConversation?.id ?? null;
   const branchPointsByIndex = useMemo(() => {
-    // Anchor each branch on the row immediately preceding branch_point_index
-    // so the X/N nav sits on the "last message before the fork". That row
-    // (msg[bp - 1]) exists in both the deleted/inactive view and the
-    // restored/active view, so switching branches never causes the nav to
-    // jump to a different row. For bp <= 0 we clamp to the first rendered
-    // row; for messageCount == 0 we return early in the render path.
+    // Anchor each branch on the row indicated by branchAnchorOverrides if
+    // present (set at creation time per operation), otherwise default to
+    // the branch_point_index itself (correct for edit/replay, where
+    // msg[bp] is the head of the new branch). For delete-style branches
+    // loaded fresh without an override (e.g. after page reload), the
+    // inference effect below populates the override to bp - 1 once the
+    // live state shows the bp index has been truncated away.
     const messages = activeConversation?.messages ?? [];
     const messageCount = messages.length;
     const findAnchorIdx = (bp: number): number => {
       if (messageCount === 0) return 0;
-      return Math.max(0, Math.min(bp - 1, messageCount - 1));
+      const override = branchAnchorOverrides[bp];
+      const target = override !== undefined ? override : bp;
+      return Math.max(0, Math.min(target, messageCount - 1));
     };
     const merged = new Map<number, ConversationBranchPointInfo>();
     for (const point of branchPoints) {
@@ -2732,7 +2745,7 @@ export function ChatPanel({
       }
     }
     return merged;
-  }, [branchPoints, activeConversation?.messages]);
+  }, [branchPoints, activeConversation?.messages, branchAnchorOverrides]);
   const branchesById = useMemo(
     () => new Map(branchPoints.flatMap((point) => point.branches.map((branch) => [branch.id, branch] as const))),
     [branchPoints],
@@ -3878,8 +3891,37 @@ export function ChatPanel({
   useEffect(() => {
     setBranchPoints([]);
     setBranchSelections({});
+    setBranchAnchorOverrides({});
     setCopiedMessageIdx(null);
   }, [activeConversationId]);
+
+  // Inference fallback for branches loaded without a creation-time anchor
+  // override (e.g. after page reload). When the live conversation has been
+  // truncated such that bp is past the last message AND no active branch
+  // restored the tail, the branch must be delete-style; pin its anchor at
+  // bp - 1 so the X/N nav stays put when the user later switches into the
+  // restored view.
+  useEffect(() => {
+    if (!activeConversation) return;
+    const liveLen = activeConversation.messages.length;
+    const activeBranchId = activeConversation.active_branch_id ?? null;
+    setBranchAnchorOverrides((prev) => {
+      let next = prev;
+      for (const point of branchPoints) {
+        const bp = point.branch_point_index;
+        if (next[bp] !== undefined) continue;
+        const isAnchorMissingFromLive = liveLen <= bp;
+        const isOnRestoredViewForThisBp = activeBranchId
+          ? point.branches.some((b) => b.id === activeBranchId)
+          : false;
+        if (isAnchorMissingFromLive && !isOnRestoredViewForThisBp) {
+          if (next === prev) next = { ...prev };
+          next[bp] = Math.max(0, bp - 1);
+        }
+      }
+      return next;
+    });
+  }, [branchPoints, activeConversation?.messages?.length, activeConversation?.active_branch_id]);
 
   const fetchAvailableTools = useCallback(async () => {
     try {
@@ -4936,6 +4978,57 @@ export function ChatPanel({
       setBranchSelections((prev) => ({ ...prev, [branchPointIndex]: createdBranch.parent_branch_id! }));
     }
 
+    // Inject the newly created branch into UI state using the actual server
+    // response from the POST request. This avoids waiting for a secondary
+    // GET request (refreshBranchPoints) to finish before the UI updates,
+    // ensuring the X/N nav count bumps instantaneously before the streaming
+    // task even starts.
+    //
+    // Also mirror the backend's sibling-absorption: when a new branch is
+    // created at bp=K, the server deletes sibling branches at bp>K that
+    // share the same parentBranchId (see repository.create_conversation_branch).
+    // Dropping those siblings client-side makes the injected count match the
+    // final server state, avoiding a visible flicker when the refresh GET
+    // lands.
+    setBranchPoints((prev) => {
+      const parentBranchId = createdBranch.parent_branch_id ?? null;
+      // 1) Remove entries whose branches are fully absorbed siblings.
+      const filtered = prev
+        .map((p) => {
+          if (p.branch_point_index <= branchPointIndex) return p;
+          const kept = p.branches.filter(
+            (b) => (b.parent_branch_id ?? null) !== parentBranchId || b.id === createdBranch.id,
+          );
+          if (kept.length === p.branches.length) return p;
+          return { ...p, branches: kept };
+        })
+        .filter((p) => p.branches.length > 0);
+      // 2) Insert/merge the newly created branch at its own bp.
+      const existingIdx = filtered.findIndex((p) => p.branch_point_index === branchPointIndex);
+      if (existingIdx >= 0) {
+        const next = [...filtered];
+        next[existingIdx] = {
+          ...next[existingIdx],
+          branches: [...next[existingIdx].branches, createdBranch],
+        };
+        return next;
+      }
+      return [
+        ...filtered,
+        {
+          branch_point_index: branchPointIndex,
+          branches: [createdBranch],
+          active_branch_id: null,
+        },
+      ];
+    });
+
+    // Refresh branch points immediately so the X/N nav reflects the new
+    // branch on the very next render. Fire-and-forget: this drives only
+    // the visual count and must not block the caller's optimistic UI
+    // update (message truncation, snapshot restore, etc.).
+    void refreshBranchPoints(conversationId);
+
     // Branch creation with auto_snapshot may have created a new userspace
     // snapshot. Notify parent so the snapshots panel can refresh.
     if (workspaceId) {
@@ -4945,7 +5038,7 @@ export function ChatPanel({
         console.warn('onSnapshotsMaybeChanged threw:', notifyErr);
       }
     }
-  }, [workspaceId, onSnapshotsMaybeChanged]);
+  }, [workspaceId, onSnapshotsMaybeChanged, refreshBranchPoints]);
 
   // Walk back from messageIdx to the nearest user message. Branches are
   // always anchored at user messages so the branch nav appears on a single,
@@ -5106,6 +5199,15 @@ export function ChatPanel({
         branchPointIndex,
         activeConversation.messages.length,
       );
+
+      // Delete-style branches anchor at bp - 1 because msg[bp] is the
+      // deleted message and will be absent from the live view. Pin the
+      // anchor now so the X/N nav row stays put across live/restored
+      // switches.
+      setBranchAnchorOverrides((prev) => ({
+        ...prev,
+        [branchPointIndex]: Math.max(0, branchPointIndex - 1),
+      }));
 
       // 2. If this message has an explicit snapshot link, restore the
       //    workspace files to that snapshot. The endpoint also truncates
