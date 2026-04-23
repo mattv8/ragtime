@@ -24,11 +24,11 @@ from fastapi import (
     status,
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
-from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
+from prisma import Json
 from ragtime.config.settings import settings
 from ragtime.core.api_accounting import (
     get_api_daily_trend,
@@ -104,6 +104,20 @@ def validate_redirect_uri(redirect_uri: str) -> bool:
     - http://[::1]:<port>/<path>
     """
     try:
+
+        def _normalize_redirect_uri(uri: str) -> str:
+            parsed_uri = urlparse(uri)
+            if parsed_uri.hostname is None:
+                return ""
+
+            # Normalize to scheme://host[:port]/path for deterministic exact matching.
+            # Query/fragment are excluded because callback registration typically
+            # keys on the base endpoint.
+            host = parsed_uri.hostname.lower()
+            port = f":{parsed_uri.port}" if parsed_uri.port is not None else ""
+            path = parsed_uri.path or ""
+            return f"{parsed_uri.scheme.lower()}://{host}{port}{path}"
+
         parsed = urlparse(redirect_uri)
 
         # Must be http or https
@@ -122,8 +136,8 @@ def validate_redirect_uri(redirect_uri: str) -> bool:
         # Allow loopback addresses (RFC 8252 for native apps)
         loopback_hosts = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
-        # Allow trusted IDE redirect domains (exact match only)
-        # These are official OAuth redirect endpoints for IDEs
+        # Allow trusted IDE redirect domains (exact match only).
+        # These are official OAuth redirect endpoints for IDEs.
         trusted_domains = {
             "vscode.dev",  # VS Code web/desktop OAuth callback
             "insiders.vscode.dev",  # VS Code Insiders
@@ -131,13 +145,38 @@ def validate_redirect_uri(redirect_uri: str) -> bool:
             "account.jetbrains.com",  # JetBrains OAuth callback
         }
 
+        # Allow exact trusted callback URLs. Includes Claude by default.
+        trusted_redirect_uris = {
+            "https://claude.ai/oauth/callback",
+        }
+
+        # Optional operator-configured trusted callback URLs (comma-separated).
+        if settings.oauth_trusted_redirect_uris.strip():
+            for raw_uri in settings.oauth_trusted_redirect_uris.split(","):
+                candidate = raw_uri.strip()
+                if not candidate:
+                    continue
+                normalized_candidate = _normalize_redirect_uri(candidate)
+                if not normalized_candidate:
+                    logger.warning(
+                        "Ignoring invalid OAUTH_TRUSTED_REDIRECT_URIS entry: %s",
+                        candidate,
+                    )
+                    continue
+                trusted_redirect_uris.add(normalized_candidate)
+
+        normalized_redirect_uri = _normalize_redirect_uri(redirect_uri)
+
         # Check if it's a loopback or trusted domain (exact match only)
         is_loopback = hostname in loopback_hosts
         is_trusted = hostname in trusted_domains
+        is_trusted_uri = normalized_redirect_uri in trusted_redirect_uris
 
-        if not is_loopback and not is_trusted:
+        if not is_loopback and not is_trusted and not is_trusted_uri:
             logger.warning(
-                f"OAuth2 redirect_uri rejected: '{hostname}' is not a loopback address or trusted domain"
+                "OAuth2 redirect_uri rejected: '%s' is not a loopback address, "
+                "trusted domain, or trusted callback URI",
+                hostname,
             )
             return False
 

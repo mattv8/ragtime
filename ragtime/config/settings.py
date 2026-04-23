@@ -206,6 +206,15 @@ class Settings(BaseSettings):
     local_admin_password: str = Field(
         default="", alias="LOCAL_ADMIN_PASSWORD"
     )  # Must be set to enable local admin
+    oauth_trusted_redirect_uris: str = Field(
+        default="",
+        alias="OAUTH_TRUSTED_REDIRECT_URIS",
+        description=(
+            "Comma-separated OAuth callback URLs to trust in addition to built-in "
+            "loopback and IDE defaults (for example "
+            "https://claude.ai/oauth/callback,https://example.com/oauth/callback)."
+        ),
+    )
 
     # -------------------------------------------------------------------------
     # MCP Server Settings
