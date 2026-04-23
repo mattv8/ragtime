@@ -23,10 +23,25 @@ Self-hosted, OpenAI-compatible RAG API + MCP server that plugs local knowledge i
 
 <div align="center">
   <img src=".github/images/2026-01-12.png" alt="Screenshot 1" height="360" />
-  <img src=".github/images/Screenshot 2026-02-28 131951.png" alt="Screenshot 2" height="360" />
+  <img src=".github/images/Screenshot 2026-02-28 131359.png " alt="Screenshot 1" height="360" />
 </div>
 
-## Features
+## Table of Contents
+
+- [Overview](#overview)
+- [Quick Start](#quick-start)
+- [Post-Install Setup](#post-install-setup)
+- [Concepts](#concepts)
+- [Integrations](#integrations)
+- [Operations](#operations)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Overview
+
+What Ragtime provides and how the main pieces fit together.
+
+### Features
 
 - **Chat UI** built in, with tool visualization, interactive charts, and DataTables: no external client required
 - **[Workspaces](#workspaces)** with live previews run in isolated runtime sessions; shared links use clean public URLs (`/{owner}/{slug}`), with optional password-protected full-page access
@@ -35,7 +50,7 @@ Self-hosted, OpenAI-compatible RAG API + MCP server that plugs local knowledge i
 - **Dual vector store**: Choose FAISS or pgvector for Upload/Git indexes; pgvector for schema/PDM and optional filesystem indexing ([details](#vector-store-abstraction))
 - **[Tool security](#security)**: SQL injection prevention via allowlist patterns, LIMIT enforcement, Odoo code validation, optional write-ops flag
 
-## Architecture
+### Architecture
 
 ```mermaid
 flowchart LR
@@ -56,73 +71,6 @@ flowchart LR
   style Ragtime fill:#1a365d,stroke:#3182ce,stroke-width:3px,color:#fff
 ```
 
-## Table of Contents
-
-- [Quick Start](#quick-start)
-- [Tool Configuration](#tool-configuration)
-- [Creating Indexes](#creating-indexes)
-- [Model Context Protocol (MCP) Integration](#model-context-protocol-mcp-integration)
-- [Connecting to OpenWebUI](#connecting-to-openwebui)
-- [Security](#security)
-- [Updating](#updating)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
-
-## Workspaces
-
-<div align="center">
-  <img src=".github/images/Screenshot 2026-02-28 131359.png " alt="Screenshot 1" height="360" />
-</div>
-
-**Workspaces** are Ragtime’s agentic development sandboxes: each workspace combines files, conversations, selected infrastructure tools, and an isolated runtime preview session. Think Replit-style sandboxing, but connected to your real environment through Ragtime tools (SQL, SSH, Odoo, filesystem indexers, and more), so agents can do useful work with live context.
-
-- Previews are runtime-only and proxied from session-managed devservers.
-- Public sharing uses direct routes (`/{owner}/{slug}` and `/shared/{token}`), with token links redirecting to canonical slug URLs.
-- Password-protected shares are handled server-side with a full-page prompt.
-
-### Preview DNS Setup (Reverse Proxy Deployments)
-
-Userspace previews use per-workspace subdomains. By default, Ragtime derives those preview hosts from its public origin, so a deployment at `https://ragtime.example.com` launches previews under `https://<workspace>.ragtime.example.com`.
-
-If you want previews to use a separate wildcard domain instead, set `USERSPACE_PREVIEW_BASE_DOMAIN` to that domain, for example `example-userspaces.com`. In either setup, wildcard DNS and TLS must route preview hosts back to Ragtime.
-
-1. Decide whether to keep the derived host family or override it explicitly:
-  - Derived default: `https://ragtime.example.com` -> `https://<workspace>.ragtime.example.com`
-  - Explicit override: `USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com` -> `https://<workspace>.example-userspaces.com`
-2. Add a wildcard DNS record for the chosen preview base domain:
-  - `*.ragtime.example.com` or `*.example-userspaces.com` -> your public Ragtime entrypoint (A, AAAA, or CNAME)
-3. Ensure your reverse proxy accepts and routes wildcard hosts for that domain to Ragtime.
-4. Ensure TLS certificates cover the wildcard domain if using HTTPS.
-5. Set these environment variables in `.env` when needed:
-
-```bash
-# Set this when the public Ragtime origin differs from what the app sees on
-# incoming requests, such as when HTTPS is terminated by Cloudflare, nginx,
-# Caddy, or Traefik and Ragtime receives internal HTTP.
-EXTERNAL_BASE_URL=https://ragtime.example.com
-
-# Set this only if previews should use a different wildcard host family than
-# the main Ragtime host.
-USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com
-```
-
-Notes:
-- Leave `EXTERNAL_BASE_URL` unset when Ragtime can already derive the correct public origin from the request, such as direct access to Ragtime or a reverse proxy that reliably forwards `Host`, `X-Forwarded-Host`, and `X-Forwarded-Proto`.
-- Set `EXTERNAL_BASE_URL` when public URLs must stay pinned to a canonical origin or when the backend would otherwise see an internal origin like `http://ragtime:8000` or `http://...` behind TLS termination. This affects OAuth metadata, preview/share URLs, and other public-facing links.
-- Keep `SESSION_COOKIE_SECURE=true` when traffic is HTTPS at the edge.
-- Forward `Host` and `X-Forwarded-Proto` headers through the proxy.
-- Legacy path-based preview proxy routes still exist for older links, but new preview launches use subdomains.
-- In local development with `DEBUG_MODE=true`, Ragtime uses `userspace-preview.lvh.me` automatically.
-
-## Vector Store Abstraction
-
-Ragtime uses **two vector backends**: **FAISS** (in-memory, loaded at startup) and **pgvector** (PostgreSQL, persistent). Upload and Git indexes use a unified indexer and can use either backend.
-
-See [Creating Indexes](#creating-indexes) for a detailed breakdown of index types and their storage backends.
-
-FAISS indexes are loaded into memory at startup; pgvector indexes stay in PostgreSQL and use cosine similarity search. Embedding provider (OpenAI or Ollama) is configured once in Settings and applies to all index types. Swapping embedding model or dimensions after initial indexing requires a full re-index.
-
 ## Quick Start
 
 ### Prerequisites
@@ -132,10 +80,10 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
 
 ### Setup
 
-1. **Create environment file:**
+1. **Create `.env`:**
 
-  Create a file named [.env](.env) with the following content (you can also copy from the full example in [.env.example](.env.example)).
-  The expanded block below is CI-synced from [.env.example](.env.example), so edit that file instead of editing the README snippet directly:
+  Copy [.env.example](.env.example) to [.env](.env).
+  The expanded block below is CI-synced from [.env.example](.env.example), so future edits should go there instead of the README snippet:
 
    <details>
    <summary>Click to expand .env template</summary>
@@ -165,13 +113,13 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
    # API port (default: 8000)
    PORT=8000
 
-   # CORS allowed origins (comma-separated, or * for all)
-   # Example: https://ragtime.example.com,https://chat.example.com
-   ALLOWED_ORIGINS=*
+  # CORS allowed origins (comma-separated)
+  # Leave empty to allow loopback-only origins.
+  # Example: https://ragtime.example.com,https://chat.example.com
+  ALLOWED_ORIGINS=
 
     # Canonical public Ragtime origin (scheme + host, no trailing slash), for example:
     # https://ragtime.example.com
-    # Usually leave this unset.
     # Set it only when Ragtime sees a different origin than users do
     # (for example behind TLS termination) or public URLs must stay fixed.
     # EXTERNAL_BASE_URL=https://ragtime.example.com
@@ -187,7 +135,8 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
    # -----------------------------------------------------------------------------
    # Security Configuration
    # -----------------------------------------------------------------------------
-   # API Key for OpenAI-compatible endpoint authentication (REQUIRED)
+  # API Key for OpenAI-compatible endpoint authentication (strongly recommended
+  # for non-local deployments)
    # Generate with: openssl rand -base64 32
    API_KEY=
 
@@ -245,11 +194,9 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
 
    </details>
 
-2. **Edit .env** and configure your specific values (see [.env.example](.env.example) for the complete sample file)
+2. **Edit `.env`** with your actual values.
 
-3. **Create docker-compose.yml:**
-
-   Create a file named `docker-compose.yml` with the following content:
+3. **Create `docker-compose.yml`** if you want the standalone self-hosted compose setup shown below:
 
    <details>
    <summary>Click to expand docker-compose.yml</summary>
@@ -375,13 +322,21 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
 
 5. **Access the application:**
    - Web UI: http://localhost:8000
-   - API docs: http://localhost:8000/docs
+  - API docs: http://localhost:8000/docs (available when `DEBUG_MODE=true`)
 
    Default credentials: `admin` / (set via `LOCAL_ADMIN_PASSWORD` in `.env`)
 
-## Tool Configuration
+## Post-Install Setup
 
-Before you connect Ragtime to MCP clients, configure tools in the Ragtime web UI so they are ready for use:
+After the stack is running, configure the capabilities Ragtime will expose.
+
+### Tool Configuration
+
+<div align="center">
+  <img src=".github/images/Screenshot 2026-02-28 131951.png" alt="Screenshot 2" height="360" />
+</div>
+
+Configure tools in the Ragtime web UI before connecting MCP clients. Enabled tools are available to chat; MCP exposure additionally applies heartbeat health filtering.
 
 1. Open the web UI at http://localhost:8000 and log in with your admin account.
 2. Navigate to the **Tools** tab.
@@ -389,9 +344,9 @@ Before you connect Ragtime to MCP clients, configure tools in the Ragtime web UI
 4. Fill in connection details (hostnames, credentials, database names, paths) for each tool.
 5. Use the built-in test button to verify each tool connection.
 
-Only tools that pass their health checks are exposed to chat and MCP clients. Configure and verify your tools here before following the [MCP Integration](#model-context-protocol-mcp-integration) section below.
+Once the required tools are healthy, continue with [MCP Integration](#model-context-protocol-mcp-integration).
 
-## Creating Indexes
+### Creating Indexes
 
 The Indexer UI (http://localhost:8000, **Indexes** tab) supports multiple index types:
 
@@ -399,35 +354,96 @@ The Indexer UI (http://localhost:8000, **Indexes** tab) supports multiple index 
 |--------|--------------|---------|----------|
 | **Upload** (zip/tar) | FAISS or pgvector | FAISS: `data/indexes/<name>/`<br/>pgvector: `filesystem_embeddings` table | Static codebases, documentation snapshots |
 | **Git Clone** | FAISS or pgvector | FAISS: `data/indexes/<name>/`<br/>pgvector: `filesystem_embeddings` table | Repositories with optional private token auth |
-| **Filesystem** | pgvector | `filesystem_embeddings` table | Live SMB/NFS shares, Docker volumes, local paths: incremental re-index |
+| **Filesystem** | FAISS or pgvector | FAISS: `data/indexes/<name>/`<br/>pgvector: `filesystem_embeddings` table | Live SMB/NFS shares, Docker volumes, local paths: incremental re-index |
 | **Schema** | pgvector | `schema_embeddings` table | Auto-generated from PostgreSQL/MSSQL/MySQL tools (enable in [Tool Configuration](#tool-configuration)) |
 | **PDM** | pgvector | `pdm_embeddings` table | SolidWorks PDM metadata via SQL Server |
 
 Jobs run async with progress streaming to the UI.
 
-## Model Context Protocol (MCP) Integration
+### Preview DNS Setup (Reverse Proxy Deployments)
+
+This deployment step configures userspace preview subdomains. For workspace behavior context, see [Workspaces](#workspaces).
+
+Userspace previews use per-workspace subdomains. By default, Ragtime derives the preview host from its public origin: `https://ragtime.example.com` becomes `https://<workspace>.ragtime.example.com`. Set `USERSPACE_PREVIEW_BASE_DOMAIN` only if previews should use a different wildcard domain such as `example-userspaces.com`.
+
+1. Choose whether to keep the derived preview host family or override it explicitly:
+  - Derived default: `https://ragtime.example.com` -> `https://<workspace>.ragtime.example.com`
+  - Explicit override: `USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com` -> `https://<workspace>.example-userspaces.com`
+2. Add a wildcard DNS record for the chosen preview base domain:
+  - `*.ragtime.example.com` or `*.example-userspaces.com` -> your public Ragtime entrypoint (A, AAAA, or CNAME)
+3. Ensure your reverse proxy accepts wildcard hosts for that domain and routes them to Ragtime.
+4. Ensure TLS certificates cover the wildcard domain if you use HTTPS.
+5. Set `.env` variables only when needed:
+
+```bash
+# Set this when the public Ragtime origin differs from what the app sees on
+# incoming requests, such as behind TLS termination.
+EXTERNAL_BASE_URL=https://ragtime.example.com
+
+# Set this only if previews should use a different wildcard host family than
+# the main Ragtime host.
+USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com
+```
+
+Notes:
+- Leave `EXTERNAL_BASE_URL` unset unless Ragtime sees a different origin than users do, or you need public URLs pinned to a canonical host.
+- Keep `SESSION_COOKIE_SECURE=true` when traffic is HTTPS at the edge.
+- Forward `Host` and `X-Forwarded-Proto` headers through the proxy.
+- In local development with `DEBUG_MODE=true`, Ragtime uses `userspace-preview.lvh.me` automatically.
+
+## Concepts
+
+Core concepts that affect how Ragtime is deployed and used.
+
+### Workspaces
+
+**Workspaces** combine files, conversations, selected infrastructure tools, and an isolated runtime preview session in one agentic sandbox. They are Replit-like, but wired into Ragtime's tools and indexed context so agents can work against live systems.
+
+- Previews are runtime-only and proxied from session-managed devservers.
+- Public sharing uses direct routes (`/{owner}/{slug}` and `/shared/{token}`); both route families launch shared previews.
+- Password-protected shares are handled server-side with a full-page prompt.
+- Preview DNS and reverse-proxy setup is in [Preview DNS Setup (Reverse Proxy Deployments)](#preview-dns-setup-reverse-proxy-deployments).
+
+### Vector Store Abstraction
+
+Ragtime uses **two vector backends**: **FAISS** (in-memory, loaded at startup) and **pgvector** (PostgreSQL, persistent). Upload, Git, and Filesystem indexes can use either backend.
+
+See [Creating Indexes](#creating-indexes) for a detailed breakdown of index types and their storage backends.
+
+FAISS indexes are loaded into memory at startup; pgvector indexes stay in PostgreSQL and use cosine similarity search. Embedding provider (OpenAI or Ollama) is configured once in Settings and applies to all index types. Swapping embedding model or dimensions after initial indexing requires a full re-index.
+
+## Integrations
+
+How to connect external clients and coding assistants to Ragtime.
+
+### Model Context Protocol (MCP) Integration
 
 Ragtime exposes its tools via the [Model Context Protocol](https://modelcontextprotocol.io), allowing AI coding assistants to interact with your databases, execute shell commands, and search your indexed codebases.
 
-### Available MCP Tools
+By default, MCP is disabled until you enable it in Settings. If disabled, `/mcp` responds with HTTP 503.
 
-Tools are dynamically exposed based on what you configure in the UI:
+#### Available MCP Tools
+
+Tools are dynamically exposed based on what you configure in the UI.
+The schemas below list the primary fields; several tools also accept optional fields such as `timeout`.
 
 | Tool Type | Input Schema |
 |-----------|-------------|
 | `postgres` | `{query, reason}` |
 | `mssql` | `{query, reason}` |
 | `mysql` | `{query, reason}` |
+| `influxdb` | `{query, reason}` |
 | `odoo_shell` | `{code, reason}` |
 | `ssh_shell` | `{command, reason}` |
 | `filesystem_indexer` | `{query, max_results}` |
+| `solidworks_pdm` | `{query, document_type}` |
 | `knowledge_search` | `{query, index_name}` |
 | `schema_search` | `{prompt, limit}` |
 | `git_history` | `{action, ...}` |
 
-### MCP Server Setup
+#### MCP Server Setup
 
-#### HTTP Transport (Recommended)
+##### HTTP Transport (Recommended)
 
 Ragtime exposes an MCP endpoint at `/mcp` that supports the Streamable HTTP transport. Add this to your MCP client configuration:
 
@@ -437,9 +453,11 @@ Ragtime exposes an MCP endpoint at `/mcp` that supports the Streamable HTTP tran
 		"ragtime": {
 			"url": "http://localhost:8000/mcp",
 			"type": "http",
-			// If you've enabled MCP authentication in the Ragtime Settings UI (Settings > MCP Configuration), add the `MCP-Password` header:
+      // If you've enabled MCP authentication in the Ragtime Settings UI (Settings > MCP Configuration), add headers for your configured auth method.
+      // Password mode supports either `MCP-Password` or `Authorization: Bearer <password>`:
 			// "headers": {
-			//   "MCP-Password": "your-mcp-password-here"
+      //   "MCP-Password": "your-mcp-password-here"
+      //   // or: "Authorization": "Bearer your-mcp-password-here"
 			// }
 		}
 	},
@@ -449,7 +467,7 @@ Ragtime exposes an MCP endpoint at `/mcp` that supports the Streamable HTTP tran
 
 > **NOTE:** For remote access, replace `localhost:8000` with your server URL.
 
-#### Stdio Transport (Alternative)
+##### Stdio Transport (Alternative)
 
 For local development or environments where HTTP isn't preferred, use stdio transport via Docker:
 
@@ -472,7 +490,7 @@ Replace `ragtime` with your container name if different (find it with `docker ps
 - **[Cursor](https://docs.cursor.com/context/model-context-protocol)**: `.cursor/mcp.json`
 - **[Windsurf](https://docs.codeium.com/windsurf/mcp)**: `~/.codeium/windsurf/mcp_config.json`
 
-## Connecting to OpenWebUI
+### Connecting to OpenWebUI
 
 1. In OpenWebUI, go to **Settings** > **Connections** > **OpenAI API**
 2. Add a new connection:
@@ -480,38 +498,43 @@ Replace `ragtime` with your container name if different (find it with `docker ps
    - **API Key**: Your configured `API_KEY` (or any value if not set)
 3. Select your server's model name (default: "ragtime", configurable in Settings > Server Branding)
 
-## Security
+## Operations
+
+Security, maintenance, and troubleshooting guidance for self-hosted deployments.
+
+### Security
 
 Ragtime is designed for self-hosted deployment on trusted networks. Review these recommendations before exposing it beyond localhost:
 
 CI builds each push; main-branch images are Cosign-signed and ship with an SPDX SBOM artifact (linked from the badges above and workflow runs) so you can verify what you pull from the registry.
 
-### Network & Access
+#### Network & Access
 - **Run behind a reverse proxy or firewall.** Avoid exposing port 8000 directly to the public internet.
 - **Set `API_KEY`** to protect the `/v1/chat/completions` endpoint. When unset (the default), anyone with network access can call the chat API and invoke your configured tools.
-- **Restrict `ALLOWED_ORIGINS`** to trusted domains. The default `*` with `allow_credentials=True` permits cross-site requests that carry session cookies, which may be exploitable if the server is publicly reachable.
-- **Enable MCP route authentication** via Settings UI if `/mcp` is network-accessible. By default the MCP endpoint is open without auth.
+- **Restrict `ALLOWED_ORIGINS`** to trusted domains. The application default is loopback-only when unset; avoid using `*` in network-accessible deployments because it is permissive with `allow_credentials=True`.
+- **Enable MCP route authentication** via Settings UI if `/mcp` is network-accessible. MCP is disabled by default; when MCP is enabled, the default route is open unless you turn on route authentication.
+- MCP authentication supports password-based headers (including `MCP-Password` and bearer form) and OAuth2/client_credentials route modes.
 - Set a strong `LOCAL_ADMIN_PASSWORD` when deploying.
 
-### Authentication Security
+#### Authentication Security
 - **Encryption key is auto-generated** on first startup and stored at `data/.encryption_key`. Include this file in your backups using `backup --include-secret` or your encrypted secrets will be unrecoverable.
-- **Rate limiting** protects the login endpoint (5 attempts/minute per IP) to prevent brute-force attacks.
+- **Rate limiting** protects the login endpoint (5 attempts/minute per IP) to prevent brute-force attacks. In `DEBUG_MODE=true`, rate limiting is disabled for local testing.
 
-### Debug Mode Warning
-**Do not use `DEBUG_MODE=true` outside local development.** When enabled, the `/auth/status` endpoint exposes your admin username and password in plaintext. This is intentional for self-hosted debugging but dangerous if the server is accessible to untrusted users.
+#### Debug Mode Warning
+**Do not use `DEBUG_MODE=true` outside local development.** When enabled, the `/auth/status` endpoint exposes your admin username and password in plaintext (including unauthenticated callers). This is intentional for self-hosted debugging but dangerous if the server is accessible to untrusted users.
 
-### SSH Connections
+#### SSH Connections
 The SSH tool uses Paramiko with `AutoAddPolicy`, which accepts any host key without verification. This makes SSH connections vulnerable to man-in-the-middle attacks on first connect. Only use the SSH tool on trusted networks or with hosts you have verified out-of-band.
 
-### Docker & Mounts
+#### Docker & Mounts
 - The default compose files include mounts for `docker.sock` and optional privileged flags to support advanced tool features (container exec, SSH tunnels, NFS/SMB mounts).
 - If you do not need these features, remove or comment out the corresponding lines in your compose file.
 - For NFS/SMB filesystem indexing, the container may require elevated privileges. Consider the security implications before enabling `privileged: true` or `SYS_ADMIN` capabilities.
 
-### Third-Party Data Relay
+#### Third-Party Data Relay
 Queries and tool calls may forward your data to external services you configure (OpenAI, Anthropic, Ollama, PostgreSQL, MSSQL, SSH hosts). Only connect to services you trust with your data.
 
-## Updating
+### Updating
 
 To update to the latest version:
 
@@ -520,9 +543,9 @@ docker compose pull
 docker compose up -d
 ```
 
-## Troubleshooting
+### Troubleshooting
 
-### NumPy CPU Compatibility Error
+#### NumPy CPU Compatibility Error
 
 If you see an error like:
 ```
