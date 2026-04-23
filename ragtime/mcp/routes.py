@@ -38,10 +38,20 @@ from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.mcp_accounting import log_mcp_request
 from ragtime.core.security import require_admin
-from ragtime.mcp.server import (get_custom_route_server,
-                                get_default_route_filtered_server,
-                                get_mcp_server, notify_tools_changed,
-                                register_tools_changed_callback)
+from ragtime.mcp.oauth import (
+    handle_authorization_server_metadata,
+    handle_protected_resource_metadata,
+    handle_token_request,
+    validate_client_credentials_basic,
+    validate_client_credentials_bearer,
+)
+from ragtime.mcp.server import (
+    get_custom_route_server,
+    get_default_route_filtered_server,
+    get_mcp_server,
+    notify_tools_changed,
+    register_tools_changed_callback,
+)
 from ragtime.mcp.tools import mcp_tool_adapter
 
 logger = get_logger(__name__)
@@ -177,7 +187,10 @@ async def handle_filtered_request(
 
 async def get_custom_route_server_cached(
     route_path: str,
-) -> tuple[MCPServer[Any, Any], bool, str | None, str | None, str | None] | None:
+) -> (
+    tuple[MCPServer[Any, Any], bool, str | None, str | None, str | None, str | None]
+    | None
+):
     """
     Get or create an MCP server for a custom route.
 
@@ -185,15 +198,23 @@ async def get_custom_route_server_cached(
         route_path: The route path suffix
 
     Returns:
-        Tuple of (server, require_auth, auth_password, auth_method, allowed_group)
-        or None if route not found
+        Tuple of (server, require_auth, auth_password, auth_method, allowed_group,
+        auth_client_id) or None if route not found
     """
     # Get route config (always need fresh auth info)
     result = await get_custom_route_server(route_path)
     if not result:
         return None
 
-    server, _, require_auth, auth_password, auth_method, allowed_group = result
+    (
+        server,
+        _,
+        require_auth,
+        auth_password,
+        auth_method,
+        allowed_group,
+        auth_client_id,
+    ) = result
 
     # Cache the server if not already cached
     if route_path not in _custom_route_servers:
@@ -206,6 +227,7 @@ async def get_custom_route_server_cached(
         auth_password,
         auth_method,
         allowed_group,
+        auth_client_id,
     )
 
 
@@ -621,19 +643,23 @@ async def _validate_route_password(scope: Scope, encrypted_password: str) -> boo
     return hmac.compare_digest(provided_password, stored_password)
 
 
-async def _check_default_route_auth() -> tuple[bool, str, str | None, str | None]:
+async def _check_default_route_auth() -> (
+    tuple[bool, str, str | None, str | None, str | None]
+):
     """
     Check if default /mcp route requires authentication and get auth configuration.
 
     Returns:
-        Tuple of (require_auth, auth_method, encrypted_password, allowed_group_dn)
+        Tuple of (require_auth, auth_method, encrypted_password, allowed_group_dn,
+        client_id)
     """
     app_settings = await get_app_settings()
     require_auth = app_settings.get("mcp_default_route_auth", False)
     auth_method = app_settings.get("mcp_default_route_auth_method", "password")
     encrypted_password = app_settings.get("mcp_default_route_password")
     allowed_group = app_settings.get("mcp_default_route_allowed_group")
-    return require_auth, auth_method, encrypted_password, allowed_group
+    client_id = app_settings.get("mcp_default_route_client_id")
+    return require_auth, auth_method, encrypted_password, allowed_group, client_id
 
 
 async def _check_mcp_enabled() -> bool:
@@ -710,7 +736,7 @@ class MCPTransportEndpoint:
             return
 
         # Check if default route requires auth and get auth config
-        require_auth, auth_method, encrypted_password, allowed_group = (
+        require_auth, auth_method, encrypted_password, allowed_group, client_id = (
             await _check_default_route_auth()
         )
 
@@ -722,6 +748,15 @@ class MCPTransportEndpoint:
                 resolved_auth_method = "oauth2"
                 # OAuth2 with LDAP - validate token and check group membership
                 is_valid = await _validate_oauth2_token(scope, allowed_group)
+            elif auth_method == "client_credentials":
+                resolved_auth_method = "client_credentials"
+                # Accept either direct Basic auth or a Bearer token issued by
+                # the client_credentials token endpoint for the default route.
+                is_valid = validate_client_credentials_bearer(scope, None)
+                if not is_valid:
+                    is_valid = await validate_client_credentials_basic(
+                        scope, client_id, encrypted_password
+                    )
             elif encrypted_password:
                 resolved_auth_method = "password"
                 # Password-based auth
@@ -745,6 +780,11 @@ class MCPTransportEndpoint:
                 )
                 if auth_method == "oauth2":
                     detail = "OAuth2 Bearer token required - token invalid, expired, or user not authorized"
+                elif auth_method == "client_credentials":
+                    detail = (
+                        "OAuth2 client_credentials required - provide client_id/client_secret "
+                        "via HTTP Basic auth or exchange them for a Bearer token at /mcp/oauth/token"
+                    )
                 elif encrypted_password:
                     detail = "Password required (use MCP-Password header or Authorization: Bearer)"
                 else:
@@ -829,6 +869,38 @@ class MCPCustomRouteEndpoint:
         else:
             route_path = ""
 
+        # Handle OAuth2 helper sub-paths for either the default or custom routes.
+        # These are matched by the catch-all; strip the suffix to locate the
+        # owning route (empty = default /mcp).
+        if route_path in ("oauth/token",):
+            await handle_token_request(scope, receive, send, None)
+            return
+        if route_path in (
+            ".well-known/oauth-authorization-server",
+            ".well-known/oauth-protected-resource",
+        ):
+            if route_path.endswith("oauth-authorization-server"):
+                await handle_authorization_server_metadata(scope, receive, send, None)
+            else:
+                await handle_protected_resource_metadata(scope, receive, send, None)
+            return
+        if route_path.endswith("/oauth/token"):
+            base_route = route_path[: -len("/oauth/token")]
+            await handle_token_request(scope, receive, send, base_route or None)
+            return
+        if route_path.endswith("/.well-known/oauth-authorization-server"):
+            base_route = route_path[: -len("/.well-known/oauth-authorization-server")]
+            await handle_authorization_server_metadata(
+                scope, receive, send, base_route or None
+            )
+            return
+        if route_path.endswith("/.well-known/oauth-protected-resource"):
+            base_route = route_path[: -len("/.well-known/oauth-protected-resource")]
+            await handle_protected_resource_metadata(
+                scope, receive, send, base_route or None
+            )
+            return
+
         if not route_path:
             # Send 404 Not Found
             await send(
@@ -866,7 +938,14 @@ class MCPCustomRouteEndpoint:
             await _log_mcp(scope, route_name=route_path, status_code=404)
             return
 
-        server, require_auth, auth_password, auth_method, allowed_group = result
+        (
+            server,
+            require_auth,
+            auth_password,
+            auth_method,
+            allowed_group,
+            auth_client_id,
+        ) = result
 
         # Check authentication if required
         resolved_auth_method = "none"
@@ -877,6 +956,15 @@ class MCPCustomRouteEndpoint:
                 resolved_auth_method = "oauth2"
                 # OAuth2 with LDAP - validate token and check group membership
                 is_valid = await _validate_oauth2_token(scope, allowed_group)
+            elif auth_method == "client_credentials":
+                resolved_auth_method = "client_credentials"
+                # Accept either direct Basic auth or a Bearer token issued by
+                # the client_credentials token endpoint for this route.
+                is_valid = validate_client_credentials_bearer(scope, route_path)
+                if not is_valid:
+                    is_valid = await validate_client_credentials_basic(
+                        scope, auth_client_id, auth_password
+                    )
             elif auth_password:
                 resolved_auth_method = "password"
                 # Password-based auth
@@ -915,6 +1003,12 @@ class MCPCustomRouteEndpoint:
                 )
                 if auth_method == "oauth2":
                     detail = "OAuth2 Bearer token required - token invalid, expired, or user not authorized"
+                elif auth_method == "client_credentials":
+                    detail = (
+                        "OAuth2 client_credentials required - provide client_id/client_secret "
+                        f"via HTTP Basic auth or exchange them for a Bearer token at "
+                        f"/mcp/{route_path}/oauth/token"
+                    )
                 else:
                     detail = "Invalid password"
                 await send(
@@ -968,9 +1062,82 @@ mcp_custom_route = Route(
 )
 
 
+class _OAuthTokenEndpoint:
+    """ASGI endpoint wrapping ``handle_token_request`` for default/custom routes."""
+
+    def __init__(self, *, default: bool) -> None:
+        self._default = default
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        route_path = (
+            None if self._default else scope.get("path_params", {}).get("route_path")
+        )
+        await handle_token_request(scope, receive, send, route_path)
+
+
+class _OAuthASMetadataEndpoint:
+    """ASGI endpoint wrapping ``handle_authorization_server_metadata``."""
+
+    def __init__(self, *, default: bool) -> None:
+        self._default = default
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        route_path = (
+            None if self._default else scope.get("path_params", {}).get("route_path")
+        )
+        await handle_authorization_server_metadata(scope, receive, send, route_path)
+
+
+class _OAuthPRMetadataEndpoint:
+    """ASGI endpoint wrapping ``handle_protected_resource_metadata``."""
+
+    def __init__(self, *, default: bool) -> None:
+        self._default = default
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        route_path = (
+            None if self._default else scope.get("path_params", {}).get("route_path")
+        )
+        await handle_protected_resource_metadata(scope, receive, send, route_path)
+
+
+# OAuth 2.0 token + discovery routes for MCP client_credentials auth.
+# Order matters: these must be registered BEFORE ``mcp_custom_route`` so the
+# greedy ``/mcp/{route_path:path}`` pattern doesn't swallow them.
+mcp_default_token_route = Route(
+    "/mcp/oauth/token",
+    endpoint=_OAuthTokenEndpoint(default=True),
+    methods=["POST", "OPTIONS"],
+)
+mcp_custom_token_route = Route(
+    "/mcp/{route_path:path}/oauth/token",
+    endpoint=_OAuthTokenEndpoint(default=False),
+    methods=["POST", "OPTIONS"],
+)
+mcp_custom_as_metadata_route = Route(
+    "/mcp/{route_path:path}/.well-known/oauth-authorization-server",
+    endpoint=_OAuthASMetadataEndpoint(default=False),
+    methods=["GET", "OPTIONS"],
+)
+mcp_custom_pr_metadata_route = Route(
+    "/mcp/{route_path:path}/.well-known/oauth-protected-resource",
+    endpoint=_OAuthPRMetadataEndpoint(default=False),
+    methods=["GET", "OPTIONS"],
+)
+
+
 def get_mcp_routes() -> list[Route]:
     """Get all MCP-related routes for mounting in the app."""
-    return [mcp_transport_route, mcp_custom_route]
+    return [
+        # OAuth helper endpoints registered before the greedy custom route
+        # so that ``/mcp/{path}/oauth/token`` etc. aren't swallowed.
+        mcp_default_token_route,
+        mcp_custom_token_route,
+        mcp_custom_as_metadata_route,
+        mcp_custom_pr_metadata_route,
+        mcp_transport_route,
+        mcp_custom_route,
+    ]
 
 
 @router.get("/tools")

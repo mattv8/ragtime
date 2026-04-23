@@ -40,7 +40,8 @@ class McpRouteConfig(BaseModel):
     require_auth: bool
     has_password: bool = False  # Whether a password is set
     auth_password: str | None = None  # Decrypted password (if requested)
-    auth_method: str = "password"  # "password" or "oauth2"
+    auth_method: str = "password"  # "password", "oauth2", or "client_credentials"
+    auth_client_id: str | None = None  # OAuth2 client_id (pre-shared, plaintext)
     allowed_ldap_group: str | None = None  # LDAP group DN for OAuth2 auth
     include_knowledge_search: bool
     include_git_history: bool
@@ -78,7 +79,12 @@ class CreateMcpRouteRequest(BaseModel):
     )
     auth_method: str = Field(
         default="password",
-        description="Authentication method: 'password' or 'oauth2'",
+        description="Authentication method: 'password', 'oauth2', or 'client_credentials'",
+    )
+    auth_client_id: str | None = Field(
+        default=None,
+        max_length=255,
+        description="OAuth2 client_id for client_credentials grant (pre-shared public identifier)",
     )
     allowed_ldap_group: str | None = Field(
         default=None,
@@ -123,7 +129,15 @@ class UpdateMcpRouteRequest(BaseModel):
     )
     auth_method: str | None = Field(
         default=None,
-        description="Authentication method: 'password' or 'oauth2'",
+        description="Authentication method: 'password', 'oauth2', or 'client_credentials'",
+    )
+    auth_client_id: str | None = Field(
+        default=None,
+        max_length=255,
+        description="OAuth2 client_id for client_credentials grant (pre-shared public identifier)",
+    )
+    clear_auth_client_id: bool = Field(
+        default=False, description="Set to true to clear the OAuth2 client_id"
     )
     allowed_ldap_group: str | None = Field(
         default=None,
@@ -185,6 +199,7 @@ async def list_mcp_routes(_user=Depends(require_admin)):
                 has_password=bool(route.authPassword),
                 auth_password=decrypted_password,
                 auth_method=route.authMethod or "password",
+                auth_client_id=getattr(route, "authClientId", None),
                 allowed_ldap_group=route.allowedLdapGroup,
                 include_knowledge_search=route.includeKnowledgeSearch,
                 include_git_history=route.includeGitHistory,
@@ -234,6 +249,7 @@ async def get_mcp_route(route_id: str, _user=Depends(require_admin)):
         has_password=bool(route.authPassword),
         auth_password=decrypted_password,
         auth_method=route.authMethod or "password",
+        auth_client_id=getattr(route, "authClientId", None),
         allowed_ldap_group=route.allowedLdapGroup,
         include_knowledge_search=route.includeKnowledgeSearch,
         include_git_history=route.includeGitHistory,
@@ -280,6 +296,7 @@ async def create_mcp_route(
         "description": request.description,
         "requireAuth": request.require_auth,
         "authMethod": request.auth_method,
+        "authClientId": request.auth_client_id,
         "allowedLdapGroup": request.allowed_ldap_group,
         "includeKnowledgeSearch": request.include_knowledge_search,
         "includeGitHistory": request.include_git_history,
@@ -288,7 +305,7 @@ async def create_mcp_route(
         "selectedSchemaIndexes": request.selected_schema_indexes,
     }
 
-    # Encrypt password if provided
+    # Encrypt password (client_secret for client_credentials) if provided
     if request.auth_password:
         create_data["authPassword"] = encrypt_secret(request.auth_password)
 
@@ -321,6 +338,7 @@ async def create_mcp_route(
         has_password=bool(route.authPassword),
         auth_password=decrypted_password,
         auth_method=route.authMethod or "password",
+        auth_client_id=getattr(route, "authClientId", None),
         allowed_ldap_group=route.allowedLdapGroup,
         include_knowledge_search=route.includeKnowledgeSearch,
         include_git_history=route.includeGitHistory,
@@ -375,6 +393,12 @@ async def update_mcp_route(
     # Handle auth method
     if request.auth_method is not None:
         update_data["authMethod"] = request.auth_method
+
+    # Handle OAuth2 client_id (plaintext, public identifier)
+    if request.clear_auth_client_id:
+        update_data["authClientId"] = None
+    elif request.auth_client_id is not None:
+        update_data["authClientId"] = request.auth_client_id
 
     # Handle allowed LDAP group
     if request.clear_allowed_ldap_group:
@@ -442,6 +466,7 @@ async def update_mcp_route(
         has_password=bool(route.authPassword),
         auth_password=decrypted_password,
         auth_method=route.authMethod or "password",
+        auth_client_id=getattr(route, "authClientId", None),
         allowed_ldap_group=route.allowedLdapGroup,
         include_knowledge_search=route.includeKnowledgeSearch,
         include_git_history=route.includeGitHistory,
@@ -506,6 +531,7 @@ async def get_mcp_route_by_path(route_path: str, _user=Depends(require_admin)):
         has_password=bool(route.authPassword),
         auth_password=decrypted_password,
         auth_method=route.authMethod or "password",
+        auth_client_id=getattr(route, "authClientId", None),
         allowed_ldap_group=route.allowedLdapGroup,
         include_knowledge_search=route.includeKnowledgeSearch,
         include_git_history=route.includeGitHistory,

@@ -218,7 +218,8 @@ model AppSettings {
   mcpEnabled                  Boolean       @default(false) @map("mcp_enabled") // Enable/disable MCP server
   mcpDefaultRouteAuth         Boolean       @default(false) @map("mcp_default_route_auth") // Require auth for default /mcp route
   mcpDefaultRouteAuthMethod   McpAuthMethod @default(password) @map("mcp_default_route_auth_method") // Auth method for default route
-  mcpDefaultRoutePassword     String?       @map("mcp_default_route_password") // Password for default /mcp route (encrypted)
+  mcpDefaultRoutePassword     String?       @map("mcp_default_route_password") // Password or OAuth2 client secret for default /mcp route (encrypted)
+  mcpDefaultRouteClientId     String?       @map("mcp_default_route_client_id") // OAuth2 client_id for default /mcp route (plaintext, public identifier)
   mcpDefaultRouteAllowedGroup String?       @map("mcp_default_route_allowed_group") // LDAP group DN for OAuth2 access (optional)
 
   // Embedding dimension tracking (for detecting provider/model changes)
@@ -380,6 +381,7 @@ model ToolConfig {
 enum McpAuthMethod {
   password // Static password/API key
   oauth2 // OAuth2 via LDAP authentication
+  client_credentials // OAuth2 Client Credentials grant (pre-shared client_id + client_secret)
 }
 
 /// Custom MCP route configuration
@@ -393,7 +395,8 @@ model McpRouteConfig {
   // Authorization settings
   requireAuth      Boolean       @default(false) @map("require_auth") // Require authentication for this route
   authMethod       McpAuthMethod @default(password) @map("auth_method") // Authentication method
-  authPassword     String?       @map("auth_password") // Password/API key for this route (stored encrypted)
+  authPassword     String?       @map("auth_password") // Password or OAuth2 client secret for this route (stored encrypted)
+  authClientId     String?       @map("auth_client_id") // OAuth2 client_id for client_credentials grant (plaintext, public identifier)
   allowedLdapGroup String?       @map("allowed_ldap_group") // LDAP group DN required for OAuth2 access (optional)
 
   // Built-in tools configuration

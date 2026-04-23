@@ -19,8 +19,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import Request
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from ldap3 import ALL, AUTO_BIND_TLS_BEFORE_BIND, SUBTREE, Connection, Server, Tls
 from ldap3 import AUTO_BIND_NO_TLS  # type: ignore[import-untyped]
+from ldap3 import ALL, AUTO_BIND_TLS_BEFORE_BIND, SUBTREE, Connection, Server, Tls
 from ldap3.core.exceptions import (  # type: ignore[import-untyped]
     LDAPBindError,
     LDAPException,
@@ -232,26 +232,44 @@ def create_access_token(user_id: str, username: str, role: str) -> str:
         "role": role,
         "exp": expire,
     }
+    return encode_jwt_payload(payload)
+
+
+def encode_jwt_payload(payload: dict[str, Any]) -> str:
+    """Encode a JWT payload with Ragtime's configured signing settings."""
     return jwt.encode(
         payload, settings.encryption_key, algorithm=settings.jwt_algorithm
     )
 
 
-def decode_access_token(token: str) -> Optional[TokenData]:
-    """Decode and validate a JWT access token."""
+def decode_jwt_payload(
+    token: str, *, audience: str | None = None
+) -> Optional[dict[str, Any]]:
+    """Decode a JWT payload with Ragtime's configured verification settings."""
     try:
-        payload = jwt.decode(
-            token, settings.encryption_key, algorithms=[settings.jwt_algorithm]
-        )
-        return TokenData(
-            user_id=payload["sub"],
-            username=payload["username"],
-            role=payload["role"],
-            exp=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
-        )
+        decode_kwargs: dict[str, Any] = {
+            "algorithms": [settings.jwt_algorithm],
+        }
+        if audience is not None:
+            decode_kwargs["audience"] = audience
+        payload = jwt.decode(token, settings.encryption_key, **decode_kwargs)
+        return dict(payload)
     except JWTError as e:
         logger.debug(f"JWT decode error: {e}")
         return None
+
+
+def decode_access_token(token: str) -> Optional[TokenData]:
+    """Decode and validate a JWT access token."""
+    payload = decode_jwt_payload(token)
+    if payload is None:
+        return None
+    return TokenData(
+        user_id=payload["sub"],
+        username=payload["username"],
+        role=payload["role"],
+        exp=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
+    )
 
 
 def hash_token(token: str) -> str:

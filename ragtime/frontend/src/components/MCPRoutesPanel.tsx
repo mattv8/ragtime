@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/api';
+import { Eye, EyeOff } from 'lucide-react';
 import { useToast, ToastContainer } from './shared/Toast';
+import { InlineCopyButton } from './shared/InlineCopyButton';
 import type {
   McpRouteConfig,
   CreateMcpRouteRequest,
@@ -22,6 +24,31 @@ interface MCPRoutesPanelProps {
   onClose?: () => void;
   ldapConfigured?: boolean;
   ldapGroups?: { dn: string; name: string }[];
+}
+
+type RouteAuthMethod = 'password' | 'oauth2' | 'client_credentials';
+
+function generateCredentialValue(length: number): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const randomValues = new Uint8Array(length);
+
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(randomValues);
+  } else {
+    for (let index = 0; index < randomValues.length; index += 1) {
+      randomValues[index] = Math.floor(Math.random() * alphabet.length);
+    }
+  }
+
+  return Array.from(randomValues, (value) => alphabet[value % alphabet.length]).join('');
+}
+
+function generateClientId(): string {
+  return `cid-${generateCredentialValue(12).toLowerCase()}`;
+}
+
+function generateSecret(): string {
+  return generateCredentialValue(32);
 }
 
 // Route card component
@@ -62,6 +89,8 @@ function RouteCard({ route, tools, onEdit, onDelete, onToggle }: RouteCardProps)
 
       <div className="tool-card-meta">
         {route.require_auth && route.auth_method === 'oauth2' && <span className="write-enabled">OAuth2 (LDAP)</span>}
+        {route.require_auth && route.auth_method === 'client_credentials' && route.has_password && <span className="write-enabled">Client credentials</span>}
+        {route.require_auth && route.auth_method === 'client_credentials' && !route.has_password && <span style={{ color: 'var(--color-warning, #f59e0b)' }}>Client credentials (secret not set)</span>}
         {route.require_auth && route.auth_method === 'password' && route.has_password && <span className="write-enabled">Password protected</span>}
         {route.require_auth && route.auth_method === 'password' && !route.has_password && <span style={{ color: 'var(--color-warning, #f59e0b)' }}>Auth enabled (no password set)</span>}
         {route.include_knowledge_search && <span>Knowledge search</span>}
@@ -177,6 +206,7 @@ interface RouteWizardProps {
   aggregateSearch: boolean;
   ldapConfigured: boolean;
   ldapGroups: { dn: string; name: string }[];
+  onCopySuccessToast: (message: string) => void;
   onSave: (data: CreateMcpRouteRequest | UpdateMcpRouteRequest, routeId?: string) => Promise<void>;
   onCancel: () => void;
   saving: boolean;
@@ -191,6 +221,7 @@ function RouteWizard({
   aggregateSearch,
   ldapConfigured,
   ldapGroups,
+  onCopySuccessToast,
   onSave,
   onCancel,
   saving,
@@ -201,10 +232,11 @@ function RouteWizard({
   const [requireAuth, setRequireAuth] = useState(editingRoute?.require_auth ?? false);
   // Pre-populate password if editing and one exists (backend decrypts it)
   const [authPassword, setAuthPassword] = useState(editingRoute?.auth_password || '');
+  const [authClientId, setAuthClientId] = useState(editingRoute?.auth_client_id || '');
   const [showPassword, setShowPassword] = useState(false);
   const [clearPassword, setClearPassword] = useState(false);
-  // Auth method: password or oauth2 (LDAP)
-  const [authMethod, setAuthMethod] = useState<'password' | 'oauth2'>(editingRoute?.auth_method || 'password');
+  // Auth method: password, oauth2 (LDAP), or client_credentials
+  const [authMethod, setAuthMethod] = useState<RouteAuthMethod>(editingRoute?.auth_method || 'password');
   // Allowed LDAP group for OAuth2 auth
   const [allowedLdapGroup, setAllowedLdapGroup] = useState(editingRoute?.allowed_ldap_group || '');
 
@@ -234,6 +266,8 @@ function RouteWizard({
 
   const [error, setError] = useState<string | null>(null);
 
+  const effectiveAllowedLdapGroup = authMethod === 'oauth2' ? allowedLdapGroup.trim() : '';
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -261,7 +295,17 @@ function RouteWizard({
       return;
     }
 
-    if (authMethod === 'password' && authPassword && authPassword.length < 8) {
+    if (requireAuth && authMethod === 'client_credentials' && !authClientId.trim()) {
+      setError('Client ID is required when client credentials authentication is enabled');
+      return;
+    }
+
+    if (requireAuth && authMethod === 'client_credentials' && !editingRoute?.has_password && !authPassword && !clearPassword) {
+      setError('Client secret is required when client credentials authentication is enabled');
+      return;
+    }
+
+    if ((authMethod === 'password' || authMethod === 'client_credentials') && authPassword && authPassword.length < 8) {
       setError('Password must be at least 8 characters');
       return;
     }
@@ -273,8 +317,8 @@ function RouteWizard({
           description: description.trim(),
           require_auth: requireAuth,
           auth_method: authMethod,
-          allowed_ldap_group: allowedLdapGroup.trim() || undefined,
-          clear_allowed_ldap_group: !allowedLdapGroup.trim() && !!editingRoute.allowed_ldap_group,
+          allowed_ldap_group: effectiveAllowedLdapGroup || undefined,
+          clear_allowed_ldap_group: !effectiveAllowedLdapGroup && !!editingRoute.allowed_ldap_group,
           include_knowledge_search: includeKnowledgeSearch,
           include_git_history: includeGitHistory,
           selected_document_indexes: Array.from(selectedDocIndexes),
@@ -282,8 +326,13 @@ function RouteWizard({
           selected_schema_indexes: Array.from(selectedSchemaTools),
           tool_config_ids: Array.from(selectedToolIds),
         };
-        if (authMethod === 'password' && authPassword) {
+        if ((authMethod === 'password' || authMethod === 'client_credentials') && authPassword) {
           updateData.auth_password = authPassword;
+        }
+        if (authMethod === 'client_credentials') {
+          updateData.auth_client_id = authClientId.trim();
+        } else if (editingRoute.auth_client_id) {
+          updateData.clear_auth_client_id = true;
         }
         if (clearPassword) {
           updateData.clear_password = true;
@@ -296,7 +345,7 @@ function RouteWizard({
           description: description.trim(),
           require_auth: requireAuth,
           auth_method: authMethod,
-          allowed_ldap_group: allowedLdapGroup.trim() || undefined,
+          allowed_ldap_group: effectiveAllowedLdapGroup || undefined,
           include_knowledge_search: includeKnowledgeSearch,
           include_git_history: includeGitHistory,
           selected_document_indexes: Array.from(selectedDocIndexes),
@@ -304,8 +353,11 @@ function RouteWizard({
           selected_schema_indexes: Array.from(selectedSchemaTools),
           tool_config_ids: Array.from(selectedToolIds),
         };
-        if (authMethod === 'password' && authPassword) {
+        if ((authMethod === 'password' || authMethod === 'client_credentials') && authPassword) {
           createData.auth_password = authPassword;
+        }
+        if (authMethod === 'client_credentials') {
+          createData.auth_client_id = authClientId.trim();
         }
         await onSave(createData);
       }
@@ -437,8 +489,8 @@ function RouteWizard({
             </p>
           </div>
 
-          {/* Auth method selection - only show when LDAP is configured and auth is enabled */}
-          {requireAuth && ldapConfigured && (
+          {/* Auth method selection - always show when auth is enabled. LDAP-only OAuth2 is conditional. */}
+          {requireAuth && (
             <div className="form-group">
               <label>Authentication Method</label>
               <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
@@ -456,17 +508,31 @@ function RouteWizard({
                   <input
                     type="radio"
                     name="route_auth_method"
+                    value="client_credentials"
+                    checked={authMethod === 'client_credentials'}
+                    onChange={() => setAuthMethod('client_credentials')}
+                  />
+                  <span>Client Credentials</span>
+                </label>
+                {ldapConfigured && (
+                <label className="radio-label">
+                  <input
+                    type="radio"
+                    name="route_auth_method"
                     value="oauth2"
                     checked={authMethod === 'oauth2'}
                     onChange={() => setAuthMethod('oauth2')}
                   />
                   <span>OAuth2 (LDAP)</span>
                 </label>
+                )}
               </div>
               <p className="field-help">
                 {authMethod === 'oauth2'
                   ? 'MCP clients authenticate with LDAP credentials via POST /auth/oauth2/token to get a Bearer token.'
-                  : 'MCP clients use a static password as the Bearer token or MCP-Password header.'}
+                  : authMethod === 'client_credentials'
+                    ? 'MCP clients authenticate with client_id/client_secret over HTTP Basic, or exchange them at the route token endpoint for a short-lived Bearer token.'
+                    : 'MCP clients use a static password as the Bearer token or MCP-Password header.'}
               </p>
             </div>
           )}
@@ -500,19 +566,45 @@ function RouteWizard({
               </label>
               {editingRoute?.has_password && !clearPassword ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    placeholder="Enter new password to change"
-                    style={{ flex: 1 }}
-                  />
+                  <div className="settings-inline-copy-wrap" style={{ flex: 1 }}>
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      placeholder="Enter new password to change"
+                      style={{ width: '100%' }}
+                    />
+                    <InlineCopyButton
+                      copyText={authPassword}
+                      className="settings-inline-copy"
+                      disabled={!authPassword}
+                      title="Copy password"
+                      ariaLabel="Copy password"
+                      copiedTitle="Password copied"
+                      copiedAriaLabel="Password copied"
+                      feedbackMs={2000}
+                      onCopySuccess={() => onCopySuccessToast('Password copied')}
+                    />
+                    <button
+                      type="button"
+                      className="settings-inline-copy settings-inline-copy-secondary"
+                      onClick={() => setShowPassword(!showPassword)}
+                      title={showPassword ? 'Hide password' : 'Show password'}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    >
+                      {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
                   <button
                     type="button"
                     className="btn btn-sm btn-secondary"
-                    onClick={() => setShowPassword(!showPassword)}
+                    onClick={() => {
+                      setAuthPassword(generateSecret());
+                      setShowPassword(true);
+                      setClearPassword(false);
+                    }}
                   >
-                    {showPassword ? 'Hide' : 'Show'}
+                    Generate Password
                   </button>
                   <button
                     type="button"
@@ -524,21 +616,47 @@ function RouteWizard({
                 </div>
               ) : (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    placeholder="Enter password (min 8 characters)"
-                    required={requireAuth && authMethod === 'password' && !editingRoute?.has_password}
-                    minLength={8}
-                    style={{ flex: 1 }}
-                  />
+                  <div className="settings-inline-copy-wrap" style={{ flex: 1 }}>
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      placeholder="Enter password (min 8 characters)"
+                      required={requireAuth && authMethod === 'password' && !editingRoute?.has_password}
+                      minLength={8}
+                      style={{ width: '100%' }}
+                    />
+                    <InlineCopyButton
+                      copyText={authPassword}
+                      className="settings-inline-copy"
+                      disabled={!authPassword}
+                      title="Copy password"
+                      ariaLabel="Copy password"
+                      copiedTitle="Password copied"
+                      copiedAriaLabel="Password copied"
+                      feedbackMs={2000}
+                      onCopySuccess={() => onCopySuccessToast('Password copied')}
+                    />
+                    <button
+                      type="button"
+                      className="settings-inline-copy settings-inline-copy-secondary"
+                      onClick={() => setShowPassword(!showPassword)}
+                      title={showPassword ? 'Hide password' : 'Show password'}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    >
+                      {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
                   <button
                     type="button"
                     className="btn btn-sm btn-secondary"
-                    onClick={() => setShowPassword(!showPassword)}
+                    onClick={() => {
+                      setAuthPassword(generateSecret());
+                      setShowPassword(true);
+                      setClearPassword(false);
+                    }}
                   >
-                    {showPassword ? 'Hide' : 'Show'}
+                    Generate Password
                   </button>
                   {clearPassword && (
                     <button
@@ -555,6 +673,166 @@ function RouteWizard({
                 MCP clients will use this password as the Bearer token. Minimum 8 characters.
               </p>
             </div>
+          )}
+
+          {/* Client credentials fields */}
+          {requireAuth && authMethod === 'client_credentials' && (
+            <>
+              <div className="form-group">
+                <label>Client ID</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <div className="settings-inline-copy-wrap" style={{ flex: 1 }}>
+                    <input
+                      type="text"
+                      value={authClientId}
+                      onChange={(e) => setAuthClientId(e.target.value)}
+                      placeholder="cid-..."
+                      style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                    />
+                    <InlineCopyButton
+                      copyText={authClientId}
+                      className="settings-inline-copy"
+                      disabled={!authClientId}
+                      title="Copy client ID"
+                      ariaLabel="Copy client ID"
+                      copiedTitle="Client ID copied"
+                      copiedAriaLabel="Client ID copied"
+                      feedbackMs={2000}
+                      onCopySuccess={() => onCopySuccessToast('Client ID copied')}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    onClick={() => setAuthClientId(generateClientId())}
+                  >
+                    Generate Client ID
+                  </button>
+                </div>
+                <p className="field-help">
+                  Public identifier for the MCP client. Use this with the client secret for HTTP Basic auth or token exchange.
+                </p>
+              </div>
+
+              <div className="form-group">
+                <label>
+                  Client Secret
+                  {editingRoute?.has_password && !clearPassword && (
+                    <span className="muted" style={{ marginLeft: '0.5rem', fontWeight: 'normal' }}>
+                      (currently set)
+                    </span>
+                  )}
+                </label>
+                {editingRoute?.has_password && !clearPassword ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div className="settings-inline-copy-wrap" style={{ flex: 1 }}>
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        value={authPassword}
+                        onChange={(e) => setAuthPassword(e.target.value)}
+                        placeholder="Enter new client secret to change"
+                        style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                      />
+                      <InlineCopyButton
+                        copyText={authPassword}
+                        className="settings-inline-copy"
+                        disabled={!authPassword}
+                        title="Copy client secret"
+                        ariaLabel="Copy client secret"
+                        copiedTitle="Client secret copied"
+                        copiedAriaLabel="Client secret copied"
+                        feedbackMs={2000}
+                        onCopySuccess={() => onCopySuccessToast('Client secret copied')}
+                      />
+                      <button
+                        type="button"
+                        className="settings-inline-copy settings-inline-copy-secondary"
+                        onClick={() => setShowPassword(!showPassword)}
+                        title={showPassword ? 'Hide client secret' : 'Show client secret'}
+                        aria-label={showPassword ? 'Hide client secret' : 'Show client secret'}
+                      >
+                        {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-secondary"
+                      onClick={() => {
+                        setAuthPassword(generateSecret());
+                        setShowPassword(true);
+                        setClearPassword(false);
+                      }}
+                    >
+                      Generate Password
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-danger"
+                      onClick={() => setClearPassword(true)}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div className="settings-inline-copy-wrap" style={{ flex: 1 }}>
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        value={authPassword}
+                        onChange={(e) => setAuthPassword(e.target.value)}
+                        placeholder="Enter client secret (min 8 characters)"
+                        required={requireAuth && authMethod === 'client_credentials' && !editingRoute?.has_password}
+                        minLength={8}
+                        style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                      />
+                      <InlineCopyButton
+                        copyText={authPassword}
+                        className="settings-inline-copy"
+                        disabled={!authPassword}
+                        title="Copy client secret"
+                        ariaLabel="Copy client secret"
+                        copiedTitle="Client secret copied"
+                        copiedAriaLabel="Client secret copied"
+                        feedbackMs={2000}
+                        onCopySuccess={() => onCopySuccessToast('Client secret copied')}
+                      />
+                      <button
+                        type="button"
+                        className="settings-inline-copy settings-inline-copy-secondary"
+                        onClick={() => setShowPassword(!showPassword)}
+                        title={showPassword ? 'Hide client secret' : 'Show client secret'}
+                        aria-label={showPassword ? 'Hide client secret' : 'Show client secret'}
+                      >
+                        {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-secondary"
+                      onClick={() => {
+                        setAuthPassword(generateSecret());
+                        setShowPassword(true);
+                        setClearPassword(false);
+                      }}
+                    >
+                      Generate Password
+                    </button>
+                    {clearPassword && (
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => setClearPassword(false)}
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+                )}
+                <p className="field-help">
+                  Secret paired with the client ID. Clients can use it directly over HTTP Basic or exchange it at <code>/mcp/&lt;route&gt;/oauth/token</code>.
+                </p>
+              </div>
+            </>
           )}
         </fieldset>
 
@@ -1355,6 +1633,7 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
             aggregateSearch={settings?.aggregate_search ?? true}
             ldapConfigured={ldapConfigured}
             ldapGroups={ldapGroups}
+            onCopySuccessToast={(message) => toast.success(message)}
             onSave={handleSaveRoute}
             onCancel={() => {
               setShowRouteWizard(false);

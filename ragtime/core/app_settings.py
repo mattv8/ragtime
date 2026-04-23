@@ -208,6 +208,9 @@ class SettingsCache:
                 "mcp_default_route_auth": prisma_settings.mcpDefaultRouteAuth,
                 "mcp_default_route_auth_method": prisma_settings.mcpDefaultRouteAuthMethod,
                 "mcp_default_route_password": mcp_password,  # Kept encrypted
+                "mcp_default_route_client_id": getattr(
+                    prisma_settings, "mcpDefaultRouteClientId", None
+                ),
                 "mcp_default_route_allowed_group": prisma_settings.mcpDefaultRouteAllowedGroup,
                 # OCR settings
                 "default_ocr_mode": getattr(
@@ -306,6 +309,7 @@ class SettingsCache:
                 "mcp_default_route_auth": False,
                 "mcp_default_route_auth_method": "password",
                 "mcp_default_route_password": None,
+                "mcp_default_route_client_id": None,
                 "mcp_default_route_allowed_group": None,
                 # OCR settings
                 "default_ocr_mode": "disabled",

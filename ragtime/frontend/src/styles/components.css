@@ -3235,6 +3235,13 @@ textarea:focus {
   color: var(--color-text-primary);
 }
 
+.userspace-env-var-copy-btn.is-copied {
+  opacity: 1;
+  background: #28a745;
+  color: #fff;
+  border-radius: 4px;
+}
+
 .userspace-env-var-value-input {
   flex: 1 1 0;
   min-width: 0;
@@ -3722,6 +3729,64 @@ textarea:focus {
   color: var(--color-text-primary);
 }
 
+.settings-inline-copy-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.settings-inline-copy-wrap input {
+  box-sizing: border-box;
+  padding-right: 70px;
+}
+
+.settings-inline-copy {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast), color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.settings-inline-copy-secondary {
+  right: 38px;
+}
+
+.settings-inline-copy-wrap:hover .settings-inline-copy,
+.settings-inline-copy-wrap:focus-within .settings-inline-copy {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.settings-inline-copy:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.settings-inline-copy.is-copied {
+  opacity: 1;
+  pointer-events: auto;
+  background: #28a745;
+  border-color: #28a745;
+  color: #fff;
+}
+
+.settings-inline-copy:disabled {
+  cursor: default;
+}
+
+
 .userspace-share-meta {
   font-size: var(--text-xs);
   color: var(--color-text-muted);
@@ -4142,6 +4207,37 @@ textarea {
 
 .copy-error-btn:active {
   transform: scale(0.95);
+}
+
+.copy-error-btn.is-copied {
+  background: #28a745;
+  border-color: #28a745;
+  color: #fff;
+}
+
+.copilot-device-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  padding: 0;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.copilot-device-copy-btn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.copilot-device-copy-btn.is-copied {
+  background: #28a745;
+  color: #fff;
 }
 
 .error-message-text {

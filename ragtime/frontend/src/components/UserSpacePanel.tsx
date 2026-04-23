@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, CopyPlus, Crown, Database, ExternalLink, File, FolderGit2Icon, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, CopyPlus, Crown, Database, ExternalLink, File, FolderGit2Icon, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { keymap } from '@codemirror/view';
 import { openSearchPanel } from '@codemirror/search';
@@ -32,6 +32,8 @@ import { ResizeHandle } from './ResizeHandle';
 import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
 import { FileDiffOverlay } from './shared/FileDiffOverlay';
+import { InlineCopyButton } from './shared/InlineCopyButton';
+import { useToast, ToastContainer } from './shared/Toast';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { Popover } from './Popover';
 import { WorkspaceObjectStorageWizard } from './MountSourceWizard';
@@ -570,6 +572,7 @@ function sortWorkspaceAgentGrants(grants: WorkspaceAgentGrant[]): WorkspaceAgent
 }
 
 export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenChange, onNavigateToTools, onPreviewWarningChange }: UserSpacePanelProps) {
+  const [toasts, toast] = useToast();
   const previewEntryPath = 'dashboard/main.ts';
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
   const [workspacesTotal, setWorkspacesTotal] = useState(0);
@@ -7895,15 +7898,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                         <label htmlFor="userspace-share-url" className="userspace-share-label">Active share URL</label>
                         <div className="userspace-share-url-copy-wrap">
                           <input id="userspace-share-url" value={effectiveShareUrl} readOnly />
-                          <button
-                            type="button"
+                          <InlineCopyButton
+                            copyText={effectiveShareUrl}
                             className="userspace-share-inline-copy"
-                            onClick={handleCopyShareLink}
                             title="Copy share URL"
-                            aria-label="Copy share URL"
-                          >
-                            {shareCopied ? <Check size={12} /> : <Copy size={12} />}
-                          </button>
+                            ariaLabel="Copy share URL"
+                            copiedTitle="Share URL copied"
+                            copiedAriaLabel="Share URL copied"
+                            iconSize={12}
+                            onCopySuccess={() => {
+                              setError(null);
+                              toast.success('Share URL copied');
+                            }}
+                            onCopyError={(error) => setError(error.message)}
+                          />
                         </div>
                         <div className="userspace-share-meta">
                           {activeShareLinkStatus.created_at ? `Created ${formatSnapshotTimestamp(activeShareLinkStatus.created_at)}` : 'Share link active'}
@@ -8061,6 +8069,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           </div>
         </div>
       )}
+
+      <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
     </div>
   );
 }

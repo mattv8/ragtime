@@ -1033,6 +1033,9 @@ class IndexerRepository:
                 settings, "mcpDefaultRouteAuthMethod", "password"
             ),
             mcp_default_route_password=mcp_password,
+            mcp_default_route_client_id=getattr(
+                settings, "mcpDefaultRouteClientId", None
+            ),
             mcp_default_route_allowed_group=getattr(
                 settings, "mcpDefaultRouteAllowedGroup", None
             ),
@@ -1153,6 +1156,7 @@ class IndexerRepository:
             "mcp_default_route_auth": "mcpDefaultRouteAuth",
             "mcp_default_route_auth_method": "mcpDefaultRouteAuthMethod",
             "mcp_default_route_password": "mcpDefaultRoutePassword",
+            "mcp_default_route_client_id": "mcpDefaultRouteClientId",
             "mcp_default_route_allowed_group": "mcpDefaultRouteAllowedGroup",
             # Embedding dimension tracking (internal use)
             "embedding_dimension": "embeddingDimension",
@@ -1205,6 +1209,15 @@ class IndexerRepository:
             elif pwd_value is not None:
                 # Encrypt and store
                 update_data["mcpDefaultRoutePassword"] = encrypt_secret(pwd_value)
+
+        # Special handling for mcp_default_route_client_id:
+        # - Empty string clears the client_id (set to None)
+        if "mcp_default_route_client_id" in updates:
+            cid_value = updates["mcp_default_route_client_id"]
+            if cid_value == "":
+                update_data["mcpDefaultRouteClientId"] = None
+            elif cid_value is not None:
+                update_data["mcpDefaultRouteClientId"] = cid_value
 
         # Special handling for mcp_default_route_allowed_group:
         # - Empty string clears the group (set to None/empty)

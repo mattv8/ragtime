@@ -27,32 +27,27 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Query, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse)
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from ragtime import __version__
 from ragtime.api import router
-from ragtime.api.auth import (
-    AUTH_CODE_EXPIRY,
-    _auth_codes,
-    _cleanup_expired_auth_codes,
-    authenticate,
-)
+from ragtime.api.auth import (AUTH_CODE_EXPIRY, _auth_codes,
+                              _cleanup_expired_auth_codes, authenticate)
 from ragtime.api.auth import oauth2_token as _oauth2_token_handler
 from ragtime.api.auth import router as auth_router
 from ragtime.api.auth import validate_redirect_uri
 from ragtime.config import settings
-from ragtime.core.auth import (
-    create_access_token,
-    create_session,
-    get_external_origin,
-    validate_session,
-)
+from ragtime.core.app_settings import get_app_settings
+from ragtime.core.auth import (create_access_token, create_session,
+                               get_external_origin, validate_session)
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import setup_logging
-from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
+from ragtime.core.rate_limit import (LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT,
+                                     limiter)
 from ragtime.core.ssl import setup_ssl
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.chunking import shutdown_process_pool
@@ -64,26 +59,25 @@ from ragtime.indexer.routes import DIST_DIR
 from ragtime.indexer.routes import router as indexer_router
 from ragtime.indexer.schema_service import schema_indexer
 from ragtime.indexer.service import indexer
-from ragtime.mcp.config_routes import default_filter_router as mcp_default_filter_router
+from ragtime.mcp.config_routes import \
+    default_filter_router as mcp_default_filter_router
 from ragtime.mcp.config_routes import router as mcp_config_router
+from ragtime.mcp.oauth import (build_authorization_server_metadata,
+                               build_protected_resource_metadata)
 from ragtime.mcp.routes import get_mcp_routes, mcp_lifespan_manager
 from ragtime.mcp.routes import router as mcp_router
 from ragtime.rag import rag
 from ragtime.userspace.preview_host import PreviewHostDispatchMiddleware
 from ragtime.userspace.routes import router as userspace_router
-from ragtime.userspace.runtime_routes import (
-    _proxy_websocket_request,
-    _sanitize_preview_query,
-    _to_websocket_url,
-)
+from ragtime.userspace.runtime_routes import (_proxy_websocket_request,
+                                              _sanitize_preview_query,
+                                              _to_websocket_url)
 from ragtime.userspace.runtime_routes import router as userspace_runtime_router
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
-from ragtime.userspace.share_auth import (
-    clear_share_auth_cookie,
-    set_share_auth_cookie,
-    share_auth_token_from_request,
-)
+from ragtime.userspace.share_auth import (clear_share_auth_cookie,
+                                          set_share_auth_cookie,
+                                          share_auth_token_from_request)
 
 # Import indexer routes (always available now that it's part of ragtime)
 # Import MCP routes and transport for HTTP API access
@@ -94,6 +88,21 @@ load_dotenv()
 logger = setup_logging("rag_api")
 
 _SHARE_PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+
+def _oauth_request_context(request: Request) -> str:
+    """Return sanitized request context for OAuth diagnostics."""
+    headers = request.headers
+    fields = {
+        "client": request.client.host if request.client else "unknown",
+        "user_agent": headers.get("user-agent") or "-",
+        "origin": headers.get("origin") or "-",
+        "referer": headers.get("referer") or "-",
+        "sec_fetch_mode": headers.get("sec-fetch-mode") or "-",
+        "sec_fetch_site": headers.get("sec-fetch-site") or "-",
+        "query_keys": ",".join(sorted(request.query_params.keys())) or "-",
+    }
+    return ", ".join(f"{key}={value}" for key, value in fields.items())
 
 
 def _validate_ssl_certificates() -> None:
@@ -430,6 +439,13 @@ async def oauth_discovery(request: Request):
         f"OAuth authorization server metadata requested from {request.client.host if request.client else 'unknown'}"
     )
 
+    app_settings = await get_app_settings()
+    if (
+        app_settings.get("mcp_default_route_auth")
+        and app_settings.get("mcp_default_route_auth_method") == "client_credentials"
+    ):
+        return build_authorization_server_metadata(base_url, None)
+
     return {
         "issuer": base_url,
         "authorization_endpoint": f"{base_url}/authorize",
@@ -466,6 +482,14 @@ async def oauth_protected_resource(request: Request, path: str = ""):
     """
     # Determine base URL considering reverse proxy headers
     base_url = get_external_origin(request)
+
+    app_settings = await get_app_settings()
+    if (
+        app_settings.get("mcp_default_route_auth")
+        and app_settings.get("mcp_default_route_auth_method") == "client_credentials"
+        and (not path or path == "mcp")
+    ):
+        return build_protected_resource_metadata(base_url, None)
 
     # Determine the resource path from the suffix
     # If path is empty or just "mcp", use default /mcp
@@ -702,7 +726,16 @@ async def authorize_with_session(
         "expires": time.time() + AUTH_CODE_EXPIRY,
     }
 
-    logger.info(f"OAuth2 authorization code issued for '{user.username}' via session")
+    logger.info(
+        "OAuth2 authorization code issued for '%s' via session "
+        "(client_id=%s, redirect_uri=%s, %s)"
+        % (
+            user.username,
+            client_id,
+            redirect_uri,
+            _oauth_request_context(request),
+        )
+    )
 
     # Build redirect URL with authorization code
     params = {"code": code}
@@ -718,6 +751,23 @@ async def authorize_with_session(
 # =============================================================================
 # OAuth2 Token Endpoint (RFC 6749 Section 3.2)
 # =============================================================================
+
+
+@app.get("/token", include_in_schema=False)
+async def token_endpoint_get(request: Request):
+    """Log unexpected browser-style token requests without changing behavior."""
+    logger.warning(
+        "Unexpected OAuth token GET request received (%s)"
+        % _oauth_request_context(request)
+    )
+    response = JSONResponse(
+        status_code=405,
+        content={
+            "detail": "Method Not Allowed. OAuth token exchange requires POST.",
+        },
+    )
+    response.headers["Allow"] = "POST"
+    return response
 
 
 @app.post("/token", include_in_schema=False)
@@ -741,6 +791,13 @@ async def token_endpoint(
     Standard endpoint location at /token for OAuth2 client compatibility.
     Also available at /auth/oauth2/token for API consistency.
     """
+    if grant_type == "authorization_code":
+        logger.info(
+            "OAuth2 token exchange requested "
+            "(client_id=%s, redirect_uri=%s, %s)"
+            % (client_id or "-", redirect_uri or "-", _oauth_request_context(request))
+        )
+
     return await _oauth2_token_handler(
         request=request,
         grant_type=grant_type,

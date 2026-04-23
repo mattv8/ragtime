@@ -1,11 +1,12 @@
 import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Lock, LockOpen, Info, Search, Clipboard, ExternalLink, X } from 'lucide-react';
+import { Lock, LockOpen, Info, Search, ExternalLink, X, Eye, EyeOff } from 'lucide-react';
 import { api } from '@/api';
 import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire, UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar, User } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
+import { InlineCopyButton } from './shared/InlineCopyButton';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
 import { renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
@@ -50,6 +51,29 @@ function formatDnForDisplay(dn: string, baseDn: string): string {
 
   // Show path from parent to child
   return names.join(' / ');
+}
+
+function generateMcpCredentialValue(length: number): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const randomValues = new Uint8Array(length);
+
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(randomValues);
+  } else {
+    for (let index = 0; index < randomValues.length; index += 1) {
+      randomValues[index] = Math.floor(Math.random() * alphabet.length);
+    }
+  }
+
+  return Array.from(randomValues, (value) => alphabet[value % alphabet.length]).join('');
+}
+
+function generateMcpClientId(): string {
+  return `cid-${generateMcpCredentialValue(12).toLowerCase()}`;
+}
+
+function generateMcpSecret(): string {
+  return generateMcpCredentialValue(32);
 }
 
 function normalizeSettingsSearchText(value: string): string {
@@ -674,32 +698,15 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     }
   }, [clearCopilotPollTimer, refreshCopilotStatus, resetLlmModelsState]);
 
-  const copyCopilotDeviceCode = useCallback(async () => {
-    if (!copilotDeviceCode) {
-      return;
-    }
+  const handleCopilotDeviceCodeCopied = useCallback(() => {
+    toast.success('Device code copied');
+    setCopilotCodeCopied(true);
+    window.setTimeout(() => setCopilotCodeCopied(false), 2000);
+  }, [toast]);
 
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(copilotDeviceCode);
-      } else {
-        const textarea = document.createElement('textarea');
-        textarea.value = copilotDeviceCode;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'absolute';
-        textarea.style.left = '-9999px';
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
-      toast.success('Device code copied');
-      setCopilotCodeCopied(true);
-      setTimeout(() => setCopilotCodeCopied(false), 2000);
-    } catch {
-      setLlmModelsError('Unable to copy device code. Please copy it manually.');
-    }
-  }, [copilotDeviceCode]);
+  const handleCopilotDeviceCodeCopyError = useCallback(() => {
+    setLlmModelsError('Unable to copy device code. Please copy it manually.');
+  }, []);
 
   const openCopilotAuthorizationPage = useCallback(() => {
     if (!copilotVerificationUri) {
@@ -966,6 +973,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         mcp_default_route_auth: data.mcp_default_route_auth,
         mcp_default_route_auth_method: data.mcp_default_route_auth_method,
         mcp_default_route_allowed_group: data.mcp_default_route_allowed_group,
+        mcp_default_route_client_id: data.mcp_default_route_client_id ?? '',
         mcp_default_route_password: data.mcp_default_route_password ?? '',
         // OCR settings
         default_ocr_mode: data.default_ocr_mode,
@@ -1399,19 +1407,39 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     // Validate password if provided (not empty string which clears, and not undefined which skips)
     const pwd = formData.mcp_default_route_password;
     const authMethod = formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password';
-    if (authMethod === 'password' && pwd !== undefined && pwd !== '' && pwd.length < 8) {
+    const authEnabled = formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth;
+    const clientId = (formData.mcp_default_route_client_id ?? settings?.mcp_default_route_client_id ?? '').trim();
+    if ((authMethod === 'password' || authMethod === 'client_credentials') && pwd !== undefined && pwd !== '' && pwd.length < 8) {
       setMcpError('MCP password must be at least 8 characters');
+      setMcpSaving(false);
+      return;
+    }
+    if (authEnabled && authMethod === 'client_credentials' && !clientId) {
+      setMcpError('Client ID is required for client credentials authentication');
+      setMcpSaving(false);
+      return;
+    }
+    if (authEnabled && authMethod === 'client_credentials' && !settings?.has_mcp_default_password && (!pwd || pwd === '')) {
+      setMcpError('Client secret is required for client credentials authentication');
       setMcpSaving(false);
       return;
     }
 
     try {
+      const allowedGroup = authMethod === 'oauth2'
+        ? (formData.mcp_default_route_allowed_group ?? settings?.mcp_default_route_allowed_group ?? null)
+        : null;
       const dataToSave: UpdateSettingsRequest = {
         mcp_enabled: formData.mcp_enabled,
         mcp_default_route_auth: formData.mcp_default_route_auth,
         mcp_default_route_auth_method: formData.mcp_default_route_auth_method,
-        mcp_default_route_allowed_group: formData.mcp_default_route_allowed_group,
+        mcp_default_route_allowed_group: allowedGroup,
       };
+      if (authMethod === 'client_credentials') {
+        dataToSave.mcp_default_route_client_id = clientId;
+      } else if (settings?.mcp_default_route_client_id) {
+        dataToSave.mcp_default_route_client_id = '';
+      }
       // Include password if it was modified
       if (formData.mcp_default_route_password !== undefined) {
         dataToSave.mcp_default_route_password = formData.mcp_default_route_password;
@@ -1425,6 +1453,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         mcp_default_route_auth: updated.mcp_default_route_auth,
         mcp_default_route_auth_method: updated.mcp_default_route_auth_method,
         mcp_default_route_allowed_group: updated.mcp_default_route_allowed_group,
+        mcp_default_route_client_id: updated.mcp_default_route_client_id ?? '',
         mcp_default_route_password: updated.mcp_default_route_password ?? '',
       }));
       toast.success('MCP configuration saved.', 5000);
@@ -1960,7 +1989,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
             <code>{getDisplayUrl('/mcp')}</code>
             <span className="muted" style={{ fontSize: '0.85em' }}>(default - all tools)</span>
             {settings?.mcp_default_route_auth && (settings?.has_mcp_default_password || settings?.mcp_default_route_auth_method === 'oauth2') ? (
-              <span title={settings?.mcp_default_route_auth_method === 'oauth2' ? "OAuth2 protected" : "Password protected"}>
+                <span title={settings?.mcp_default_route_auth_method === 'oauth2' ? 'OAuth2 protected' : settings?.mcp_default_route_auth_method === 'client_credentials' ? 'Client credentials protected' : 'Password protected'}>
                 <Lock size={14} style={{ color: 'var(--success-color, #4caf50)' }} />
               </span>
             ) : (
@@ -1976,7 +2005,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 <code>{getDisplayUrl(`/mcp/${route.route_path}`)}</code>
                 <span className="muted" style={{ fontSize: '0.85em' }}>({route.name})</span>
                 {isProtected ? (
-                  <span title={route.auth_method === 'oauth2' ? 'OAuth2 (LDAP)' : 'Password protected'}>
+                  <span title={route.auth_method === 'oauth2' ? 'OAuth2 (LDAP)' : route.auth_method === 'client_credentials' ? 'Client credentials' : 'Password protected'}>
                     <Lock size={14} style={{ color: 'var(--success-color, #4caf50)' }} />
                   </span>
                 ) : (
@@ -2341,17 +2370,18 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                         <code style={{ fontSize: '1.1rem', fontWeight: 700, letterSpacing: '0.08em', padding: '0.35rem 0.55rem' }}>
                           {copilotDeviceCode}
                         </code>
-                        <button
-                          type="button"
-                          onClick={copyCopilotDeviceCode}
-                          aria-label="Copy device code"
+                        <InlineCopyButton
+                          copyText={copilotDeviceCode}
+                          className="copilot-device-copy-btn"
                           title="Copy device code"
-                          className="btn btn-sm btn-secondary"
-                          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0.35rem' }}
-                        >
-                          <Clipboard size={16} />
-                        </button>
-                        {copilotCodeCopied && <span className="muted">Copied</span>}
+                          ariaLabel="Copy device code"
+                          copiedTitle="Device code copied"
+                          copiedAriaLabel="Device code copied"
+                          iconSize={16}
+                          feedbackMs={2000}
+                          onCopySuccess={handleCopilotDeviceCodeCopied}
+                          onCopyError={handleCopilotDeviceCodeCopyError}
+                        />
                         <button
                           type="button"
                           className="btn btn-sm"
@@ -3774,14 +3804,16 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                   When enabled, the default <code>/mcp</code> endpoint requires authentication.
                   {(formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2'
                     ? ' MCP clients must authenticate via OAuth2 using the /auth/oauth2/token endpoint.'
-                    : settings?.has_mcp_default_password
-                      ? ' A password is configured - MCP clients should use this password as the Bearer token.'
-                      : ' Set a password below to enable password-based authentication.'}
+                    : (formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'client_credentials'
+                      ? ' MCP clients must authenticate with a client ID and client secret, either via HTTP Basic or the per-route token endpoint.'
+                      : settings?.has_mcp_default_password
+                        ? ' A password is configured - MCP clients should use this password as the Bearer token.'
+                        : ' Set a password below to enable password-based authentication.'}
                 </p>
               </div>
 
-              {/* Auth method selection - only show when LDAP is configured and auth is enabled */}
-              {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && ldapConfig?.server_url && (
+              {/* Auth method selection - always show when auth is enabled. LDAP-only OAuth2 is conditional. */}
+              {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
                 <div className="form-group" style={{ marginTop: '1rem' }}>
                   <label>Authentication Method</label>
                   <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
@@ -3799,24 +3831,38 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                       <input
                         type="radio"
                         name="mcp_auth_method"
+                        value="client_credentials"
+                        checked={(formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'client_credentials'}
+                        onChange={() => setFormData({ ...formData, mcp_default_route_auth_method: 'client_credentials' })}
+                      />
+                      <span>Client Credentials</span>
+                    </label>
+                    {ldapConfigured && (
+                    <label className="radio-label">
+                      <input
+                        type="radio"
+                        name="mcp_auth_method"
                         value="oauth2"
                         checked={(formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2'}
                         onChange={() => setFormData({ ...formData, mcp_default_route_auth_method: 'oauth2' })}
                       />
                       <span>OAuth2 (LDAP)</span>
                     </label>
+                    )}
                   </div>
                   <p className="field-help">
                     {(formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2'
                       ? 'MCP clients authenticate with LDAP credentials via POST /auth/oauth2/token to get a Bearer token.'
-                      : 'MCP clients use a static password as the Bearer token or MCP-Password header.'}
+                      : (formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'client_credentials'
+                        ? 'MCP clients authenticate with client_id/client_secret over HTTP Basic, or exchange them at the token endpoint for a short-lived Bearer token.'
+                        : 'MCP clients use a static password as the Bearer token or MCP-Password header.'}
                   </p>
                 </div>
               )}
 
               {/* LDAP Group restriction - only for OAuth2 auth method */}
               {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) &&
-                ldapConfig?.server_url &&
+                ldapConfigured &&
                 (formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2' && (
                   <div className="form-group" style={{ marginTop: '1rem' }}>
                     <label htmlFor="mcp-allowed-group">Allowed LDAP Group (Optional)</label>
@@ -3837,6 +3883,117 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                   </div>
                 )}
 
+              {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) &&
+                (formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'client_credentials' && (
+                  <>
+                    <div className="form-group" style={{ marginTop: '1rem' }}>
+                      <label htmlFor="mcp-client-id">Client ID</label>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <div className="settings-inline-copy-wrap" style={{ flex: 1, maxWidth: '400px' }}>
+                          <input
+                            type="text"
+                            id="mcp-client-id"
+                            placeholder="cid-..."
+                            value={formData.mcp_default_route_client_id ?? settings?.mcp_default_route_client_id ?? ''}
+                            onChange={(e) => setFormData({ ...formData, mcp_default_route_client_id: e.target.value })}
+                            style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                          />
+                          <InlineCopyButton
+                            copyText={formData.mcp_default_route_client_id ?? settings?.mcp_default_route_client_id ?? ''}
+                            className="settings-inline-copy"
+                            disabled={!(formData.mcp_default_route_client_id ?? settings?.mcp_default_route_client_id ?? '')}
+                            title="Copy client ID"
+                            ariaLabel="Copy client ID"
+                            copiedTitle="Client ID copied"
+                            copiedAriaLabel="Client ID copied"
+                            feedbackMs={2000}
+                            onCopySuccess={() => toast.success('Client ID copied')}
+                            onCopyError={() => setMcpError('Unable to copy client-id. Please copy it manually.')}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-small btn-secondary"
+                          onClick={() => setFormData({ ...formData, mcp_default_route_client_id: generateMcpClientId() })}
+                        >
+                          Generate Client ID
+                        </button>
+                      </div>
+                      <p className="field-help">
+                        Public identifier for MCP clients. Use this with the client secret for HTTP Basic auth or token exchange.
+                      </p>
+                    </div>
+
+                    <div className="form-group" style={{ marginTop: '1rem' }}>
+                      <label htmlFor="mcp-client-secret">Client Secret</label>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <div className="settings-inline-copy-wrap" style={{ flex: 1, maxWidth: '400px' }}>
+                          <input
+                            type={showMcpPassword ? 'text' : 'password'}
+                            id="mcp-client-secret"
+                            placeholder={settings?.has_mcp_default_password ? '••••••••' : 'Enter client secret (min 8 characters)'}
+                            value={formData.mcp_default_route_password ?? ''}
+                            onChange={(e) =>
+                              setFormData({ ...formData, mcp_default_route_password: e.target.value })
+                            }
+                            style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                          />
+                          <InlineCopyButton
+                            copyText={formData.mcp_default_route_password ?? ''}
+                            className="settings-inline-copy"
+                            disabled={!(formData.mcp_default_route_password ?? '')}
+                            title="Copy client secret"
+                            ariaLabel="Copy client secret"
+                            copiedTitle="Client secret copied"
+                            copiedAriaLabel="Client secret copied"
+                            feedbackMs={2000}
+                            onCopySuccess={() => toast.success('Client secret copied')}
+                            onCopyError={() => setMcpError('Unable to copy secret. Please copy it manually.')}
+                          />
+                          <button
+                            type="button"
+                            className="settings-inline-copy settings-inline-copy-secondary"
+                            onClick={() => setShowMcpPassword(!showMcpPassword)}
+                            title={showMcpPassword ? 'Hide client secret' : 'Show client secret'}
+                            aria-label={showMcpPassword ? 'Hide client secret' : 'Show client secret'}
+                          >
+                            {showMcpPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-small btn-secondary"
+                          onClick={() => setFormData({ ...formData, mcp_default_route_password: generateMcpSecret() })}
+                        >
+                          Generate Password
+                        </button>
+                        {settings?.has_mcp_default_password && (
+                          <button
+                            type="button"
+                            className="btn btn-small btn-secondary"
+                            onClick={() => setFormData({ ...formData, mcp_default_route_password: '' })}
+                            title="Clear client secret (submit empty to remove)"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                      <p className="field-help">
+                        {settings?.has_mcp_default_password
+                          ? 'Client secret is set. Leave blank to keep the current secret, or enter a new one to rotate it. Clear and save to remove client credentials protection.'
+                          : 'Set a client secret for MCP clients. Minimum 8 characters.'}
+                      </p>
+                      {window.location.protocol === 'http:' && (
+                        <div className="field-warning" style={{ marginTop: '0.5rem', padding: '0.5rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px', fontSize: '0.85em' }}>
+                          <strong>Security:</strong> You are accessing over HTTP. Client credentials will be transmitted in plaintext.
+                          Consider using HTTPS via a reverse proxy for production deployments.
+                        </div>
+                      )}
+                      {mcpError && <p className="field-error">{mcpError}</p>}
+                    </div>
+                  </>
+                )}
+
               {/* Warning when auth is disabled */}
               {!(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
                 <div className="field-warning" style={{ marginTop: '0.5rem', padding: '0.75rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px' }}>
@@ -3852,23 +4009,46 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                   <div className="form-group" style={{ marginTop: '1rem' }}>
                     <label htmlFor="mcp-password">MCP Password</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <input
-                        type={showMcpPassword ? 'text' : 'password'}
-                        id="mcp-password"
-                        placeholder={settings?.has_mcp_default_password ? '••••••••' : 'Enter password (min 8 characters)'}
-                        value={formData.mcp_default_route_password ?? ''}
-                        onChange={(e) =>
-                          setFormData({ ...formData, mcp_default_route_password: e.target.value })
-                        }
-                        style={{ flex: 1, maxWidth: '400px' }}
-                      />
+                      <div className="settings-inline-copy-wrap" style={{ flex: 1, maxWidth: '400px' }}>
+                        <input
+                          type={showMcpPassword ? 'text' : 'password'}
+                          id="mcp-password"
+                          placeholder={settings?.has_mcp_default_password ? '••••••••' : 'Enter password (min 8 characters)'}
+                          value={formData.mcp_default_route_password ?? ''}
+                          onChange={(e) =>
+                            setFormData({ ...formData, mcp_default_route_password: e.target.value })
+                          }
+                          style={{ width: '100%' }}
+                        />
+                        <InlineCopyButton
+                          copyText={formData.mcp_default_route_password ?? ''}
+                          className="settings-inline-copy"
+                          disabled={!(formData.mcp_default_route_password ?? '')}
+                          title="Copy password"
+                          ariaLabel="Copy password"
+                          copiedTitle="Password copied"
+                          copiedAriaLabel="Password copied"
+                          feedbackMs={2000}
+                          onCopySuccess={() => toast.success('Password copied')}
+                          onCopyError={() => setMcpError('Unable to copy secret. Please copy it manually.')}
+                        />
+                        <button
+                          type="button"
+                          className="settings-inline-copy settings-inline-copy-secondary"
+                          onClick={() => setShowMcpPassword(!showMcpPassword)}
+                          title={showMcpPassword ? 'Hide password' : 'Show password'}
+                          aria-label={showMcpPassword ? 'Hide password' : 'Show password'}
+                        >
+                          {showMcpPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                      </div>
                       <button
                         type="button"
-                        className="btn btn-small"
-                        onClick={() => setShowMcpPassword(!showMcpPassword)}
-                        title={showMcpPassword ? 'Hide password' : 'Show password'}
+                        className="btn btn-small btn-secondary"
+                        onClick={() => setFormData({ ...formData, mcp_default_route_password: generateMcpSecret() })}
+                        title="Generate password"
                       >
-                        {showMcpPassword ? 'Hide' : 'Show'}
+                        Generate Password
                       </button>
                       {settings?.has_mcp_default_password && (
                         <button
@@ -4528,7 +4708,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         <div className="modal-overlay" onClick={() => setShowMcpRoutesPanel(false)}>
           <div className="modal-content modal-large" onClick={(e) => e.stopPropagation()}>
             <MCPRoutesPanel
-              ldapConfigured={!!ldapConfig?.server_url}
+              ldapConfigured={ldapConfigured}
               ldapGroups={ldapDiscoveredGroups}
               onClose={async () => {
                 setShowMcpRoutesPanel(false);

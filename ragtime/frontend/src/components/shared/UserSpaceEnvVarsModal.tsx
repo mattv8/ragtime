@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Check, Copy, Pencil, Trash2, X } from 'lucide-react';
+import { Check, Pencil, Trash2, X } from 'lucide-react';
 
 import type { UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar } from '@/types';
+import { InlineCopyButton } from './InlineCopyButton';
 import { MiniLoadingSpinner } from './MiniLoadingSpinner';
+import { useToast, ToastContainer } from './Toast';
 
 interface UserSpaceEnvVarsModalProps {
   isOpen: boolean;
@@ -45,6 +47,7 @@ export function UserSpaceEnvVarsModal({
   onUpdateEnvVar,
   onDeleteEnvVar,
 }: UserSpaceEnvVarsModalProps) {
+  const [toasts, toast] = useToast();
   const [draftEnvKey, setDraftEnvKey] = useState('');
   const [draftEnvValue, setDraftEnvValue] = useState('');
   const [draftEnvDescription, setDraftEnvDescription] = useState('');
@@ -54,7 +57,6 @@ export function UserSpaceEnvVarsModal({
   const [editingEnvDescriptionDraft, setEditingEnvDescriptionDraft] = useState('');
   const [deletingEnvKey, setDeletingEnvKey] = useState<string | null>(null);
   const [confirmDeleteEnvKey, setConfirmDeleteEnvKey] = useState<string | null>(null);
-  const [copiedEnvKey, setCopiedEnvKey] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen) {
@@ -69,7 +71,6 @@ export function UserSpaceEnvVarsModal({
     setEditingEnvDescriptionDraft('');
     setDeletingEnvKey(null);
     setConfirmDeleteEnvKey(null);
-    setCopiedEnvKey(null);
   }, [isOpen]);
 
   const sortedVars = useMemo(() => {
@@ -143,17 +144,17 @@ export function UserSpaceEnvVarsModal({
                             {envVar.source === 'global' && (
                               <span className="userspace-env-var-badge">Global</span>
                             )}
-                            <button
+                            <InlineCopyButton
+                              copyText={envVar.key}
                               className="userspace-env-var-copy-btn"
                               title="Copy key"
-                              onClick={async () => {
-                                await navigator.clipboard.writeText(envVar.key);
-                                setCopiedEnvKey(envVar.key);
-                                setTimeout(() => setCopiedEnvKey((c) => c === envVar.key ? null : c), 1500);
-                              }}
-                            >
-                              {copiedEnvKey === envVar.key ? <Check size={13} /> : <Copy size={13} />}
-                            </button>
+                              ariaLabel="Copy key"
+                              copiedTitle="Key copied"
+                              copiedAriaLabel="Key copied"
+                              iconSize={13}
+                              onCopySuccess={() => toast.success('Key copied')}
+                              onCopyError={() => toast.error('Failed to copy key')}
+                            />
                           </span>
 
                           {isEditingValue && !rowReadOnly ? (
@@ -401,6 +402,7 @@ export function UserSpaceEnvVarsModal({
             </>
           )}
         </div>
+        <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
       </div>
     </div>
   );

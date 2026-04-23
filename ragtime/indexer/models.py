@@ -2,8 +2,6 @@
 Indexer data models and schemas.
 """
 
-
-
 import hashlib
 import json
 from datetime import datetime
@@ -12,12 +10,16 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from ragtime.core.embedding_models import (get_embedding_models,
-                                           get_model_dimensions_sync)
+from ragtime.core.embedding_models import (
+    get_embedding_models,
+    get_model_dimensions_sync,
+)
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
-    normalize_userspace_preview_sandbox_flags)
+    normalize_userspace_preview_sandbox_flags,
+)
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -679,11 +681,15 @@ class AppSettings(BaseModel):
     )
     mcp_default_route_auth_method: str = Field(
         default="password",
-        description="Authentication method for default MCP route: 'password' for Bearer token, 'oauth2' for LDAP OAuth2 flow.",
+        description="Authentication method for default MCP route: 'password' for Bearer token, 'oauth2' for LDAP OAuth2 flow, 'client_credentials' for OAuth2 client_credentials grant.",
     )
     mcp_default_route_password: Optional[str] = Field(
         default=None,
-        description="Password for the default /mcp route (decrypted for display). Use this as Bearer token for MCP clients.",
+        description="Password for the default /mcp route (decrypted for display). Use this as Bearer token for MCP clients. For 'client_credentials' mode, this is the client_secret.",
+    )
+    mcp_default_route_client_id: Optional[str] = Field(
+        default=None,
+        description="OAuth2 client_id for the default /mcp route when using 'client_credentials' auth method.",
     )
     mcp_default_route_allowed_group: Optional[str] = Field(
         default=None,
@@ -1069,11 +1075,15 @@ class UpdateSettingsRequest(BaseModel):
     mcp_default_route_auth: Optional[bool] = None
     mcp_default_route_auth_method: Optional[str] = Field(
         default=None,
-        description="Authentication method for default MCP route: 'password' or 'oauth2'.",
+        description="Authentication method for default MCP route: 'password', 'oauth2', or 'client_credentials'.",
     )
     mcp_default_route_password: Optional[str] = Field(
         default=None,
-        description="Password for the default /mcp route. Set to empty string to clear.",
+        description="Password for the default /mcp route. Set to empty string to clear. For 'client_credentials' mode, this is the client_secret.",
+    )
+    mcp_default_route_client_id: Optional[str] = Field(
+        default=None,
+        description="OAuth2 client_id for the default /mcp route (client_credentials grant). Set to empty string to clear.",
     )
     mcp_default_route_allowed_group: Optional[str] = Field(
         default=None,

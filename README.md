@@ -94,14 +94,22 @@ If you want previews to use a separate wildcard domain instead, set `USERSPACE_P
   - `*.ragtime.example.com` or `*.example-userspaces.com` -> your public Ragtime entrypoint (A, AAAA, or CNAME)
 3. Ensure your reverse proxy accepts and routes wildcard hosts for that domain to Ragtime.
 4. Ensure TLS certificates cover the wildcard domain if using HTTPS.
-5. Optionally set these environment variables in `.env`:
+5. Set these environment variables in `.env` when needed:
 
 ```bash
+# Set this when the public Ragtime origin differs from what the app sees on
+# incoming requests, such as when HTTPS is terminated by Cloudflare, nginx,
+# Caddy, or Traefik and Ragtime receives internal HTTP.
 EXTERNAL_BASE_URL=https://ragtime.example.com
+
+# Set this only if previews should use a different wildcard host family than
+# the main Ragtime host.
 USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com
 ```
 
 Notes:
+- Leave `EXTERNAL_BASE_URL` unset when Ragtime can already derive the correct public origin from the request, such as direct access to Ragtime or a reverse proxy that reliably forwards `Host`, `X-Forwarded-Host`, and `X-Forwarded-Proto`.
+- Set `EXTERNAL_BASE_URL` when public URLs must stay pinned to a canonical origin or when the backend would otherwise see an internal origin like `http://ragtime:8000` or `http://...` behind TLS termination. This affects OAuth metadata, preview/share URLs, and other public-facing links.
 - Keep `SESSION_COOKIE_SECURE=true` when traffic is HTTPS at the edge.
 - Forward `Host` and `X-Forwarded-Proto` headers through the proxy.
 - Legacy path-based preview proxy routes still exist for older links, but new preview launches use subdomains.
@@ -126,7 +134,8 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
 
 1. **Create environment file:**
 
-  Create a file named [.env](.env) with the following content (you can also copy from the full example in [.env.example](.env.example)):
+  Create a file named [.env](.env) with the following content (you can also copy from the full example in [.env.example](.env.example)).
+  The expanded block below is CI-synced from [.env.example](.env.example), so edit that file instead of editing the README snippet directly:
 
    <details>
    <summary>Click to expand .env template</summary>
@@ -157,15 +166,23 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
    PORT=8000
 
    # CORS allowed origins (comma-separated, or * for all)
+   # Example: https://ragtime.example.com,https://chat.example.com
    ALLOWED_ORIGINS=*
 
-   # Optional preview base-domain override for userspace subdomain previews.
-   # Leave unset to derive preview hosts from the current Ragtime origin
-   # (for example https://ragtime.example.com -> https://<workspace>.ragtime.example.com).
-   # Set this when previews should use a separate wildcard host family such as
-   # example-userspaces.com. Wildcard DNS/TLS must route *.example-userspaces.com
-   # back to Ragtime.
-   # USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com
+    # Canonical public Ragtime origin (scheme + host, no trailing slash), for example:
+    # https://ragtime.example.com
+    # Usually leave this unset.
+    # Set it only when Ragtime sees a different origin than users do
+    # (for example behind TLS termination) or public URLs must stay fixed.
+    # EXTERNAL_BASE_URL=https://ragtime.example.com
+
+    # Optional preview base-domain override for userspace subdomain previews.
+    # Leave unset to derive preview hosts from the current Ragtime origin
+    # (for example https://ragtime.example.com -> https://<workspace>.ragtime.example.com).
+    # Set this when previews should use a separate wildcard host family such as
+    # example-userspaces.com. Wildcard DNS/TLS must route *.example-userspaces.com
+    # back to Ragtime.
+    # USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com
 
    # -----------------------------------------------------------------------------
    # Security Configuration
@@ -187,16 +204,6 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
    # Set to true if behind an HTTPS reverse proxy (nginx, Caddy, Traefik)
    # This marks cookies as Secure. Auto-enabled when ENABLE_HTTPS=true.
    SESSION_COOKIE_SECURE=false
-
-    ############################################################
-    # Developer Only - Typically do not modify below this line #
-    ############################################################
-
-   # Debug mode (enables verbose logging and hot-reload)
-   DEBUG_MODE=false
-
-   # Database URL (auto-configured by docker-compose, override for external DB)
-   # DATABASE_URL=postgresql://ragtime:password@hostname:5432/ragtime
 
     # -----------------------------------------------------------------------------
     # Runtime Configuration
@@ -222,8 +229,18 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
    # RUNTIME_MAX_SESSIONS=12
    # Session lease duration before idle sessions are reclaimed
    # RUNTIME_LEASE_TTL_SECONDS=3600
-   # Reconcile interval for heartbeat and lease cleanup
-   # RUNTIME_RECONCILE_INTERVAL_SECONDS=15
+  # Reconcile interval for heartbeat and lease cleanup
+  # RUNTIME_RECONCILE_INTERVAL_SECONDS=15
+
+    ############################################################
+    # Developer Only - Typically do not modify below this line #
+    ############################################################
+
+    # Debug mode (enables verbose logging and hot-reload)
+    DEBUG_MODE=false
+
+    # Database URL (auto-configured by docker-compose, override for external DB)
+    # DATABASE_URL=postgresql://ragtime:password@hostname:5432/ragtime
    ```
 
    </details>

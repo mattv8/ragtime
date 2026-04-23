@@ -37,6 +37,7 @@ applyTo: '**'
 - Preferred dev loop: VS Code task `Start Development Stack` (`docker/docker-compose.dev.yml`).
 - Dev ports: `8000` API, `8001` Vite UI; in dev, `DEBUG_MODE=true` and hot reload is active.
 - If `ragtime/frontend/package.json` changes, run `docker exec ragtime-dev sh -c "cd /ragtime/ragtime/frontend && npm ci"`.
+- Documentation sync rule: the expanded `.env` template block in `README.md` is auto-synced from `.env.example` by `.github/actions/sync-readme/action.yml`. When updating env docs, edit `.env.example` first and keep the README copy in sync with that source of truth.
 - Prisma workflow after schema edits:
   - `docker exec ragtime-dev python -m prisma generate`
   - Use migrations for durable changes (`python -m prisma migrate dev` / `migrate deploy`), not ad-hoc DB edits.

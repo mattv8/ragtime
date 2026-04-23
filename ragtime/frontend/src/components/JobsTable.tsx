@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Copy, Check, ArrowUp, ArrowDown, Search } from 'lucide-react';
+import { ArrowUp, ArrowDown, Search } from 'lucide-react';
 import { api } from '@/api';
 import { formatElapsedTime } from '@/utils';
 import type { IndexJob, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob } from '@/types';
+import { InlineCopyButton } from './shared/InlineCopyButton';
+import { useToast, ToastContainer } from './shared/Toast';
 
 interface JobsTableProps {
   jobs: IndexJob[];
@@ -365,6 +367,7 @@ function getElapsedDuration(job: UnifiedJob, nowMs: number): string {
 }
 
 export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs = [], loading, error, onJobsChanged, onFilesystemJobsChanged, onSchemaJobsChanged, onPdmJobsChanged, onCancelFilesystemJob, onCancelSchemaJob, onCancelPdmJob }: JobsTableProps) {
+  const [toasts, toast] = useToast();
   const [showAll, setShowAll] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [sortConfig, setSortConfig] = useState<{ key: keyof UnifiedJob; direction: 'asc' | 'desc' } | null>(null);
@@ -373,7 +376,6 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
   const [retryConfirmId, setRetryConfirmId] = useState<string | null>(null);
-  const [copiedErrorId, setCopiedErrorId] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const handleSort = (key: keyof UnifiedJob) => {
@@ -385,16 +387,6 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
       }
     } else {
       setSortConfig({ key, direction: 'asc' });
-    }
-  };
-
-  const copyErrorMessage = async (text: string, jobId: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedErrorId(jobId);
-      setTimeout(() => setCopiedErrorId(null), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
     }
   };
 
@@ -842,17 +834,19 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
               <div className="error-message-section">
                 <div className="error-message-header">
                   <h4>Error Message</h4>
-                  <button
+                  <InlineCopyButton
+                    copyText={selectedJob.errorMessage ?? ''}
                     className="copy-error-btn"
-                    onClick={() => copyErrorMessage(selectedJob.errorMessage ?? '', selectedJob.id)}
                     title="Copy error message"
-                  >
-                    {copiedErrorId === selectedJob.id ? (
-                      <Check size={16} />
-                    ) : (
-                      <Copy size={16} />
-                    )}
-                  </button>
+                    ariaLabel="Copy error message"
+                    copiedTitle="Error message copied"
+                    copiedAriaLabel="Error message copied"
+                    iconSize={16}
+                    feedbackMs={2000}
+                    disabled={!selectedJob.errorMessage}
+                    onCopySuccess={() => toast.success('Error message copied')}
+                    onCopyError={() => toast.error('Failed to copy error message')}
+                  />
                 </div>
                 <pre className="error-message-text">{selectedJob.errorMessage}</pre>
               </div>
@@ -860,6 +854,8 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
           </div>
         </div>
       )}
+
+      <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
     </div>
   );
 }

@@ -135,7 +135,9 @@ async def get_mcp_server() -> Server:
         _mcp_server_state["server"] = _create_server(configured_name)
         # Keep legacy module-level export in sync for backward compatibility.
         globals()["mcp_server"] = _mcp_server_state["server"]
-        logger.info("Updated MCP server name to %s from Server Branding", configured_name)
+        logger.info(
+            "Updated MCP server name to %s from Server Branding", configured_name
+        )
         _mcp_server_state["id"] = configured_name
     return cast(Server, _mcp_server_state["server"])
 
@@ -270,7 +272,10 @@ def _register_handlers(
 
 async def get_custom_route_server(
     route_path: str,
-) -> tuple[Server, MCPToolAdapter, bool, str | None, str | None, str | None] | None:
+) -> (
+    tuple[Server, MCPToolAdapter, bool, str | None, str | None, str | None, str | None]
+    | None
+):
     """
     Get or create an MCP server for a custom route.
 
@@ -278,8 +283,8 @@ async def get_custom_route_server(
         route_path: The route path suffix (e.g., 'my_toolset')
 
     Returns:
-        Tuple of (Server, MCPToolAdapter, require_auth, auth_password, auth_method, allowed_group)
-        or None if route not found
+        Tuple of (Server, MCPToolAdapter, require_auth, auth_password, auth_method,
+        allowed_group, auth_client_id) or None if route not found
     """
     # Check cache first
     if route_path in _custom_route_servers:
@@ -295,6 +300,7 @@ async def get_custom_route_server(
                 route.authPassword,
                 route.authMethod,
                 route.allowedLdapGroup,
+                getattr(route, "authClientId", None),
             )
         return None
 
@@ -348,6 +354,7 @@ async def get_custom_route_server(
         route.authPassword,
         route.authMethod,
         route.allowedLdapGroup,
+        getattr(route, "authClientId", None),
     )
 
 
