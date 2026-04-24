@@ -107,9 +107,9 @@ flowchart LR
    LOCAL_ADMIN_USER=admin
    LOCAL_ADMIN_PASSWORD=changeme_admin
 
-  # Optional comma-separated OAuth callback URLs to trust in addition to built-in
-  # loopback/IDE callback handling.
-  # OAUTH_TRUSTED_REDIRECT_URIS=https://example-1/oauth/callback,https://example-2/oauth/callback
+   # Optional comma-separated OAuth callback URLs to trust in addition to built-in
+   # loopback/IDE callback handling.
+   # OAUTH_TRUSTED_REDIRECT_URIS=https://example-1/oauth/callback,https://example-2/oauth/callback
 
    # -----------------------------------------------------------------------------
    # Server Configuration
