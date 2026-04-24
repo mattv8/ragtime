@@ -193,6 +193,9 @@ from ragtime.userspace.sqlite_import import (
 
 logger = get_logger(__name__)
 
+_WORKSPACE_GIT_USER_NAME = "Ragtime User Space"
+_WORKSPACE_GIT_USER_EMAIL = "userspace@ragtime.local"
+
 _FILE_LIST_CACHE_TTL_SECONDS = 2
 _ENTRYPOINT_STATUS_CACHE_TTL_SECONDS = 300  # 5-minute TTL for entrypoint status
 _CHANGED_FILE_ACK_MAX_ROWS_PER_WORKSPACE_USER = (
@@ -6009,21 +6012,29 @@ class UserSpaceService:
         files_dir = self._workspace_files_dir(workspace_id)
         files_dir.mkdir(parents=True, exist_ok=True)
         git_dir = self._workspace_git_dir(workspace_id)
-        if git_dir.exists() and git_dir.is_dir():
-            self._ensure_workspace_gitignore(files_dir)
-            return
+        if not git_dir.exists() or not git_dir.is_dir():
+            await self._run_git(workspace_id, ["init"])
 
-        await self._run_git(workspace_id, ["init"])
-        await self._run_git(
-            workspace_id,
-            ["config", "user.name", "Ragtime User Space"],
-        )
-        await self._run_git(
-            workspace_id,
-            ["config", "user.email", "userspace@ragtime.local"],
-        )
+        await self._ensure_workspace_git_identity(workspace_id)
 
         self._ensure_workspace_gitignore(files_dir)
+
+    async def _ensure_workspace_git_identity(self, workspace_id: str) -> None:
+        for key, expected_value in (
+            ("user.name", _WORKSPACE_GIT_USER_NAME),
+            ("user.email", _WORKSPACE_GIT_USER_EMAIL),
+        ):
+            existing = await self._run_git(
+                workspace_id,
+                ["config", "--local", "--get", key],
+                check=False,
+            )
+            if existing.returncode == 0 and existing.stdout.strip():
+                continue
+            await self._run_git(
+                workspace_id,
+                ["config", "--local", key, expected_value],
+            )
 
     async def _reconcile_workspace_git_drift(
         self,
