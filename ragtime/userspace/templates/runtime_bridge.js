@@ -10,6 +10,11 @@
   var JQUERY_URL = 'https://code.jquery.com/jquery-3.7.1.min.js';
   var DATATABLES_JS_URL = 'https://cdn.datatables.net/1.13.8/js/dataTables.min.js';
   var DATATABLES_CSS_URL = 'https://cdn.datatables.net/1.13.8/css/dataTables.dataTables.min.css';
+  var CHART_ORIGIN = 'https://cdn.jsdelivr.net';
+  var JQUERY_ORIGIN = 'https://code.jquery.com';
+  var DATATABLES_ORIGIN = 'https://cdn.datatables.net';
+  var scriptLoadPromises = window.__ragtime_script_load_promises || (window.__ragtime_script_load_promises = Object.create(null));
+  var preconnectedOrigins = window.__ragtime_preconnected_origins || (window.__ragtime_preconnected_origins = Object.create(null));
   var reportedSandboxBlocks = Object.create(null);
 
   function getBridgeConfig() {
@@ -53,11 +58,31 @@
     document.head.appendChild(link);
   }
 
+  function ensurePreconnect(origin) {
+    if (!origin || preconnectedOrigins[origin]) return;
+    preconnectedOrigins[origin] = true;
+    if (document.querySelector('link[rel="preconnect"][href="' + origin + '"]')) return;
+    var link = document.createElement('link');
+    link.rel = 'preconnect';
+    link.href = origin;
+    link.crossOrigin = 'anonymous';
+    document.head.appendChild(link);
+  }
+
   function loadScript(src) {
-    return new Promise(function (resolve, reject) {
+    if (scriptLoadPromises[src]) {
+      return scriptLoadPromises[src];
+    }
+
+    var promise = new Promise(function (resolve, reject) {
       var existing = document.querySelector('script[src="' + src + '"]');
       if (existing) {
-        if (existing.getAttribute('data-ragtime-loaded') === '1') {
+        var alreadyLoaded = existing.getAttribute('data-ragtime-loaded') === '1'
+          || (src === CHART_URL && !!window.Chart)
+          || (src === JQUERY_URL && !!window.jQuery)
+          || (src === DATATABLES_JS_URL && hasDataTables());
+        if (alreadyLoaded) {
+          existing.setAttribute('data-ragtime-loaded', '1');
           resolve();
           return;
         }
@@ -67,48 +92,48 @@
       }
       var script = document.createElement('script');
       script.src = src;
-      script.async = false;
+      script.async = true;
       script.onload = function () {
         script.setAttribute('data-ragtime-loaded', '1');
         resolve();
       };
       script.onerror = function () { reject(new Error('Failed to load ' + src)); };
       document.head.appendChild(script);
+    }).catch(function (error) {
+      delete scriptLoadPromises[src];
+      throw error;
     });
+
+    scriptLoadPromises[src] = promise;
+    return promise;
   }
 
   function bootstrapVizLibs() {
     if (window.__ragtime_viz_bootstrap_promise) return window.__ragtime_viz_bootstrap_promise;
 
-    ensureStylesheet(DATATABLES_CSS_URL);
+    var needChart = !window.Chart;
+    var needJQuery = !window.jQuery;
+    var needDataTables = !hasDataTables();
 
-    var canUseDocumentWrite = document.readyState === 'loading' && !!document.currentScript;
-    if (canUseDocumentWrite) {
-      if (!window.Chart) {
-        document.write('<script src="' + CHART_URL + '"><\/script>');
-      }
-      if (!window.jQuery) {
-        document.write('<script src="' + JQUERY_URL + '"><\/script>');
-      }
-      if (!hasDataTables()) {
-        document.write('<script src="' + DATATABLES_JS_URL + '"><\/script>');
-      }
-      window.__ragtime_viz_bootstrap_promise = Promise.resolve();
-      return window.__ragtime_viz_bootstrap_promise;
-    }
+    // Only preconnect for origins we are actually about to fetch from,
+    // to avoid wasted TLS handshakes when workspaces preload some libs.
+    if (needChart) ensurePreconnect(CHART_ORIGIN);
+    if (needJQuery || needDataTables) ensurePreconnect(JQUERY_ORIGIN);
+    if (needDataTables) ensurePreconnect(DATATABLES_ORIGIN);
 
-    var chain = Promise.resolve();
-    if (!window.Chart) {
-      chain = chain.then(function () { return loadScript(CHART_URL); });
-    }
-    if (!window.jQuery) {
-      chain = chain.then(function () { return loadScript(JQUERY_URL); });
-    }
-    if (!hasDataTables()) {
-      chain = chain.then(function () { return loadScript(DATATABLES_JS_URL); });
-    }
+    var chartPromise = needChart ? loadScript(CHART_URL) : Promise.resolve();
+    var jQueryPromise = needJQuery ? loadScript(JQUERY_URL) : Promise.resolve();
+    var dataTablesPromise = needDataTables
+      ? jQueryPromise.then(function () {
+          ensureStylesheet(DATATABLES_CSS_URL);
+          return loadScript(DATATABLES_JS_URL);
+        })
+      : Promise.resolve();
 
-    window.__ragtime_viz_bootstrap_promise = chain.catch(function (error) {
+    window.__ragtime_viz_bootstrap_promise = Promise.all([
+      chartPromise,
+      dataTablesPromise,
+    ]).catch(function (error) {
       console.warn('[ragtime bridge] visualization bootstrap failed:', error);
     });
     return window.__ragtime_viz_bootstrap_promise;
