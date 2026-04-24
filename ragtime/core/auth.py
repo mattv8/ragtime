@@ -400,6 +400,11 @@ def _get_first_entry_attribute_value(entry: Any, *attribute_names: str) -> str |
     return None
 
 
+def _get_user_entry_search_attributes() -> list[str]:
+    """Return LDAP attributes needed for user lookup and role checks."""
+    return ["*", "memberOf"]
+
+
 def _build_user_search_filters(configured_filter: str, username: str) -> list[str]:
     """Build ordered filter candidates from configured filter + safe fallbacks."""
     filters: list[str] = []
@@ -816,7 +821,7 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
             conn=conn,
             search_base=search_base,
             search_filters=search_filters,
-            attributes=["*", "memberOf", "primaryGroupID"],
+            attributes=_get_user_entry_search_attributes(),
             context="LDAP authentication",
         )
 
@@ -1036,7 +1041,7 @@ async def resolve_ldap_role_for_user_dn(
             search_base=user_dn,
             search_filter="(objectClass=*)",
             search_scope="BASE",
-            attributes=["memberOf", "primaryGroupID", "sAMAccountName", "uid"],
+            attributes=_get_user_entry_search_attributes(),
         )
         if not conn.entries:
             return None, "User not found"

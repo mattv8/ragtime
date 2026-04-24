@@ -35,6 +35,7 @@ sys.modules["ragtime.core.database"] = database_module
 from ragtime.core.auth import (
     _build_default_user_search_filters,
     _get_first_entry_attribute_value,
+    _get_user_entry_search_attributes,
 )
 
 
@@ -59,6 +60,9 @@ class LdapAuthFilterTests(unittest.TestCase):
             ),
             "matt@visnovsky.us",
         )
+
+    def test_user_entry_search_attributes_avoid_explicit_primary_group_id(self) -> None:
+        self.assertEqual(_get_user_entry_search_attributes(), ["*", "memberOf"])
 
 
 if __name__ == "__main__":
