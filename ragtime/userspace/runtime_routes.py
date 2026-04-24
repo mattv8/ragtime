@@ -21,7 +21,8 @@ from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import decode_access_token, get_browser_matched_origin
 from ragtime.core.rate_limit import SHARE_AUTH_RATE_LIMIT, limiter
-from ragtime.core.security import get_current_user, get_current_user_optional
+from ragtime.core.security import (get_current_user, get_current_user_optional,
+                                   get_session_token)
 from ragtime.userspace.models import (UserSpaceBrowserAuthorization,
                                       UserSpaceBrowserAuthRequest,
                                       UserSpaceBrowserAuthResponse,
@@ -75,6 +76,22 @@ def _root_share_target_url(base_url: str, share_path: str, target_path: str) -> 
     )
 
 
+def _workspace_preview_entry_url(
+    base_url: str,
+    workspace_id: str,
+    target_path: str,
+    parent_origin: str | None,
+) -> str:
+    normalized_base = (base_url or "").rstrip("/")
+    entry_path = f"/indexes/userspace/runtime/workspaces/{quote(workspace_id, safe='')}/preview-entry"
+    query_params = {"path": target_path or "/"}
+    normalized_parent_origin = (parent_origin or "").strip()
+    if normalized_parent_origin:
+        query_params["parent_origin"] = normalized_parent_origin
+    query = urlencode(query_params)
+    return f"{normalized_base}{entry_path}?{query}"
+
+
 def _root_share_launch_response(
     *,
     workspace_id: str,
@@ -88,6 +105,30 @@ def _root_share_launch_response(
         preview_origin=preview_origin,
         preview_url=_root_share_target_url(base_url, share_path, target_path),
         expires_at=datetime.now(timezone.utc),
+    )
+
+
+def _workspace_preview_entry_launch_response(
+    *,
+    workspace_id: str,
+    base_url: str,
+    target_path: str,
+    parent_origin: str | None,
+    preview_origin: str,
+    expires_at: datetime,
+    preview_warning: Any | None = None,
+) -> UserSpacePreviewLaunchResponse:
+    return UserSpacePreviewLaunchResponse(
+        workspace_id=workspace_id,
+        preview_origin=preview_origin,
+        preview_url=_workspace_preview_entry_url(
+            base_url,
+            workspace_id,
+            target_path,
+            parent_origin,
+        ),
+        expires_at=expires_at,
+        preview_warning=preview_warning,
     )
 
 
@@ -939,16 +980,60 @@ async def issue_workspace_preview_launch(
     payload: UserSpacePreviewLaunchRequest,
     request: Request,
     user: Any = Depends(get_current_user),
+    session_token: str | None = Depends(get_session_token),
 ):
-    return await _runtime_service().issue_workspace_preview_launch(
+    external_origin = get_browser_matched_origin(
+        request,
+        browser_origin=payload.parent_origin,
+    )
+    token_data = decode_access_token(session_token) if session_token else None
+    preview_origin, expires_at, warning = await _runtime_service().describe_workspace_preview_launch(
+        workspace_id,
+        user.id,
+        control_plane_origin=external_origin,
+        session_expires_at=token_data.exp if token_data else None,
+    )
+    if warning and warning.issue_code == "preview_host_unreachable":
+        warning = None
+    return _workspace_preview_entry_launch_response(
+        workspace_id=workspace_id,
+        base_url=external_origin,
+        target_path=payload.path,
+        parent_origin=payload.parent_origin,
+        preview_origin=preview_origin,
+        expires_at=expires_at,
+        preview_warning=warning,
+    )
+
+
+@router.get(
+    "/runtime/workspaces/{workspace_id}/preview-entry",
+)
+async def workspace_preview_entry(
+    workspace_id: str,
+    request: Request,
+    path: str = "/",
+    parent_origin: str | None = None,
+    user: Any = Depends(get_current_user),
+):
+    launch = await _runtime_service().issue_workspace_preview_launch(
         workspace_id,
         user.id,
         control_plane_origin=get_browser_matched_origin(
             request,
-            browser_origin=payload.parent_origin,
+            browser_origin=parent_origin,
         ),
-        path=payload.path,
-        parent_origin=payload.parent_origin,
+        path=path,
+        parent_origin=parent_origin,
+    )
+    return Response(
+        status_code=307,
+        headers={
+            "Location": launch.preview_url,
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Referrer-Policy": "no-referrer",
+        },
     )
 
 

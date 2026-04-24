@@ -17,34 +17,29 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.core.workspace_ops import normalize_runtime_file_path
 from ragtime.indexer.workspace_state import build_workspace_chat_state
-from ragtime.userspace.models import (
-    RuntimeOperationPhase,
-    RuntimeSessionState,
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceCollabSnapshotResponse,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpacePreviewLaunchResponse,
-    UserSpacePreviewWarning,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSession,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-    UserSpaceWorkspaceTabStateResponse,
-)
-from ragtime.userspace.preview_probe import (
-    build_preview_probe_url,
-    is_preview_probe_response,
-)
+from ragtime.userspace.models import (RuntimeOperationPhase,
+                                      RuntimeSessionState,
+                                      UserSpaceCapabilityTokenResponse,
+                                      UserSpaceCollabSnapshotResponse,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpacePreviewLaunchResponse,
+                                      UserSpacePreviewWarning,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSession,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse,
+                                      UserSpaceWorkspaceTabStateResponse)
+from ragtime.userspace.preview_probe import (build_preview_probe_url,
+                                             is_preview_probe_response)
 from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
 from ragtime.userspace.service import userspace_service
 
@@ -343,7 +338,9 @@ class UserSpaceRuntimeService:
         ttl_seconds: int,
     ) -> tuple[str, datetime]:
         now = self._utc_now()
-        expires_at = now + timedelta(seconds=max(60, min(ttl_seconds, 86400)))
+        expires_at = now + timedelta(
+            seconds=self._clamp_preview_token_ttl_seconds(ttl_seconds)
+        )
         payload = {key: value for key, value in claims.items() if value is not None}
         payload.update(
             {
@@ -357,6 +354,10 @@ class UserSpaceRuntimeService:
         )
         return token, expires_at
 
+    @staticmethod
+    def _clamp_preview_token_ttl_seconds(ttl_seconds: int) -> int:
+        return max(60, min(ttl_seconds, 86400))
+
     def _sanitize_preview_path(self, path: str | None, query: str | None = None) -> str:
         normalized = "/" + (path or "").lstrip("/")
         if normalized.startswith("/__ragtime/"):
@@ -364,6 +365,43 @@ class UserSpaceRuntimeService:
         if query:
             normalized = f"{normalized}?{query}"
         return normalized
+
+    def _build_preview_launch_expiration(
+        self,
+        *,
+        session_expires_at: datetime | None = None,
+    ) -> datetime:
+        expires_at = self._utc_now() + timedelta(
+            seconds=self._clamp_preview_token_ttl_seconds(
+                _RUNTIME_PREVIEW_SESSION_TTL_SECONDS
+            )
+        )
+        if session_expires_at is None:
+            return expires_at
+        if session_expires_at.tzinfo is None:
+            session_expires_at = session_expires_at.replace(tzinfo=timezone.utc)
+        return min(expires_at, session_expires_at)
+
+    async def _describe_preview_launch(
+        self,
+        *,
+        workspace_id: str,
+        control_plane_origin: str,
+    ) -> tuple[str, UserSpacePreviewWarning | None]:
+        resolved_base_domain, source = self._resolve_preview_base_domain(
+            control_plane_origin
+        )
+        self._remember_preview_base_domain(resolved_base_domain)
+        preview_origin = self._build_preview_origin(
+            workspace_id,
+            control_plane_origin=control_plane_origin,
+        )
+        preview_warning = await self._build_preview_launch_warning(
+            preview_origin=preview_origin,
+            resolved_base_domain=resolved_base_domain,
+            source=source,
+        )
+        return preview_origin, preview_warning
 
     async def _build_workspace_preview_launch_response(
         self,
@@ -379,12 +417,8 @@ class UserSpaceRuntimeService:
         share_slug: str | None = None,
         share_access_mode: str | None = None,
     ) -> UserSpacePreviewLaunchResponse:
-        resolved_base_domain, source = self._resolve_preview_base_domain(
-            control_plane_origin
-        )
-        self._remember_preview_base_domain(resolved_base_domain)
-        preview_origin = self._build_preview_origin(
-            workspace_id,
+        preview_origin, preview_warning = await self._describe_preview_launch(
+            workspace_id=workspace_id,
             control_plane_origin=control_plane_origin,
         )
         preview_host = urlsplit(preview_origin).netloc.lower()
@@ -407,11 +441,6 @@ class UserSpaceRuntimeService:
             ttl_seconds=_RUNTIME_PREVIEW_BOOTSTRAP_TTL_SECONDS,
         )
         bootstrap_query = urlencode({"grant": grant_token})
-        preview_warning = await self._build_preview_launch_warning(
-            preview_origin=preview_origin,
-            resolved_base_domain=resolved_base_domain,
-            source=source,
-        )
         return UserSpacePreviewLaunchResponse(
             workspace_id=workspace_id,
             preview_origin=preview_origin,
@@ -419,6 +448,24 @@ class UserSpaceRuntimeService:
             expires_at=expires_at,
             preview_warning=preview_warning,
         )
+
+    async def describe_workspace_preview_launch(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        control_plane_origin: str,
+        session_expires_at: datetime | None = None,
+    ) -> tuple[str, datetime, UserSpacePreviewWarning | None]:
+        await self.ensure_workspace_preview_session(workspace_id, user_id)
+        preview_origin, preview_warning = await self._describe_preview_launch(
+            workspace_id=workspace_id,
+            control_plane_origin=control_plane_origin,
+        )
+        expires_at = self._build_preview_launch_expiration(
+            session_expires_at=session_expires_at,
+        )
+        return preview_origin, expires_at, preview_warning
 
     def build_preview_session_token(
         self, claims: dict[str, Any]
@@ -806,9 +853,8 @@ class UserSpaceRuntimeService:
     ) -> None:
         await self.invalidate_preview_session_cache(workspace_id)
         if invalidate_preview_host:
-            from ragtime.userspace.preview_host import (
-                invalidate_preview_sessions_for_workspace,
-            )
+            from ragtime.userspace.preview_host import \
+                invalidate_preview_sessions_for_workspace
 
             await invalidate_preview_sessions_for_workspace(workspace_id)
 
