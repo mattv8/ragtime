@@ -26,20 +26,26 @@ from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.core.workspace_ops import normalize_runtime_file_path
 from ragtime.indexer.workspace_state import build_workspace_chat_state
-from ragtime.userspace.models import (RuntimeOperationPhase,
-                                      RuntimeSessionState,
-                                      UserSpaceCapabilityTokenResponse,
-                                      UserSpaceCollabSnapshotResponse,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpacePreviewLaunchResponse,
-                                      UserSpacePreviewWarning,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSession,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse,
-                                      UserSpaceWorkspaceTabStateResponse)
-from ragtime.userspace.preview_probe import (build_preview_probe_url,
-                                             is_preview_probe_response)
+from ragtime.userspace.models import (
+    RuntimeOperationPhase,
+    RuntimeSessionState,
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceCollabSnapshotResponse,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpacePreviewLaunchResponse,
+    UserSpacePreviewWarning,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSession,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+    UserSpaceWorkspaceTabStateResponse,
+)
+from ragtime.userspace.preview_probe import (
+    PREVIEW_HOST_PROBE_PATH,
+    build_preview_probe_url,
+    is_preview_probe_response,
+)
 from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
 from ragtime.userspace.service import userspace_service
 
@@ -61,6 +67,8 @@ _RUNTIME_PROVIDER_STATUS_STALE_FALLBACK_SECONDS = 8.0
 _RUNTIME_PREVIEW_PROBE_CACHE_TTL_SECONDS = 3.0
 _RUNTIME_PUBLIC_PREVIEW_DNS_CACHE_TTL_SECONDS = 30.0
 _RUNTIME_PUBLIC_PREVIEW_PROBE_CACHE_TTL_SECONDS = 30.0
+_RUNTIME_PUBLIC_PREVIEW_PROBE_ATTEMPTS = 2
+_RUNTIME_PUBLIC_PREVIEW_PROBE_RETRY_DELAY_SECONDS = 0.2
 # How often to (re-)log a WARNING for a given unreachable preview origin.
 _RUNTIME_PUBLIC_PREVIEW_UNREACHABLE_LOG_INTERVAL_SECONDS = 300.0
 
@@ -859,8 +867,9 @@ class UserSpaceRuntimeService:
     ) -> None:
         await self.invalidate_preview_session_cache(workspace_id)
         if invalidate_preview_host:
-            from ragtime.userspace.preview_host import \
-                invalidate_preview_sessions_for_workspace
+            from ragtime.userspace.preview_host import (
+                invalidate_preview_sessions_for_workspace,
+            )
 
             await invalidate_preview_sessions_for_workspace(workspace_id)
 
@@ -968,7 +977,10 @@ class UserSpaceRuntimeService:
             cache_key=probe_url,
             ttl_seconds=_RUNTIME_PUBLIC_PREVIEW_PROBE_CACHE_TTL_SECONDS,
             inflight_key=f"public-preview:{probe_url}",
-            probe=lambda: self._probe_public_preview_origin(probe_url),
+            probe=lambda: self._probe_public_preview_origin(
+                preview_origin,
+                probe_url,
+            ),
         )
         if not ok:
             self._log_preview_host_unreachable(preview_origin, probe_url)
@@ -989,10 +1001,7 @@ class UserSpaceRuntimeService:
 
         now = _time.monotonic()
         last = self._preview_host_unreachable_log_ts.get(probe_url, 0.0)
-        if (
-            now - last
-            < _RUNTIME_PUBLIC_PREVIEW_UNREACHABLE_LOG_INTERVAL_SECONDS
-        ):
+        if now - last < _RUNTIME_PUBLIC_PREVIEW_UNREACHABLE_LOG_INTERVAL_SECONDS:
             return
         self._preview_host_unreachable_log_ts[probe_url] = now
         logger.warning(
@@ -1002,17 +1011,54 @@ class UserSpaceRuntimeService:
             probe_url,
         )
 
-    async def _probe_public_preview_origin(self, probe_url: str) -> bool:
+    async def _probe_public_preview_origin(
+        self,
+        preview_origin: str,
+        probe_url: str,
+    ) -> bool:
+        """Probe preview routing with retries and a direct-host fallback.
+
+        ``preview-probe.<base-domain>`` is the primary signal because it avoids
+        needing per-workspace routing registration, but some proxies may update
+        workspace host routes before the shared probe host. In that case, fall
+        back to probing the workspace subdomain directly before reporting an
+        unreachable warning.
+        """
+
         timeout = httpx.Timeout(connect=1.0, read=1.0, write=1.0, pool=0.5)
-        try:
+        direct_probe_url = f"{preview_origin.rstrip('/')}{PREVIEW_HOST_PROBE_PATH}"
+        candidate_urls = [probe_url]
+        if direct_probe_url != probe_url:
+            candidate_urls.append(direct_probe_url)
+
+        async def _run_probe() -> bool:
             async with httpx.AsyncClient(
                 timeout=timeout,
                 follow_redirects=False,
             ) as client:
-                response = await client.get(probe_url)
-        except Exception:
+                for candidate_url in candidate_urls:
+                    for attempt in range(1, _RUNTIME_PUBLIC_PREVIEW_PROBE_ATTEMPTS + 1):
+                        try:
+                            response = await client.get(candidate_url)
+                            if is_preview_probe_response(
+                                response.status_code,
+                                response.headers,
+                            ):
+                                return True
+                        except Exception:
+                            pass
+
+                        if attempt < _RUNTIME_PUBLIC_PREVIEW_PROBE_ATTEMPTS:
+                            await asyncio.sleep(
+                                _RUNTIME_PUBLIC_PREVIEW_PROBE_RETRY_DELAY_SECONDS
+                                * attempt
+                            )
             return False
-        return is_preview_probe_response(response.status_code, response.headers)
+
+        try:
+            return await asyncio.wait_for(_run_probe(), timeout=3.0)
+        except asyncio.TimeoutError:
+            return False
 
     async def _probe_preview_base_url(self, base_url: str) -> bool:
         health_candidates = ["/", "/@vite/client"]
