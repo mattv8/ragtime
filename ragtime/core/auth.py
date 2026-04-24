@@ -379,10 +379,25 @@ def _build_default_user_search_filters(username: str) -> list[str]:
     # LDAP-first attributes, followed by AD-specific attributes.
     add_filter("uid", short_username)
     add_filter("mail", full_username)
+    add_filter("mailPrimaryAddress", full_username)
+    add_filter("mailAlternativeAddress", full_username)
     add_filter("cn", short_username)
     add_filter("sAMAccountName", short_username)
     add_filter("userPrincipalName", full_username)
     return filters
+
+
+def _get_first_entry_attribute_value(entry: Any, *attribute_names: str) -> str | None:
+    """Return the first populated LDAP entry attribute value as a string."""
+    for attribute_name in attribute_names:
+        if not hasattr(entry, attribute_name):
+            continue
+
+        attribute_value = getattr(entry, attribute_name)
+        if attribute_value:
+            return str(attribute_value)
+
+    return None
 
 
 def _build_user_search_filters(configured_filter: str, username: str) -> list[str]:
@@ -809,16 +824,19 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
             return AuthResult(success=False, error="User not found")
 
         user_dn = str(user_entry.entry_dn)
-        user_mail = (
-            str(user_entry.mail)
-            if hasattr(user_entry, "mail") and user_entry.mail
-            else None
+        user_mail = _get_first_entry_attribute_value(
+            user_entry,
+            "mail",
+            "mailPrimaryAddress",
+            "mailAlternativeAddress",
         )
-        user_display = (
-            str(user_entry.displayName)
-            if hasattr(user_entry, "displayName") and user_entry.displayName
-            else username
+        user_display = _get_first_entry_attribute_value(
+            user_entry,
+            "displayName",
+            "cn",
         )
+        if not user_display:
+            user_display = username
 
         # Get username from LDAP (prefer sAMAccountName, fall back to uid)
         ldap_username = username
