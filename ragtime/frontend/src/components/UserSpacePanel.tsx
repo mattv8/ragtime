@@ -6101,7 +6101,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                     : `git:${activeWorkspace.scm.git_branch || 'main'}`}
               </span>
             )}
-            {activeWorkspace?.archive_export_task_phase && (
+            {archiveExportInProgress && activeWorkspace?.archive_export_task_phase && (
               <span className="userspace-status-pill userspace-status-pill-info" title="Workspace archive export status">
                 Archive export: {activeWorkspace.archive_export_task_phase.replace(/_/g, ' ')}
               </span>
