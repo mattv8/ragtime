@@ -16,19 +16,16 @@ from fastapi.responses import RedirectResponse
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import HTMLResponse, JSONResponse
 
-from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse
-from ragtime.userspace.preview_probe import (
-    PREVIEW_HOST_PROBE_HEADER,
-    PREVIEW_HOST_PROBE_PATH,
-    PREVIEW_HOST_PROBE_VALUE,
-)
-from ragtime.userspace.runtime_routes import (
-    _PROXY_METHODS,
-    _proxy_http_request,
-    _proxy_websocket_request,
-    _sanitize_preview_query,
-    _to_websocket_url,
-)
+from ragtime.userspace.models import (ExecuteComponentRequest,
+                                      ExecuteComponentResponse)
+from ragtime.userspace.preview_probe import (PREVIEW_HOST_PROBE_HEADER,
+                                             PREVIEW_HOST_PROBE_PATH,
+                                             PREVIEW_HOST_PROBE_VALUE)
+from ragtime.userspace.runtime_routes import (_PROXY_METHODS,
+                                              _proxy_http_request,
+                                              _proxy_websocket_request,
+                                              _sanitize_preview_query,
+                                              _to_websocket_url)
 
 _RUNTIME_PREVIEW_GRANT_KIND = "userspace_preview_grant"
 _RUNTIME_PREVIEW_SESSION_KIND = "userspace_preview_session"
@@ -66,8 +63,22 @@ async def _handle_preview_auth_error(request: StarletteRequest, exc: HTTPExcepti
 
     is_bootstrap = request.url.path.startswith("/__ragtime/bootstrap")
     workspace_id = _workspace_id_from_preview_host(request.headers.get("host"))
+    # Sec-Fetch-Dest == "document" identifies a top-level navigation (new tab,
+    # bookmark, reload of the bootstrap URL). In that context the
+    # postMessage() recovery below is useless because there is no parent
+    # frame, which is why users see the subdomain URL stuck on
+    # /__ragtime/bootstrap?grant=... after an expired or already-consumed
+    # grant. For that case we bounce back to the main-origin /shared/{token}
+    # so it can mint a fresh grant and re-enter the subdomain bootstrap.
+    is_top_level_nav = (
+        str(request.headers.get("sec-fetch-dest", "")).lower() == "document"
+    )
 
-    if workspace_id and not request.url.path.startswith("/__ragtime/"):
+    should_redirect_to_share = workspace_id and (
+        not request.url.path.startswith("/__ragtime/")
+        or (is_bootstrap and is_top_level_nav)
+    )
+    if should_redirect_to_share:
         share_token = await _userspace_service().get_share_token(workspace_id)
         if share_token:
             # Derive control-plane origin from the subdomain host header:

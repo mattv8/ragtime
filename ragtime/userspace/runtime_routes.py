@@ -15,11 +15,13 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 import httpx
 from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
                      WebSocket, WebSocketDisconnect)
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import (FileResponse, HTMLResponse, Response,
+                                StreamingResponse)
 
 from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import decode_access_token, get_browser_matched_origin
+from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.security import (get_current_user, get_current_user_optional,
                                    get_session_token)
@@ -38,6 +40,8 @@ from ragtime.userspace.models import (UserSpaceBrowserAuthorization,
 from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
 from ragtime.userspace.share_auth import (set_share_auth_cookie,
                                           share_auth_token_from_request)
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
@@ -129,6 +133,70 @@ def _workspace_preview_entry_launch_response(
         ),
         expires_at=expires_at,
         preview_warning=preview_warning,
+    )
+
+
+def _preview_host_unreachable_response(
+    *,
+    workspace_id: str,
+    preview_origin: str,
+    warning: Any,
+) -> HTMLResponse:
+    """Return an actionable 503 when the preview subdomain is not routed to Ragtime.
+
+    Mirrors the ``preview_host_unreachable`` warning condition but renders
+    inline instead of issuing a 307 into an upstream that will 502 at the
+    reverse proxy.
+    """
+
+    import html as _html
+
+    preview_host = _html.escape(str(getattr(warning, "preview_host", "") or ""))
+    base_domain = _html.escape(
+        str(getattr(warning, "resolved_base_domain", "") or "")
+    )
+    origin = _html.escape(preview_origin or "")
+    workspace = _html.escape(workspace_id)
+    body = (
+        "<!doctype html>\n"
+        "<html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<title>Userspace preview unreachable</title>"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<style>"
+        "body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;"
+        "max-width:640px;margin:2rem auto;padding:0 1rem;color:#222}"
+        "h1{font-size:1.25rem;margin-bottom:.5rem}"
+        "code{background:#f3f3f3;padding:2px 6px;border-radius:3px}"
+        ".hint{background:#fff7e6;border-left:4px solid #f0ad4e;"
+        "padding:.75rem 1rem;margin-top:1rem}"
+        "p{line-height:1.5}"
+        "</style></head><body>"
+        "<h1>Preview subdomain is not routed to Ragtime</h1>"
+        f"<p>The workspace preview host <code>{preview_host}</code> is "
+        "configured but does not reach this Ragtime instance. Ragtime "
+        "refused to redirect into an upstream that will fail at the "
+        "reverse proxy.</p>"
+        f"<p><strong>Workspace:</strong> <code>{workspace}</code><br>"
+        f"<strong>Preview origin:</strong> <code>{origin}</code></p>"
+        "<div class=\"hint\"><p><strong>Fix:</strong> configure a wildcard "
+        f"vhost <code>*.{base_domain}</code> on your reverse proxy "
+        "(Caddy/Traefik/nginx) that forwards to the Ragtime container, or "
+        "point <code>USERSPACE_PREVIEW_BASE_DOMAIN</code> at a domain whose "
+        "wildcard already proxies to Ragtime. Verify with:<br>"
+        f"<code>curl -I https://{preview_host}/__ragtime/preview-host-probe</code>"
+        "<br>A correctly routed host returns <code>HTTP 204</code> with "
+        "<code>x-ragtime-preview-probe: ok</code>.</p></div>"
+        "</body></html>"
+    )
+    return HTMLResponse(
+        content=body,
+        status_code=503,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Referrer-Policy": "no-referrer",
+            "X-Ragtime-Preview-Issue": "preview_host_unreachable",
+        },
     )
 
 
@@ -1026,6 +1094,13 @@ async def workspace_preview_entry(
         path=path,
         parent_origin=parent_origin,
     )
+    warning = getattr(launch, "preview_warning", None)
+    if warning and warning.issue_code == "preview_host_unreachable":
+        return _preview_host_unreachable_response(
+            workspace_id=workspace_id,
+            preview_origin=launch.preview_origin,
+            warning=warning,
+        )
     return Response(
         status_code=307,
         headers={

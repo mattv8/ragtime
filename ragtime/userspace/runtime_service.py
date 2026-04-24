@@ -61,6 +61,8 @@ _RUNTIME_PROVIDER_STATUS_STALE_FALLBACK_SECONDS = 8.0
 _RUNTIME_PREVIEW_PROBE_CACHE_TTL_SECONDS = 3.0
 _RUNTIME_PUBLIC_PREVIEW_DNS_CACHE_TTL_SECONDS = 30.0
 _RUNTIME_PUBLIC_PREVIEW_PROBE_CACHE_TTL_SECONDS = 30.0
+# How often to (re-)log a WARNING for a given unreachable preview origin.
+_RUNTIME_PUBLIC_PREVIEW_UNREACHABLE_LOG_INTERVAL_SECONDS = 300.0
 
 
 @dataclass
@@ -119,6 +121,10 @@ class UserSpaceRuntimeService:
         self._public_preview_dns_cache: dict[str, _PreviewProbeCacheEntry] = {}
         self._public_preview_probe_cache: dict[str, _PreviewProbeCacheEntry] = {}
         self._probe_tasks: dict[str, asyncio.Task[bool]] = {}
+        # Throttle WARNING logs for preview-host unreachability to avoid
+        # log-spam when a misconfigured wildcard vhost is probed repeatedly.
+        # Maps probe_url -> monotonic timestamp of last emitted warning.
+        self._preview_host_unreachable_log_ts: dict[str, float] = {}
         self._runtime_watch_task: asyncio.Task[None] | None = None
         self._runtime_watch_task_lock = asyncio.Lock()
         self._runtime_watch_interval_seconds = float(
@@ -957,12 +963,43 @@ class UserSpaceRuntimeService:
 
     async def _probe_public_preview_origin_cached(self, preview_origin: str) -> bool:
         probe_url = build_preview_probe_url(preview_origin)
-        return await self._run_cached_probe(
+        ok = await self._run_cached_probe(
             cache=self._public_preview_probe_cache,
             cache_key=probe_url,
             ttl_seconds=_RUNTIME_PUBLIC_PREVIEW_PROBE_CACHE_TTL_SECONDS,
             inflight_key=f"public-preview:{probe_url}",
             probe=lambda: self._probe_public_preview_origin(probe_url),
+        )
+        if not ok:
+            self._log_preview_host_unreachable(preview_origin, probe_url)
+        return ok
+
+    def _log_preview_host_unreachable(
+        self,
+        preview_origin: str,
+        probe_url: str,
+    ) -> None:
+        """Emit a rate-limited WARNING when a preview subdomain is unreachable.
+
+        The reverse proxy in front of Ragtime is a common misconfiguration
+        surface; surfacing these probe failures in server logs lets operators
+        diagnose ``502 Bad Gateway`` on preview subdomains without inspecting
+        per-workspace UI state.
+        """
+
+        now = _time.monotonic()
+        last = self._preview_host_unreachable_log_ts.get(probe_url, 0.0)
+        if (
+            now - last
+            < _RUNTIME_PUBLIC_PREVIEW_UNREACHABLE_LOG_INTERVAL_SECONDS
+        ):
+            return
+        self._preview_host_unreachable_log_ts[probe_url] = now
+        logger.warning(
+            "Preview host unreachable: %s did not respond to public probe %s. "
+            "Check that the reverse proxy forwards *.<base_domain> to Ragtime.",
+            preview_origin,
+            probe_url,
         )
 
     async def _probe_public_preview_origin(self, probe_url: str) -> bool:
