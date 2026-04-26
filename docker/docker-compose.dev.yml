@@ -61,14 +61,14 @@ services:
       - ../prisma:/ragtime/prisma:ro
       # Mount data directory (indexes, SSL certs, etc.)
       - ../.data:/data
-      # Mount Docker socket for container exec
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount Docker socket for container exec.
+      # Linux/WSL default: /var/run/docker.sock
+      # Colima/macOS: set DOCKER_SOCKET_PATH=$HOME/.colima/default/docker.sock
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
       # Mount SSH keys for remote connections
       - ~/.ssh:/root/.ssh:ro
       # Mount scripts for backup/restore
       - ./scripts:/docker-scripts:ro
-      # Mount downloads directory for filesystem tool testing
-      - /mnt/c/Users/matt/Downloads:/mnt/downloads:ro
     privileged: true
     cap_add:
       - SYS_ADMIN

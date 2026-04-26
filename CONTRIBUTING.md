@@ -110,6 +110,12 @@ curl -X POST http://localhost:8000/v1/chat/completions \
    cp .env.example .env
    ```
 
+  If you use Colima on macOS, add the Docker socket override before starting the dev stack:
+  ```bash
+  echo 'DOCKER_SOCKET_PATH=$HOME/.colima/default/docker.sock' >> .env
+  ```
+  Linux and WSL typically do not need this because `/var/run/docker.sock` is already the default.
+
 2. **Start development stack:**
 
    **VS Code:** Press `Ctrl+Shift+P` → `Tasks: Run Task` → `Start Development Stack`
