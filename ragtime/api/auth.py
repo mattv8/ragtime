@@ -73,6 +73,25 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
+TRUSTED_NATIVE_REDIRECT_SCHEMES = {
+    "vscode",
+    "vscode-insiders",
+    "cursor",
+    "windsurf",
+    "jetbrains",
+}
+
+TRUSTED_IDE_REDIRECT_HOSTS = {
+    "vscode.dev",
+    "insiders.vscode.dev",
+    "github.dev",
+    "account.jetbrains.com",
+}
+
+DEFAULT_TRUSTED_REDIRECT_URIS = {
+    "https://claude.ai/oauth/callback",
+}
+
 # In-memory storage for authorization codes (short-lived, 10 min expiry)
 # Format: {code: {"client_id": str, "redirect_uri": str, "code_challenge": str,
 #                 "user_id": str, "username": str, "role": str, "expires": float}}
@@ -92,11 +111,14 @@ def validate_redirect_uri(redirect_uri: str) -> bool:
     Validate redirect_uri for OAuth2 security.
 
     For MCP clients (VS Code, JetBrains, etc.), allow:
+    - Registered private-use URI schemes for native apps (RFC 8252 §7.1)
+      e.g. vscode://, cursor://, windsurf://, jetbrains://
     - Loopback addresses per RFC 8252 Section 7.3
     - Trusted IDE redirect domains (vscode.dev, etc.)
+    - Exact URIs listed in OAUTH_TRUSTED_REDIRECT_URIS (any scheme)
 
     This prevents open redirect attacks while supporting OAuth flows from
-    various development tools.
+    various development tools and native desktop clients.
 
     RFC 8252 Section 7.3: Loopback Interface Redirection
     - http://127.0.0.1:<port>/<path>
@@ -120,7 +142,18 @@ def validate_redirect_uri(redirect_uri: str) -> bool:
 
         parsed = urlparse(redirect_uri)
 
-        # Must be http or https
+        # Allow registered private-use URI schemes for native IDE clients
+        # (RFC 8252 §7.1). These don't redirect to web servers so open-redirect
+        # risk doesn't apply; the OS only delivers the callback to the app that
+        # registered the scheme.
+        if parsed.scheme in TRUSTED_NATIVE_REDIRECT_SCHEMES:
+            if settings.debug_mode:
+                logger.debug(
+                    f"OAuth2 redirect_uri validated (native app scheme): {redirect_uri}"
+                )
+            return True
+
+        # Must be http or https for the remainder of the checks
         if parsed.scheme not in ("http", "https"):
             logger.warning(
                 f"OAuth2 redirect_uri rejected: scheme must be http or https, got {parsed.scheme}"
@@ -138,32 +171,22 @@ def validate_redirect_uri(redirect_uri: str) -> bool:
 
         # Allow trusted IDE redirect domains (exact match only).
         # These are official OAuth redirect endpoints for IDEs.
-        trusted_domains = {
-            "vscode.dev",  # VS Code web/desktop OAuth callback
-            "insiders.vscode.dev",  # VS Code Insiders
-            "github.dev",  # GitHub Codespaces
-            "account.jetbrains.com",  # JetBrains OAuth callback
-        }
+        trusted_domains = TRUSTED_IDE_REDIRECT_HOSTS
 
         # Allow exact trusted callback URLs. Includes Claude by default.
-        trusted_redirect_uris = {
-            "https://claude.ai/oauth/callback",
-        }
+        trusted_redirect_uris = set(DEFAULT_TRUSTED_REDIRECT_URIS)
 
         # Optional operator-configured trusted callback URLs (comma-separated).
+        # Normalised http/https URIs are added to the set; any other scheme was
+        # already handled above via the native_app_schemes early-return path.
         if settings.oauth_trusted_redirect_uris.strip():
             for raw_uri in settings.oauth_trusted_redirect_uris.split(","):
                 candidate = raw_uri.strip()
                 if not candidate:
                     continue
                 normalized_candidate = _normalize_redirect_uri(candidate)
-                if not normalized_candidate:
-                    logger.warning(
-                        "Ignoring invalid OAUTH_TRUSTED_REDIRECT_URIS entry: %s",
-                        candidate,
-                    )
-                    continue
-                trusted_redirect_uris.add(normalized_candidate)
+                if normalized_candidate:
+                    trusted_redirect_uris.add(normalized_candidate)
 
         normalized_redirect_uri = _normalize_redirect_uri(redirect_uri)
 

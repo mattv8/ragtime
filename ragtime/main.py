@@ -48,6 +48,7 @@ from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import (
     create_access_token,
     create_session,
+    get_browser_matched_origin,
     get_external_origin,
     validate_session,
 )
@@ -441,8 +442,9 @@ async def oauth_discovery(request: Request):
     Provides OAuth2 discovery for MCP clients (VS Code, JetBrains, CLI tools, etc.)
     to automatically configure authorization endpoints.
     """
-    # Determine base URL from request, considering reverse proxy headers
-    base_url = get_external_origin(request)
+    # Use the browser-visible origin so OAuth metadata stays HTTPS-correct
+    # when Ragtime runs behind a TLS-terminating reverse proxy.
+    base_url = get_browser_matched_origin(request)
 
     # Security warning: OAuth should use HTTPS in production
     if base_url.startswith("http://") and not settings.debug_mode:
@@ -495,8 +497,9 @@ async def oauth_protected_resource(request: Request, path: str = ""):
         /.well-known/oauth-protected-resource/mcp   -> resource: /mcp
         /.well-known/oauth-protected-resource/mcp/custom -> resource: /mcp/custom
     """
-    # Determine base URL considering reverse proxy headers
-    base_url = get_external_origin(request)
+    # Use the browser-visible origin so protected-resource metadata points
+    # clients at the same public HTTPS origin they are already using.
+    base_url = get_browser_matched_origin(request)
 
     app_settings = await get_app_settings()
     if (
