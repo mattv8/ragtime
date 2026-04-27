@@ -1864,6 +1864,23 @@ export const api = {
     return handleResponse<import('@/types').ChatTask>(response);
   },
 
+  async uploadConversationChatAttachment(
+    conversationId: string,
+    file: File,
+    workspaceId?: string,
+  ): Promise<import('@/types').ChatAttachmentUploadResponse> {
+    const formData = new FormData();
+    formData.append('file', file, file.name);
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/attachments`, workspaceId),
+      {
+        method: 'POST',
+        body: formData,
+      },
+    );
+    return handleResponse<import('@/types').ChatAttachmentUploadResponse>(response);
+  },
+
   /**
    * Get the active task for a conversation, if any.
    */

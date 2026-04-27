@@ -112,13 +112,16 @@ from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import (
     background_task_service,
+    parse_message_content,
     rebuild_tool_messages_from_events,
 )
+from ragtime.indexer.chat_attachments import store_chat_attachment_upload
 from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import (
     AnalyzeIndexRequest,
     AppSettings,
+    ChatAttachmentUploadResponse,
     ChatMessage,
     ChatTaskResponse,
     ChatTaskStatus,
@@ -9962,7 +9965,16 @@ async def send_message(
     chat_history: list[BaseMessage] = []
     for msg_idx, msg in enumerate(conv.messages[:-1]):  # Exclude the current message
         if msg.role == "user":
-            chat_history.append(HumanMessage(content=msg.content))
+            parsed_content = parse_message_content(msg.content)
+            if not isinstance(parsed_content, str):
+                parsed_content, _ = await rag.preprocess_message_content_async(
+                    parsed_content,
+                    conversation_id=conversation_id,
+                    user_id=user.id,
+                    workspace_id=workspace_id,
+                    model_id=conv.model,
+                )
+            chat_history.append(HumanMessage(content=parsed_content))
         elif msg.role == "assistant":
             if msg.events:
                 chat_history.extend(
@@ -9970,6 +9982,16 @@ async def send_message(
                 )
             else:
                 chat_history.append(AIMessage(content=msg.content))
+
+    current_user_message = parse_message_content(user_message)
+    if not isinstance(current_user_message, str):
+        current_user_message, _ = await rag.preprocess_message_content_async(
+            current_user_message,
+            conversation_id=conversation_id,
+            user_id=user.id,
+            workspace_id=workspace_id,
+            model_id=conv.model,
+        )
 
     # Generate response
     input_est = _estimate_input_tokens(user_message, chat_history)
@@ -9983,7 +10005,7 @@ async def send_message(
     )
     try:
         answer = await rag.process_query(
-            user_message,
+            current_user_message,
             chat_history,
             blocked_tool_names=blocked_tool_names,
             workspace_context=workspace_context,
@@ -10084,7 +10106,16 @@ async def send_message_stream(
     chat_history: list[BaseMessage] = []
     for msg_idx, msg in enumerate(conv.messages[:-1]):  # Exclude current message
         if msg.role == "user":
-            chat_history.append(HumanMessage(content=msg.content))
+            parsed_content = parse_message_content(msg.content)
+            if not isinstance(parsed_content, str):
+                parsed_content, _ = await rag.preprocess_message_content_async(
+                    parsed_content,
+                    conversation_id=conversation_id,
+                    user_id=user.id,
+                    workspace_id=workspace_id,
+                    model_id=conv.model,
+                )
+            chat_history.append(HumanMessage(content=parsed_content))
         elif msg.role == "assistant":
             if msg.events:
                 chat_history.extend(
@@ -10092,6 +10123,16 @@ async def send_message_stream(
                 )
             else:
                 chat_history.append(AIMessage(content=msg.content))
+
+    current_user_message = parse_message_content(user_message)
+    if not isinstance(current_user_message, str):
+        current_user_message, _ = await rag.preprocess_message_content_async(
+            current_user_message,
+            conversation_id=conversation_id,
+            user_id=user.id,
+            workspace_id=workspace_id,
+            model_id=conv.model,
+        )
 
     input_est = _estimate_input_tokens(user_message, chat_history)
     stream_attempt_id = await create_usage_attempt(
@@ -10118,7 +10159,7 @@ async def send_message_stream(
         try:
             # Use UI agent (with chart tool and enhanced prompt)
             async for event in rag.process_query_stream(
-                user_message,
+                current_user_message,
                 chat_history,
                 is_ui=True,
                 blocked_tool_names=blocked_tool_names,
@@ -10544,6 +10585,50 @@ async def retry_terminal_tool(
 # =============================================================================
 # Background Chat Task Endpoints
 # =============================================================================
+
+
+@router.post(
+    "/conversations/{conversation_id}/attachments",
+    response_model=ChatAttachmentUploadResponse,
+)
+async def upload_chat_attachment(
+    conversation_id: str,
+    file: UploadFile = File(..., description="Chat attachment to upload"),
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Upload a non-image chat attachment for later chunking during message processing."""
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
+
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    metadata = await store_chat_attachment_upload(
+        file,
+        conversation_id=conversation_id,
+        user_id=user.id,
+        workspace_id=workspace_id,
+    )
+    return ChatAttachmentUploadResponse(
+        attachment_id=str(metadata["attachment_id"]),
+        attachment_source=str(metadata["source"]),
+        filename=str(metadata["filename"]),
+        mime_type=str(metadata["mime_type"]),
+        size_bytes=int(metadata["size_bytes"]),
+        expires_at=datetime.fromisoformat(str(metadata["expires_at"])),
+    )
 
 
 @router.post(

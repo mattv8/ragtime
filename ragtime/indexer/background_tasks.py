@@ -23,6 +23,7 @@ from ragtime.core.usage_accounting import (
     finalize_stale_attempts_for_tasks,
     finalize_usage_attempt,
 )
+from ragtime.indexer.chat_attachments import cleanup_expired_chat_attachments
 from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import (
@@ -425,6 +426,7 @@ class BackgroundTaskService:
             try:
                 await asyncio.sleep(300)  # Every 5 minutes
                 await repository.cleanup_stale_tasks(max_age_seconds=600)
+                await cleanup_expired_chat_attachments()
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -788,6 +790,23 @@ class BackgroundTaskService:
                     if msg.role == "user":
                         # Parse content in case it's a JSON-encoded multimodal array
                         parsed_content = parse_message_content(msg.content)
+                        if not isinstance(parsed_content, str):
+                            parsed_content, attachment_stats = (
+                                await rag.preprocess_message_content_async(
+                                    parsed_content,
+                                    conversation_id=conversation_id,
+                                    user_id=conv.user_id,
+                                    workspace_id=getattr(conv, "workspace_id", None),
+                                    model_id=conv.model,
+                                )
+                            )
+                            if attachment_stats:
+                                logger.debug(
+                                    "Expanded chat history attachments for conversation=%s files=%d included_chunks=%d",
+                                    conversation_id,
+                                    attachment_stats.get("file_count", 0),
+                                    attachment_stats.get("included_chunk_count", 0),
+                                )
                         # Strip images from history - they consume tokens but add little value
                         parsed_content = strip_images_from_content(parsed_content)
                         chat_history.append(HumanMessage(content=parsed_content))

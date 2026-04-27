@@ -100,6 +100,7 @@ from ragtime.core.ssh import (
     ssh_tunnel_config_from_dict,
 )
 from ragtime.core.tokenization import truncate_to_token_budget
+from ragtime.indexer.chat_attachments import preprocess_chat_attachment_content_parts
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
@@ -5796,6 +5797,23 @@ except Exception as e:
         # Fallback: convert to string
         return str(content)
 
+    async def preprocess_message_content_async(
+        self,
+        content: Any,
+        conversation_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+    ) -> tuple[Any, Optional[dict[str, int]]]:
+        """Expand chat attachment parts into text chunks before provider serialization."""
+        return await preprocess_chat_attachment_content_parts(
+            content,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            model_id=model_id,
+        )
+
     async def _convert_message_to_langchain_async(self, message: Any) -> Any:
         """Async message conversion with non-blocking image downsampling."""
         if isinstance(message, str):
@@ -5806,6 +5824,16 @@ except Exception as e:
             return content
 
         if isinstance(content, list):
+            content, attachment_stats = await self.preprocess_message_content_async(
+                content,
+                model_id=None,
+            )
+            if attachment_stats:
+                logger.debug(
+                    "Expanded chat attachments during provider serialization files=%d included_chunks=%d",
+                    attachment_stats.get("file_count", 0),
+                    attachment_stats.get("included_chunk_count", 0),
+                )
             langchain_content: list[Any] = []
             image_tasks: list[tuple[int, asyncio.Task[dict[str, Any]]]] = []
 

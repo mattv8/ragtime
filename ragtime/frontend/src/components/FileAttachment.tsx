@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { X, FileText, Upload, Link } from 'lucide-react';
+import { api } from '@/api/client';
 import type { ContentPart } from '@/types';
 
 export function formatAttachmentSize(bytes: number): string {
@@ -18,24 +19,36 @@ export interface AttachmentFile {
   preview?: string;  // data URL for images
   dataUrl?: string;  // base64 data URL
   filePath?: string; // For file path input
+  attachmentId?: string;
+  attachmentSource?: 'chat_upload' | 'userspace_path';
+  expiresAt?: string;
 }
 
 interface FileAttachmentProps {
   attachments: AttachmentFile[];
   onAttachmentsChange: (attachments: AttachmentFile[]) => void;
   disabled?: boolean;
+  conversationId?: string;
+  workspaceId?: string;
 }
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 const SUPPORTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp'];
-const SUPPORTED_FILE_TYPES = [
-  ...SUPPORTED_IMAGE_TYPES,
-  'text/plain',
-  'application/pdf',
-  'text/csv',
-  'application/json',
-  'text/markdown'
-];
+const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+
+function isImageFile(file: File): boolean {
+  const mimeType = (file.type || '').toLowerCase();
+  if (SUPPORTED_IMAGE_TYPES.includes(mimeType)) {
+    return true;
+  }
+
+  const dotIndex = file.name.lastIndexOf('.');
+  if (dotIndex === -1) {
+    return false;
+  }
+
+  return SUPPORTED_IMAGE_EXTENSIONS.has(file.name.slice(dotIndex).toLowerCase());
+}
 
 export async function resizeAttachmentImageDataUrl(
   dataUrl: string,
@@ -70,11 +83,12 @@ export async function resizeAttachmentImageDataUrl(
   }
 }
 
-export function FileAttachment({ attachments, onAttachmentsChange, disabled }: FileAttachmentProps) {
+export function FileAttachment({ attachments, onAttachmentsChange, disabled, conversationId, workspaceId }: FileAttachmentProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [uploadingCount, setUploadingCount] = useState(0);
 
   // Handle click outside to close dropdown
   useEffect(() => {
@@ -107,7 +121,7 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
         // Only process file items
         if (item.kind === 'file') {
           const file = item.getAsFile();
-          if (file && SUPPORTED_FILE_TYPES.includes(file.type)) {
+          if (file) {
             files.push(file);
           }
         }
@@ -142,32 +156,52 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
         continue;
       }
 
-      // Validate file type
-      if (!SUPPORTED_FILE_TYPES.includes(file.type)) {
-        alert(`File type "${file.type}" is not supported for "${file.name}".`);
+      const isImage = isImageFile(file);
+
+      if (isImage) {
+        let dataUrl = await readFileAsDataURL(file);
+        dataUrl = await resizeAttachmentImageDataUrl(dataUrl, file.type);
+        newAttachments.push({
+          id: `${Date.now()}-${Math.random()}`,
+          type: 'image',
+          name: file.name,
+          size: file.size,
+          mimeType: file.type || 'image/png',
+          preview: dataUrl,
+          dataUrl
+        });
         continue;
       }
 
-      const isImage = SUPPORTED_IMAGE_TYPES.includes(file.type);
-      let dataUrl = await readFileAsDataURL(file);
-
-      // Downsize images to reduce token usage while preserving visual fidelity
-      if (isImage) {
-        dataUrl = await resizeAttachmentImageDataUrl(dataUrl, file.type);
+      if (!conversationId) {
+        alert(`Create or select a conversation before attaching "${file.name}".`);
+        continue;
       }
 
-      newAttachments.push({
-        id: `${Date.now()}-${Math.random()}`,
-        type: isImage ? 'image' : 'file',
-        name: file.name,
-        size: file.size,
-        mimeType: file.type,
-        preview: isImage ? dataUrl : undefined,
-        dataUrl
-      });
+      setUploadingCount((count) => count + 1);
+      try {
+        const uploaded = await api.uploadConversationChatAttachment(conversationId, file, workspaceId);
+        newAttachments.push({
+          id: `${uploaded.attachment_id}-${Math.random()}`,
+          type: 'file',
+          name: uploaded.filename,
+          size: uploaded.size_bytes,
+          mimeType: uploaded.mime_type || file.type || 'application/octet-stream',
+          attachmentId: uploaded.attachment_id,
+          attachmentSource: uploaded.attachment_source,
+          expiresAt: uploaded.expires_at,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to upload attachment';
+        alert(`${message}: ${file.name}`);
+      } finally {
+        setUploadingCount((count) => Math.max(0, count - 1));
+      }
     }
 
-    onAttachmentsChange([...attachments, ...newAttachments]);
+    if (newAttachments.length > 0) {
+      onAttachmentsChange([...attachments, ...newAttachments]);
+    }
   };
 
   const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -274,9 +308,8 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
           ref={fileInputRef}
           type="file"
           multiple
-          accept={SUPPORTED_FILE_TYPES.join(',')}
           onChange={handleFileInput}
-          disabled={disabled}
+          disabled={disabled || uploadingCount > 0}
           style={{ display: 'none' }}
         />
 
@@ -285,8 +318,8 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
             type="button"
             className="btn-attach-menu"
             onClick={() => setShowDropdown(!showDropdown)}
-            disabled={disabled}
-            title="Attach files or images"
+            disabled={disabled || uploadingCount > 0}
+            title={uploadingCount > 0 ? 'Uploading attachments...' : 'Attach files or images'}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -303,10 +336,10 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
                   fileInputRef.current?.click();
                   setShowDropdown(false);
                 }}
-                disabled={disabled}
+                disabled={disabled || uploadingCount > 0}
               >
                 <Upload size={18} />
-                <span>Upload Files</span>
+                <span>{uploadingCount > 0 ? `Uploading ${uploadingCount}...` : 'Upload Files'}</span>
               </button>
             </div>
           )}
@@ -347,12 +380,23 @@ export function attachmentsToContentParts(text: string, attachments: AttachmentF
           detail: 'auto'
         }
       });
+    } else if (attachment.attachmentId) {
+      parts.push({
+        type: 'file',
+        attachment_id: attachment.attachmentId,
+        attachment_source: attachment.attachmentSource || 'chat_upload',
+        filename: attachment.name,
+        mime_type: attachment.mimeType,
+        size_bytes: attachment.size,
+        expires_at: attachment.expiresAt
+      });
     } else if (attachment.filePath) {
       parts.push({
         type: 'file',
         file_path: attachment.filePath,
         filename: attachment.name,
-        mime_type: attachment.mimeType
+        mime_type: attachment.mimeType,
+        attachment_source: 'userspace_path'
       });
     }
   }

@@ -4934,9 +4934,12 @@ export function ChatPanel({
           id: `edit-attachment-${i}-${Date.now()}`,
           type: 'file' as const,
           name: (p as any).filename || 'file',
-          size: 0,
+          size: (p as any).size_bytes || 0,
           mimeType: (p as any).mime_type || 'application/octet-stream',
-          filePath: (p as any).file_path
+          filePath: (p as any).file_path,
+          attachmentId: (p as any).attachment_id,
+          attachmentSource: (p as any).attachment_source,
+          expiresAt: (p as any).expires_at,
         } as AttachmentFile;
       }));
 
@@ -6221,6 +6224,8 @@ export function ChatPanel({
                                   <FileAttachment
                                     attachments={editMessageAttachments}
                                     onAttachmentsChange={setEditMessageAttachments}
+                                    conversationId={activeConversation?.id}
+                                    workspaceId={workspaceId}
                                   />
                                 </div>
                               </>
@@ -6440,6 +6445,8 @@ export function ChatPanel({
                 <FileAttachment
                   attachments={attachments}
                   onAttachmentsChange={setAttachments}
+                  conversationId={activeConversation?.id}
+                  workspaceId={workspaceId}
                   disabled={isReadOnly || isStreaming}
                 />
                 <textarea
@@ -6447,7 +6454,7 @@ export function ChatPanel({
                   value={inputValue}
                   onChange={handleInputChange}
                   onKeyDown={handleKeyDown}
-                  placeholder={isReadOnly ? effectiveReadOnlyMessage : 'Ask a question or paste an image (Ctrl+V)...'}
+                  placeholder={isReadOnly ? effectiveReadOnlyMessage : 'Ask a question or paste files/images (Ctrl+V)...'}
                   rows={1}
                   className="chat-input"
                   disabled={isReadOnly}

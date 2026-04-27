@@ -27,29 +27,36 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Query, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                               RedirectResponse)
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from ragtime import __version__
 from ragtime.api import router
-from ragtime.api.auth import (AUTH_CODE_EXPIRY, _auth_codes,
-                              _cleanup_expired_auth_codes, authenticate)
+from ragtime.api.auth import (
+    AUTH_CODE_EXPIRY,
+    _auth_codes,
+    _cleanup_expired_auth_codes,
+    authenticate,
+)
 from ragtime.api.auth import oauth2_token as _oauth2_token_handler
 from ragtime.api.auth import router as auth_router
 from ragtime.api.auth import validate_redirect_uri
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
-from ragtime.core.auth import (create_access_token, create_session,
-                               get_external_origin, validate_session)
+from ragtime.core.auth import (
+    create_access_token,
+    create_session,
+    get_external_origin,
+    validate_session,
+)
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import setup_logging
-from ragtime.core.rate_limit import (LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT,
-                                     limiter)
+from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.ssl import setup_ssl
 from ragtime.indexer.background_tasks import background_task_service
+from ragtime.indexer.chat_attachments import cleanup_expired_chat_attachments
 from ragtime.indexer.chunking import shutdown_process_pool
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.pdm_service import pdm_indexer
@@ -59,25 +66,30 @@ from ragtime.indexer.routes import DIST_DIR
 from ragtime.indexer.routes import router as indexer_router
 from ragtime.indexer.schema_service import schema_indexer
 from ragtime.indexer.service import indexer
-from ragtime.mcp.config_routes import \
-    default_filter_router as mcp_default_filter_router
+from ragtime.mcp.config_routes import default_filter_router as mcp_default_filter_router
 from ragtime.mcp.config_routes import router as mcp_config_router
-from ragtime.mcp.oauth import (build_authorization_server_metadata,
-                               build_protected_resource_metadata)
+from ragtime.mcp.oauth import (
+    build_authorization_server_metadata,
+    build_protected_resource_metadata,
+)
 from ragtime.mcp.routes import get_mcp_routes, mcp_lifespan_manager
 from ragtime.mcp.routes import router as mcp_router
 from ragtime.rag import rag
 from ragtime.userspace.preview_host import PreviewHostDispatchMiddleware
 from ragtime.userspace.routes import router as userspace_router
-from ragtime.userspace.runtime_routes import (_proxy_websocket_request,
-                                              _sanitize_preview_query,
-                                              _to_websocket_url)
+from ragtime.userspace.runtime_routes import (
+    _proxy_websocket_request,
+    _sanitize_preview_query,
+    _to_websocket_url,
+)
 from ragtime.userspace.runtime_routes import router as userspace_runtime_router
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
-from ragtime.userspace.share_auth import (clear_share_auth_cookie,
-                                          set_share_auth_cookie,
-                                          share_auth_token_from_request)
+from ragtime.userspace.share_auth import (
+    clear_share_auth_cookie,
+    set_share_auth_cookie,
+    share_auth_token_from_request,
+)
 
 # Import indexer routes (always available now that it's part of ragtime)
 # Import MCP routes and transport for HTTP API access
@@ -181,6 +193,9 @@ async def lifespan(app: FastAPI):
     gc_total = sum(gc_results.values())
     if gc_total > 0:
         logger.info(f"Garbage collected {gc_total} orphaned embedding(s)")
+
+    # Remove expired chat attachment uploads left from previous sessions
+    await cleanup_expired_chat_attachments()
 
     # Start background task service for chat
     await background_task_service.start()

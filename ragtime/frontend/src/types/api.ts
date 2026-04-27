@@ -1578,12 +1578,25 @@ export interface ImageContent {
 
 export interface FileContent {
   type: 'file';
-  file_path: string;
+  file_path?: string;
   filename: string;
   mime_type?: string;
+  attachment_id?: string;
+  attachment_source?: 'chat_upload' | 'userspace_path';
+  size_bytes?: number;
+  expires_at?: string;
 }
 
 export type ContentPart = TextContent | ImageContent | FileContent;
+
+export interface ChatAttachmentUploadResponse {
+  attachment_id: string;
+  attachment_source: 'chat_upload';
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  expires_at: string;
+}
 
 export interface MessageSnapshotRestore {
   snapshot_id: string;

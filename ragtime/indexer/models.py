@@ -2344,6 +2344,23 @@ class SendMessageRequest(BaseModel):
     )
 
 
+class ChatAttachmentUploadResponse(BaseModel):
+    """Descriptor returned after uploading a chat attachment."""
+
+    attachment_id: str = Field(
+        description="Opaque ID used to reference the stored attachment"
+    )
+    attachment_source: str = Field(
+        default="chat_upload", description="Attachment storage source"
+    )
+    filename: str = Field(description="Original filename")
+    mime_type: str = Field(description="Detected MIME type")
+    size_bytes: int = Field(description="Uploaded file size in bytes")
+    expires_at: datetime = Field(
+        description="When the attachment becomes eligible for cleanup"
+    )
+
+
 class RetryVisualizationRequest(BaseModel):
     """Request to retry a failed visualization tool call."""
 
