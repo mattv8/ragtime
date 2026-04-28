@@ -501,13 +501,40 @@ async def oauth_protected_resource(request: Request, path: str = ""):
     # clients at the same public HTTPS origin they are already using.
     base_url = get_browser_matched_origin(request)
 
+    normalized_path = (path or "").strip("/")
+    route_path: str | None = None
+    if normalized_path and normalized_path != "mcp":
+        route_path = (
+            normalized_path[len("mcp/") :]
+            if normalized_path.startswith("mcp/")
+            else normalized_path
+        )
+
     app_settings = await get_app_settings()
-    if (
-        app_settings.get("mcp_default_route_auth")
-        and app_settings.get("mcp_default_route_auth_method") == "client_credentials"
-        and (not path or path == "mcp")
-    ):
-        return build_protected_resource_metadata(base_url, None)
+    if route_path is None:
+        if (
+            app_settings.get("mcp_default_route_auth")
+            and app_settings.get("mcp_default_route_auth_method")
+            == "client_credentials"
+        ):
+            logger.debug(
+                "OAuth protected-resource discovery resolved default /mcp route to client_credentials metadata"
+            )
+            return build_protected_resource_metadata(base_url, None)
+    else:
+        db = await get_db()
+        route = await db.mcprouteconfig.find_unique(where={"routePath": route_path})
+        if (
+            route
+            and route.enabled
+            and route.requireAuth
+            and (route.authMethod or "password") == "client_credentials"
+        ):
+            logger.debug(
+                "OAuth protected-resource discovery resolved custom route /mcp/%s to client_credentials metadata",
+                route_path,
+            )
+            return build_protected_resource_metadata(base_url, route_path)
 
     # Determine the resource path from the suffix
     # If path is empty or just "mcp", use default /mcp
