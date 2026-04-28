@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from ragtime.core.app_settings import SettingsCache
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import strip_table_metadata
@@ -35,6 +36,7 @@ from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
+from ragtime.rag import rag
 
 logger = get_logger(__name__)
 
@@ -744,6 +746,11 @@ class BackgroundTaskService:
 
         async def run():
             nonlocal task_id
+            full_response = ""
+            events: list[dict[str, Any]] = []
+            tool_calls: list[dict[str, Any]] = []
+            partial_message_persisted = False
+            reasoning_block_started_at: Optional[datetime] = None
             try:
                 # Create or get the task
                 if not task_id:
@@ -776,8 +783,6 @@ class BackgroundTaskService:
 
                 # Build chat history (exclude the user message we're about to process)
                 # Include tool call information so the LLM has full context
-                from ragtime.core.app_settings import SettingsCache
-
                 app_settings = await SettingsCache.get_instance().get_settings()
                 max_tool_output_chars = int(
                     app_settings.get("max_tool_output_chars", 5000)
@@ -821,9 +826,6 @@ class BackgroundTaskService:
                         elif msg.content and msg.content.strip():
                             chat_history.append(AIMessage(content=msg.content))
 
-                # Process the message with streaming
-                from ragtime.rag import rag
-
                 if not rag.is_ready:
                     await repository.update_chat_task_status(
                         task_id, ChatTaskStatus.failed, "RAG service not ready"
@@ -838,11 +840,6 @@ class BackgroundTaskService:
                     )
                     return
 
-                full_response = ""
-                events = []
-                tool_calls = []
-                partial_message_persisted = False
-                reasoning_block_started_at: Optional[datetime] = None
                 # Track running tools by run_id -> index in events list
                 running_tool_indices: dict[str, int] = {}
                 hit_max_iterations = False  # Track if we hit the iteration limit
