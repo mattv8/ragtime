@@ -780,6 +780,7 @@ model User {
   mcpRequestLogs                       McpRequestLog[]
   apiRequestLogs                       ApiRequestLog[]
   agentGrantsGranted                   WorkspaceAgentGrant[]                 @relation("AgentGrantGranter")
+  conversationSharesOwned              ConversationShare[]                   @relation("ConversationShareOwner")
 
   @@map("users")
 }
@@ -853,6 +854,11 @@ enum ConversationToolOutputMode {
   auto // Let AI decide based on relevance
 }
 
+enum ConversationShareRole {
+  viewer
+  editor
+}
+
 /// A chat conversation with the RAG assistant
 model Conversation {
   id    String @id @default(uuid())
@@ -895,6 +901,7 @@ model Conversation {
   members             ConversationMember[]
   toolSelections      ConversationToolSelection[]
   toolGroupSelections ConversationToolGroupSelection[]
+  shares              ConversationShare[]
 
   // Chat branches
   branches ConversationBranch[]
@@ -907,6 +914,32 @@ model Conversation {
   @@index([workspaceId, updatedAt])
   @@index([userId, workspaceId, updatedAt])
   @@map("conversations")
+}
+
+model ConversationShare {
+  id                       String                @id @default(uuid())
+  conversationId           String                @map("conversation_id")
+  conversation             Conversation          @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  ownerUserId              String                @map("owner_user_id")
+  ownerUser                User                  @relation("ConversationShareOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  label                    String?               @map("label")
+  shareToken               String?               @unique @map("share_token")
+  shareTokenCreatedAt      DateTime?             @map("share_token_created_at")
+  shareSlug                String?               @map("share_slug")
+  shareAccessMode          String                @default("token") @map("share_access_mode")
+  sharePassword            String?               @map("share_password")
+  shareSelectedUserIds     Json                  @default("[]") @map("share_selected_user_ids")
+  shareSelectedLdapGroups  Json                  @default("[]") @map("share_selected_ldap_groups")
+  grantedRole              ConversationShareRole @default(viewer) @map("granted_role")
+  scopeAnchorMessageIdx    Int?                  @map("scope_anchor_message_idx")
+  scopeDirection           String?               @map("scope_direction")
+  createdAt                DateTime              @default(now()) @map("created_at")
+  updatedAt                DateTime              @default(now()) @updatedAt @map("updated_at")
+
+  @@index([conversationId])
+  @@index([ownerUserId, shareSlug])
+  @@index([conversationId, shareToken])
+  @@map("conversation_shares")
 }
 
 /// A branch of a chat conversation, created when a user edits and resends a message.
@@ -950,13 +983,6 @@ model Workspace {
   nameNormalized             String?                     @map("name_normalized")
   description                String?                     @default("")
   sqlitePersistenceMode      SqlitePersistenceMode       @default(include) @map("sqlite_persistence_mode")
-  shareToken                 String?                     @unique @map("share_token")
-  shareTokenCreatedAt        DateTime?                   @map("share_token_created_at")
-  shareSlug                  String?                     @map("share_slug")
-  shareAccessMode            String                      @default("token") @map("share_access_mode")
-  sharePassword              String?                     @map("share_password")
-  shareSelectedUserIds       Json                        @default("[]") @map("share_selected_user_ids")
-  shareSelectedLdapGroups    Json                        @default("[]") @map("share_selected_ldap_groups")
   currentSnapshotId          String?                     @map("current_snapshot_id")
   currentSnapshotBranchId    String?                     @map("current_snapshot_branch_id")
   scmGitUrl                  String?                     @map("scm_git_url")
@@ -1004,12 +1030,34 @@ model Workspace {
   outgoingAgentGrants         WorkspaceAgentGrant[]                 @relation("AgentGrantSource")
   incomingAgentGrants         WorkspaceAgentGrant[]                 @relation("AgentGrantTarget")
   messageSnapshotLinks        ConversationMessageSnapshotLink[]
+  shares                      WorkspaceShare[]
 
   @@unique([ownerUserId, nameNormalized])
-  @@unique([ownerUserId, shareSlug])
   @@index([ownerUserId])
   @@index([updatedAt])
   @@map("workspaces")
+}
+
+model WorkspaceShare {
+  id                       String    @id @default(uuid())
+  workspaceId              String    @map("workspace_id")
+  workspace                Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  ownerUserId              String    @map("owner_user_id")
+  label                    String?   @map("label")
+  shareToken               String?   @unique @map("share_token")
+  shareTokenCreatedAt      DateTime? @map("share_token_created_at")
+  shareSlug                String?   @map("share_slug")
+  shareAccessMode          String    @default("token") @map("share_access_mode")
+  sharePassword            String?   @map("share_password")
+  shareSelectedUserIds     Json      @default("[]") @map("share_selected_user_ids")
+  shareSelectedLdapGroups  Json      @default("[]") @map("share_selected_ldap_groups")
+  createdAt                DateTime  @default(now()) @map("created_at")
+  updatedAt                DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([workspaceId])
+  @@index([ownerUserId, shareSlug])
+  @@index([workspaceId, shareToken])
+  @@map("workspace_shares")
 }
 
 /// Cross-workspace agent access mode

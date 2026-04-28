@@ -76,7 +76,14 @@ from ragtime.core.workspace_ops import (
 )
 from ragtime.indexer.file_utils import build_authenticated_git_url
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import FilesystemConnectionConfig
+from ragtime.indexer.models import (
+    ConversationShareLink,
+    ConversationShareLinkListResponse,
+    ConversationShareLinkStatus,
+    ConversationShareSlugAvailabilityResponse,
+    FilesystemConnectionConfig,
+    UpdateConversationShareAccessRequest,
+)
 from ragtime.indexer.repository import _resolve_default_conversation_model, repository
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
@@ -156,6 +163,7 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceScmStatus,
     UserSpaceWorkspaceScmSyncResponse,
     UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkListResponse,
     UserSpaceWorkspaceShareLinkStatus,
     WorkspaceAgentGrant,
     WorkspaceAgentGrantMode,
@@ -223,10 +231,13 @@ class _ExecutionProofRecord:
         self.query_hash = query_hash
 
 
-class _ShareAuthorizationResult(TypedDict):
+class _ShareAuthorizationResult(TypedDict, total=False):
     workspace_id: str
+    conversation_id: str
     share_auth_token: str | None
     expires_at: datetime | None
+    granted_role: str
+    can_edit: bool
 
 
 class _GitCommandResult:
@@ -7605,49 +7616,311 @@ class UserSpaceService:
             base_url=base_url,
         )
 
-    def is_direct_share_subdomain_allowed(self, workspace_record: Any) -> bool:
-        share_token = str(getattr(workspace_record, "shareToken", "") or "").strip()
-        mode, password_encrypted, _, _ = self._extract_share_access_state(
-            workspace_record
-        )
+    def is_direct_share_subdomain_allowed(self, share_record: Any) -> bool:
+        share_token = str(getattr(share_record, "shareToken", "") or "").strip()
+        mode, password_encrypted, _, _ = self._extract_share_access_state(share_record)
         return bool(share_token) and mode == "token" and not bool(password_encrypted)
 
     async def is_public_direct_share_host_enabled(self, workspace_id: str) -> bool:
-        workspace_record = await self._get_workspace_record(workspace_id)
-        if not workspace_record:
+        share_record = await self._get_primary_workspace_share_record(workspace_id)
+        if not share_record:
             return False
-        return self.is_direct_share_subdomain_allowed(workspace_record)
+        return self.is_direct_share_subdomain_allowed(share_record)
 
     async def has_active_share_link(self, workspace_id: str) -> bool:
-        workspace_record = await self._get_workspace_record(workspace_id)
-        if not workspace_record:
+        share_record = await self._get_primary_workspace_share_record(workspace_id)
+        if not share_record:
             return False
-        return bool(str(getattr(workspace_record, "shareToken", "") or "").strip())
+        return bool(str(getattr(share_record, "shareToken", "") or "").strip())
 
     async def get_share_access_mode(self, workspace_id: str) -> str | None:
-        workspace_record = await self._get_workspace_record(workspace_id)
-        if not workspace_record:
+        share_record = await self._get_primary_workspace_share_record(workspace_id)
+        if not share_record:
             return None
-        mode, _, _, _ = self._extract_share_access_state(workspace_record)
+        mode, _, _, _ = self._extract_share_access_state(share_record)
         return mode
 
     async def get_share_token(self, workspace_id: str) -> str | None:
-        workspace_record = await self._get_workspace_record(workspace_id)
-        if not workspace_record:
+        share_record = await self._get_primary_workspace_share_record(workspace_id)
+        if not share_record:
             return None
-        return str(getattr(workspace_record, "shareToken", "") or "").strip() or None
+        return str(getattr(share_record, "shareToken", "") or "").strip() or None
 
     def _share_prompt_metadata_from_record(
-        self, workspace_record: Any
+        self, share_record: Any
     ) -> tuple[str | None, str | None]:
-        workspace_name = (
-            str(getattr(workspace_record, "name", "") or "").strip() or None
+        # WorkspaceShare records don't have a "name" field directly; the
+        # workspace name lives on the related Workspace record. ConversationShare
+        # records get their display name from the related conversation's title.
+        share_name = str(getattr(share_record, "label", "") or "").strip() or None
+        if not share_name:
+            workspace = getattr(share_record, "workspace", None)
+            if workspace is not None:
+                share_name = str(getattr(workspace, "name", "") or "").strip() or None
+        if not share_name:
+            conversation = getattr(share_record, "conversation", None)
+            share_name = str(getattr(conversation, "title", "") or "").strip() or None
+        owner_obj = getattr(share_record, "owner", None) or getattr(
+            share_record, "ownerUser", None
         )
-        owner_obj = getattr(workspace_record, "owner", None)
+        if owner_obj is None:
+            workspace = getattr(share_record, "workspace", None)
+            if workspace is not None:
+                owner_obj = getattr(workspace, "owner", None)
         owner_display_name = (
             str(getattr(owner_obj, "displayName", "") or "").strip() or None
         )
-        return workspace_name, owner_display_name
+        return share_name, owner_display_name
+
+    @staticmethod
+    def _share_target_id_from_record(share_record: Any) -> str:
+        conversation_id = str(getattr(share_record, "conversationId", "") or "").strip()
+        if conversation_id:
+            return conversation_id
+        # WorkspaceShare records carry workspaceId; fall back to id (legacy
+        # records that already contained the workspace id directly).
+        workspace_id = str(getattr(share_record, "workspaceId", "") or "").strip()
+        if workspace_id:
+            return workspace_id
+        return str(getattr(share_record, "id", "") or "").strip()
+
+    async def _find_workspace_share_by_token(
+        self,
+        share_token: str,
+        *,
+        include_owner: bool = False,
+    ) -> Any | None:
+        """Find a WorkspaceShare row by token (returns workspace_share with .workspace included)."""
+        token = (share_token or "").strip()
+        if not token:
+            return None
+        db = await get_db()
+        include: dict[str, Any] = {"workspace": True}
+        if include_owner:
+            include["workspace"] = {"include": {"owner": True}}
+        return await db.workspaceshare.find_first(
+            where={"shareToken": token},
+            include=include,
+        )
+
+    async def _find_workspace_share_by_slug(
+        self,
+        owner_ids: list[str],
+        share_slug: str,
+        *,
+        include_owner: bool = False,
+    ) -> Any | None:
+        """Find a WorkspaceShare row by (owner, slug) pair (must have a non-null token)."""
+        normalized_slug = _normalize_share_slug_for_uniqueness(share_slug)
+        if not normalized_slug or not owner_ids:
+            return None
+        db = await get_db()
+        where = {
+            "ownerUserId": {"in": owner_ids},
+            "shareSlug": normalized_slug,
+            "shareToken": {"not": None},
+        }
+        include: dict[str, Any] = {"workspace": True}
+        if include_owner:
+            include["workspace"] = {"include": {"owner": True}}
+        return await db.workspaceshare.find_first(where=where, include=include)
+
+    async def _get_primary_workspace_share_record(
+        self,
+        workspace_id: str,
+    ) -> Any | None:
+        """Return the legacy/primary WorkspaceShare for a workspace, or None.
+
+        The "primary" share is the oldest row for the workspace, mirroring the
+        single share that previously lived directly on the workspaces table.
+        """
+        if not workspace_id:
+            return None
+        db = await get_db()
+        return await db.workspaceshare.find_first(
+            where={"workspaceId": workspace_id},
+            order={"createdAt": "asc"},
+        )
+
+    async def _list_workspace_share_records(
+        self,
+        workspace_id: str,
+    ) -> list[Any]:
+        db = await get_db()
+        return await db.workspaceshare.find_many(
+            where={"workspaceId": workspace_id},
+            order={"createdAt": "asc"},
+        )
+
+    async def _get_workspace_share_record_by_id(
+        self,
+        share_id: str,
+    ) -> Any | None:
+        if not share_id:
+            return None
+        db = await get_db()
+        return await db.workspaceshare.find_unique(where={"id": share_id})
+
+    async def _find_conversation_share_by_token(
+        self,
+        share_token: str,
+        *,
+        include_owner: bool = False,
+        include_conversation: bool = False,
+    ) -> Any | None:
+        token = (share_token or "").strip()
+        if not token:
+            return None
+        db = await get_db()
+        include: dict[str, bool] | None = None
+        if include_owner or include_conversation:
+            include = {}
+            if include_owner:
+                include["ownerUser"] = True
+            if include_conversation:
+                include["conversation"] = True
+        if include is not None:
+            return await db.conversationshare.find_first(
+                where={"shareToken": token},
+                include=include,
+            )
+        return await db.conversationshare.find_first(where={"shareToken": token})
+
+    async def _find_conversation_share_by_slug(
+        self,
+        owner_ids: list[str],
+        share_slug: str,
+        *,
+        include_owner: bool = False,
+        include_conversation: bool = False,
+    ) -> Any | None:
+        normalized_slug = _normalize_share_slug_for_uniqueness(share_slug)
+        if not normalized_slug or not owner_ids:
+            return None
+        db = await get_db()
+        where = {
+            "ownerUserId": {"in": owner_ids},
+            "shareSlug": normalized_slug,
+            "shareToken": {"not": None},
+        }
+        include: dict[str, bool] | None = None
+        if include_owner or include_conversation:
+            include = {}
+            if include_owner:
+                include["ownerUser"] = True
+            if include_conversation:
+                include["conversation"] = True
+        if include is not None:
+            return await db.conversationshare.find_first(where=where, include=include)
+        return await db.conversationshare.find_first(where=where)
+
+    async def _resolve_public_share_record_by_token(
+        self,
+        share_token: str,
+        *,
+        include_owner: bool = False,
+        include_conversation: bool = False,
+    ) -> tuple[str, Any]:
+        workspace = await self._find_workspace_share_by_token(
+            share_token,
+            include_owner=include_owner,
+        )
+        conversation_share = await self._find_conversation_share_by_token(
+            share_token,
+            include_owner=include_owner,
+            include_conversation=include_conversation,
+        )
+        match_count = int(workspace is not None) + int(conversation_share is not None)
+        if match_count == 0:
+            raise HTTPException(status_code=404, detail="Shared resource not found")
+        if match_count > 1:
+            raise HTTPException(status_code=409, detail="Ambiguous shared link")
+        if workspace is not None:
+            return "workspace", workspace
+        return "conversation", conversation_share
+
+    async def _resolve_public_share_record_by_slug(
+        self,
+        owner_username: str,
+        share_slug: str,
+        *,
+        include_owner: bool = False,
+        include_conversation: bool = False,
+    ) -> tuple[str, Any]:
+        owner_ids = await self._resolve_share_owner_ids(owner_username)
+        if not owner_ids:
+            raise HTTPException(status_code=404, detail="Shared resource not found")
+
+        workspace = await self._find_workspace_share_by_slug(
+            owner_ids,
+            share_slug,
+            include_owner=include_owner,
+        )
+        conversation_share = await self._find_conversation_share_by_slug(
+            owner_ids,
+            share_slug,
+            include_owner=include_owner,
+            include_conversation=include_conversation,
+        )
+        match_count = int(workspace is not None) + int(conversation_share is not None)
+        if match_count == 0:
+            raise HTTPException(status_code=404, detail="Shared resource not found")
+        if match_count > 1:
+            raise HTTPException(status_code=409, detail="Ambiguous shared link")
+        if workspace is not None:
+            return "workspace", workspace
+        return "conversation", conversation_share
+
+    async def _share_token_in_use(self, share_token: str) -> bool:
+        token = (share_token or "").strip()
+        if not token:
+            return False
+        workspace = await self._find_workspace_share_by_token(token)
+        if workspace is not None:
+            return True
+        conversation_share = await self._find_conversation_share_by_token(token)
+        return conversation_share is not None
+
+    async def _share_slug_in_use(
+        self,
+        owner_user_id: str,
+        share_slug: str,
+        *,
+        exclude_workspace_id: str | None = None,
+        exclude_conversation_id: str | None = None,
+        exclude_share_id: str | None = None,
+        exclude_workspace_share_id: str | None = None,
+    ) -> bool:
+        normalized_slug = _normalize_share_slug_for_uniqueness(share_slug)
+        if not normalized_slug:
+            return False
+        db = await get_db()
+        workspace_share_where: dict[str, Any] = {
+            "ownerUserId": owner_user_id,
+            "shareSlug": normalized_slug,
+        }
+        if exclude_workspace_id:
+            workspace_share_where["NOT"] = {"workspaceId": exclude_workspace_id}
+        elif exclude_workspace_share_id:
+            workspace_share_where["NOT"] = {"id": exclude_workspace_share_id}
+        workspace_share = await db.workspaceshare.find_first(
+            where=workspace_share_where
+        )
+        if workspace_share is not None:
+            return True
+
+        conversation_where: dict[str, Any] = {
+            "ownerUserId": owner_user_id,
+            "shareSlug": normalized_slug,
+        }
+        if exclude_share_id:
+            conversation_where["NOT"] = {"id": exclude_share_id}
+        elif exclude_conversation_id:
+            conversation_where["NOT"] = {"conversationId": exclude_conversation_id}
+        conversation_share = await db.conversationshare.find_first(
+            where=conversation_where
+        )
+        return conversation_share is not None
 
     async def _resolve_share_owner_ids(self, owner_username: str) -> list[str]:
         normalized_owner = _normalize_owner_username_for_share_path(owner_username)
@@ -7676,80 +7949,52 @@ class UserSpaceService:
         self,
         share_token: str,
     ) -> tuple[str | None, str | None]:
-        token = (share_token or "").strip()
-        if not token:
+        try:
+            _target_type, share_record = (
+                await self._resolve_public_share_record_by_token(
+                    share_token,
+                    include_owner=True,
+                    include_conversation=True,
+                )
+            )
+        except HTTPException:
             return None, None
-
-        db = await get_db()
-        workspace = await db.workspace.find_first(
-            where={"shareToken": token},
-            include={"owner": True},
-        )
-        if not workspace:
-            return None, None
-        return self._share_prompt_metadata_from_record(workspace)
+        return self._share_prompt_metadata_from_record(share_record)
 
     async def get_share_prompt_metadata_by_slug(
         self,
         owner_username: str,
         share_slug: str,
     ) -> tuple[str | None, str | None]:
-        normalized_slug = _normalize_share_slug_for_uniqueness(share_slug)
-        if not normalized_slug:
+        try:
+            _target_type, share_record = (
+                await self._resolve_public_share_record_by_slug(
+                    owner_username,
+                    share_slug,
+                    include_owner=True,
+                    include_conversation=True,
+                )
+            )
+        except HTTPException:
             return None, None
-
-        owner_ids = await self._resolve_share_owner_ids(owner_username)
-        if not owner_ids:
-            return None, None
-
-        db = await get_db()
-        workspace = await db.workspace.find_first(
-            where={
-                "ownerUserId": {"in": owner_ids},
-                "shareSlug": normalized_slug,
-                "shareToken": {"not": None},
-            },
-            include={"owner": True},
-        )
-        if not workspace:
-            return None, None
-        return self._share_prompt_metadata_from_record(workspace)
+        return self._share_prompt_metadata_from_record(share_record)
 
     async def _resolve_workspace_id_from_share_token(self, share_token: str) -> str:
-        token = (share_token or "").strip()
-        if not token:
+        share_record = await self._find_workspace_share_by_token(share_token)
+        if not share_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
-
-        db = await get_db()
-        workspace = await db.workspace.find_first(where={"shareToken": token})
-        if not workspace:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
-        return str(workspace.id)
+        return str(getattr(share_record, "workspaceId", "") or "")
 
     async def _resolve_workspace_id_from_share_slug(
         self,
         owner_username: str,
         share_slug: str,
     ) -> str:
-        normalized_slug = _normalize_share_slug_for_uniqueness(share_slug)
-        if not normalized_slug:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
-
         owner_ids = await self._resolve_share_owner_ids(owner_username)
-        if not owner_ids:
+        share_record = await self._find_workspace_share_by_slug(owner_ids, share_slug)
+        if not share_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
-
-        db = await get_db()
-        workspace = await db.workspace.find_first(
-            where={
-                "ownerUserId": {"in": owner_ids},
-                "shareSlug": normalized_slug,
-                "shareToken": {"not": None},
-            },
-        )
-        if not workspace:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
-        return str(workspace.id)
+        return str(getattr(share_record, "workspaceId", "") or "")
 
     async def _get_public_owner_username(self, owner_user_id: str) -> str:
         db = await get_db()
@@ -7771,8 +8016,12 @@ class UserSpaceService:
         owner_user_id: str,
         preferred_name: str,
     ) -> str:
-        del owner_user_id, preferred_name
-        return f"{_DEFAULT_SHARE_SLUG_PREFIX}_{secrets.token_hex(4)}"
+        del preferred_name
+        for _ in range(20):
+            candidate = f"{_DEFAULT_SHARE_SLUG_PREFIX}_{secrets.token_hex(4)}"
+            if not await self._share_slug_in_use(owner_user_id, candidate):
+                return candidate
+        raise HTTPException(status_code=500, detail="Failed to allocate share slug")
 
     def _extract_share_access_state(
         self,
@@ -7878,12 +8127,12 @@ class UserSpaceService:
 
     async def _enforce_share_access(
         self,
-        workspace_record: Any,
+        share_record: Any,
         current_user: Any | None,
         provided_password: str | None,
     ) -> None:
         mode, password_encrypted, selected_user_ids, selected_ldap_groups = (
-            self._extract_share_access_state(workspace_record)
+            self._extract_share_access_state(share_record)
         )
 
         if mode == "token":
@@ -7906,7 +8155,7 @@ class UserSpaceService:
         # Owner bypass: workspace owner skips group/user-list checks.
         # Password mode is handled above and always requires the password.
         if current_user is not None:
-            owner_id = str(getattr(workspace_record, "ownerUserId", "") or "").strip()
+            owner_id = str(getattr(share_record, "ownerUserId", "") or "").strip()
             if (
                 owner_id
                 and owner_id == str(getattr(current_user, "id", "") or "").strip()
@@ -7940,30 +8189,30 @@ class UserSpaceService:
             )
 
     @staticmethod
-    def _share_password_access_proof(workspace_record: Any) -> str | None:
-        password_encrypted = str(getattr(workspace_record, "sharePassword", "") or "")
-        share_token = str(getattr(workspace_record, "shareToken", "") or "")
-        workspace_id = str(getattr(workspace_record, "id", "") or "")
-        if not password_encrypted or not share_token or not workspace_id:
+    def _share_password_access_proof(share_record: Any) -> str | None:
+        password_encrypted = str(getattr(share_record, "sharePassword", "") or "")
+        share_token = str(getattr(share_record, "shareToken", "") or "")
+        share_record_id = str(getattr(share_record, "id", "") or "")
+        if not password_encrypted or not share_token or not share_record_id:
             return None
         return hashlib.sha256(
-            f"{workspace_id}:{share_token}:{password_encrypted}".encode("utf-8")
+            f"{share_record_id}:{share_token}:{password_encrypted}".encode("utf-8")
         ).hexdigest()
 
     def _build_share_password_access_token(
         self,
-        workspace_record: Any,
+        share_record: Any,
     ) -> tuple[str, datetime]:
-        workspace_id = str(getattr(workspace_record, "id", "") or "").strip()
-        proof = self._share_password_access_proof(workspace_record)
-        if not workspace_id or not proof:
+        share_record_id = str(getattr(share_record, "id", "") or "").strip()
+        proof = self._share_password_access_proof(share_record)
+        if not share_record_id or not proof:
             raise HTTPException(status_code=403, detail="Share password not configured")
 
         now = _utc_now()
         expires_at = now + timedelta(seconds=_SHARE_PASSWORD_ACCESS_TTL_SECONDS)
         payload = {
             "kind": _SHARE_PASSWORD_ACCESS_TOKEN_KIND,
-            "workspace_id": workspace_id,
+            "share_record_id": share_record_id,
             "share_access_mode": "password",
             "proof": proof,
             "iat": int(now.timestamp()),
@@ -7978,7 +8227,7 @@ class UserSpaceService:
     def _verify_share_password_access_token(
         self,
         token: str,
-        workspace_record: Any,
+        share_record: Any,
     ) -> datetime:
         try:
             claims = cast(
@@ -7992,11 +8241,11 @@ class UserSpaceService:
         except JWTError as exc:
             raise HTTPException(status_code=401, detail="Password required") from exc
 
-        workspace_id = str(getattr(workspace_record, "id", "") or "").strip()
-        expected_proof = self._share_password_access_proof(workspace_record)
+        share_record_id = str(getattr(share_record, "id", "") or "").strip()
+        expected_proof = self._share_password_access_proof(share_record)
         if (
             str(claims.get("kind") or "").strip() != _SHARE_PASSWORD_ACCESS_TOKEN_KIND
-            or str(claims.get("workspace_id") or "").strip() != workspace_id
+            or str(claims.get("share_record_id") or "").strip() != share_record_id
             or str(claims.get("share_access_mode") or "").strip() != "password"
             or not expected_proof
             or not hmac.compare_digest(str(claims.get("proof") or ""), expected_proof)
@@ -8008,18 +8257,21 @@ class UserSpaceService:
             raise HTTPException(status_code=401, detail="Password required")
         return datetime.fromtimestamp(int(exp), tz=timezone.utc)
 
-    async def _authorize_shared_workspace_record(
+    async def _authorize_share_record(
         self,
-        workspace_record: Any,
+        share_record: Any,
         *,
+        target_type: Literal["workspace", "conversation"],
+        granted_role: str = "viewer",
         current_user: Any | None = None,
         password: str | None = None,
         share_auth_token: str | None = None,
+        not_found_detail: str = "Shared resource not found",
     ) -> _ShareAuthorizationResult:
-        if not workspace_record:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
+        if not share_record:
+            raise HTTPException(status_code=404, detail=not_found_detail)
 
-        mode, _, _, _ = self._extract_share_access_state(workspace_record)
+        mode, _, _, _ = self._extract_share_access_state(share_record)
         resolved_token: str | None = None
         expires_at: datetime | None = None
 
@@ -8029,7 +8281,7 @@ class UserSpaceService:
                 try:
                     expires_at = self._verify_share_password_access_token(
                         candidate_token,
-                        workspace_record,
+                        share_record,
                     )
                     resolved_token = candidate_token
                 except HTTPException:
@@ -8038,25 +8290,50 @@ class UserSpaceService:
 
             if resolved_token is None:
                 await self._enforce_share_access(
-                    workspace_record,
+                    share_record,
                     current_user,
                     password,
                 )
                 resolved_token, expires_at = self._build_share_password_access_token(
-                    workspace_record
+                    share_record
                 )
         else:
             await self._enforce_share_access(
-                workspace_record,
+                share_record,
                 current_user,
                 password,
             )
 
-        return {
-            "workspace_id": str(getattr(workspace_record, "id", "") or ""),
+        result: _ShareAuthorizationResult = {
             "share_auth_token": resolved_token,
             "expires_at": expires_at,
+            "granted_role": granted_role,
+            "can_edit": granted_role == "editor" and current_user is not None,
         }
+        target_id = self._share_target_id_from_record(share_record)
+        if target_type == "workspace":
+            result["workspace_id"] = target_id
+        else:
+            result["conversation_id"] = target_id
+        return result
+
+    async def _authorize_shared_workspace_record(
+        self,
+        workspace_record: Any,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+        share_auth_token: str | None = None,
+    ) -> _ShareAuthorizationResult:
+        return await self._authorize_share_record(
+            workspace_record,
+            target_type="workspace",
+            granted_role="viewer",
+            current_user=current_user,
+            password=password,
+            share_auth_token=share_auth_token,
+            not_found_detail="Shared workspace not found",
+        )
 
     async def _allocate_next_default_workspace_name(self, user_id: str) -> str:
         db = await get_db()
@@ -10474,228 +10751,275 @@ class UserSpaceService:
     ) -> UserSpaceWorkspace:
         return await self._enforce_workspace_access(workspace_id, user_id)
 
-    async def get_workspace_share_link_status(
+    def _workspace_share_status_from_record(
         self,
         workspace_id: str,
-        user_id: str,
+        owner_username: str,
+        share_record: Any | None,
+        *,
         base_url: str | None = None,
     ) -> UserSpaceWorkspaceShareLinkStatus:
-        await self._enforce_workspace_access(
-            workspace_id,
-            user_id,
-            required_role="editor",
-        )
-
-        db = await get_db()
-        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
-        if not workspace_record:
-            raise HTTPException(status_code=404, detail="Workspace not found")
-
-        share_token = str(getattr(workspace_record, "shareToken", "") or "")
-        share_slug = str(getattr(workspace_record, "shareSlug", "") or "")
-        access_mode, password_encrypted, selected_user_ids, selected_ldap_groups = (
-            self._extract_share_access_state(workspace_record)
-        )
-        owner_username = await self._get_public_owner_username(
-            str(getattr(workspace_record, "ownerUserId", "") or "")
-        )
-        created_at = getattr(workspace_record, "shareTokenCreatedAt", None)
-        if not share_token or not share_slug:
+        if share_record is None:
             return UserSpaceWorkspaceShareLinkStatus(
+                id="",
                 workspace_id=workspace_id,
                 has_share_link=False,
                 owner_username=owner_username,
-                share_slug=share_slug or None,
-                share_token=None,
-                share_url=None,
-                created_at=None,
-                share_access_mode=access_mode,
-                selected_user_ids=selected_user_ids,
-                selected_ldap_groups=selected_ldap_groups,
-                has_password=bool(password_encrypted),
             )
-
+        share_id = str(getattr(share_record, "id", "") or "")
+        share_token = str(getattr(share_record, "shareToken", "") or "")
+        share_slug = str(getattr(share_record, "shareSlug", "") or "")
+        access_mode, password_encrypted, selected_user_ids, selected_ldap_groups = (
+            self._extract_share_access_state(share_record)
+        )
+        created_at = getattr(share_record, "shareTokenCreatedAt", None)
+        label_value = getattr(share_record, "label", None)
+        label = str(label_value).strip() if label_value else None
+        has_share_link = bool(share_token and share_slug)
+        share_url: str | None = None
+        anonymous_share_url: str | None = None
+        if has_share_link:
+            share_url = self._build_workspace_share_url(
+                owner_username, share_slug, base_url=base_url
+            )
+            anonymous_share_url = self._build_workspace_anonymous_share_url(
+                share_token, base_url=base_url
+            )
         return UserSpaceWorkspaceShareLinkStatus(
+            id=share_id,
             workspace_id=workspace_id,
-            has_share_link=True,
+            has_share_link=has_share_link,
             owner_username=owner_username,
-            share_slug=share_slug,
-            share_token=share_token,
-            share_url=self._build_workspace_share_url(
-                owner_username,
-                share_slug,
-                base_url=base_url,
-            ),
-            created_at=created_at,
+            label=label,
+            share_slug=share_slug or None,
+            share_token=share_token or None,
+            share_url=share_url,
+            anonymous_share_url=anonymous_share_url,
+            created_at=created_at if has_share_link else None,
             share_access_mode=access_mode,
             selected_user_ids=selected_user_ids,
             selected_ldap_groups=selected_ldap_groups,
             has_password=bool(password_encrypted),
         )
 
-    async def revoke_workspace_share_link(
+    async def list_workspace_share_links(
         self,
         workspace_id: str,
         user_id: str,
-    ) -> UserSpaceWorkspaceShareLinkStatus:
+        base_url: str | None = None,
+    ) -> UserSpaceWorkspaceShareLinkListResponse:
         await self._enforce_workspace_access(
-            workspace_id,
-            user_id,
-            required_role="editor",
+            workspace_id, user_id, required_role="editor"
         )
-
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Workspace not found")
-
         owner_username = await self._get_public_owner_username(
             str(getattr(workspace_record, "ownerUserId", "") or "")
         )
-        share_slug = str(getattr(workspace_record, "shareSlug", "") or "")
-
-        try:
-            await db.workspace.update(
-                where={"id": workspace_id},
-                data={
-                    "shareToken": None,
-                    "shareTokenCreatedAt": None,
-                },
+        records = await self._list_workspace_share_records(workspace_id)
+        links = [
+            self._workspace_share_status_from_record(
+                workspace_id, owner_username, record, base_url=base_url
             )
-        except Exception as exc:
-            raise HTTPException(status_code=404, detail="Workspace not found") from exc
-
-        return UserSpaceWorkspaceShareLinkStatus(
+            for record in records
+        ]
+        return UserSpaceWorkspaceShareLinkListResponse(
             workspace_id=workspace_id,
-            has_share_link=False,
             owner_username=owner_username,
-            share_slug=share_slug or None,
-            share_token=None,
-            share_url=None,
-            created_at=None,
-            share_access_mode=_normalize_share_access_mode(
-                str(getattr(workspace_record, "shareAccessMode", "token") or "token")
-            ),
-            selected_user_ids=_normalize_string_list(
-                getattr(workspace_record, "shareSelectedUserIds", [])
-            ),
-            selected_ldap_groups=_normalize_string_list(
-                getattr(workspace_record, "shareSelectedLdapGroups", [])
-            ),
-            has_password=bool(
-                str(getattr(workspace_record, "sharePassword", "") or "")
-            ),
+            links=links,
         )
+
+    async def get_workspace_share_link_status(
+        self,
+        workspace_id: str,
+        user_id: str,
+        base_url: str | None = None,
+    ) -> UserSpaceWorkspaceShareLinkStatus:
+        """Returns the primary (oldest) share link status for backward compatibility."""
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        owner_username = await self._get_public_owner_username(
+            str(getattr(workspace_record, "ownerUserId", "") or "")
+        )
+        share_record = await self._get_primary_workspace_share_record(workspace_id)
+        return self._workspace_share_status_from_record(
+            workspace_id, owner_username, share_record, base_url=base_url
+        )
+
+    async def _ensure_workspace_share_owner(
+        self,
+        workspace_id: str,
+        share_id: str,
+        user_id: str,
+    ) -> tuple[Any, Any]:
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        share_record = await self._get_workspace_share_record_by_id(share_id)
+        if (
+            share_record is None
+            or str(getattr(share_record, "workspaceId", "") or "") != workspace_id
+        ):
+            raise HTTPException(status_code=404, detail="Share link not found")
+        return workspace_record, share_record
 
     async def create_workspace_share_link(
         self,
         workspace_id: str,
         user_id: str,
         base_url: str | None = None,
-        rotate_token: bool = False,
+        label: str | None = None,
     ) -> UserSpaceWorkspaceShareLink:
         await self._enforce_workspace_access(
-            workspace_id,
-            user_id,
-            required_role="editor",
+            workspace_id, user_id, required_role="editor"
         )
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Workspace not found")
-
-        existing_token = str(getattr(workspace_record, "shareToken", "") or "")
         owner_user_id = str(getattr(workspace_record, "ownerUserId", "") or "")
-        existing_slug = str(getattr(workspace_record, "shareSlug", "") or "")
-        share_slug = _normalize_share_slug_for_uniqueness(existing_slug)
-        if not share_slug:
-            share_slug = await self._allocate_next_share_slug(
-                owner_user_id,
-                str(getattr(workspace_record, "name", "") or ""),
+        normalized_label = (label or "").strip() or None
+
+        share_slug = await self._allocate_next_share_slug(
+            owner_user_id,
+            str(getattr(workspace_record, "name", "") or ""),
+        )
+
+        share_token = ""
+        share_record: Any | None = None
+        for _ in range(20):
+            candidate = self._generate_share_token()
+            if await self._share_token_in_use(candidate):
+                continue
+            try:
+                share_record = await db.workspaceshare.create(
+                    data={
+                        "workspaceId": workspace_id,
+                        "ownerUserId": owner_user_id,
+                        "label": normalized_label,
+                        "shareToken": candidate,
+                        "shareTokenCreatedAt": _utc_now(),
+                        "shareSlug": share_slug,
+                        "shareAccessMode": "token",
+                        "shareSelectedUserIds": Json([]),
+                        "shareSelectedLdapGroups": Json([]),
+                    }
+                )
+                share_token = candidate
+                break
+            except Exception as exc:
+                if _is_share_token_conflict_error(exc) or _is_share_slug_conflict_error(
+                    exc
+                ):
+                    share_slug = await self._allocate_next_share_slug(
+                        owner_user_id,
+                        str(getattr(workspace_record, "name", "") or ""),
+                    )
+                    continue
+                raise
+        if not share_token or share_record is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate workspace share link",
             )
 
-        if existing_token and not rotate_token:
-            share_token = existing_token
-            if share_slug != existing_slug:
-                try:
-                    await db.workspace.update(
-                        where={"id": workspace_id},
-                        data={"shareSlug": share_slug},
-                    )
-                except Exception as exc:
-                    if _is_share_slug_conflict_error(exc):
-                        raise HTTPException(
-                            status_code=409,
-                            detail="A share slug with that value already exists for this owner",
-                        ) from exc
-                    raise
-        else:
-            share_token = ""
-            max_attempts = 20
-            for _ in range(max_attempts):
-                candidate = self._generate_share_token()
-                try:
-                    await db.workspace.update(
-                        where={"id": workspace_id},
-                        data={
-                            "shareToken": candidate,
-                            "shareTokenCreatedAt": _utc_now(),
-                            "shareSlug": share_slug,
-                        },
-                    )
-                    share_token = candidate
-                    break
-                except Exception as exc:
-                    if _is_share_token_conflict_error(
-                        exc
-                    ) or _is_share_slug_conflict_error(exc):
-                        continue
-                    raise
-            if not share_token:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to generate workspace share link",
-                )
         owner_username = await self._get_public_owner_username(owner_user_id)
         share_url = self._build_workspace_share_url(
-            owner_username,
-            share_slug,
-            base_url=base_url,
+            owner_username, share_slug, base_url=base_url
+        )
+        anonymous_share_url = self._build_workspace_anonymous_share_url(
+            share_token, base_url=base_url
         )
 
         return UserSpaceWorkspaceShareLink(
+            id=str(getattr(share_record, "id", "")),
             workspace_id=workspace_id,
             share_token=share_token,
             owner_username=owner_username,
             share_slug=share_slug,
             share_url=share_url,
+            anonymous_share_url=anonymous_share_url,
+            label=normalized_label,
+        )
+
+    async def delete_workspace_share_link(
+        self,
+        workspace_id: str,
+        share_id: str,
+        user_id: str,
+    ) -> None:
+        await self._ensure_workspace_share_owner(workspace_id, share_id, user_id)
+        db = await get_db()
+        await db.workspaceshare.delete(where={"id": share_id})
+        await invalidate_preview_sessions_for_workspace(workspace_id)
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        await userspace_runtime_service.invalidate_preview_session_cache(workspace_id)
+
+    async def update_workspace_share_link_label(
+        self,
+        workspace_id: str,
+        share_id: str,
+        label: str | None,
+        user_id: str,
+        base_url: str | None = None,
+    ) -> UserSpaceWorkspaceShareLinkStatus:
+        workspace_record, _share_record = await self._ensure_workspace_share_owner(
+            workspace_id, share_id, user_id
+        )
+        db = await get_db()
+        normalized_label = (label or "").strip() or None
+        share_record = await db.workspaceshare.update(
+            where={"id": share_id},
+            data={"label": normalized_label, "updatedAt": _utc_now()},
+        )
+        owner_username = await self._get_public_owner_username(
+            str(getattr(workspace_record, "ownerUserId", "") or "")
+        )
+        return self._workspace_share_status_from_record(
+            workspace_id, owner_username, share_record, base_url=base_url
         )
 
     async def update_workspace_share_slug(
         self,
         workspace_id: str,
+        share_id: str,
         slug: str,
         user_id: str,
         base_url: str | None = None,
     ) -> UserSpaceWorkspaceShareLinkStatus:
-        await self._enforce_workspace_access(
-            workspace_id,
-            user_id,
-            required_role="editor",
-        )
-
         normalized_slug = _normalize_share_slug_for_uniqueness(slug)
         if not normalized_slug:
             raise HTTPException(status_code=400, detail="Share slug is required")
-
+        workspace_record, _share_record = await self._ensure_workspace_share_owner(
+            workspace_id, share_id, user_id
+        )
+        owner_user_id = str(getattr(workspace_record, "ownerUserId", "") or "")
+        if await self._share_slug_in_use(
+            owner_user_id,
+            normalized_slug,
+            exclude_workspace_share_id=share_id,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="A share slug with that value already exists for this owner",
+            )
         db = await get_db()
         try:
-            await db.workspace.update(
-                where={"id": workspace_id},
-                data={
-                    "shareSlug": normalized_slug,
-                    "updatedAt": _utc_now(),
-                },
+            share_record = await db.workspaceshare.update(
+                where={"id": share_id},
+                data={"shareSlug": normalized_slug, "updatedAt": _utc_now()},
             )
         except Exception as exc:
             if _is_share_slug_conflict_error(exc):
@@ -10703,78 +11027,53 @@ class UserSpaceService:
                     status_code=409,
                     detail="A share slug with that value already exists for this owner",
                 ) from exc
-            raise HTTPException(status_code=404, detail="Workspace not found") from exc
-
-        return await self.get_workspace_share_link_status(
-            workspace_id,
-            user_id,
-            base_url=base_url,
+            raise
+        owner_username = await self._get_public_owner_username(owner_user_id)
+        return self._workspace_share_status_from_record(
+            workspace_id, owner_username, share_record, base_url=base_url
         )
 
     async def check_workspace_share_slug_availability(
         self,
         workspace_id: str,
+        share_id: str | None,
         slug: str,
         user_id: str,
     ) -> WorkspaceShareSlugAvailabilityResponse:
         await self._enforce_workspace_access(
-            workspace_id,
-            user_id,
-            required_role="editor",
+            workspace_id, user_id, required_role="editor"
         )
-
         normalized_slug = _normalize_share_slug_for_uniqueness(slug)
         if not normalized_slug:
             raise HTTPException(status_code=400, detail="Share slug is required")
-
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Workspace not found")
-
-        existing = await db.workspace.find_first(
-            where={
-                "ownerUserId": str(getattr(workspace_record, "ownerUserId", "") or ""),
-                "shareSlug": normalized_slug,
-                "NOT": {"id": workspace_id},
-            }
-        )
+        owner_user_id = str(getattr(workspace_record, "ownerUserId", "") or "")
         return WorkspaceShareSlugAvailabilityResponse(
             slug=normalized_slug,
-            available=existing is None,
+            available=not await self._share_slug_in_use(
+                owner_user_id,
+                normalized_slug,
+                exclude_workspace_share_id=share_id,
+            ),
         )
 
     async def update_workspace_share_access(
         self,
         workspace_id: str,
+        share_id: str,
         request: UpdateWorkspaceShareAccessRequest,
         user_id: str,
         base_url: str | None = None,
     ) -> UserSpaceWorkspaceShareLinkStatus:
-        await self._enforce_workspace_access(
-            workspace_id,
-            user_id,
-            required_role="editor",
+        workspace_record, _share_record = await self._ensure_workspace_share_owner(
+            workspace_id, share_id, user_id
         )
-
         mode = _normalize_share_access_mode(request.share_access_mode)
         selected_user_ids = _normalize_string_list(request.selected_user_ids)
         selected_ldap_groups = _normalize_string_list(request.selected_ldap_groups)
-
-        update_data: dict[str, Any] = {
-            "shareAccessMode": mode,
-            "shareSelectedUserIds": Json(selected_user_ids),
-            "shareSelectedLdapGroups": Json(selected_ldap_groups),
-            "updatedAt": _utc_now(),
-        }
-
-        if mode == "password":
-            password = (request.password or "").strip()
-            if not password:
-                raise HTTPException(status_code=400, detail="Password is required")
-            update_data["sharePassword"] = encrypt_secret(password)
-        else:
-            update_data["sharePassword"] = None
 
         if mode == "selected_users" and not selected_user_ids:
             raise HTTPException(
@@ -10787,21 +11086,741 @@ class UserSpaceService:
                 detail="At least one LDAP group is required for ldap-groups mode",
             )
 
-        db = await get_db()
-        await db.workspace.update(where={"id": workspace_id}, data=update_data)
+        update_data: dict[str, Any] = {
+            "shareAccessMode": mode,
+            "shareSelectedUserIds": Json(selected_user_ids),
+            "shareSelectedLdapGroups": Json(selected_ldap_groups),
+            "updatedAt": _utc_now(),
+        }
+        if mode == "password":
+            password = (request.password or "").strip()
+            if not password:
+                raise HTTPException(status_code=400, detail="Password is required")
+            update_data["sharePassword"] = encrypt_secret(password)
+        else:
+            update_data["sharePassword"] = None
 
-        # Invalidate stale preview sessions so visitors must re-authenticate
-        # through the proper share URL with the new access mode.
+        db = await get_db()
+        share_record = await db.workspaceshare.update(
+            where={"id": share_id}, data=update_data
+        )
+
         await invalidate_preview_sessions_for_workspace(workspace_id)
         from ragtime.userspace.runtime_service import userspace_runtime_service
 
         await userspace_runtime_service.invalidate_preview_session_cache(workspace_id)
 
-        return await self.get_workspace_share_link_status(
-            workspace_id,
+        owner_username = await self._get_public_owner_username(
+            str(getattr(workspace_record, "ownerUserId", "") or "")
+        )
+        return self._workspace_share_status_from_record(
+            workspace_id, owner_username, share_record, base_url=base_url
+        )
+
+    async def _get_conversation_share_management_record(
+        self,
+        conversation_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> Any:
+        db = await get_db()
+        conversation = await db.conversation.find_unique(
+            where={"id": conversation_id},
+            include={"members": True},
+        )
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        if is_admin:
+            return conversation
+
+        workspace_id = str(getattr(conversation, "workspaceId", "") or "").strip()
+        if workspace_id:
+            await self._enforce_workspace_access(
+                workspace_id,
+                user_id,
+                required_role="editor",
+            )
+            return conversation
+
+        if str(getattr(conversation, "userId", "") or "").strip() == user_id:
+            return conversation
+
+        for member in getattr(conversation, "members", []) or []:
+            member_user_id = str(getattr(member, "userId", "") or "").strip()
+            member_role = str(getattr(member, "role", "") or "").strip()
+            if member_user_id == user_id and member_role in {"owner", "editor"}:
+                return conversation
+
+        raise HTTPException(status_code=403, detail="Conversation access denied")
+
+    async def _resolve_conversation_share_owner_user_id(
+        self,
+        conversation_record: Any,
+    ) -> str:
+        workspace_id = str(
+            getattr(conversation_record, "workspaceId", "") or ""
+        ).strip()
+        if workspace_id:
+            workspace = await self._get_workspace_record(workspace_id)
+            if not workspace:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+            owner_user_id = str(getattr(workspace, "ownerUserId", "") or "").strip()
+            if owner_user_id:
+                return owner_user_id
+
+        conversation_owner_user_id = str(
+            getattr(conversation_record, "userId", "") or ""
+        ).strip()
+        if conversation_owner_user_id:
+            return conversation_owner_user_id
+
+        for member in getattr(conversation_record, "members", []) or []:
+            if str(getattr(member, "role", "") or "").strip() == "owner":
+                member_user_id = str(getattr(member, "userId", "") or "").strip()
+                if member_user_id:
+                    return member_user_id
+
+        raise HTTPException(
+            status_code=400,
+            detail="Conversation owner could not be resolved",
+        )
+
+    async def _get_conversation_share_record_by_id(
+        self,
+        share_id: str,
+        *,
+        include_owner: bool = False,
+        include_conversation: bool = False,
+    ) -> Any | None:
+        if not share_id:
+            return None
+        db = await get_db()
+        include: dict[str, bool] | None = None
+        if include_owner or include_conversation:
+            include = {}
+            if include_owner:
+                include["ownerUser"] = True
+            if include_conversation:
+                include["conversation"] = True
+        if include is not None:
+            return await db.conversationshare.find_unique(
+                where={"id": share_id},
+                include=include,
+            )
+        return await db.conversationshare.find_unique(where={"id": share_id})
+
+    async def _list_conversation_share_records(
+        self,
+        conversation_id: str,
+    ) -> list[Any]:
+        db = await get_db()
+        return await db.conversationshare.find_many(
+            where={"conversationId": conversation_id},
+            order={"createdAt": "asc"},
+        )
+
+    def _conversation_share_status_from_record(
+        self,
+        conversation_id: str,
+        owner_username: str,
+        share_record: Any | None,
+        *,
+        base_url: str | None = None,
+    ) -> ConversationShareLinkStatus:
+        if not share_record:
+            # Placeholder status with empty id; only used when no link exists yet.
+            return ConversationShareLinkStatus(
+                id="",
+                conversation_id=conversation_id,
+                has_share_link=False,
+                owner_username=owner_username,
+            )
+
+        share_id = str(getattr(share_record, "id", "") or "")
+        share_token = str(getattr(share_record, "shareToken", "") or "")
+        share_slug = str(getattr(share_record, "shareSlug", "") or "")
+        access_mode, password_encrypted, selected_user_ids, selected_ldap_groups = (
+            self._extract_share_access_state(share_record)
+        )
+        granted_role = str(getattr(share_record, "grantedRole", "viewer") or "viewer")
+        created_at = getattr(share_record, "shareTokenCreatedAt", None)
+        label_value = getattr(share_record, "label", None)
+        label = str(label_value).strip() if label_value else None
+        scope_anchor = getattr(share_record, "scopeAnchorMessageIdx", None)
+        scope_direction_raw = getattr(share_record, "scopeDirection", None)
+        scope_direction: Optional[str] = None
+        if scope_direction_raw in ("forward", "backward"):
+            scope_direction = scope_direction_raw
+
+        share_url = None
+        anonymous_share_url = None
+        has_share_link = bool(share_token and share_slug)
+        if has_share_link:
+            share_url = self._build_workspace_share_url(
+                owner_username,
+                share_slug,
+                base_url=base_url,
+            )
+            anonymous_share_url = self._build_workspace_anonymous_share_url(
+                share_token,
+                base_url=base_url,
+            )
+
+        return ConversationShareLinkStatus(
+            id=share_id,
+            conversation_id=conversation_id,
+            has_share_link=has_share_link,
+            owner_username=owner_username,
+            label=label,
+            share_slug=share_slug or None,
+            share_token=share_token or None,
+            share_url=share_url,
+            anonymous_share_url=anonymous_share_url,
+            created_at=created_at if has_share_link else None,
+            share_access_mode=access_mode,
+            selected_user_ids=selected_user_ids,
+            selected_ldap_groups=selected_ldap_groups,
+            has_password=bool(password_encrypted),
+            granted_role=cast(Any, granted_role),
+            scope_anchor_message_idx=(
+                int(scope_anchor) if scope_anchor is not None else None
+            ),
+            scope_direction=cast(Any, scope_direction),
+        )
+
+    async def list_conversation_share_links(
+        self,
+        conversation_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+        base_url: str | None = None,
+    ) -> ConversationShareLinkListResponse:
+        conversation = await self._get_conversation_share_management_record(
+            conversation_id,
             user_id,
+            is_admin=is_admin,
+        )
+        owner_user_id = await self._resolve_conversation_share_owner_user_id(
+            conversation
+        )
+        owner_username = await self._get_public_owner_username(owner_user_id)
+        records = await self._list_conversation_share_records(conversation_id)
+        links = [
+            self._conversation_share_status_from_record(
+                conversation_id,
+                owner_username,
+                record,
+                base_url=base_url,
+            )
+            for record in records
+        ]
+        return ConversationShareLinkListResponse(
+            conversation_id=conversation_id,
+            owner_username=owner_username,
+            links=links,
+        )
+
+    async def create_conversation_share_link(
+        self,
+        conversation_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+        base_url: str | None = None,
+        label: str | None = None,
+        scope_anchor_message_idx: int | None = None,
+        scope_direction: str | None = None,
+    ) -> ConversationShareLink:
+        conversation = await self._get_conversation_share_management_record(
+            conversation_id,
+            user_id,
+            is_admin=is_admin,
+        )
+        owner_user_id = await self._resolve_conversation_share_owner_user_id(
+            conversation
+        )
+        owner_username = await self._get_public_owner_username(owner_user_id)
+
+        normalized_label = (label or "").strip() or None
+        anchor_idx, direction = self._normalize_scope_input(
+            scope_anchor_message_idx, scope_direction
+        )
+
+        share_slug = await self._allocate_next_share_slug(
+            owner_user_id,
+            str(getattr(conversation, "title", "") or ""),
+        )
+
+        db = await get_db()
+        share_token = ""
+        share_record: Any | None = None
+        for _ in range(20):
+            candidate = self._generate_share_token()
+            if await self._share_token_in_use(candidate):
+                continue
+            try:
+                share_record = await db.conversationshare.create(
+                    data={
+                        "conversationId": conversation_id,
+                        "ownerUserId": owner_user_id,
+                        "label": normalized_label,
+                        "shareToken": candidate,
+                        "shareTokenCreatedAt": _utc_now(),
+                        "shareSlug": share_slug,
+                        "shareAccessMode": "token",
+                        "shareSelectedUserIds": Json([]),
+                        "shareSelectedLdapGroups": Json([]),
+                        "grantedRole": "viewer",
+                        "scopeAnchorMessageIdx": anchor_idx,
+                        "scopeDirection": direction,
+                    }
+                )
+                share_token = candidate
+                break
+            except Exception as exc:
+                if _is_share_token_conflict_error(exc) or _is_share_slug_conflict_error(
+                    exc
+                ):
+                    # Try a different slug / token combo
+                    share_slug = await self._allocate_next_share_slug(
+                        owner_user_id,
+                        str(getattr(conversation, "title", "") or ""),
+                    )
+                    continue
+                raise
+        if not share_token or share_record is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate conversation share link",
+            )
+
+        share_url = self._build_workspace_share_url(
+            owner_username,
+            share_slug,
             base_url=base_url,
         )
+        anonymous_share_url = self._build_workspace_anonymous_share_url(
+            share_token,
+            base_url=base_url,
+        )
+        return ConversationShareLink(
+            id=str(getattr(share_record, "id", "")),
+            conversation_id=conversation_id,
+            share_token=share_token,
+            owner_username=owner_username,
+            share_slug=share_slug,
+            share_url=share_url,
+            anonymous_share_url=anonymous_share_url,
+            label=normalized_label,
+            scope_anchor_message_idx=anchor_idx,
+            scope_direction=cast(Any, direction),
+        )
+
+    @staticmethod
+    def _normalize_scope_input(
+        anchor: int | None,
+        direction: str | None,
+    ) -> tuple[int | None, str | None]:
+        if anchor is None and not direction:
+            return None, None
+        if direction not in ("forward", "backward"):
+            raise HTTPException(
+                status_code=400,
+                detail="scope_direction must be 'forward' or 'backward'",
+            )
+        if anchor is None or anchor < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="scope_anchor_message_idx must be a non-negative integer",
+            )
+        return int(anchor), direction
+
+    async def _ensure_conversation_share_owner(
+        self,
+        share_id: str,
+        conversation_id: str,
+        user_id: str,
+        *,
+        is_admin: bool,
+    ) -> tuple[Any, Any, str]:
+        share_record = await self._get_conversation_share_record_by_id(share_id)
+        if (
+            share_record is None
+            or str(getattr(share_record, "conversationId", "") or "") != conversation_id
+        ):
+            raise HTTPException(status_code=404, detail="Share link not found")
+        conversation = await self._get_conversation_share_management_record(
+            conversation_id,
+            user_id,
+            is_admin=is_admin,
+        )
+        owner_user_id = await self._resolve_conversation_share_owner_user_id(
+            conversation
+        )
+        return share_record, conversation, owner_user_id
+
+    async def delete_conversation_share_link(
+        self,
+        conversation_id: str,
+        share_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> None:
+        await self._ensure_conversation_share_owner(
+            share_id, conversation_id, user_id, is_admin=is_admin
+        )
+        db = await get_db()
+        await db.conversationshare.delete(where={"id": share_id})
+
+    async def update_conversation_share_link_metadata(
+        self,
+        conversation_id: str,
+        share_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+        base_url: str | None = None,
+        label: str | None = None,
+        scope_anchor_message_idx: int | None = None,
+        scope_direction: str | None = None,
+        update_label: bool = False,
+        update_scope: bool = False,
+    ) -> ConversationShareLinkStatus:
+        share_record, _conversation, owner_user_id = (
+            await self._ensure_conversation_share_owner(
+                share_id, conversation_id, user_id, is_admin=is_admin
+            )
+        )
+        owner_username = await self._get_public_owner_username(owner_user_id)
+        update_data: dict[str, Any] = {"updatedAt": _utc_now()}
+        if update_label:
+            update_data["label"] = (label or "").strip() or None
+        if update_scope:
+            anchor_idx, direction = self._normalize_scope_input(
+                scope_anchor_message_idx, scope_direction
+            )
+            update_data["scopeAnchorMessageIdx"] = anchor_idx
+            update_data["scopeDirection"] = direction
+        db = await get_db()
+        share_record = await db.conversationshare.update(
+            where={"id": share_id}, data=update_data
+        )
+        return self._conversation_share_status_from_record(
+            conversation_id, owner_username, share_record, base_url=base_url
+        )
+
+    async def update_conversation_share_link_slug(
+        self,
+        conversation_id: str,
+        share_id: str,
+        slug: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+        base_url: str | None = None,
+    ) -> ConversationShareLinkStatus:
+        normalized_slug = _normalize_share_slug_for_uniqueness(slug)
+        if not normalized_slug:
+            raise HTTPException(status_code=400, detail="Share slug is required")
+        share_record, _conversation, owner_user_id = (
+            await self._ensure_conversation_share_owner(
+                share_id, conversation_id, user_id, is_admin=is_admin
+            )
+        )
+        if await self._share_slug_in_use(
+            owner_user_id,
+            normalized_slug,
+            exclude_share_id=share_id,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="A share slug with that value already exists for this owner",
+            )
+        db = await get_db()
+        share_record = await db.conversationshare.update(
+            where={"id": share_id},
+            data={
+                "shareSlug": normalized_slug,
+                "ownerUserId": owner_user_id,
+                "updatedAt": _utc_now(),
+            },
+        )
+        owner_username = await self._get_public_owner_username(owner_user_id)
+        return self._conversation_share_status_from_record(
+            conversation_id, owner_username, share_record, base_url=base_url
+        )
+
+    async def check_conversation_share_slug_availability(
+        self,
+        conversation_id: str,
+        share_id: str | None,
+        slug: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> ConversationShareSlugAvailabilityResponse:
+        normalized_slug = _normalize_share_slug_for_uniqueness(slug)
+        if not normalized_slug:
+            raise HTTPException(status_code=400, detail="Share slug is required")
+        conversation = await self._get_conversation_share_management_record(
+            conversation_id,
+            user_id,
+            is_admin=is_admin,
+        )
+        owner_user_id = await self._resolve_conversation_share_owner_user_id(
+            conversation
+        )
+        return ConversationShareSlugAvailabilityResponse(
+            slug=normalized_slug,
+            available=not await self._share_slug_in_use(
+                owner_user_id,
+                normalized_slug,
+                exclude_share_id=share_id,
+            ),
+        )
+
+    async def update_conversation_share_link_access(
+        self,
+        conversation_id: str,
+        share_id: str,
+        request: UpdateConversationShareAccessRequest,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+        base_url: str | None = None,
+    ) -> ConversationShareLinkStatus:
+        mode = _normalize_share_access_mode(request.share_access_mode)
+        selected_user_ids = _normalize_string_list(request.selected_user_ids)
+        selected_ldap_groups = _normalize_string_list(request.selected_ldap_groups)
+
+        if mode == "selected_users" and not selected_user_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one user is required for selected-users mode",
+            )
+        if mode == "ldap_groups" and not selected_ldap_groups:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one LDAP group is required for ldap-groups mode",
+            )
+
+        share_record, _conversation, owner_user_id = (
+            await self._ensure_conversation_share_owner(
+                share_id, conversation_id, user_id, is_admin=is_admin
+            )
+        )
+
+        update_data: dict[str, Any] = {
+            "ownerUserId": owner_user_id,
+            "shareAccessMode": mode,
+            "shareSelectedUserIds": Json(selected_user_ids),
+            "shareSelectedLdapGroups": Json(selected_ldap_groups),
+            "grantedRole": request.granted_role,
+            "updatedAt": _utc_now(),
+        }
+        if mode == "password":
+            password = (request.password or "").strip()
+            if not password:
+                raise HTTPException(status_code=400, detail="Password is required")
+            update_data["sharePassword"] = encrypt_secret(password)
+        else:
+            update_data["sharePassword"] = None
+
+        db = await get_db()
+        share_record = await db.conversationshare.update(
+            where={"id": share_id}, data=update_data
+        )
+        owner_username = await self._get_public_owner_username(owner_user_id)
+        return self._conversation_share_status_from_record(
+            conversation_id, owner_username, share_record, base_url=base_url
+        )
+
+    async def _authorize_shared_conversation_record(
+        self,
+        share_record: Any,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+        share_auth_token: str | None = None,
+    ) -> _ShareAuthorizationResult:
+        granted_role = str(getattr(share_record, "grantedRole", "viewer") or "viewer")
+        result = await self._authorize_share_record(
+            share_record,
+            target_type="conversation",
+            granted_role=granted_role,
+            current_user=current_user,
+            password=password,
+            share_auth_token=share_auth_token,
+            not_found_detail="Shared conversation not found",
+        )
+        if granted_role == "editor":
+            result["can_edit"] = True
+        if current_user is not None:
+            current_user_id = str(getattr(current_user, "id", "") or "").strip()
+            owner_user_id = str(getattr(share_record, "ownerUserId", "") or "").strip()
+            current_role = str(getattr(current_user, "role", "") or "").strip()
+            if current_user_id and owner_user_id and current_user_id == owner_user_id:
+                result["can_edit"] = True
+            elif current_role == "admin":
+                result["can_edit"] = True
+        return result
+
+    async def get_authorized_shared_conversation_record(
+        self,
+        share_token: str,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+        share_auth_token: str | None = None,
+    ) -> tuple[Any, _ShareAuthorizationResult]:
+        share_record = await self._find_conversation_share_by_token(
+            share_token,
+            include_owner=True,
+            include_conversation=True,
+        )
+        if not share_record:
+            raise HTTPException(status_code=404, detail="Shared conversation not found")
+        authorization = await self._authorize_shared_conversation_record(
+            share_record,
+            current_user=current_user,
+            password=password,
+            share_auth_token=share_auth_token,
+        )
+        return share_record, authorization
+
+    async def get_authorized_shared_conversation_record_by_slug(
+        self,
+        owner_username: str,
+        share_slug: str,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+        share_auth_token: str | None = None,
+    ) -> tuple[Any, _ShareAuthorizationResult]:
+        owner_ids = await self._resolve_share_owner_ids(owner_username)
+        share_record = await self._find_conversation_share_by_slug(
+            owner_ids,
+            share_slug,
+            include_owner=True,
+            include_conversation=True,
+        )
+        if not share_record:
+            raise HTTPException(status_code=404, detail="Shared conversation not found")
+        authorization = await self._authorize_shared_conversation_record(
+            share_record,
+            current_user=current_user,
+            password=password,
+            share_auth_token=share_auth_token,
+        )
+        return share_record, authorization
+
+    async def authorize_shared_conversation_access(
+        self,
+        share_token: str,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+        share_auth_token: str | None = None,
+    ) -> _ShareAuthorizationResult:
+        _share_record, authorization = (
+            await self.get_authorized_shared_conversation_record(
+                share_token,
+                current_user=current_user,
+                password=password,
+                share_auth_token=share_auth_token,
+            )
+        )
+        return authorization
+
+    async def authorize_shared_conversation_access_by_slug(
+        self,
+        owner_username: str,
+        share_slug: str,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+        share_auth_token: str | None = None,
+    ) -> _ShareAuthorizationResult:
+        _share_record, authorization = (
+            await self.get_authorized_shared_conversation_record_by_slug(
+                owner_username,
+                share_slug,
+                current_user=current_user,
+                password=password,
+                share_auth_token=share_auth_token,
+            )
+        )
+        return authorization
+
+    async def resolve_shared_conversation_id(
+        self,
+        share_token: str,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+        share_auth_token: str | None = None,
+    ) -> str:
+        authorization = await self.authorize_shared_conversation_access(
+            share_token,
+            current_user=current_user,
+            password=password,
+            share_auth_token=share_auth_token,
+        )
+        return str(authorization.get("conversation_id") or "")
+
+    async def resolve_shared_conversation_id_by_slug(
+        self,
+        owner_username: str,
+        share_slug: str,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+        share_auth_token: str | None = None,
+    ) -> str:
+        authorization = await self.authorize_shared_conversation_access_by_slug(
+            owner_username,
+            share_slug,
+            current_user=current_user,
+            password=password,
+            share_auth_token=share_auth_token,
+        )
+        return str(authorization.get("conversation_id") or "")
+
+    async def resolve_public_share_target_by_token(
+        self,
+        share_token: str,
+    ) -> Literal["workspace", "conversation", "unknown"]:
+        try:
+            target_type, _share_record = (
+                await self._resolve_public_share_record_by_token(share_token)
+            )
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return "unknown"
+            raise
+        return cast(Literal["workspace", "conversation"], target_type)
+
+    async def resolve_public_share_target_by_slug(
+        self,
+        owner_username: str,
+        share_slug: str,
+    ) -> Literal["workspace", "conversation", "unknown"]:
+        try:
+            target_type, _share_record = (
+                await self._resolve_public_share_record_by_slug(
+                    owner_username,
+                    share_slug,
+                )
+            )
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return "unknown"
+            raise
+        return cast(Literal["workspace", "conversation"], target_type)
 
     async def get_shared_preview(
         self,

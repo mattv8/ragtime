@@ -283,7 +283,8 @@ textarea:focus {
   z-index: var(--z-tooltip);
   max-width: 320px;
   background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-lg);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   font-size: var(--text-xs);
@@ -493,6 +494,127 @@ textarea:focus {
   width: max(100%, 370px);
   min-width: 100%;
   max-width: min(370px, calc(100vw - 24px));
+}
+
+.userspace-share-link-picker {
+  position: relative;
+  width: 100%;
+}
+
+.userspace-share-link-trigger {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 32px;
+  justify-content: space-between;
+  padding: 6px 10px 6px 12px;
+  max-width: none;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
+}
+
+.userspace-share-link-trigger .model-selector-text {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+
+.userspace-share-link-dropdown {
+  width: 100%;
+  min-width: 100%;
+  max-width: none;
+  right: 0;
+}
+
+.userspace-share-link-item {
+  gap: var(--space-xxs, 2px);
+  padding: 3px 6px 3px 8px;
+  height: 30px;
+  box-sizing: border-box;
+}
+
+.userspace-share-link-item.is-selected {
+  background: color-mix(in srgb, var(--color-primary-soft) 72%, var(--color-surface));
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
+.userspace-share-link-item.is-selected .userspace-share-link-select-btn {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.userspace-share-link-select-btn {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  min-height: 24px;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 2px;
+}
+
+.userspace-share-link-inline-edit {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  display: flex;
+  align-items: center;
+}
+
+.userspace-share-link-rename-input {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  line-height: 24px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+.userspace-share-link-empty {
+  padding: 8px 10px;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.userspace-share-link-create-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: 6px var(--space-sm);
+  background: none;
+  border: none;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.userspace-share-link-create-btn:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.userspace-share-link-create-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .userspace-workspace-item {
@@ -3647,10 +3769,21 @@ textarea:focus {
 }
 
 .userspace-share-modal .modal-header,
+.userspace-members-modal .modal-header {
+  border: none;
+}
+
 .userspace-share-modal .modal-footer,
-.userspace-members-modal .modal-header,
 .userspace-members-modal .modal-footer {
   border: none;
+}
+
+.userspace-share-modal-footer {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-xs);
+  border-top: 1px solid var(--color-border) !important;
+  padding: var(--space-md) var(--space-lg);
 }
 
 .userspace-share-modal .modal-body {
@@ -3826,7 +3959,6 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
-  padding-top: var(--space-sm);
 }
 
 .userspace-share-controls h4 {

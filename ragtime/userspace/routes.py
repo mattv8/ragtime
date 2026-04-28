@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     File,
     Form,
@@ -45,6 +46,7 @@ from ragtime.userspace.models import (
     CreateUserSpaceObjectStorageBucketRequest,
     CreateWorkspaceMountRequest,
     CreateWorkspaceRequest,
+    CreateWorkspaceShareLinkRequest,
     DeleteGlobalEnvVarResponse,
     DeleteUserspaceMountSourceResponse,
     DeleteUserSpaceObjectStorageBucketResponse,
@@ -68,6 +70,7 @@ from ragtime.userspace.models import (
     UpdateWorkspaceMountRequest,
     UpdateWorkspaceRequest,
     UpdateWorkspaceShareAccessRequest,
+    UpdateWorkspaceShareLinkRequest,
     UpdateWorkspaceShareSlugRequest,
     UpsertGlobalEnvVarRequest,
     UpsertWorkspaceAgentGrantRequest,
@@ -106,6 +109,7 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceScmSettingsRequest,
     UserSpaceWorkspaceScmSyncResponse,
     UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkListResponse,
     UserSpaceWorkspaceShareLinkStatus,
     WorkspaceAgentGrant,
     WorkspaceMount,
@@ -1464,14 +1468,41 @@ async def exec_workspace_command(
     return result
 
 
+@router.get(
+    "/workspaces/{workspace_id}/share-links",
+    response_model=UserSpaceWorkspaceShareLinkListResponse,
+)
+async def list_workspace_share_links(
+    workspace_id: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+):
+    base_url = get_browser_matched_origin(request)
+    response = await userspace_service.list_workspace_share_links(
+        workspace_id,
+        user.id,
+        base_url=base_url,
+    )
+    return response.model_copy(
+        update={
+            "links": [
+                _apply_share_link_variants(link, base_url=base_url)
+                for link in response.links
+            ],
+        }
+    )
+
+
 @router.post(
-    "/workspaces/{workspace_id}/share-link",
+    "/workspaces/{workspace_id}/share-links",
     response_model=UserSpaceWorkspaceShareLink,
 )
 async def create_workspace_share_link(
     workspace_id: str,
     request: Request,
-    rotate_token: bool = Query(default=False),
+    body: CreateWorkspaceShareLinkRequest = Body(
+        default_factory=CreateWorkspaceShareLinkRequest
+    ),
     user: Any = Depends(get_current_user),
 ):
     base_url = get_browser_matched_origin(request)
@@ -1479,18 +1510,13 @@ async def create_workspace_share_link(
         workspace_id,
         user.id,
         base_url=base_url,
-        rotate_token=rotate_token,
-    )
-    status = await userspace_service.get_workspace_share_link_status(
-        workspace_id,
-        user.id,
-        base_url=base_url,
+        label=body.label,
     )
     return _apply_share_link_variants(
         link,
         base_url=base_url,
-        access_mode=status.share_access_mode,
-        has_share_link=status.has_share_link,
+        access_mode="token",
+        has_share_link=True,
     )
 
 
@@ -1513,26 +1539,51 @@ async def get_workspace_share_link(
 
 
 @router.delete(
-    "/workspaces/{workspace_id}/share-link",
-    response_model=UserSpaceWorkspaceShareLinkStatus,
+    "/workspaces/{workspace_id}/share-links/{share_id}",
+    status_code=204,
 )
-async def revoke_workspace_share_link(
+async def delete_workspace_share_link(
     workspace_id: str,
+    share_id: str,
     user: Any = Depends(get_current_user),
 ):
-    status = await userspace_service.revoke_workspace_share_link(
+    await userspace_service.delete_workspace_share_link(
         workspace_id,
+        share_id,
         user.id,
     )
-    return _apply_share_link_variants(status, base_url="")
+    return Response(status_code=204)
 
 
 @router.put(
-    "/workspaces/{workspace_id}/share-link/access",
+    "/workspaces/{workspace_id}/share-links/{share_id}",
+    response_model=UserSpaceWorkspaceShareLinkStatus,
+)
+async def update_workspace_share_link_label(
+    workspace_id: str,
+    share_id: str,
+    body: UpdateWorkspaceShareLinkRequest,
+    base_request: Request,
+    user: Any = Depends(get_current_user),
+):
+    base_url = get_browser_matched_origin(base_request)
+    status = await userspace_service.update_workspace_share_link_label(
+        workspace_id,
+        share_id,
+        body.label,
+        user.id,
+        base_url=base_url,
+    )
+    return _apply_share_link_variants(status, base_url=base_url)
+
+
+@router.put(
+    "/workspaces/{workspace_id}/share-links/{share_id}/access",
     response_model=UserSpaceWorkspaceShareLinkStatus,
 )
 async def update_workspace_share_access(
     workspace_id: str,
+    share_id: str,
     request: UpdateWorkspaceShareAccessRequest,
     base_request: Request,
     user: Any = Depends(get_current_user),
@@ -1540,6 +1591,7 @@ async def update_workspace_share_access(
     base_url = get_browser_matched_origin(base_request)
     status = await userspace_service.update_workspace_share_access(
         workspace_id,
+        share_id,
         request,
         user.id,
         base_url=base_url,
@@ -1548,11 +1600,12 @@ async def update_workspace_share_access(
 
 
 @router.put(
-    "/workspaces/{workspace_id}/share-link/slug",
+    "/workspaces/{workspace_id}/share-links/{share_id}/slug",
     response_model=UserSpaceWorkspaceShareLinkStatus,
 )
 async def update_workspace_share_slug(
     workspace_id: str,
+    share_id: str,
     request: UpdateWorkspaceShareSlugRequest,
     base_request: Request,
     user: Any = Depends(get_current_user),
@@ -1560,6 +1613,7 @@ async def update_workspace_share_slug(
     base_url = get_browser_matched_origin(base_request)
     status = await userspace_service.update_workspace_share_slug(
         workspace_id,
+        share_id,
         request.slug,
         user.id,
         base_url=base_url,
@@ -1568,16 +1622,18 @@ async def update_workspace_share_slug(
 
 
 @router.get(
-    "/workspaces/{workspace_id}/share-link/availability",
+    "/workspaces/{workspace_id}/share-links/availability",
     response_model=WorkspaceShareSlugAvailabilityResponse,
 )
 async def check_workspace_share_slug_availability(
     workspace_id: str,
     slug: str = Query(min_length=1, max_length=120),
+    share_id: str | None = Query(default=None),
     user: Any = Depends(get_current_user),
 ):
     return await userspace_service.check_workspace_share_slug_availability(
         workspace_id,
+        share_id,
         slug,
         user.id,
     )

@@ -2313,6 +2313,97 @@ class ConversationResponse(BaseModel):
     updated_at: datetime
 
 
+ConversationShareRole = Literal["viewer", "editor"]
+ConversationShareAccessMode = Literal[
+    "token",
+    "password",
+    "authenticated_users",
+    "selected_users",
+    "ldap_groups",
+]
+
+
+class ConversationShareLink(BaseModel):
+    id: str
+    conversation_id: str
+    share_token: str
+    owner_username: str
+    share_slug: str
+    share_url: str
+    anonymous_share_url: str | None = None
+    label: str | None = None
+    scope_anchor_message_idx: int | None = None
+    scope_direction: Literal["forward", "backward"] | None = None
+
+
+class ConversationShareLinkStatus(BaseModel):
+    id: str
+    conversation_id: str
+    has_share_link: bool
+    owner_username: str
+    label: str | None = None
+    share_slug: str | None = None
+    share_token: str | None = None
+    share_url: str | None = None
+    anonymous_share_url: str | None = None
+    created_at: datetime | None = None
+    share_access_mode: ConversationShareAccessMode = "token"
+    selected_user_ids: list[str] = Field(default_factory=list)
+    selected_ldap_groups: list[str] = Field(default_factory=list)
+    has_password: bool = False
+    granted_role: ConversationShareRole = "viewer"
+    scope_anchor_message_idx: int | None = None
+    scope_direction: Literal["forward", "backward"] | None = None
+
+
+class ConversationShareLinkListResponse(BaseModel):
+    conversation_id: str
+    owner_username: str
+    links: list[ConversationShareLinkStatus] = Field(default_factory=list)
+
+
+class CreateConversationShareLinkRequest(BaseModel):
+    label: str | None = Field(default=None, max_length=200)
+    scope_anchor_message_idx: int | None = Field(default=None, ge=0)
+    scope_direction: Literal["forward", "backward"] | None = None
+
+
+class UpdateConversationShareAccessRequest(BaseModel):
+    share_access_mode: ConversationShareAccessMode
+    password: str | None = Field(default=None, max_length=512)
+    selected_user_ids: list[str] = Field(default_factory=list)
+    selected_ldap_groups: list[str] = Field(default_factory=list)
+    granted_role: ConversationShareRole = "viewer"
+
+
+class UpdateConversationShareLinkRequest(BaseModel):
+    label: str | None = Field(default=None, max_length=200)
+    scope_anchor_message_idx: int | None = Field(default=None, ge=0)
+    scope_direction: Literal["forward", "backward"] | None = None
+
+
+class ConversationShareSlugAvailabilityResponse(BaseModel):
+    slug: str
+    available: bool
+
+
+class SharedConversationResponse(BaseModel):
+    conversation: ConversationResponse
+    owner_username: str
+    owner_display_name: str | None = None
+    share_access_mode: ConversationShareAccessMode = "token"
+    granted_role: ConversationShareRole = "viewer"
+    can_edit: bool = False
+    is_authenticated: bool = False
+    context_limit: int | None = None
+    scope_anchor_message_idx: int | None = None
+    scope_direction: Literal["forward", "backward"] | None = None
+
+
+class PublicShareTargetResponse(BaseModel):
+    target_type: Literal["workspace", "conversation", "unknown"]
+
+
 class MessageSnapshotRestoreResponse(BaseModel):
     """Response from combined message-anchored snapshot restore."""
 

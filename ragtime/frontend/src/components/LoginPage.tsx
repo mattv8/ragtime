@@ -29,7 +29,7 @@ function resolveAuthMethods(authStatus: AuthStatus): AuthMethodStatus[] {
   return methods;
 }
 
-export function LoginPage({ authStatus, onLoginSuccess, serverName = 'Ragtime' }: LoginPageProps) {
+export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }: LoginPageProps) {
   const authMethods = resolveAuthMethods(authStatus);
   const hasLdapMethod = authMethods.some((method) => method.key === 'ldap' && method.configured);
   const [username, setUsername] = useState(authStatus.debug_username || '');
@@ -64,44 +64,50 @@ export function LoginPage({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
   };
 
   return (
-    <div className="login-container">
-      <div className="login-card">
-        <div className="login-header">
-          <h1 className="login-title">{serverName}</h1>
-          <p className="login-subtitle">Sign in to continue</p>
-        </div>
-
-        {authStatus.cookie_warning && (
-          <div className="status-message warning">
-            <strong>Warning:</strong> {authStatus.cookie_warning}
-          </div>
-        )}
-
-        <AuthCredentialsForm
-          username={username}
-          password={password}
-          usernamePlaceholder={hasLdapMethod ? 'Username' : 'Local admin'}
-          error={error}
-          isLoading={isLoading}
-          onUsernameChange={setUsername}
-          onPasswordChange={setPassword}
-          onSubmit={handleSubmit}
-        />
-
-        <div className="login-footer">
-          <ul className="login-auth-method-list" aria-live="polite">
-            {authMethods.map((method) => (
-              <li className="login-auth-method-item" key={method.key}>
-                <span
-                  className={`login-auth-dot status-${method.status}`}
-                  aria-hidden="true"
-                />
-                <span className="login-auth-method-label">{method.label}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
+    <div className="login-card">
+      <div className="login-header">
+        <h1 className="login-title">{serverName}</h1>
+        <p className="login-subtitle">Sign in to continue</p>
       </div>
+
+      {authStatus.cookie_warning && (
+        <div className="status-message warning">
+          <strong>Warning:</strong> {authStatus.cookie_warning}
+        </div>
+      )}
+
+      <AuthCredentialsForm
+        username={username}
+        password={password}
+        usernamePlaceholder={hasLdapMethod ? 'Username' : 'Local admin'}
+        error={error}
+        isLoading={isLoading}
+        onUsernameChange={setUsername}
+        onPasswordChange={setPassword}
+        onSubmit={handleSubmit}
+      />
+
+      <div className="login-footer">
+        <ul className="login-auth-method-list" aria-live="polite">
+          {authMethods.map((method) => (
+            <li className="login-auth-method-item" key={method.key}>
+              <span
+                className={`login-auth-dot status-${method.status}`}
+                aria-hidden="true"
+              />
+              <span className="login-auth-method-label">{method.label}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+export function LoginPage(props: LoginPageProps) {
+  return (
+    <div className="login-container">
+      <LoginCard {...props} />
     </div>
   );
 }

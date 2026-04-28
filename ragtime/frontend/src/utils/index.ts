@@ -1,4 +1,10 @@
 export { formatSizeMB, formatBytes, formatElapsedTime, formatChatTimestamp } from './format';
+export {
+  areSameNormalizedStringArrays,
+  getDefaultShareSlug,
+  normalizeShareSlugInput,
+  normalizeUniqueStrings,
+} from './shareLinks';
 export * from './userspacePreview';
 export {
   getCookieValue,

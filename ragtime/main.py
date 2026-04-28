@@ -27,7 +27,13 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Query, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -1023,6 +1029,16 @@ async def _proxy_shared_workspace_websocket(
     await _proxy_websocket_request(websocket, _to_websocket_url(upstream_url))
 
 
+def _shared_chat_shell_response() -> Response:
+    dist_index = DIST_DIR / "index.html"
+    if dist_index.exists():
+        return FileResponse(dist_index, media_type="text/html")
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Frontend build not available for shared conversation"},
+    )
+
+
 async def _shared_launch_redirect_by_slug(
     owner_username: str,
     share_slug: str,
@@ -1045,6 +1061,46 @@ async def _shared_launch_redirect_by_slug(
             share_slug,
         )
     )
+    target_type = await userspace_service.resolve_public_share_target_by_slug(
+        owner_username,
+        share_slug,
+    )
+    if target_type == "unknown":
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if target_type == "conversation":
+        try:
+            await userspace_service.authorize_shared_conversation_access_by_slug(
+                owner_username,
+                share_slug,
+                current_user=current_user,
+                share_auth_token=share_auth_token,
+            )
+        except HTTPException as exc:
+            detail = str(exc.detail).lower() if isinstance(exc.detail, str) else ""
+            is_password_error = exc.status_code == 401 and (
+                "password required" in detail or "invalid password" in detail
+            )
+            if is_password_error and request.method == "GET":
+                response = HTMLResponse(
+                    _render_share_password_prompt(
+                        workspace_name,
+                        _share_slug_authorize_path(owner_username, share_slug),
+                        owner_display_name or owner_username,
+                        "Invalid password" if "invalid password" in detail else None,
+                        _share_request_target(request),
+                    )
+                )
+                clear_share_auth_cookie(
+                    response,
+                    owner_username=owner_username,
+                    share_slug=share_slug,
+                )
+                return response
+            if exc.status_code in {401, 403} and request.method == "GET":
+                return _shared_chat_shell_response()
+            raise
+        return _shared_chat_shell_response()
 
     try:
         workspace_id = await userspace_service.resolve_shared_workspace_id_by_slug(
@@ -1107,6 +1163,42 @@ async def _shared_launch_redirect_by_token(
     workspace_name, _ = await userspace_service.get_share_prompt_metadata_by_token(
         share_token,
     )
+    target_type = await userspace_service.resolve_public_share_target_by_token(
+        share_token
+    )
+    if target_type == "unknown":
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if target_type == "conversation":
+        try:
+            await userspace_service.authorize_shared_conversation_access(
+                share_token,
+                current_user=current_user,
+                share_auth_token=share_auth_token,
+            )
+        except HTTPException as exc:
+            detail = str(exc.detail).lower() if isinstance(exc.detail, str) else ""
+            is_password_error = exc.status_code == 401 and (
+                "password required" in detail or "invalid password" in detail
+            )
+            if is_password_error and request.method == "GET":
+                response = HTMLResponse(
+                    _render_share_token_password_prompt(
+                        workspace_name,
+                        _share_token_authorize_path(share_token),
+                        "Invalid password" if "invalid password" in detail else None,
+                        _share_request_target(request),
+                    )
+                )
+                clear_share_auth_cookie(
+                    response,
+                    share_token=share_token,
+                )
+                return response
+            if exc.status_code in {401, 403} and request.method == "GET":
+                return _shared_chat_shell_response()
+            raise
+        return _shared_chat_shell_response()
 
     try:
         workspace_id = await userspace_service.resolve_shared_workspace_id(
@@ -1161,6 +1253,11 @@ async def userspace_share_token_authorize(share_token: str, request: Request):
     workspace_name, _ = await userspace_service.get_share_prompt_metadata_by_token(
         share_token,
     )
+    target_type = await userspace_service.resolve_public_share_target_by_token(
+        share_token
+    )
+    if target_type == "unknown":
+        raise HTTPException(status_code=404, detail="Not found")
     fallback_target = f"/shared/{quote(share_token, safe='')}"
     try:
         form = await request.form()
@@ -1184,11 +1281,20 @@ async def userspace_share_token_authorize(share_token: str, request: Request):
         )
 
     try:
-        authorization = await userspace_service.authorize_shared_workspace_access(
-            share_token,
-            current_user=current_user,
-            password=share_password,
-        )
+        if target_type == "conversation":
+            authorization = (
+                await userspace_service.authorize_shared_conversation_access(
+                    share_token,
+                    current_user=current_user,
+                    password=share_password,
+                )
+            )
+        else:
+            authorization = await userspace_service.authorize_shared_workspace_access(
+                share_token,
+                current_user=current_user,
+                password=share_password,
+            )
     except HTTPException as exc:
         detail = str(exc.detail) if isinstance(exc.detail, str) else "Invalid password"
         error_response = HTMLResponse(
@@ -1257,6 +1363,12 @@ async def userspace_share_slug_authorize(
             share_slug,
         )
     )
+    target_type = await userspace_service.resolve_public_share_target_by_slug(
+        owner_username,
+        share_slug,
+    )
+    if target_type == "unknown":
+        raise HTTPException(status_code=404, detail="Not found")
     fallback_target = f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}"
     try:
         form = await request.form()
@@ -1281,14 +1393,24 @@ async def userspace_share_slug_authorize(
         )
 
     try:
-        authorization = (
-            await userspace_service.authorize_shared_workspace_access_by_slug(
-                owner_username,
-                share_slug,
-                current_user=current_user,
-                password=share_password,
+        if target_type == "conversation":
+            authorization = (
+                await userspace_service.authorize_shared_conversation_access_by_slug(
+                    owner_username,
+                    share_slug,
+                    current_user=current_user,
+                    password=share_password,
+                )
             )
-        )
+        else:
+            authorization = (
+                await userspace_service.authorize_shared_workspace_access_by_slug(
+                    owner_username,
+                    share_slug,
+                    current_user=current_user,
+                    password=share_password,
+                )
+            )
     except HTTPException as exc:
         detail = str(exc.detail) if isinstance(exc.detail, str) else "Invalid password"
         error_response = HTMLResponse(

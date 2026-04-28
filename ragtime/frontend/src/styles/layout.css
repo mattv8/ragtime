@@ -2519,3 +2519,57 @@ body {
     min-height: 200px;
   }
 }
+
+/* =============================================================================
+   PUBLIC SHARED VIEW - Login modal overlay
+   ============================================================================= */
+
+.shared-blur-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  transition: filter var(--transition-fast);
+}
+
+.shared-blur-host-active {
+  filter: blur(6px);
+  pointer-events: none;
+  user-select: none;
+}
+
+.shared-login-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-lg);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.shared-login-modal-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.35);
+  padding: var(--space-lg);
+}
+
+.shared-login-modal-card .login-card {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  max-width: none;
+}
+
+.shared-login-modal-footer {
+  text-align: center;
+  margin-top: var(--space-md);
+}

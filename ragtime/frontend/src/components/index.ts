@@ -10,6 +10,8 @@ export { ToolWizard } from './ToolWizard';
 export { UsersPanel } from './UsersPanel';
 export { MCPRoutesPanel } from './MCPRoutesPanel';
 export { ChatPanel } from './ChatPanel';
+export { ChatPage } from './ChatPage';
+export { PublicSharedChatView } from './PublicSharedChatView';
 export { UserSpacePanel } from './UserSpacePanel';
 export { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 export { UserSpaceSharedView } from './UserSpaceSharedView';

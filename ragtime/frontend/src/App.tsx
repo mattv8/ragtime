@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, onAuthExpired } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, UserSpaceSharedView, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner, WarningsBanner, UsersPanel } from '@/components';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPage, PublicSharedChatView, UserSpacePanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner, WarningsBanner, UsersPanel } from '@/components';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ConfigurationWarning, UserSpacePreviewWarning } from '@/types';
 import type { OAuthParams } from '@/components';
@@ -26,6 +26,12 @@ function getInitialView(): ViewType {
 function getInitialHighlight(): string | null {
   const params = new URLSearchParams(window.location.search);
   return params.get('highlight');
+}
+
+function getInitialConversationId(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  const conversationId = params.get('conversation');
+  return conversationId && conversationId.trim() ? conversationId.trim() : null;
 }
 
 const INDEXER_ACTIVE_POLL_MS = 2000;
@@ -99,6 +105,7 @@ export function App() {
   // App state
   const [activeView, setActiveView] = useState<ViewType>(getInitialView);
   const [highlightSetting, setHighlightSetting] = useState<string | null>(getInitialHighlight);
+  const [initialConversationId] = useState<string | null>(getInitialConversationId);
   const [highlightToolsSection, setHighlightToolsSection] = useState<string | null>(null);
   const [serverName, setServerName] = useState<string>('Ragtime');
   const [jobs, setJobs] = useState<IndexJob[]>([]);
@@ -189,11 +196,6 @@ export function App() {
 
   // Check authentication status on mount
   useEffect(() => {
-    if (userspaceSharedRoute) {
-      setAuthLoading(false);
-      return;
-    }
-
     const checkAuth = async () => {
       try {
         const status = await api.getAuthStatus();
@@ -346,6 +348,12 @@ export function App() {
     // Non-admins should only have user-space or chat views in URL
     const viewToSync = (!isAdmin && activeView !== 'chat' && activeView !== 'userspace') ? 'userspace' : activeView;
     params.set('view', viewToSync);
+    if (viewToSync === 'chat') {
+      const existingConversationId = new URLSearchParams(window.location.search).get('conversation');
+      if (existingConversationId && existingConversationId.trim()) {
+        params.set('conversation', existingConversationId.trim());
+      }
+    }
     if (highlightSetting) {
       params.set('highlight', highlightSetting);
     }
@@ -354,9 +362,40 @@ export function App() {
   }, [activeView, highlightSetting, oauthParams, isAdmin, userspaceSharedRoute]);
 
   if (userspaceSharedRoute) {
+    // Block until the initial auth check has settled so PublicSharedChatView
+    // mounts with a stable currentUser snapshot. Otherwise a null→user
+    // transition during initial auth resolution would be misread as a fresh
+    // sign-in and trigger an unwanted redirect to the authenticated view.
+    if (authLoading) {
+      return (
+        <div className="auth-loading">
+          <div className="spinner"></div>
+          <p>Loading...</p>
+        </div>
+      );
+    }
     return userspaceSharedRoute.mode === 'token'
-      ? <UserSpaceSharedView shareToken={userspaceSharedRoute.token} />
-      : <UserSpaceSharedView ownerUsername={userspaceSharedRoute.ownerUsername} shareSlug={userspaceSharedRoute.shareSlug} />;
+      ? (
+        <PublicSharedChatView
+          shareToken={userspaceSharedRoute.token}
+          currentUser={currentUser}
+          authStatus={authStatus}
+          serverName={serverName}
+          onLoginSuccess={handleLoginSuccess}
+          onLogout={handleLogout}
+        />
+      )
+      : (
+        <PublicSharedChatView
+          ownerUsername={userspaceSharedRoute.ownerUsername}
+          shareSlug={userspaceSharedRoute.shareSlug}
+          currentUser={currentUser}
+          authStatus={authStatus}
+          serverName={serverName}
+          onLoginSuccess={handleLoginSuccess}
+          onLogout={handleLogout}
+        />
+      );
   }
 
   const loadJobs = useCallback(async () => {
@@ -696,9 +735,10 @@ export function App() {
         </div>
       ) : isChatView ? (
         <div className="chat-page-container">
-          <ChatPanel
+          <ChatPage
             currentUser={currentUser}
             debugMode={Boolean(authStatus?.debug_mode)}
+            initialConversationId={initialConversationId}
             onFullscreenChange={setChatFullscreen}
           />
         </div>

@@ -708,6 +708,7 @@ class ExecuteComponentResponse(BaseModel):
 
 
 class UserSpaceWorkspaceShareLink(BaseModel):
+    id: str
     workspace_id: str
     share_token: str
     owner_username: str
@@ -717,12 +718,15 @@ class UserSpaceWorkspaceShareLink(BaseModel):
     subdomain_share_url: str | None = None
     subdomain_share_enabled: bool = False
     subdomain_share_disabled_reason: str | None = None
+    label: str | None = None
 
 
 class UserSpaceWorkspaceShareLinkStatus(BaseModel):
+    id: str
     workspace_id: str
     has_share_link: bool
     owner_username: str
+    label: str | None = None
     share_slug: str | None = None
     share_token: str | None = None
     share_url: str | None = None
@@ -735,6 +739,20 @@ class UserSpaceWorkspaceShareLinkStatus(BaseModel):
     selected_user_ids: list[str] = Field(default_factory=list)
     selected_ldap_groups: list[str] = Field(default_factory=list)
     has_password: bool = False
+
+
+class UserSpaceWorkspaceShareLinkListResponse(BaseModel):
+    workspace_id: str
+    owner_username: str
+    links: list[UserSpaceWorkspaceShareLinkStatus] = Field(default_factory=list)
+
+
+class CreateWorkspaceShareLinkRequest(BaseModel):
+    label: str | None = Field(default=None, max_length=200)
+
+
+class UpdateWorkspaceShareLinkRequest(BaseModel):
+    label: str | None = Field(default=None, max_length=200)
 
 
 class UserSpaceCollabPresenceUser(BaseModel):

@@ -2542,6 +2542,7 @@ export interface ExecuteComponentResponse {
 }
 
 export interface UserSpaceWorkspaceShareLink {
+  id: string;
   workspace_id: string;
   share_token: string;
   owner_username: string;
@@ -2551,12 +2552,15 @@ export interface UserSpaceWorkspaceShareLink {
   subdomain_share_url: string | null;
   subdomain_share_enabled: boolean;
   subdomain_share_disabled_reason: string | null;
+  label?: string | null;
 }
 
 export interface UserSpaceWorkspaceShareLinkStatus {
+  id: string;
   workspace_id: string;
   has_share_link: boolean;
   owner_username: string;
+  label?: string | null;
   share_slug: string | null;
   share_token: string | null;
   share_url: string | null;
@@ -2569,6 +2573,20 @@ export interface UserSpaceWorkspaceShareLinkStatus {
   selected_user_ids: string[];
   selected_ldap_groups: string[];
   has_password: boolean;
+}
+
+export interface UserSpaceWorkspaceShareLinkListResponse {
+  workspace_id: string;
+  owner_username: string;
+  links: UserSpaceWorkspaceShareLinkStatus[];
+}
+
+export interface CreateWorkspaceShareLinkRequest {
+  label?: string | null;
+}
+
+export interface UpdateWorkspaceShareLinkRequest {
+  label?: string | null;
 }
 
 export type UserSpaceShareAccessMode =
@@ -2588,6 +2606,96 @@ export interface UpdateUserSpaceWorkspaceShareAccessRequest {
 export interface WorkspaceShareSlugAvailabilityResponse {
   slug: string;
   available: boolean;
+}
+
+export type ConversationShareRole = 'viewer' | 'editor';
+
+export type ConversationShareAccessMode =
+  | 'token'
+  | 'password'
+  | 'authenticated_users'
+  | 'selected_users'
+  | 'ldap_groups';
+
+export interface ConversationShareLink {
+  id: string;
+  conversation_id: string;
+  share_token: string;
+  owner_username: string;
+  share_slug: string;
+  share_url: string;
+  anonymous_share_url: string | null;
+  label?: string | null;
+  scope_anchor_message_idx?: number | null;
+  scope_direction?: 'forward' | 'backward' | null;
+}
+
+export interface ConversationShareLinkStatus {
+  id: string;
+  conversation_id: string;
+  has_share_link: boolean;
+  owner_username: string;
+  label?: string | null;
+  share_slug: string | null;
+  share_token: string | null;
+  share_url: string | null;
+  anonymous_share_url: string | null;
+  created_at: string | null;
+  share_access_mode: ConversationShareAccessMode;
+  selected_user_ids: string[];
+  selected_ldap_groups: string[];
+  has_password: boolean;
+  granted_role: ConversationShareRole;
+  scope_anchor_message_idx?: number | null;
+  scope_direction?: 'forward' | 'backward' | null;
+}
+
+export interface ConversationShareLinkListResponse {
+  conversation_id: string;
+  owner_username: string;
+  links: ConversationShareLinkStatus[];
+}
+
+export interface CreateConversationShareLinkRequest {
+  label?: string | null;
+  scope_anchor_message_idx?: number | null;
+  scope_direction?: 'forward' | 'backward' | null;
+}
+
+export interface UpdateConversationShareLinkRequest {
+  label?: string | null;
+  scope_anchor_message_idx?: number | null;
+  scope_direction?: 'forward' | 'backward' | null;
+}
+
+export interface UpdateConversationShareAccessRequest {
+  share_access_mode: ConversationShareAccessMode;
+  password?: string | null;
+  selected_user_ids?: string[];
+  selected_ldap_groups?: string[];
+  granted_role?: ConversationShareRole;
+}
+
+export interface ConversationShareSlugAvailabilityResponse {
+  slug: string;
+  available: boolean;
+}
+
+export interface SharedConversationResponse {
+  conversation: Conversation;
+  owner_username: string;
+  owner_display_name?: string | null;
+  share_access_mode: ConversationShareAccessMode;
+  granted_role: ConversationShareRole;
+  can_edit: boolean;
+  is_authenticated: boolean;
+  context_limit?: number | null;
+  scope_anchor_message_idx?: number | null;
+  scope_direction?: 'forward' | 'backward' | null;
+}
+
+export interface PublicShareTargetResponse {
+  target_type: 'workspace' | 'conversation' | 'unknown';
 }
 
 export interface UserSpaceSharedPreviewResponse {

@@ -444,6 +444,15 @@
     text-overflow: ellipsis;
   }
 
+  .chat-shared-owner-col {
+    min-width: 96px;
+    max-width: 45%;
+  }
+
+  .chat-shared-owner-value {
+    font-size: var(--text-xs);
+  }
+
   /* Chat Input Optimization */
   .chat-input-area {
     padding: var(--space-sm);
@@ -789,6 +798,30 @@
 
   .chat-header {
     padding: var(--space-xs) var(--space-sm);
+  }
+
+  .chat-header.chat-header-shared {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .chat-header.chat-header-shared .chat-header-info {
+    flex: 1 1 100%;
+  }
+
+  .chat-shared-header-right {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--space-sm, 8px);
+  }
+
+  .chat-shared-owner-col {
+    flex: 1 1 100%;
+    min-width: 0;
+    max-width: 100%;
+    align-items: flex-start;
+    text-align: left;
   }
 
   .chat-header-info h2 {

@@ -18,6 +18,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import types
 import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -33,6 +34,8 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
+    Response,
     UploadFile,
 )
 from fastapi.responses import StreamingResponse
@@ -42,6 +45,7 @@ from starlette.responses import StreamingResponse
 
 from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
+from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.container_capabilities import get_container_capabilities
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import (
@@ -80,7 +84,11 @@ from ragtime.core.ollama import (
 )
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
-from ragtime.core.security import get_current_user, require_admin
+from ragtime.core.security import (
+    get_current_user,
+    get_current_user_optional,
+    require_admin,
+)
 from ragtime.core.sql_utils import (
     MssqlConnectionError,
     MysqlConnectionError,
@@ -131,8 +139,13 @@ from ragtime.indexer.models import (
     ConversationBranchPointInfo,
     ConversationBranchSummary,
     ConversationResponse,
+    ConversationShareLink,
+    ConversationShareLinkListResponse,
+    ConversationShareLinkStatus,
+    ConversationShareSlugAvailabilityResponse,
     CreateConversationBranchRequest,
     CreateConversationRequest,
+    CreateConversationShareLinkRequest,
     CreateIndexRequest,
     CreateToolConfigRequest,
     CreateToolGroupRequest,
@@ -163,11 +176,13 @@ from ragtime.indexer.models import (
     PostgresDiscoverResponse,
     ProviderPromptDebugListResponse,
     ProviderPromptDebugRecord,
+    PublicShareTargetResponse,
     RepoVisibilityResponse,
     RetryVisualizationRequest,
     RetryVisualizationResponse,
     SchemaIndexJobResponse,
     SendMessageRequest,
+    SharedConversationResponse,
     SwitchConversationBranchRequest,
     ToolConfig,
     ToolGroup,
@@ -176,6 +191,8 @@ from ragtime.indexer.models import (
     TriggerFilesystemIndexRequest,
     TriggerPdmIndexRequest,
     TriggerSchemaIndexRequest,
+    UpdateConversationShareAccessRequest,
+    UpdateConversationShareLinkRequest,
     UpdateSettingsRequest,
     UpdateToolConfigRequest,
     UpdateToolGroupRequest,
@@ -202,6 +219,7 @@ from ragtime.tools.mssql import test_mssql_connection
 from ragtime.tools.mysql import test_mysql_connection
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
+from ragtime.userspace.share_auth import share_auth_token_from_request
 
 if TYPE_CHECKING:
     from prisma.models import User
@@ -8903,6 +8921,237 @@ def _to_conversation_response(conv: Conversation) -> ConversationResponse:
     )
 
 
+def _to_public_owner_username(raw_username: str | None) -> str:
+    value = (raw_username or "").strip().lower()
+    if value.startswith("local:"):
+        value = value.split(":", 1)[1]
+    return value
+
+
+async def _to_shared_conversation_response(
+    conv: Conversation,
+    share_record: Any,
+    authorization: Any,
+    current_user: User | None,
+) -> SharedConversationResponse:
+    owner_user = getattr(share_record, "ownerUser", None)
+    owner_username = _to_public_owner_username(
+        str(getattr(owner_user, "username", "") or "")
+    )
+    owner_display_name = (
+        str(getattr(owner_user, "displayName", "") or "").strip() or None
+    )
+
+    # Apply server-side message scope slicing if the share record specifies one.
+    # The frontend cannot bypass this because the scope is bound to the share
+    # record (and therefore to the share token / slug).
+    scope_anchor_raw = getattr(share_record, "scopeAnchorMessageIdx", None)
+    scope_direction = getattr(share_record, "scopeDirection", None)
+    scope_anchor: int | None = None
+    try:
+        if scope_anchor_raw is not None:
+            scope_anchor = int(scope_anchor_raw)
+    except (TypeError, ValueError):
+        scope_anchor = None
+    if (
+        scope_anchor is not None
+        and scope_direction in ("forward", "backward")
+        and conv.messages
+    ):
+        anchor = max(0, min(scope_anchor, len(conv.messages) - 1))
+        if scope_direction == "forward":
+            sliced = conv.messages[anchor:]
+        else:
+            sliced = conv.messages[: anchor + 1]
+        # Construct a copy of the conversation with sliced messages so the
+        # scope is enforced at the API boundary.
+        try:
+            conv = conv.model_copy(update={"messages": sliced})
+        except AttributeError:
+            # Fallback for non-pydantic mock objects in tests.
+            conv.messages = sliced  # type: ignore[attr-defined]
+
+    # Best-effort context limit lookup so the public view can render an
+    # accurate ContextUsagePie without exposing the model registry.
+    context_limit: int | None = None
+    raw_model = (getattr(conv, "model", "") or "").strip()
+    if raw_model:
+        if "::" in raw_model:
+            _, _, model_id = raw_model.partition("::")
+        else:
+            model_id = raw_model
+        model_id = model_id.strip()
+        if model_id:
+            try:
+                context_limit = await get_context_limit(model_id)
+            except Exception:  # pragma: no cover - defensive
+                context_limit = None
+
+    return SharedConversationResponse(
+        conversation=_to_conversation_response(conv),
+        owner_username=owner_username,
+        owner_display_name=owner_display_name,
+        share_access_mode=str(
+            getattr(share_record, "shareAccessMode", "token") or "token"
+        ),
+        granted_role=str(authorization.get("granted_role") or "viewer"),
+        can_edit=bool(authorization.get("can_edit")),
+        is_authenticated=current_user is not None,
+        context_limit=context_limit,
+        scope_anchor_message_idx=scope_anchor,
+        scope_direction=(
+            scope_direction if scope_direction in ("forward", "backward") else None
+        ),
+    )
+
+
+def _shared_conversation_request_actor(
+    conv: Conversation,
+    share_record: Any,
+    current_user: User | None,
+) -> Any:
+    if current_user is not None:
+        return current_user
+
+    fallback_user_id = str(
+        getattr(share_record, "ownerUserId", "") or getattr(conv, "user_id", "") or ""
+    ).strip()
+    if not fallback_user_id:
+        raise HTTPException(
+            status_code=500,
+            detail="Shared conversation owner not found",
+        )
+
+    return types.SimpleNamespace(id=fallback_user_id, role="user")
+
+
+async def _send_message_to_loaded_conversation(
+    conv: Conversation,
+    request: SendMessageRequest,
+    user: User,
+    *,
+    workspace_id: Optional[str],
+    blocked_tool_names: Optional[set[str]] = None,
+    workspace_context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    conversation_id = conv.id
+    if blocked_tool_names is None:
+        _, blocked_tool_names, workspace_context = (
+            await _resolve_workspace_runtime_scope(
+                conv,
+                user,
+                workspace_id,
+                _workspace_chat_required_role(workspace_id),
+            )
+        )
+
+    if not rag.is_ready:
+        raise HTTPException(
+            status_code=503, detail="RAG service initializing, please retry"
+        )
+
+    await _validate_conversation_model_before_send(conv.model)
+
+    user_message = request.message.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    updated_conversation = await repository.add_message(
+        conversation_id,
+        "user",
+        user_message,
+    )
+    schedule_title_generation(conversation_id, user_message)
+    if updated_conversation is None:
+        raise HTTPException(status_code=500, detail="Failed to add user message")
+    conv = updated_conversation
+
+    chat_history: list[BaseMessage] = []
+    for msg_idx, msg in enumerate(conv.messages[:-1]):
+        if msg.role == "user":
+            parsed_content = parse_message_content(msg.content)
+            if not isinstance(parsed_content, str):
+                parsed_content, _ = await rag.preprocess_message_content_async(
+                    parsed_content,
+                    conversation_id=conversation_id,
+                    user_id=user.id,
+                    workspace_id=workspace_id,
+                    model_id=conv.model,
+                )
+            chat_history.append(HumanMessage(content=parsed_content))
+        elif msg.role == "assistant":
+            if msg.events:
+                chat_history.extend(
+                    rebuild_tool_messages_from_events(msg.events, msg_idx)
+                )
+            else:
+                chat_history.append(AIMessage(content=msg.content))
+
+    current_user_message = parse_message_content(user_message)
+    if not isinstance(current_user_message, str):
+        current_user_message, _ = await rag.preprocess_message_content_async(
+            current_user_message,
+            conversation_id=conversation_id,
+            user_id=user.id,
+            workspace_id=workspace_id,
+            model_id=conv.model,
+        )
+
+    input_est = _estimate_input_tokens(user_message, chat_history)
+    attempt_id = await create_usage_attempt(
+        user_id=user.id,
+        request_source="ui",
+        provider=conv.model or "",
+        model=conv.model or "",
+        conversation_id=conversation_id,
+        input_tokens=input_est,
+    )
+    try:
+        answer = await rag.process_query(
+            current_user_message,
+            chat_history,
+            blocked_tool_names=blocked_tool_names,
+            workspace_context=workspace_context,
+            conversation_model=conv.model,
+            conversation_id=conversation_id,
+            user_id=user.id,
+            message_index=len(conv.messages),
+        )
+        output_est = _estimate_output_tokens(answer)
+        await finalize_usage_attempt(
+            attempt_id,
+            status="completed",
+            output_tokens=output_est,
+            input_tokens=input_est,
+        )
+    except Exception as e:
+        logger.exception("Error processing message")
+        await finalize_usage_attempt(
+            attempt_id,
+            status="failed",
+            failure_reason=str(e),
+        )
+        answer = f"Error: {str(e)}"
+
+    updated_conversation = await repository.add_message(
+        conversation_id,
+        "assistant",
+        answer,
+    )
+    if updated_conversation is None:
+        raise HTTPException(status_code=500, detail="Failed to add assistant message")
+    conv = updated_conversation
+
+    return {
+        "message": ChatMessage(
+            role="assistant",
+            content=answer,
+            timestamp=conv.messages[-1].timestamp,
+        ),
+        "conversation": _to_conversation_response(conv),
+    }
+
+
 async def _link_assistant_snapshot_tool_calls(
     conv: Optional[Conversation],
     workspace_id: Optional[str],
@@ -8958,6 +9207,10 @@ class WorkspaceConversationStateSummaryItem(BaseModel):
         default=False,
         description="True when any conversation has an interrupted task.",
     )
+
+
+class UpdateConversationShareSlugRequest(BaseModel):
+    slug: str = Field(min_length=1, max_length=120)
 
 
 @router.get(
@@ -9290,6 +9543,355 @@ async def get_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     return _to_conversation_response(conv)
+
+
+@router.get(
+    "/conversations/{conversation_id}/share-links",
+    response_model=ConversationShareLinkListResponse,
+)
+async def list_conversation_share_links(
+    conversation_id: str,
+    request: Request,
+    user: User = Depends(get_current_user),
+):
+    return await userspace_service.list_conversation_share_links(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        base_url=get_browser_matched_origin(request),
+    )
+
+
+@router.post(
+    "/conversations/{conversation_id}/share-links",
+    response_model=ConversationShareLink,
+)
+async def create_conversation_share_link(
+    conversation_id: str,
+    request: Request,
+    body: CreateConversationShareLinkRequest = Body(
+        default_factory=CreateConversationShareLinkRequest
+    ),
+    user: User = Depends(get_current_user),
+):
+    return await userspace_service.create_conversation_share_link(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        base_url=get_browser_matched_origin(request),
+        label=body.label,
+        scope_anchor_message_idx=body.scope_anchor_message_idx,
+        scope_direction=body.scope_direction,
+    )
+
+
+@router.delete(
+    "/conversations/{conversation_id}/share-links/{share_id}",
+    status_code=204,
+)
+async def delete_conversation_share_link(
+    conversation_id: str,
+    share_id: str,
+    user: User = Depends(get_current_user),
+):
+    await userspace_service.delete_conversation_share_link(
+        conversation_id,
+        share_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+    )
+    return Response(status_code=204)
+
+
+@router.put(
+    "/conversations/{conversation_id}/share-links/{share_id}",
+    response_model=ConversationShareLinkStatus,
+)
+async def update_conversation_share_link(
+    conversation_id: str,
+    share_id: str,
+    request: Request,
+    body: UpdateConversationShareLinkRequest,
+    user: User = Depends(get_current_user),
+):
+    return await userspace_service.update_conversation_share_link_metadata(
+        conversation_id,
+        share_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        base_url=get_browser_matched_origin(request),
+        label=body.label,
+        scope_anchor_message_idx=body.scope_anchor_message_idx,
+        scope_direction=body.scope_direction,
+        update_label=True,
+        update_scope=True,
+    )
+
+
+@router.put(
+    "/conversations/{conversation_id}/share-links/{share_id}/slug",
+    response_model=ConversationShareLinkStatus,
+)
+async def update_conversation_share_link_slug(
+    conversation_id: str,
+    share_id: str,
+    body: UpdateConversationShareSlugRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+):
+    return await userspace_service.update_conversation_share_link_slug(
+        conversation_id,
+        share_id,
+        body.slug,
+        user.id,
+        is_admin=(user.role == "admin"),
+        base_url=get_browser_matched_origin(request),
+    )
+
+
+@router.get(
+    "/conversations/{conversation_id}/share-links/availability",
+    response_model=ConversationShareSlugAvailabilityResponse,
+)
+async def check_conversation_share_slug_availability(
+    conversation_id: str,
+    slug: str = Query(min_length=1, max_length=120),
+    share_id: Optional[str] = Query(default=None),
+    user: User = Depends(get_current_user),
+):
+    return await userspace_service.check_conversation_share_slug_availability(
+        conversation_id,
+        share_id,
+        slug,
+        user.id,
+        is_admin=(user.role == "admin"),
+    )
+
+
+@router.put(
+    "/conversations/{conversation_id}/share-links/{share_id}/access",
+    response_model=ConversationShareLinkStatus,
+)
+async def update_conversation_share_link_access(
+    conversation_id: str,
+    share_id: str,
+    request: Request,
+    body: dict = Body(...),
+    user: User = Depends(get_current_user),
+):
+    share_access_request = UpdateConversationShareAccessRequest.model_validate(body)
+    return await userspace_service.update_conversation_share_link_access(
+        conversation_id,
+        share_id,
+        share_access_request,
+        user.id,
+        is_admin=(user.role == "admin"),
+        base_url=get_browser_matched_origin(request),
+    )
+
+
+@router.get(
+    "/public-shares/{share_token}/target",
+    response_model=PublicShareTargetResponse,
+)
+async def resolve_public_share_target(share_token: str):
+    return PublicShareTargetResponse(
+        target_type=await userspace_service.resolve_public_share_target_by_token(
+            share_token
+        )
+    )
+
+
+@router.get(
+    "/public-shares/{owner_username}/{share_slug}/target",
+    response_model=PublicShareTargetResponse,
+)
+async def resolve_public_share_target_by_slug(
+    owner_username: str,
+    share_slug: str,
+):
+    return PublicShareTargetResponse(
+        target_type=await userspace_service.resolve_public_share_target_by_slug(
+            owner_username,
+            share_slug,
+        )
+    )
+
+
+@router.get(
+    "/shared-conversations/{share_token}",
+    response_model=SharedConversationResponse,
+)
+async def get_shared_conversation(
+    share_token: str,
+    request: Request,
+    password: Optional[str] = None,
+    user: User | None = Depends(get_current_user_optional),
+):
+    share_record, authorization = (
+        await userspace_service.get_authorized_shared_conversation_record(
+            share_token,
+            current_user=user,
+            password=password,
+            share_auth_token=share_auth_token_from_request(
+                request.headers,
+                request.cookies,
+                share_token=share_token,
+            ),
+        )
+    )
+    conv = await repository.get_conversation(
+        str(authorization.get("conversation_id") or "")
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return await _to_shared_conversation_response(
+        conv, share_record, authorization, user
+    )
+
+
+@router.get(
+    "/shared-conversations/{owner_username}/{share_slug}",
+    response_model=SharedConversationResponse,
+)
+async def get_shared_conversation_by_slug(
+    owner_username: str,
+    share_slug: str,
+    request: Request,
+    password: Optional[str] = None,
+    user: User | None = Depends(get_current_user_optional),
+):
+    share_record, authorization = (
+        await userspace_service.get_authorized_shared_conversation_record_by_slug(
+            owner_username,
+            share_slug,
+            current_user=user,
+            password=password,
+            share_auth_token=share_auth_token_from_request(
+                request.headers,
+                request.cookies,
+                owner_username=owner_username,
+                share_slug=share_slug,
+            ),
+        )
+    )
+    conv = await repository.get_conversation(
+        str(authorization.get("conversation_id") or "")
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return await _to_shared_conversation_response(
+        conv, share_record, authorization, user
+    )
+
+
+@router.post("/shared-conversations/{share_token}/messages")
+async def send_shared_conversation_message(
+    share_token: str,
+    body: SendMessageRequest,
+    request: Request,
+    password: Optional[str] = None,
+    user: User | None = Depends(get_current_user_optional),
+):
+    share_record, authorization = (
+        await userspace_service.get_authorized_shared_conversation_record(
+            share_token,
+            current_user=user,
+            password=password,
+            share_auth_token=share_auth_token_from_request(
+                request.headers,
+                request.cookies,
+                share_token=share_token,
+            ),
+        )
+    )
+    if not authorization.get("can_edit"):
+        raise HTTPException(status_code=403, detail="Shared conversation is read-only")
+
+    conv = await repository.get_conversation(
+        str(authorization.get("conversation_id") or "")
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    actor = _shared_conversation_request_actor(conv, share_record, user)
+    has_direct_access = False
+    if user is not None:
+        has_direct_access = await repository.check_conversation_access(
+            conv.id,
+            user.id,
+            is_admin=(user.role == "admin"),
+            workspace_id=conv.workspace_id,
+        )
+    blocked_tool_names = None
+    workspace_context = None
+    if not has_direct_access:
+        blocked_tool_names = set(rag.get_blocked_config_tool_names([]))
+
+    return await _send_message_to_loaded_conversation(
+        conv,
+        body,
+        actor,
+        workspace_id=conv.workspace_id,
+        blocked_tool_names=blocked_tool_names,
+        workspace_context=workspace_context,
+    )
+
+
+@router.post("/shared-conversations/{owner_username}/{share_slug}/messages")
+async def send_shared_conversation_message_by_slug(
+    owner_username: str,
+    share_slug: str,
+    body: SendMessageRequest,
+    request: Request,
+    password: Optional[str] = None,
+    user: User | None = Depends(get_current_user_optional),
+):
+    share_record, authorization = (
+        await userspace_service.get_authorized_shared_conversation_record_by_slug(
+            owner_username,
+            share_slug,
+            current_user=user,
+            password=password,
+            share_auth_token=share_auth_token_from_request(
+                request.headers,
+                request.cookies,
+                owner_username=owner_username,
+                share_slug=share_slug,
+            ),
+        )
+    )
+    if not authorization.get("can_edit"):
+        raise HTTPException(status_code=403, detail="Shared conversation is read-only")
+
+    conv = await repository.get_conversation(
+        str(authorization.get("conversation_id") or "")
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    actor = _shared_conversation_request_actor(conv, share_record, user)
+    has_direct_access = False
+    if user is not None:
+        has_direct_access = await repository.check_conversation_access(
+            conv.id,
+            user.id,
+            is_admin=(user.role == "admin"),
+            workspace_id=conv.workspace_id,
+        )
+    blocked_tool_names = None
+    workspace_context = None
+    if not has_direct_access:
+        blocked_tool_names = set(rag.get_blocked_config_tool_names([]))
+
+    return await _send_message_to_loaded_conversation(
+        conv,
+        body,
+        actor,
+        workspace_id=conv.workspace_id,
+        blocked_tool_names=blocked_tool_names,
+        workspace_context=workspace_context,
+    )
 
 
 @router.get(
@@ -9936,113 +10538,12 @@ async def send_message(
     conv = await repository.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
-
-    _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
+    return await _send_message_to_loaded_conversation(
         conv,
+        request,
         user,
-        workspace_id,
-        _workspace_chat_required_role(workspace_id),
+        workspace_id=workspace_id,
     )
-
-    if not rag.is_ready:
-        raise HTTPException(
-            status_code=503, detail="RAG service initializing, please retry"
-        )
-
-    await _validate_conversation_model_before_send(conv.model)
-
-    user_message = request.message.strip()
-    if not user_message:
-        raise HTTPException(status_code=400, detail="Message is required")
-
-    # Add user message
-    conv = await repository.add_message(conversation_id, "user", user_message)
-    schedule_title_generation(conversation_id, user_message)
-    if conv is None:
-        raise HTTPException(status_code=500, detail="Failed to add user message")
-
-    # Build chat history for RAG
-    chat_history: list[BaseMessage] = []
-    for msg_idx, msg in enumerate(conv.messages[:-1]):  # Exclude the current message
-        if msg.role == "user":
-            parsed_content = parse_message_content(msg.content)
-            if not isinstance(parsed_content, str):
-                parsed_content, _ = await rag.preprocess_message_content_async(
-                    parsed_content,
-                    conversation_id=conversation_id,
-                    user_id=user.id,
-                    workspace_id=workspace_id,
-                    model_id=conv.model,
-                )
-            chat_history.append(HumanMessage(content=parsed_content))
-        elif msg.role == "assistant":
-            if msg.events:
-                chat_history.extend(
-                    rebuild_tool_messages_from_events(msg.events, msg_idx)
-                )
-            else:
-                chat_history.append(AIMessage(content=msg.content))
-
-    current_user_message = parse_message_content(user_message)
-    if not isinstance(current_user_message, str):
-        current_user_message, _ = await rag.preprocess_message_content_async(
-            current_user_message,
-            conversation_id=conversation_id,
-            user_id=user.id,
-            workspace_id=workspace_id,
-            model_id=conv.model,
-        )
-
-    # Generate response
-    input_est = _estimate_input_tokens(user_message, chat_history)
-    attempt_id = await create_usage_attempt(
-        user_id=user.id,
-        request_source="ui",
-        provider=conv.model or "",
-        model=conv.model or "",
-        conversation_id=conversation_id,
-        input_tokens=input_est,
-    )
-    try:
-        answer = await rag.process_query(
-            current_user_message,
-            chat_history,
-            blocked_tool_names=blocked_tool_names,
-            workspace_context=workspace_context,
-            conversation_model=conv.model,
-            conversation_id=conversation_id,
-            user_id=user.id,
-            message_index=len(conv.messages),
-        )
-        output_est = _estimate_output_tokens(answer)
-        await finalize_usage_attempt(
-            attempt_id,
-            status="completed",
-            output_tokens=output_est,
-            input_tokens=input_est,
-        )
-    except Exception as e:
-        logger.exception("Error processing message")
-        await finalize_usage_attempt(
-            attempt_id,
-            status="failed",
-            failure_reason=str(e),
-        )
-        answer = f"Error: {str(e)}"
-
-    # Add assistant response
-    conv = await repository.add_message(conversation_id, "assistant", answer)
-    if conv is None:
-        raise HTTPException(status_code=500, detail="Failed to add assistant message")
-
-    return {
-        "message": ChatMessage(
-            role="assistant",
-            content=answer,
-            timestamp=conv.messages[-1].timestamp,
-        ),
-        "conversation": _to_conversation_response(conv),
-    }
 
 
 @router.post("/conversations/{conversation_id}/messages/stream")

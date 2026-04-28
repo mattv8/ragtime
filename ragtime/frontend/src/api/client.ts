@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, DuplicateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, WorkspaceAgentGrant, UpsertWorkspaceAgentGrantRequest, RevokeWorkspaceAgentGrantResponse, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, UpsertUserSpaceGlobalEnvVarRequest, DeleteUserSpaceGlobalEnvVarResponse, UserSpaceObjectStorageConfig, CreateUserSpaceObjectStorageBucketRequest, UpdateUserSpaceObjectStorageBucketRequest, DeleteUserSpaceObjectStorageBucketResponse, UserspaceMountSource, CreateUserspaceMountSourceRequest, UpdateUserspaceMountSourceRequest, BrowseUserspaceMountSourceRequest, DeleteUserspaceMountSourceResponse, WorkspaceMount, MountableSource, BrowseWorkspaceMountSourceRequest, WorkspaceMountBrowseResponse, CreateWorkspaceMountRequest, UpdateWorkspaceMountRequest, DeleteWorkspaceMountResponse, WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest, WorkspaceMountSyncResponse, MountSourceAffectedWorkspacesResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, CreateUserSpaceSnapshotBranchRequest, PromoteUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceArchiveExportRequest, UserSpaceWorkspaceArchiveExportTask, UserSpaceWorkspaceArchiveImportTask, UserSpaceWorkspaceArchiveExportListResponse, DeleteUserSpaceWorkspaceArchiveExportResponse, UserSpaceRuntimeRestartBatchTask, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, UserSpaceBrowserAuthResponse, UserSpaceBrowserSurface, UserSpacePreviewLaunchRequest, UserSpacePreviewLaunchResponse, UserSpaceWorkspaceTabStateResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState, UserSpacePreviewSettingsResponse, UserSpaceWorkspaceScmConnectionRequest, UserSpaceWorkspaceScmConnectionResponse, UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse, UserSpaceWorkspaceScmImportRequest, UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmSyncResponse, UserSpaceWorkspaceScmSettingsRequest, SqliteImportResponse, UserSpaceCollabPresenceResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, DuplicateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, WorkspaceAgentGrant, UpsertWorkspaceAgentGrantRequest, RevokeWorkspaceAgentGrantResponse, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, UpsertUserSpaceGlobalEnvVarRequest, DeleteUserSpaceGlobalEnvVarResponse, UserSpaceObjectStorageConfig, CreateUserSpaceObjectStorageBucketRequest, UpdateUserSpaceObjectStorageBucketRequest, DeleteUserSpaceObjectStorageBucketResponse, UserspaceMountSource, CreateUserspaceMountSourceRequest, UpdateUserspaceMountSourceRequest, BrowseUserspaceMountSourceRequest, DeleteUserspaceMountSourceResponse, WorkspaceMount, MountableSource, BrowseWorkspaceMountSourceRequest, WorkspaceMountBrowseResponse, CreateWorkspaceMountRequest, UpdateWorkspaceMountRequest, DeleteWorkspaceMountResponse, WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest, WorkspaceMountSyncResponse, MountSourceAffectedWorkspacesResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, CreateUserSpaceSnapshotBranchRequest, PromoteUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceArchiveExportRequest, UserSpaceWorkspaceArchiveExportTask, UserSpaceWorkspaceArchiveImportTask, UserSpaceWorkspaceArchiveExportListResponse, DeleteUserSpaceWorkspaceArchiveExportResponse, UserSpaceRuntimeRestartBatchTask, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceShareLinkListResponse, CreateWorkspaceShareLinkRequest, UpdateWorkspaceShareLinkRequest, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, UserSpaceBrowserAuthResponse, UserSpaceBrowserSurface, UserSpacePreviewLaunchRequest, UserSpacePreviewLaunchResponse, UserSpaceWorkspaceTabStateResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState, UserSpacePreviewSettingsResponse, UserSpaceWorkspaceScmConnectionRequest, UserSpaceWorkspaceScmConnectionResponse, UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse, UserSpaceWorkspaceScmImportRequest, UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmSyncResponse, UserSpaceWorkspaceScmSettingsRequest, SqliteImportResponse, UserSpaceCollabPresenceResponse, ConversationShareLink, ConversationShareLinkStatus, ConversationShareLinkListResponse, CreateConversationShareLinkRequest, UpdateConversationShareLinkRequest, ConversationShareSlugAvailabilityResponse, UpdateConversationShareAccessRequest, SharedConversationResponse, PublicShareTargetResponse } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -2732,9 +2732,35 @@ export const api = {
     return handleResponse<import('@/types').RetryTerminalToolResponse>(response);
   },
 
-  async createUserSpaceWorkspaceShareLink(workspaceId: string, rotateToken = false): Promise<UserSpaceWorkspaceShareLink> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-link?rotate_token=${String(rotateToken)}`, {
+  async listUserSpaceWorkspaceShareLinks(workspaceId: string): Promise<UserSpaceWorkspaceShareLinkListResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links`);
+    return handleResponse<UserSpaceWorkspaceShareLinkListResponse>(response);
+  },
+
+  async revokeUserSpaceWorkspaceShareLink(workspaceId: string): Promise<UserSpaceWorkspaceShareLinkStatus> {
+    const list = await this.listUserSpaceWorkspaceShareLinks(workspaceId);
+    for (const link of list.links) {
+      if (link.id) {
+        await this.deleteUserSpaceWorkspaceShareLink(workspaceId, link.id);
+      }
+    }
+    return this.getUserSpaceWorkspaceShareLinkStatus(workspaceId);
+  },
+
+  async createUserSpaceWorkspaceShareLink(
+    workspaceId: string,
+    requestOrRotate: CreateWorkspaceShareLinkRequest | boolean = {},
+  ): Promise<UserSpaceWorkspaceShareLink> {
+    const request: CreateWorkspaceShareLinkRequest =
+      typeof requestOrRotate === 'boolean' ? {} : requestOrRotate;
+    if (typeof requestOrRotate === 'boolean' && requestOrRotate) {
+      // Legacy "rotateToken=true" callers expected revoke + new link.
+      await this.revokeUserSpaceWorkspaceShareLink(workspaceId);
+    }
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
     });
     return handleResponse<UserSpaceWorkspaceShareLink>(response);
   },
@@ -2744,37 +2770,272 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
   },
 
-  async revokeUserSpaceWorkspaceShareLink(workspaceId: string): Promise<UserSpaceWorkspaceShareLinkStatus> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-link`, {
+  async deleteUserSpaceWorkspaceShareLink(workspaceId: string, shareId: string): Promise<void> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links/${shareId}`, {
       method: 'DELETE',
     });
-    return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
+    if (!response.ok) {
+      await handleResponse<unknown>(response);
+    }
   },
 
-  async updateUserSpaceWorkspaceShareSlug(workspaceId: string, slug: string): Promise<UserSpaceWorkspaceShareLinkStatus> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-link/slug`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug }),
-    });
-    return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
-  },
-
-  async checkUserSpaceWorkspaceShareSlugAvailability(workspaceId: string, slug: string): Promise<WorkspaceShareSlugAvailabilityResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-link/availability?slug=${encodeURIComponent(slug)}`);
-    return handleResponse<WorkspaceShareSlugAvailabilityResponse>(response);
-  },
-
-  async updateUserSpaceWorkspaceShareAccess(
+  async updateUserSpaceWorkspaceShareLinkLabel(
     workspaceId: string,
-    request: UpdateUserSpaceWorkspaceShareAccessRequest,
+    shareId: string,
+    request: UpdateWorkspaceShareLinkRequest,
   ): Promise<UserSpaceWorkspaceShareLinkStatus> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-link/access`, {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links/${shareId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     });
     return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
+  },
+
+  async updateUserSpaceWorkspaceShareSlug(
+    workspaceId: string,
+    shareIdOrSlug: string,
+    slug?: string,
+  ): Promise<UserSpaceWorkspaceShareLinkStatus> {
+    let resolvedShareId: string;
+    let resolvedSlug: string;
+    if (slug === undefined) {
+      const status = await this.getUserSpaceWorkspaceShareLinkStatus(workspaceId);
+      if (!status.id) {
+        throw new Error('No share link available to update');
+      }
+      resolvedShareId = status.id;
+      resolvedSlug = shareIdOrSlug;
+    } else {
+      resolvedShareId = shareIdOrSlug;
+      resolvedSlug = slug;
+    }
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links/${resolvedShareId}/slug`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: resolvedSlug }),
+    });
+    return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
+  },
+
+  async checkUserSpaceWorkspaceShareSlugAvailability(
+    workspaceId: string,
+    slug: string,
+    shareId?: string,
+  ): Promise<WorkspaceShareSlugAvailabilityResponse> {
+    const params = new URLSearchParams({ slug });
+    if (shareId) params.set('share_id', shareId);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/share-links/availability?${params.toString()}`,
+    );
+    return handleResponse<WorkspaceShareSlugAvailabilityResponse>(response);
+  },
+
+  async updateUserSpaceWorkspaceShareAccess(
+    workspaceId: string,
+    shareIdOrRequest: string | UpdateUserSpaceWorkspaceShareAccessRequest,
+    request?: UpdateUserSpaceWorkspaceShareAccessRequest,
+  ): Promise<UserSpaceWorkspaceShareLinkStatus> {
+    let resolvedShareId: string;
+    let resolvedRequest: UpdateUserSpaceWorkspaceShareAccessRequest;
+    if (typeof shareIdOrRequest === 'string') {
+      resolvedShareId = shareIdOrRequest;
+      resolvedRequest = request as UpdateUserSpaceWorkspaceShareAccessRequest;
+    } else {
+      const status = await this.getUserSpaceWorkspaceShareLinkStatus(workspaceId);
+      if (!status.id) {
+        throw new Error('No share link available to update');
+      }
+      resolvedShareId = status.id;
+      resolvedRequest = shareIdOrRequest;
+    }
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links/${resolvedShareId}/access`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(resolvedRequest),
+    });
+    return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
+  },
+
+  async listConversationShareLinks(conversationId: string): Promise<ConversationShareLinkListResponse> {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/share-links`);
+    return handleResponse<ConversationShareLinkListResponse>(response);
+  },
+
+  // Backward-compat helpers operating on the primary (oldest) share link.
+  async getConversationShareLinkStatus(conversationId: string): Promise<ConversationShareLinkStatus> {
+    const list = await this.listConversationShareLinks(conversationId);
+    if (list.links.length > 0) {
+      return list.links[0];
+    }
+    return {
+      id: '',
+      conversation_id: conversationId,
+      has_share_link: false,
+      owner_username: list.owner_username,
+      share_slug: null,
+      share_token: null,
+      share_url: null,
+      anonymous_share_url: null,
+      created_at: null,
+      share_access_mode: 'token',
+      selected_user_ids: [],
+      selected_ldap_groups: [],
+      has_password: false,
+      granted_role: 'viewer',
+    };
+  },
+
+  async revokeConversationShareLink(conversationId: string): Promise<ConversationShareLinkStatus> {
+    const list = await this.listConversationShareLinks(conversationId);
+    for (const link of list.links) {
+      if (link.id) {
+        await this.deleteConversationShareLink(conversationId, link.id);
+      }
+    }
+    return this.getConversationShareLinkStatus(conversationId);
+  },
+
+  async createConversationShareLink(
+    conversationId: string,
+    request: CreateConversationShareLinkRequest = {},
+  ): Promise<ConversationShareLink> {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/share-links`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<ConversationShareLink>(response);
+  },
+
+  async deleteConversationShareLink(conversationId: string, shareId: string): Promise<void> {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/share-links/${shareId}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      await handleResponse<unknown>(response);
+    }
+  },
+
+  async updateConversationShareLinkMetadata(
+    conversationId: string,
+    shareId: string,
+    request: UpdateConversationShareLinkRequest,
+  ): Promise<ConversationShareLinkStatus> {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/share-links/${shareId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<ConversationShareLinkStatus>(response);
+  },
+
+  async updateConversationShareSlug(
+    conversationId: string,
+    shareIdOrSlug: string,
+    slug?: string,
+  ): Promise<ConversationShareLinkStatus> {
+    // Backward compatible: if called with two args, resolve primary share id.
+    let resolvedShareId: string;
+    let resolvedSlug: string;
+    if (slug === undefined) {
+      const status = await this.getConversationShareLinkStatus(conversationId);
+      if (!status.id) {
+        throw new Error('No share link available to update');
+      }
+      resolvedShareId = status.id;
+      resolvedSlug = shareIdOrSlug;
+    } else {
+      resolvedShareId = shareIdOrSlug;
+      resolvedSlug = slug;
+    }
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/share-links/${resolvedShareId}/slug`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: resolvedSlug }),
+    });
+    return handleResponse<ConversationShareLinkStatus>(response);
+  },
+
+  async checkConversationShareSlugAvailability(
+    conversationId: string,
+    slug: string,
+    shareId?: string,
+  ): Promise<ConversationShareSlugAvailabilityResponse> {
+    const params = new URLSearchParams({ slug });
+    if (shareId) params.set('share_id', shareId);
+    const response = await apiFetch(
+      `${API_BASE}/conversations/${conversationId}/share-links/availability?${params.toString()}`,
+    );
+    return handleResponse<ConversationShareSlugAvailabilityResponse>(response);
+  },
+
+  async updateConversationShareAccess(
+    conversationId: string,
+    shareIdOrRequest: string | UpdateConversationShareAccessRequest,
+    request?: UpdateConversationShareAccessRequest,
+  ): Promise<ConversationShareLinkStatus> {
+    let resolvedShareId: string;
+    let resolvedRequest: UpdateConversationShareAccessRequest;
+    if (typeof shareIdOrRequest === 'string') {
+      resolvedShareId = shareIdOrRequest;
+      resolvedRequest = request as UpdateConversationShareAccessRequest;
+    } else {
+      const status = await this.getConversationShareLinkStatus(conversationId);
+      if (!status.id) {
+        throw new Error('No share link available to update');
+      }
+      resolvedShareId = status.id;
+      resolvedRequest = shareIdOrRequest;
+    }
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/share-links/${resolvedShareId}/access`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(resolvedRequest),
+    });
+    return handleResponse<ConversationShareLinkStatus>(response);
+  },
+
+  async resolvePublicShareTarget(shareToken: string): Promise<PublicShareTargetResponse> {
+    const response = await apiFetch(`${API_BASE}/public-shares/${encodeURIComponent(shareToken)}/target`);
+    return handleResponse<PublicShareTargetResponse>(response);
+  },
+
+  async resolvePublicShareTargetBySlug(ownerUsername: string, shareSlug: string): Promise<PublicShareTargetResponse> {
+    const response = await apiFetch(`${API_BASE}/public-shares/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/target`);
+    return handleResponse<PublicShareTargetResponse>(response);
+  },
+
+  async getSharedConversation(shareToken: string, password?: string): Promise<SharedConversationResponse> {
+    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
+    const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}${suffix}`);
+    return handleResponse<SharedConversationResponse>(response);
+  },
+
+  async getSharedConversationBySlug(ownerUsername: string, shareSlug: string, password?: string): Promise<SharedConversationResponse> {
+    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
+    const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}${suffix}`);
+    return handleResponse<SharedConversationResponse>(response);
+  },
+
+  async sendSharedConversationMessage(shareToken: string, request: SendMessageRequest, password?: string): Promise<{ message: ChatMessage; conversation: Conversation }> {
+    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
+    const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}/messages${suffix}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<{ message: ChatMessage; conversation: Conversation }>(response);
+  },
+
+  async sendSharedConversationMessageBySlug(ownerUsername: string, shareSlug: string, request: SendMessageRequest, password?: string): Promise<{ message: ChatMessage; conversation: Conversation }> {
+    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
+    const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/messages${suffix}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<{ message: ChatMessage; conversation: Conversation }>(response);
   },
 
   async executeUserSpaceSharedComponent(shareToken: string, request: ExecuteComponentRequest): Promise<ExecuteComponentResponse> {

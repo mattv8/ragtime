@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { diffLines } from 'diff';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link } from 'lucide-react';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2 } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchPointInfo } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
@@ -94,7 +94,7 @@ const markdownComponents: Components = {
 
 // Memoized markdown component to prevent re-parsing on every render
 // Only re-renders when content actually changes
-const MemoizedMarkdown = memo(function MemoizedMarkdown({ content }: { content: string }) {
+export const MemoizedMarkdown = memo(function MemoizedMarkdown({ content }: { content: string }) {
   return <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{content}</ReactMarkdown>;
 });
 
@@ -253,7 +253,7 @@ function findProviderState(
 }
 
 // Helper component to parse URLs and render them as clickable links
-const LinkifiedText = memo(function LinkifiedText({ text }: { text: string }) {
+export const LinkifiedText = memo(function LinkifiedText({ text }: { text: string }) {
   if (typeof text !== 'string') return <>{text}</>;
 
   const parts = text.split(URL_PATTERN);
@@ -2500,7 +2500,7 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
 const DEFAULT_CONTEXT_LIMIT = 8192;
 
 // Helper to extract text and attachments from message content
-function parseMessageContent(content: string | ContentPart[]): { text: string; attachments: ContentPart[] } {
+export function parseMessageContent(content: string | ContentPart[]): { text: string; attachments: ContentPart[] } {
   if (typeof content === 'string') {
     // Try to parse as JSON content parts (for backward compatibility)
     try {
@@ -2540,7 +2540,7 @@ interface MessageAttachmentsProps {
   onImageClick?: (url: string) => void;
 }
 
-const MessageAttachments = memo(function MessageAttachments({ attachments, onImageClick }: MessageAttachmentsProps) {
+export const MessageAttachments = memo(function MessageAttachments({ attachments, onImageClick }: MessageAttachmentsProps) {
   if (attachments.length === 0) return null;
 
   return (
@@ -2605,6 +2605,7 @@ const ChatTitle = memo(({ title }: { title: string }) => {
 interface ChatPanelProps {
   currentUser: User;
   debugMode?: boolean;
+  initialConversationId?: string | null;
   workspaceId?: string;
   workspaceChatState?: WorkspaceChatStateResponse | null;
   workspaceAvailableTools?: UserSpaceAvailableTool[];
@@ -2641,11 +2642,15 @@ interface ChatPanelProps {
   readOnly?: boolean;
   readOnlyMessage?: string;
   allowAdminReadOnlyBypass?: boolean;
+  onOpenShareModal?: () => void;
+  canShareConversation?: boolean;
+  onShareConversationAtMessage?: (messageIdx: number) => void;
 }
 
 export function ChatPanel({
   currentUser,
   debugMode = false,
+  initialConversationId,
   workspaceId,
   workspaceChatState,
   workspaceAvailableTools,
@@ -2670,6 +2675,9 @@ export function ChatPanel({
   readOnly = false,
   readOnlyMessage,
   allowAdminReadOnlyBypass = false,
+  onOpenShareModal,
+  canShareConversation = false,
+  onShareConversationAtMessage,
 }: ChatPanelProps) {
   const MIN_INPUT_AREA_HEIGHT = 96;
   const INPUT_AREA_COLLAPSE_THRESHOLD = 80;
@@ -2888,6 +2896,16 @@ export function ChatPanel({
     && workspaceSelectedToolIds
     && onToggleWorkspaceTool,
   );
+
+  const initialConversationIdRef = useRef<string | null>(
+    initialConversationId && initialConversationId.trim() ? initialConversationId.trim() : null,
+  );
+
+  useEffect(() => {
+    if (initialConversationId && initialConversationId.trim()) {
+      initialConversationIdRef.current = initialConversationId.trim();
+    }
+  }, [initialConversationId]);
 
   const effectiveAvailableTools = useWorkspaceToolSource
     ? (workspaceAvailableTools ?? [])
@@ -3798,6 +3816,15 @@ export function ChatPanel({
 
       setConversations(visibleConversations);
       setActiveConversation((current) => {
+        const preferredConversationId = initialConversationIdRef.current;
+        if (preferredConversationId) {
+          const preferredConversation = visibleConversations.find((conversation) => conversation.id === preferredConversationId);
+          if (preferredConversation) {
+            initialConversationIdRef.current = null;
+            return preferredConversation;
+          }
+        }
+
         if (!current) {
           return visibleConversations[0] ?? null;
         }
@@ -5830,6 +5857,17 @@ export function ChatPanel({
                   contextLimit={contextUsage.contextLimit}
                   loading={modelsLoading}
                 />
+                {canShareConversation && !embedded && activeConversation && (
+                  <button
+                    className="btn btn-secondary btn-sm btn-icon"
+                    onClick={onOpenShareModal}
+                    title="Share conversation"
+                    aria-label="Share conversation"
+                    type="button"
+                  >
+                    <Link size={14} />
+                  </button>
+                )}
                 {!embedded && canManageConversationMembers && (
                   <MemberManagementButton
                     className="btn btn-secondary btn-sm btn-icon"
@@ -6253,6 +6291,16 @@ export function ChatPanel({
                                     <Trash2 size={12} />
                                   </button>
                                 )}
+                                {canShareConversation && !embedded && onShareConversationAtMessage && (
+                                  <button
+                                    className="chat-action-icon-btn"
+                                    onClick={() => onShareConversationAtMessage(idx)}
+                                    title="Share chat from this message"
+                                    aria-label="Share chat from this message"
+                                  >
+                                    <Share2 size={12} />
+                                  </button>
+                                )}
                               </span>
                             )}
                             {branchNav}
@@ -6300,6 +6348,16 @@ export function ChatPanel({
                                 {showPromptDebugButton && (
                                   <button className="chat-action-icon-btn" onClick={() => openPromptDebugForAssistantMessage(idx)} title="Open prompt debug for this assistant reply">
                                     <Bug size={12} />
+                                  </button>
+                                )}
+                                {canShareConversation && !embedded && onShareConversationAtMessage && (
+                                  <button
+                                    className="chat-action-icon-btn"
+                                    onClick={() => onShareConversationAtMessage(idx)}
+                                    title="Share chat from this message"
+                                    aria-label="Share chat from this message"
+                                  >
+                                    <Share2 size={12} />
                                   </button>
                                 )}
                               </span>
