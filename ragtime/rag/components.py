@@ -12672,6 +12672,7 @@ except Exception as e:
                                     and tool_name not in ui_tools
                                     and tool_name not in _userspace_write_tools
                                     and tool_name != "read_userspace_file"
+                                    and tool_name != "list_userspace_files"
                                     and not has_table_metadata
                                 ):
                                     display_output = (

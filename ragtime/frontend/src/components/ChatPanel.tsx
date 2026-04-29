@@ -870,6 +870,24 @@ interface ParsedUserSpaceReadResult {
   totalLines: number | null;
 }
 
+interface ParsedUserSpaceListEntry {
+  path: string;
+  entryType: 'file' | 'directory';
+  sizeBytes: number;
+  updatedAt: string | null;
+}
+
+interface ParsedUserSpaceListResult {
+  message: string;
+  status: string;
+  count: number;
+  entries: ParsedUserSpaceListEntry[];
+  fileCount: number;
+  directoryCount: number;
+  totalSizeBytes: number;
+  truncated: boolean;
+}
+
 interface ParsedUserSpaceReadBatch {
   isBatch: boolean;
   primary: ParsedUserSpaceReadResult;
@@ -1091,6 +1109,72 @@ function readJsonStringArrayField(source: string, key: string): string[] {
   return values;
 }
 
+function readJsonObjectArrayField(source: string, key: string): string[] {
+  const arrayStart = findValueStart(source, key);
+  if (arrayStart === -1) return [];
+
+  const bracketStart = source.indexOf('[', arrayStart);
+  if (bracketStart === -1) return [];
+
+  const values: string[] = [];
+  let objectStart = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = bracketStart + 1; index < source.length; index += 1) {
+    const ch = source[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === '{') {
+      if (depth === 0) objectStart = index;
+      depth += 1;
+      continue;
+    }
+
+    if (ch === '}') {
+      if (depth > 0) {
+        depth -= 1;
+        if (depth === 0 && objectStart !== -1) {
+          values.push(source.slice(objectStart, index + 1));
+          objectStart = -1;
+        }
+      }
+      continue;
+    }
+
+    if (ch === ']' && depth === 0) {
+      break;
+    }
+  }
+
+  if (depth > 0 && objectStart !== -1) {
+    values.push(source.slice(objectStart));
+  }
+
+  return values;
+}
+
+function isLikelyTruncatedToolOutput(source: string): boolean {
+  return /\.\.\. \[[\d,]+ characters omitted\] \.\.\./.test(source)
+    || source.includes('... (truncated)');
+}
+
 function parseUserspaceToolPayload(output?: string | null): ParsedUserspaceToolPayload | null {
   if (!output) return null;
 
@@ -1174,6 +1258,108 @@ function parseUserspaceToolPayload(output?: string | null): ParsedUserspaceToolP
       ...readJsonStringArrayField(output, 'warnings'),
     ],
   };
+}
+
+function parseUserspaceListToolResult(toolName: string, output?: string | null): ParsedUserSpaceListResult | null {
+  if (toolName !== 'list_userspace_files') return null;
+  if (!output) return null;
+
+  const buildResult = (
+    entries: ParsedUserSpaceListEntry[],
+    message: string,
+    status: string,
+    count: number,
+    truncated: boolean,
+  ): ParsedUserSpaceListResult => {
+    let fileCount = 0;
+    let directoryCount = 0;
+    let totalSizeBytes = 0;
+
+    entries.forEach((entry) => {
+      if (entry.entryType === 'directory') {
+        directoryCount += 1;
+      } else {
+        fileCount += 1;
+        totalSizeBytes += entry.sizeBytes;
+      }
+    });
+
+    entries.sort((a, b) => {
+      if (a.entryType !== b.entryType) {
+        return a.entryType === 'directory' ? -1 : 1;
+      }
+      return a.path.localeCompare(b.path);
+    });
+
+    return {
+      message,
+      status,
+      count,
+      entries,
+      fileCount,
+      directoryCount,
+      totalSizeBytes,
+      truncated,
+    };
+  };
+
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    const candidate = JSON.parse(output);
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+      parsed = candidate as Record<string, unknown>;
+    }
+  } catch {
+    parsed = null;
+  }
+
+  if (parsed) {
+    const filesRaw = Array.isArray(parsed.files) ? (parsed.files as unknown[]) : [];
+    const entries: ParsedUserSpaceListEntry[] = [];
+
+    for (const item of filesRaw) {
+      if (!item || typeof item !== 'object') continue;
+      const rec = item as Record<string, unknown>;
+      const path = typeof rec.path === 'string' ? rec.path.trim() : '';
+      if (!path) continue;
+      const rawType = typeof rec.entry_type === 'string' ? rec.entry_type : 'file';
+      const entryType: 'file' | 'directory' = rawType === 'directory' ? 'directory' : 'file';
+      const sizeBytes = typeof rec.size_bytes === 'number' && Number.isFinite(rec.size_bytes)
+        ? Math.max(0, rec.size_bytes as number)
+        : 0;
+      const updatedAt = typeof rec.updated_at === 'string' ? rec.updated_at : null;
+      entries.push({ path, entryType, sizeBytes, updatedAt });
+    }
+
+    const count = typeof parsed.count === 'number' ? (parsed.count as number) : entries.length;
+    const message = typeof parsed.message === 'string' ? (parsed.message as string) : '';
+    const status = typeof parsed.status === 'string' ? (parsed.status as string) : '';
+
+    return buildResult(entries, message, status, count, false);
+  }
+
+  const entries = readJsonObjectArrayField(output, 'files')
+    .map((itemSource): ParsedUserSpaceListEntry | null => {
+      const path = readJsonStringField(itemSource, 'path');
+      if (!path) return null;
+      const rawType = readJsonStringField(itemSource, 'entry_type') || 'file';
+      return {
+        path: path.trim(),
+        entryType: rawType === 'directory' ? 'directory' : 'file',
+        sizeBytes: Math.max(0, readJsonNumberField(itemSource, 'size_bytes') ?? 0),
+        updatedAt: readJsonStringField(itemSource, 'updated_at'),
+      };
+    })
+    .filter((entry): entry is ParsedUserSpaceListEntry => Boolean(entry && entry.path));
+
+  const count = readJsonNumberField(output, 'count') ?? entries.length;
+  const message = readJsonStringField(output, 'message') || '';
+  const status = readJsonStringField(output, 'status') || '';
+  const truncated = isLikelyTruncatedToolOutput(output);
+
+  if (entries.length === 0 && count === 0 && !message && !status) return null;
+
+  return buildResult(entries, message, status, count, truncated);
 }
 
 function parseUserspaceReadToolResult(toolName: string, output?: string | null): ParsedUserSpaceReadResult | null {
@@ -1710,6 +1896,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const [userspaceCurrentSnapshotId, setUserspaceCurrentSnapshotId] = useState<string | null>(null);
   const [showUserspaceDiffOverlay, setShowUserspaceDiffOverlay] = useState(false);
   const [userspaceOverlayActiveIndex, setUserspaceOverlayActiveIndex] = useState<number>(0);
+  const [hydratedUserspaceListEntries, setHydratedUserspaceListEntries] = useState<ParsedUserSpaceListEntry[] | null>(null);
+  const [isHydratingUserspaceList, setIsHydratingUserspaceList] = useState(false);
+  const [hydratedUserspaceListError, setHydratedUserspaceListError] = useState<string | null>(null);
   const latestOutput = retryOutput || toolCall.output;
   const activeOutput = isRerunning ? retryOutput : latestOutput;
   const parsedTerminalOutput = useMemo(() => parseTerminalOutput(latestOutput), [latestOutput]);
@@ -1933,6 +2122,62 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     if (toolCall.tool !== 'read_userspace_file') return null;
     return parseUserspaceReadBatch(toolCall.tool, effectiveOutput);
   }, [effectiveOutput, toolCall.tool]);
+
+  const userspaceListResult = useMemo(() => {
+    if (toolCall.tool !== 'list_userspace_files') return null;
+    return parseUserspaceListToolResult(toolCall.tool, effectiveOutput);
+  }, [effectiveOutput, toolCall.tool]);
+
+  useEffect(() => {
+    if (toolCall.tool !== 'list_userspace_files' || !workspaceId || !expanded) {
+      setHydratedUserspaceListEntries(null);
+      setHydratedUserspaceListError(null);
+      setIsHydratingUserspaceList(false);
+      return;
+    }
+    if (!userspaceListResult?.truncated) {
+      setHydratedUserspaceListEntries(null);
+      setHydratedUserspaceListError(null);
+      setIsHydratingUserspaceList(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsHydratingUserspaceList(true);
+    setHydratedUserspaceListError(null);
+
+    const hydrate = async () => {
+      try {
+        const files = await api.listUserSpaceFiles(workspaceId, { includeDirs: false });
+        if (cancelled) return;
+        const mapped = files
+          .map((file) => ({
+            path: file.path,
+            entryType: file.entry_type === 'directory' ? 'directory' as const : 'file' as const,
+            sizeBytes: Number.isFinite(file.size_bytes) ? Math.max(0, file.size_bytes) : 0,
+            updatedAt: file.updated_at || null,
+          }))
+          .filter((entry) => entry.entryType === 'file' && entry.path.trim().length > 0)
+          .sort((a, b) => a.path.localeCompare(b.path));
+        setHydratedUserspaceListEntries(mapped);
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : 'Failed to load full workspace file list.';
+        setHydratedUserspaceListError(message);
+        setHydratedUserspaceListEntries(null);
+      } finally {
+        if (!cancelled) {
+          setIsHydratingUserspaceList(false);
+        }
+      }
+    };
+
+    void hydrate();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, toolCall.tool, userspaceListResult?.truncated, workspaceId]);
 
   const userspaceReadResult = userspaceReadBatch?.primary ?? null;
 
@@ -2573,6 +2818,116 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         );
       }
 
+      case 'list_userspace_files': {
+        if (!userspaceListResult) return null;
+        const { entries, count, fileCount, totalSizeBytes, message, truncated } = userspaceListResult;
+        const parsedFileEntries = entries.filter((entry) => entry.entryType === 'file');
+        const visibleEntries = hydratedUserspaceListEntries ?? parsedFileEntries;
+        const isHydrated = hydratedUserspaceListEntries != null;
+
+        const formatSize = (bytes: number): string => {
+          if (bytes <= 0) return '0 B';
+          if (bytes < 1024) return `${bytes} B`;
+          if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+          if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+          return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+        };
+
+        const formatUpdatedAt = (iso: string | null): string => {
+          if (!iso) return '';
+          const date = new Date(iso);
+          if (Number.isNaN(date.getTime())) return '';
+          return date.toLocaleString(undefined, {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          });
+        };
+
+        const summaryParts: string[] = [];
+        if (fileCount > 0) summaryParts.push(`${fileCount} file${fileCount === 1 ? '' : 's'}`);
+        if (fileCount > 0) summaryParts.push(formatSize(totalSizeBytes));
+        const summaryText = summaryParts.length > 0
+          ? summaryParts.join(' \u00b7 ')
+          : (message || 'Empty workspace');
+
+        const copyAllPaths = visibleEntries.map((e) => e.path).join('\n');
+
+        return (
+          <div className="tool-call-section">
+            <div className="tool-call-section-header">
+              <span className="tool-call-section-label">Workspace files:</span>
+              <button
+                className="tool-call-copy-btn"
+                onClick={() => copyToClipboard(copyAllPaths || (toolCall.output ?? ''), 'result')}
+                title="Copy all paths"
+              >
+                {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+            </div>
+            <div className="tool-call-userspace-list-summary">{summaryText}</div>
+            {isHydratingUserspaceList && (
+              <div className="tool-call-userspace-list-truncated">Loading full file list...</div>
+            )}
+            {hydratedUserspaceListError && (
+              <div className="tool-call-userspace-list-truncated">{hydratedUserspaceListError}</div>
+            )}
+            {visibleEntries.length === 0 ? (
+              <div className="tool-call-userspace-list-empty">
+                {truncated
+                  ? 'Tool output was truncated before any file entries could be parsed.'
+                  : 'No files in this workspace.'}
+              </div>
+            ) : (
+              <ul className="tool-call-userspace-list">
+                {visibleEntries.map((entry) => {
+                  const updated = formatUpdatedAt(entry.updatedAt);
+                  return (
+                    <li
+                      key={`file:${entry.path}`}
+                      className="tool-call-userspace-list-item tool-call-userspace-list-item-file"
+                    >
+                      <span className="tool-call-userspace-list-icon" aria-hidden="true">
+                        <FileText size={12} />
+                      </span>
+                      {onOpenWorkspaceFile ? (
+                        <button
+                          type="button"
+                          className="tool-call-userspace-write-path tool-call-userspace-write-path-link"
+                          title={entry.path}
+                          onClick={() => onOpenWorkspaceFile(entry.path)}
+                        >
+                          {entry.path}
+                        </button>
+                      ) : (
+                        <span className="tool-call-userspace-write-path" title={entry.path}>
+                          {entry.path}
+                        </span>
+                      )}
+                      <span className="tool-call-userspace-list-size" title={`${entry.sizeBytes} bytes`}>
+                        {formatSize(entry.sizeBytes)}
+                      </span>
+                      {updated && (
+                        <span className="tool-call-userspace-list-updated" title={entry.updatedAt ?? ''}>
+                          {updated}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {(truncated || count > entries.length) && !isHydrated && !isHydratingUserspaceList && (
+              <div className="tool-call-userspace-list-truncated">
+                Tool output was truncated. Some entries are omitted.
+              </div>
+            )}
+          </div>
+        );
+      }
+
       default: {
         return (
           <div className="tool-call-section">
@@ -2648,7 +3003,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               <pre className="tool-call-code tool-call-error-text">{retryError}</pre>
             </div>
           )}
-          {inputDisplay && !userspaceWriteResult && !userspaceReadResult && !isTerminalCommand && (
+          {inputDisplay && !userspaceWriteResult && !userspaceReadResult && toolCall.tool !== 'list_userspace_files' && !isTerminalCommand && (
             <div className="tool-call-section">
               <div className="tool-call-section-header">
                 <span className="tool-call-section-label">Query:</span>
