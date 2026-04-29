@@ -2445,10 +2445,36 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
     }
   }, [content]);
 
+  const normalizeReasoningListIndentation = useCallback((text: string) => {
+    const lines = text.split('\n');
+    let inIndentedList = false;
+
+    return lines.map((line) => {
+      if (!line.trim()) {
+        return '';
+      }
+
+      if (/^ {4,}(?:[*+-]\s|\d+[.)]\s)/.test(line)) {
+        inIndentedList = true;
+        return line.replace(/^ {4}/, '');
+      }
+
+      if (inIndentedList) {
+        if (/^ {4,}\S/.test(line)) {
+          return line.replace(/^ {4}/, '');
+        }
+        inIndentedList = false;
+      }
+
+      return line;
+    }).join('\n');
+  }, []);
+
   // Convert standalone **title** lines in reasoning text to ### markdown headers
   // so the model's section headings are visually distinct rather than showing raw asterisks.
   const formatReasoningText = useCallback((text: string) => {
     let result = text.replace(/\r\n?/g, '\n');
+    result = normalizeReasoningListIndentation(result);
     // Some streamed reasoning chunks place the next **Heading** immediately after
     // the previous sentence with no newline at all. Split those into their own block first.
     result = result.replace(/([^\n])(\*\*([A-Z][^*\n]{2,})\*\*)/g, '$1\n\n$2');
@@ -2459,7 +2485,7 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
     result = result.replace(/(#{1,6} [^\n]+)\n([^\n#])/g, '$1\n\n$2');
     result = result.replace(/\n{3,}/g, '\n\n');
     return result;
-  }, []);
+  }, [normalizeReasoningListIndentation]);
 
   // Keep this after all hooks so hook order remains stable across renders.
   if (visibility === 'hidden' && isComplete) return null;
