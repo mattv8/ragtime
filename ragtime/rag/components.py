@@ -7378,6 +7378,23 @@ except Exception as e:
             )
 
         class ReadUserSpaceFileInput(BaseModel):
+            class ReadEntryInput(BaseModel):
+                path: str = Field(
+                    description="Relative path from the workspace files root to read."
+                )
+                start_line: Optional[int] = Field(
+                    default=None,
+                    description="Optional starting line (1-indexed, inclusive) for this entry.",
+                )
+                end_line: Optional[int] = Field(
+                    default=None,
+                    description="Optional ending line (1-indexed, inclusive) for this entry.",
+                )
+                search_query: Optional[str] = Field(
+                    default=None,
+                    description="Optional substring to locate context lines for this entry.",
+                )
+
             workspace_id: Optional[str] = Field(
                 default=None,
                 description=(
@@ -7389,7 +7406,24 @@ except Exception as e:
                 default="dashboard/main.ts",
                 description=(
                     "Relative path from the workspace files root to read. "
-                    "Default entry file: dashboard/main.ts"
+                    "Default entry file: dashboard/main.ts. "
+                    "Omit when using paths or reads for batched reads."
+                ),
+            )
+            paths: list[str] | None = Field(
+                default=None,
+                description=(
+                    "Optional batched mode: list of relative paths to read in one call. "
+                    "Each entry returns its own file payload. "
+                    "Use reads for per-file line ranges or search queries."
+                ),
+            )
+            reads: list[ReadEntryInput] | None = Field(
+                default=None,
+                description=(
+                    "Optional batched mode with detailed per-entry options "
+                    "(path plus optional start_line/end_line/search_query). "
+                    "Use this instead of paths when entries need different line ranges."
                 ),
             )
             start_line: Optional[int] = Field(
@@ -7409,6 +7443,40 @@ except Exception as e:
                 description="Brief description of why this file is being read",
             )
 
+            @field_validator("paths", mode="before")
+            @classmethod
+            def _coerce_paths(cls, v: Any) -> Any:
+                if isinstance(v, str):
+                    raw = v.strip()
+                    if not raw:
+                        return None
+                    try:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, list):
+                            return parsed
+                        if isinstance(parsed, str):
+                            return [parsed]
+                    except (json.JSONDecodeError, ValueError):
+                        return [raw]
+                return v
+
+            @field_validator("reads", mode="before")
+            @classmethod
+            def _coerce_reads(cls, v: Any) -> Any:
+                if isinstance(v, str):
+                    raw = v.strip()
+                    if not raw:
+                        return None
+                    try:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, list):
+                            return parsed
+                        if isinstance(parsed, dict):
+                            return [parsed]
+                    except (json.JSONDecodeError, ValueError):
+                        return None
+                return v
+
         class DeleteUserSpaceFileInput(BaseModel):
             workspace_id: Optional[str] = Field(
                 default=None,
@@ -7418,24 +7486,85 @@ except Exception as e:
                 ),
             )
             path: str = Field(
-                description="Relative path from the workspace files root to delete.",
+                default="",
+                description="Relative path from the workspace files root to delete. Omit when using paths for a batched delete.",
+            )
+            paths: list[str] | None = Field(
+                default=None,
+                description=(
+                    "Optional batched mode: list of relative paths to delete in one call. "
+                    "Each entry is processed independently with per-file success/failure reporting."
+                ),
             )
             reason: str = Field(
                 default="",
                 description="Brief description of why this file is being deleted",
             )
 
+            @field_validator("paths", mode="before")
+            @classmethod
+            def _coerce_paths(cls, v: Any) -> Any:
+                if isinstance(v, str):
+                    raw = v.strip()
+                    if not raw:
+                        return None
+                    try:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, list):
+                            return parsed
+                        if isinstance(parsed, str):
+                            return [parsed]
+                    except (json.JSONDecodeError, ValueError):
+                        return [raw]
+                return v
+
         class MoveUserSpaceFileInput(BaseModel):
+            class MoveEntryInput(BaseModel):
+                old_path: str = Field(
+                    description="Existing relative path from the workspace files root."
+                )
+                new_path: str = Field(
+                    description="Destination relative path from the workspace files root."
+                )
+
             old_path: str = Field(
-                description="Existing relative path from the workspace files root.",
+                default="",
+                description="Existing relative path from the workspace files root. Omit when using moves for a batched rename.",
             )
             new_path: str = Field(
-                description="Destination relative path from the workspace files root.",
+                default="",
+                description="Destination relative path from the workspace files root. Omit when using moves for a batched rename.",
+            )
+            moves: list[MoveEntryInput] | None = Field(
+                default=None,
+                description=(
+                    "Optional batched mode: list of {old_path, new_path} pairs to rename in one call. "
+                    "Each entry is processed independently with per-file success/failure reporting."
+                ),
             )
             reason: str = Field(
                 default="",
                 description="Brief description of why this file is being moved",
             )
+
+            @field_validator("moves", mode="before")
+            @classmethod
+            def _coerce_moves(cls, v: Any) -> Any:
+                if isinstance(v, str):
+                    raw = v.strip()
+                    if not raw:
+                        return None
+                    try:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, dict):
+                            return [parsed]
+                        if isinstance(parsed, list):
+                            return parsed
+                    except (json.JSONDecodeError, ValueError):
+                        return None
+                if isinstance(v, dict):
+                    return [v]
+                return v
 
         class UpsertUserSpaceFileInput(BaseModel):
             class LiveDataConnectionInput(BaseModel):
@@ -7510,7 +7639,13 @@ except Exception as e:
                     "Requires read_write grant for non-primary workspaces."
                 ),
             )
-            content: str = Field(description="Full UTF-8 file content to write")
+            content: str = Field(
+                default="",
+                description=(
+                    "Full UTF-8 file content to write. Omit when using files for a "
+                    "batched multi-file upsert (per-entry content is required there)."
+                ),
+            )
 
             @field_validator("content", mode="before")
             @classmethod
@@ -7581,10 +7716,37 @@ except Exception as e:
                     "component_id that matches a declared live_data_connections entry."
                 ),
             )
+            files: list[dict[str, Any]] | None = Field(
+                default=None,
+                description=(
+                    "Optional batched mode: list of {path, content, artifact_type?, live_data_requested?, "
+                    "live_data_connections?, live_data_checks?} entries to create or update in one call. "
+                    "Each entry is processed independently with per-file validation, success, or failure reporting."
+                ),
+            )
             reason: str = Field(
                 default="",
                 description="Brief description of why this file is being updated",
             )
+
+            @field_validator("files", mode="before")
+            @classmethod
+            def _coerce_files(cls, v: Any) -> Any:
+                if isinstance(v, str):
+                    raw = v.strip()
+                    if not raw:
+                        return None
+                    try:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, dict):
+                            return [parsed]
+                        if isinstance(parsed, list):
+                            return parsed
+                    except (json.JSONDecodeError, ValueError):
+                        return None
+                if isinstance(v, dict):
+                    return [v]
+                return v
 
         class PatchUserSpaceFileInput(BaseModel):
             class ReplacementInput(BaseModel):
@@ -7611,7 +7773,7 @@ except Exception as e:
 
             path: str = Field(
                 default="dashboard/main.ts",
-                description="Relative path from workspace root to patch.",
+                description="Relative path from workspace root to patch. Omit when using patches for a batched multi-file edit.",
             )
             replacements: list[Any] = Field(
                 default_factory=list,
@@ -7621,10 +7783,36 @@ except Exception as e:
                     "quoted JSON strings are tolerated and parsed best-effort."
                 ),
             )
+            patches: list[dict[str, Any]] | None = Field(
+                default=None,
+                description=(
+                    "Optional batched mode: list of {path, replacements} entries to patch multiple files in one call. "
+                    "Each entry is processed independently with per-file success/failure reporting."
+                ),
+            )
             reason: str = Field(
                 default="",
                 description="Brief description of why this patch is being applied",
             )
+
+            @field_validator("patches", mode="before")
+            @classmethod
+            def _coerce_patches(cls, value: Any) -> Any:
+                if isinstance(value, str):
+                    raw = value.strip()
+                    if not raw:
+                        return None
+                    try:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, dict):
+                            return [parsed]
+                        if isinstance(parsed, list):
+                            return parsed
+                    except (json.JSONDecodeError, ValueError):
+                        return None
+                if isinstance(value, dict):
+                    return [value]
+                return value
 
             @field_validator("replacements", mode="before")
             @classmethod
@@ -7889,6 +8077,261 @@ except Exception as e:
                     **kwargs,
                 ),
                 indent=2,
+            )
+
+        def _aggregate_userspace_batch_payload(
+            *,
+            tool_name: str,
+            op: str,
+            entry_results: list[dict[str, Any]],
+        ) -> str:
+            """Aggregate per-entry userspace tool results into a single batch payload.
+
+            Each entry_results item is a parsed JSON dict produced by the
+            per-file tool path. The aggregate normalizes it into a `files`
+            collection so the chat UI can render every touched file from one
+            tool call. Partial success is preserved: a batch reports persisted
+            and rejected entries side-by-side rather than failing the whole call.
+            """
+            normalized_files: list[dict[str, Any]] = []
+            persisted_count = 0
+            rejected_count = 0
+            no_change_count = 0
+            with_violations_count = 0
+            read_count = 0
+            any_persisted_with_violations = False
+            failure_classes: list[str] = []
+
+            for raw in entry_results:
+                if not isinstance(raw, dict):
+                    continue
+                entry: dict[str, Any] = {"op": op}
+                # Promote useful per-entry fields. Keep both `path` and
+                # `old_path`/`new_path` when present so move entries render
+                # the rename arrow in the UI.
+                for key in (
+                    "path",
+                    "old_path",
+                    "new_path",
+                    "status",
+                    "persisted",
+                    "rejected",
+                    "persisted_with_violations",
+                    "message",
+                    "error",
+                    "action_required",
+                    "failure_class",
+                    "next_best_tool",
+                    "write_signature",
+                    "applied",
+                    "skipped",
+                    "attempted_replacements",
+                    "updated",
+                    "deleted",
+                    "moved",
+                    "file",
+                    "contract_violations",
+                    "warnings",
+                    "diagnostics",
+                    "typescript_validation",
+                    "live_data_contract",
+                    "allowed_violations",
+                    "created_with_violations",
+                ):
+                    if key in raw:
+                        entry[key] = raw[key]
+                normalized_files.append(entry)
+
+                if entry.get("persisted_with_violations"):
+                    any_persisted_with_violations = True
+                    with_violations_count += 1
+                if entry.get("persisted"):
+                    persisted_count += 1
+                elif entry.get("rejected"):
+                    rejected_count += 1
+                if entry.get("status") == "no_changes":
+                    no_change_count += 1
+                if entry.get("status") == "read" and not entry.get("rejected"):
+                    read_count += 1
+                fc = entry.get("failure_class")
+                if fc and fc != "none":
+                    failure_classes.append(fc)
+
+            total = len(normalized_files)
+            if op == "read":
+                # Read aggregation: success = status="read", failure = rejected.
+                if total == 0:
+                    aggregate_status = "rejected_not_persisted"
+                    rejected = True
+                    persisted = False
+                elif rejected_count == 0 and read_count > 0:
+                    aggregate_status = "read"
+                    rejected = False
+                    persisted = False
+                elif read_count == 0 and rejected_count > 0:
+                    aggregate_status = "rejected_not_persisted"
+                    rejected = True
+                    persisted = False
+                else:
+                    aggregate_status = "partial"
+                    rejected = False
+                    persisted = False
+            elif total == 0:
+                aggregate_status = "rejected_not_persisted"
+                rejected = True
+                persisted = False
+            elif rejected_count == 0 and persisted_count > 0:
+                aggregate_status = (
+                    "persisted_with_violations"
+                    if any_persisted_with_violations
+                    else "persisted"
+                )
+                rejected = False
+                persisted = True
+            elif persisted_count == 0 and rejected_count > 0:
+                aggregate_status = "rejected_not_persisted"
+                rejected = True
+                persisted = False
+            elif persisted_count > 0 and rejected_count > 0:
+                aggregate_status = "partial"
+                rejected = False
+                persisted = True
+            elif no_change_count == total:
+                aggregate_status = "no_changes"
+                rejected = False
+                persisted = False
+            else:
+                aggregate_status = (
+                    "persisted" if persisted_count else "rejected_not_persisted"
+                )
+                rejected = persisted_count == 0
+                persisted = persisted_count > 0
+
+            # Surface the most informative failure_class when any entry failed.
+            aggregate_failure_class = failure_classes[0] if failure_classes else "none"
+
+            messages: list[str] = []
+            if read_count:
+                messages.append(f"{read_count} read")
+            if persisted_count:
+                messages.append(f"{persisted_count} persisted")
+            if rejected_count:
+                messages.append(f"{rejected_count} rejected")
+            if no_change_count:
+                messages.append(f"{no_change_count} unchanged")
+            if with_violations_count:
+                messages.append(f"{with_violations_count} with violations")
+            summary_message = (
+                f"Batched {op}: {', '.join(messages)} of {total} file(s)."
+                if messages
+                else f"Batched {op}: {total} file(s) processed."
+            )
+
+            if op == "read":
+                next_best = (
+                    "list_userspace_files" if rejected_count else "patch_userspace_file"
+                )
+            elif rejected_count:
+                next_best = "patch_userspace_file"
+            elif op in ("upsert", "patch"):
+                next_best = "validate_userspace_code"
+            else:
+                next_best = "assay_userspace_code"
+
+            payload: dict[str, Any] = {
+                "tool": tool_name,
+                "status": aggregate_status,
+                "rejected": rejected,
+                "persisted": persisted,
+                "persisted_with_violations": any_persisted_with_violations,
+                "retryable": True,
+                "failure_class": aggregate_failure_class,
+                "next_best_tool": next_best,
+                "batch": True,
+                "summary": {
+                    "total": total,
+                    "persisted": persisted_count,
+                    "rejected": rejected_count,
+                    "no_changes": no_change_count,
+                    "with_violations": with_violations_count,
+                    "read": read_count,
+                },
+                "message": summary_message,
+                "files": normalized_files,
+            }
+            return json.dumps(payload, indent=2)
+
+        async def _run_userspace_batch(
+            *,
+            tool_name: str,
+            op: str,
+            entries: list[dict[str, Any]],
+            invoke_entry,
+        ) -> str:
+            """Execute a list of per-entry tool calls and aggregate the results.
+
+            invoke_entry is an async callable that takes one entry dict and
+            returns a JSON string from the existing single-file tool path.
+            """
+            entry_results: list[dict[str, Any]] = []
+            for entry in entries:
+                try:
+                    raw = await invoke_entry(entry)
+                except ToolException as exc:
+                    entry_results.append(
+                        {
+                            "path": entry.get("path")
+                            or entry.get("new_path")
+                            or entry.get("old_path")
+                            or "",
+                            "old_path": entry.get("old_path"),
+                            "new_path": entry.get("new_path"),
+                            "status": "rejected_not_persisted",
+                            "rejected": True,
+                            "persisted": False,
+                            "error": str(exc),
+                            "failure_class": "tool_error",
+                            "action_required": "Fix the input fields for this entry and retry.",
+                        }
+                    )
+                    continue
+                except Exception as exc:  # pragma: no cover - defensive
+                    entry_results.append(
+                        {
+                            "path": entry.get("path")
+                            or entry.get("new_path")
+                            or entry.get("old_path")
+                            or "",
+                            "old_path": entry.get("old_path"),
+                            "new_path": entry.get("new_path"),
+                            "status": "rejected_not_persisted",
+                            "rejected": True,
+                            "persisted": False,
+                            "error": f"Unexpected error: {exc}",
+                            "failure_class": "tool_error",
+                        }
+                    )
+                    continue
+
+                if isinstance(raw, str):
+                    try:
+                        parsed = json.loads(raw)
+                    except (json.JSONDecodeError, ValueError):
+                        parsed = {
+                            "path": entry.get("path") or "",
+                            "status": "unknown",
+                            "raw": raw[:1000],
+                        }
+                elif isinstance(raw, dict):
+                    parsed = raw
+                else:
+                    parsed = {"raw": str(raw)[:1000]}
+                entry_results.append(parsed)
+
+            return _aggregate_userspace_batch_payload(
+                tool_name=tool_name,
+                op=op,
+                entry_results=entry_results,
             )
 
         def _compact_userspace_screenshot_payload(
@@ -8240,15 +8683,69 @@ except Exception as e:
             )
 
         async def read_userspace_file(
-            path: str,
+            path: str = "dashboard/main.ts",
             start_line: Optional[int] = None,
             end_line: Optional[int] = None,
             search_query: Optional[str] = None,
             reason: str = "",
             workspace_id: Optional[str] = None,
+            paths: list[str] | None = None,
+            reads: list[Any] | None = None,
             **_: Any,
         ) -> str:
             del reason
+            # Batched mode: iterate per entry and aggregate results.
+            if paths or reads:
+                normalized_entries: list[dict[str, Any]] = []
+                if reads:
+                    for item in reads:
+                        raw = (
+                            item.model_dump(mode="python")
+                            if isinstance(item, BaseModel)
+                            else item
+                        )
+                        if not isinstance(raw, dict):
+                            continue
+                        entry_path = (raw.get("path") or "").strip()
+                        if not entry_path:
+                            continue
+                        normalized_entries.append(
+                            {
+                                "path": entry_path,
+                                "start_line": raw.get("start_line"),
+                                "end_line": raw.get("end_line"),
+                                "search_query": raw.get("search_query"),
+                            }
+                        )
+                if paths:
+                    for p in paths:
+                        entry_path = (p or "").strip()
+                        if not entry_path:
+                            continue
+                        normalized_entries.append({"path": entry_path})
+                if not normalized_entries:
+                    raise ToolException(
+                        "Invalid batched read: provide at least one non-empty path."
+                    )
+
+                batch_workspace_id = workspace_id
+
+                async def _invoke_read_entry(entry: dict[str, Any]) -> str:
+                    return await read_userspace_file(
+                        path=entry.get("path") or "",
+                        start_line=entry.get("start_line"),
+                        end_line=entry.get("end_line"),
+                        search_query=entry.get("search_query"),
+                        workspace_id=batch_workspace_id,
+                    )
+
+                return await _run_userspace_batch(
+                    tool_name="read_userspace_file",
+                    op="read",
+                    entries=normalized_entries,
+                    invoke_entry=_invoke_read_entry,
+                )
+
             target_ws, target_uid = await _resolve_target_workspace(
                 workspace_id, "read"
             )
@@ -8377,12 +8874,36 @@ except Exception as e:
             )
 
         async def delete_userspace_file(
-            path: str,
+            path: str = "",
+            paths: list[str] | None = None,
             reason: str = "",
             workspace_id: Optional[str] = None,
             **_: Any,
         ) -> str:
             del reason
+            # Batched mode: iterate per path and aggregate results.
+            if paths:
+                batch_workspace_id = workspace_id
+
+                async def _invoke_delete_entry(entry: dict[str, Any]) -> str:
+                    return await delete_userspace_file(
+                        path=entry.get("path") or "",
+                        workspace_id=batch_workspace_id,
+                    )
+
+                normalized_entries = [
+                    {"path": (p or "").strip()} for p in paths if (p or "").strip()
+                ]
+                if not normalized_entries:
+                    raise ToolException(
+                        "Invalid paths: provide at least one non-empty path."
+                    )
+                return await _run_userspace_batch(
+                    tool_name="delete_userspace_file",
+                    op="delete",
+                    entries=normalized_entries,
+                    invoke_entry=_invoke_delete_entry,
+                )
             target_ws, target_uid = await _resolve_target_workspace(
                 workspace_id, "write"
             )
@@ -8444,12 +8965,46 @@ except Exception as e:
             )
 
         async def move_userspace_file(
-            old_path: str,
-            new_path: str,
+            old_path: str = "",
+            new_path: str = "",
+            moves: list[Any] | None = None,
             reason: str = "",
             **_: Any,
         ) -> str:
             del reason
+            # Batched mode: iterate per move pair and aggregate results.
+            if moves:
+                normalized_entries: list[dict[str, Any]] = []
+                for item in moves:
+                    raw = (
+                        item.model_dump(mode="python")
+                        if isinstance(item, BaseModel)
+                        else item
+                    )
+                    if not isinstance(raw, dict):
+                        continue
+                    op_old = (raw.get("old_path") or "").strip()
+                    op_new = (raw.get("new_path") or "").strip()
+                    if not op_old or not op_new:
+                        continue
+                    normalized_entries.append({"old_path": op_old, "new_path": op_new})
+                if not normalized_entries:
+                    raise ToolException(
+                        "Invalid moves: provide at least one entry with old_path and new_path."
+                    )
+
+                async def _invoke_move_entry(entry: dict[str, Any]) -> str:
+                    return await move_userspace_file(
+                        old_path=entry.get("old_path") or "",
+                        new_path=entry.get("new_path") or "",
+                    )
+
+                return await _run_userspace_batch(
+                    tool_name="move_userspace_file",
+                    op="move",
+                    entries=normalized_entries,
+                    invoke_entry=_invoke_move_entry,
+                )
             await userspace_service.enforce_workspace_role(
                 workspace_id, user_id, "editor"
             )
@@ -8548,10 +9103,46 @@ except Exception as e:
         async def patch_userspace_file(
             path: str = "dashboard/main.ts",
             replacements: list[Any] | None = None,
+            patches: list[Any] | None = None,
             reason: str = "",
             **_: Any,
         ) -> str:
             del reason
+            # Batched mode: iterate per patch entry and aggregate results.
+            if patches:
+                normalized_entries: list[dict[str, Any]] = []
+                for item in patches:
+                    raw = (
+                        item.model_dump(mode="python")
+                        if isinstance(item, BaseModel)
+                        else item
+                    )
+                    if not isinstance(raw, dict):
+                        continue
+                    entry_path = (raw.get("path") or "").strip()
+                    entry_replacements = raw.get("replacements")
+                    if not entry_path or entry_replacements is None:
+                        continue
+                    normalized_entries.append(
+                        {"path": entry_path, "replacements": entry_replacements}
+                    )
+                if not normalized_entries:
+                    raise ToolException(
+                        "Invalid patches: provide at least one entry with path and replacements."
+                    )
+
+                async def _invoke_patch_entry(entry: dict[str, Any]) -> str:
+                    return await patch_userspace_file(
+                        path=entry.get("path") or "",
+                        replacements=entry.get("replacements") or [],
+                    )
+
+                return await _run_userspace_batch(
+                    tool_name="patch_userspace_file",
+                    op="patch",
+                    entries=normalized_entries,
+                    invoke_entry=_invoke_patch_entry,
+                )
             await userspace_service.enforce_workspace_role(
                 workspace_id, user_id, "editor"
             )
@@ -8916,17 +9507,60 @@ except Exception as e:
             return json.dumps(response_payload, indent=2)
 
         async def upsert_userspace_file(
-            content: str,
+            content: str = "",
             path: str = "",
             artifact_type: ArtifactType | None = "module_ts",
             live_data_requested: bool = False,
             live_data_connections: list[Any] | None = None,
             live_data_checks: list[Any] | None = None,
+            files: list[Any] | None = None,
             reason: str = "",
             workspace_id: Optional[str] = None,
             **_: Any,
         ) -> str:
             del reason
+            # Batched mode: iterate per file entry and aggregate results.
+            if files:
+                batch_workspace_id = workspace_id
+                normalized_entries: list[dict[str, Any]] = []
+                for item in files:
+                    raw = (
+                        item.model_dump(mode="python")
+                        if isinstance(item, BaseModel)
+                        else item
+                    )
+                    if not isinstance(raw, dict):
+                        continue
+                    entry_path = (raw.get("path") or "").strip()
+                    if not entry_path:
+                        continue
+                    if "content" not in raw:
+                        continue
+                    normalized_entries.append(raw)
+                if not normalized_entries:
+                    raise ToolException(
+                        "Invalid files: provide at least one entry with path and content."
+                    )
+
+                async def _invoke_upsert_entry(entry: dict[str, Any]) -> str:
+                    return await upsert_userspace_file(
+                        content=entry.get("content") or "",
+                        path=entry.get("path") or "",
+                        artifact_type=entry.get("artifact_type", "module_ts"),
+                        live_data_requested=bool(
+                            entry.get("live_data_requested", False)
+                        ),
+                        live_data_connections=entry.get("live_data_connections"),
+                        live_data_checks=entry.get("live_data_checks"),
+                        workspace_id=batch_workspace_id,
+                    )
+
+                return await _run_userspace_batch(
+                    tool_name="upsert_userspace_file",
+                    op="upsert",
+                    entries=normalized_entries,
+                    invoke_entry=_invoke_upsert_entry,
+                )
             target_ws, target_uid = await _resolve_target_workspace(
                 workspace_id, "write"
             )
@@ -10359,7 +10993,10 @@ except Exception as e:
                 coroutine=read_userspace_file,
                 name="read_userspace_file",
                 description=(
-                    "Read a file from the active User Space workspace by relative path."
+                    "Read a file from the active User Space workspace by relative path. "
+                    "Supports batched reads: pass paths=[...] to read multiple files in one call, "
+                    "or reads=[{path, start_line?, end_line?, search_query?}, ...] for per-file options. "
+                    "Each entry returns its own file payload; partial success is preserved."
                 ),
                 args_schema=ReadUserSpaceFileInput,
             ),
@@ -10368,7 +11005,9 @@ except Exception as e:
                 name="delete_userspace_file",
                 description=(
                     "Delete a file from the active User Space workspace by relative path. "
-                    "Use to remove stale/conflicting files that block runtime builds."
+                    "Use to remove stale/conflicting files that block runtime builds. "
+                    "Supports batched deletion: pass paths=[...] to delete multiple files in one call "
+                    "with per-file success/failure reporting (partial success is preserved)."
                 ),
                 args_schema=DeleteUserSpaceFileInput,
             ),
@@ -10377,7 +11016,9 @@ except Exception as e:
                 name="move_userspace_file",
                 description=(
                     "Move or rename a file in the active User Space workspace using relative paths. "
-                    "Use this to reorganize files without rewriting content."
+                    "Use this to reorganize files without rewriting content. "
+                    "Supports batched renames: pass moves=[{old_path,new_path},...] to rename multiple files "
+                    "in one call with per-file success/failure reporting (partial success is preserved)."
                 ),
                 args_schema=MoveUserSpaceFileInput,
             ),
@@ -10394,7 +11035,9 @@ except Exception as e:
                     "context.components[componentId].execute() calls in the source code (AST-checked). "
                     "Responses always include live_data_contract guidance with selected_tool_ids and required wiring context. "
                     "Policy violations raise tool errors that must be resolved before retrying. "
-                    "Output may include CSS/theme warnings that must be fixed in follow-up edits."
+                    "Output may include CSS/theme warnings that must be fixed in follow-up edits. "
+                    "Supports batched upserts: pass files=[{path,content,...},...] to write multiple files in one call "
+                    "with per-file validation and partial-success reporting."
                 ),
                 args_schema=UpsertUserSpaceFileInput,
             ),
@@ -10406,7 +11049,9 @@ except Exception as e:
                     "Use for surgical edits to avoid re-rendering full file content. "
                     "Do not use to create new files or replace large files wholesale. "
                     "Supports ordered exact old/new replacements with per-op required flags. "
-                    "For reliable matches, source old_text from read_userspace_file output (not shell-derived views)."
+                    "For reliable matches, source old_text from read_userspace_file output (not shell-derived views). "
+                    "Supports batched patching: pass patches=[{path,replacements},...] to patch multiple files in one call "
+                    "with per-file success/failure reporting (partial success is preserved)."
                 ),
                 args_schema=PatchUserSpaceFileInput,
             ),
@@ -11959,6 +12604,8 @@ except Exception as e:
                                 _userspace_write_tools = {
                                     "upsert_userspace_file",
                                     "patch_userspace_file",
+                                    "move_userspace_file",
+                                    "delete_userspace_file",
                                 }
                                 display_output = tool_output
                                 if (
@@ -11967,12 +12614,41 @@ except Exception as e:
                                 ):
                                     try:
                                         _parsed_output = json.loads(display_output)
-                                        if isinstance(
-                                            _parsed_output, dict
-                                        ) and isinstance(
-                                            _parsed_output.get("file"), dict
-                                        ):
-                                            _parsed_output["file"].pop("content", None)
+                                        if isinstance(_parsed_output, dict):
+                                            # Strip bulky `content` and prompt-only
+                                            # contract guidance for both single-file
+                                            # payloads (legacy `file` key) and
+                                            # batched payloads (per-entry
+                                            # `files[i].file.content` and
+                                            # `files[i].live_data_contract`). The
+                                            # frontend diff renderer never reads
+                                            # these so dropping them keeps the
+                                            # streamed payload compact enough that
+                                            # batched results stay JSON-parseable.
+                                            _parsed_output.pop(
+                                                "live_data_contract", None
+                                            )
+                                            if isinstance(
+                                                _parsed_output.get("file"), dict
+                                            ):
+                                                _parsed_output["file"].pop(
+                                                    "content", None
+                                                )
+                                            batch_files = _parsed_output.get("files")
+                                            if isinstance(batch_files, list):
+                                                for _entry in batch_files:
+                                                    if isinstance(_entry, dict):
+                                                        _entry.pop(
+                                                            "live_data_contract",
+                                                            None,
+                                                        )
+                                                        if isinstance(
+                                                            _entry.get("file"),
+                                                            dict,
+                                                        ):
+                                                            _entry["file"].pop(
+                                                                "content", None
+                                                            )
                                             display_output = json.dumps(
                                                 _parsed_output, indent=2
                                             )
@@ -11981,10 +12657,21 @@ except Exception as e:
                                 has_table_metadata = isinstance(
                                     display_output, str
                                 ) and display_output.startswith(TABLE_METADATA_START)
+                                # Userspace write tools emit structured JSON whose
+                                # batched form must remain parseable client-side
+                                # (one diff card per entry). Truncating to 2000
+                                # chars cuts trailing entries and forces the
+                                # frontend to fall back to single-entry rendering,
+                                # so exempt them after the targeted strip above.
+                                # read_userspace_file batches are exempted for the
+                                # same reason; per-entry content is bounded by the
+                                # tool's own line-range / file-size limits.
                                 if (
                                     isinstance(display_output, str)
                                     and len(display_output) > 2000
                                     and tool_name not in ui_tools
+                                    and tool_name not in _userspace_write_tools
+                                    and tool_name != "read_userspace_file"
                                     and not has_table_metadata
                                 ):
                                     display_output = (

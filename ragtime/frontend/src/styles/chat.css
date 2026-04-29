@@ -2116,6 +2116,94 @@ button.tool-call-userspace-write-path-link:hover {
   color: var(--color-text-muted);
 }
 
+/* Batched userspace tool-call presentation: a flat, compact list of entries
+ * where each row collapses the per-entry "Read:/Upsert:" header into the
+ * summary row itself and the diff card auto-fits to the file's line count
+ * (capped). Singletons keep their existing layout. */
+.tool-call-userspace-batched-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: var(--space-xs);
+}
+
+.tool-call-userspace-batched-list .tool-call-userspace-batched-entry {
+  margin-top: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--tool-call-radius-sm);
+  background: var(--color-bg-primary);
+}
+
+.tool-call-userspace-batched-list .tool-call-userspace-batched-entry .tool-call-userspace-write-summary {
+  margin-bottom: 0;
+  gap: 2px;
+}
+
+.tool-call-userspace-batched-list .tool-call-userspace-batched-entry .tool-call-userspace-write-summary-row {
+  gap: 6px;
+}
+
+.tool-call-userspace-batched-op {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-border);
+  border-radius: var(--tool-call-radius-sm);
+  padding: 1px 6px;
+  line-height: 1.3;
+}
+
+.tool-call-userspace-batched-counts {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--tool-call-font-xs);
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-call-userspace-batched-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--tool-call-radius-sm);
+  padding: 2px 4px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  transition: all var(--transition-fast);
+  opacity: 0.6;
+}
+
+.tool-call-userspace-batched-action:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+  opacity: 1;
+}
+
+.tool-call-userspace-batched-list .tool-call-userspace-batched-entry .tool-call-userspace-diff-card {
+  /* Cancel the negative-margin "edge-bleed" used by singletons so cards stay
+   * neatly inside the bordered batched entry. */
+  margin: 6px 0 0;
+  border-top: 1px solid var(--color-border);
+}
+
+/* Hide the per-card path/label header inside batched entries — the path is
+ * already shown in the summary row directly above the diff. */
+.tool-call-userspace-batched-list .tool-call-userspace-batched-entry .userspace-snapshot-diff-column-header {
+  display: none;
+}
+
+.tool-call-userspace-batched-list .tool-call-userspace-batched-entry .tool-call-userspace-write-meta {
+  margin-top: 1px;
+}
+
 .tool-call-userspace-diff-card {
   max-width: none;
   margin: 0 calc(-1 * var(--space-xs)) calc(-1 * var(--space-xs));

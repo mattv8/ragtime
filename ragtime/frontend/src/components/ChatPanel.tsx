@@ -870,6 +870,19 @@ interface ParsedUserSpaceReadResult {
   totalLines: number | null;
 }
 
+interface ParsedUserSpaceReadBatch {
+  isBatch: boolean;
+  primary: ParsedUserSpaceReadResult;
+  entries: ParsedUserSpaceReadResult[];
+  summary: {
+    total: number;
+    read: number;
+    rejected: number;
+  };
+  aggregateMessage: string;
+  aggregateStatus: string;
+}
+
 interface ParsedUserspaceToolPayload {
   toolName: string;
   status: string;
@@ -1181,6 +1194,94 @@ function parseUserspaceReadToolResult(toolName: string, output?: string | null):
     startLine: parsed.startLine,
     endLine: parsed.endLine,
     totalLines: parsed.totalLines,
+  };
+}
+
+function parseUserspaceReadBatch(toolName: string, output?: string | null): ParsedUserSpaceReadBatch | null {
+  if (toolName !== 'read_userspace_file') return null;
+  if (!output) return null;
+
+  let parsedJson: Record<string, unknown> | null = null;
+  try {
+    const candidate = JSON.parse(output);
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+      parsedJson = candidate as Record<string, unknown>;
+    }
+  } catch {
+    parsedJson = null;
+  }
+
+  const isBatch = Boolean(parsedJson && parsedJson.batch === true && Array.isArray(parsedJson.files));
+
+  if (!isBatch) {
+    const single = parseUserspaceReadToolResult(toolName, output);
+    if (!single) return null;
+    return {
+      isBatch: false,
+      primary: single,
+      entries: [single],
+      summary: {
+        total: 1,
+        read: single.isRejected ? 0 : 1,
+        rejected: single.isRejected ? 1 : 0,
+      },
+      aggregateMessage: single.message,
+      aggregateStatus: single.status,
+    };
+  }
+
+  const filesRaw = parsedJson!.files as unknown[];
+  const entries: ParsedUserSpaceReadResult[] = [];
+  for (const item of filesRaw) {
+    if (!item || typeof item !== 'object') continue;
+    const e = item as Record<string, unknown>;
+    const fileObj = e.file && typeof e.file === 'object' ? (e.file as Record<string, unknown>) : null;
+    const entryPath =
+      (typeof e.path === 'string' && (e.path as string).trim()) ? (e.path as string).trim()
+      : (typeof fileObj?.path === 'string' && (fileObj!.path as string).trim()) ? (fileObj!.path as string).trim()
+      : '';
+    if (!entryPath) continue;
+    const status = typeof e.status === 'string' ? e.status : '';
+    const fileContent = fileObj && typeof fileObj.content === 'string' ? (fileObj.content as string) : null;
+    const diagnostics = e.diagnostics && typeof e.diagnostics === 'object' ? (e.diagnostics as Record<string, unknown>) : null;
+    entries.push({
+      path: entryPath,
+      message: typeof e.message === 'string' ? (e.message as string).trim() : '',
+      content: fileContent,
+      isRejected: e.rejected === true || status.includes('rejected'),
+      status,
+      startLine: typeof diagnostics?.start_line === 'number' ? (diagnostics.start_line as number) : null,
+      endLine: typeof diagnostics?.end_line === 'number' ? (diagnostics.end_line as number) : null,
+      totalLines: typeof diagnostics?.total_lines === 'number' ? (diagnostics.total_lines as number) : null,
+    });
+  }
+
+  if (entries.length === 0) return null;
+
+  const summarySrc = parsedJson!.summary && typeof parsedJson!.summary === 'object'
+    ? (parsedJson!.summary as Record<string, unknown>)
+    : {};
+  const numericOrCount = (key: string, fallback: () => number): number => {
+    const v = summarySrc[key];
+    return typeof v === 'number' ? v : fallback();
+  };
+
+  const summary = {
+    total: numericOrCount('total', () => entries.length),
+    read: numericOrCount('read', () => entries.filter((e) => !e.isRejected).length),
+    rejected: numericOrCount('rejected', () => entries.filter((e) => e.isRejected).length),
+  };
+
+  const aggregateMessage = typeof parsedJson!.message === 'string' ? (parsedJson!.message as string) : '';
+  const aggregateStatus = typeof parsedJson!.status === 'string' ? (parsedJson!.status as string) : '';
+
+  return {
+    isBatch: true,
+    primary: entries[0],
+    entries,
+    summary,
+    aggregateMessage,
+    aggregateStatus,
   };
 }
 
@@ -1828,10 +1929,12 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     };
   }, [expanded, workspaceId, diffableEntries]);
 
-  const userspaceReadResult = useMemo(() => {
+  const userspaceReadBatch = useMemo(() => {
     if (toolCall.tool !== 'read_userspace_file') return null;
-    return parseUserspaceReadToolResult(toolCall.tool, effectiveOutput);
+    return parseUserspaceReadBatch(toolCall.tool, effectiveOutput);
   }, [effectiveOutput, toolCall.tool]);
+
+  const userspaceReadResult = userspaceReadBatch?.primary ?? null;
 
   const userspaceReadDiff = useMemo((): UserSpaceSnapshotFileDiff | null => {
     if (!userspaceReadResult || userspaceReadResult.isRejected || userspaceReadResult.content == null) return null;
@@ -2158,19 +2261,6 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userspaceWriteBatch, userspaceDiffMap, userspaceDiffLoadingMap, userspaceDiffErrorMap, userspaceCurrentSnapshotId]);
 
-  const userspaceReadRangeSummary = userspaceReadResult
-    ? (() => {
-        const { startLine, endLine, totalLines } = userspaceReadResult;
-        if (startLine != null && endLine != null && totalLines != null) {
-          return `Lines ${startLine}-${endLine} of ${totalLines}`;
-        }
-        if (startLine != null && endLine != null) {
-          return `Lines ${startLine}-${endLine}`;
-        }
-        return null;
-      })()
-    : null;
-
   const openUserspaceOverlayAt = (index: number) => {
     setUserspaceOverlayActiveIndex(index);
     setShowUserspaceDiffOverlay(true);
@@ -2179,7 +2269,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const renderUserspaceWriteEntry = (
     entry: ParsedUserSpaceWriteResult,
     index: number,
-    options: { showSummaryFallback: boolean },
+    options: { showSummaryFallback: boolean; batched?: boolean },
   ): ReactNode => {
     const { diff, loading, error } = getEntryDiffState(entry);
     const isDiffable = USERSPACE_DIFFABLE_TOOL_NAMES.has(entry.toolName) || entry.op === 'upsert' || entry.op === 'patch';
@@ -2194,39 +2284,53 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       : entry.op === 'move'
         ? 'R'
         : (diff?.status ?? (entry.rejected ? 'X' : 'M'));
+    const opLabel = entry.op === 'upsert'
+      ? 'Upsert'
+      : entry.op === 'patch'
+        ? 'Patch'
+        : entry.op === 'move'
+          ? 'Move'
+          : 'Delete';
+    const batched = Boolean(options.batched);
+    const sectionClass = batched
+      ? 'tool-call-section tool-call-userspace-batched-entry'
+      : 'tool-call-section';
+    const metaText = batched
+      ? (entry.rejected ? (entry.error || entry.message || 'Rejected') : entry.noChanges ? 'No changes' : '')
+      : ((diff ? formatDiffStatus(diff.status) : null) || entry.message || (entry.rejected ? 'Rejected' : entry.noChanges ? 'No changes' : 'Updated'));
+    const diffCounts = diff ? `+${diff.additions} -${diff.deletions}` : '';
 
     return (
-      <div className="tool-call-section" key={`${entry.op}:${entry.path}:${index}`}>
-        <div className="tool-call-section-header">
-          <span className="tool-call-section-label">
-            {entry.op === 'upsert' && 'Upsert'}
-            {entry.op === 'patch' && 'Patch'}
-            {entry.op === 'move' && 'Move'}
-            {entry.op === 'delete' && 'Delete'}
-            {':'}
-          </span>
-          {showDiffCard ? (
-            <button
-              type="button"
-              className="tool-call-retry-btn"
-              onClick={() => openUserspaceOverlayAt(index)}
-              title="Open full diff"
-            >
-              <Diff size={12} />
-              <span>Full Diff</span>
-            </button>
-          ) : (
-            <button
-              className="tool-call-copy-btn"
-              onClick={() => copyToClipboard(fallbackText || entry.path, 'result')}
-              title="Copy result"
-            >
-              {copiedResult ? <Check size={12} /> : <Copy size={12} />}
-            </button>
-          )}
-        </div>
+      <div className={sectionClass} key={`${entry.op}:${entry.path}:${index}`}>
+        {!batched && (
+          <div className="tool-call-section-header">
+            <span className="tool-call-section-label">{`${opLabel}:`}</span>
+            {showDiffCard ? (
+              <button
+                type="button"
+                className="tool-call-retry-btn"
+                onClick={() => openUserspaceOverlayAt(index)}
+                title="Open full diff"
+              >
+                <Diff size={12} />
+                <span>Full Diff</span>
+              </button>
+            ) : (
+              <button
+                className="tool-call-copy-btn"
+                onClick={() => copyToClipboard(fallbackText || entry.path, 'result')}
+                title="Copy result"
+              >
+                {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+            )}
+          </div>
+        )}
         <div className="tool-call-userspace-write-summary">
           <div className="tool-call-userspace-write-summary-row">
+            {batched && (
+              <span className="tool-call-userspace-batched-op" title={opLabel}>{opLabel}</span>
+            )}
             {onOpenWorkspaceFile ? (
               <button
                 className="tool-call-userspace-write-path tool-call-userspace-write-path-link"
@@ -2243,14 +2347,29 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 {entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path}
               </span>
             )}
+            {batched && diffCounts && (
+              <span className="tool-call-userspace-batched-counts">{diffCounts}</span>
+            )}
             <span className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${String(statusGlyph).toLowerCase()}`}>
               {statusGlyph}
             </span>
+            {batched && showDiffCard && (
+              <button
+                type="button"
+                className="tool-call-userspace-batched-action"
+                onClick={() => openUserspaceOverlayAt(index)}
+                title="Open full diff"
+              >
+                <Diff size={12} />
+              </button>
+            )}
           </div>
-          <div className="tool-call-userspace-write-meta">
-            {(diff ? formatDiffStatus(diff.status) : null) || entry.message || (entry.rejected ? 'Rejected' : entry.noChanges ? 'No changes' : 'Updated')}
-            {diff ? ` | +${diff.additions} -${diff.deletions}` : ''}
-          </div>
+          {metaText && (
+            <div className="tool-call-userspace-write-meta">
+              {metaText}
+              {!batched && diffCounts ? ` | ${diffCounts}` : ''}
+            </div>
+          )}
         </div>
         {loading && (
           <div className="tool-call-userspace-diff-loading">
@@ -2258,7 +2377,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             <span>Loading diff from current snapshot...</span>
           </div>
         )}
-        {!loading && !diff && fallbackText && (
+        {!loading && !diff && fallbackText && !batched && (
           <pre className="tool-call-code">{fallbackText}</pre>
         )}
         {error && (
@@ -2271,6 +2390,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               beforeLabel="Last Snapshot"
               afterLabel="Tool Result"
               compact
+              maxLines={batched ? 14 : undefined}
             />
           </div>
         )}
@@ -2308,56 +2428,146 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 {aggregateMessage || `Batched ${userspaceWriteBatch.toolName} across ${summary.total} file(s).`}
               </div>
             </div>
-            {entries.map((entry, index) => renderUserspaceWriteEntry(entry, index, { showSummaryFallback: false }))}
+            <div className="tool-call-userspace-batched-list">
+              {entries.map((entry, index) => renderUserspaceWriteEntry(entry, index, { showSummaryFallback: false, batched: true }))}
+            </div>
           </>
         );
       }
 
       case 'read_userspace_file': {
-        if (!userspaceReadResult || !userspaceReadDiff) return null;
+        if (!userspaceReadBatch) return null;
+        const { entries, isBatch, summary, aggregateMessage } = userspaceReadBatch;
+
+        const renderReadEntry = (entry: ParsedUserSpaceReadResult, idx: number, opts: { batched?: boolean } = {}): ReactNode => {
+          const batched = Boolean(opts.batched);
+          const normalizedContent = entry.content != null
+            ? normalizeUserspaceSnippetContent(entry.content)
+            : null;
+          const lineCount = normalizedContent ? normalizedContent.split('\n').length : 0;
+          const entryDiff: UserSpaceSnapshotFileDiff | null = (!entry.isRejected && normalizedContent != null)
+            ? {
+                workspace_id: '',
+                snapshot_id: '',
+                path: entry.path,
+                status: 'R',
+                before_content: '',
+                after_content: normalizedContent,
+                additions: lineCount,
+                deletions: 0,
+                is_binary: false,
+                is_deleted_in_current: false,
+                is_untracked_in_current: false,
+              }
+            : null;
+          const range = (entry.startLine != null && entry.endLine != null)
+            ? (entry.totalLines != null
+                ? `Lines ${entry.startLine}-${entry.endLine} of ${entry.totalLines}`
+                : `Lines ${entry.startLine}-${entry.endLine}`)
+            : null;
+          const statusGlyph = entry.isRejected ? 'X' : 'R';
+          const sectionClass = batched
+            ? 'tool-call-section tool-call-userspace-batched-entry'
+            : 'tool-call-section';
+          const metaText = batched
+            ? (entry.isRejected ? (entry.message || 'Rejected') : '')
+            : (entry.message || (entry.isRejected ? 'Rejected' : 'Read'));
+          return (
+            <div className={sectionClass} key={`read:${entry.path}:${idx}`}>
+              {!batched && (
+                <div className="tool-call-section-header">
+                  <span className="tool-call-section-label">Read:</span>
+                  <button
+                    className="tool-call-copy-btn"
+                    onClick={() => copyToClipboard(entry.content ?? entry.message ?? entry.path, 'result')}
+                    title="Copy result"
+                  >
+                    {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                  </button>
+                </div>
+              )}
+              <div className="tool-call-userspace-write-summary">
+                <div className="tool-call-userspace-write-summary-row">
+                  {batched && (
+                    <span className="tool-call-userspace-batched-op">Read</span>
+                  )}
+                  {onOpenWorkspaceFile ? (
+                    <button
+                      className="tool-call-userspace-write-path tool-call-userspace-write-path-link"
+                      title={entry.path}
+                      onClick={() => onOpenWorkspaceFile(entry.path)}
+                    >
+                      {entry.path}
+                    </button>
+                  ) : (
+                    <span className="tool-call-userspace-write-path" title={entry.path}>{entry.path}</span>
+                  )}
+                  {batched && range && (
+                    <span className="tool-call-userspace-batched-counts">{range}</span>
+                  )}
+                  <span className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${statusGlyph.toLowerCase()}`}>
+                    {statusGlyph}
+                  </span>
+                  {batched && (
+                    <button
+                      type="button"
+                      className="tool-call-userspace-batched-action"
+                      onClick={() => copyToClipboard(entry.content ?? entry.message ?? entry.path, 'result')}
+                      title="Copy snippet"
+                    >
+                      {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                    </button>
+                  )}
+                </div>
+                {metaText && (
+                  <div className="tool-call-userspace-write-meta">
+                    {metaText}
+                    {!batched && range ? ` | ${range}` : ''}
+                  </div>
+                )}
+              </div>
+              {entryDiff && (
+                <div className="tool-call-userspace-diff-card">
+                  <UserSpaceFileDiffView
+                    diff={entryDiff}
+                    beforeLabel="Read Snippet"
+                    afterLabel="Read Snippet"
+                    compact
+                    highlightSingleColumnChanges={false}
+                    maxLines={batched ? 12 : undefined}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        if (!isBatch) {
+          if (!userspaceReadDiff || !userspaceReadResult) {
+            return renderReadEntry(entries[0], 0);
+          }
+          return renderReadEntry(entries[0], 0);
+        }
 
         return (
           <>
             <div className="tool-call-section">
               <div className="tool-call-section-header">
-                <span className="tool-call-section-label">Result:</span>
+                <span className="tool-call-section-label">Batched read:</span>
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(userspaceReadResult.content ?? displayText ?? toolCall.output!, 'result')}
-                  title="Copy result"
+                  onClick={() => copyToClipboard(aggregateMessage || displayText || (toolCall.output ?? ''), 'result')}
+                  title="Copy summary"
                 >
                   {copiedResult ? <Check size={12} /> : <Copy size={12} />}
                 </button>
               </div>
-              <div className="tool-call-userspace-write-summary">
-                <div className="tool-call-userspace-write-summary-row">
-                  {onOpenWorkspaceFile ? (
-                    <button
-                      className="tool-call-userspace-write-path tool-call-userspace-write-path-link"
-                      title={userspaceReadResult.path}
-                      onClick={() => onOpenWorkspaceFile(userspaceReadResult.path)}
-                    >
-                      {userspaceReadResult.path}
-                    </button>
-                  ) : (
-                    <span className="tool-call-userspace-write-path" title={userspaceReadResult.path}>{userspaceReadResult.path}</span>
-                  )}
-                  <span className="userspace-snapshot-diff-status userspace-snapshot-diff-status-r">R</span>
-                </div>
-                <div className="tool-call-userspace-write-meta">
-                  {userspaceReadResult.message || 'Read'}
-                  {userspaceReadRangeSummary ? ` | ${userspaceReadRangeSummary}` : ''}
-                </div>
+              <div className="tool-call-userspace-write-meta">
+                {aggregateMessage || `Batched read across ${summary.total} file(s).`}
               </div>
             </div>
-            <div className="tool-call-userspace-diff-card">
-              <UserSpaceFileDiffView
-                diff={userspaceReadDiff}
-                beforeLabel="Read Snippet"
-                afterLabel="Read Snippet"
-                compact
-                highlightSingleColumnChanges={false}
-              />
+            <div className="tool-call-userspace-batched-list">
+              {entries.map((entry, idx) => renderReadEntry(entry, idx, { batched: true }))}
             </div>
           </>
         );

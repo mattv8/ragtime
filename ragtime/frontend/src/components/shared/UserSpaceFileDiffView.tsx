@@ -146,6 +146,24 @@ export interface UserSpaceFileDiffViewProps {
   compact?: boolean;
   syncScroll?: boolean;
   highlightSingleColumnChanges?: boolean;
+  /**
+   * When set, the editor wraps auto-fit to the actual line count (capped at
+   * this value) instead of using the default fixed compact min-height. Used
+   * by batched tool-call rendering so a 3-line file does not occupy 180px.
+   */
+  maxLines?: number;
+}
+
+// Approximate CodeMirror line-height at our 12px font size, plus a small
+// allowance for the editor's internal vertical padding so the last line is
+// not clipped when auto-fitting.
+const DIFF_LINE_HEIGHT_PX = 18;
+const DIFF_AUTO_FIT_PADDING_PX = 8;
+
+function computeAutoFitHeight(text: string, maxLines: number): string {
+  const lines = text.length === 0 ? 1 : text.split('\n').length;
+  const clamped = Math.max(2, Math.min(lines, Math.max(2, maxLines)));
+  return `${clamped * DIFF_LINE_HEIGHT_PX + DIFF_AUTO_FIT_PADDING_PX}px`;
 }
 
 export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
@@ -155,6 +173,7 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
   compact = false,
   syncScroll = true,
   highlightSingleColumnChanges = true,
+  maxLines,
 }: UserSpaceFileDiffViewProps) {
   const beforeWrapRef = useRef<HTMLDivElement | null>(null);
   const afterWrapRef = useRef<HTMLDivElement | null>(null);
@@ -274,20 +293,25 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
       ? (isPureAdd ? afterExtensions : beforeExtensions)
       : languageExtensions;
 
+    const autoFitHeight = maxLines ? computeAutoFitHeight(singleContent, maxLines) : '100%';
+    const wrapStyle = maxLines ? { minHeight: 0, height: autoFitHeight } : undefined;
     return (
-      <div className={`userspace-snapshot-diff-columns userspace-snapshot-diff-columns-single${compact ? ' userspace-snapshot-diff-columns-compact' : ''}`}>
+      <div className={`userspace-snapshot-diff-columns userspace-snapshot-diff-columns-single${compact ? ' userspace-snapshot-diff-columns-compact' : ''}${maxLines ? ' userspace-snapshot-diff-columns-autofit' : ''}`}>
         <div className="userspace-snapshot-diff-column userspace-snapshot-diff-column-current">
           <div className="userspace-snapshot-diff-column-header">
             <span>{singleLabel}</span>
             <code>{singlePath}</code>
           </div>
-          <div className={`userspace-snapshot-diff-editor-wrap${compact ? ' userspace-snapshot-diff-editor-wrap-compact' : ''}`}>
+          <div
+            className={`userspace-snapshot-diff-editor-wrap${compact ? ' userspace-snapshot-diff-editor-wrap-compact' : ''}`}
+            style={wrapStyle}
+          >
             <CodeMirror
               value={singleContent}
               basicSetup={DIFF_CODEMIRROR_SETUP}
               editable={false}
               extensions={singleExtensions}
-              height="100%"
+              height={autoFitHeight}
             />
           </div>
         </div>
@@ -295,20 +319,36 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
     );
   }
 
+  // For two-column diffs we size both panes to the larger of the aligned
+  // texts so changes line up visually when auto-fitting.
+  const dualAutoFitHeight = maxLines
+    ? (() => {
+        const beforeLines = alignedDiff.beforeText.split('\n').length;
+        const afterLines = alignedDiff.afterText.split('\n').length;
+        const lines = Math.max(beforeLines, afterLines, 1);
+        const clamped = Math.max(2, Math.min(lines, Math.max(2, maxLines)));
+        return `${clamped * DIFF_LINE_HEIGHT_PX + DIFF_AUTO_FIT_PADDING_PX}px`;
+      })()
+    : '100%';
+  const dualWrapStyle = maxLines ? { minHeight: 0, height: dualAutoFitHeight } : undefined;
   return (
-    <div className={`userspace-snapshot-diff-columns${compact ? ' userspace-snapshot-diff-columns-compact' : ''}`}>
+    <div className={`userspace-snapshot-diff-columns${compact ? ' userspace-snapshot-diff-columns-compact' : ''}${maxLines ? ' userspace-snapshot-diff-columns-autofit' : ''}`}>
       <div className="userspace-snapshot-diff-column">
         <div className="userspace-snapshot-diff-column-header">
           <span>{beforeLabel}</span>
           <code>{diff.before_path ?? diff.path}</code>
         </div>
-        <div className={`userspace-snapshot-diff-editor-wrap${compact ? ' userspace-snapshot-diff-editor-wrap-compact' : ''}`} ref={beforeWrapRef}>
+        <div
+          className={`userspace-snapshot-diff-editor-wrap${compact ? ' userspace-snapshot-diff-editor-wrap-compact' : ''}`}
+          ref={beforeWrapRef}
+          style={dualWrapStyle}
+        >
           <CodeMirror
             value={alignedDiff.beforeText}
             basicSetup={DIFF_CODEMIRROR_SETUP}
             editable={false}
             extensions={beforeExtensions}
-            height="100%"
+            height={dualAutoFitHeight}
           />
         </div>
       </div>
@@ -317,13 +357,17 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
           <span>{afterLabel}</span>
           <code>{diff.after_path ?? diff.path}</code>
         </div>
-        <div className={`userspace-snapshot-diff-editor-wrap${compact ? ' userspace-snapshot-diff-editor-wrap-compact' : ''}`} ref={afterWrapRef}>
+        <div
+          className={`userspace-snapshot-diff-editor-wrap${compact ? ' userspace-snapshot-diff-editor-wrap-compact' : ''}`}
+          ref={afterWrapRef}
+          style={dualWrapStyle}
+        >
           <CodeMirror
             value={alignedDiff.afterText}
             basicSetup={DIFF_CODEMIRROR_SETUP}
             editable={false}
             extensions={afterExtensions}
-            height="100%"
+            height={dualAutoFitHeight}
           />
         </div>
       </div>

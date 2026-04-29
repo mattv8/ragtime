@@ -93,6 +93,27 @@ USERSPACE_RESPONSE_BEHAVIOR_PROMPT = """
 """
 
 
+USERSPACE_BATCHED_TOOLS_PROMPT = """
+
+## BATCHED USER SPACE TOOLS
+
+The userspace file tools support batched inputs and per-file results.
+
+- When you already know multiple independent files to read or modify, prefer
+    one batched call over many sequential calls.
+- Batched reads are low-risk and usually preferred when you need context from
+    several files before deciding what to change.
+- Do not batch dependent write sequences where a later mutation needs the
+    result of an earlier write or patch.
+- Batched results can partially succeed. Inspect each entry in `files[]`, not
+    just the top-level summary.
+- If only some entries fail or persist with violations, fix those entries
+    rather than re-running the whole batch.
+- Use each tool's schema and description as the source of truth for the exact
+    batched input shape.
+"""
+
+
 def _compose_system_prompt(*sections: str) -> str:
     """Compose a system prompt from ordered sections."""
 
@@ -110,6 +131,7 @@ BASE_USERSPACE_SYSTEM_PROMPT = _compose_system_prompt(
     _COMMON_AGENT_INSTRUCTIONS_PROMPT,
     BASE_SYSTEM_PROMPT_COMMON,
     USERSPACE_RESPONSE_BEHAVIOR_PROMPT,
+    USERSPACE_BATCHED_TOOLS_PROMPT,
 )
 
 
@@ -143,6 +165,8 @@ _USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
 - Treat any tool result with rejected=true as a failed step and fix/retry.
 - Treat any tool result with retryable=false as a strategy failure: change approach before retrying the same call.
 - If a tool result includes next_best_tool, follow that recommendation unless new evidence changes the plan.
+- For batched userspace tool results, inspect each entry in `files[]`: a top-level success does not imply every entry persisted. Fix only the rejected/violating entries instead of resending the whole batch.
+- When you already know multiple files to read or write up-front, prefer a single batched call (paths/reads/files/patches/moves) over N sequential calls. Only split when later steps depend on earlier results.
 - If a tool result has persisted_with_violations=true, the file WAS saved but has contract issues:
     use patch_userspace_file to fix the specific violations listed in contract_violations
     (do NOT re-send the full file content).
