@@ -171,7 +171,7 @@ export const MemoizedMarkdown = memo(function MemoizedMarkdown({ content }: { co
 });
 
 // Tool call info for display during streaming
-interface ActiveToolCall {
+export interface ActiveToolCall {
   tool: string;
   input?: Record<string, unknown>;
   output?: string;
@@ -1232,6 +1232,7 @@ interface ToolCallDisplayProps {
   defaultExpanded?: boolean;
   conversationId?: string;
   workspaceId?: string;
+  allowRerun?: boolean;
   siblingEvents?: Array<{ type: string; tool?: string; output?: string }>;
   onRetrySuccess?: (newOutput: string) => void;
   onOpenWorkspaceFile?: (path: string) => void;
@@ -1365,11 +1366,12 @@ function parseTerminalOutput(output: string | undefined | null): ParsedTerminalO
   }
 }
 
-const ToolCallDisplay = memo(function ToolCallDisplay({
+export const ToolCallDisplay = memo(function ToolCallDisplay({
   toolCall,
   defaultExpanded = false,
   conversationId,
   workspaceId,
+  allowRerun = true,
   siblingEvents,
   onRetrySuccess,
   onOpenWorkspaceFile,
@@ -1396,7 +1398,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   const isTerminalCommand = isTerminalToolCall(toolCall) || Boolean(parsedTerminalOutput);
   const isSqlTool = isSqlToolCall(toolCall);
   const rerunKind = getTerminalRerunKind(toolCall);
-  const canRerun = canRerunToolCall(toolCall);
+  const canRerun = allowRerun && canRerunToolCall(toolCall);
   const hasRerunContext = rerunKind === USERSPACE_EXEC_RERUN_KIND
     ? Boolean(workspaceId)
     : rerunKind === CONVERSATION_TOOL_RERUN_KIND
@@ -2036,7 +2038,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </span>
         </button>
-        {isFailed && isVisualizationTool && !isRetrying && (
+        {allowRerun && isFailed && isVisualizationTool && !isRetrying && (
           <button
             type="button"
             className="tool-call-retry-btn"

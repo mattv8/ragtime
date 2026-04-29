@@ -3,11 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Info } from 'lucide-react';
 
 import { api } from '@/api';
-import type { AuthStatus, ChatTask, Conversation, PublicShareTargetResponse, SharedConversationResponse, User } from '@/types';
+import type { AuthStatus, Conversation, MessageEvent, PublicShareTargetResponse, SharedConversationResponse, User } from '@/types';
 import { formatChatTimestamp } from '@/utils';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
 
-import { LinkifiedText, MemoizedMarkdown, MessageAttachments, parseMessageContent } from './ChatPanel';
+import { LinkifiedText, MemoizedMarkdown, MessageAttachments, ToolCallDisplay, parseMessageContent, type ActiveToolCall } from './ChatPanel';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { LoginCard } from './LoginPage';
 import { Popover } from './Popover';
@@ -235,7 +235,6 @@ function SharedChatSurface({
   }, [attachments, messageDraft, ownerUsername, shareSlug, shareToken, submittedSharePassword]);
 
   const conversation: Conversation | null = sharedConversation?.conversation || null;
-  const activeTask: ChatTask | null = sharedConversation?.active_task || null;
   const canEdit = Boolean(sharedConversation?.can_edit);
   const ownerLabel = sharedConversation?.owner_display_name || sharedConversation?.owner_username || 'unknown';
 
@@ -249,31 +248,9 @@ function SharedChatSurface({
   // Server already pre-slices messages based on the share record's
   // scope_anchor_message_idx + scope_direction (the scope is bound to the share
   // link, not to URL params, so it can't be bypassed by clients).
-  const streamingMessage = useMemo<Conversation['messages'][number] | null>(() => {
-    if (!activeTask) return null;
-    if (activeTask.status !== 'pending' && activeTask.status !== 'running') {
-      return null;
-    }
-
-    const content = activeTask.streaming_state?.content ?? activeTask.response_content ?? '';
-    if (!content.trim()) {
-      return null;
-    }
-
-    return {
-      role: 'assistant',
-      content,
-      timestamp: activeTask.last_update_at,
-      events: activeTask.streaming_state?.events,
-      tool_calls: activeTask.streaming_state?.tool_calls,
-    };
-  }, [activeTask]);
-
   const visibleMessages = useMemo(
-    () => streamingMessage
-      ? [...(conversation?.messages || []), streamingMessage]
-      : (conversation?.messages || []),
-    [conversation?.messages, streamingMessage],
+    () => conversation?.messages || [],
+    [conversation?.messages],
   );
 
   const contextLimitForPie = sharedConversation?.context_limit && sharedConversation.context_limit > 0
@@ -296,10 +273,10 @@ function SharedChatSurface({
 
   // Auto-scroll to latest message
   useEffect(() => {
-    if (!loading && visibleMessages.length) {
+    if (!loading && conversation?.messages.length) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
-  }, [loading, visibleMessages.length, activeTask?.streaming_state?.content_length]);
+  }, [loading, conversation?.messages.length]);
 
   // Auto-resize textarea
   const handleTextareaInput = useCallback(() => {
@@ -464,6 +441,13 @@ function SharedChatSurface({
                   visibleMessages.map((msg, idx) => {
                     const { text, attachments } = parseMessageContent(msg.content);
                     const isUser = msg.role === 'user';
+                    const siblingEvents = msg.events?.map((event) => (
+                      event.type === 'tool'
+                        ? { type: 'tool', tool: event.tool, output: event.output }
+                        : { type: event.type }
+                    ));
+                    const fallbackToolCalls = (!msg.events || msg.events.length === 0) ? (msg.tool_calls ?? []) : [];
+
                     return (
                       <div
                         key={`shared-msg-${idx}-${msg.timestamp || idx}`}
@@ -481,9 +465,58 @@ function SharedChatSurface({
                                 )}
                               </>
                             ) : (
-                              <div className="chat-message-text markdown-content">
-                                <MemoizedMarkdown content={text} />
-                              </div>
+                              <>
+                                {msg.events && msg.events.length > 0 ? (
+                                  msg.events.map((event: MessageEvent, eventIdx: number) => {
+                                    if (event.type === 'tool') {
+                                      const toolCall: ActiveToolCall = {
+                                        tool: event.tool,
+                                        input: event.input,
+                                        output: event.output,
+                                        presentation: event.presentation,
+                                        connection: event.connection,
+                                        status: 'complete',
+                                      };
+                                      return (
+                                        <div key={`shared-tool-${idx}-${eventIdx}`} className="chat-tool-calls">
+                                          <ToolCallDisplay
+                                            toolCall={toolCall}
+                                            defaultExpanded={false}
+                                            siblingEvents={siblingEvents}
+                                            allowRerun={false}
+                                          />
+                                        </div>
+                                      );
+                                    }
+
+                                    if (event.type === 'content' || event.type === 'reasoning') {
+                                      return (
+                                        <div key={`shared-content-${idx}-${eventIdx}`} className="chat-message-text markdown-content">
+                                          <MemoizedMarkdown content={event.content} />
+                                        </div>
+                                      );
+                                    }
+
+                                    return null;
+                                  })
+                                ) : (
+                                  <div className="chat-message-text markdown-content">
+                                    <MemoizedMarkdown content={text} />
+                                  </div>
+                                )}
+                                {fallbackToolCalls.length > 0 && (
+                                  <div className="chat-tool-calls">
+                                    {fallbackToolCalls.map((toolCall, toolIdx) => (
+                                      <ToolCallDisplay
+                                        key={`shared-legacy-tool-${idx}-${toolIdx}`}
+                                        toolCall={{ ...toolCall, status: 'complete' }}
+                                        defaultExpanded={false}
+                                        allowRerun={false}
+                                      />
+                                    ))}
+                                  </div>
+                                )}
+                              </>
                             )}
                             <div className="chat-message-footer">
                               <span className="chat-message-time">
