@@ -177,16 +177,43 @@ const markdownComponents: Components = {
   pre: PreBlock,
 };
 
+// Some models emit display math glued to surrounding text, e.g.
+//   $$h(x,t) =
+//   \begin{cases} ...
+//   \end{cases}$$
+// remark-math wants the `$$` fences on their own lines. We only split when a
+// line contains exactly one `$$` (so an opener/closer of a multi-line block);
+// inline `$$x$$` pairs and lines inside fenced code blocks are left alone.
+function normalizeMarkdownMathFences(content: string): string {
+  let inFence = false;
+  return content
+    .split('\n')
+    .map((line) => {
+      if (/^\s*(```|~~~)/.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence) return line;
+      const count = (line.match(/\$\$/g) ?? []).length;
+      if (count !== 1) return line;
+      return line
+        .replace(/^(\s*)\$\$(\S.*)$/, '$1$$$$\n$1$2')
+        .replace(/^(.*\S)\$\$\s*$/, '$1\n$$$$');
+    })
+    .join('\n');
+}
+
 // Memoized markdown component to prevent re-parsing on every render
 // Only re-renders when content actually changes
 export const MemoizedMarkdown = memo(function MemoizedMarkdown({ content }: { content: string }) {
+  const normalized = useMemo(() => normalizeMarkdownMathFences(content), [content]);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
       components={markdownComponents}
     >
-      {content}
+      {normalized}
     </ReactMarkdown>
   );
 });
