@@ -26,6 +26,7 @@ import {
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 import { ContextUsagePie } from './shared/ContextUsagePie';
 import { FileDiffOverlay } from './shared/FileDiffOverlay';
+import type { FileDiffOverlayEntry } from './shared/FileDiffOverlay';
 import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
@@ -814,9 +815,11 @@ const DataTableDisplay = memo(function DataTableDisplay({ tableData }: { tableDa
 });
 
 interface ParsedUserSpaceWriteResult {
-  toolName: 'upsert_userspace_file' | 'patch_userspace_file';
+  toolName: 'upsert_userspace_file' | 'patch_userspace_file' | 'move_userspace_file' | 'delete_userspace_file';
+  op: 'upsert' | 'patch' | 'move' | 'delete';
   status: string;
   path: string;
+  oldPath: string | null;
   message: string;
   error: string | null;
   actionRequired: string | null;
@@ -828,7 +831,32 @@ interface ParsedUserSpaceWriteResult {
   details: string[];
 }
 
-const USERSPACE_WRITE_TOOL_NAMES = new Set(['upsert_userspace_file', 'patch_userspace_file']);
+interface ParsedUserSpaceWriteBatch {
+  toolName: 'upsert_userspace_file' | 'patch_userspace_file' | 'move_userspace_file' | 'delete_userspace_file';
+  isBatch: boolean;
+  // The "primary" entry, used for legacy single-file rendering paths.
+  // For a batched payload this is just the first entry; for a single-file
+  // payload this is the only entry.
+  primary: ParsedUserSpaceWriteResult;
+  entries: ParsedUserSpaceWriteResult[];
+  summary: {
+    total: number;
+    persisted: number;
+    rejected: number;
+    noChanges: number;
+    withViolations: number;
+  };
+  aggregateMessage: string;
+  aggregateStatus: string;
+}
+
+const USERSPACE_WRITE_TOOL_NAMES = new Set([
+  'upsert_userspace_file',
+  'patch_userspace_file',
+  'move_userspace_file',
+  'delete_userspace_file',
+]);
+const USERSPACE_DIFFABLE_TOOL_NAMES = new Set(['upsert_userspace_file', 'patch_userspace_file']);
 const USERSPACE_WRITE_DIFF_CACHE_MAX_ENTRIES = 100;
 
 interface ParsedUserSpaceReadResult {
@@ -1201,10 +1229,18 @@ function parseUserspaceWriteToolResult(toolName: string, output?: string | null)
   const path = parsed.path;
   if (!path) return null;
 
+  const op: 'upsert' | 'patch' | 'move' | 'delete' =
+    toolName === 'upsert_userspace_file' ? 'upsert'
+    : toolName === 'patch_userspace_file' ? 'patch'
+    : toolName === 'move_userspace_file' ? 'move'
+    : 'delete';
+
   return {
-    toolName: toolName as 'upsert_userspace_file' | 'patch_userspace_file',
+    toolName: toolName as ParsedUserSpaceWriteResult['toolName'],
+    op,
     status,
     path,
+    oldPath: null,
     message: parsed.message,
     error: parsed.error,
     actionRequired: parsed.actionRequired,
@@ -1214,6 +1250,138 @@ function parseUserspaceWriteToolResult(toolName: string, output?: string | null)
     noChanges: status === 'no_changes',
     file,
     details: parsed.details,
+  };
+}
+
+function entryStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+}
+
+function parseUserspaceWriteBatch(toolName: string, output?: string | null): ParsedUserSpaceWriteBatch | null {
+  if (!USERSPACE_WRITE_TOOL_NAMES.has(toolName)) return null;
+  if (!output) return null;
+
+  const opForTool: 'upsert' | 'patch' | 'move' | 'delete' =
+    toolName === 'upsert_userspace_file' ? 'upsert'
+    : toolName === 'patch_userspace_file' ? 'patch'
+    : toolName === 'move_userspace_file' ? 'move'
+    : 'delete';
+
+  // Try strict JSON parse first to detect a batched `files` collection.
+  let parsedJson: Record<string, unknown> | null = null;
+  try {
+    const candidate = JSON.parse(output);
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+      parsedJson = candidate as Record<string, unknown>;
+    }
+  } catch {
+    parsedJson = null;
+  }
+
+  const isBatch = Boolean(parsedJson && parsedJson.batch === true && Array.isArray(parsedJson.files));
+
+  if (!isBatch) {
+    const single = parseUserspaceWriteToolResult(toolName, output);
+    if (!single) return null;
+    return {
+      toolName: toolName as ParsedUserSpaceWriteBatch['toolName'],
+      isBatch: false,
+      primary: single,
+      entries: [single],
+      summary: {
+        total: 1,
+        persisted: single.persisted ? 1 : 0,
+        rejected: single.rejected ? 1 : 0,
+        noChanges: single.noChanges ? 1 : 0,
+        withViolations: 0,
+      },
+      aggregateMessage: single.message,
+      aggregateStatus: single.status,
+    };
+  }
+
+  const filesRaw = parsedJson!.files as unknown[];
+  const entries: ParsedUserSpaceWriteResult[] = [];
+  for (const item of filesRaw) {
+    if (!item || typeof item !== 'object') continue;
+    const e = item as Record<string, unknown>;
+    const entryOpRaw = typeof e.op === 'string' ? e.op : opForTool;
+    const entryOp: 'upsert' | 'patch' | 'move' | 'delete' =
+      entryOpRaw === 'upsert' || entryOpRaw === 'patch' || entryOpRaw === 'move' || entryOpRaw === 'delete'
+        ? entryOpRaw
+        : opForTool;
+    const entryStatus = typeof e.status === 'string' ? e.status : '';
+    const fileObj = e.file && typeof e.file === 'object' ? (e.file as Record<string, unknown>) : null;
+    const entryPath =
+      (typeof e.new_path === 'string' && e.new_path.trim()) ? (e.new_path as string).trim()
+      : (typeof e.path === 'string' && e.path.trim()) ? (e.path as string).trim()
+      : (typeof fileObj?.path === 'string' && (fileObj!.path as string).trim()) ? (fileObj!.path as string).trim()
+      : '';
+    if (!entryPath) continue;
+    const writeSig = typeof e.write_signature === 'string' && e.write_signature.trim() ? e.write_signature.trim() : null;
+    const fileForEntry: UserSpaceFile | null = fileObj && typeof fileObj.content === 'string'
+      ? {
+          path: typeof fileObj.path === 'string' && fileObj.path.trim() ? (fileObj.path as string).trim() : entryPath,
+          content: fileObj.content as string,
+          updated_at: writeSig || '',
+        } as UserSpaceFile
+      : null;
+    const entryToolName: ParsedUserSpaceWriteResult['toolName'] =
+      entryOp === 'upsert' ? 'upsert_userspace_file'
+      : entryOp === 'patch' ? 'patch_userspace_file'
+      : entryOp === 'move' ? 'move_userspace_file'
+      : 'delete_userspace_file';
+    entries.push({
+      toolName: entryToolName,
+      op: entryOp,
+      status: entryStatus,
+      path: entryPath,
+      oldPath: typeof e.old_path === 'string' && (e.old_path as string).trim() ? (e.old_path as string).trim() : null,
+      message: typeof e.message === 'string' ? (e.message as string).trim() : '',
+      error: typeof e.error === 'string' && (e.error as string).trim() ? (e.error as string).trim() : null,
+      actionRequired: typeof e.action_required === 'string' && (e.action_required as string).trim() ? (e.action_required as string).trim() : null,
+      writeSignature: writeSig,
+      persisted: e.persisted === true || entryStatus.startsWith('persisted'),
+      rejected: e.rejected === true || entryStatus.includes('rejected'),
+      noChanges: entryStatus === 'no_changes',
+      file: fileForEntry,
+      details: [
+        ...entryStringList(e.contract_violations),
+        ...entryStringList(e.warnings),
+      ],
+    });
+  }
+
+  if (entries.length === 0) return null;
+
+  const summarySrc = parsedJson!.summary && typeof parsedJson!.summary === 'object'
+    ? (parsedJson!.summary as Record<string, unknown>)
+    : {};
+  const numericOrCount = (key: string, fallback: () => number): number => {
+    const v = summarySrc[key];
+    return typeof v === 'number' ? v : fallback();
+  };
+
+  const summary = {
+    total: numericOrCount('total', () => entries.length),
+    persisted: numericOrCount('persisted', () => entries.filter((e) => e.persisted).length),
+    rejected: numericOrCount('rejected', () => entries.filter((e) => e.rejected).length),
+    noChanges: numericOrCount('no_changes', () => entries.filter((e) => e.noChanges).length),
+    withViolations: numericOrCount('with_violations', () => entries.filter((e) => e.status === 'persisted_with_violations').length),
+  };
+
+  const aggregateMessage = typeof parsedJson!.message === 'string' ? (parsedJson!.message as string) : '';
+  const aggregateStatus = typeof parsedJson!.status === 'string' ? (parsedJson!.status as string) : '';
+
+  return {
+    toolName: toolName as ParsedUserSpaceWriteBatch['toolName'],
+    isBatch: true,
+    primary: entries[0],
+    entries,
+    summary,
+    aggregateMessage,
+    aggregateStatus,
   };
 }
 
@@ -1432,11 +1600,15 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const [retryError, setRetryError] = useState<string | null>(null);
   const [isRerunning, setIsRerunning] = useState(false);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
-  const [userspaceFileDiff, setUserspaceFileDiff] = useState<UserSpaceSnapshotFileDiff | null>(null);
-  const [userspaceFileDiffError, setUserspaceFileDiffError] = useState<string | null>(null);
-  const [userspaceFileDiffLoading, setUserspaceFileDiffLoading] = useState(false);
-  const [userspaceFileDiffKey, setUserspaceFileDiffKey] = useState<string | null>(null);
+  // Per-entry diff state keyed by snapshot+path+writeSignature so a batched
+  // tool call can load each file's diff independently and a partial failure
+  // does not blank the entire card.
+  const [userspaceDiffMap, setUserspaceDiffMap] = useState<Map<string, UserSpaceSnapshotFileDiff>>(() => new Map());
+  const [userspaceDiffLoadingMap, setUserspaceDiffLoadingMap] = useState<Map<string, boolean>>(() => new Map());
+  const [userspaceDiffErrorMap, setUserspaceDiffErrorMap] = useState<Map<string, string>>(() => new Map());
+  const [userspaceCurrentSnapshotId, setUserspaceCurrentSnapshotId] = useState<string | null>(null);
   const [showUserspaceDiffOverlay, setShowUserspaceDiffOverlay] = useState(false);
+  const [userspaceOverlayActiveIndex, setUserspaceOverlayActiveIndex] = useState<number>(0);
   const latestOutput = retryOutput || toolCall.output;
   const activeOutput = isRerunning ? retryOutput : latestOutput;
   const parsedTerminalOutput = useMemo(() => parseTerminalOutput(latestOutput), [latestOutput]);
@@ -1498,32 +1670,75 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   // Effective output (use retry output if available)
   const effectiveOutput = activeOutput || '';
 
-  const userspaceWriteResult = useMemo(() => {
+  const userspaceWriteBatch = useMemo(() => {
     if (hasErrorInOutput) {
-      return parseUserspaceWriteToolResult(toolCall.tool, toolCall.output);
+      return parseUserspaceWriteBatch(toolCall.tool, toolCall.output);
     }
-    return parseUserspaceWriteToolResult(toolCall.tool, effectiveOutput);
+    return parseUserspaceWriteBatch(toolCall.tool, effectiveOutput);
   }, [effectiveOutput, hasErrorInOutput, toolCall.output, toolCall.tool]);
 
-  const userspaceDiffReady = Boolean(
-    userspaceWriteResult
-    && userspaceWriteResult.persisted
-    && !userspaceWriteResult.rejected
-    && !userspaceWriteResult.noChanges
-    && workspaceId,
-  );
+  // Legacy single-result alias for the (still single-file) read/render
+  // paths. The full batched entries list is available on userspaceWriteBatch.
+  const userspaceWriteResult = userspaceWriteBatch?.primary ?? null;
+
+  // Only diffable ops (upsert/patch) drive the diff loader. Move/delete
+  // entries are rendered as path rows without diff fetches.
+  const diffableEntries = useMemo<ParsedUserSpaceWriteResult[]>(() => {
+    if (!userspaceWriteBatch || !workspaceId) return [];
+    return userspaceWriteBatch.entries.filter(
+      (entry) =>
+        USERSPACE_DIFFABLE_TOOL_NAMES.has(entry.toolName)
+        && entry.persisted
+        && !entry.rejected
+        && !entry.noChanges,
+    );
+  }, [userspaceWriteBatch, workspaceId]);
 
   useEffect(() => {
-    if (!expanded || !userspaceDiffReady || !workspaceId || !userspaceWriteResult) {
+    if (!expanded || !workspaceId || diffableEntries.length === 0) {
       return;
     }
 
     let cancelled = false;
 
-    const loadDiff = async () => {
-      setUserspaceFileDiffError(null);
-      setUserspaceFileDiffLoading(true);
+    const loadOne = async (
+      snapshotId: string,
+      entry: ParsedUserSpaceWriteResult,
+      cacheKey: string,
+    ): Promise<UserSpaceSnapshotFileDiff> => {
+      const cached = userspaceWriteDiffCache.get(cacheKey);
+      if (cached) return cached;
 
+      let finalDiff: UserSpaceSnapshotFileDiff;
+      try {
+        const baselineDiff = await api.getUserSpaceSnapshotFileDiff(workspaceId, snapshotId, entry.path);
+        finalDiff = entry.file?.content != null
+          ? mergeUserspaceWriteDiff(baselineDiff, entry)
+          : baselineDiff;
+      } catch {
+        const currentFile = await api.getUserSpaceFile(workspaceId, entry.path);
+        const afterContent = entry.file?.content ?? currentFile.content ?? '';
+        const lines = afterContent.split('\n').length;
+        finalDiff = {
+          workspace_id: workspaceId,
+          snapshot_id: snapshotId,
+          path: entry.path,
+          status: 'A',
+          before_content: '',
+          after_content: afterContent,
+          additions: lines,
+          deletions: 0,
+          is_binary: false,
+          is_deleted_in_current: false,
+          is_untracked_in_current: false,
+        };
+      }
+      userspaceWriteDiffCache.set(cacheKey, finalDiff);
+      trimUserspaceWriteDiffCache();
+      return finalDiff;
+    };
+
+    const loadAll = async () => {
       try {
         const timeline = await api.getUserSpaceSnapshotTimeline(workspaceId);
         const snapshotId = timeline.current_snapshot_id ?? null;
@@ -1531,78 +1746,87 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           throw new Error('No snapshot baseline is available for this workspace yet.');
         }
 
-        const cacheKey = buildUserspaceToolDiffCacheKey(snapshotId, userspaceWriteResult);
         if (!cancelled) {
-          setUserspaceFileDiffKey(cacheKey);
+          setUserspaceCurrentSnapshotId(snapshotId);
         }
 
-        const cached = userspaceWriteDiffCache.get(cacheKey);
-        if (cached) {
-          if (!cancelled) {
-            setUserspaceFileDiff(cached);
-            setUserspaceFileDiffLoading(false);
+        // Mark all entries loading up-front so the UI shows progress for
+        // each card even before its individual fetch completes.
+        if (!cancelled) {
+          setUserspaceDiffLoadingMap(() => {
+            const next = new Map<string, boolean>();
+            for (const entry of diffableEntries) {
+              next.set(buildUserspaceToolDiffCacheKey(snapshotId, entry), true);
+            }
+            return next;
+          });
+          setUserspaceDiffErrorMap(() => new Map());
+        }
+
+        // Capped concurrency: process entries in small parallel batches
+        // so a 20-file batched call does not flood the snapshot API.
+        const concurrency = 4;
+        const queue = [...diffableEntries];
+        const runners: Promise<void>[] = [];
+        const runOne = async () => {
+          while (queue.length > 0) {
+            const entry = queue.shift();
+            if (!entry) break;
+            const cacheKey = buildUserspaceToolDiffCacheKey(snapshotId, entry);
+            try {
+              const diff = await loadOne(snapshotId, entry, cacheKey);
+              if (cancelled) return;
+              setUserspaceDiffMap((prev) => {
+                const next = new Map(prev);
+                next.set(cacheKey, diff);
+                return next;
+              });
+            } catch (err) {
+              if (cancelled) return;
+              const message = err instanceof Error ? err.message : 'Failed to load file diff';
+              setUserspaceDiffErrorMap((prev) => {
+                const next = new Map(prev);
+                next.set(cacheKey, message);
+                return next;
+              });
+            } finally {
+              if (!cancelled) {
+                setUserspaceDiffLoadingMap((prev) => {
+                  const next = new Map(prev);
+                  next.delete(cacheKey);
+                  return next;
+                });
+              }
+            }
           }
-          return;
+        };
+        for (let i = 0; i < Math.min(concurrency, diffableEntries.length); i += 1) {
+          runners.push(runOne());
         }
-
-        let finalDiff: UserSpaceSnapshotFileDiff;
-        try {
-          const baselineDiff = await api.getUserSpaceSnapshotFileDiff(workspaceId, snapshotId, userspaceWriteResult.path);
-          // When the tool payload includes file.content, merge it as the
-          // stable "after" side so historical diffs stay accurate even if
-          // the file was edited after this tool call. When file.content is
-          // missing (stripped/truncated events), fall back to the snapshot
-          // API diff which shows snapshot → current workspace state.
-          finalDiff = userspaceWriteResult.file?.content != null
-            ? mergeUserspaceWriteDiff(baselineDiff, userspaceWriteResult)
-            : baselineDiff;
-        } catch {
-          // Snapshot diff returned 404 — the file has no changes relative
-          // to the current snapshot (typically because a snapshot was
-          // created after this tool write captured the change). Fall back
-          // to reading the current file content and showing it as an
-          // "added" diff so the card isn't blank.
-          const currentFile = await api.getUserSpaceFile(workspaceId, userspaceWriteResult.path);
-          const afterContent = userspaceWriteResult.file?.content ?? currentFile.content ?? '';
-          const lines = afterContent.split('\n').length;
-          finalDiff = {
-            workspace_id: workspaceId,
-            snapshot_id: snapshotId,
-            path: userspaceWriteResult.path,
-            status: 'A',
-            before_content: '',
-            after_content: afterContent,
-            additions: lines,
-            deletions: 0,
-            is_binary: false,
-            is_deleted_in_current: false,
-            is_untracked_in_current: false,
-          };
-        }
-        userspaceWriteDiffCache.set(cacheKey, finalDiff);
-        trimUserspaceWriteDiffCache();
-
-        if (!cancelled) {
-          setUserspaceFileDiff(finalDiff);
-        }
+        await Promise.all(runners);
       } catch (err) {
-        if (!cancelled) {
-          setUserspaceFileDiff(null);
-          setUserspaceFileDiffError(err instanceof Error ? err.message : 'Failed to load file diff');
-        }
-      } finally {
-        if (!cancelled) {
-          setUserspaceFileDiffLoading(false);
-        }
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : 'Failed to load file diffs';
+        // Mark every entry errored so cards show the reason.
+        setUserspaceDiffLoadingMap(() => new Map());
+        setUserspaceDiffErrorMap(() => {
+          const next = new Map<string, string>();
+          for (const entry of diffableEntries) {
+            // Without a snapshot id we can't form the canonical key, so
+            // use the path as a fallback identifier.
+            next.set(`__error__:${entry.path}`, message);
+          }
+          return next;
+        });
       }
     };
 
-    void loadDiff();
+    void loadAll();
 
     return () => {
       cancelled = true;
     };
-  }, [expanded, userspaceDiffReady, workspaceId, userspaceWriteResult]);
+  }, [expanded, workspaceId, diffableEntries]);
 
   const userspaceReadResult = useMemo(() => {
     if (toolCall.tool !== 'read_userspace_file') return null;
@@ -1895,7 +2119,45 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const statusIcon = getStatusIcon();
   const toolIcon = getToolIcon();
   const userspaceWriteSummary = userspaceWriteResult ? formatUserspaceWriteSummary(userspaceWriteResult) : '';
-  const userspaceDiffStatus = userspaceFileDiff ? formatDiffStatus(userspaceFileDiff.status) : null;
+
+  // Helper to look up an entry's diff/loading/error from the per-entry maps.
+  const getEntryDiffState = (entry: ParsedUserSpaceWriteResult) => {
+    if (!userspaceCurrentSnapshotId) {
+      return {
+        cacheKey: '',
+        diff: null as UserSpaceSnapshotFileDiff | null,
+        loading: false,
+        error: userspaceDiffErrorMap.get(`__error__:${entry.path}`) ?? null,
+      };
+    }
+    const cacheKey = buildUserspaceToolDiffCacheKey(userspaceCurrentSnapshotId, entry);
+    return {
+      cacheKey,
+      diff: userspaceDiffMap.get(cacheKey) ?? null,
+      loading: Boolean(userspaceDiffLoadingMap.get(cacheKey)),
+      error: userspaceDiffErrorMap.get(cacheKey) ?? userspaceDiffErrorMap.get(`__error__:${entry.path}`) ?? null,
+    };
+  };
+
+  // Build the list of overlay entries (in entry order) for the batched
+  // FileDiffOverlay. Non-diffable ops still appear in the nav so the
+  // overlay reflects the full batch.
+  const userspaceOverlayEntries = useMemo<FileDiffOverlayEntry[]>(() => {
+    if (!userspaceWriteBatch) return [];
+    return userspaceWriteBatch.entries.map((entry, index) => {
+      const state = getEntryDiffState(entry);
+      return {
+        key: `${entry.op}:${entry.path}:${entry.writeSignature ?? index}`,
+        path: entry.path,
+        op: entry.op,
+        diff: state.diff,
+        loading: state.loading,
+        error: state.error,
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userspaceWriteBatch, userspaceDiffMap, userspaceDiffLoadingMap, userspaceDiffErrorMap, userspaceCurrentSnapshotId]);
+
   const userspaceReadRangeSummary = userspaceReadResult
     ? (() => {
         const { startLine, endLine, totalLines } = userspaceReadResult;
@@ -1909,82 +2171,144 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       })()
     : null;
 
+  const openUserspaceOverlayAt = (index: number) => {
+    setUserspaceOverlayActiveIndex(index);
+    setShowUserspaceDiffOverlay(true);
+  };
+
+  const renderUserspaceWriteEntry = (
+    entry: ParsedUserSpaceWriteResult,
+    index: number,
+    options: { showSummaryFallback: boolean },
+  ): ReactNode => {
+    const { diff, loading, error } = getEntryDiffState(entry);
+    const isDiffable = USERSPACE_DIFFABLE_TOOL_NAMES.has(entry.toolName) || entry.op === 'upsert' || entry.op === 'patch';
+    const showDiffCard = isDiffable && !loading && Boolean(diff);
+    const fallbackText = entry.error
+      ? entry.error
+      : entry.message
+        ? entry.message
+        : (options.showSummaryFallback ? (userspaceWriteSummary || displayText || (toolCall.output ?? '')) : '');
+    const statusGlyph = entry.op === 'delete'
+      ? 'D'
+      : entry.op === 'move'
+        ? 'R'
+        : (diff?.status ?? (entry.rejected ? 'X' : 'M'));
+
+    return (
+      <div className="tool-call-section" key={`${entry.op}:${entry.path}:${index}`}>
+        <div className="tool-call-section-header">
+          <span className="tool-call-section-label">
+            {entry.op === 'upsert' && 'Upsert'}
+            {entry.op === 'patch' && 'Patch'}
+            {entry.op === 'move' && 'Move'}
+            {entry.op === 'delete' && 'Delete'}
+            {':'}
+          </span>
+          {showDiffCard ? (
+            <button
+              type="button"
+              className="tool-call-retry-btn"
+              onClick={() => openUserspaceOverlayAt(index)}
+              title="Open full diff"
+            >
+              <Diff size={12} />
+              <span>Full Diff</span>
+            </button>
+          ) : (
+            <button
+              className="tool-call-copy-btn"
+              onClick={() => copyToClipboard(fallbackText || entry.path, 'result')}
+              title="Copy result"
+            >
+              {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+            </button>
+          )}
+        </div>
+        <div className="tool-call-userspace-write-summary">
+          <div className="tool-call-userspace-write-summary-row">
+            {onOpenWorkspaceFile ? (
+              <button
+                className="tool-call-userspace-write-path tool-call-userspace-write-path-link"
+                title={entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path}
+                onClick={() => onOpenWorkspaceFile(entry.path)}
+              >
+                {entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path}
+              </button>
+            ) : (
+              <span
+                className="tool-call-userspace-write-path"
+                title={entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path}
+              >
+                {entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path}
+              </span>
+            )}
+            <span className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${String(statusGlyph).toLowerCase()}`}>
+              {statusGlyph}
+            </span>
+          </div>
+          <div className="tool-call-userspace-write-meta">
+            {(diff ? formatDiffStatus(diff.status) : null) || entry.message || (entry.rejected ? 'Rejected' : entry.noChanges ? 'No changes' : 'Updated')}
+            {diff ? ` | +${diff.additions} -${diff.deletions}` : ''}
+          </div>
+        </div>
+        {loading && (
+          <div className="tool-call-userspace-diff-loading">
+            <MiniLoadingSpinner variant="icon" size={14} />
+            <span>Loading diff from current snapshot...</span>
+          </div>
+        )}
+        {!loading && !diff && fallbackText && (
+          <pre className="tool-call-code">{fallbackText}</pre>
+        )}
+        {error && (
+          <div className="tool-call-userspace-diff-error">{error}</div>
+        )}
+        {showDiffCard && diff && (
+          <div className="tool-call-userspace-diff-card">
+            <UserSpaceFileDiffView
+              diff={diff}
+              beforeLabel="Last Snapshot"
+              afterLabel="Tool Result"
+              compact
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderUserspaceResultBody = (): ReactNode => {
     switch (toolCall.tool) {
       case 'upsert_userspace_file':
-      case 'patch_userspace_file': {
-        if (!userspaceWriteResult) return null;
+      case 'patch_userspace_file':
+      case 'move_userspace_file':
+      case 'delete_userspace_file': {
+        if (!userspaceWriteBatch || !userspaceWriteResult) return null;
+        const { entries, isBatch, summary, aggregateMessage } = userspaceWriteBatch;
+
+        if (!isBatch) {
+          return renderUserspaceWriteEntry(entries[0], 0, { showSummaryFallback: true });
+        }
 
         return (
           <>
             <div className="tool-call-section">
               <div className="tool-call-section-header">
-                <span className="tool-call-section-label">Result:</span>
-                {userspaceFileDiff ? (
-                  <button
-                    type="button"
-                    className="tool-call-retry-btn"
-                    onClick={() => setShowUserspaceDiffOverlay(true)}
-                    title="Open full diff"
-                  >
-                    <Diff size={12} />
-                    <span>Full Diff</span>
-                  </button>
-                ) : (
-                  <button
-                    className="tool-call-copy-btn"
-                    onClick={() => copyToClipboard(userspaceWriteSummary || displayText || toolCall.output!, 'result')}
-                    title="Copy result"
-                  >
-                    {copiedResult ? <Check size={12} /> : <Copy size={12} />}
-                  </button>
-                )}
+                <span className="tool-call-section-label">Batched result:</span>
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={() => copyToClipboard(aggregateMessage || displayText || (toolCall.output ?? ''), 'result')}
+                  title="Copy summary"
+                >
+                  {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                </button>
               </div>
-              <div className="tool-call-userspace-write-summary">
-                <div className="tool-call-userspace-write-summary-row">
-                  {onOpenWorkspaceFile ? (
-                    <button
-                      className="tool-call-userspace-write-path tool-call-userspace-write-path-link"
-                      title={userspaceWriteResult.path}
-                      onClick={() => onOpenWorkspaceFile(userspaceWriteResult.path)}
-                    >
-                      {userspaceWriteResult.path}
-                    </button>
-                  ) : (
-                    <span className="tool-call-userspace-write-path" title={userspaceWriteResult.path}>{userspaceWriteResult.path}</span>
-                  )}
-                  <span className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${(userspaceFileDiff?.status ?? 'm').toLowerCase()}`}>
-                    {userspaceFileDiff?.status ?? 'M'}
-                  </span>
-                </div>
-                <div className="tool-call-userspace-write-meta">
-                  {userspaceDiffStatus || userspaceWriteResult.message || 'Updated'}
-                  {userspaceFileDiff ? ` | +${userspaceFileDiff.additions} -${userspaceFileDiff.deletions}` : ''}
-                </div>
+              <div className="tool-call-userspace-write-meta">
+                {aggregateMessage || `Batched ${userspaceWriteBatch.toolName} across ${summary.total} file(s).`}
               </div>
-              {userspaceFileDiffLoading && (
-                <div className="tool-call-userspace-diff-loading">
-                  <MiniLoadingSpinner variant="icon" size={14} />
-                  <span>Loading diff from current snapshot...</span>
-                </div>
-              )}
-              {!userspaceFileDiffLoading && !userspaceFileDiff && (
-                <pre className="tool-call-code">{userspaceWriteSummary || displayText || toolCall.output}</pre>
-              )}
-              {userspaceFileDiffError && (
-                <div className="tool-call-userspace-diff-error">{userspaceFileDiffError}</div>
-              )}
             </div>
-            {!userspaceFileDiffLoading && userspaceFileDiff && (
-              <div className="tool-call-userspace-diff-card">
-                <UserSpaceFileDiffView
-                  diff={userspaceFileDiff}
-                  beforeLabel="Last Snapshot"
-                  afterLabel="Tool Result"
-                  compact
-                />
-              </div>
-            )}
+            {entries.map((entry, index) => renderUserspaceWriteEntry(entry, index, { showSummaryFallback: false }))}
           </>
         );
       }
@@ -2284,13 +2608,12 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         </div>
       </div>
     )}
-    {showUserspaceDiffOverlay && (
+    {showUserspaceDiffOverlay && userspaceWriteBatch && (
       <FileDiffOverlay
-        key={userspaceFileDiffKey ?? 'userspace-file-diff-overlay'}
-        diff={userspaceFileDiff}
-        loading={userspaceFileDiffLoading}
-        error={userspaceFileDiffError}
-        title="Userspace File Diff"
+        key="userspace-file-diff-overlay"
+        entries={userspaceOverlayEntries}
+        activeIndex={userspaceOverlayActiveIndex}
+        title={userspaceWriteBatch.isBatch ? 'Userspace Batch Diff' : 'Userspace File Diff'}
         beforeLabel="Last Snapshot"
         afterLabel="Tool Result"
         onDismiss={() => setShowUserspaceDiffOverlay(false)}
@@ -2848,6 +3171,10 @@ export function ChatPanel({
   const [isManualResize, setIsManualResize] = useState(false);
   const [autoResizeState, setAutoResizeState] = useState<'growing' | 'shrinking' | null>(null);
   const [editingTitle, setEditingTitle] = useState<string | null>(null);
+  // Separate state for the chat-header rename input so its `autoFocus` does not
+  // steal focus from the sidebar rename input when both would otherwise mount
+  // simultaneously for the active conversation.
+  const [editingHeaderTitle, setEditingHeaderTitle] = useState<string | null>(null);
   const [titleInput, setTitleInput] = useState('');
   const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
   const [editMessageContent, setEditMessageContent] = useState('');
@@ -4854,6 +5181,7 @@ export function ChatPanel({
   const saveTitle = async (conversationId: string) => {
     if (!titleInput.trim()) {
       setEditingTitle(null);
+      setEditingHeaderTitle(null);
       return;
     }
 
@@ -4864,6 +5192,7 @@ export function ChatPanel({
         setActiveConversation(updated);
       }
       setEditingTitle(null);
+      setEditingHeaderTitle(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update title');
     }
@@ -5596,7 +5925,7 @@ export function ChatPanel({
     return (
       <div
         key={conv.id}
-        className={`chat-conversation-item ${isActive ? 'active' : ''}`}
+        className={`chat-conversation-item ${isActive ? 'active' : ''}${editingTitle === conv.id ? ' is-renaming' : ''}`}
         onClick={() => selectConversation(conv)}
       >
         {editingTitle === conv.id ? (
@@ -5628,6 +5957,7 @@ export function ChatPanel({
             </div>
           </>
         )}
+        {editingTitle !== conv.id && (
         <div className="chat-conversation-actions">
           {deleteConfirmId === conv.id ? (
             <>
@@ -5668,6 +5998,7 @@ export function ChatPanel({
             </>
           )}
         </div>
+        )}
       </div>
     );
   };
@@ -5982,7 +6313,7 @@ export function ChatPanel({
                   </div>
                 ) : (
                   <div className="chat-header-title-row">
-                    {editingTitle === activeConversation.id ? (
+                    {editingHeaderTitle === activeConversation.id ? (
                       <input
                         type="text"
                         value={titleInput}
@@ -5990,7 +6321,7 @@ export function ChatPanel({
                         onBlur={() => saveTitle(activeConversation.id)}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') void saveTitle(activeConversation.id);
-                          if (e.key === 'Escape') setEditingTitle(null);
+                          if (e.key === 'Escape') setEditingHeaderTitle(null);
                         }}
                         autoFocus
                         className="chat-title-input chat-header-title-input"
@@ -6001,7 +6332,7 @@ export function ChatPanel({
                         <button
                           className="chat-header-title-edit-btn"
                           onClick={() => {
-                            setEditingTitle(activeConversation.id);
+                            setEditingHeaderTitle(activeConversation.id);
                             setTitleInput(activeConversation.title);
                           }}
                           title="Rename"

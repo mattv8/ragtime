@@ -141,6 +141,13 @@
   margin-bottom: 1px;
   position: relative;
 }
+.chat-conversation-item.is-renaming {
+  padding-right: 10px;
+  /* Preserve the normal title+meta row height so layout doesn't shift */
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+}
 .chat-conversation-item:hover {
   background: var(--color-surface-hover);
 }
@@ -208,14 +215,17 @@
   color: var(--color-error);
   opacity: 1;
 }
-.chat-title-input {
+/* input.chat-title-input — specificity (0,1,1) beats the global input[type="text"] rule */
+input.chat-title-input {
   width: 100%;
-  padding: 3px 8px;
+  padding: 2px 6px;
   background: var(--color-input-bg);
   border: 1px solid var(--color-primary);
   border-radius: var(--radius-sm);
   color: var(--color-text-primary);
   font-size: var(--text-xs);
+  line-height: 1.3;
+  box-sizing: border-box;
 }
 .chat-workspace-conversation-dropdown .model-selector-item {
   padding: 6px 10px;
@@ -495,7 +505,18 @@
   background: var(--color-surface-active);
   color: var(--color-text-primary);
 }
-.chat-header-title-input {
+/* input.chat-header-title-input — specificity (0,1,1) beats the global input[type="text"] rule */
+input.chat-header-title-input {
+  /* Pin to the same rendered height as the h2 it replaces (18px font × 1.5 = 27px) */
+  height: 27px;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: 27px;
+  padding-top: 0;
+  padding-bottom: 0;
+  padding-left: 4px;
+  padding-right: 4px;
+  box-sizing: border-box;
   max-width: min(520px, 100%);
 }
 .chat-header-shared .chat-header-info {
