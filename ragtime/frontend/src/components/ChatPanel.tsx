@@ -8,7 +8,7 @@ import 'katex/dist/katex.min.css';
 import { diffLines } from 'diff';
 import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2 } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchPointInfo } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -37,6 +37,27 @@ interface CodeBlockProps {
   inline?: boolean;
   className?: string;
   children?: ReactNode | ReactNode[];
+}
+
+interface BranchRenderGroup {
+  anchorIndex: number;
+  selectionKey: string;
+  sourceBranchPointIndex: number;
+  branches: ConversationBranchSummary[];
+}
+
+function getConversationBranchAnchorIndex(
+  branchPointIndex: number,
+  branchKind: ConversationBranchKind | null | undefined,
+  messageCount: number,
+): number {
+  if (messageCount <= 0) return 0;
+  const target = branchKind === 'delete' ? branchPointIndex - 1 : branchPointIndex;
+  return Math.max(0, Math.min(target, messageCount - 1));
+}
+
+function getConversationBranchSelectionKey(branchPointIndex: number, anchorIndex: number): string {
+  return `${branchPointIndex}:${anchorIndex}`;
 }
 
 // Renders markdown code blocks with inset styling and copy support
@@ -2783,51 +2804,48 @@ export function ChatPanel({
   // Chat branching state
   const [branchPoints, setBranchPoints] = useState<ConversationBranchPointInfo[]>([]);
   const [branchSwitching, setBranchSwitching] = useState(false);
-  const [branchSelections, setBranchSelections] = useState<Record<number, string>>({});
-  // Sticky per-branch-point anchor override. Populated at branch creation
-  // time so the X/N nav row depends on the operation that created it:
-  //   - Delete  → bp - 1   (msg[bp] is gone from live; controls sit on the
-  //                         last surviving row before the fork)
-  //   - Edit    → bp       (msg[bp] is the edited user message; controls
-  //                         sit on it directly)
-  //   - Replay  → bp       (msg[bp] is the user message being replayed)
-  // The override survives branch switches so the nav row stays put when
-  // toggling between the live and restored views of the same branch.
-  const [branchAnchorOverrides, setBranchAnchorOverrides] = useState<Record<number, number>>({});
+  const [branchSelections, setBranchSelections] = useState<Record<string, string>>({});
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
   const activeConversationId = activeConversation?.id ?? null;
-  const branchPointsByIndex = useMemo(() => {
-    // Anchor each branch on the row indicated by branchAnchorOverrides if
-    // present (set at creation time per operation), otherwise default to
-    // the branch_point_index itself (correct for edit/replay, where
-    // msg[bp] is the head of the new branch). For delete-style branches
-    // loaded fresh without an override (e.g. after page reload), the
-    // inference effect below populates the override to bp - 1 once the
-    // live state shows the bp index has been truncated away.
-    const messages = activeConversation?.messages ?? [];
-    const messageCount = messages.length;
-    const findAnchorIdx = (bp: number): number => {
-      if (messageCount === 0) return 0;
-      const override = branchAnchorOverrides[bp];
-      const target = override !== undefined ? override : bp;
-      return Math.max(0, Math.min(target, messageCount - 1));
-    };
-    const merged = new Map<number, ConversationBranchPointInfo>();
+  const branchGroupsByIndex = useMemo(() => {
+    const messageCount = activeConversation?.messages.length ?? 0;
+    const grouped = new Map<number, BranchRenderGroup[]>();
+
     for (const point of branchPoints) {
-      const anchor = findAnchorIdx(point.branch_point_index);
-      const existing = merged.get(anchor);
-      if (existing) {
-        merged.set(anchor, {
-          ...existing,
-          branches: [...existing.branches, ...point.branches],
+      const groupsForPoint = new Map<number, ConversationBranchSummary[]>();
+      for (const branch of point.branches) {
+        const anchorIndex = getConversationBranchAnchorIndex(
+          point.branch_point_index,
+          branch.branch_kind,
+          messageCount,
+        );
+        const existing = groupsForPoint.get(anchorIndex);
+        if (existing) {
+          existing.push(branch);
+        } else {
+          groupsForPoint.set(anchorIndex, [branch]);
+        }
+      }
+
+      for (const [anchorIndex, branches] of groupsForPoint.entries()) {
+        const next = grouped.get(anchorIndex) ?? [];
+        next.push({
+          anchorIndex,
+          selectionKey: getConversationBranchSelectionKey(point.branch_point_index, anchorIndex),
+          sourceBranchPointIndex: point.branch_point_index,
+          branches,
         });
-      } else {
-        merged.set(anchor, { ...point, branch_point_index: anchor });
+        grouped.set(anchorIndex, next);
       }
     }
-    return merged;
-  }, [branchPoints, activeConversation?.messages, branchAnchorOverrides]);
+
+    for (const groups of grouped.values()) {
+      groups.sort((left, right) => left.sourceBranchPointIndex - right.sourceBranchPointIndex);
+    }
+
+    return grouped;
+  }, [branchPoints, activeConversation?.messages.length]);
   const branchesById = useMemo(
     () => new Map(branchPoints.flatMap((point) => point.branches.map((branch) => [branch.id, branch] as const))),
     [branchPoints],
@@ -3997,37 +4015,8 @@ export function ChatPanel({
   useEffect(() => {
     setBranchPoints([]);
     setBranchSelections({});
-    setBranchAnchorOverrides({});
     setCopiedMessageIdx(null);
   }, [activeConversationId]);
-
-  // Inference fallback for branches loaded without a creation-time anchor
-  // override (e.g. after page reload). When the live conversation has been
-  // truncated such that bp is past the last message AND no active branch
-  // restored the tail, the branch must be delete-style; pin its anchor at
-  // bp - 1 so the X/N nav stays put when the user later switches into the
-  // restored view.
-  useEffect(() => {
-    if (!activeConversation) return;
-    const liveLen = activeConversation.messages.length;
-    const activeBranchId = activeConversation.active_branch_id ?? null;
-    setBranchAnchorOverrides((prev) => {
-      let next = prev;
-      for (const point of branchPoints) {
-        const bp = point.branch_point_index;
-        if (next[bp] !== undefined) continue;
-        const isAnchorMissingFromLive = liveLen <= bp;
-        const isOnRestoredViewForThisBp = activeBranchId
-          ? point.branches.some((b) => b.id === activeBranchId)
-          : false;
-        if (isAnchorMissingFromLive && !isOnRestoredViewForThisBp) {
-          if (next === prev) next = { ...prev };
-          next[bp] = Math.max(0, bp - 1);
-        }
-      }
-      return next;
-    });
-  }, [branchPoints, activeConversation?.messages?.length, activeConversation?.active_branch_id]);
 
   const fetchAvailableTools = useCallback(async () => {
     try {
@@ -5104,6 +5093,7 @@ export function ChatPanel({
     conversationId: string,
     branchPointIndex: number,
     messageCount: number,
+    branchKind: ConversationBranchKind,
   ) => {
     if (branchPointIndex < 0 || branchPointIndex >= messageCount) {
       return;
@@ -5111,12 +5101,22 @@ export function ChatPanel({
 
     const createdBranch = await api.createConversationBranch(
       conversationId,
-      { from_message_index: branchPointIndex, auto_snapshot: Boolean(workspaceId) },
+      {
+        from_message_index: branchPointIndex,
+        branch_kind: branchKind,
+        auto_snapshot: Boolean(workspaceId),
+      },
       workspaceId,
     );
 
     if (createdBranch.parent_branch_id) {
-      setBranchSelections((prev) => ({ ...prev, [branchPointIndex]: createdBranch.parent_branch_id! }));
+      const anchorIndex = getConversationBranchAnchorIndex(
+        branchPointIndex,
+        createdBranch.branch_kind ?? branchKind,
+        messageCount,
+      );
+      const selectionKey = getConversationBranchSelectionKey(branchPointIndex, anchorIndex);
+      setBranchSelections((prev) => ({ ...prev, [selectionKey]: createdBranch.parent_branch_id! }));
     }
 
     // Inject the newly created branch into UI state using the actual server
@@ -5211,7 +5211,13 @@ export function ChatPanel({
       if (oldActiveBranchId) {
         const oldBranch = branchesById.get(oldActiveBranchId);
         if (oldBranch) {
-          setBranchSelections(prev => ({ ...prev, [oldBranch.branch_point_index]: oldActiveBranchId }));
+          const anchorIndex = getConversationBranchAnchorIndex(
+            oldBranch.branch_point_index,
+            oldBranch.branch_kind,
+            activeConversation.messages.length,
+          );
+          const selectionKey = getConversationBranchSelectionKey(oldBranch.branch_point_index, anchorIndex);
+          setBranchSelections(prev => ({ ...prev, [selectionKey]: oldActiveBranchId }));
         }
       }
 
@@ -5276,6 +5282,7 @@ export function ChatPanel({
         conversationId,
         truncateAt,
         activeConversation.messages.length,
+        'replay',
       );
 
       // Re-send the original user message content verbatim
@@ -5339,16 +5346,8 @@ export function ChatPanel({
         conversationId,
         branchPointIndex,
         activeConversation.messages.length,
+        'delete',
       );
-
-      // Delete-style branches anchor at bp - 1 because msg[bp] is the
-      // deleted message and will be absent from the live view. Pin the
-      // anchor now so the X/N nav row stays put across live/restored
-      // switches.
-      setBranchAnchorOverrides((prev) => ({
-        ...prev,
-        [branchPointIndex]: Math.max(0, branchPointIndex - 1),
-      }));
 
       // 2. If this message has an explicit snapshot link, restore the
       //    workspace files to that snapshot. The endpoint also truncates
@@ -5433,6 +5432,7 @@ export function ChatPanel({
         conversationId,
         truncateAt,
         activeConversation.messages.length,
+        'edit',
       );
 
       // 2. Local Optimistic Update
@@ -6070,13 +6070,8 @@ export function ChatPanel({
               ) : (
                 <>
                   {activeConversation.messages.map((msg, idx) => {
-                    const bp = branchPointsByIndex.get(idx);
-                    // Branch points are anchored on the row closest to the
-                    // branch_point_index (see branchPointsByIndex). Nav
-                    // surfaces on whichever row hosts the anchor, which
-                    // may be a user or assistant row depending on what was
-                    // deleted.
-                    const hasBranches = !!(bp && bp.branches.length > 0);
+                    const branchGroups = branchGroupsByIndex.get(idx) ?? [];
+                    const hasBranches = branchGroups.length > 0;
                     const msgKey = `msg-${idx}`;
                     return (
                     <div key={msgKey} className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}${hasBranches ? ' chat-branch-wrapper-has-branches' : ''}`}>
@@ -6266,75 +6261,65 @@ export function ChatPanel({
                     {(() => {
                       const isEditing = editingMessageIdx === idx;
                       const activeBranchId = activeConversation.active_branch_id;
-                      const branchNav = hasBranches && bp ? (() => {
-                        const livePathOptionId = `__current__:${bp.branch_point_index}`;
-                        // Always offer a "Current (live path)" option at a
-                        // branch point so users can round-trip between the
-                        // restored state (a branch) and the post-delete
-                        // state (the live path). For retry-style branches
-                        // this matches the original behavior; for
-                        // delete-style branches it is the only way back to
-                        // the deleted view.
-                        const hasLivePathOption = true;
-                        const allOptions = [
-                          ...bp.branches.map(b => ({ id: b.id, label: b.created_by_username || 'Branch' })),
-                          ...(hasLivePathOption ? [{ id: livePathOptionId, label: 'Current' }] : []),
-                        ];
-                        const newestBranch = bp.branches.length > 0 ? bp.branches[bp.branches.length - 1] : null;
-                        const inferredCurrentBranchId = newestBranch?.parent_branch_id ?? null;
-                        // Match the active branch (or any ancestor) against
-                        // the set of branches rendered on this anchor. We
-                        // cannot rely on findLineageBranchIdForPoint here
-                        // because the merged bp.branch_point_index is the
-                        // render anchor, not the DB branch_point_index.
-                        const branchIdsOnThisAnchor = new Set(bp.branches.map(b => b.id));
-                        let lineageBranchId: string | null = null;
-                        if (activeBranchId) {
-                          const visited = new Set<string>();
-                          let curr: string | null = activeBranchId;
-                          while (curr && !visited.has(curr)) {
-                            visited.add(curr);
-                            if (branchIdsOnThisAnchor.has(curr)) { lineageBranchId = curr; break; }
-                            const parent = branchesById.get(curr);
-                            curr = parent?.parent_branch_id ?? null;
-                          }
-                        }
-                        // 1. Active branch matches this point → use it
-                        // 2. Active branch ancestry reaches this point → use that ancestor branch
-                        // 3. If on the live path, show the synthetic current option
-                        // 4. Remembered selection for this point → use it when on the live path
-                        // 5. If on live path (active is null), infer from newest branch's parent
-                        // 6. Fallback to last (most recent) branch
-                        const bpIdx = bp.branch_point_index;
-                        let matchIdx = lineageBranchId
-                          ? allOptions.findIndex(o => o.id === lineageBranchId)
-                          : -1;
-                        if (matchIdx < 0 && hasLivePathOption) {
-                          matchIdx = allOptions.findIndex(o => o.id === livePathOptionId);
-                        }
-                        if (matchIdx < 0 && branchSelections[bpIdx]) {
-                          matchIdx = allOptions.findIndex(o => o.id === branchSelections[bpIdx]);
-                        }
-                        if (matchIdx < 0 && inferredCurrentBranchId) {
-                          matchIdx = allOptions.findIndex(o => o.id === inferredCurrentBranchId);
-                        }
-                        const currentOptionIdx = matchIdx >= 0 ? matchIdx : allOptions.length - 1;
-                        return (
-                          <span className="chat-branch-nav">
-                            <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx > 0 && !branchSwitching) switchBranch(allOptions[currentOptionIdx - 1].id); }} disabled={currentOptionIdx <= 0 || branchSwitching} aria-label="Previous branch">
-                              <ChevronLeft size={12} />
-                            </button>
-                            <span className="chat-branch-nav-label">{currentOptionIdx + 1}/{allOptions.length}</span>
-                            <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx < allOptions.length - 1 && !branchSwitching) switchBranch(allOptions[currentOptionIdx + 1].id); }} disabled={currentOptionIdx >= allOptions.length - 1 || branchSwitching} aria-label="Next branch">
-                              <ChevronRight size={12} />
-                            </button>
-                          </span>
-                        );
-                      })() : null;
+                      const branchNav = hasBranches ? (
+                        <span className="chat-branch-nav-stack">
+                          {branchGroups.map((group) => {
+                            const livePathOptionId = `__current__:${group.sourceBranchPointIndex}`;
+                            const hasLivePathOption = true;
+                            const allOptions = [
+                              ...group.branches.map(b => ({ id: b.id, label: b.created_by_username || 'Branch' })),
+                              ...(hasLivePathOption ? [{ id: livePathOptionId, label: 'Current' }] : []),
+                            ];
+                            const newestBranch = group.branches.length > 0 ? group.branches[group.branches.length - 1] : null;
+                            const inferredCurrentBranchId = newestBranch?.parent_branch_id ?? null;
+                            const branchIdsInGroup = new Set(group.branches.map(b => b.id));
+                            let lineageBranchId: string | null = null;
+                            if (activeBranchId) {
+                              const visited = new Set<string>();
+                              let curr: string | null = activeBranchId;
+                              while (curr && !visited.has(curr)) {
+                                visited.add(curr);
+                                if (branchIdsInGroup.has(curr)) {
+                                  lineageBranchId = curr;
+                                  break;
+                                }
+                                const parent = branchesById.get(curr);
+                                curr = parent?.parent_branch_id ?? null;
+                              }
+                            }
+
+                            let matchIdx = lineageBranchId
+                              ? allOptions.findIndex(o => o.id === lineageBranchId)
+                              : -1;
+                            if (matchIdx < 0 && hasLivePathOption) {
+                              matchIdx = allOptions.findIndex(o => o.id === livePathOptionId);
+                            }
+                            if (matchIdx < 0 && branchSelections[group.selectionKey]) {
+                              matchIdx = allOptions.findIndex(o => o.id === branchSelections[group.selectionKey]);
+                            }
+                            if (matchIdx < 0 && inferredCurrentBranchId) {
+                              matchIdx = allOptions.findIndex(o => o.id === inferredCurrentBranchId);
+                            }
+                            const currentOptionIdx = matchIdx >= 0 ? matchIdx : allOptions.length - 1;
+
+                            return (
+                              <span key={group.selectionKey} className="chat-branch-nav">
+                                <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx > 0 && !branchSwitching) switchBranch(allOptions[currentOptionIdx - 1].id); }} disabled={currentOptionIdx <= 0 || branchSwitching} aria-label="Previous branch">
+                                  <ChevronLeft size={12} />
+                                </button>
+                                <span className="chat-branch-nav-label">{currentOptionIdx + 1}/{allOptions.length}</span>
+                                <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx < allOptions.length - 1 && !branchSwitching) switchBranch(allOptions[currentOptionIdx + 1].id); }} disabled={currentOptionIdx >= allOptions.length - 1 || branchSwitching} aria-label="Next branch">
+                                  <ChevronRight size={12} />
+                                </button>
+                              </span>
+                            );
+                          })}
+                        </span>
+                      ) : null;
 
                       const isCopied = copiedMessageIdx === idx;
                       // Only show the restore banner on the branch-point message for the active branch
-                      const showBanner = inputBanner && bp && activeBranchId && bp.branches.some(b => b.id === activeBranchId);
+                      const showBanner = inputBanner && activeBranchId && branchGroups.some(group => group.branches.some(b => b.id === activeBranchId));
 
                       if (msg.role === 'user') {
                         return (

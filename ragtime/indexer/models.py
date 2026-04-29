@@ -11,15 +11,13 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from ragtime.core.embedding_models import (
-    get_embedding_models,
-    get_model_dimensions_sync,
-)
+from ragtime.core.embedding_models import (get_embedding_models,
+                                           get_model_dimensions_sync)
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
-    normalize_userspace_preview_sandbox_flags,
-)
+    normalize_userspace_preview_sandbox_flags)
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -37,6 +35,14 @@ class ToolOutputMode(str, Enum):
     SHOW = "show"  # Always show tool output
     HIDE = "hide"  # Always hide tool output
     AUTO = "auto"  # Let AI decide based on relevance
+
+
+class ConversationBranchKind(str, Enum):
+    """Operation that created a conversation branch."""
+
+    EDIT = "edit"
+    DELETE = "delete"
+    REPLAY = "replay"
 
 
 class OcrMode(str, Enum):
@@ -2231,13 +2237,17 @@ class Conversation(BaseModel):
 
 
 class ConversationBranch(BaseModel):
-    """A branch of a chat conversation created when a user edits and resends a message."""
+    """A branch of a chat conversation created by an edit, delete, or replay."""
 
     id: str
     conversation_id: str
     parent_branch_id: Optional[str] = None
     branch_point_index: int = Field(
-        description="0-based message index where the edit occurred"
+        description="0-based message index where the branch begins"
+    )
+    branch_kind: Optional[ConversationBranchKind] = Field(
+        default=None,
+        description="Operation that created this branch",
     )
     preserved_messages: List[ChatMessage] = Field(
         default_factory=list,
@@ -2259,6 +2269,7 @@ class ConversationBranchSummary(BaseModel):
     conversation_id: str
     parent_branch_id: Optional[str] = None
     branch_point_index: int
+    branch_kind: Optional[ConversationBranchKind] = None
     message_count: int = Field(
         description="Number of preserved messages in this branch"
     )
@@ -2277,10 +2288,14 @@ class ConversationBranchPointInfo(BaseModel):
 
 
 class CreateConversationBranchRequest(BaseModel):
-    """Request to create a new branch by editing a message."""
+    """Request to create a new branch from a message index."""
 
     from_message_index: int = Field(
-        description="0-based index of the message being edited"
+        description="0-based index where the branch begins"
+    )
+    branch_kind: Optional[ConversationBranchKind] = Field(
+        default=None,
+        description="Operation that created this branch",
     )
     auto_snapshot: bool = Field(
         default=True,

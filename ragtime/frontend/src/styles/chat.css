@@ -1104,13 +1104,19 @@
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  margin-left: var(--space-xs);
   background: var(--color-surface-hover);
   border-radius: var(--radius-sm);
   padding: 1px 4px;
   font-size: var(--text-xs);
   color: var(--color-text-muted);
   user-select: none;
+}
+.chat-branch-nav-stack {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-left: var(--space-xs);
 }
 .chat-branch-nav-btn {
   background: none;

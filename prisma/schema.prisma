@@ -859,6 +859,12 @@ enum ConversationShareRole {
   editor
 }
 
+enum ConversationBranchKind {
+  edit
+  delete
+  replay
+}
+
 /// A chat conversation with the RAG assistant
 model Conversation {
   id    String @id @default(uuid())
@@ -942,7 +948,7 @@ model ConversationShare {
   @@map("conversation_shares")
 }
 
-/// A branch of a chat conversation, created when a user edits and resends a message.
+/// A branch of a chat conversation, created by an edit, delete, or replay.
 /// Preserves the original messages from the branch point onward so they can be restored.
 model ConversationBranch {
   id String @id @default(uuid())
@@ -954,8 +960,11 @@ model ConversationBranch {
   // Branch lineage
   parentBranchId String? @map("parent_branch_id")
 
-  // Branch point: the message index where the edit occurred (0-based)
+  // Branch point: the message index where the branch begins (0-based)
   branchPointIndex Int @map("branch_point_index")
+
+  // Operation that created this branch
+  branchKind ConversationBranchKind? @map("branch_kind")
 
   // Preserved messages: the original messages from branch_point_index onward (JSON array)
   preservedMessages Json @default("[]") @map("preserved_messages")

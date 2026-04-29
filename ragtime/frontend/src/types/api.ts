@@ -1652,11 +1652,14 @@ export interface Conversation {
   updated_at: string;
 }
 
+export type ConversationBranchKind = 'edit' | 'delete' | 'replay';
+
 export interface ConversationBranchSummary {
   id: string;
   conversation_id: string;
   parent_branch_id?: string | null;
   branch_point_index: number;
+  branch_kind?: ConversationBranchKind | null;
   message_count: number;
   associated_snapshot_id?: string | null;
   created_by_user_id?: string | null;
@@ -1672,6 +1675,7 @@ export interface ConversationBranchPointInfo {
 
 export interface CreateConversationBranchRequest {
   from_message_index: number;
+  branch_kind?: ConversationBranchKind | null;
   auto_snapshot?: boolean;
 }
 

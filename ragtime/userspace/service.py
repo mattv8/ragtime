@@ -2499,6 +2499,10 @@ class UserSpaceService:
                             "branch_point_index": int(
                                 getattr(source_branch, "branchPointIndex", 0) or 0
                             ),
+                            "branch_kind": (
+                                str(getattr(source_branch, "branchKind", "") or "")
+                                or None
+                            ),
                             "preserved_messages": self._json_safe_clone(
                                 getattr(source_branch, "preservedMessages", None) or []
                             ),
@@ -2668,6 +2672,9 @@ class UserSpaceService:
                         "parentBranchId": resolved_parent_branch_id,
                         "branchPointIndex": int(
                             branch_payload.get("branch_point_index") or 0
+                        ),
+                        "branchKind": (
+                            str(branch_payload.get("branch_kind") or "") or None
                         ),
                         "preservedMessages": Json(
                             _rekey_chat_messages(
