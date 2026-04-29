@@ -2974,15 +2974,13 @@ class IndexerRepository:
         """Get an interrupted task only when it is the latest task for a conversation."""
         db = await self._get_db()
 
-        rows = await db.query_raw(
-            f"""
+        rows = await db.query_raw(f"""
             SELECT id, status
             FROM chat_tasks
             WHERE conversation_id = {_sql_quote_literal(conversation_id)}
             ORDER BY created_at DESC, id DESC
             LIMIT 1
-            """
-        )
+            """)
         if not rows:
             return None
 
@@ -3002,8 +3000,7 @@ class IndexerRepository:
         """Return conversation IDs whose latest task is interrupted in a workspace."""
         db = await self._get_db()
 
-        rows = await db.query_raw(
-            f"""
+        rows = await db.query_raw(f"""
             SELECT latest.conversation_id
             FROM (
                 SELECT DISTINCT ON (ct.conversation_id)
@@ -3015,8 +3012,7 @@ class IndexerRepository:
                 ORDER BY ct.conversation_id, ct.created_at DESC, ct.id DESC
             ) latest
             WHERE latest.status = {_sql_quote_literal(ChatTaskStatus.interrupted.value)}
-            """
-        )
+            """)
 
         return [
             str(row.get("conversation_id") or "").strip()
@@ -3050,8 +3046,7 @@ class IndexerRepository:
         workspace_id_clause = ", ".join(
             _sql_quote_literal(workspace_id) for workspace_id in deduped_workspace_ids
         )
-        interrupted_rows = await db.query_raw(
-            f"""
+        interrupted_rows = await db.query_raw(f"""
             SELECT DISTINCT latest.workspace_id
             FROM (
                 SELECT DISTINCT ON (ct.conversation_id)
@@ -3064,8 +3059,7 @@ class IndexerRepository:
                 ORDER BY ct.conversation_id, ct.created_at DESC, ct.id DESC
             ) latest
             WHERE latest.status = {_sql_quote_literal(ChatTaskStatus.interrupted.value)}
-            """
-        )
+            """)
 
         live_workspace_ids = {
             str(getattr(row, "workspaceId", "") or "")
@@ -3340,39 +3334,34 @@ class IndexerRepository:
                 ),
             )
 
+            create_data: dict[str, Any] = {
+                "id": str(uuid.uuid4()),
+                "conversationId": conversation_id,
+                "provider": provider,
+                "model": model,
+                "mode": mode,
+                "requestKind": request_kind,
+                "renderedSystemPrompt": _sanitize_for_postgres(rendered_system_prompt),
+                "renderedUserInput": _sanitize_for_postgres(rendered_user_input),
+                "renderedProviderMessages": Json(sanitized_provider_messages),
+                "renderedChatHistory": Json(sanitized_chat_history),
+                "toolScopePrompt": _sanitize_for_postgres(tool_scope_prompt),
+                "promptAdditions": _sanitize_for_postgres(prompt_additions),
+                "turnReminders": _sanitize_for_postgres(turn_reminders),
+                "debugMetadata": (
+                    Json(sanitized_debug_metadata)
+                    if sanitized_debug_metadata is not None
+                    else None
+                ),
+                "messageIndex": message_index,
+            }
+            if chat_task_id:
+                create_data["chatTaskId"] = chat_task_id
+            if user_id:
+                create_data["userId"] = user_id
+
             prisma_record = await db.providerpromptdebugrecord.create(
-                data=cast(
-                    Any,
-                    {
-                        "id": str(uuid.uuid4()),
-                        "conversation": {"connect": {"id": conversation_id}},
-                        "chatTask": (
-                            {"connect": {"id": chat_task_id}} if chat_task_id else None
-                        ),
-                        "user": ({"connect": {"id": user_id}} if user_id else None),
-                        "provider": provider,
-                        "model": model,
-                        "mode": mode,
-                        "requestKind": request_kind,
-                        "renderedSystemPrompt": _sanitize_for_postgres(
-                            rendered_system_prompt
-                        ),
-                        "renderedUserInput": _sanitize_for_postgres(
-                            rendered_user_input
-                        ),
-                        "renderedProviderMessages": Json(sanitized_provider_messages),
-                        "renderedChatHistory": Json(sanitized_chat_history),
-                        "toolScopePrompt": _sanitize_for_postgres(tool_scope_prompt),
-                        "promptAdditions": _sanitize_for_postgres(prompt_additions),
-                        "turnReminders": _sanitize_for_postgres(turn_reminders),
-                        "debugMetadata": (
-                            Json(sanitized_debug_metadata)
-                            if sanitized_debug_metadata is not None
-                            else None
-                        ),
-                        "messageIndex": message_index,
-                    },
-                )
+                data=cast(Any, create_data)
             )
             return self._prisma_provider_prompt_debug_to_model(prisma_record)
         except Exception as e:
