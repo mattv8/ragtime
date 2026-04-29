@@ -9,9 +9,7 @@ import importlib
 import io
 import json
 import os
-import posixpath
 import re
-import secrets
 import shlex
 import shutil
 import socket
@@ -26,6 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional, cast
 
 import httpx
+import posixpath
+import secrets
 from fastapi import (
     APIRouter,
     Body,
@@ -40,10 +40,10 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
-from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.container_capabilities import get_container_capabilities

@@ -8,7 +8,6 @@ If the server restarts mid-job (e.g., hot-reload), jobs in 'pending' or
 
 
 import asyncio
-import fnmatch
 import json
 import os
 import pickle
@@ -21,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
 
+import fnmatch
 from langchain_community.document_loaders import TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangChainDocument

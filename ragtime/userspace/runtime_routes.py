@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import html as _html
 import importlib
 import json
 import os
@@ -148,8 +149,6 @@ def _preview_host_unreachable_response(
     inline instead of issuing a 307 into an upstream that will 502 at the
     reverse proxy.
     """
-
-    import html as _html
 
     preview_host = _html.escape(str(getattr(warning, "preview_host", "") or ""))
     base_domain = _html.escape(

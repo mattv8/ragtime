@@ -2,6 +2,7 @@
 Indexer data models and schemas.
 """
 
+
 import hashlib
 import json
 from datetime import datetime
@@ -19,7 +20,6 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
     normalize_userspace_preview_sandbox_flags,
 )
-
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""

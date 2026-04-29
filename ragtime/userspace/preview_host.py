@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import heapq
 import json
 from collections import OrderedDict
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from itertools import count
 from typing import Any
 from urllib.parse import quote, urlsplit
 
+import heapq
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import RedirectResponse
+from itertools import count
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import HTMLResponse, JSONResponse
 

@@ -7,10 +7,10 @@ The enable_write_ops parameter should be passed from the database settings.
 
 from __future__ import annotations
 
-import posixpath
 import re
 from typing import TYPE_CHECKING, Optional, Tuple
 
+import posixpath
 from fastapi import Cookie, Depends, HTTPException, Request, status
 
 from ragtime.core.auth import TokenData, validate_session

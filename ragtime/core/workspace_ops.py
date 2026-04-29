@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-import posixpath
 from pathlib import Path
 from typing import Callable, Collection
 
+import posixpath
 from fastapi import HTTPException
 
 SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"

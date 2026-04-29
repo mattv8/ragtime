@@ -35,13 +35,13 @@ Security notes:
 from __future__ import annotations
 
 import base64
-import binascii
 import hmac
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs
 
+import binascii
 from starlette.types import Receive, Scope, Send
 
 from ragtime.core.app_settings import get_app_settings

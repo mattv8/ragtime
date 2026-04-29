@@ -5,13 +5,14 @@ This module extracts common file handling functionality used by both
 IndexerService (upload/git) and FilesystemIndexerService (local/SMB/NFS).
 """
 
-import fnmatch
 import hashlib
 import re
-import tarfile
 import zipfile
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+import fnmatch
+import tarfile
 
 from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
                                          PARSEABLE_DOCUMENT_EXTENSIONS,
