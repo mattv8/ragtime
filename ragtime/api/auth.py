@@ -24,7 +24,7 @@ from fastapi import (
     Response,
     status,
 )
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
@@ -872,15 +872,24 @@ async def oauth2_token(
 
     Rate limited to prevent brute-force attacks.
     """
+
+    # OAuth2 error responses must be top-level JSON per RFC 6749 Section 5.2;
+    # FastAPI's HTTPException wraps the body in {"detail": ...}, which breaks
+    # strict OAuth2 clients (e.g. Claude MCP), so emit JSONResponse directly.
+    def _oauth_error(
+        error: str, description: str, status_code: int = 400
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status_code,
+            content={"error": error, "error_description": description},
+        )
+
     # Handle authorization_code grant (PKCE flow)
     if grant_type == "authorization_code":
         if not code or not code_verifier:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "error": "invalid_request",
-                    "error_description": "code and code_verifier are required for authorization_code grant",
-                },
+            return _oauth_error(
+                "invalid_request",
+                "code and code_verifier are required for authorization_code grant",
             )
 
         # Cleanup expired codes
@@ -889,25 +898,15 @@ async def oauth2_token(
         # Look up the authorization code
         auth_data = _auth_codes.get(code)
         if not auth_data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "error": "invalid_grant",
-                    "error_description": "Invalid or expired authorization code",
-                },
+            return _oauth_error(
+                "invalid_grant", "Invalid or expired authorization code"
             )
 
         # Verify PKCE
         if not _verify_pkce(code_verifier, auth_data["code_challenge"]):
             # Remove the code on PKCE failure (prevent replay)
             del _auth_codes[code]
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "error": "invalid_grant",
-                    "error_description": "PKCE verification failed",
-                },
-            )
+            return _oauth_error("invalid_grant", "PKCE verification failed")
 
         # Verify client_id matches (if provided) - prevents code theft
         if client_id and client_id != auth_data["client_id"]:
@@ -915,24 +914,12 @@ async def oauth2_token(
             logger.warning(
                 f"OAuth2 client_id mismatch: expected '{auth_data['client_id']}', got '{client_id}'"
             )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "error": "invalid_grant",
-                    "error_description": "client_id mismatch",
-                },
-            )
+            return _oauth_error("invalid_grant", "client_id mismatch")
 
         # Verify redirect_uri matches (if provided)
         if redirect_uri and redirect_uri != auth_data["redirect_uri"]:
             del _auth_codes[code]
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "error": "invalid_grant",
-                    "error_description": "redirect_uri mismatch",
-                },
-            )
+            return _oauth_error("invalid_grant", "redirect_uri mismatch")
 
         # Code is valid - consume it (one-time use)
         del _auth_codes[code]
@@ -966,24 +953,15 @@ async def oauth2_token(
     # Handle password grant
     elif grant_type == "password":
         if not username or not password:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "error": "invalid_request",
-                    "error_description": "username and password are required for password grant",
-                },
+            return _oauth_error(
+                "invalid_request",
+                "username and password are required for password grant",
             )
 
         # Check if LDAP is configured (OAuth2 requires LDAP)
         ldap_config = await get_ldap_config()
         if not ldap_config.serverUrl or not ldap_config.bindDn:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "error": "server_error",
-                    "error_description": "OAuth2 requires LDAP to be configured",
-                },
-            )
+            return _oauth_error("server_error", "OAuth2 requires LDAP to be configured")
 
         # Authenticate via LDAP
         result = await authenticate(username, password)
@@ -992,21 +970,17 @@ async def oauth2_token(
             logger.warning(
                 f"OAuth2 token request failed for '{username}': {result.error}"
             )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={
-                    "error": "invalid_grant",
-                    "error_description": result.error or "Authentication failed",
-                },
+            return _oauth_error(
+                "invalid_grant",
+                result.error or "Authentication failed",
+                status_code=401,
             )
 
         if not result.user_id or not result.username:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "error": "server_error",
-                    "error_description": "Authentication succeeded but user data is missing",
-                },
+            return _oauth_error(
+                "server_error",
+                "Authentication succeeded but user data is missing",
+                status_code=500,
             )
 
         # Create access token
@@ -1030,12 +1004,9 @@ async def oauth2_token(
         )
 
     else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "unsupported_grant_type",
-                "error_description": "Supported grant types: 'password', 'authorization_code'",
-            },
+        return _oauth_error(
+            "unsupported_grant_type",
+            "Supported grant types: 'password', 'authorization_code'",
         )
 
 
