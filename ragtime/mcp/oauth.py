@@ -400,19 +400,53 @@ def build_authorization_server_metadata(
     }
 
 
+def build_interactive_authorization_server_metadata(base: str) -> dict[str, Any]:
+    """Build auth-code OAuth metadata for routes that use user authentication."""
+    return {
+        "issuer": base,
+        "authorization_endpoint": f"{base}/authorize",
+        "token_endpoint": f"{base}/token",
+        "registration_endpoint": f"{base}/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "password"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "client_id_metadata_document_supported": True,
+        "scopes_supported": [],
+        "response_modes_supported": ["query"],
+        "service_documentation": f"{base}/docs",
+    }
+
+
+def build_interactive_protected_resource_metadata(
+    base: str, route_path: str | None
+) -> dict[str, Any]:
+    """Build protected-resource metadata for routes that use app-level OAuth."""
+    if route_path:
+        resource = f"{base}/mcp/{route_path}"
+    else:
+        resource = f"{base}/mcp"
+    return {
+        "resource": resource,
+        "authorization_servers": [base],
+        "scopes_supported": [],
+        "bearer_methods_supported": ["header"],
+    }
+
+
 def build_protected_resource_metadata(
     base: str, route_path: str | None
 ) -> dict[str, Any]:
     """Build RFC 9728 protected-resource metadata for an MCP route."""
     if route_path:
         resource = f"{base}/mcp/{route_path}"
-        as_metadata = f"{base}/mcp/{route_path}/.well-known/oauth-authorization-server"
+        authorization_server = f"{base}/mcp/{route_path}"
     else:
         resource = f"{base}/mcp"
-        as_metadata = f"{base}/.well-known/oauth-authorization-server"
+        authorization_server = f"{base}/mcp"
     return {
         "resource": resource,
-        "authorization_servers": [as_metadata],
+        "authorization_servers": [authorization_server],
         "bearer_methods_supported": ["header"],
     }
 
@@ -428,7 +462,10 @@ async def handle_authorization_server_metadata(
     the token endpoint without manual setup.
     """
     base = _resource_base(scope)
-    payload = build_authorization_server_metadata(base, route_path)
+    if await _get_route_client_credentials(route_path) is None:
+        payload = build_interactive_authorization_server_metadata(base)
+    else:
+        payload = build_authorization_server_metadata(base, route_path)
     await _send_json(send, 200, payload)
 
 
@@ -441,5 +478,8 @@ async def handle_protected_resource_metadata(
     metadata document above.
     """
     base = _resource_base(scope)
-    payload = build_protected_resource_metadata(base, route_path)
+    if await _get_route_client_credentials(route_path) is None:
+        payload = build_interactive_protected_resource_metadata(base, route_path)
+    else:
+        payload = build_protected_resource_metadata(base, route_path)
     await _send_json(send, 200, payload)

@@ -30,6 +30,10 @@ applyTo: '**'
 - Session auth uses `ragtime_session` cookie (JWT-backed); `get_session_token` also accepts `Authorization: Bearer`.
 - Local admin usernames are stored with `local:` prefix to avoid LDAP collisions.
 - MCP HTTP transport (`ragtime/mcp/routes.py`) supports default route plus dynamic custom routes and optional auth/group filters.
+- MCP custom-route OAuth discovery must match the route's actual `auth_method`: `client_credentials` routes should serve route-scoped metadata, while `oauth2` routes must fall back to the app-level auth-code metadata in `ragtime/mcp/oauth.py`.
+- E.g. Claude probes both route-form and path-form well-known MCP discovery URLs; when changing discovery behavior, keep compatibility routes in `ragtime/mcp/routes.py` aligned so custom routes do not regress.
+- Keep app-level PKCE/auth-code handlers in `ragtime/main.py` (`/authorize`, `/token`, and the root well-known OAuth metadata routes) authoritative; MCP compatibility routes must coexist with them, not intercept or redefine them.
+- RFC 9728 protected-resource metadata must list authorization-server issuer URLs in `authorization_servers`, not `.well-known` metadata document URLs.
 - User Space is file-backed under `${INDEX_DATA_PATH}/_userspace/workspaces/*` with git-based snapshots (`ragtime/userspace/service.py`).
 
 ## Developer Workflow
@@ -69,6 +73,8 @@ applyTo: '**'
 
 - Security validators are strict by design (`ragtime/core/security.py`): SQL read-only checks (including `LIMIT` expectations), Odoo write-op blocking, SSH command filtering.
 - Secrets in DB are encrypted (`enc::`), key persisted at `.data/.encryption_key`; backups need `--include-secret` when secret portability matters.
+- OAuth endpoints consumed by external MCP clients are strict about response shape: return RFC 6749 top-level JSON errors from `/token` via `JSONResponse`, not `HTTPException(detail={...})`, which FastAPI wraps as `{"detail": ...}`.
+- With `allow_credentials=True`, `ALLOWED_ORIGINS` entries must be full origins including scheme (for example `https://ragtime.hammerton.com`), not bare hostnames.
 - Keep async style and existing logging pattern (`get_logger` / `setup_logging`), and preserve mapped Prisma field naming conventions.
 - No dedicated test suite exists in repo; validate changes with targeted API/UI/container smoke checks.
 - House style: keep type hints and Pydantic `Field(description=...)` on LLM-facing schemas; avoid emojis in logs/UI text.

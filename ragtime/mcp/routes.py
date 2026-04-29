@@ -1082,7 +1082,7 @@ class _OAuthASMetadataEndpoint:
         self._default = default
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        route_path = (
+        route_path = _normalize_well_known_route_path(
             None if self._default else scope.get("path_params", {}).get("route_path")
         )
         await handle_authorization_server_metadata(scope, receive, send, route_path)
@@ -1099,6 +1099,16 @@ class _OAuthPRMetadataEndpoint:
             None if self._default else scope.get("path_params", {}).get("route_path")
         )
         await handle_protected_resource_metadata(scope, receive, send, route_path)
+
+
+def _normalize_well_known_route_path(route_path: str | None) -> str | None:
+    """Normalize RFC 8414 path-form issuer suffixes to an MCP route path."""
+    normalized = (route_path or "").strip("/")
+    if not normalized or normalized == "mcp":
+        return None
+    if normalized.startswith("mcp/"):
+        return normalized[len("mcp/") :]
+    return normalized
 
 
 # OAuth 2.0 token + discovery routes for MCP client_credentials auth.
@@ -1119,6 +1129,21 @@ mcp_custom_as_metadata_route = Route(
     endpoint=_OAuthASMetadataEndpoint(default=False),
     methods=["GET", "OPTIONS"],
 )
+mcp_prefixed_as_metadata_route = Route(
+    "/.well-known/oauth-authorization-server/{route_path:path}",
+    endpoint=_OAuthASMetadataEndpoint(default=False),
+    methods=["GET", "OPTIONS"],
+)
+mcp_prefixed_oidc_metadata_route = Route(
+    "/.well-known/openid-configuration/{route_path:path}",
+    endpoint=_OAuthASMetadataEndpoint(default=False),
+    methods=["GET", "OPTIONS"],
+)
+mcp_custom_oidc_metadata_route = Route(
+    "/mcp/{route_path:path}/.well-known/openid-configuration",
+    endpoint=_OAuthASMetadataEndpoint(default=False),
+    methods=["GET", "OPTIONS"],
+)
 mcp_custom_pr_metadata_route = Route(
     "/mcp/{route_path:path}/.well-known/oauth-protected-resource",
     endpoint=_OAuthPRMetadataEndpoint(default=False),
@@ -1134,6 +1159,9 @@ def get_mcp_routes() -> list[Route]:
         mcp_default_token_route,
         mcp_custom_token_route,
         mcp_custom_as_metadata_route,
+        mcp_prefixed_as_metadata_route,
+        mcp_prefixed_oidc_metadata_route,
+        mcp_custom_oidc_metadata_route,
         mcp_custom_pr_metadata_route,
         mcp_transport_route,
         mcp_custom_route,
