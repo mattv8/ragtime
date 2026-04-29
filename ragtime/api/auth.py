@@ -90,6 +90,7 @@ TRUSTED_IDE_REDIRECT_HOSTS = {
 
 DEFAULT_TRUSTED_REDIRECT_URIS = {
     "https://claude.ai/oauth/callback",
+    "https://claude.ai/api/mcp/auth_callback",
 }
 
 # In-memory storage for authorization codes (short-lived, 10 min expiry)
