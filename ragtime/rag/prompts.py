@@ -8,15 +8,17 @@ The system prompt is composed of these sections in order:
 1. Mode base prompt (chat/userspace), built from shared Anthropic-style sections
 2. build_index_system_prompt() - Dynamic: lists available knowledge indexes
 3. build_tool_system_prompt() - Dynamic: lists available query/action tools
-4. Userspace-only workspace/runtime context fragments (per request)
-5. UI_VISUALIZATION_COMMON_PROMPT - (UI only) Visualization guidance shared across modes
-6. UI_VISUALIZATION_CHAT_PROMPT / UI_VISUALIZATION_USERSPACE_PROMPT - Mode-specific visualization guidance (added per request context)
-7. TOOL_OUTPUT_VISIBILITY_PROMPT - (Conditional) When tool_output_mode is 'auto'
+4. build_current_user_prompt_fragment() - Dynamic: resolves the authenticated user identity when available
+5. Userspace-only workspace/runtime context fragments (per request)
+6. UI_VISUALIZATION_COMMON_PROMPT - (UI only) Visualization guidance shared across modes
+7. UI_VISUALIZATION_CHAT_PROMPT / UI_VISUALIZATION_USERSPACE_PROMPT - Mode-specific visualization guidance (added per request context)
+8. TOOL_OUTPUT_VISIBILITY_PROMPT - (Conditional) When tool_output_mode is 'auto'
 """
 
 from typing import List, Optional
 
 from ragtime.core.entrypoint_status import EntrypointStatus
+from ragtime.core.user_identity import normalize_user_identity
 
 # =============================================================================
 # BASE SYSTEM PROMPTS
@@ -186,6 +188,55 @@ def build_userspace_turn_reminder_with_env_vars(
         ),
         env_var_reminder_line=env_var_reminder_line,
     )
+
+
+def build_current_user_prompt_fragment(
+    username: str | None,
+    display_name: str | None,
+) -> str:
+    """Build a request-scoped current-user context block when identity is known."""
+
+    normalized_username, normalized_display_name = normalize_user_identity(
+        username,
+        display_name,
+    )
+    if not normalized_username and not normalized_display_name:
+        return ""
+
+    lines = ["\n## CURRENT USER\n\n"]
+    if normalized_username:
+        lines.append(f"- Username: {normalized_username}\n")
+    if normalized_display_name:
+        lines.append(f"- Display Name: {normalized_display_name}\n")
+    lines.append(
+        '- When the user refers to "I", "me", "my", or "mine", resolve that to this user identity whenever the request depends on who the user is.\n'
+    )
+    return "".join(lines)
+
+
+def build_current_user_turn_reminder_line(
+    username: str | None,
+    display_name: str | None,
+) -> str:
+    """Build a compact current-user line for the per-turn reminder."""
+
+    normalized_username, normalized_display_name = normalize_user_identity(
+        username,
+        display_name,
+    )
+    if not normalized_username and not normalized_display_name:
+        return ""
+
+    if (
+        normalized_display_name
+        and normalized_username
+        and normalized_display_name != normalized_username
+    ):
+        identity_label = f"{normalized_display_name} ({normalized_username})"
+    else:
+        identity_label = normalized_display_name or normalized_username
+
+    return f"[CURRENT USER: {identity_label}]\n\n"
 
 
 # Backward-compatible constant for non-workspace callers (exclude mode default).

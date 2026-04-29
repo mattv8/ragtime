@@ -6,13 +6,10 @@ import hmac
 import io
 import json
 import os
-import posixpath
 import re
-import secrets
 import shlex
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import time as _time
 import zipfile
@@ -23,11 +20,14 @@ from typing import Any, Callable, Literal, TypedDict, cast
 from urllib.parse import quote
 from uuid import uuid4
 
+import posixpath
+import secrets
+import tarfile
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-
 from prisma import Json
 from prisma import fields as prisma_fields
+
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -65,6 +65,7 @@ from ragtime.core.ssh import (
     ssh_tunnel_config_from_dict,
     sync_ssh_directory,
 )
+from ragtime.core.user_identity import normalize_user_identity
 from ragtime.core.workspace_ops import (
     PLATFORM_MANAGED_GITIGNORE_PATTERNS,
     WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
@@ -868,10 +869,11 @@ def _normalize_share_slug_for_uniqueness(slug: str) -> str:
 
 
 def _normalize_owner_username_for_share_path(username: str) -> str:
-    value = (username or "").strip().lower()
-    if value.startswith("local:"):
-        value = value.split(":", 1)[1]
-    return value
+    normalized_username, _ = normalize_user_identity(
+        username,
+        lowercase_username=True,
+    )
+    return normalized_username
 
 
 def _is_share_slug_conflict_error(exc: Exception) -> bool:
@@ -3510,8 +3512,7 @@ class UserSpaceService:
             branched_from_snapshot_id = str(
                 branch.get("branched_from_snapshot_id") or ""
             ).strip()
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 INSERT INTO userspace_snapshot_branches
                 (id, workspace_id, name, git_ref_name, base_snapshot_id, branched_from_snapshot_id, is_active, created_at, updated_at)
                 VALUES
@@ -3526,8 +3527,7 @@ class UserSpaceService:
                     {self._sql_quote(str(branch.get('created_at') or _utc_now().isoformat()))},
                     NOW()
                 )
-                """
-            )
+                """)
         imported_snapshot_count = 0
         for snapshot in raw_snapshots:
             source_snapshot_id = str(snapshot.get("id") or "").strip()
@@ -3539,8 +3539,7 @@ class UserSpaceService:
             if not cloned_snapshot_id or not cloned_branch_id:
                 continue
             parent_snapshot_id = str(snapshot.get("parent_snapshot_id") or "").strip()
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 INSERT INTO userspace_snapshots
                 (id, workspace_id, branch_id, git_commit_hash, message, remote_commit_hash, file_count, parent_snapshot_id, created_by_user_id, created_at, updated_at)
                 VALUES
@@ -3557,8 +3556,7 @@ class UserSpaceService:
                     {self._sql_quote(str(snapshot.get('created_at') or _utc_now().isoformat()))},
                     NOW()
                 )
-                """
-            )
+                """)
             imported_snapshot_count += 1
         cursor = snapshots_manifest.get("cursor") or {}
         source_current_snapshot_id = (
@@ -6477,8 +6475,7 @@ class UserSpaceService:
         ):
             return
 
-        rows = await db.query_raw(
-            f"""
+        rows = await db.query_raw(f"""
             SELECT s.id,
                    s.workspace_id,
                    s.branch_id,
@@ -6496,19 +6493,16 @@ class UserSpaceService:
               AND s.remote_commit_hash IS NULL
             ORDER BY s.created_at DESC
             LIMIT 1
-            """
-        )
+            """)
         if not rows:
             return
 
-        current_snapshot_rows = await db.query_raw(
-            f"""
+        current_snapshot_rows = await db.query_raw(f"""
             SELECT current_snapshot_id
             FROM workspaces
             WHERE id = {self._sql_quote(workspace_id)}
             LIMIT 1
-            """
-        )
+            """)
         current_snapshot_id = (
             str(current_snapshot_rows[0].get("current_snapshot_id"))
             if current_snapshot_rows
@@ -6763,13 +6757,11 @@ class UserSpaceService:
         """Reconcile existing workspaces sequentially in one background task."""
         try:
             db = await get_db()
-            rows = await db.query_raw(
-                """
+            rows = await db.query_raw("""
                 SELECT id
                 FROM workspaces
                 ORDER BY updated_at DESC
-                """
-            )
+                """)
             for row in rows:
                 workspace_id = str(row.get("id") or "").strip()
                 if not workspace_id:
@@ -6968,8 +6960,7 @@ class UserSpaceService:
         snapshot_id: str,
     ) -> dict[str, Any]:
         db = await get_db()
-        rows = await db.query_raw(
-            f"""
+        rows = await db.query_raw(f"""
             SELECT s.id, s.workspace_id, s.branch_id, s.git_commit_hash, s.message,
                  s.remote_commit_hash, s.file_count, s.parent_snapshot_id,
                  s.created_at,
@@ -6979,8 +6970,7 @@ class UserSpaceService:
             WHERE s.workspace_id = {self._sql_quote(workspace_id)}
               AND s.id = {self._sql_quote(snapshot_id)}
             LIMIT 1
-            """
-        )
+            """)
         if not rows:
             raise HTTPException(status_code=404, detail="Snapshot not found")
         return rows[0]
@@ -7834,8 +7824,9 @@ class UserSpaceService:
             workspace = getattr(share_record, "workspace", None)
             if workspace is not None:
                 owner_obj = getattr(workspace, "owner", None)
-        owner_display_name = (
-            str(getattr(owner_obj, "displayName", "") or "").strip() or None
+        _owner_username, owner_display_name = normalize_user_identity(
+            str(getattr(owner_obj, "username", "") or ""),
+            str(getattr(owner_obj, "displayName", "") or ""),
         )
         return share_name, owner_display_name
 
@@ -9236,15 +9227,13 @@ class UserSpaceService:
         db = await get_db()
         all_hashes = [c["hash"] for c in history_commits]
         in_clause = ", ".join(self._sql_quote(h) for h in all_hashes)
-        existing_rows = await db.query_raw(
-            f"""
+        existing_rows = await db.query_raw(f"""
             SELECT git_commit_hash, id
             FROM userspace_snapshots
             WHERE workspace_id = {self._sql_quote(workspace_id)}
               AND branch_id = {self._sql_quote(branch_id)}
               AND git_commit_hash IN ({in_clause})
-            """
-        )
+            """)
         existing_by_hash: dict[str, str] = {
             str(r["git_commit_hash"]): str(r["id"]) for r in existing_rows
         }
@@ -9261,8 +9250,7 @@ class UserSpaceService:
 
             snapshot_id = str(uuid4())
             created_at = datetime.fromtimestamp(commit["timestamp"], tz=timezone.utc)
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 INSERT INTO userspace_snapshots
                     (id, workspace_id, branch_id, git_commit_hash,
                      remote_commit_hash, message, file_count,
@@ -9281,8 +9269,7 @@ class UserSpaceService:
                     {self._sql_quote(created_at.isoformat())},
                     {self._sql_quote(created_at.isoformat())}
                 )
-                """
-            )
+                """)
             existing_by_hash[commit["hash"]] = snapshot_id
             prev_snapshot_id = snapshot_id
             created_count += 1
@@ -9291,14 +9278,12 @@ class UserSpaceService:
         # 6. Reparent the imported snapshot so the timeline is continuous.
         # ------------------------------------------------------------------
         if prev_snapshot_id:
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 UPDATE userspace_snapshots
                 SET parent_snapshot_id = {self._sql_quote(prev_snapshot_id)},
                     updated_at = NOW()
                 WHERE id = {self._sql_quote(imported_snapshot_id)}
-                """
-            )
+                """)
 
         # Also mark any previously-pushed local snapshots whose hashes
         # happen to match remote commits (original backfill behaviour).
@@ -9308,16 +9293,14 @@ class UserSpaceService:
         for start in range(0, len(full_hash_list), chunk_size):
             chunk = full_hash_list[start : start + chunk_size]
             chunk_clause = ", ".join(self._sql_quote(h) for h in chunk)
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 UPDATE userspace_snapshots
                 SET remote_commit_hash = git_commit_hash,
                     updated_at = NOW()
                 WHERE workspace_id = {self._sql_quote(workspace_id)}
                   AND remote_commit_hash IS NULL
                   AND git_commit_hash IN ({chunk_clause})
-                """
-            )
+                """)
 
         logger.info(
             "Imported %s historical snapshots for workspace %s from %s (%s remote commits)",
@@ -9598,14 +9581,12 @@ class UserSpaceService:
                 allow_force=False,
             )
             db = await get_db()
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 UPDATE userspace_snapshots
                 SET remote_commit_hash = {self._sql_quote(remote_commit_hash)},
                     updated_at = NOW()
                 WHERE id = {self._sql_quote(snapshot.id)}
-                """
-            )
+                """)
             await self._update_workspace_scm_sync_metadata(
                 workspace_id,
                 git_url=git_url,
@@ -10409,14 +10390,12 @@ class UserSpaceService:
         )
 
         db = await get_db()
-        await db.execute_raw(
-            f"""
+        await db.execute_raw(f"""
             UPDATE userspace_snapshots
             SET remote_commit_hash = {self._sql_quote(remote_commit_hash)},
                 updated_at = NOW()
             WHERE id = {self._sql_quote(imported_snapshot.id)}
-            """
-        )
+            """)
         imported_snapshot.remote_commit_hash = remote_commit_hash
 
         sync_message = (
@@ -10592,14 +10571,12 @@ class UserSpaceService:
                 allow_force=preview.state == "destructive",
             )
             db = await get_db()
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 UPDATE userspace_snapshots
                 SET remote_commit_hash = {self._sql_quote(remote_commit_hash)},
                     updated_at = NOW()
                 WHERE id = {self._sql_quote(exported_snapshot.id)}
-                """
-            )
+                """)
             exported_snapshot.remote_commit_hash = remote_commit_hash
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, str) else "Export failed"
@@ -15514,14 +15491,12 @@ class UserSpaceService:
         """
         await self._enforce_workspace_access(workspace_id, user_id)
         db = await get_db()
-        cursor_rows = await db.query_raw(
-            f"""
+        cursor_rows = await db.query_raw(f"""
             SELECT current_snapshot_id
             FROM workspaces
             WHERE id = {self._sql_quote(workspace_id)}
             LIMIT 1
-            """
-        )
+            """)
         current_snapshot_id = (
             str(cursor_rows[0].get("current_snapshot_id"))
             if cursor_rows and cursor_rows[0].get("current_snapshot_id")
@@ -16167,26 +16142,22 @@ class UserSpaceService:
         branch_id: str | None,
     ) -> None:
         db = await get_db()
-        await db.execute_raw(
-            f"""
+        await db.execute_raw(f"""
             UPDATE workspaces
             SET current_snapshot_id = {self._sql_quote(snapshot_id)},
                 current_snapshot_branch_id = {self._sql_quote(branch_id)},
                 updated_at = NOW()
             WHERE id = {self._sql_quote(workspace_id)}
-            """
-        )
+            """)
 
     async def _activate_branch(self, workspace_id: str, branch_id: str) -> None:
         db = await get_db()
-        await db.execute_raw(
-            f"""
+        await db.execute_raw(f"""
             UPDATE userspace_snapshot_branches
             SET is_active = CASE WHEN id = {self._sql_quote(branch_id)} THEN TRUE ELSE FALSE END,
                 updated_at = NOW()
             WHERE workspace_id = {self._sql_quote(workspace_id)}
-            """
-        )
+            """)
 
     async def _ensure_snapshot_timeline(
         self,
@@ -16198,37 +16169,31 @@ class UserSpaceService:
 
         async with self._snapshot_operation_semaphore:
             db = await get_db()
-            existing = await db.query_raw(
-                f"""
+            existing = await db.query_raw(f"""
                 SELECT id
                 FROM userspace_snapshot_branches
                 WHERE workspace_id = {self._sql_quote(workspace_id)}
                 LIMIT 1
-                """
-            )
+                """)
             if existing:
-                cursor_rows = await db.query_raw(
-                    f"""
+                cursor_rows = await db.query_raw(f"""
                     SELECT current_snapshot_id, current_snapshot_branch_id
                     FROM workspaces
                     WHERE id = {self._sql_quote(workspace_id)}
                     LIMIT 1
-                    """
-                )
+                    """)
                 if cursor_rows:
                     cursor = cursor_rows[0]
                     if not cursor.get("current_snapshot_id") or not cursor.get(
                         "current_snapshot_branch_id"
                     ):
-                        latest_rows = await db.query_raw(
-                            f"""
+                        latest_rows = await db.query_raw(f"""
                             SELECT s.id AS snapshot_id, s.branch_id
                             FROM userspace_snapshots s
                             WHERE s.workspace_id = {self._sql_quote(workspace_id)}
                             ORDER BY s.created_at DESC
                             LIMIT 1
-                            """
-                        )
+                            """)
                         if latest_rows:
                             latest = latest_rows[0]
                             await self._set_current_snapshot_cursor(
@@ -16244,8 +16209,7 @@ class UserSpaceService:
                 )
             ).stdout.strip() or "main"
             branch_id = str(uuid4())
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 INSERT INTO userspace_snapshot_branches
                 (id, workspace_id, name, git_ref_name, is_active, created_at, updated_at)
                 VALUES
@@ -16258,8 +16222,7 @@ class UserSpaceService:
                     NOW(),
                     NOW()
                 )
-                """
-            )
+                """)
 
             git_log_result = await self._run_git(
                 workspace_id,
@@ -16282,8 +16245,7 @@ class UserSpaceService:
                 created_at = datetime.fromtimestamp(
                     int(commit_ts), tz=timezone.utc
                 ).isoformat()
-                await db.execute_raw(
-                    f"""
+                await db.execute_raw(f"""
                     INSERT INTO userspace_snapshots
                     (
                         id,
@@ -16312,8 +16274,7 @@ class UserSpaceService:
                     )
                     ON CONFLICT (workspace_id, branch_id, git_commit_hash)
                     DO NOTHING
-                    """
-                )
+                    """)
                 parent_snapshot_id = snapshot_id
 
             await self._set_current_snapshot_cursor(
@@ -16327,14 +16288,12 @@ class UserSpaceService:
         list[UserSpaceSnapshot], list[UserSpaceSnapshotBranch], str | None, str | None
     ]:
         db = await get_db()
-        cursor_rows = await db.query_raw(
-            f"""
+        cursor_rows = await db.query_raw(f"""
             SELECT current_snapshot_id, current_snapshot_branch_id
             FROM workspaces
             WHERE id = {self._sql_quote(workspace_id)}
             LIMIT 1
-            """
-        )
+            """)
         current_snapshot_id = None
         current_branch_id = None
         if cursor_rows:
@@ -16350,15 +16309,13 @@ class UserSpaceService:
                 else None
             )
 
-        branch_rows = await db.query_raw(
-            f"""
+        branch_rows = await db.query_raw(f"""
             SELECT id, workspace_id, name, git_ref_name, base_snapshot_id,
                    branched_from_snapshot_id, is_active, created_at
             FROM userspace_snapshot_branches
             WHERE workspace_id = {self._sql_quote(workspace_id)}
             ORDER BY created_at ASC
-            """
-        )
+            """)
         branch_name_by_id: dict[str, str] = {}
         branches: list[UserSpaceSnapshotBranch] = []
         for row in branch_rows:
@@ -16386,15 +16343,13 @@ class UserSpaceService:
                 )
             )
 
-        snapshot_rows = await db.query_raw(
-            f"""
+        snapshot_rows = await db.query_raw(f"""
             SELECT id, workspace_id, branch_id, git_commit_hash, message,
                  remote_commit_hash, file_count, parent_snapshot_id, created_at
             FROM userspace_snapshots
             WHERE workspace_id = {self._sql_quote(workspace_id)}
             ORDER BY created_at DESC
-            """
-        )
+            """)
         # Compute which snapshots are heads (no other snapshot points to them as parent)
         child_parent_ids: set[str] = {
             str(row.get("parent_snapshot_id"))
@@ -16541,8 +16496,7 @@ class UserSpaceService:
         await self._ensure_snapshot_timeline(workspace_id, user_id)
         await self._ensure_workspace_git_repo(workspace_id)
         db = await get_db()
-        rows = await db.query_raw(
-            f"""
+        rows = await db.query_raw(f"""
             SELECT s.id, s.workspace_id, s.branch_id, s.git_commit_hash, s.message,
                    s.remote_commit_hash, s.file_count, s.parent_snapshot_id,
                    s.created_at,
@@ -16559,8 +16513,7 @@ class UserSpaceService:
             WHERE s.workspace_id = {self._sql_quote(workspace_id)}
               AND s.id = {self._sql_quote(snapshot_id)}
             LIMIT 1
-            """
-        )
+            """)
         if not rows:
             raise HTTPException(status_code=404, detail="Snapshot not found")
         row = rows[0]
@@ -16683,14 +16636,12 @@ class UserSpaceService:
 
         async with self._snapshot_operation_semaphore:
             db = await get_db()
-            cursor_rows = await db.query_raw(
-                f"""
+            cursor_rows = await db.query_raw(f"""
                 SELECT current_snapshot_id, current_snapshot_branch_id
                 FROM workspaces
                 WHERE id = {self._sql_quote(workspace_id)}
                 LIMIT 1
-                """
-            )
+                """)
             current_snapshot_id = None
             current_branch_id = None
             if cursor_rows:
@@ -16707,21 +16658,18 @@ class UserSpaceService:
                 )
 
             if not current_branch_id:
-                branch_rows = await db.query_raw(
-                    f"""
+                branch_rows = await db.query_raw(f"""
                     SELECT id
                     FROM userspace_snapshot_branches
                     WHERE workspace_id = {self._sql_quote(workspace_id)}
                     ORDER BY created_at ASC
                     LIMIT 1
-                    """
-                )
+                    """)
                 current_branch_id = (
                     str(branch_rows[0].get("id")) if branch_rows else str(uuid4())
                 )
 
-            tip_rows = await db.query_raw(
-                f"""
+            tip_rows = await db.query_raw(f"""
                 SELECT s.id
                 FROM userspace_snapshots s
                 WHERE s.workspace_id = {self._sql_quote(workspace_id)}
@@ -16735,8 +16683,7 @@ class UserSpaceService:
                   )
                 ORDER BY s.created_at DESC, s.id DESC
                 LIMIT 1
-                """
-            )
+                """)
             branch_tip_id = str(tip_rows[0].get("id")) if tip_rows else None
 
             if (
@@ -16744,13 +16691,11 @@ class UserSpaceService:
                 and branch_tip_id
                 and current_snapshot_id != branch_tip_id
             ):
-                branch_count_rows = await db.query_raw(
-                    f"""
+                branch_count_rows = await db.query_raw(f"""
                     SELECT COUNT(*) AS count
                     FROM userspace_snapshot_branches
                     WHERE workspace_id = {self._sql_quote(workspace_id)}
-                    """
-                )
+                    """)
                 branch_count = (
                     int(branch_count_rows[0].get("count") or 0)
                     if branch_count_rows
@@ -16760,8 +16705,7 @@ class UserSpaceService:
                 branch_name = f"Branch {branch_count + 1}"
                 branch_ref_name = self._branch_ref_name(new_branch_id)
                 await self._run_git(workspace_id, ["checkout", "-b", branch_ref_name])
-                await db.execute_raw(
-                    f"""
+                await db.execute_raw(f"""
                     INSERT INTO userspace_snapshot_branches
                     (id, workspace_id, name, git_ref_name, base_snapshot_id, branched_from_snapshot_id, is_active, created_at, updated_at)
                     VALUES
@@ -16776,8 +16720,7 @@ class UserSpaceService:
                         NOW(),
                         NOW()
                     )
-                    """
-                )
+                    """)
                 await self._activate_branch(workspace_id, new_branch_id)
                 current_branch_id = new_branch_id
 
@@ -16811,8 +16754,7 @@ class UserSpaceService:
             )
 
             snapshot_id = str(uuid4())
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 INSERT INTO userspace_snapshots
                 (id, workspace_id, branch_id, git_commit_hash, message, file_count, parent_snapshot_id, created_by_user_id, created_at, updated_at)
                 VALUES
@@ -16828,8 +16770,7 @@ class UserSpaceService:
                     {self._sql_quote(created_at.isoformat())},
                     {self._sql_quote(created_at.isoformat())}
                 )
-                """
-            )
+                """)
             await self._activate_branch(workspace_id, current_branch_id)
             await self._set_current_snapshot_cursor(
                 workspace_id,
@@ -16877,15 +16818,13 @@ class UserSpaceService:
         )
         await self._ensure_snapshot_timeline(workspace_id, user_id)
         db = await get_db()
-        await db.execute_raw(
-            f"""
+        await db.execute_raw(f"""
             UPDATE userspace_snapshots
             SET message = {self._sql_quote(request.message.strip()[:200])},
                 updated_at = NOW()
             WHERE workspace_id = {self._sql_quote(workspace_id)}
               AND id = {self._sql_quote(snapshot_id)}
-            """
-        )
+            """)
         timeline = await self.get_snapshot_timeline(workspace_id, user_id)
         snapshot = next(
             (item for item in timeline.snapshots if item.id == snapshot_id), None
@@ -17040,23 +16979,20 @@ class UserSpaceService:
         )
         await self._ensure_snapshot_timeline(workspace_id, user_id)
         db = await get_db()
-        rows = await db.query_raw(
-            f"""
+        rows = await db.query_raw(f"""
             SELECT id, git_ref_name
             FROM userspace_snapshot_branches
             WHERE workspace_id = {self._sql_quote(workspace_id)}
               AND id = {self._sql_quote(request.branch_id)}
             LIMIT 1
-            """
-        )
+            """)
         if not rows:
             raise HTTPException(status_code=404, detail="Snapshot branch not found")
 
         branch = rows[0]
         branch_id = str(branch.get("id") or "")
         branch_ref_name = str(branch.get("git_ref_name") or "")
-        head_rows = await db.query_raw(
-            f"""
+        head_rows = await db.query_raw(f"""
             SELECT s.id
             FROM userspace_snapshots s
             WHERE s.workspace_id = {self._sql_quote(workspace_id)}
@@ -17070,8 +17006,7 @@ class UserSpaceService:
               )
             ORDER BY s.created_at DESC, s.id DESC
             LIMIT 1
-            """
-        )
+            """)
         target_snapshot_id = str(head_rows[0].get("id")) if head_rows else None
 
         async with self._snapshot_operation_semaphore:
@@ -17101,14 +17036,12 @@ class UserSpaceService:
         await self._ensure_workspace_git_repo(workspace_id)
 
         db = await get_db()
-        cursor_rows = await db.query_raw(
-            f"""
+        cursor_rows = await db.query_raw(f"""
             SELECT current_snapshot_id, current_snapshot_branch_id
             FROM workspaces
             WHERE id = {self._sql_quote(workspace_id)}
             LIMIT 1
-            """
-        )
+            """)
         if not cursor_rows:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
@@ -17123,13 +17056,11 @@ class UserSpaceService:
                 detail="No snapshot to branch from; create a snapshot first",
             )
 
-        branch_count_rows = await db.query_raw(
-            f"""
+        branch_count_rows = await db.query_raw(f"""
             SELECT COUNT(*) AS count
             FROM userspace_snapshot_branches
             WHERE workspace_id = {self._sql_quote(workspace_id)}
-            """
-        )
+            """)
         branch_count = (
             int(branch_count_rows[0].get("count") or 0) if branch_count_rows else 0
         )
@@ -17138,14 +17069,12 @@ class UserSpaceService:
         branch_ref_name = self._branch_ref_name(new_branch_id)
 
         # Fetch source snapshot details so the new branch has a visible snapshot
-        source_rows = await db.query_raw(
-            f"""
+        source_rows = await db.query_raw(f"""
             SELECT git_commit_hash, remote_commit_hash, message, file_count
             FROM userspace_snapshots
             WHERE id = {self._sql_quote(current_snapshot_id)}
             LIMIT 1
-            """
-        )
+            """)
         if not source_rows:
             raise HTTPException(status_code=404, detail="Source snapshot not found")
         source = source_rows[0]
@@ -17158,8 +17087,7 @@ class UserSpaceService:
 
         async with self._snapshot_operation_semaphore:
             await self._run_git(workspace_id, ["checkout", "-b", branch_ref_name])
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 INSERT INTO userspace_snapshot_branches
                 (id, workspace_id, name, git_ref_name, base_snapshot_id,
                  branched_from_snapshot_id, is_active, created_at, updated_at)
@@ -17174,16 +17102,14 @@ class UserSpaceService:
                     NOW(),
                     NOW()
                 )
-                """
-            )
+                """)
             # Create an initial snapshot on the new branch so it appears in the timeline
             remote_col = (
                 self._sql_quote(str(source_remote_commit))
                 if source_remote_commit
                 else "NULL"
             )
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 INSERT INTO userspace_snapshots
                 (id, workspace_id, branch_id, git_commit_hash, remote_commit_hash,
                  message, file_count, parent_snapshot_id, created_by_user_id,
@@ -17201,8 +17127,7 @@ class UserSpaceService:
                     NOW(),
                     NOW()
                 )
-                """
-            )
+                """)
             await self._activate_branch(workspace_id, new_branch_id)
             await self._set_current_snapshot_cursor(
                 workspace_id, new_snapshot_id, new_branch_id
@@ -17225,15 +17150,13 @@ class UserSpaceService:
         db = await get_db()
 
         # Load the branch to promote
-        target_rows = await db.query_raw(
-            f"""
+        target_rows = await db.query_raw(f"""
             SELECT id, name, git_ref_name
             FROM userspace_snapshot_branches
             WHERE workspace_id = {self._sql_quote(workspace_id)}
               AND id = {self._sql_quote(branch_id)}
             LIMIT 1
-            """
-        )
+            """)
         if not target_rows:
             raise HTTPException(status_code=404, detail="Branch not found")
         target = target_rows[0]
@@ -17243,47 +17166,40 @@ class UserSpaceService:
             raise HTTPException(status_code=400, detail="Branch is already Main")
 
         # Find the current Main branch (by name)
-        main_rows = await db.query_raw(
-            f"""
+        main_rows = await db.query_raw(f"""
             SELECT id, name
             FROM userspace_snapshot_branches
             WHERE workspace_id = {self._sql_quote(workspace_id)}
               AND name = 'Main'
             LIMIT 1
-            """
-        )
+            """)
 
         async with self._snapshot_operation_semaphore:
             # Rename old Main to the promoted branch's former name
             if main_rows:
                 old_main_id = str(main_rows[0].get("id") or "")
                 demoted_name = old_target_name if old_target_name else "Former Main"
-                await db.execute_raw(
-                    f"""
+                await db.execute_raw(f"""
                     UPDATE userspace_snapshot_branches
                     SET name = {self._sql_quote(demoted_name)},
                         updated_at = NOW()
                     WHERE workspace_id = {self._sql_quote(workspace_id)}
                       AND id = {self._sql_quote(old_main_id)}
-                    """
-                )
+                    """)
 
             # Rename promoted branch to Main
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 UPDATE userspace_snapshot_branches
                 SET name = 'Main',
                     updated_at = NOW()
                 WHERE workspace_id = {self._sql_quote(workspace_id)}
                   AND id = {self._sql_quote(branch_id)}
-                """
-            )
+                """)
 
             # Make the promoted branch active and switch to it
             await self._activate_branch(workspace_id, branch_id)
             # Set cursor to the promoted branch's head
-            head_rows = await db.query_raw(
-                f"""
+            head_rows = await db.query_raw(f"""
                 SELECT s.id
                 FROM userspace_snapshots s
                 WHERE s.workspace_id = {self._sql_quote(workspace_id)}
@@ -17297,8 +17213,7 @@ class UserSpaceService:
                   )
                 ORDER BY s.created_at DESC, s.id DESC
                 LIMIT 1
-                """
-            )
+                """)
             head_snapshot_id = str(head_rows[0].get("id")) if head_rows else None
             await self._set_current_snapshot_cursor(
                 workspace_id, head_snapshot_id, branch_id
@@ -17328,8 +17243,7 @@ class UserSpaceService:
         db = await get_db()
 
         # Load the snapshot and verify it belongs to this workspace.
-        snap_rows = await db.query_raw(
-            f"""
+        snap_rows = await db.query_raw(f"""
             SELECT s.id, s.branch_id, s.parent_snapshot_id,
                    b.git_ref_name, b.name AS branch_name
             FROM userspace_snapshots s
@@ -17337,8 +17251,7 @@ class UserSpaceService:
             WHERE s.workspace_id = {self._sql_quote(workspace_id)}
               AND s.id = {self._sql_quote(snapshot_id)}
             LIMIT 1
-            """
-        )
+            """)
         if not snap_rows:
             raise HTTPException(status_code=404, detail="Snapshot not found")
 
@@ -17352,14 +17265,12 @@ class UserSpaceService:
         )
 
         # Reject if this snapshot has children (not a head).
-        child_rows = await db.query_raw(
-            f"""
+        child_rows = await db.query_raw(f"""
             SELECT id FROM userspace_snapshots
             WHERE workspace_id = {self._sql_quote(workspace_id)}
               AND parent_snapshot_id = {self._sql_quote(snapshot_id)}
             LIMIT 1
-            """
-        )
+            """)
         if child_rows:
             raise HTTPException(
                 status_code=409,
@@ -17367,14 +17278,12 @@ class UserSpaceService:
             )
 
         # Load workspace cursor so we know if this is the current snapshot.
-        cursor_rows = await db.query_raw(
-            f"""
+        cursor_rows = await db.query_raw(f"""
             SELECT current_snapshot_id, current_snapshot_branch_id
             FROM workspaces
             WHERE id = {self._sql_quote(workspace_id)}
             LIMIT 1
-            """
-        )
+            """)
         cursor = cursor_rows[0] if cursor_rows else {}
         current_snapshot_id = (
             str(cursor.get("current_snapshot_id"))
@@ -17383,46 +17292,38 @@ class UserSpaceService:
         )
 
         async with self._snapshot_operation_semaphore:
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 UPDATE conversation_branches
                 SET associated_snapshot_id = NULL,
                     updated_at = NOW()
                 WHERE associated_snapshot_id = {self._sql_quote(snapshot_id)}
-                """
-            )
+                """)
 
             # Delete the snapshot record.
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 DELETE FROM userspace_snapshots
                 WHERE workspace_id = {self._sql_quote(workspace_id)}
                   AND id = {self._sql_quote(snapshot_id)}
-                """
-            )
+                """)
 
             # Count remaining snapshots on this branch.
-            count_rows = await db.query_raw(
-                f"""
+            count_rows = await db.query_raw(f"""
                 SELECT COUNT(*) AS cnt
                 FROM userspace_snapshots
                 WHERE workspace_id = {self._sql_quote(workspace_id)}
                   AND branch_id = {self._sql_quote(branch_id)}
-                """
-            )
+                """)
             remaining_on_branch = int(
                 count_rows[0].get("cnt") or 0 if count_rows else 0
             )
 
             if remaining_on_branch == 0:
                 # Branch is now empty — delete it.
-                await db.execute_raw(
-                    f"""
+                await db.execute_raw(f"""
                     DELETE FROM userspace_snapshot_branches
                     WHERE workspace_id = {self._sql_quote(workspace_id)}
                       AND id = {self._sql_quote(branch_id)}
-                    """
-                )
+                    """)
                 # Delete the git branch ref if it exists.
                 if branch_ref_name:
                     await self._run_git(
@@ -17432,8 +17333,7 @@ class UserSpaceService:
                     )
 
                 # Find another branch to become active.
-                other_rows = await db.query_raw(
-                    f"""
+                other_rows = await db.query_raw(f"""
                     SELECT b.id AS branch_id, b.git_ref_name,
                            s.id AS head_snapshot_id
                     FROM userspace_snapshot_branches b
@@ -17447,8 +17347,7 @@ class UserSpaceService:
                     WHERE b.workspace_id = {self._sql_quote(workspace_id)}
                     ORDER BY b.created_at ASC
                     LIMIT 1
-                    """
-                )
+                    """)
                 if other_rows:
                     new_branch_id = str(other_rows[0].get("branch_id") or "")
                     new_ref = str(other_rows[0].get("git_ref_name") or "")

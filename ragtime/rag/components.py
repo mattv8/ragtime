@@ -51,6 +51,7 @@ from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
+from ragtime.core.database import get_db
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
 from ragtime.core.file_constants import (
     USERSPACE_MODULE_SOURCE_EXTENSIONS,
@@ -115,6 +116,8 @@ from ragtime.rag.prompts import (
     UI_VISUALIZATION_CHAT_PROMPT,
     UI_VISUALIZATION_COMMON_PROMPT,
     UI_VISUALIZATION_USERSPACE_PROMPT,
+    build_current_user_prompt_fragment,
+    build_current_user_turn_reminder_line,
     build_index_system_prompt,
     build_tool_system_prompt,
     build_userspace_entrypoint_nudge,
@@ -10625,6 +10628,8 @@ except Exception as e:
         blocked_tool_names: Optional[set[str]],
         workspace_context: Optional[dict[str, Any]],
         add_chat_visualization_prompt: bool,
+        user_id: Optional[str] = None,
+        current_user_context: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Build request-scoped runtime tools, mode, and prompt additions once."""
         t0 = time.monotonic()
@@ -10656,10 +10661,63 @@ except Exception as e:
         if not isinstance(workspace_id, str):
             workspace_id = str(workspace_id or "")
         workspace_id = workspace_id.strip()
-        user_id = (workspace_context or {}).get("user_id", "")
-        if not isinstance(user_id, str):
-            user_id = str(user_id or "")
-        user_id = user_id.strip()
+        request_user_id = (current_user_context or {}).get("user_id", user_id)
+        if not request_user_id:
+            request_user_id = (workspace_context or {}).get("user_id", "")
+        if not isinstance(request_user_id, str):
+            request_user_id = str(request_user_id or "")
+        request_user_id = request_user_id.strip()
+        username = (current_user_context or {}).get(
+            "username",
+            (workspace_context or {}).get("username", ""),
+        )
+        if not isinstance(username, str):
+            username = str(username or "")
+        username = username.strip()
+        display_name = (current_user_context or {}).get(
+            "display_name",
+            (workspace_context or {}).get("display_name", ""),
+        )
+        if not isinstance(display_name, str):
+            display_name = str(display_name or "")
+        display_name = display_name.strip()
+        display_name_supplied = bool(
+            (
+                isinstance(current_user_context, dict)
+                and "display_name" in current_user_context
+            )
+            or (
+                isinstance(workspace_context, dict)
+                and "display_name" in workspace_context
+            )
+        )
+        if request_user_id and (not username or not display_name_supplied):
+            current_user = None
+            try:
+                db = await get_db()
+                current_user = await db.user.find_unique(where={"id": request_user_id})
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve current user identity for prompt context: %s",
+                    _format_exception_message(exc),
+                )
+
+            if current_user is not None:
+                if not username:
+                    username = str(getattr(current_user, "username", "") or "").strip()
+                if not display_name_supplied:
+                    display_name = str(
+                        getattr(current_user, "displayName", "") or ""
+                    ).strip()
+
+        user_identity_prompt_fragment = build_current_user_prompt_fragment(
+            username=username,
+            display_name=display_name,
+        )
+        user_identity_turn_line = build_current_user_turn_reminder_line(
+            username=username,
+            display_name=display_name,
+        )
         raw_accessible_modes = (workspace_context or {}).get(
             "accessible_workspace_modes", {}
         )
@@ -10673,10 +10731,13 @@ except Exception as e:
                 if value_str not in ("read", "read_write"):
                     value_str = "read"
                 accessible_workspace_modes[key_str] = value_str
-        has_workspace_context = bool(workspace_id and user_id)
+        has_workspace_context = bool(workspace_id and request_user_id)
 
         if has_workspace_context:
-            workspace = await userspace_service.get_workspace(workspace_id, user_id)
+            workspace = await userspace_service.get_workspace(
+                workspace_id,
+                request_user_id,
+            )
             allowed_tool_config_ids = list(workspace.selected_tool_ids)
 
             # Expand group selections: add all enabled tools from selected groups
@@ -10700,13 +10761,19 @@ except Exception as e:
             ) = await asyncio.gather(
                 userspace_service.list_workspace_env_var_summaries(
                     workspace_id,
-                    user_id,
+                    request_user_id,
                 ),
-                userspace_service.list_workspace_mounts(workspace_id, user_id),
-                userspace_service.list_mountable_sources(workspace_id, user_id),
+                userspace_service.list_workspace_mounts(
+                    workspace_id,
+                    request_user_id,
+                ),
+                userspace_service.list_mountable_sources(
+                    workspace_id,
+                    request_user_id,
+                ),
                 userspace_service.get_workspace_object_storage_summary(
                     workspace_id,
-                    user_id,
+                    request_user_id,
                 ),
             )
             userspace_env_var_turn_hint = self._build_userspace_env_var_turn_hint(
@@ -10715,7 +10782,7 @@ except Exception as e:
 
             userspace_tools = await self._create_userspace_file_tools(
                 workspace_id,
-                user_id,
+                request_user_id,
                 accessible_workspace_modes=accessible_workspace_modes,
             )
             runtime_tools = [
@@ -10753,7 +10820,7 @@ except Exception as e:
 
             continuity_ctx = await self._build_userspace_continuity_prompt(
                 workspace_id=workspace_id,
-                user_id=user_id,
+                user_id=request_user_id,
                 ep_status=ep_status,
                 is_default_entrypoint=is_default,
                 accessible_workspace_modes=accessible_workspace_modes,
@@ -10814,6 +10881,9 @@ except Exception as e:
                 )
             )
 
+        if user_identity_prompt_fragment:
+            prompt_additions = user_identity_prompt_fragment + prompt_additions
+
         elapsed_ms = (time.monotonic() - t0) * 1000
         prompt_bytes = len(prompt_additions.encode("utf-8", errors="replace"))
         logger.debug(
@@ -10832,6 +10902,7 @@ except Exception as e:
             "prompt_additions": prompt_additions,
             "include_sqlite_persistence": include_sqlite_persistence,
             "userspace_env_var_turn_hint": userspace_env_var_turn_hint,
+            "user_identity_turn_line": user_identity_turn_line,
             "request_tool_state": request_tool_state,
             "workspace_id": workspace_id or None,
         }
@@ -11382,6 +11453,7 @@ except Exception as e:
         conversation_model: Optional[str] = None,
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        current_user_context: Optional[dict[str, Any]] = None,
         chat_task_id: Optional[str] = None,
         message_index: Optional[int] = None,
     ) -> str:
@@ -11412,6 +11484,8 @@ except Exception as e:
                 blocked_tool_names=blocked_tool_names,
                 workspace_context=workspace_context,
                 add_chat_visualization_prompt=True,
+                user_id=user_id,
+                current_user_context=current_user_context,
             )
             system_prompt = self._build_request_system_prompt(
                 is_ui=request_context["prompt_is_ui"],
@@ -11425,7 +11499,8 @@ except Exception as e:
             tool_scope_prompt = ""
 
             # Build per-turn system content (reminders + context headroom)
-            turn_system_content = self._build_turn_reminder_text(
+            turn_system_content = request_context["user_identity_turn_line"]
+            turn_system_content += self._build_turn_reminder_text(
                 request_context["mode"],
                 include_sqlite_persistence=request_context[
                     "include_sqlite_persistence"
@@ -11632,6 +11707,7 @@ except Exception as e:
         conversation_model: Optional[str] = None,
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        current_user_context: Optional[dict[str, Any]] = None,
         chat_task_id: Optional[str] = None,
         message_index: Optional[int] = None,
     ):
@@ -11671,6 +11747,8 @@ except Exception as e:
             blocked_tool_names=blocked_tool_names,
             workspace_context=workspace_context,
             add_chat_visualization_prompt=is_ui,
+            user_id=user_id,
+            current_user_context=current_user_context,
         )
         system_prompt = self._build_request_system_prompt(
             is_ui=request_context["prompt_is_ui"],
@@ -11684,7 +11762,8 @@ except Exception as e:
         tool_scope_prompt = ""
 
         # Build per-turn system content (reminders + context headroom)
-        turn_system_content = self._build_turn_reminder_text(
+        turn_system_content = request_context["user_identity_turn_line"]
+        turn_system_content += self._build_turn_reminder_text(
             request_context["mode"],
             include_sqlite_persistence=request_context["include_sqlite_persistence"],
             userspace_env_var_turn_hint=request_context["userspace_env_var_turn_hint"],
