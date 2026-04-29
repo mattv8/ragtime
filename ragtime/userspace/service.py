@@ -6,10 +6,13 @@ import hmac
 import io
 import json
 import os
+import posixpath
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time as _time
 import zipfile
@@ -20,14 +23,11 @@ from typing import Any, Callable, Literal, TypedDict, cast
 from urllib.parse import quote
 from uuid import uuid4
 
-import posixpath
-import secrets
-import tarfile
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
+
 from prisma import Json
 from prisma import fields as prisma_fields
-
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -2305,6 +2305,133 @@ class UserSpaceService:
                     UpdateWorkspaceMountRequest(enabled=False),
                 )
 
+    @staticmethod
+    def _normalize_workspace_archive_selection_ids(raw_ids: Any) -> list[str]:
+        if not isinstance(raw_ids, list):
+            return []
+        normalized_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for raw_value in raw_ids:
+            source_id = str(raw_value or "").strip()
+            if not source_id or source_id in seen_ids:
+                continue
+            seen_ids.add(source_id)
+            normalized_ids.append(source_id)
+        return normalized_ids
+
+    @staticmethod
+    def _append_workspace_archive_selection_ids(
+        collected_ids: list[str],
+        seen_ids: set[str],
+        raw_ids: Any,
+    ) -> None:
+        for source_id in UserSpaceService._normalize_workspace_archive_selection_ids(
+            raw_ids
+        ):
+            if source_id in seen_ids:
+                continue
+            seen_ids.add(source_id)
+            collected_ids.append(source_id)
+
+    @staticmethod
+    async def _resolve_existing_workspace_archive_selection_ids(
+        table: Any,
+        source_ids: list[str],
+        *,
+        require_enabled: bool = False,
+    ) -> tuple[set[str], int]:
+        allowed_ids: set[str] = set()
+        skipped_count = 0
+        for source_id in source_ids:
+            record = await table.find_unique(where={"id": source_id})
+            if record is None:
+                skipped_count += 1
+                continue
+            if require_enabled and not getattr(record, "enabled", False):
+                skipped_count += 1
+                continue
+            allowed_ids.add(source_id)
+        return allowed_ids, skipped_count
+
+    @staticmethod
+    def _filter_workspace_archive_selection_ids(
+        raw_ids: Any,
+        allowed_ids: set[str],
+    ) -> list[str]:
+        filtered_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for source_id in UserSpaceService._normalize_workspace_archive_selection_ids(
+            raw_ids
+        ):
+            if source_id not in allowed_ids or source_id in seen_ids:
+                continue
+            seen_ids.add(source_id)
+            filtered_ids.append(source_id)
+        return filtered_ids
+
+    async def _resolve_workspace_archive_selection_id_sets(
+        self,
+        manifest: dict[str, Any],
+    ) -> tuple[set[str], set[str], list[str]]:
+        db = await get_db()
+        workspace_meta = cast(dict[str, Any], manifest.get("workspace") or {})
+
+        tool_source_ids: list[str] = []
+        tool_source_seen: set[str] = set()
+        self._append_workspace_archive_selection_ids(
+            tool_source_ids,
+            tool_source_seen,
+            workspace_meta.get("selected_tool_ids"),
+        )
+
+        group_source_ids: list[str] = []
+        group_source_seen: set[str] = set()
+        self._append_workspace_archive_selection_ids(
+            group_source_ids,
+            group_source_seen,
+            workspace_meta.get("selected_tool_group_ids"),
+        )
+
+        for payload in cast(list[dict[str, Any]], manifest.get("chats") or []):
+            self._append_workspace_archive_selection_ids(
+                tool_source_ids,
+                tool_source_seen,
+                payload.get("tool_config_ids"),
+            )
+            self._append_workspace_archive_selection_ids(
+                group_source_ids,
+                group_source_seen,
+                payload.get("tool_group_ids"),
+            )
+
+        allowed_tool_ids, skipped_tool_count = (
+            await self._resolve_existing_workspace_archive_selection_ids(
+                db.toolconfig,
+                tool_source_ids,
+                require_enabled=True,
+            )
+        )
+        allowed_tool_group_ids, skipped_tool_group_count = (
+            await self._resolve_existing_workspace_archive_selection_ids(
+                db.toolgroup,
+                group_source_ids,
+            )
+        )
+
+        warnings: list[str] = []
+        if skipped_tool_count:
+            plural = "s" if skipped_tool_count != 1 else ""
+            warnings.append(
+                f"Skipped {skipped_tool_count} archived tool selection reference{plural} because matching enabled tools were not available in this instance"
+            )
+        if skipped_tool_group_count:
+            plural = "s" if skipped_tool_group_count != 1 else ""
+            warnings.append(
+                f"Skipped {skipped_tool_group_count} archived tool group reference{plural} because matching tool groups were not available in this instance"
+            )
+
+        return allowed_tool_ids, allowed_tool_group_ids, warnings
+
     async def _serialize_workspace_chat_payloads(
         self,
         workspace_id: str,
@@ -2387,6 +2514,9 @@ class UserSpaceService:
         workspace_id: str,
         user_id: str,
         chat_payloads: list[dict[str, Any]],
+        *,
+        allowed_tool_config_ids: set[str] | None = None,
+        allowed_tool_group_ids: set[str] | None = None,
     ) -> int:
         def _rekey_chat_messages(
             raw_messages: Any,
@@ -2479,14 +2609,35 @@ class UserSpaceService:
                 }
             )
 
-            for tool_config_id in payload.get("tool_config_ids") or []:
+            resolved_tool_config_ids = (
+                self._filter_workspace_archive_selection_ids(
+                    payload.get("tool_config_ids"),
+                    allowed_tool_config_ids,
+                )
+                if allowed_tool_config_ids is not None
+                else self._normalize_workspace_archive_selection_ids(
+                    payload.get("tool_config_ids")
+                )
+            )
+            for tool_config_id in resolved_tool_config_ids:
                 await db.conversationtoolselection.create(
                     data={
                         "conversationId": cloned_conversation_id,
                         "toolConfigId": str(tool_config_id),
                     }
                 )
-            for tool_group_id in payload.get("tool_group_ids") or []:
+
+            resolved_tool_group_ids = (
+                self._filter_workspace_archive_selection_ids(
+                    payload.get("tool_group_ids"),
+                    allowed_tool_group_ids,
+                )
+                if allowed_tool_group_ids is not None
+                else self._normalize_workspace_archive_selection_ids(
+                    payload.get("tool_group_ids")
+                )
+            )
+            for tool_group_id in resolved_tool_group_ids:
                 await db.conversationtoolgroupselection.create(
                     data={
                         "conversationId": cloned_conversation_id,
@@ -3440,6 +3591,12 @@ class UserSpaceService:
     ) -> tuple[list[str], int, int]:
         warnings: list[str] = []
         workspace_meta = cast(dict[str, Any], manifest.get("workspace") or {})
+        (
+            allowed_tool_ids,
+            allowed_tool_group_ids,
+            resolution_warnings,
+        ) = await self._resolve_workspace_archive_selection_id_sets(manifest)
+        warnings.extend(resolution_warnings)
         update_request = UpdateWorkspaceRequest(
             name=None,
             description=workspace_meta.get("description"),
@@ -3447,13 +3604,14 @@ class UserSpaceService:
                 SqlitePersistenceMode,
                 str(workspace_meta.get("sqlite_persistence_mode") or "include"),
             ),
-            selected_tool_ids=[
-                str(value) for value in (workspace_meta.get("selected_tool_ids") or [])
-            ],
-            selected_tool_group_ids=[
-                str(value)
-                for value in (workspace_meta.get("selected_tool_group_ids") or [])
-            ],
+            selected_tool_ids=self._filter_workspace_archive_selection_ids(
+                workspace_meta.get("selected_tool_ids"),
+                allowed_tool_ids,
+            ),
+            selected_tool_group_ids=self._filter_workspace_archive_selection_ids(
+                workspace_meta.get("selected_tool_group_ids"),
+                allowed_tool_group_ids,
+            ),
         )
         await self.update_workspace(workspace_id, update_request, user_id)
 
@@ -3504,6 +3662,8 @@ class UserSpaceService:
                 workspace_id,
                 user_id,
                 cast(list[dict[str, Any]], manifest.get("chats") or []),
+                allowed_tool_config_ids=allowed_tool_ids,
+                allowed_tool_group_ids=allowed_tool_group_ids,
             )
         return warnings, imported_snapshot_count, imported_chat_count
 
