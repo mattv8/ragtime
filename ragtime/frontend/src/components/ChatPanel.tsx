@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import katex from 'katex';
+import 'katex/dist/katex.min.css';
 import { diffLines } from 'diff';
 import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2 } from 'lucide-react';
 import { api } from '@/api';
@@ -50,6 +54,40 @@ function CodeBlock({ className, children }: CodeBlockProps) {
     return className.replace('language-', '') || 'text';
   }, [className]);
 
+  const isLatexBlock = useMemo(() => {
+    const normalized = language.toLowerCase();
+    return normalized === 'latex' || normalized === 'tex' || normalized === 'katex' || normalized === 'math';
+  }, [language]);
+
+  const renderedLatex = useMemo(() => {
+    if (!isLatexBlock || !codeText.trim()) {
+      return { html: null as string | null, error: null as string | null };
+    }
+
+    try {
+      const html = katex.renderToString(codeText, {
+        displayMode: true,
+        throwOnError: true,
+        strict: 'warn',
+      });
+
+      return { html, error: null as string | null };
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Invalid LaTeX expression.';
+
+      const html = katex.renderToString(codeText, {
+        displayMode: true,
+        throwOnError: false,
+        strict: 'ignore',
+      });
+
+      return {
+        html,
+        error: errorMessage,
+      };
+    }
+  }, [codeText, isLatexBlock]);
+
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(codeText);
@@ -59,6 +97,32 @@ function CodeBlock({ className, children }: CodeBlockProps) {
       console.error('Failed to copy code block:', err);
     }
   }, [codeText]);
+
+  if (isLatexBlock && renderedLatex.html) {
+    return (
+      <div className="markdown-codeblock markdown-codeblock-latex">
+        <div className="markdown-codeblock-header">
+          <span className="markdown-codeblock-lang">latex</span>
+          <button
+            type="button"
+            className={`markdown-codeblock-copy ${copied ? 'is-copied' : ''}`}
+            onClick={handleCopy}
+            aria-label={copied ? 'LaTeX copied' : 'Copy LaTeX'}
+          >
+            {copied ? <Check size={14} /> : <Copy size={14} />}
+            <span>{copied ? 'Copied' : 'Copy'}</span>
+          </button>
+        </div>
+        <div className="markdown-latex-render" dangerouslySetInnerHTML={{ __html: renderedLatex.html }} />
+        {renderedLatex.error && (
+          <div className="markdown-latex-error">
+            <p className="markdown-latex-error-message">Rendered with LaTeX parse warning: {renderedLatex.error}</p>
+            <pre className="markdown-latex-source"><code>{codeText}</code></pre>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="markdown-codeblock">
@@ -95,7 +159,15 @@ const markdownComponents: Components = {
 // Memoized markdown component to prevent re-parsing on every render
 // Only re-renders when content actually changes
 export const MemoizedMarkdown = memo(function MemoizedMarkdown({ content }: { content: string }) {
-  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{content}</ReactMarkdown>;
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex]}
+      components={markdownComponents}
+    >
+      {content}
+    </ReactMarkdown>
+  );
 });
 
 // Tool call info for display during streaming
