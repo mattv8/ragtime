@@ -14,7 +14,6 @@ Usage:
 import asyncio
 import html
 import os
-import secrets
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import quote, urlencode
 
+import secrets
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Query, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
@@ -42,6 +42,7 @@ from ragtime import __version__
 from ragtime.api import router
 from ragtime.api.auth import (
     AUTH_CODE_EXPIRY,
+    RedirectUriValidationResult,
     _auth_codes,
     _cleanup_expired_auth_codes,
     authenticate,
@@ -81,6 +82,7 @@ from ragtime.mcp.oauth import (
 )
 from ragtime.mcp.routes import get_mcp_routes, mcp_lifespan_manager
 from ragtime.mcp.routes import router as mcp_router
+from ragtime.oauth_redirects import DEFAULT_ALLOWED_ORIGINS, build_allowed_origins
 from ragtime.rag import rag
 from ragtime.userspace.preview_host import PreviewHostDispatchMiddleware
 from ragtime.userspace.routes import router as userspace_router
@@ -304,10 +306,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # CORS middleware
 # Note: allow_origins=["*"] with allow_credentials=True is problematic per CORS spec.
-# When ALLOWED_ORIGINS is unset, default to loopback-only origins; dev clients
-# on arbitrary localhost ports are still matched via allow_origin_regex below.
+# When ALLOWED_ORIGINS is unset, default to loopback origins plus built-in
+# trusted web OAuth callback origins; dev clients on arbitrary localhost ports
+# are still matched via allow_origin_regex below.
 # For production, set ALLOWED_ORIGINS to specific origins like
 # "https://ragtime.example.com".
+origins = build_allowed_origins(settings.allowed_origins)
 if settings.allowed_origins == "*":
     origins = ["*"]
     logger.warning(
@@ -315,17 +319,12 @@ if settings.allowed_origins == "*":
         "For production, set ALLOWED_ORIGINS to specific trusted origins."
     )
 else:
-    origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
-    # Always allow loopback addresses for OAuth callbacks (RFC 8252)
-    # These are safe because they only allow requests from the local machine
-    loopback_origins = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
-    for lb in loopback_origins:
-        if lb not in origins:
-            origins.append(lb)
     if not settings.allowed_origins:
         logger.info(
-            "CORS: ALLOWED_ORIGINS unset; defaulting to loopback-only origins. "
-            "Set ALLOWED_ORIGINS to an explicit list for non-loopback deployments."
+            "CORS: ALLOWED_ORIGINS unset; defaulting to loopback origins plus "
+            "built-in trusted OAuth web origins %s. Set ALLOWED_ORIGINS to an "
+            "explicit list for non-loopback deployments.",
+            list(DEFAULT_ALLOWED_ORIGINS),
         )
     else:
         logger.info(f"CORS: Allowing origins: {origins}")
@@ -586,23 +585,33 @@ async def authorize_get(
     )
 
     # Validate redirect_uri (security: prevent open redirect attacks)
-    # Only loopback addresses allowed per RFC 8252 for native apps
-    if not validate_redirect_uri(redirect_uri):
-        return HTMLResponse(
-            content="<h1>Error</h1><p>Invalid redirect_uri. Only loopback addresses (127.0.0.1, localhost) are allowed for native OAuth2 clients per RFC 8252.</p>",
-            status_code=400,
+    # Allows loopback callbacks, trusted IDE callback domains, and exact
+    # callback URLs listed in OAUTH_TRUSTED_REDIRECT_URIS.
+    redirect_validation = validate_redirect_uri(redirect_uri)
+    if not redirect_validation.is_valid:
+        error_params: list[tuple[str, str]] = [
+            ("oauth_error_title", "OAuth Callback Rejected"),
+            ("oauth_error_summary", redirect_validation.summary),
+        ]
+        for step in redirect_validation.next_steps:
+            error_params.append(("oauth_next_steps", step))
+        return RedirectResponse(
+            url=f"/?{urlencode(error_params)}",
+            status_code=302,
         )
 
     if response_type != "code":
-        return HTMLResponse(
-            content=f"<h1>Error</h1><p>Unsupported response_type: {response_type}</p>",
-            status_code=400,
+        summary = f"Unsupported response_type '{response_type}'. This endpoint only supports OAuth authorization code flows."
+        return RedirectResponse(
+            url=f"/?{urlencode([('oauth_error_title', 'Unsupported Response Type'), ('oauth_error_summary', summary)])}",
+            status_code=302,
         )
 
     if code_challenge_method != "S256":
-        return HTMLResponse(
-            content=f"<h1>Error</h1><p>Unsupported code_challenge_method: {code_challenge_method}. Only S256 is supported.</p>",
-            status_code=400,
+        summary = f"Unsupported code_challenge_method '{code_challenge_method}'. This endpoint only supports S256."
+        return RedirectResponse(
+            url=f"/?{urlencode([('oauth_error_title', 'Unsupported PKCE Method'), ('oauth_error_summary', summary)])}",
+            status_code=302,
         )
 
     # Redirect to frontend with OAuth params preserved
@@ -641,12 +650,11 @@ async def authorize_post(
     Rate limited to prevent brute-force attacks on OAuth login.
     """
     # Validate redirect_uri (security: prevent open redirect attacks)
-    if not validate_redirect_uri(redirect_uri):
+    redirect_validation = validate_redirect_uri(redirect_uri)
+    if not redirect_validation.is_valid:
         return JSONResponse(
             status_code=400,
-            content={
-                "error": "Invalid redirect_uri. Only loopback addresses are allowed."
-            },
+            content=_oauth_redirect_error_payload(redirect_validation),
         )
 
     # Authenticate user
@@ -729,12 +737,11 @@ async def authorize_with_session(
     using their session cookie instead of requiring username/password.
     """
     # Validate redirect_uri (security: prevent open redirect attacks)
-    if not validate_redirect_uri(redirect_uri):
+    redirect_validation = validate_redirect_uri(redirect_uri)
+    if not redirect_validation.is_valid:
         return JSONResponse(
             status_code=400,
-            content={
-                "error": "Invalid redirect_uri. Only loopback addresses are allowed."
-            },
+            content=_oauth_redirect_error_payload(redirect_validation),
         )
 
     # Extract session token from cookie
@@ -876,6 +883,20 @@ def _share_reserved_roots() -> set[str]:
         "shared",
         "v1",
     }
+
+
+def _oauth_redirect_error_payload(
+    validation: RedirectUriValidationResult,
+) -> dict[str, object]:
+    error_message = validation.summary
+    if validation.next_steps:
+        error_message = (
+            f"{validation.summary} Next steps: {' '.join(validation.next_steps)}"
+        )
+    payload: dict[str, object] = {"error": error_message}
+    if validation.next_steps:
+        payload["next_steps"] = list(validation.next_steps)
+    return payload
 
 
 def _render_share_unlock_prompt(

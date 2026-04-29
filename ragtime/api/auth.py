@@ -8,8 +8,9 @@ import asyncio
 import base64
 import hashlib
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal, Optional
+from typing import Literal, Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import (
@@ -24,11 +25,11 @@ from fastapi import (
     status,
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
+from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
-from prisma import Json
 from ragtime.config.settings import settings
 from ragtime.core.api_accounting import (
     get_api_daily_trend,
@@ -68,30 +69,17 @@ from ragtime.core.usage_accounting import (
     get_user_daily_usage_series,
     get_user_usage_summary,
 )
+from ragtime.oauth_redirects import (
+    DEFAULT_TRUSTED_REDIRECT_URIS,
+    LOOPBACK_REDIRECT_HOSTS,
+    TRUSTED_IDE_REDIRECT_HOSTS,
+    TRUSTED_NATIVE_REDIRECT_SCHEMES,
+    build_allowed_origins,
+)
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
-
-TRUSTED_NATIVE_REDIRECT_SCHEMES = {
-    "vscode",
-    "vscode-insiders",
-    "cursor",
-    "windsurf",
-    "jetbrains",
-}
-
-TRUSTED_IDE_REDIRECT_HOSTS = {
-    "vscode.dev",
-    "insiders.vscode.dev",
-    "github.dev",
-    "account.jetbrains.com",
-}
-
-DEFAULT_TRUSTED_REDIRECT_URIS = {
-    "https://claude.ai/oauth/callback",
-    "https://claude.ai/api/mcp/auth_callback",
-}
 
 # In-memory storage for authorization codes (short-lived, 10 min expiry)
 # Format: {code: {"client_id": str, "redirect_uri": str, "code_challenge": str,
@@ -101,13 +89,53 @@ AUTH_CODE_EXPIRY = 600  # 10 minutes
 MAX_AUTH_CODES = 10000  # Prevent memory exhaustion from code accumulation
 
 
+@dataclass(frozen=True)
+class RedirectUriValidationResult:
+    is_valid: bool
+    summary: str = ""
+    log_message: str = ""
+    normalized_uri: str = ""
+    callback_origin: str = ""
+    next_steps: Tuple[str, ...] = ()
+
+
 def _usage_window_start(days: int) -> datetime:
     """Return the UTC start-of-day for an inclusive N-day usage window."""
     today_utc = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     return today_utc - timedelta(days=days - 1)
 
 
-def validate_redirect_uri(redirect_uri: str) -> bool:
+def _normalize_redirect_uri(uri: str) -> str:
+    parsed_uri = urlparse(uri)
+    if parsed_uri.hostname is None:
+        return ""
+
+    host = parsed_uri.hostname.lower()
+    port = f":{parsed_uri.port}" if parsed_uri.port is not None else ""
+    path = parsed_uri.path or ""
+    return f"{parsed_uri.scheme.lower()}://{host}{port}{path}"
+
+
+def _redirect_uri_origin(uri: str) -> str:
+    parsed_uri = urlparse(uri)
+    if parsed_uri.hostname is None or not parsed_uri.scheme:
+        return ""
+    port = f":{parsed_uri.port}" if parsed_uri.port is not None else ""
+    return f"{parsed_uri.scheme.lower()}://{parsed_uri.hostname.lower()}{port}"
+
+
+def _redirect_uri_allow_origin_step(origin: str) -> Optional[str]:
+    if not origin or settings.allowed_origins == "*":
+        return None
+    if origin in build_allowed_origins(settings.allowed_origins):
+        return None
+    return (
+        f"If this callback exchanges the authorization code from a browser on '{origin}', "
+        f"also add '{origin}' to ALLOWED_ORIGINS."
+    )
+
+
+def validate_redirect_uri(redirect_uri: str) -> RedirectUriValidationResult:
     """
     Validate redirect_uri for OAuth2 security.
 
@@ -127,59 +155,58 @@ def validate_redirect_uri(redirect_uri: str) -> bool:
     - http://[::1]:<port>/<path>
     """
     try:
-
-        def _normalize_redirect_uri(uri: str) -> str:
-            parsed_uri = urlparse(uri)
-            if parsed_uri.hostname is None:
-                return ""
-
-            # Normalize to scheme://host[:port]/path for deterministic exact matching.
-            # Query/fragment are excluded because callback registration typically
-            # keys on the base endpoint.
-            host = parsed_uri.hostname.lower()
-            port = f":{parsed_uri.port}" if parsed_uri.port is not None else ""
-            path = parsed_uri.path or ""
-            return f"{parsed_uri.scheme.lower()}://{host}{port}{path}"
-
         parsed = urlparse(redirect_uri)
+        normalized_redirect_uri = _normalize_redirect_uri(redirect_uri)
+        callback_origin = _redirect_uri_origin(redirect_uri)
 
-        # Allow registered private-use URI schemes for native IDE clients
-        # (RFC 8252 §7.1). These don't redirect to web servers so open-redirect
-        # risk doesn't apply; the OS only delivers the callback to the app that
-        # registered the scheme.
         if parsed.scheme in TRUSTED_NATIVE_REDIRECT_SCHEMES:
             if settings.debug_mode:
                 logger.debug(
                     f"OAuth2 redirect_uri validated (native app scheme): {redirect_uri}"
                 )
-            return True
-
-        # Must be http or https for the remainder of the checks
-        if parsed.scheme not in ("http", "https"):
-            logger.warning(
-                f"OAuth2 redirect_uri rejected: scheme must be http or https, got {parsed.scheme}"
+            return RedirectUriValidationResult(
+                is_valid=True,
+                normalized_uri=normalized_redirect_uri,
+                callback_origin=callback_origin,
             )
-            return False
 
-        # Extract hostname (remove port if present)
+        if parsed.scheme not in ("http", "https"):
+            result = RedirectUriValidationResult(
+                is_valid=False,
+                summary=(
+                    "Invalid redirect_uri. Use a loopback http(s) callback, a trusted IDE "
+                    "callback domain, or a registered native-app scheme such as vscode://."
+                ),
+                log_message=(
+                    "OAuth2 redirect_uri rejected: scheme must be http or https or a "
+                    f"registered native-app scheme, got {parsed.scheme!r} "
+                    f"(redirect_uri={redirect_uri!r})"
+                ),
+                normalized_uri=normalized_redirect_uri,
+                callback_origin=callback_origin,
+            )
+            logger.warning(result.log_message)
+            return result
+
         hostname = parsed.hostname
         if hostname is None:
-            logger.warning("OAuth2 redirect_uri rejected: no hostname")
-            return False
+            result = RedirectUriValidationResult(
+                is_valid=False,
+                summary="Invalid redirect_uri. The callback URL must include a hostname.",
+                log_message=(
+                    f"OAuth2 redirect_uri rejected: no hostname "
+                    f"(redirect_uri={redirect_uri!r})"
+                ),
+                normalized_uri=normalized_redirect_uri,
+                callback_origin=callback_origin,
+            )
+            logger.warning(result.log_message)
+            return result
 
-        # Allow loopback addresses (RFC 8252 for native apps)
-        loopback_hosts = {"127.0.0.1", "localhost", "::1", "[::1]"}
-
-        # Allow trusted IDE redirect domains (exact match only).
-        # These are official OAuth redirect endpoints for IDEs.
+        loopback_hosts = LOOPBACK_REDIRECT_HOSTS
         trusted_domains = TRUSTED_IDE_REDIRECT_HOSTS
-
-        # Allow exact trusted callback URLs. Includes Claude by default.
         trusted_redirect_uris = set(DEFAULT_TRUSTED_REDIRECT_URIS)
 
-        # Optional operator-configured trusted callback URLs (comma-separated).
-        # Normalised http/https URIs are added to the set; any other scheme was
-        # already handled above via the native_app_schemes early-return path.
         if settings.oauth_trusted_redirect_uris.strip():
             for raw_uri in settings.oauth_trusted_redirect_uris.split(","):
                 candidate = raw_uri.strip()
@@ -189,39 +216,74 @@ def validate_redirect_uri(redirect_uri: str) -> bool:
                 if normalized_candidate:
                     trusted_redirect_uris.add(normalized_candidate)
 
-        normalized_redirect_uri = _normalize_redirect_uri(redirect_uri)
-
-        # Check if it's a loopback or trusted domain (exact match only)
         is_loopback = hostname in loopback_hosts
         is_trusted = hostname in trusted_domains
         is_trusted_uri = normalized_redirect_uri in trusted_redirect_uris
 
         if not is_loopback and not is_trusted and not is_trusted_uri:
-            logger.warning(
-                "OAuth2 redirect_uri rejected: '%s' is not a loopback address, "
-                "trusted domain, or trusted callback URI",
-                hostname,
+            next_steps = [
+                f"Add '{normalized_redirect_uri}' to OAUTH_TRUSTED_REDIRECT_URIS if this callback should be allowed."
+            ]
+            allow_origin_step = _redirect_uri_allow_origin_step(callback_origin)
+            if allow_origin_step:
+                next_steps.append(allow_origin_step)
+            result = RedirectUriValidationResult(
+                is_valid=False,
+                summary=(
+                    f"Invalid redirect_uri '{normalized_redirect_uri}'. Ragtime only allows "
+                    "loopback callbacks, trusted IDE callback domains, or exact callback URLs "
+                    "listed in OAUTH_TRUSTED_REDIRECT_URIS."
+                ),
+                log_message=(
+                    "OAuth2 redirect_uri rejected: '%s' is not a loopback address, trusted "
+                    "domain, or trusted callback URI. %s"
+                    % (hostname, " ".join(next_steps))
+                ),
+                normalized_uri=normalized_redirect_uri,
+                callback_origin=callback_origin,
+                next_steps=tuple(next_steps),
             )
-            return False
+            logger.warning(result.log_message)
+            return result
 
-        # For loopback, port can be any valid port (MCP clients pick available ports)
         if (
             is_loopback
             and parsed.port is not None
             and (parsed.port < 1 or parsed.port > 65535)
         ):
-            logger.warning(f"OAuth2 redirect_uri rejected: invalid port {parsed.port}")
-            return False
+            result = RedirectUriValidationResult(
+                is_valid=False,
+                summary=(
+                    f"Invalid redirect_uri '{normalized_redirect_uri}'. Loopback callback ports "
+                    "must be between 1 and 65535."
+                ),
+                log_message=(
+                    f"OAuth2 redirect_uri rejected: invalid loopback port {parsed.port} "
+                    f"(redirect_uri={redirect_uri!r})"
+                ),
+                normalized_uri=normalized_redirect_uri,
+                callback_origin=callback_origin,
+            )
+            logger.warning(result.log_message)
+            return result
 
-        # In debug mode, log successful validation for troubleshooting
         if settings.debug_mode:
             logger.debug(f"OAuth2 redirect_uri validated: {redirect_uri}")
 
-        return True
+        return RedirectUriValidationResult(
+            is_valid=True,
+            normalized_uri=normalized_redirect_uri,
+            callback_origin=callback_origin,
+        )
 
-    except Exception as e:
-        logger.warning(f"OAuth2 redirect_uri validation error: {e}")
-        return False
+    except Exception as exc:
+        result = RedirectUriValidationResult(
+            is_valid=False,
+            summary="Invalid redirect_uri. Ragtime could not validate the callback URL.",
+            log_message=f"OAuth2 redirect_uri validation error: {exc}",
+        )
+        logger.warning(result.log_message)
+        return result
 
 
 # =============================================================================

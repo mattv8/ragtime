@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, onAuthExpired } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPage, PublicSharedChatView, UserSpacePanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner, WarningsBanner, UsersPanel } from '@/components';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPage, PublicSharedChatView, UserSpacePanel, LoginPage, OAuthLoginPage, OAuthCallbackError, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner, WarningsBanner, UsersPanel } from '@/components';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ConfigurationWarning, UserSpacePreviewWarning } from '@/types';
 import type { OAuthParams } from '@/components';
@@ -61,6 +61,22 @@ function getOAuthParams(): OAuthParams | null {
   return null;
 }
 
+interface OAuthCallbackErrorParams {
+  title: string;
+  summary: string;
+  nextSteps: string[];
+}
+
+function getOAuthCallbackError(): OAuthCallbackErrorParams | null {
+  const params = new URLSearchParams(window.location.search);
+  const title = params.get('oauth_error_title');
+  const summary = params.get('oauth_error_summary');
+  if (title && summary) {
+    return { title, summary, nextSteps: params.getAll('oauth_next_steps') };
+  }
+  return null;
+}
+
 function getUserSpaceSharedRoute(): UserSpaceSharedRoute {
   const params = new URLSearchParams(window.location.search);
   const token = params.get('userspace_share_token');
@@ -96,6 +112,7 @@ export function App() {
   const [authLoading, setAuthLoading] = useState(true);
 
   // OAuth flow state - capture on mount
+  const [oauthCallbackError] = useState<OAuthCallbackErrorParams | null>(getOAuthCallbackError);
   const [oauthParams] = useState<OAuthParams | null>(() => {
     const params = getOAuthParams();
     return params;
@@ -595,6 +612,17 @@ export function App() {
         <div className="spinner"></div>
         <p>Loading...</p>
       </div>
+    );
+  }
+
+  // Handle OAuth callback errors (bad redirect_uri, unsupported response_type, etc.)
+  if (oauthCallbackError) {
+    return (
+      <OAuthCallbackError
+        title={oauthCallbackError.title}
+        summary={oauthCallbackError.summary}
+        nextSteps={oauthCallbackError.nextSteps}
+      />
     );
   }
 

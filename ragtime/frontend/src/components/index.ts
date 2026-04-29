@@ -18,6 +18,7 @@ export { UserSpaceSharedView } from './UserSpaceSharedView';
 export { LoginPage } from './LoginPage';
 export { OAuthLoginPage } from './OAuthLoginPage';
 export type { OAuthParams } from './OAuthLoginPage';
+export { OAuthCallbackError } from './OAuthCallbackError';
 export { Popover, DisabledPopover } from './Popover';
 export { DescriptionField } from './DescriptionField';
 export { AnalysisStats } from './AnalysisStats';

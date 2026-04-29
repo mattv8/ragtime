@@ -7,13 +7,18 @@ See: ragtime/core/app_settings.py and indexer/routes.py (GET/PUT /indexes/settin
 """
 
 import os
-import secrets
 import sys
 from pathlib import Path
 from typing import Literal
 
+import secrets
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
+
+from ragtime.oauth_redirects import (
+    DEFAULT_ALLOWED_ORIGINS,
+    DEFAULT_TRUSTED_REDIRECT_URIS,
+)
 
 # File to persist auto-generated encryption key (in data volume)
 # Used for both JWT signing and secrets encryption (Fernet)
@@ -49,10 +54,10 @@ class Settings(BaseSettings):
         alias="ALLOWED_ORIGINS",
         description=(
             "Comma-separated list of allowed CORS origins. When empty, only "
-            "loopback origins are permitted (via allow_origin_regex). Set to "
-            "explicit origins such as 'https://ragtime.example.com' in "
-            "production. The legacy '*' value is still honored but emits a "
-            "security warning because it is unsafe with allow_credentials=True."
+            "loopback origins plus built-in trusted OAuth web origins "
+            f"({', '.join(DEFAULT_ALLOWED_ORIGINS)}) are permitted. When set, "
+            "explicit origins such as 'https://ragtime.example.com' are added "
+            "to those defaults."
         ),
     )
     external_base_url: str = Field(
@@ -212,7 +217,7 @@ class Settings(BaseSettings):
         description=(
             "Comma-separated OAuth callback URLs to trust in addition to built-in "
             "loopback and IDE defaults (for example "
-            "https://claude.ai/oauth/callback,https://example.com/oauth/callback)."
+            f"{DEFAULT_TRUSTED_REDIRECT_URIS[0]},https://example.com/oauth/callback)."
         ),
     )
 

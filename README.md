@@ -118,7 +118,6 @@ flowchart LR
    PORT=8000
 
    # CORS allowed origins (comma-separated)
-   # Leave empty to allow loopback-only origins.
    # Example: https://ragtime.example.com,https://chat.example.com
    ALLOWED_ORIGINS=
 
