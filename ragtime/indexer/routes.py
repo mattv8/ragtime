@@ -8987,8 +8987,20 @@ async def _to_shared_conversation_response(
             except Exception:  # pragma: no cover - defensive
                 context_limit = None
 
+    # Public shared chat needs the current active task's streaming state so the
+    # UI can paint incremental assistant output between persisted messages.
+    # Avoid including it for scoped shares because those links intentionally
+    # expose only the persisted slice bound to the share record.
+    active_task = None
+    if scope_anchor is None:
+        try:
+            active_task = await repository.get_active_task_for_conversation(conv.id)
+        except Exception:  # pragma: no cover - defensive
+            active_task = None
+
     return SharedConversationResponse(
         conversation=_to_conversation_response(conv),
+        active_task=_to_chat_task_response(active_task) if active_task else None,
         owner_username=owner_username,
         owner_display_name=owner_display_name,
         share_access_mode=str(
@@ -9715,6 +9727,91 @@ async def resolve_public_share_target_by_slug(
             owner_username,
             share_slug,
         )
+    )
+
+
+async def _shared_conversation_event_stream(conversation_id: str):
+    """SSE generator forwarding `conversation:{id}` channel events.
+
+    Used by anonymous and authenticated subscribers of a shared conversation
+    so the public chat view can react to task lifecycle and progress events
+    in real time instead of polling.
+    """
+    channel = f"conversation:{conversation_id}"
+    queue = await task_event_bus.subscribe(channel)
+    try:
+        while True:
+            try:
+                data = await asyncio.wait_for(queue.get(), timeout=15.0)
+                yield f"data: {json.dumps(data)}\n\n"
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
+    except asyncio.CancelledError:
+        pass
+    finally:
+        task_event_bus.unsubscribe(channel, queue)
+
+
+# IMPORTANT: The `/events` routes must be registered BEFORE the slug-based
+# `/shared-conversations/{owner_username}/{share_slug}` GET, otherwise FastAPI
+# would match `/shared-conversations/TOKEN/events` against the slug pattern
+# (owner=TOKEN, slug=events) and reject it as a missing share.
+@router.get("/shared-conversations/{share_token}/events")
+async def shared_conversation_events(
+    share_token: str,
+    request: Request,
+    password: Optional[str] = None,
+    user: User | None = Depends(get_current_user_optional),
+):
+    share_record, authorization = (
+        await userspace_service.get_authorized_shared_conversation_record(
+            share_token,
+            current_user=user,
+            password=password,
+            share_auth_token=share_auth_token_from_request(
+                request.headers,
+                request.cookies,
+                share_token=share_token,
+            ),
+        )
+    )
+    conversation_id = str(authorization.get("conversation_id") or "")
+    if not conversation_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return StreamingResponse(
+        _shared_conversation_event_stream(conversation_id),
+        media_type="text/event-stream",
+    )
+
+
+@router.get("/shared-conversations/{owner_username}/{share_slug}/events")
+async def shared_conversation_events_by_slug(
+    owner_username: str,
+    share_slug: str,
+    request: Request,
+    password: Optional[str] = None,
+    user: User | None = Depends(get_current_user_optional),
+):
+    share_record, authorization = (
+        await userspace_service.get_authorized_shared_conversation_record_by_slug(
+            owner_username,
+            share_slug,
+            current_user=user,
+            password=password,
+            share_auth_token=share_auth_token_from_request(
+                request.headers,
+                request.cookies,
+                owner_username=owner_username,
+                share_slug=share_slug,
+            ),
+        )
+    )
+    conversation_id = str(authorization.get("conversation_id") or "")
+    if not conversation_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return StreamingResponse(
+        _shared_conversation_event_stream(conversation_id),
+        media_type="text/event-stream",
     )
 
 

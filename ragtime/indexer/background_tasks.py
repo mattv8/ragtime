@@ -9,6 +9,7 @@ Also handles scheduled filesystem re-indexing tasks.
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
@@ -45,6 +46,31 @@ DEV_SERVER_INTERRUPT_MESSAGE = (
     "Chat run interrupted by dev server reload or shutdown before it finished."
 )
 WRAPPED_PROCESSING_ERROR_PREFIX = "I encountered an error processing your request:"
+
+
+# Throttle "task_progress" events published to per-conversation SSE channels.
+# Per-task token streaming continues to fan out at full rate on the
+# task-scoped channel; conversation subscribers (especially anonymous shared
+# chat viewers without per-task SSE access) only need a coarser progress
+# heartbeat to know when to refresh.
+_CONV_PROGRESS_THROTTLE_S = 0.5
+_LAST_CONV_PROGRESS_TS: Dict[str, float] = {}
+
+
+async def _notify_conversation_progress(conversation_id: str, task_id: str) -> None:
+    now = time.monotonic()
+    last = _LAST_CONV_PROGRESS_TS.get(conversation_id, 0.0)
+    if now - last < _CONV_PROGRESS_THROTTLE_S:
+        return
+    _LAST_CONV_PROGRESS_TS[conversation_id] = now
+    await task_event_bus.publish(
+        f"conversation:{conversation_id}",
+        {
+            "event": "task_progress",
+            "task_id": task_id,
+            "conversation_id": conversation_id,
+        },
+    )
 
 
 def _extract_wrapped_processing_error(full_response: str) -> Optional[str]:
@@ -769,6 +795,19 @@ class BackgroundTaskService:
                     task_id, ChatTaskStatus.running
                 )
 
+                # Notify conversation subscribers (SSE) that a task has started.
+                # Both authenticated ChatPanel and PublicSharedChatView listen on
+                # `conversation:{id}` so they can react in real time without
+                # frequent polling.
+                await task_event_bus.publish(
+                    f"conversation:{conversation_id}",
+                    {
+                        "event": "task_started",
+                        "task_id": task_id,
+                        "conversation_id": conversation_id,
+                    },
+                )
+
                 # Bind usage attempt to this task
                 if usage_attempt_id:
                     await bind_usage_attempt_task(usage_attempt_id, task_id)
@@ -834,6 +873,15 @@ class BackgroundTaskService:
                         task_id,
                         {
                             "completed": True,
+                            "status": "failed",
+                            "error": "RAG service not ready",
+                        },
+                    )
+                    await task_event_bus.publish(
+                        f"conversation:{conversation_id}",
+                        {
+                            "event": "task_completed",
+                            "task_id": task_id,
                             "status": "failed",
                             "error": "RAG service not ready",
                         },
@@ -930,6 +978,15 @@ class BackgroundTaskService:
                                 "error": DEV_SERVER_INTERRUPT_MESSAGE,
                             },
                         )
+                        await task_event_bus.publish(
+                            f"conversation:{conversation_id}",
+                            {
+                                "event": "task_completed",
+                                "task_id": task_id,
+                                "status": "interrupted",
+                                "error": DEV_SERVER_INTERRUPT_MESSAGE,
+                            },
+                        )
                         return
 
                     if isinstance(event, dict):
@@ -998,6 +1055,9 @@ class BackgroundTaskService:
                                 await task_event_bus.publish(
                                     task_id, result.streaming_state.dict()
                                 )
+                                await _notify_conversation_progress(
+                                    conversation_id, task_id
+                                )
                             last_update = datetime.utcnow()
 
                         elif event_type == "tool_end":
@@ -1041,6 +1101,9 @@ class BackgroundTaskService:
                                     await task_event_bus.publish(
                                         task_id, result.streaming_state.dict()
                                     )
+                                    await _notify_conversation_progress(
+                                        conversation_id, task_id
+                                    )
                                 last_update = datetime.utcnow()
 
                         elif event_type == "max_iterations_reached":
@@ -1059,6 +1122,9 @@ class BackgroundTaskService:
                                 current_version = result.streaming_state.version
                                 await task_event_bus.publish(
                                     task_id, result.streaming_state.dict()
+                                )
+                                await _notify_conversation_progress(
+                                    conversation_id, task_id
                                 )
                             last_update = datetime.utcnow()
 
@@ -1116,6 +1182,9 @@ class BackgroundTaskService:
                                     await task_event_bus.publish(
                                         task_id, result.streaming_state.dict()
                                     )
+                                    await _notify_conversation_progress(
+                                        conversation_id, task_id
+                                    )
                                 last_update = now
 
                         elif event_type == "reasoning":
@@ -1158,6 +1227,9 @@ class BackgroundTaskService:
                             current_version = result.streaming_state.version
                             await task_event_bus.publish(
                                 task_id, result.streaming_state.dict()
+                            )
+                            await _notify_conversation_progress(
+                                conversation_id, task_id
                             )
                         last_update = now
 
@@ -1245,6 +1317,15 @@ class BackgroundTaskService:
                             "events": events,
                         },
                     )
+                    await task_event_bus.publish(
+                        f"conversation:{conversation_id}",
+                        {
+                            "event": "task_completed",
+                            "task_id": task_id,
+                            "status": "interrupted",
+                            "error": wrapped_error_detail,
+                        },
+                    )
                     logger.warning(
                         "Background task %s produced wrapped internal error; "
                         "marking interrupted (%s)",
@@ -1306,6 +1387,14 @@ class BackgroundTaskService:
                         "status": "completed",
                         "content": full_response,
                         "events": events,
+                    },
+                )
+                await task_event_bus.publish(
+                    f"conversation:{conversation_id}",
+                    {
+                        "event": "task_completed",
+                        "task_id": task_id,
+                        "status": "completed",
                     },
                 )
 
@@ -1410,6 +1499,15 @@ class BackgroundTaskService:
                     await task_event_bus.publish(
                         task_id,
                         {"completed": True, "status": "failed", "error": str(e)},
+                    )
+                    await task_event_bus.publish(
+                        f"conversation:{conversation_id}",
+                        {
+                            "event": "task_completed",
+                            "task_id": task_id,
+                            "status": "failed",
+                            "error": str(e),
+                        },
                     )
                     if usage_attempt_id:
                         await finalize_usage_attempt(

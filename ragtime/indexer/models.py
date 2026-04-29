@@ -2389,6 +2389,7 @@ class ConversationShareSlugAvailabilityResponse(BaseModel):
 
 class SharedConversationResponse(BaseModel):
     conversation: ConversationResponse
+    active_task: Optional["ChatTaskResponse"] = None
     owner_username: str
     owner_display_name: str | None = None
     share_access_mode: ConversationShareAccessMode = "token"
@@ -2564,6 +2565,9 @@ class WorkspaceChatStateResponse(BaseModel):
         default=None,
         description="Most recent interrupted task for the selected conversation when there is no active task.",
     )
+
+
+SharedConversationResponse.model_rebuild()
 
 
 class ProviderPromptDebugRecord(BaseModel):

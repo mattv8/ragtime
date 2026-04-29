@@ -3166,6 +3166,11 @@ export function ChatPanel({
   // a stable string per (taskId, eventIndex). Cleared when the task ends.
   const notifiedSnapshotEventKeysRef = useRef<Set<string>>(new Set());
   const titleSourceRef = useRef<Map<string, EventSource>>(new Map());
+  // Forward-reference to connectTaskStream so the conversation event SSE
+  // handler (defined earlier in the component) can trigger task streaming
+  // as soon as a task_started event arrives, without waiting for the
+  // periodic task-state poll.
+  const connectTaskStreamRef = useRef<((taskId: string) => void) | null>(null);
   const workspaceConversationDropdownRef = useRef<HTMLDivElement>(null);
   const chatMainRef = useRef<HTMLDivElement>(null);
   const selectConversationRequestIdRef = useRef(0);
@@ -4327,10 +4332,11 @@ export function ChatPanel({
   };
 
 
-  // Listen for auto-generated titles per conversation using SSE.
+  // Listen for conversation events (auto-generated titles + chat task
+  // lifecycle) per active conversation using SSE.
   // IMPORTANT: We only open ONE SSE connection for the active conversation to
   // avoid exhausting the browser's HTTP/1.1 connection limit (6 per origin).
-  // Opening SSE streams for every untitled conversation would saturate the
+  // Opening SSE streams for every conversation would saturate the
   // connection pool and lock up the UI.
   const stopTitleStreamFor = useCallback((conversationId: string) => {
     const es = titleSourceRef.current.get(conversationId);
@@ -4340,10 +4346,8 @@ export function ChatPanel({
     titleSourceRef.current.delete(conversationId);
   }, []);
 
-  const startTitleStreamFor = useCallback((conversationId: string, title: string) => {
+  const startTitleStreamFor = useCallback((conversationId: string, _title: string) => {
     if (titleSourceRef.current.has(conversationId)) return;
-
-    if (title !== 'Untitled Chat') return;
 
     try {
       const url = api.getConversationEventsUrl(conversationId, workspaceId);
@@ -4352,29 +4356,51 @@ export function ChatPanel({
       es.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+
+          // Auto-generated title arrived
           if (data.type === 'title_update' && data.title) {
-            // Update conversation title
             setConversations(prev => prev.map(c => {
                if (c.id === conversationId) {
                  return { ...c, title: data.title };
                }
                return c;
             }));
-
-            // Also update active conversation if it matches
             setActiveConversation(prev => {
               if (prev && prev.id === conversationId) {
                 return { ...prev, title: data.title };
               }
               return prev;
             });
+            return;
+          }
 
-            // Close stream after receiving title
-            es.close();
-            titleSourceRef.current.delete(conversationId);
+          // Background chat task lifecycle events. These let us pick up a
+          // newly-running task immediately instead of waiting for the
+          // periodic /task-state poll, which makes streaming feel instant.
+          if (data.event === 'task_started' && data.task_id) {
+            connectTaskStreamRef.current?.(data.task_id);
+            return;
+          }
+
+          if (data.event === 'task_completed') {
+            // The per-task SSE stream already drives streaming UI cleanup;
+            // refresh the conversation here so persisted assistant messages
+            // and any post-completion state (e.g. interrupted_task) are
+            // reflected even if the task SSE was not active.
+            void api.getConversation(conversationId, workspaceId)
+              .then(fresh => {
+                setActiveConversation(prev => (
+                  prev && prev.id === conversationId ? fresh : prev
+                ));
+                setConversations(prev => prev.map(c => (
+                  c.id === conversationId ? { ...c, ...fresh } : c
+                )));
+              })
+              .catch(() => {});
+            return;
           }
         } catch (e) {
-          console.error("Failed to parse title update", e);
+          console.error("Failed to parse conversation event", e);
         }
       };
 
@@ -4385,7 +4411,7 @@ export function ChatPanel({
 
       titleSourceRef.current.set(conversationId, es);
     } catch (e) {
-      console.error("Failed to start title stream", e);
+      console.error("Failed to start conversation event stream", e);
     }
   }, [workspaceId]);
 
@@ -4623,6 +4649,14 @@ export function ChatPanel({
     void connectTaskStream(activeTask.id);
   }, [activeTask?.id, activeTask?.status, connectTaskStream]);
 
+  // Expose connectTaskStream via ref so the conversation event SSE handler
+  // (declared earlier in the component) can trigger task streaming the moment
+  // a task_started event is received.
+  useEffect(() => {
+    connectTaskStreamRef.current = (taskId: string) => { void connectTaskStream(taskId); };
+    return () => { connectTaskStreamRef.current = null; };
+  }, [connectTaskStream]);
+
   // Check for active/interrupted background task when conversation changes
   useEffect(() => {
     if (workspaceChatState || workspaceId) {
@@ -4681,9 +4715,12 @@ export function ChatPanel({
     };
 
     void checkTasks();
+    // Conversation-scoped SSE (`/conversations/{id}/events`) drives immediate
+    // task pickup via `task_started` events; this interval is a long
+    // safety-net fallback in case the SSE connection is briefly dropped.
     const interval = setInterval(() => {
       void checkTasks();
-    }, 3000);
+    }, 30000);
 
     return () => {
         clearInterval(interval);

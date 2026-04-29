@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Info } from 'lucide-react';
 
 import { api } from '@/api';
-import type { AuthStatus, Conversation, PublicShareTargetResponse, SharedConversationResponse, User } from '@/types';
+import type { AuthStatus, ChatTask, Conversation, PublicShareTargetResponse, SharedConversationResponse, User } from '@/types';
 import { formatChatTimestamp } from '@/utils';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
 
@@ -16,7 +16,8 @@ import { ContextUsagePie } from './shared/ContextUsagePie';
 import { UserMenu } from './UserMenu';
 import { UserSpaceSharedView } from './UserSpaceSharedView';
 
-const SHARED_CHAT_POLL_INTERVAL_MS = 5000;
+const SHARED_CHAT_POLL_INTERVAL_MS = 30000;
+const SHARED_CHAT_SSE_REFRESH_DEBOUNCE_MS = 250;
 const SHARED_CHAT_MIN_INPUT_HEIGHT = 96;
 const SHARED_CHAT_MAX_INPUT_HEIGHT = 400;
 const SHARED_CHAT_DEFAULT_CONTEXT_LIMIT = 128_000;
@@ -126,7 +127,8 @@ function SharedChatSurface({
   }, [loadSharedConversation, currentUser?.id]);
 
   // Live polling — refresh conversation periodically. Skip while user is sending,
-  // a password is required, or the login overlay is open.
+  // a password is required, or the login overlay is open. Acts as a long
+  // safety-net fallback while the SSE stream below drives realtime updates.
   useEffect(() => {
     if (passwordRequired) return;
     const interval = window.setInterval(() => {
@@ -135,6 +137,75 @@ function SharedChatSurface({
     }, SHARED_CHAT_POLL_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, [loadSharedConversation, passwordRequired]);
+
+  // Realtime SSE — subscribe to per-conversation events so streaming chat
+  // feels instant. The backend publishes `task_started`, throttled
+  // `task_progress` and `task_completed` events on `conversation:{id}`; on
+  // each event we trigger a debounced silent reload of the conversation.
+  useEffect(() => {
+    if (passwordRequired) return;
+    if (!sharedConversation) return;
+
+    const url = shareToken
+      ? api.getSharedConversationEventsUrl(shareToken, submittedSharePassword)
+      : api.getSharedConversationEventsUrlBySlug(
+          ownerUsername as string,
+          shareSlug as string,
+          submittedSharePassword,
+        );
+
+    const es = new EventSource(url, { withCredentials: true });
+    let pendingTimeout: number | null = null;
+    let cancelled = false;
+
+    const scheduleRefresh = () => {
+      if (cancelled) return;
+      if (pendingTimeout !== null) return;
+      pendingTimeout = window.setTimeout(() => {
+        pendingTimeout = null;
+        if (cancelled) return;
+        if (sendingRef.current || showLoginRef.current) return;
+        void loadSharedConversation(true);
+      }, SHARED_CHAT_SSE_REFRESH_DEBOUNCE_MS);
+    };
+
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (
+          data?.event === 'task_started' ||
+          data?.event === 'task_progress' ||
+          data?.event === 'task_completed' ||
+          data?.type === 'title_update'
+        ) {
+          scheduleRefresh();
+        }
+      } catch {
+        // Ignore malformed events
+      }
+    };
+
+    es.onerror = () => {
+      // EventSource will auto-reconnect; if the share/password becomes
+      // invalid the next reconnect will surface via subsequent fetches.
+    };
+
+    return () => {
+      cancelled = true;
+      if (pendingTimeout !== null) {
+        window.clearTimeout(pendingTimeout);
+      }
+      es.close();
+    };
+  }, [
+    loadSharedConversation,
+    ownerUsername,
+    passwordRequired,
+    shareSlug,
+    shareToken,
+    sharedConversation?.conversation.id,
+    submittedSharePassword,
+  ]);
 
   const handleSendMessage = useCallback(async () => {
     const trimmedMessage = messageDraft.trim();
@@ -164,6 +235,7 @@ function SharedChatSurface({
   }, [attachments, messageDraft, ownerUsername, shareSlug, shareToken, submittedSharePassword]);
 
   const conversation: Conversation | null = sharedConversation?.conversation || null;
+  const activeTask: ChatTask | null = sharedConversation?.active_task || null;
   const canEdit = Boolean(sharedConversation?.can_edit);
   const ownerLabel = sharedConversation?.owner_display_name || sharedConversation?.owner_username || 'unknown';
 
@@ -177,9 +249,31 @@ function SharedChatSurface({
   // Server already pre-slices messages based on the share record's
   // scope_anchor_message_idx + scope_direction (the scope is bound to the share
   // link, not to URL params, so it can't be bypassed by clients).
+  const streamingMessage = useMemo<Conversation['messages'][number] | null>(() => {
+    if (!activeTask) return null;
+    if (activeTask.status !== 'pending' && activeTask.status !== 'running') {
+      return null;
+    }
+
+    const content = activeTask.streaming_state?.content ?? activeTask.response_content ?? '';
+    if (!content.trim()) {
+      return null;
+    }
+
+    return {
+      role: 'assistant',
+      content,
+      timestamp: activeTask.last_update_at,
+      events: activeTask.streaming_state?.events,
+      tool_calls: activeTask.streaming_state?.tool_calls,
+    };
+  }, [activeTask]);
+
   const visibleMessages = useMemo(
-    () => conversation?.messages || [],
-    [conversation?.messages],
+    () => streamingMessage
+      ? [...(conversation?.messages || []), streamingMessage]
+      : (conversation?.messages || []),
+    [conversation?.messages, streamingMessage],
   );
 
   const contextLimitForPie = sharedConversation?.context_limit && sharedConversation.context_limit > 0
@@ -202,10 +296,10 @@ function SharedChatSurface({
 
   // Auto-scroll to latest message
   useEffect(() => {
-    if (!loading && conversation?.messages.length) {
+    if (!loading && visibleMessages.length) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
-  }, [loading, conversation?.messages.length]);
+  }, [loading, visibleMessages.length, activeTask?.streaming_state?.content_length]);
 
   // Auto-resize textarea
   const handleTextareaInput = useCallback(() => {

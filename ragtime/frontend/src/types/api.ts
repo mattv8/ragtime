@@ -2683,6 +2683,7 @@ export interface ConversationShareSlugAvailabilityResponse {
 
 export interface SharedConversationResponse {
   conversation: Conversation;
+  active_task?: ChatTask | null;
   owner_username: string;
   owner_display_name?: string | null;
   share_access_mode: ConversationShareAccessMode;

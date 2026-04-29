@@ -3018,6 +3018,16 @@ export const api = {
     return handleResponse<SharedConversationResponse>(response);
   },
 
+  getSharedConversationEventsUrl(shareToken: string, password?: string): string {
+    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
+    return `${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}/events${suffix}`;
+  },
+
+  getSharedConversationEventsUrlBySlug(ownerUsername: string, shareSlug: string, password?: string): string {
+    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
+    return `${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/events${suffix}`;
+  },
+
   async sendSharedConversationMessage(shareToken: string, request: SendMessageRequest, password?: string): Promise<{ message: ChatMessage; conversation: Conversation }> {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
     const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}/messages${suffix}`, {
