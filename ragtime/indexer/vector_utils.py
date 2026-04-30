@@ -403,9 +403,12 @@ async def get_embeddings_model(
             )
             or "http://host.docker.internal:1234"
         ).rstrip("/")
+        api_key = str(
+            _get_setting(settings, "lmstudio_api_key", "") or "lmstudio-local"
+        )
         return OpenAIEmbeddings(
             model=model,
-            api_key="lmstudio-local",
+            api_key=api_key,
             base_url=f"{base_url}/v1",
         )
 

@@ -518,6 +518,10 @@ class AppSettings(BaseModel):
         default="http://host.docker.internal:1234",
         description="LM Studio embedding server URL (computed from protocol/host/port)",
     )
+    lmstudio_api_key: str = Field(
+        default="",
+        description="LM Studio API key (optional; used for both LLM and embedding roles when set)",
+    )
 
     # LLM Configuration (for chat/RAG responses)
     llm_provider: str = Field(
@@ -1051,6 +1055,7 @@ class UpdateSettingsRequest(BaseModel):
     lmstudio_host: Optional[str] = None
     lmstudio_port: Optional[int] = Field(default=None, ge=1, le=65535)
     lmstudio_base_url: Optional[str] = None
+    lmstudio_api_key: Optional[str] = None
     # LLM settings
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None

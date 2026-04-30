@@ -149,10 +149,11 @@ model AppSettings {
   llamaCppHost        String @default("host.docker.internal") @map("llama_cpp_host")
   llamaCppPort        Int    @default(8081) @map("llama_cpp_port")
   llamaCppBaseUrl     String @default("http://host.docker.internal:8081") @map("llama_cpp_base_url")
-  lmstudioProtocol    String @default("http") @map("lmstudio_protocol")
-  lmstudioHost        String @default("host.docker.internal") @map("lmstudio_host")
-  lmstudioPort        Int    @default(1234) @map("lmstudio_port")
-  lmstudioBaseUrl     String @default("http://host.docker.internal:1234") @map("lmstudio_base_url")
+  lmstudioProtocol    String  @default("http") @map("lmstudio_protocol")
+  lmstudioHost        String  @default("host.docker.internal") @map("lmstudio_host")
+  lmstudioPort        Int     @default(1234) @map("lmstudio_port")
+  lmstudioBaseUrl     String  @default("http://host.docker.internal:1234") @map("lmstudio_base_url")
+  lmstudioApiKey      String? @map("lmstudio_api_key")
 
   // LLM Configuration (for chat/RAG responses)
   llmProvider                    String    @default("openai") @map("llm_provider") // "openai", "anthropic", "ollama", "llama_cpp", "lmstudio", "github_copilot", or "github_models"

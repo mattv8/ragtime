@@ -190,7 +190,17 @@ async def is_reachable(
     )
 
 
-async def list_native_models(base_url: str) -> list[LmStudioModelInfo]:
+def _auth_headers(api_key: str | None) -> dict[str, str]:
+    """Build Authorization header dict when an API key is provided."""
+    key = str(api_key or "").strip()
+    if key and key != "lmstudio-local":
+        return {"Authorization": f"Bearer {key}"}
+    return {}
+
+
+async def list_native_models(
+    base_url: str, api_key: str | None = None
+) -> list[LmStudioModelInfo]:
     """List all models using LM Studio native metadata, preferring /api/v1."""
     normalized_base = normalize_base_url(base_url)
     reachable, error = await is_reachable(normalized_base)
@@ -199,11 +209,14 @@ async def list_native_models(base_url: str) -> list[LmStudioModelInfo]:
             error or f"Cannot connect to LM Studio at {normalized_base}"
         )
 
+    headers = _auth_headers(api_key)
     last_error: str | None = None
     async with httpx.AsyncClient(timeout=10.0) as client:
         for endpoint in ("/api/v1/models", "/api/v0/models"):
             try:
-                response = await client.get(f"{normalized_base}{endpoint}")
+                response = await client.get(
+                    f"{normalized_base}{endpoint}", headers=headers
+                )
                 if response.status_code == 404:
                     continue
                 response.raise_for_status()
@@ -220,9 +233,11 @@ async def list_native_models(base_url: str) -> list[LmStudioModelInfo]:
     raise RuntimeError(last_error or "LM Studio returned no native models")
 
 
-async def list_chat_models(base_url: str) -> list[LmStudioModelInfo]:
+async def list_chat_models(
+    base_url: str, api_key: str | None = None
+) -> list[LmStudioModelInfo]:
     """List LM Studio chat-capable models."""
-    models = await list_native_models(base_url)
+    models = await list_native_models(base_url, api_key=api_key)
     return [model for model in models if model.model_type in CHAT_MODEL_TYPES]
 
 
@@ -240,17 +255,21 @@ def extract_embedding_dimension(payload: dict[str, Any]) -> int | None:
     return None
 
 
-async def probe_embedding_dimension(base_url: str, model: str) -> int | None:
+async def probe_embedding_dimension(
+    base_url: str, model: str, api_key: str | None = None
+) -> int | None:
     """Probe /v1/embeddings and return the output vector length."""
     normalized_base = normalize_base_url(base_url)
     model_id = str(model or "").strip()
     if not model_id:
         return None
 
+    headers = _auth_headers(api_key)
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             f"{normalized_base}/v1/embeddings",
             json={"model": model_id, "input": "test"},
+            headers=headers,
         )
         response.raise_for_status()
         payload = response.json()
@@ -260,13 +279,15 @@ async def probe_embedding_dimension(base_url: str, model: str) -> int | None:
 
 
 async def list_embedding_models(
-    base_url: str, selected_model: str | None = None
+    base_url: str,
+    selected_model: str | None = None,
+    api_key: str | None = None,
 ) -> list[LmStudioModelInfo]:
     """List LM Studio embedding models and probe dimensions when possible."""
     normalized_base = normalize_base_url(base_url)
     models = [
         model
-        for model in await list_native_models(normalized_base)
+        for model in await list_native_models(normalized_base, api_key=api_key)
         if model.model_type in EMBEDDING_MODEL_TYPES
     ]
 
@@ -278,7 +299,7 @@ async def list_embedding_models(
             continue
         try:
             model.dimensions = await probe_embedding_dimension(
-                normalized_base, model.id
+                normalized_base, model.id, api_key=api_key
             )
         except Exception as exc:
             logger.debug(
@@ -290,11 +311,13 @@ async def list_embedding_models(
     return models
 
 
-async def get_model_context_length(model: str, base_url: str) -> int | None:
+async def get_model_context_length(
+    model: str, base_url: str, api_key: str | None = None
+) -> int | None:
     """Return LM Studio context metadata for a model if discoverable."""
     target = str(model or "").strip()
     try:
-        models = await list_chat_models(base_url)
+        models = await list_chat_models(base_url, api_key=api_key)
     except Exception:
         return None
     if not target and models:
@@ -310,6 +333,7 @@ async def load_model(
     model: str,
     *,
     context_length: int | None = None,
+    api_key: str | None = None,
 ) -> dict[str, Any]:
     """Load an LM Studio model through the native REST API."""
     normalized_base = normalize_base_url(base_url)
@@ -320,9 +344,10 @@ async def load_model(
     if parsed_context:
         payload["context_length"] = parsed_context
 
+    headers = _auth_headers(api_key)
     async with httpx.AsyncClient(timeout=120.0) as client:
         response = await client.post(
-            f"{normalized_base}/api/v1/models/load", json=payload
+            f"{normalized_base}/api/v1/models/load", json=payload, headers=headers
         )
         if not response.is_success:
             raise RuntimeError(_extract_error_message(response))
@@ -330,16 +355,19 @@ async def load_model(
         return data if isinstance(data, dict) else {"data": data}
 
 
-async def unload_model(base_url: str, instance_id: str) -> dict[str, Any]:
+async def unload_model(
+    base_url: str, instance_id: str, api_key: str | None = None
+) -> dict[str, Any]:
     """Unload an LM Studio model instance through the native REST API."""
     normalized_base = normalize_base_url(base_url)
     payload = {"instance_id": str(instance_id or "").strip()}
     if not payload["instance_id"]:
         raise ValueError("instance_id is required")
 
+    headers = _auth_headers(api_key)
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
-            f"{normalized_base}/api/v1/models/unload", json=payload
+            f"{normalized_base}/api/v1/models/unload", json=payload, headers=headers
         )
         if not response.is_success:
             raise RuntimeError(_extract_error_message(response))

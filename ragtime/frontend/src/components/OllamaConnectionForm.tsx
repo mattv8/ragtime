@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type { OllamaModel } from '@/types';
 
 interface OllamaConnectionFormProps {
@@ -43,6 +44,8 @@ interface OllamaConnectionFormProps {
   onModelChange: (model: string) => void;
   /** Called when user clicks Fetch Models button */
   onFetchModels: () => void;
+  /** Optional action rendered inline next to the model selector (e.g., Load/Unload button) */
+  modelAction?: ReactNode;
 }
 
 /**
@@ -69,6 +72,7 @@ export function OllamaConnectionForm({
   onPortChange,
   onModelChange,
   onFetchModels,
+  modelAction,
 }: OllamaConnectionFormProps) {
   return (
     <>
@@ -127,7 +131,32 @@ export function OllamaConnectionForm({
       {/* Model Selection */}
       <div className="form-group">
         <label>{modelLabel}</label>
-        {connected && models.length > 0 ? (
+        {modelAction ? (
+          <div className="input-with-button">
+            {connected && models.length > 0 ? (
+              <select value={model} onChange={(e) => onModelChange(e.target.value)}>
+                <option value="">Select a model...</option>
+                {models.map((m) => (
+                  <option key={m.id || m.name} value={m.id || m.name}>
+                    {m.name || m.id}
+                    {m.size ? ` (${(m.size / 1024 / 1024 / 1024).toFixed(1)}GB)` : ''}
+                    {m.dimensions ? ` [${m.dimensions} dims]` : ''}
+                    {m.context_limit ? ` [${m.context_limit.toLocaleString()} ctx]` : ''}
+                    {m.loaded === true ? ' [loaded]' : m.loaded === false ? ' [not loaded]' : ''}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={model}
+                onChange={(e) => onModelChange(e.target.value)}
+                placeholder={modelPlaceholder}
+              />
+            )}
+            {modelAction}
+          </div>
+        ) : connected && models.length > 0 ? (
           <select value={model} onChange={(e) => onModelChange(e.target.value)}>
             <option value="">Select a model...</option>
             {models.map((m) => (

@@ -967,6 +967,9 @@ class IndexerRepository:
                 "lmstudioBaseUrl",
                 "http://host.docker.internal:1234",
             ),
+            lmstudio_api_key=decrypt_secret(
+                getattr(settings, "lmstudioApiKey", None) or ""
+            ),
             # LLM settings
             llm_provider=settings.llmProvider,
             llm_model=settings.llmModel,
@@ -1141,6 +1144,7 @@ class IndexerRepository:
             "lmstudio_host": "lmstudioHost",
             "lmstudio_port": "lmstudioPort",
             "lmstudio_base_url": "lmstudioBaseUrl",
+            "lmstudio_api_key": "lmstudioApiKey",
             # LLM settings
             "llm_provider": "llmProvider",
             "llm_model": "llmModel",
@@ -1245,6 +1249,7 @@ class IndexerRepository:
             "github_copilot_refresh_token",
             "github_copilot_oauth_refresh_token",
             "postgres_password",
+            "lmstudio_api_key",
         ]
         for field in secret_fields:
             if field in updates and updates[field]:

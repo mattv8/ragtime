@@ -184,6 +184,7 @@ class SettingsCache:
             )
             postgres_password = prisma_settings.postgresPassword or ""
             mcp_password = prisma_settings.mcpDefaultRoutePassword
+            lmstudio_api_key = getattr(prisma_settings, "lmstudioApiKey", None) or ""
 
             openai_key = decrypt_secret(openai_key)
             anthropic_key = decrypt_secret(anthropic_key)
@@ -194,6 +195,7 @@ class SettingsCache:
                 github_copilot_oauth_refresh_token
             )
             postgres_password = decrypt_secret(postgres_password)
+            lmstudio_api_key = decrypt_secret(lmstudio_api_key)
             # Note: mcp_default_route_password stays encrypted for auth verification
             # It's decrypted in the verification function
 
@@ -266,6 +268,7 @@ class SettingsCache:
                 ),
                 "openai_api_key": openai_key,
                 "anthropic_api_key": anthropic_key,
+                "lmstudio_api_key": lmstudio_api_key,
                 "github_models_api_token": github_models_api_token,
                 "github_copilot_access_token": github_copilot_access_token,
                 "github_copilot_refresh_token": github_copilot_refresh_token,
@@ -377,6 +380,7 @@ class SettingsCache:
                 "image_payload_max_bytes": 350000,
                 "openai_api_key": "",
                 "anthropic_api_key": "",
+                "lmstudio_api_key": "",
                 "github_models_api_token": "",
                 "github_copilot_access_token": "",
                 "github_copilot_refresh_token": "",

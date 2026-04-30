@@ -507,6 +507,7 @@ export interface AppSettings {
   lmstudio_host: string;
   lmstudio_port: number;
   lmstudio_base_url: string;
+  lmstudio_api_key: string;
   // LLM Configuration (for chat/RAG responses)
   llm_provider: LlmProviderWire;
   llm_model: string;
@@ -617,6 +618,7 @@ export interface UpdateSettingsRequest {
   lmstudio_host?: string;
   lmstudio_port?: number;
   lmstudio_base_url?: string;
+  lmstudio_api_key?: string;
   // LLM settings
   llm_provider?: LlmProviderWire;
   llm_model?: string;

@@ -6399,6 +6399,9 @@ async def fetch_embedding_models(
             normalized_provider,
             base_url,
             selected_model=request.model,
+            api_key=str(settings.lmstudio_api_key or "") or None
+            if normalized_provider == "lmstudio"
+            else None,
         )
 
     return EmbeddingModelsResponse(
@@ -6428,29 +6431,38 @@ async def _fetch_local_embedding_models(
     base_url: str,
     *,
     selected_model: str = "",
+    api_key: str | None = None,
 ) -> EmbeddingModelsResponse:
     """Fetch embedding models from local OpenAI-compatible providers."""
     normalized_provider = normalize_provider_name(provider)
     provider_info = get_provider(normalized_provider)
     label = provider_info.label if provider_info else provider
     try:
+        discovered: list[Any]
         if normalized_provider == "llama_cpp":
             normalized_base_url = llama_cpp.normalize_base_url(
                 base_url,
                 llama_cpp.DEFAULT_EMBEDDING_BASE_URL,
             )
-            discovered = await llama_cpp.list_embedding_models(
-                normalized_base_url,
-                selected_model=selected_model,
+            discovered = cast(
+                list[Any],
+                await llama_cpp.list_embedding_models(
+                    normalized_base_url,
+                    selected_model=selected_model,
+                ),
             )
         elif normalized_provider == "lmstudio":
             normalized_base_url = lmstudio.normalize_base_url(
                 base_url,
                 lmstudio.DEFAULT_BASE_URL,
             )
-            discovered = await lmstudio.list_embedding_models(
-                normalized_base_url,
-                selected_model=selected_model,
+            discovered = cast(
+                list[Any],
+                await lmstudio.list_embedding_models(
+                    normalized_base_url,
+                    selected_model=selected_model,
+                    api_key=api_key,
+                ),
             )
         else:
             return EmbeddingModelsResponse(
@@ -6953,9 +6965,10 @@ async def _fetch_llm_models_for_provider(
             if raise_on_unconfigured:
                 raise HTTPException(status_code=400, detail="LM Studio is not configured")
             return LLMModelsResponse(success=False, message="LM Studio is not configured")
-        return await _fetch_lmstudio_llm_models(resolved_base_url)
-
-    if normalized_provider == "github_copilot":
+        return await _fetch_lmstudio_llm_models(
+            resolved_base_url,
+            api_key=str(settings.lmstudio_api_key or "") or None,
+        )
         return await _fetch_github_provider_models(
             provider=provider,
             settings=settings,
@@ -8099,14 +8112,16 @@ async def _fetch_llama_cpp_llm_models(base_url: str) -> LLMModelsResponse:
         )
 
 
-async def _fetch_lmstudio_llm_models(base_url: str) -> LLMModelsResponse:
+async def _fetch_lmstudio_llm_models(
+    base_url: str, api_key: str | None = None
+) -> LLMModelsResponse:
     """Fetch available chat models from LM Studio native metadata."""
     try:
         normalized_base_url = lmstudio.normalize_base_url(
             base_url,
             lmstudio.DEFAULT_BASE_URL,
         )
-        discovered = await lmstudio.list_chat_models(normalized_base_url)
+        discovered = await lmstudio.list_chat_models(normalized_base_url, api_key=api_key)
         models = [
             LLMModel(
                 id=model.id,
@@ -8191,11 +8206,14 @@ async def load_lmstudio_model(
 ):
     """Load an LM Studio model using the native model-management API."""
     base_url = lmstudio.normalize_base_url(request.base_url, lmstudio.DEFAULT_BASE_URL)
+    settings = await repository.get_settings()
+    api_key = str(settings.lmstudio_api_key or "") or None
     try:
         data = await lmstudio.load_model(
             base_url,
             request.model,
             context_length=request.context_length,
+            api_key=api_key,
         )
         return LmStudioModelActionResponse(
             success=True,
@@ -8218,44 +8236,70 @@ async def unload_lmstudio_model(
     request: LmStudioModelUnloadRequest,
     _user: User = Depends(require_admin),
 ):
-    """Unload an LM Studio model instance using the native API."""
+    """Unload LM Studio model instance(s) using the native API.
+
+    If ``instance_id`` is provided, unload that single instance. Otherwise unload
+    every currently-loaded instance for the given model so the UI's load/unload
+    toggle reflects reality after one click (LM Studio can have multiple
+    instances of the same model loaded simultaneously).
+    """
     base_url = lmstudio.normalize_base_url(request.base_url, lmstudio.DEFAULT_BASE_URL)
-    instance_id = request.instance_id.strip()
-    if not instance_id and request.model.strip():
+    settings = await repository.get_settings()
+    api_key = str(settings.lmstudio_api_key or "") or None
+    explicit_instance_id = request.instance_id.strip()
+    target_model = request.model.strip()
+
+    instance_ids: list[str] = []
+    if explicit_instance_id:
+        instance_ids = [explicit_instance_id]
+    elif target_model:
         try:
-            for model in await lmstudio.list_native_models(base_url):
-                if model.id != request.model.strip():
+            for model in await lmstudio.list_native_models(base_url, api_key=api_key):
+                if model.id != target_model:
                     continue
                 for instance in model.loaded_instances:
-                    instance_id = _extract_lmstudio_instance_id(instance)
-                    if instance_id:
-                        break
-                if instance_id:
-                    break
+                    candidate = _extract_lmstudio_instance_id(instance)
+                    if candidate:
+                        instance_ids.append(candidate)
+                break
         except Exception as e:
             return LmStudioModelActionResponse(
                 success=False,
                 message=f"Failed to inspect loaded LM Studio models: {str(e)}",
             )
 
-    if not instance_id:
+    if not instance_ids:
         return LmStudioModelActionResponse(
             success=False,
             message="LM Studio unload requires a loaded instance id.",
         )
 
+    unloaded: list[str] = []
+    last_data: dict[str, Any] = {}
     try:
-        data = await lmstudio.unload_model(base_url, instance_id)
-        return LmStudioModelActionResponse(
-            success=True,
-            message=f"LM Studio instance '{instance_id}' unload requested.",
-            data=data,
-        )
+        for inst_id in instance_ids:
+            last_data = await lmstudio.unload_model(base_url, inst_id, api_key=api_key)
+            unloaded.append(inst_id)
     except Exception as e:
         return LmStudioModelActionResponse(
             success=False,
-            message=f"Failed to unload LM Studio model: {str(e)}",
+            message=(
+                f"Failed to unload LM Studio model after unloading {len(unloaded)} "
+                f"of {len(instance_ids)} instance(s): {str(e)}"
+            ),
+            data={"unloaded": unloaded},
         )
+
+    summary = (
+        f"LM Studio instance '{unloaded[0]}' unload requested."
+        if len(unloaded) == 1
+        else f"Unloaded {len(unloaded)} LM Studio instance(s): {', '.join(unloaded)}."
+    )
+    return LmStudioModelActionResponse(
+        success=True,
+        message=summary,
+        data={"unloaded": unloaded, "last": last_data},
+    )
 
 
 def _extract_context_limit_from_model_row(row: dict[str, Any]) -> int | None:
@@ -8858,10 +8902,11 @@ async def get_available_chat_models():
     if lmstudio_url:
         provider_states["lmstudio"].configured = True
         provider_states["lmstudio"].connected = True
+        _lmstudio_api_key = str(getattr(app_settings, "lmstudio_api_key", "") or "") or None
         tasks.append(
             asyncio.create_task(
                 _safe_fetch_llm_models_task(
-                    "lmstudio", _fetch_lmstudio_llm_models(lmstudio_url)
+                    "lmstudio", _fetch_lmstudio_llm_models(lmstudio_url, api_key=_lmstudio_api_key)
                 )
             )
         )
@@ -9184,11 +9229,12 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
 
     lmstudio_url = _resolve_lmstudio_chat_base_url(app_settings)
     if lmstudio_url:
+        _lmstudio_api_key = str(getattr(app_settings, "lmstudio_api_key", "") or "") or None
         tasks.append(
             asyncio.create_task(
                 _safe_fetch_llm_models_task(
                     "lmstudio",
-                    _fetch_lmstudio_llm_models(lmstudio_url),
+                    _fetch_lmstudio_llm_models(lmstudio_url, api_key=_lmstudio_api_key),
                     none_on_error=True,
                 )
             )

@@ -2486,7 +2486,7 @@ class RAGComponents:
         ).rstrip("/")
         api_keys = {
             "llama_cpp": "llama-cpp-local",
-            "lmstudio": "lmstudio-local",
+            "lmstudio": self._app_settings.get("lmstudio_api_key") or "lmstudio-local",
         }
         logger.info(
             f"Using {self._provider_label(normalized_provider)} embeddings: {model} at {base_url}"
@@ -2698,7 +2698,7 @@ class RAGComponents:
                 api_key=(
                     "llama-cpp-local"
                     if provider_normalized == "llama_cpp"
-                    else "lmstudio-local"
+                    else (self._app_settings.get("lmstudio_api_key") or "lmstudio-local")
                 ),
                 base_url=f"{base_url}/v1",
                 max_tokens=max_tokens,

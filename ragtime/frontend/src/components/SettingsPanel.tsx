@@ -194,20 +194,6 @@ function getScopedModelId(selectionKey: string): string {
   return delimiter >= 0 ? selectionKey.slice(delimiter + 2) : selectionKey;
 }
 
-function getLmstudioInstanceId(instances: Record<string, unknown>[] | undefined): string {
-  if (!instances || instances.length === 0) {
-    return '';
-  }
-  const first = instances[0];
-  for (const key of ['instance_id', 'identifier', 'id', 'model_identifier']) {
-    const value = first[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-  return '';
-}
-
 function toggleScopedModelSelection(currentSelection: Set<string>, model: AvailableModel): Set<string> {
   const selectionKey = toScopedModelIdentifier(model);
   const nextSelection = new Set(currentSelection);
@@ -284,6 +270,7 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
   | 'lmstudio_host'
   | 'lmstudio_port'
   | 'lmstudio_base_url'
+  | 'lmstudio_api_key'
   | 'ollama_embedding_timeout_seconds'
   | 'default_ocr_mode'
   | 'default_ocr_vision_model'
@@ -305,6 +292,7 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
     lmstudio_host: data.lmstudio_host,
     lmstudio_port: data.lmstudio_port,
     lmstudio_base_url: data.lmstudio_base_url,
+    lmstudio_api_key: data.lmstudio_api_key,
     ollama_embedding_timeout_seconds: data.ollama_embedding_timeout_seconds,
     default_ocr_mode: data.default_ocr_mode,
     default_ocr_vision_model: data.default_ocr_vision_model,
@@ -949,8 +937,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     const modelInfo = role === 'llm'
       ? llmModels.find((item) => item.id === model)
       : embeddingModels.find((item) => item.id === model);
-    const instanceId = getLmstudioInstanceId(modelInfo?.loaded_instances);
-    if (!model && !instanceId) {
+    const hasLoadedInstance = !!(modelInfo?.loaded_instances && modelInfo.loaded_instances.length > 0);
+    if (!model && !hasLoadedInstance) {
       const message = role === 'llm' ? 'Select a loaded LM Studio chat model first' : 'Select a loaded LM Studio embedding model first';
       role === 'llm' ? setLlmModelsError(message) : setEmbeddingModelsError(message);
       return;
@@ -959,9 +947,11 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     setLmstudioModelActionLoading(true);
     role === 'llm' ? setLlmModelsError(null) : setEmbeddingModelsError(null);
     try {
+      // Pass only the model name so the backend unloads every instance of it.
+      // (LM Studio supports multiple concurrent instances of the same model.)
       const response = await api.unloadLmstudioModel({
         base_url: role === 'llm' ? getLmstudioChatBaseUrl() : getLmstudioEmbeddingBaseUrl(),
-        instance_id: instanceId || undefined,
+        instance_id: undefined,
         model: model || undefined,
       });
       if (!response.success) {
@@ -1536,6 +1526,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           formData.lmstudio_port,
           PROVIDER_CONNECTIONS.lmstudioEmbedding,
         ),
+        lmstudio_api_key: formData.lmstudio_api_key,
         ollama_embedding_timeout_seconds: formData.ollama_embedding_timeout_seconds,
         sequential_index_loading: formData.sequential_index_loading,
         default_ocr_mode: formData.default_ocr_mode,
@@ -1629,6 +1620,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           formData.llm_lmstudio_port,
           PROVIDER_CONNECTIONS.lmstudioLlm,
         );
+        dataToSave.lmstudio_api_key = formData.lmstudio_api_key;
       }
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
@@ -2524,6 +2516,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           )}
 
           {formData.llm_provider === 'llama_cpp' && (
+            <>
             <OllamaConnectionForm
               protocol={formData.llm_llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL}
               host={formData.llm_llama_cpp_host || DEFAULT_LLAMA_CPP_HOST}
@@ -2555,10 +2548,25 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
               onFetchModels={fetchLlamaCppLlmModels}
             />
+            <p className="field-help">
+              llama.cpp does not support load/unload over its HTTP API. Start the llama.cpp server with the desired model already loaded (for example, <code>llama-server -m model.gguf</code>); Ragtime will use whichever model the server is currently serving.
+            </p>
+            </>
           )}
 
           {formData.llm_provider === 'lmstudio' && (
             <>
+              <div className="form-group">
+                <label>LM Studio API Key</label>
+                <input
+                  type="password"
+                  value={formData.lmstudio_api_key || ''}
+                  onChange={(e) => setFormData({ ...formData, lmstudio_api_key: e.target.value })}
+                  placeholder="sk-lm-... (optional)"
+                  autoComplete="off"
+                />
+                <p className="form-help">Optional. Leave blank if LM Studio is running without authentication.</p>
+              </div>
               <OllamaConnectionForm
                 protocol={formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL}
                 host={formData.llm_lmstudio_host || DEFAULT_LMSTUDIO_HOST}
@@ -2594,15 +2602,27 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 }}
                 onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
                 onFetchModels={fetchLmstudioLlmModels}
+                modelAction={(() => {
+                  const selected = llmModels.find((m) => m.id === formData.llm_model);
+                  const isLoaded = !!(selected?.loaded || (selected?.loaded_instances && selected.loaded_instances.length > 0));
+                  if (!formData.llm_model) {
+                    return (
+                      <button type="button" className="btn btn-test" disabled>
+                        Load Selected
+                      </button>
+                    );
+                  }
+                  return isLoaded ? (
+                    <button type="button" className="btn btn-test" onClick={() => unloadSelectedLmstudioModel('llm')} disabled={lmstudioModelActionLoading}>
+                      Unload Selected
+                    </button>
+                  ) : (
+                    <button type="button" className="btn btn-test" onClick={() => loadSelectedLmstudioModel('llm')} disabled={lmstudioModelActionLoading}>
+                      Load Selected
+                    </button>
+                  );
+                })()}
               />
-              <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0, marginTop: 0 }}>
-                <button type="button" className="btn btn-test" onClick={() => loadSelectedLmstudioModel('llm')} disabled={lmstudioModelActionLoading || !formData.llm_model}>
-                  Load Selected
-                </button>
-                <button type="button" className="btn btn-test" onClick={() => unloadSelectedLmstudioModel('llm')} disabled={lmstudioModelActionLoading || !formData.llm_model}>
-                  Unload Selected
-                </button>
-              </div>
             </>
           )}
 
@@ -3490,6 +3510,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           )}
 
           {formData.embedding_provider === 'llama_cpp' && (
+            <>
             <OllamaConnectionForm
               protocol={formData.llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL}
               host={formData.llama_cpp_host || DEFAULT_LLAMA_CPP_HOST}
@@ -3521,10 +3542,25 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
               onFetchModels={fetchLlamaCppEmbeddingModels}
             />
+            <p className="field-help">
+              llama.cpp does not support load/unload over its HTTP API. Start the embedding server with <code>--embedding</code> and the desired model already loaded (for example, <code>llama-server --embedding -m embed-model.gguf</code>).
+            </p>
+            </>
           )}
 
           {formData.embedding_provider === 'lmstudio' && (
             <>
+              <div className="form-group">
+                <label>LM Studio API Key</label>
+                <input
+                  type="password"
+                  value={formData.lmstudio_api_key || ''}
+                  onChange={(e) => setFormData({ ...formData, lmstudio_api_key: e.target.value })}
+                  placeholder="sk-lm-... (optional)"
+                  autoComplete="off"
+                />
+                <p className="form-help">Optional. Leave blank if LM Studio is running without authentication.</p>
+              </div>
               <OllamaConnectionForm
                 protocol={formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL}
                 host={formData.lmstudio_host || DEFAULT_LMSTUDIO_HOST}
@@ -3561,15 +3597,27 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 }}
                 onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
                 onFetchModels={fetchLmstudioEmbeddingModels}
+                modelAction={(() => {
+                  const selected = embeddingModels.find((m) => m.id === formData.embedding_model);
+                  const isLoaded = !!(selected?.loaded || (selected?.loaded_instances && selected.loaded_instances.length > 0));
+                  if (!formData.embedding_model) {
+                    return (
+                      <button type="button" className="btn btn-test" disabled>
+                        Load Selected
+                      </button>
+                    );
+                  }
+                  return isLoaded ? (
+                    <button type="button" className="btn btn-test" onClick={() => unloadSelectedLmstudioModel('embedding')} disabled={lmstudioModelActionLoading}>
+                      Unload Selected
+                    </button>
+                  ) : (
+                    <button type="button" className="btn btn-test" onClick={() => loadSelectedLmstudioModel('embedding')} disabled={lmstudioModelActionLoading}>
+                      Load Selected
+                    </button>
+                  );
+                })()}
               />
-              <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0, marginTop: 0 }}>
-                <button type="button" className="btn btn-test" onClick={() => loadSelectedLmstudioModel('embedding')} disabled={lmstudioModelActionLoading || !formData.embedding_model}>
-                  Load Selected
-                </button>
-                <button type="button" className="btn btn-test" onClick={() => unloadSelectedLmstudioModel('embedding')} disabled={lmstudioModelActionLoading || !formData.embedding_model}>
-                  Unload Selected
-                </button>
-              </div>
             </>
           )}
 

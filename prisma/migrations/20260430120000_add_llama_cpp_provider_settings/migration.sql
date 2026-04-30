@@ -14,4 +14,5 @@ ALTER TABLE "app_settings"
   ADD COLUMN IF NOT EXISTS "lmstudio_protocol" TEXT NOT NULL DEFAULT 'http',
   ADD COLUMN IF NOT EXISTS "lmstudio_host" TEXT NOT NULL DEFAULT 'host.docker.internal',
   ADD COLUMN IF NOT EXISTS "lmstudio_port" INTEGER NOT NULL DEFAULT 1234,
-  ADD COLUMN IF NOT EXISTS "lmstudio_base_url" TEXT NOT NULL DEFAULT 'http://host.docker.internal:1234';
+  ADD COLUMN IF NOT EXISTS "lmstudio_base_url" TEXT NOT NULL DEFAULT 'http://host.docker.internal:1234',
+  ADD COLUMN IF NOT EXISTS "lmstudio_api_key" TEXT;
