@@ -1716,6 +1716,7 @@ interface ToolWizardProps {
 }
 
 type WizardStep = 'type' | 'connection' | 'pdm_filtering' | 'execution_constraints' | 'description' | 'options' | 'review';
+type ToolTypeInfoEntry = [ToolType, typeof TOOL_TYPE_INFO[ToolType]];
 
 // Base steps - pdm_filtering is dynamically inserted for solidworks_pdm tools
 const BASE_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'options', 'review'];
@@ -2823,16 +2824,31 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   };
 
   const renderTypeSelection = () => {
-    // Define SQL tool types that should be grouped
     const sqlToolTypes: ToolType[] = ['postgres', 'mysql', 'mssql', 'influxdb'];
     const isSqlTool = (type: ToolType) => sqlToolTypes.includes(type);
-    const nonSqlTools = (Object.entries(TOOL_TYPE_INFO) as [ToolType, typeof TOOL_TYPE_INFO[ToolType]][])
-      .filter(([type]) => !isSqlTool(type));
-    const sqlTools = (Object.entries(TOOL_TYPE_INFO) as [ToolType, typeof TOOL_TYPE_INFO[ToolType]][])
+    const toolEntries = Object.entries(TOOL_TYPE_INFO) as ToolTypeInfoEntry[];
+    const primaryTools = toolEntries.filter(([type]) => type === 'ssh_shell');
+    const sqlTools = toolEntries
       .filter(([type]) => isSqlTool(type));
+    const remainingTools = toolEntries
+      .filter(([type]) => type !== 'ssh_shell' && !isSqlTool(type));
 
     // Check if any SQL tool is currently selected
     const sqlToolSelected = isSqlTool(toolType);
+    const renderToolTypeOption = ([type, info]: ToolTypeInfoEntry, nested = false) => (
+      <button
+        key={type}
+        type="button"
+        className={`tool-type-option${nested ? ' tool-type-option-nested' : ''} ${toolType === type ? 'selected' : ''}`}
+        onClick={() => setToolType(type)}
+      >
+        <span className="tool-type-option-icon">
+          <Icon name={getToolIconType(info.icon)} size={nested ? 20 : 24} />
+        </span>
+        <span className="tool-type-option-name">{info.name}</span>
+        <span className="tool-type-option-desc">{info.description}</span>
+      </button>
+    );
 
     return (
       <div className="wizard-content">
@@ -2840,6 +2856,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           Select the type of tool connection you want to add:
         </p>
         <div className="tool-type-selection">
+          {primaryTools.map((entry) => renderToolTypeOption(entry))}
+
           {/* SQL Tools Dropdown Group */}
           <div
             className={`tool-type-group ${sqlToolsExpanded || sqlToolSelected ? 'expanded' : ''}`}
@@ -2858,39 +2876,13 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             </div>
             {(sqlToolsExpanded || sqlToolSelected) && (
               <div className="tool-type-group-items">
-                {sqlTools.map(([type, info]) => (
-                  <button
-                    key={type}
-                    type="button"
-                    className={`tool-type-option tool-type-option-nested ${toolType === type ? 'selected' : ''}`}
-                    onClick={() => setToolType(type)}
-                  >
-                    <span className="tool-type-option-icon">
-                      <Icon name={getToolIconType(info.icon)} size={20} />
-                    </span>
-                    <span className="tool-type-option-name">{info.name}</span>
-                    <span className="tool-type-option-desc">{info.description}</span>
-                  </button>
-                ))}
+                {sqlTools.map((entry) => renderToolTypeOption(entry, true))}
               </div>
             )}
           </div>
 
           {/* Non-SQL Tools */}
-          {nonSqlTools.map(([type, info]) => (
-            <button
-              key={type}
-              type="button"
-              className={`tool-type-option ${toolType === type ? 'selected' : ''}`}
-              onClick={() => setToolType(type)}
-            >
-              <span className="tool-type-option-icon">
-                <Icon name={getToolIconType(info.icon)} size={24} />
-              </span>
-              <span className="tool-type-option-name">{info.name}</span>
-              <span className="tool-type-option-desc">{info.description}</span>
-            </button>
-          ))}
+          {remainingTools.map((entry) => renderToolTypeOption(entry))}
         </div>
       </div>
     );
