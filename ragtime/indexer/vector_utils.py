@@ -110,8 +110,7 @@ async def ensure_embedding_column(
 
     try:
         db = await get_db()
-        result = await db.query_raw(
-            f"""
+        result = await db.query_raw(f"""
             SELECT a.atttypmod AS typmod
             FROM pg_attribute a
             JOIN pg_class c ON a.attrelid = c.oid
@@ -121,8 +120,7 @@ async def ensure_embedding_column(
               AND a.attname = 'embedding'
               AND a.attnum > 0
               AND NOT a.attisdropped
-        """
-        )
+        """)
 
         current_dim: Optional[int] = None
         if result:
@@ -159,28 +157,24 @@ async def ensure_embedding_column(
             await db.execute_raw(f"DROP INDEX IF EXISTS {index_name}")
             return True
 
-        index_info = await db.query_raw(
-            f"""
+        index_info = await db.query_raw(f"""
             SELECT 1
             FROM pg_index i
             JOIN pg_class c ON i.indexrelid = c.oid
             WHERE c.relname = '{index_name}'
-        """
-        )
+        """)
 
         if dimension_changed or not index_info:
             await db.execute_raw(f"DROP INDEX IF EXISTS {index_name}")
             log.info(
                 f"Creating IVFFlat index for {table_name} embeddings with dimension {embedding_dim}"
             )
-            await db.execute_raw(
-                f"""
+            await db.execute_raw(f"""
                 CREATE INDEX {index_name}
                 ON {table_name}
                 USING ivfflat (embedding vector_cosine_ops)
                 WITH (lists = {index_lists})
-            """
-            )
+            """)
 
         return True
 
@@ -255,9 +249,7 @@ async def embed_documents_subbatched(
     batch_start = 0
     current_sub_batch_size = max(1, sub_batch_size)
     uses_ollama = _uses_ollama_embeddings(embeddings)
-    embedding_timeout = (
-        await _get_ollama_embedding_timeout() if uses_ollama else None
-    )
+    embedding_timeout = await _get_ollama_embedding_timeout() if uses_ollama else None
 
     while batch_start < total:
         batch_end = min(batch_start + current_sub_batch_size, total)
@@ -337,8 +329,7 @@ async def _embed_documents_guarded(
         return await embed_call
 
     if _uses_ollama_embeddings(embeddings):
-        from ragtime.core.ollama_concurrency import \
-            get_ollama_embedding_semaphore
+        from ragtime.core.ollama_concurrency import get_ollama_embedding_semaphore
 
         semaphore = await get_ollama_embedding_semaphore()
         async with semaphore:
@@ -387,6 +378,21 @@ async def get_embeddings_model(
             kwargs["dimensions"] = dimensions
             log.info(f"Using OpenAI embeddings with {dimensions} dimensions")
         return OpenAIEmbeddings(**kwargs)
+
+    if provider == "llama_cpp":
+        from langchain_openai import OpenAIEmbeddings
+
+        base_url = str(
+            _get_setting(
+                settings, "llama_cpp_base_url", "http://host.docker.internal:8081"
+            )
+            or "http://host.docker.internal:8081"
+        ).rstrip("/")
+        return OpenAIEmbeddings(
+            model=model,
+            api_key="llama-cpp-local",
+            base_url=f"{base_url}/v1",
+        )
 
     message = f"Unknown embedding provider: {provider}"
     if return_none_on_error:
@@ -511,13 +517,11 @@ async def get_pgvector_table_size_bytes(
         db = await get_db()
         safe_index_name = index_name.replace("'", "''")
 
-        result = await db.query_raw(
-            f"""
+        result = await db.query_raw(f"""
             SELECT COALESCE(SUM(pg_column_size(t.*)), 0)::bigint as total_bytes
             FROM {table_name} t
             WHERE index_name = '{safe_index_name}'
-        """
-        )
+        """)
 
         if result and result[0]["total_bytes"]:
             return int(result[0]["total_bytes"])

@@ -56,7 +56,7 @@ What Ragtime provides and how the main pieces fit together.
 flowchart LR
   Tools["Tools<br/>(SQL, SSH, Odoo)"] -->|tool runs + results| Ragtime
   Context["Knowledge Sources<br/>(FAISS, pgvector)"] -->|retrieved context| Ragtime
-  LLM["LLM Provider<br/>(OpenAI, Anthropic, Ollama)"] -->|LLM API| Ragtime
+  LLM["LLM Provider<br/>(OpenAI, Anthropic, Ollama, llama.cpp)"] -->|LLM API| Ragtime
 
   subgraph Ragtime["Ragtime"]
     direction TB
@@ -414,7 +414,7 @@ Ragtime uses **two vector backends**: **FAISS** (in-memory, loaded at startup) a
 
 See [Creating Indexes](#creating-indexes) for a detailed breakdown of index types and their storage backends.
 
-FAISS indexes are loaded into memory at startup; pgvector indexes stay in PostgreSQL and use cosine similarity search. Embedding provider (OpenAI or Ollama) is configured once in Settings and applies to all index types. Swapping embedding model or dimensions after initial indexing requires a full re-index.
+FAISS indexes are loaded into memory at startup; pgvector indexes stay in PostgreSQL and use cosine similarity search. Embedding provider (OpenAI, Ollama, or llama.cpp) is configured once in Settings and applies to all index types. Swapping embedding model or dimensions after initial indexing requires a full re-index.
 
 ## Integrations
 
@@ -536,7 +536,7 @@ The SSH tool uses Paramiko with `AutoAddPolicy`, which accepts any host key with
 - For NFS/SMB filesystem indexing, the container may require elevated privileges. Consider the security implications before enabling `privileged: true` or `SYS_ADMIN` capabilities.
 
 #### Third-Party Data Relay
-Queries and tool calls may forward your data to external services you configure (OpenAI, Anthropic, Ollama, PostgreSQL, MSSQL, SSH hosts). Only connect to services you trust with your data.
+Queries and tool calls may forward your data to external services you configure (OpenAI, Anthropic, Ollama, llama.cpp, PostgreSQL, MSSQL, SSH hosts). Only connect to services you trust with your data.
 
 ### Updating
 

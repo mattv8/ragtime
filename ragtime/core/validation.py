@@ -12,6 +12,7 @@ import httpx
 from fastapi import HTTPException
 
 from ragtime.core.logging import get_logger
+from ragtime.core import llama_cpp
 from ragtime.core.ollama import NUM_GPU, is_reachable, list_models
 
 logger = get_logger(__name__)
@@ -48,6 +49,9 @@ async def validate_embedding_provider() -> ValidationResult:
             "embedding_provider": app_settings.embedding_provider,
             "embedding_model": app_settings.embedding_model,
             "ollama_base_url": app_settings.ollama_base_url,
+            "llama_cpp_base_url": getattr(
+                app_settings, "llama_cpp_base_url", llama_cpp.DEFAULT_EMBEDDING_BASE_URL
+            ),
             "openai_api_key": app_settings.openai_api_key,
         }
 
@@ -63,13 +67,15 @@ async def validate_embedding_provider() -> ValidationResult:
 
         if provider == "ollama":
             return await _validate_ollama_embeddings(settings, model)
+        elif provider == "llama_cpp":
+            return await _validate_llama_cpp_embeddings(settings, model)
         elif provider == "openai":
             return await _validate_openai_embeddings(settings, model)
         else:
             return ValidationResult(
                 valid=False,
                 error=f"Unknown embedding provider: {provider}",
-                details="Supported providers are 'ollama' and 'openai'.",
+                details="Supported providers are 'ollama', 'openai', and 'llama_cpp'.",
             )
 
     except Exception as e:
@@ -221,6 +227,55 @@ async def _validate_openai_embeddings(settings: dict, model: str) -> ValidationR
         return ValidationResult(
             valid=False,
             error="OpenAI validation failed",
+            details=str(e),
+        )
+
+    return ValidationResult(valid=True)
+
+
+async def _validate_llama_cpp_embeddings(
+    settings: dict, model: str
+) -> ValidationResult:
+    """Validate llama.cpp embedding provider reachability and model probe."""
+    base_url = llama_cpp.normalize_base_url(
+        settings.get("llama_cpp_base_url"),
+        llama_cpp.DEFAULT_EMBEDDING_BASE_URL,
+    )
+
+    reachable, error_msg = await llama_cpp.is_reachable(base_url)
+    if not reachable:
+        return ValidationResult(
+            valid=False,
+            error="Cannot reach llama.cpp embedding server",
+            details=error_msg
+            or f"Failed to connect to llama.cpp at {base_url}. Start llama-server with --embedding and check Settings.",
+        )
+
+    try:
+        dimension = await llama_cpp.probe_embedding_dimension(base_url, model)
+        if not dimension:
+            return ValidationResult(
+                valid=False,
+                error="Failed to generate test embedding",
+                details=f"llama.cpp returned no embedding vector for model '{model}'. Start the server with --embedding and use an embedding-capable model.",
+            )
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text[:300] if e.response.text else str(e)
+        return ValidationResult(
+            valid=False,
+            error=f"llama.cpp model '{model}' could not generate embeddings",
+            details=detail,
+        )
+    except httpx.TimeoutException:
+        return ValidationResult(
+            valid=False,
+            error="llama.cpp embedding generation timeout",
+            details=f"Model '{model}' took too long to respond. It may still be loading.",
+        )
+    except Exception as e:
+        return ValidationResult(
+            valid=False,
+            error="llama.cpp validation failed",
             details=str(e),
         )
 

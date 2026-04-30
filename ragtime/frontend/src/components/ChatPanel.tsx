@@ -302,7 +302,7 @@ interface ChartConfig {
 // Global URL regex for efficient linkification
 const URL_PATTERN = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s])/g;
 
-const KNOWN_PROVIDER_KEYS = new Set(['openai', 'anthropic', 'ollama', 'github_copilot', 'github_models']);
+const KNOWN_PROVIDER_KEYS = new Set(['openai', 'anthropic', 'ollama', 'llama_cpp', 'github_copilot', 'github_models']);
 
 function normalizeProviderAlias(provider?: string | null): string {
   const value = (provider || '').trim().toLowerCase();

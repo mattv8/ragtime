@@ -9,7 +9,7 @@ interface OllamaConnectionFormProps {
   port: number;
   /** Current selected model */
   model: string;
-  /** Whether connected to Ollama server */
+  /** Whether connected to local server */
   connected: boolean;
   /** Whether currently connecting */
   connecting: boolean;
@@ -17,6 +17,12 @@ interface OllamaConnectionFormProps {
   error: string | null;
   /** Available models after connection */
   models: OllamaModel[];
+  /** Local provider/server label */
+  providerLabel?: string;
+  /** Default port for the local provider */
+  defaultPort?: number;
+  /** Placeholder for host input */
+  hostPlaceholder?: string;
   /** Label for the model field */
   modelLabel?: string;
   /** Placeholder for manual model input */
@@ -40,8 +46,7 @@ interface OllamaConnectionFormProps {
 }
 
 /**
- * Shared component for Ollama server connection form.
- * Used for both LLM and Embedding configuration in SettingsPanel.
+ * Shared component for local model server connection forms.
  */
 export function OllamaConnectionForm({
   protocol,
@@ -54,6 +59,9 @@ export function OllamaConnectionForm({
   models,
   modelLabel = 'Model',
   modelPlaceholder = 'llama3',
+  providerLabel = 'Ollama',
+  defaultPort = 11434,
+  hostPlaceholder = 'localhost',
   connectedHelpText = 'Select a model from your Ollama server.',
   disconnectedHelpText = 'Click "Fetch Models" to see available models, or enter manually.',
   onProtocolChange,
@@ -81,7 +89,7 @@ export function OllamaConnectionForm({
             type="text"
             value={host}
             onChange={(e) => onHostChange(e.target.value)}
-            placeholder="localhost"
+            placeholder={hostPlaceholder}
           />
         </div>
         <div className="form-group form-group-small">
@@ -89,7 +97,7 @@ export function OllamaConnectionForm({
           <input
             type="number"
             value={port}
-            onChange={(e) => onPortChange(parseInt(e.target.value, 10) || 11434)}
+            onChange={(e) => onPortChange(parseInt(e.target.value, 10) || defaultPort)}
             min={1}
             max={65535}
           />
@@ -113,7 +121,7 @@ export function OllamaConnectionForm({
       )}
       {error && <p className="field-error">{error}</p>}
       <p className="field-help">
-        When running in Docker, use <code>host.docker.internal</code> instead of <code>localhost</code>.
+        When running Ragtime in Docker, use <code>host.docker.internal</code> for a {providerLabel} server on the host.
       </p>
 
       {/* Model Selection */}
@@ -123,10 +131,11 @@ export function OllamaConnectionForm({
           <select value={model} onChange={(e) => onModelChange(e.target.value)}>
             <option value="">Select a model...</option>
             {models.map((m) => (
-              <option key={m.name} value={m.name}>
-                {m.name}
+              <option key={m.id || m.name} value={m.id || m.name}>
+                {m.name || m.id}
                 {m.size ? ` (${(m.size / 1024 / 1024 / 1024).toFixed(1)}GB)` : ''}
                 {m.dimensions ? ` [${m.dimensions} dims]` : ''}
+                {m.context_limit ? ` [${m.context_limit.toLocaleString()} ctx]` : ''}
               </option>
             ))}
           </select>
@@ -141,11 +150,14 @@ export function OllamaConnectionForm({
         <p className="field-help">
           {connected
             ? (() => {
-                const selectedModel = models.find(m => m.name === model);
+                const selectedModel = models.find(m => (m.id || m.name) === model);
                 const dimInfo = selectedModel?.dimensions
                   ? ` Selected model outputs ${selectedModel.dimensions}-dimension vectors.`
                   : '';
-                return `${connectedHelpText}${dimInfo}`;
+                const contextInfo = selectedModel?.context_limit
+                  ? ` Context window: ${selectedModel.context_limit.toLocaleString()} tokens.`
+                  : '';
+                return `${connectedHelpText}${dimInfo}${contextInfo}`;
               })()
             : disconnectedHelpText}
         </p>

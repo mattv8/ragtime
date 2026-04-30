@@ -51,6 +51,10 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "an": "anthropic",
     "ollama": "ollama",
     "ol": "ollama",
+    "llama_cpp": "llama_cpp",
+    "llama.cpp": "llama_cpp",
+    "llamacpp": "llama_cpp",
+    "lc": "llama_cpp",
     "github": "github_copilot",
     "gh": "github_copilot",
     "copilot": "github_copilot",
@@ -63,6 +67,7 @@ _OPENAPI_PROVIDER_TOKENS: dict[str, str] = {
     "openai": "oa",
     "anthropic": "an",
     "ollama": "ol",
+    "llama_cpp": "lc",
     "github_copilot": "gh",
 }
 

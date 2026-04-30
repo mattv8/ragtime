@@ -230,6 +230,7 @@ async def get_embedding_model_context_limit(
     model_name: str,
     provider: str,
     ollama_base_url: str | None = None,
+    llama_cpp_base_url: str | None = None,
 ) -> int:
     """
     Get the context/input token limit for an embedding model.
@@ -239,8 +240,9 @@ async def get_embedding_model_context_limit(
 
     Args:
         model_name: The embedding model name
-        provider: The provider ('ollama', 'openai', etc.)
+        provider: The provider ('ollama', 'openai', 'llama_cpp', etc.)
         ollama_base_url: Ollama server URL (required for Ollama models)
+        llama_cpp_base_url: llama.cpp server URL (required for llama.cpp models)
 
     Returns:
         Maximum input tokens for the model. Returns a safe default of 2048
@@ -262,6 +264,25 @@ async def get_embedding_model_context_limit(
         # Fallback for Ollama models without context_length in API
         logger.debug(
             f"Could not get context_length for {model_name}, using default {default_limit}"
+        )
+        return default_limit
+
+    if provider == "llama_cpp":
+        if not llama_cpp_base_url:
+            logger.warning(
+                "No llama.cpp base URL provided, using default context limit"
+            )
+            return default_limit
+
+        from ragtime.core import llama_cpp
+
+        context_len = await llama_cpp.get_model_context_length(
+            model_name, llama_cpp_base_url
+        )
+        if context_len:
+            return context_len
+        logger.debug(
+            f"Could not get context length for llama.cpp model {model_name}, using default {default_limit}"
         )
         return default_limit
 

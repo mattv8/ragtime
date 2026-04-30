@@ -2,6 +2,7 @@ export const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
   ollama: 'Ollama',
+  llama_cpp: 'llama.cpp',
   github_copilot: 'Github Copilot',
   github_models: 'Github Copilot',
 };

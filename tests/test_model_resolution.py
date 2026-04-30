@@ -1,12 +1,43 @@
 import unittest
 
-from ragtime.indexer.routes import (AvailableModel, LLMModel,
-                                    LLMModelsResponse, _assign_model_groups,
-                                    _extract_version_parts, _group_models,
-                                    _merge_llm_model_results)
+from ragtime.indexer.routes import (
+    AvailableModel,
+    LLMModel,
+    LLMModelsResponse,
+    _assign_model_groups,
+    _extract_version_parts,
+    _group_models,
+    _merge_llm_model_results,
+    _parse_model_identifier,
+)
+from ragtime.api.routes import (
+    _normalize_openapi_model_id,
+    _normalize_runtime_model,
+    _owned_by_from_openapi_model_id,
+)
 
 
 class ModelResolutionTests(unittest.TestCase):
+    def test_parse_model_identifier_accepts_llama_cpp(self) -> None:
+        self.assertEqual(
+            _parse_model_identifier("llama_cpp::my-chat-model"),
+            ("llama_cpp", "my-chat-model"),
+        )
+
+    def test_openapi_normalization_accepts_llama_cpp_token(self) -> None:
+        self.assertEqual(
+            _normalize_openapi_model_id("llama_cpp", "llama_cpp::my-chat-model"),
+            "lc::my-chat-model",
+        )
+        self.assertEqual(
+            _normalize_runtime_model("openai", "lc::my-chat-model"),
+            "llama_cpp::my-chat-model",
+        )
+        self.assertEqual(
+            _owned_by_from_openapi_model_id("openai", "lc::my-chat-model"),
+            "llama_cpp",
+        )
+
     def test_extract_version_parts_prefers_model_id_detail(self) -> None:
         self.assertEqual(
             _extract_version_parts("claude-opus-4.7", "Claude Opus 4"),
@@ -94,7 +125,9 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0].id, "claude-opus-4.7")
 
-    def test_assign_model_groups_handles_dynamic_claude_families_for_copilot(self) -> None:
+    def test_assign_model_groups_handles_dynamic_claude_families_for_copilot(
+        self,
+    ) -> None:
         models = [
             AvailableModel(
                 id="anthropic/claude-mythos-5",
@@ -145,7 +178,9 @@ class ModelResolutionTests(unittest.TestCase):
     def test_group_models_dynamic_gemini_family(self) -> None:
         models = [
             LLMModel(id="google/gemini-3", name="Gemini 3", created=100),
-            LLMModel(id="google/gemini-3.1-flash", name="Gemini 3.1 Flash", created=200),
+            LLMModel(
+                id="google/gemini-3.1-flash", name="Gemini 3.1 Flash", created=200
+            ),
         ]
 
         grouped = _group_models(models, "github_copilot")

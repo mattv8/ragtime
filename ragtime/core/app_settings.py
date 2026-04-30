@@ -191,6 +191,18 @@ class SettingsCache:
                 "ollama_host": prisma_settings.ollamaHost,
                 "ollama_port": prisma_settings.ollamaPort,
                 "ollama_base_url": prisma_settings.ollamaBaseUrl,
+                "llama_cpp_protocol": getattr(
+                    prisma_settings, "llamaCppProtocol", "http"
+                ),
+                "llama_cpp_host": getattr(
+                    prisma_settings, "llamaCppHost", "host.docker.internal"
+                ),
+                "llama_cpp_port": getattr(prisma_settings, "llamaCppPort", 8081),
+                "llama_cpp_base_url": getattr(
+                    prisma_settings,
+                    "llamaCppBaseUrl",
+                    "http://host.docker.internal:8081",
+                ),
                 "llm_ollama_protocol": getattr(
                     prisma_settings, "llmOllamaProtocol", "http"
                 ),
@@ -202,6 +214,18 @@ class SettingsCache:
                     prisma_settings,
                     "llmOllamaBaseUrl",
                     "http://localhost:11434",
+                ),
+                "llm_llama_cpp_protocol": getattr(
+                    prisma_settings, "llmLlamaCppProtocol", "http"
+                ),
+                "llm_llama_cpp_host": getattr(
+                    prisma_settings, "llmLlamaCppHost", "host.docker.internal"
+                ),
+                "llm_llama_cpp_port": getattr(prisma_settings, "llmLlamaCppPort", 8080),
+                "llm_llama_cpp_base_url": getattr(
+                    prisma_settings,
+                    "llmLlamaCppBaseUrl",
+                    "http://host.docker.internal:8080",
                 ),
                 # MCP settings
                 "mcp_enabled": prisma_settings.mcpEnabled,

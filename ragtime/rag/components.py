@@ -70,6 +70,7 @@ from ragtime.core.model_limits import (
     supports_responses_api,
     supports_thinking_budget,
 )
+from ragtime.core import llama_cpp
 from ragtime.core.ollama import (
     DEFAULT_WARMUP_TIMEOUT_SECONDS,
     KEEP_ALIVE,
@@ -2439,6 +2440,8 @@ class RAGComponents:
 
         if provider == "ollama":
             logger.info(f"Using Ollama LLM: {model}")
+        elif provider == "llama_cpp":
+            logger.info(f"Using llama.cpp LLM: {model}")
         elif provider == "anthropic":
             logger.info(f"Using Anthropic LLM: {model}")
         elif provider == "github_models":
@@ -2472,6 +2475,23 @@ class RAGComponents:
 
             logger.warning(
                 f"Could not detect limits for Ollama model {model}, using default 4096"
+            )
+            return 4096
+
+        if provider == "llama_cpp":
+            base_url = self._app_settings.get(
+                "llm_llama_cpp_base_url",
+                llama_cpp.DEFAULT_CHAT_BASE_URL,
+            )
+            detected_limit = await llama_cpp.get_model_context_length(model, base_url)
+            if detected_limit:
+                logger.info(
+                    f"Using detected context limit for llama.cpp model {model}: {detected_limit}"
+                )
+                return detected_limit
+
+            logger.warning(
+                f"Could not detect limits for llama.cpp model {model}, using default 4096"
             )
             return 4096
 
@@ -2625,6 +2645,29 @@ class RAGComponents:
             except ImportError:
                 logger.warning("langchain-ollama not installed")
                 return None
+
+        if provider_normalized == "llama_cpp":
+            base_url = str(
+                self._app_settings.get(
+                    "llm_llama_cpp_base_url",
+                    llama_cpp.DEFAULT_CHAT_BASE_URL,
+                )
+                or llama_cpp.DEFAULT_CHAT_BASE_URL
+            ).rstrip("/")
+            await _hydrate_openai_compatible_capabilities(
+                metadata_urls=[f"{base_url}/v1/models", f"{base_url}/models"],
+                headers={},
+                requested_model=model,
+            )
+            return _CopilotChatOpenAI(
+                model=model,
+                temperature=0,
+                streaming=True,
+                api_key="llama-cpp-local",
+                base_url=f"{base_url}/v1",
+                max_tokens=max_tokens,
+                request_timeout=LLM_REQUEST_TIMEOUT_SECONDS,
+            )
 
         if provider_normalized == "anthropic":
             api_key = self._app_settings.get("anthropic_api_key", "")
@@ -2820,6 +2863,20 @@ class RAGComponents:
                 logger.warning("OpenAI embeddings selected but no API key configured")
             logger.info(f"Using OpenAI embeddings: {model}")
             return OpenAIEmbeddings(model=model, openai_api_key=api_key)  # type: ignore[call-arg]
+        elif provider == "llama_cpp":
+            base_url = str(
+                self._app_settings.get(
+                    "llama_cpp_base_url",
+                    llama_cpp.DEFAULT_EMBEDDING_BASE_URL,
+                )
+                or llama_cpp.DEFAULT_EMBEDDING_BASE_URL
+            ).rstrip("/")
+            logger.info(f"Using llama.cpp embeddings: {model} at {base_url}")
+            return OpenAIEmbeddings(
+                model=model,
+                api_key="llama-cpp-local",
+                base_url=f"{base_url}/v1",
+            )
         else:
             raise ValueError(f"Unknown embedding provider: {provider}")
 
@@ -11889,6 +11946,7 @@ except Exception as e:
                 "openai",
                 "anthropic",
                 "ollama",
+                "llama_cpp",
                 "github_copilot",
                 "github_models",
             }
@@ -11910,6 +11968,19 @@ except Exception as e:
                 self._app_settings.get("ollama_base_url", "http://localhost:11434"),
             )
             model_limit = await get_model_context_length(model, base_url)
+            if model_limit and resolved > model_limit:
+                logger.debug(
+                    f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}"
+                )
+                return model_limit
+            return resolved
+
+        if provider == "llama_cpp":
+            base_url = self._app_settings.get(
+                "llm_llama_cpp_base_url",
+                llama_cpp.DEFAULT_CHAT_BASE_URL,
+            )
+            model_limit = await llama_cpp.get_model_context_length(model, base_url)
             if model_limit and resolved > model_limit:
                 logger.debug(
                     f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}"
@@ -12054,6 +12125,15 @@ except Exception as e:
                     ),
                 )
                 detected = await get_model_context_length(effective_model_id, base_url)
+                context_limit = max(1, detected or 8192)
+            elif provider == "llama_cpp":
+                base_url = (self._app_settings or {}).get(
+                    "llm_llama_cpp_base_url",
+                    llama_cpp.DEFAULT_CHAT_BASE_URL,
+                )
+                detected = await llama_cpp.get_model_context_length(
+                    effective_model_id, base_url
+                )
                 context_limit = max(1, detected or 8192)
             else:
                 # OpenAI/Anthropic: use LiteLLM dataset

@@ -453,16 +453,14 @@ class FilesystemIndexerService:
             db = await get_db()
 
             # Find all jobs stuck in pending or indexing state
-            result = await db.execute_raw(
-                """
+            result = await db.execute_raw("""
                 UPDATE filesystem_index_jobs
                 SET status = 'failed',
                     error_message = 'Job interrupted by server restart',
                     completed_at = NOW()
                 WHERE status IN ('pending', 'indexing')
                 RETURNING id
-                """
-            )
+                """)
 
             # result is the count of updated rows
             count = result if isinstance(result, int) else 0
@@ -1071,8 +1069,7 @@ class FilesystemIndexerService:
 
             if values_list:
                 values_sql = ",\n".join(values_list)
-                await db.execute_raw(
-                    f"""
+                await db.execute_raw(f"""
                     INSERT INTO filesystem_file_metadata
                     (id, index_name, file_path, file_hash, file_size, mime_type, chunk_count, last_indexed)
                     VALUES {values_sql}
@@ -1082,8 +1079,7 @@ class FilesystemIndexerService:
                         mime_type = EXCLUDED.mime_type,
                         chunk_count = EXCLUDED.chunk_count,
                         last_indexed = EXCLUDED.last_indexed
-                    """
-                )
+                    """)
                 total_upserted += len(batch)
 
         return total_upserted
@@ -1265,13 +1261,11 @@ class FilesystemIndexerService:
             if values_list:
                 values_sql = ",\n".join(values_list)
                 # Insert using raw SQL because Prisma doesn't support vector type
-                await db.execute_raw(
-                    f"""
+                await db.execute_raw(f"""
                     INSERT INTO filesystem_embeddings
                     (id, index_name, file_path, chunk_index, content, metadata, embedding, created_at)
                     VALUES {values_sql}
-                    """
-                )
+                    """)
                 inserted += len(values_list)
 
         return inserted
@@ -1329,6 +1323,9 @@ class FilesystemIndexerService:
                 provider=app_settings.get("embedding_provider", "ollama"),
                 ollama_base_url=app_settings.get(
                     "ollama_base_url", "http://localhost:11434"
+                ),
+                llama_cpp_base_url=app_settings.get(
+                    "llama_cpp_base_url", "http://host.docker.internal:8081"
                 ),
             )
             logger.debug(

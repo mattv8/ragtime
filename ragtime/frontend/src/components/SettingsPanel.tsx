@@ -96,6 +96,10 @@ const DEFAULT_OLLAMA_PORT = 11434;
 const DEFAULT_OLLAMA_HOST = 'localhost';
 const DEFAULT_OLLAMA_PROTOCOL = 'http';
 const DEFAULT_OLLAMA_BASE_URL = `${DEFAULT_OLLAMA_PROTOCOL}://${DEFAULT_OLLAMA_HOST}:${DEFAULT_OLLAMA_PORT}`;
+const DEFAULT_LLAMA_CPP_CHAT_PORT = 8080;
+const DEFAULT_LLAMA_CPP_EMBEDDING_PORT = 8081;
+const DEFAULT_LLAMA_CPP_HOST = 'host.docker.internal';
+const DEFAULT_LLAMA_CPP_PROTOCOL = 'http';
 
 const COPILOT_MODEL_FETCH_OPTIONS = {
   includeDirectoryModels: true,
@@ -109,6 +113,16 @@ function normalizeLlmProvider(provider: LlmProviderWire | null | undefined): Exc
 
 function buildOllamaBaseUrl(protocol?: 'http' | 'https' | null, host?: string | null, port?: number | null): string {
   return `${protocol || 'http'}://${host || 'localhost'}:${port || DEFAULT_OLLAMA_PORT}`;
+}
+
+function buildLocalBaseUrl(
+  protocol: 'http' | 'https' | null | undefined,
+  host: string | null | undefined,
+  port: number | null | undefined,
+  defaultHost: string,
+  defaultPort: number,
+): string {
+  return `${protocol || 'http'}://${host || defaultHost}:${port || defaultPort}`;
 }
 
 function isUnsetDefaultOllamaConnection(
@@ -245,6 +259,10 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
   | 'ollama_host'
   | 'ollama_port'
   | 'ollama_base_url'
+  | 'llama_cpp_protocol'
+  | 'llama_cpp_host'
+  | 'llama_cpp_port'
+  | 'llama_cpp_base_url'
   | 'ollama_embedding_timeout_seconds'
   | 'default_ocr_mode'
   | 'default_ocr_vision_model'
@@ -258,6 +276,10 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
     ollama_host: data.ollama_host,
     ollama_port: data.ollama_port,
     ollama_base_url: data.ollama_base_url,
+    llama_cpp_protocol: data.llama_cpp_protocol,
+    llama_cpp_host: data.llama_cpp_host,
+    llama_cpp_port: data.llama_cpp_port,
+    llama_cpp_base_url: data.llama_cpp_base_url,
     ollama_embedding_timeout_seconds: data.ollama_embedding_timeout_seconds,
     default_ocr_mode: data.default_ocr_mode,
     default_ocr_vision_model: data.default_ocr_vision_model,
@@ -503,13 +525,14 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
 
   // Fetch LLM models from provider API
   const fetchLlmModels = useCallback(async (
-    provider: 'openai' | 'anthropic' | 'github_copilot',
+    provider: 'openai' | 'anthropic' | 'llama_cpp' | 'github_copilot',
     apiKey?: string,
     options?: {
       authMode?: 'oauth' | 'pat';
       includeDirectoryModels?: boolean;
       includeAnthropicModels?: boolean;
       includeGoogleModels?: boolean;
+      baseUrl?: string;
     }
   ) => {
     if ((provider === 'openai' || provider === 'anthropic') && (!apiKey || apiKey.length < 10)) {
@@ -527,6 +550,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         provider,
         api_key: apiKey,
         auth_mode: options?.authMode,
+        base_url: options?.baseUrl,
         include_directory_models: options?.includeDirectoryModels,
         include_anthropic_models: options?.includeAnthropicModels,
         include_google_models: options?.includeGoogleModels,
@@ -558,6 +582,18 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
       setLlmModelsFetching(false);
     }
   }, []);
+
+  const fetchLlamaCppLlmModels = useCallback(async () => {
+    await fetchLlmModels('llama_cpp', undefined, {
+      baseUrl: buildLocalBaseUrl(
+        formData.llm_llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL,
+        formData.llm_llama_cpp_host || DEFAULT_LLAMA_CPP_HOST,
+        formData.llm_llama_cpp_port || DEFAULT_LLAMA_CPP_CHAT_PORT,
+        DEFAULT_LLAMA_CPP_HOST,
+        DEFAULT_LLAMA_CPP_CHAT_PORT,
+      ),
+    });
+  }, [fetchLlmModels, formData.llm_llama_cpp_host, formData.llm_llama_cpp_port, formData.llm_llama_cpp_protocol]);
 
   const fetchCopilotModels = useCallback(async () => {
     await fetchLlmModels('github_copilot', undefined, {
@@ -758,6 +794,44 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     }
   }, [formData.embedding_model]);
 
+  const fetchLlamaCppEmbeddingModels = useCallback(async () => {
+    setEmbeddingModelsFetching(true);
+    setEmbeddingModelsError(null);
+    setEmbeddingModels([]);
+    setEmbeddingModelsLoaded(false);
+
+    try {
+      const response = await api.fetchEmbeddingModels({
+        provider: 'llama_cpp',
+        base_url: buildLocalBaseUrl(
+          formData.llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL,
+          formData.llama_cpp_host || DEFAULT_LLAMA_CPP_HOST,
+          formData.llama_cpp_port || DEFAULT_LLAMA_CPP_EMBEDDING_PORT,
+          DEFAULT_LLAMA_CPP_HOST,
+          DEFAULT_LLAMA_CPP_EMBEDDING_PORT,
+        ),
+        model: formData.embedding_model || undefined,
+      });
+
+      if (response.success) {
+        setEmbeddingModels(response.models);
+        setEmbeddingModelsLoaded(true);
+        if (response.default_model) {
+          setFormData((prev) => ({
+            ...prev,
+            embedding_model: prev.embedding_model || response.default_model,
+          }));
+        }
+      } else {
+        setEmbeddingModelsError(response.message);
+      }
+    } catch (err) {
+      setEmbeddingModelsError(err instanceof Error ? err.message : 'Failed to fetch embedding models');
+    } finally {
+      setEmbeddingModelsFetching(false);
+    }
+  }, [formData.embedding_model, formData.llama_cpp_host, formData.llama_cpp_port, formData.llama_cpp_protocol]);
+
   // --- Shared model-fetching helpers for Chat & OpenAPI modal ---
   const fetchModelsForModal = useCallback(async (): Promise<{ models: AvailableModel[]; response: Awaited<ReturnType<typeof api.getAllModels>> }> => {
     const response = await api.getAllModels();
@@ -947,6 +1021,10 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         llm_ollama_host: data.llm_ollama_host,
         llm_ollama_port: data.llm_ollama_port,
         llm_ollama_base_url: data.llm_ollama_base_url,
+        llm_llama_cpp_protocol: data.llm_llama_cpp_protocol,
+        llm_llama_cpp_host: data.llm_llama_cpp_host,
+        llm_llama_cpp_port: data.llm_llama_cpp_port,
+        llm_llama_cpp_base_url: data.llm_llama_cpp_base_url,
         openai_api_key: data.openai_api_key,
         anthropic_api_key: data.anthropic_api_key,
         github_models_api_token: data.github_models_api_token,
@@ -1287,6 +1365,16 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           formData.ollama_host,
           formData.ollama_port,
         ),
+        llama_cpp_protocol: formData.llama_cpp_protocol,
+        llama_cpp_host: formData.llama_cpp_host,
+        llama_cpp_port: formData.llama_cpp_port,
+        llama_cpp_base_url: buildLocalBaseUrl(
+          formData.llama_cpp_protocol,
+          formData.llama_cpp_host,
+          formData.llama_cpp_port,
+          DEFAULT_LLAMA_CPP_HOST,
+          DEFAULT_LLAMA_CPP_EMBEDDING_PORT,
+        ),
         ollama_embedding_timeout_seconds: formData.ollama_embedding_timeout_seconds,
         sequential_index_loading: formData.sequential_index_loading,
         default_ocr_mode: formData.default_ocr_mode,
@@ -1357,6 +1445,18 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           formData.llm_ollama_protocol,
           formData.llm_ollama_host,
           formData.llm_ollama_port,
+        );
+      }
+      if (normalizedProvider === 'llama_cpp') {
+        dataToSave.llm_llama_cpp_protocol = formData.llm_llama_cpp_protocol;
+        dataToSave.llm_llama_cpp_host = formData.llm_llama_cpp_host;
+        dataToSave.llm_llama_cpp_port = formData.llm_llama_cpp_port;
+        dataToSave.llm_llama_cpp_base_url = buildLocalBaseUrl(
+          formData.llm_llama_cpp_protocol,
+          formData.llm_llama_cpp_host,
+          formData.llm_llama_cpp_port,
+          DEFAULT_LLAMA_CPP_HOST,
+          DEFAULT_LLAMA_CPP_CHAT_PORT,
         );
       }
       const updated = await api.updateSettings(dataToSave);
@@ -1843,11 +1943,21 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     (formData.llm_ollama_host ?? settings?.llm_ollama_host)?.trim() &&
     (formData.llm_ollama_port ?? settings?.llm_ollama_port)
   );
+  const llamaCppConfigured = Boolean(
+    (formData.llm_llama_cpp_protocol ?? settings?.llm_llama_cpp_protocol) &&
+    (formData.llm_llama_cpp_host ?? settings?.llm_llama_cpp_host)?.trim() &&
+    (formData.llm_llama_cpp_port ?? settings?.llm_llama_cpp_port)
+  );
   const embeddingOpenAiConfigured = Boolean((formData.openai_api_key ?? settings?.openai_api_key)?.trim());
   const embeddingOllamaConfigured = Boolean(
     (formData.ollama_protocol ?? settings?.ollama_protocol) &&
     (formData.ollama_host ?? settings?.ollama_host)?.trim() &&
     (formData.ollama_port ?? settings?.ollama_port)
+  );
+  const embeddingLlamaCppConfigured = Boolean(
+    (formData.llama_cpp_protocol ?? settings?.llama_cpp_protocol) &&
+    (formData.llama_cpp_host ?? settings?.llama_cpp_host)?.trim() &&
+    (formData.llama_cpp_port ?? settings?.llama_cpp_port)
   );
   const activeAuthProvider = AUTH_PROVIDER_OPTIONS[0];
   const ldapConfigured = Boolean(ldapFormData.ldap_host.trim() || ldapConfig?.server_url?.trim());
@@ -2094,6 +2204,13 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 />
                 <span className="llm-provider-status-label">Ollama</span>
               </span>
+              <span className="llm-provider-status-item" title={llamaCppConfigured ? 'llama.cpp configured' : 'llama.cpp not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${llamaCppConfigured ? 'configured' : ''}`}
+                  aria-label={llamaCppConfigured ? 'llama.cpp configured' : 'llama.cpp not configured'}
+                />
+                <span className="llm-provider-status-label">llama.cpp</span>
+              </span>
               <span className="llm-provider-status-item" title={(copilotConfigured || copilotPatConfigured) ? 'GitHub Copilot configured' : 'GitHub Copilot not configured'}>
                 <span
                   className={`llm-provider-status-dot ${(copilotConfigured || copilotPatConfigured) ? 'configured' : ''}`}
@@ -2113,7 +2230,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
             <select
               value={formData.llm_provider || 'openai'}
               onChange={(e) => {
-                const newProvider = e.target.value as 'openai' | 'anthropic' | 'ollama' | 'github_copilot';
+                const newProvider = e.target.value as 'openai' | 'anthropic' | 'ollama' | 'llama_cpp' | 'github_copilot';
                 setFormData({
                   ...formData,
                   llm_provider: newProvider,
@@ -2126,7 +2243,6 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 });
                 // Reset LLM models when switching providers
                 resetLlmModelsState();
-                // Reset LLM Ollama state when switching away from Ollama
                 if (newProvider !== 'ollama') {
                   resetLlmOllamaState();
                 }
@@ -2139,6 +2255,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic (Claude)</option>
               <option value="ollama">Ollama</option>
+              <option value="llama_cpp">llama.cpp</option>
               <option value="github_copilot">GitHub Copilot</option>
             </select>
             {/* Quick-fill from embedding Ollama when it has a real host */}
@@ -2198,6 +2315,40 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               )}
             />
             </>
+          )}
+
+          {formData.llm_provider === 'llama_cpp' && (
+            <OllamaConnectionForm
+              protocol={formData.llm_llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL}
+              host={formData.llm_llama_cpp_host || DEFAULT_LLAMA_CPP_HOST}
+              port={formData.llm_llama_cpp_port || DEFAULT_LLAMA_CPP_CHAT_PORT}
+              model={formData.llm_model || ''}
+              connected={llmModelsLoaded && formData.llm_provider === 'llama_cpp'}
+              connecting={llmModelsFetching}
+              error={formData.llm_provider === 'llama_cpp' ? llmModelsError : null}
+              models={llmModels.map((m) => ({ id: m.id, name: m.name, context_limit: m.context_limit }))}
+              providerLabel="llama.cpp"
+              defaultPort={DEFAULT_LLAMA_CPP_CHAT_PORT}
+              hostPlaceholder={DEFAULT_LLAMA_CPP_HOST}
+              modelLabel="Model"
+              modelPlaceholder="my-chat-model"
+              connectedHelpText="Select a model from your llama.cpp server."
+              disconnectedHelpText="Click &quot;Fetch Models&quot; to discover the active llama.cpp model, or enter its alias manually."
+              onProtocolChange={(protocol) => {
+                setFormData({ ...formData, llm_llama_cpp_protocol: protocol });
+                resetLlmModelsState();
+              }}
+              onHostChange={(host) => {
+                setFormData({ ...formData, llm_llama_cpp_host: host });
+                resetLlmModelsState();
+              }}
+              onPortChange={(port) => {
+                setFormData({ ...formData, llm_llama_cpp_port: port });
+                resetLlmModelsState();
+              }}
+              onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
+              onFetchModels={fetchLlamaCppLlmModels}
+            />
           )}
 
           {/* API Key - show appropriate one based on provider */}
@@ -2469,7 +2620,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 Configure Chat Models
               </button>
               <p className="field-help">
-                Limit which models appear in the Chat view dropdown. Includes all configured providers (OpenAI, Anthropic, Ollama, GitHub Copilot).
+                Limit which models appear in the Chat view dropdown. Includes all configured providers (OpenAI, Anthropic, Ollama, llama.cpp, GitHub Copilot).
               </p>
             </div>
 
@@ -2545,7 +2696,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           </div>
 
           {/* Show OpenAI key field for embeddings if using Anthropic or Ollama for LLM */}
-          {(formData.llm_provider === 'anthropic' || formData.llm_provider === 'ollama' || formData.llm_provider === 'github_copilot') && formData.embedding_provider === 'openai' && (
+          {(formData.llm_provider === 'anthropic' || formData.llm_provider === 'ollama' || formData.llm_provider === 'llama_cpp' || formData.llm_provider === 'github_copilot') && formData.embedding_provider === 'openai' && (
             <div className="form-group">
               <label>OpenAI API Key (for embeddings)</label>
               <input
@@ -2902,6 +3053,13 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 />
                 <span className="llm-provider-status-label">Ollama</span>
               </span>
+              <span className="llm-provider-status-item" title={embeddingLlamaCppConfigured ? 'llama.cpp configured' : 'llama.cpp not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${embeddingLlamaCppConfigured ? 'configured' : ''}`}
+                  aria-label={embeddingLlamaCppConfigured ? 'llama.cpp configured' : 'llama.cpp not configured'}
+                />
+                <span className="llm-provider-status-label">llama.cpp</span>
+              </span>
             </span>
           </legend>
           <p className="fieldset-help">
@@ -2915,7 +3073,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               <select
                 value={formData.embedding_provider || 'ollama'}
                 onChange={(e) => {
-                  const newProvider = e.target.value as 'ollama' | 'openai';
+                  const newProvider = e.target.value as 'ollama' | 'openai' | 'llama_cpp';
                   setFormData({
                     ...formData,
                     embedding_provider: newProvider,
@@ -2923,7 +3081,9 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                     embedding_model:
                       newProvider === 'ollama'
                         ? 'nomic-embed-text'
-                        : 'text-embedding-3-small',
+                        : newProvider === 'llama_cpp'
+                          ? ''
+                          : 'text-embedding-3-small',
                   });
                   // Reset Ollama connection state when switching providers
                   if (newProvider !== 'ollama') {
@@ -2936,6 +3096,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 }}
               >
                 <option value="ollama">Ollama</option>
+                <option value="llama_cpp">llama.cpp</option>
                 <option value="openai">OpenAI</option>
               </select>
               {/* Quick-fill from LLM Ollama when it has a real host */}
@@ -2958,7 +3119,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               )}
               </div>
               <p className="field-help">
-                Note: Anthropic does not offer embedding models. Use Ollama or OpenAI for document embeddings.
+                Note: Anthropic does not offer embedding models. Use Ollama, llama.cpp, or OpenAI for document embeddings.
               </p>
             </div>
             {/* Show embedding dimension info */}
@@ -2966,7 +3127,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               // Get the dimension from the selected model if available
               const selectedOllamaModel = ollamaModels.find(m => m.name === formData.embedding_model);
               const selectedOpenAIModel = embeddingModels.find(m => m.id === formData.embedding_model);
-              const selectedModelDimension = selectedOllamaModel?.dimensions || selectedOpenAIModel?.dimensions;
+              const selectedLlamaCppModel = embeddingModels.find(m => m.id === formData.embedding_model);
+              const selectedModelDimension = selectedOllamaModel?.dimensions || selectedOpenAIModel?.dimensions || selectedLlamaCppModel?.dimensions;
               const storedDimension = settings?.embedding_dimension;
 
               // Determine if there's a mismatch between stored and selected
@@ -3041,6 +3203,40 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               }}
               onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
               onFetchModels={handleTestOllamaConnection}
+            />
+          )}
+
+          {formData.embedding_provider === 'llama_cpp' && (
+            <OllamaConnectionForm
+              protocol={formData.llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL}
+              host={formData.llama_cpp_host || DEFAULT_LLAMA_CPP_HOST}
+              port={formData.llama_cpp_port || DEFAULT_LLAMA_CPP_EMBEDDING_PORT}
+              model={formData.embedding_model || ''}
+              connected={embeddingModelsLoaded && formData.embedding_provider === 'llama_cpp'}
+              connecting={embeddingModelsFetching}
+              error={formData.embedding_provider === 'llama_cpp' ? embeddingModelsError : null}
+              models={embeddingModels.map((m) => ({ id: m.id, name: m.name, dimensions: m.dimensions }))}
+              providerLabel="llama.cpp"
+              defaultPort={DEFAULT_LLAMA_CPP_EMBEDDING_PORT}
+              hostPlaceholder={DEFAULT_LLAMA_CPP_HOST}
+              modelLabel="Embedding Model"
+              modelPlaceholder="my-embed-model"
+              connectedHelpText="Select an embedding model from your llama.cpp server."
+              disconnectedHelpText="Click &quot;Fetch Models&quot; to probe the llama.cpp embedding server, or enter the model alias manually."
+              onProtocolChange={(protocol) => {
+                setFormData({ ...formData, llama_cpp_protocol: protocol });
+                resetEmbeddingModelsState();
+              }}
+              onHostChange={(host) => {
+                setFormData({ ...formData, llama_cpp_host: host });
+                resetEmbeddingModelsState();
+              }}
+              onPortChange={(port) => {
+                setFormData({ ...formData, llama_cpp_port: port });
+                resetEmbeddingModelsState();
+              }}
+              onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
+              onFetchModels={fetchLlamaCppEmbeddingModels}
             />
           )}
 

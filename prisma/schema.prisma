@@ -137,7 +137,7 @@ model AppSettings {
   serverName String @default("Ragtime") @map("server_name") // Customizable server/model name
 
   // Embedding Configuration (for FAISS indexing)
-  embeddingProvider   String @default("ollama") @map("embedding_provider") // "ollama" or "openai"
+  embeddingProvider   String @default("ollama") @map("embedding_provider") // "ollama", "openai", or "llama_cpp"
   embeddingModel      String @default("nomic-embed-text") @map("embedding_model")
   embeddingDimensions Int?   @map("embedding_dimensions") // Target dims for OpenAI text-embedding-3-* (MRL)
   // Ollama connection settings (separate fields for UI)
@@ -145,9 +145,13 @@ model AppSettings {
   ollamaHost          String @default("localhost") @map("ollama_host")
   ollamaPort          Int    @default(11434) @map("ollama_port")
   ollamaBaseUrl       String @default("http://localhost:11434") @map("ollama_base_url")
+  llamaCppProtocol    String @default("http") @map("llama_cpp_protocol")
+  llamaCppHost        String @default("host.docker.internal") @map("llama_cpp_host")
+  llamaCppPort        Int    @default(8081) @map("llama_cpp_port")
+  llamaCppBaseUrl     String @default("http://host.docker.internal:8081") @map("llama_cpp_base_url")
 
   // LLM Configuration (for chat/RAG responses)
-  llmProvider                    String    @default("openai") @map("llm_provider") // "openai", "anthropic", "ollama", "github_copilot", or "github_models"
+  llmProvider                    String    @default("openai") @map("llm_provider") // "openai", "anthropic", "ollama", "llama_cpp", "github_copilot", or "github_models"
   llmModel                       String    @default("gpt-4-turbo") @map("llm_model")
   llmMaxTokens                   Int       @default(4096) @map("llm_max_tokens") // Max output tokens
   imagePayloadMaxWidth           Int       @default(1024) @map("image_payload_max_width") // Max width (px) for image attachments
@@ -158,6 +162,10 @@ model AppSettings {
   llmOllamaHost                  String    @default("localhost") @map("llm_ollama_host")
   llmOllamaPort                  Int       @default(11434) @map("llm_ollama_port")
   llmOllamaBaseUrl               String    @default("http://localhost:11434") @map("llm_ollama_base_url")
+  llmLlamaCppProtocol            String    @default("http") @map("llm_llama_cpp_protocol")
+  llmLlamaCppHost                String    @default("host.docker.internal") @map("llm_llama_cpp_host")
+  llmLlamaCppPort                Int       @default(8080) @map("llm_llama_cpp_port")
+  llmLlamaCppBaseUrl             String    @default("http://host.docker.internal:8080") @map("llm_llama_cpp_base_url")
   openaiApiKey                   String    @default("") @map("openai_api_key")
   anthropicApiKey                String    @default("") @map("anthropic_api_key")
   githubModelsApiToken           String    @default("") @map("github_models_api_token")

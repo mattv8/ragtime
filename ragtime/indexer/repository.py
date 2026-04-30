@@ -951,6 +951,14 @@ class IndexerRepository:
             ollama_host=settings.ollamaHost,
             ollama_port=settings.ollamaPort,
             ollama_base_url=settings.ollamaBaseUrl,
+            llama_cpp_protocol=getattr(settings, "llamaCppProtocol", "http"),
+            llama_cpp_host=getattr(settings, "llamaCppHost", "host.docker.internal"),
+            llama_cpp_port=getattr(settings, "llamaCppPort", 8081),
+            llama_cpp_base_url=getattr(
+                settings,
+                "llamaCppBaseUrl",
+                "http://host.docker.internal:8081",
+            ),
             # LLM settings
             llm_provider=settings.llmProvider,
             llm_model=settings.llmModel,
@@ -966,6 +974,16 @@ class IndexerRepository:
                 settings,
                 "llmOllamaBaseUrl",
                 "http://localhost:11434",
+            ),
+            llm_llama_cpp_protocol=getattr(settings, "llmLlamaCppProtocol", "http"),
+            llm_llama_cpp_host=getattr(
+                settings, "llmLlamaCppHost", "host.docker.internal"
+            ),
+            llm_llama_cpp_port=getattr(settings, "llmLlamaCppPort", 8080),
+            llm_llama_cpp_base_url=getattr(
+                settings,
+                "llmLlamaCppBaseUrl",
+                "http://host.docker.internal:8080",
             ),
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
@@ -1097,6 +1115,10 @@ class IndexerRepository:
             "ollama_host": "ollamaHost",
             "ollama_port": "ollamaPort",
             "ollama_base_url": "ollamaBaseUrl",
+            "llama_cpp_protocol": "llamaCppProtocol",
+            "llama_cpp_host": "llamaCppHost",
+            "llama_cpp_port": "llamaCppPort",
+            "llama_cpp_base_url": "llamaCppBaseUrl",
             # LLM settings
             "llm_provider": "llmProvider",
             "llm_model": "llmModel",
@@ -1109,6 +1131,10 @@ class IndexerRepository:
             "llm_ollama_host": "llmOllamaHost",
             "llm_ollama_port": "llmOllamaPort",
             "llm_ollama_base_url": "llmOllamaBaseUrl",
+            "llm_llama_cpp_protocol": "llmLlamaCppProtocol",
+            "llm_llama_cpp_host": "llmLlamaCppHost",
+            "llm_llama_cpp_port": "llmLlamaCppPort",
+            "llm_llama_cpp_base_url": "llmLlamaCppBaseUrl",
             "openai_api_key": "openaiApiKey",
             "anthropic_api_key": "anthropicApiKey",
             "github_models_api_token": "githubModelsApiToken",
