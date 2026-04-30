@@ -44,13 +44,13 @@ function SharedChatSurface({
   onLogout,
 }: PublicSharedChatViewProps) {
   const [sharedConversation, setSharedConversation] = useState<SharedConversationResponse | null>(null);
-  const [redirectingToAuthenticatedChat, setRedirectingToAuthenticatedChat] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showLogin, setShowLogin] = useState(false);
   const [messageDraft, setMessageDraft] = useState('');
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [sending, setSending] = useState(false);
+  const [addingToChats, setAddingToChats] = useState(false);
   const [sharePasswordDraft, setSharePasswordDraft] = useState('');
   const [submittedSharePassword, setSubmittedSharePassword] = useState<string | undefined>(undefined);
   const [passwordRequired, setPasswordRequired] = useState(false);
@@ -59,12 +59,6 @@ function SharedChatSurface({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sendingRef = useRef(false);
   const showLoginRef = useRef(false);
-  // Snapshot the currentUser at mount time. Auto-redirect only fires when the
-  // user transitions from anonymous (null at mount) to authenticated during
-  // this view's lifetime — i.e., after signing in via the inline modal.
-  // Visiting the public link while already authenticated (e.g., the owner
-  // clicking "Open Link" from the share modal) preserves the public preview.
-  const initialCurrentUserIdRef = useRef<string | null>(currentUser?.id ?? null);
 
   useEffect(() => {
     sendingRef.current = sending;
@@ -73,26 +67,6 @@ function SharedChatSurface({
   useEffect(() => {
     showLoginRef.current = showLogin;
   }, [showLogin]);
-
-  useEffect(() => {
-    if (!currentUser) {
-      return;
-    }
-    if (!sharedConversation?.can_edit || !sharedConversation.conversation.id) {
-      return;
-    }
-    // If the user was already authenticated when this view first mounted,
-    // they're previewing the public share — do not redirect.
-    if (initialCurrentUserIdRef.current) {
-      return;
-    }
-
-    setRedirectingToAuthenticatedChat(true);
-    const params = new URLSearchParams();
-    params.set('view', 'chat');
-    params.set('conversation', sharedConversation.conversation.id);
-    window.location.assign(`/?${params.toString()}`);
-  }, [currentUser, sharedConversation?.can_edit, sharedConversation?.conversation.id]);
 
   const loadSharedConversation = useCallback(async (silent = false) => {
     if (!silent) {
@@ -238,7 +212,32 @@ function SharedChatSurface({
   const conversation: Conversation | null = sharedConversation?.conversation || null;
   const activeTask: ChatTask | null = sharedConversation?.active_task || null;
   const canEdit = Boolean(sharedConversation?.can_edit);
+  const currentUserMemberRole = sharedConversation?.current_user_member_role ?? null;
   const ownerLabel = sharedConversation?.owner_display_name || sharedConversation?.owner_username || 'unknown';
+
+  const openChatInApp = useCallback(() => {
+    if (!conversation?.id) return;
+    const params = new URLSearchParams();
+    params.set('view', 'chat');
+    params.set('conversation', conversation.id);
+    window.location.assign(`/?${params.toString()}`);
+  }, [conversation?.id]);
+
+  const handleAddThisChat = useCallback(async () => {
+    if (!currentUser || !conversation || addingToChats) return;
+    setAddingToChats(true);
+    try {
+      const response = shareToken
+        ? await api.joinSharedConversation(shareToken, submittedSharePassword)
+        : await api.joinSharedConversationBySlug(ownerUsername as string, shareSlug as string, submittedSharePassword);
+      setSharedConversation(response);
+      setError(null);
+    } catch (joinError) {
+      setError(joinError instanceof Error ? joinError.message : 'Failed to add shared chat');
+    } finally {
+      setAddingToChats(false);
+    }
+  }, [addingToChats, conversation, currentUser, ownerUsername, shareSlug, shareToken, submittedSharePassword]);
 
   const modelLabel = useMemo(() => {
     const raw = (conversation?.model || '').trim();
@@ -329,12 +328,6 @@ function SharedChatSurface({
 
   const showLoginModal = showLogin && !currentUser && Boolean(authStatus);
 
-  if (currentUser && redirectingToAuthenticatedChat) {
-    return (
-      <div className="userspace-shared-status">Opening chat in your workspace...</div>
-    );
-  }
-
   return (
     <div className="app-shell app-shell-locked">
       <div className={showLoginModal ? 'shared-blur-host shared-blur-host-active' : 'shared-blur-host'}>
@@ -342,7 +335,26 @@ function SharedChatSurface({
           <span className="topnav-brand">{serverName}</span>
           <div className="topnav-links">
             {currentUser ? (
-              <UserMenu user={currentUser} onLogout={onLogout} />
+              <>
+                {conversation && !conversation.workspace_id && (
+                  currentUserMemberRole ? (
+                    <button className="topnav-link" onClick={openChatInApp} type="button">
+                      Open Chat
+                    </button>
+                  ) : (
+                    <button
+                      className="topnav-link"
+                      onClick={() => void handleAddThisChat()}
+                      type="button"
+                      disabled={addingToChats}
+                      title="Add this chat to your conversations"
+                    >
+                      {addingToChats ? 'Adding...' : 'Add this chat'}
+                    </button>
+                  )
+                )}
+                <UserMenu user={currentUser} onLogout={onLogout} />
+              </>
             ) : (
               <button className="topnav-link" onClick={() => setShowLogin((previous) => !previous)}>
                 Sign In

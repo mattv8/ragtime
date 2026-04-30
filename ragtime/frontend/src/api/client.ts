@@ -3046,6 +3046,22 @@ export const api = {
     return `${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/events${suffix}`;
   },
 
+  async joinSharedConversation(shareToken: string, password?: string): Promise<SharedConversationResponse> {
+    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
+    const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}/join${suffix}`, {
+      method: 'POST',
+    });
+    return handleResponse<SharedConversationResponse>(response);
+  },
+
+  async joinSharedConversationBySlug(ownerUsername: string, shareSlug: string, password?: string): Promise<SharedConversationResponse> {
+    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
+    const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/join${suffix}`, {
+      method: 'POST',
+    });
+    return handleResponse<SharedConversationResponse>(response);
+  },
+
   async sendSharedConversationMessage(shareToken: string, request: SendMessageRequest, password?: string): Promise<{ message: ChatMessage; conversation: Conversation; task?: import('@/types').ChatTask | null }> {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
     const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}/messages${suffix}`, {

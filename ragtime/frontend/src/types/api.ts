@@ -2765,6 +2765,7 @@ export interface SharedConversationResponse {
   granted_role: ConversationShareRole;
   can_edit: boolean;
   is_authenticated: boolean;
+  current_user_member_role?: WorkspaceRole | null;
   context_limit?: number | null;
   scope_anchor_message_idx?: number | null;
   scope_direction?: 'forward' | 'backward' | null;

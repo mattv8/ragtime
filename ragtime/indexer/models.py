@@ -2,7 +2,6 @@
 Indexer data models and schemas.
 """
 
-
 import hashlib
 import json
 from datetime import datetime
@@ -20,6 +19,7 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
     normalize_userspace_preview_sandbox_flags,
 )
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -2491,6 +2491,7 @@ class SharedConversationResponse(BaseModel):
     granted_role: ConversationShareRole = "viewer"
     can_edit: bool = False
     is_authenticated: bool = False
+    current_user_member_role: Optional[Literal["owner", "editor", "viewer"]] = None
     context_limit: int | None = None
     scope_anchor_message_idx: int | None = None
     scope_direction: Literal["forward", "backward"] | None = None

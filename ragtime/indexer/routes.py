@@ -6399,9 +6399,11 @@ async def fetch_embedding_models(
             normalized_provider,
             base_url,
             selected_model=request.model,
-            api_key=str(settings.lmstudio_api_key or "") or None
-            if normalized_provider == "lmstudio"
-            else None,
+            api_key=(
+                str(settings.lmstudio_api_key or "") or None
+                if normalized_provider == "lmstudio"
+                else None
+            ),
         )
 
     return EmbeddingModelsResponse(
@@ -6933,8 +6935,12 @@ async def _fetch_llm_models_for_provider(
         token = str(api_key or settings.anthropic_api_key or "").strip()
         if not token:
             if raise_on_unconfigured:
-                raise HTTPException(status_code=400, detail="Anthropic is not configured")
-            return LLMModelsResponse(success=False, message="Anthropic is not configured")
+                raise HTTPException(
+                    status_code=400, detail="Anthropic is not configured"
+                )
+            return LLMModelsResponse(
+                success=False, message="Anthropic is not configured"
+            )
         return await _fetch_anthropic_models(token)
 
     if normalized_provider == "ollama":
@@ -6953,8 +6959,12 @@ async def _fetch_llm_models_for_provider(
         )
         if not resolved_base_url:
             if raise_on_unconfigured:
-                raise HTTPException(status_code=400, detail="llama.cpp is not configured")
-            return LLMModelsResponse(success=False, message="llama.cpp is not configured")
+                raise HTTPException(
+                    status_code=400, detail="llama.cpp is not configured"
+                )
+            return LLMModelsResponse(
+                success=False, message="llama.cpp is not configured"
+            )
         return await _fetch_llama_cpp_llm_models(resolved_base_url)
 
     if normalized_provider == "lmstudio":
@@ -6963,8 +6973,12 @@ async def _fetch_llm_models_for_provider(
         )
         if not resolved_base_url:
             if raise_on_unconfigured:
-                raise HTTPException(status_code=400, detail="LM Studio is not configured")
-            return LLMModelsResponse(success=False, message="LM Studio is not configured")
+                raise HTTPException(
+                    status_code=400, detail="LM Studio is not configured"
+                )
+            return LLMModelsResponse(
+                success=False, message="LM Studio is not configured"
+            )
         return await _fetch_lmstudio_llm_models(
             resolved_base_url,
             api_key=str(settings.lmstudio_api_key or "") or None,
@@ -6991,7 +7005,7 @@ async def _safe_fetch_llm_models_task(
 ) -> tuple[str, LLMModelsResponse | None]:
     """Run a provider model fetch with consistent logging/error shaping."""
     normalized_provider = normalize_provider_name(provider)
-    provider_label = (get_provider(normalized_provider) or get_provider(provider))
+    provider_label = get_provider(normalized_provider) or get_provider(provider)
     label = provider_label.label if provider_label else provider
     try:
         return (normalized_provider, await fetch)
@@ -8121,7 +8135,9 @@ async def _fetch_lmstudio_llm_models(
             base_url,
             lmstudio.DEFAULT_BASE_URL,
         )
-        discovered = await lmstudio.list_chat_models(normalized_base_url, api_key=api_key)
+        discovered = await lmstudio.list_chat_models(
+            normalized_base_url, api_key=api_key
+        )
         models = [
             LLMModel(
                 id=model.id,
@@ -8902,11 +8918,14 @@ async def get_available_chat_models():
     if lmstudio_url:
         provider_states["lmstudio"].configured = True
         provider_states["lmstudio"].connected = True
-        _lmstudio_api_key = str(getattr(app_settings, "lmstudio_api_key", "") or "") or None
+        _lmstudio_api_key = (
+            str(getattr(app_settings, "lmstudio_api_key", "") or "") or None
+        )
         tasks.append(
             asyncio.create_task(
                 _safe_fetch_llm_models_task(
-                    "lmstudio", _fetch_lmstudio_llm_models(lmstudio_url, api_key=_lmstudio_api_key)
+                    "lmstudio",
+                    _fetch_lmstudio_llm_models(lmstudio_url, api_key=_lmstudio_api_key),
                 )
             )
         )
@@ -9229,7 +9248,9 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
 
     lmstudio_url = _resolve_lmstudio_chat_base_url(app_settings)
     if lmstudio_url:
-        _lmstudio_api_key = str(getattr(app_settings, "lmstudio_api_key", "") or "") or None
+        _lmstudio_api_key = (
+            str(getattr(app_settings, "lmstudio_api_key", "") or "") or None
+        )
         tasks.append(
             asyncio.create_task(
                 _safe_fetch_llm_models_task(
@@ -9439,6 +9460,16 @@ async def _to_shared_conversation_response(
         except Exception:  # pragma: no cover - defensive
             active_task = None
 
+    current_user_member_role = None
+    if current_user is not None:
+        if getattr(conv, "user_id", None) == current_user.id:
+            current_user_member_role = "owner"
+        else:
+            current_user_member_role = await _get_conversation_member_role(
+                conv.id,
+                current_user.id,
+            )
+
     return SharedConversationResponse(
         conversation=_to_conversation_response(conv),
         active_task=_to_chat_task_response(active_task) if active_task else None,
@@ -9450,6 +9481,7 @@ async def _to_shared_conversation_response(
         granted_role=str(authorization.get("granted_role") or "viewer"),
         can_edit=bool(authorization.get("can_edit")),
         is_authenticated=current_user is not None,
+        current_user_member_role=current_user_member_role,
         context_limit=context_limit,
         scope_anchor_message_idx=scope_anchor,
         scope_direction=(
@@ -9476,6 +9508,47 @@ def _shared_conversation_request_actor(
         )
 
     return types.SimpleNamespace(id=fallback_user_id, role="user")
+
+
+async def _get_conversation_member_role(
+    conversation_id: str,
+    user_id: str | None,
+) -> str | None:
+    if not user_id:
+        return None
+    db = await repository._get_db()
+    member = await db.conversationmember.find_first(
+        where={"conversationId": conversation_id, "userId": user_id}
+    )
+    return str(getattr(member, "role", "") or "") or None
+
+
+async def _add_or_update_conversation_member(
+    db: Prisma,
+    conversation_id: str,
+    user_id: str,
+    role: str,
+) -> str:
+    role = role if role in {"owner", "editor", "viewer"} else "viewer"
+    existing = await db.conversationmember.find_first(
+        where={"conversationId": conversation_id, "userId": user_id}
+    )
+    if existing:
+        existing_role = str(getattr(existing, "role", "") or "")
+        if existing_role == "owner":
+            return "owner"
+        if existing_role == role or (existing_role == "editor" and role == "viewer"):
+            return existing_role or role
+        updated = await db.conversationmember.update(
+            where={"id": existing.id},
+            data={"role": role},
+        )
+        return str(getattr(updated, "role", role) or role)
+
+    created = await db.conversationmember.create(
+        data={"conversationId": conversation_id, "userId": user_id, "role": role}
+    )
+    return str(getattr(created, "role", role) or role)
 
 
 async def _send_message_to_loaded_conversation(
@@ -10296,10 +10369,10 @@ async def _shared_conversation_event_stream(conversation_id: str):
         task_event_bus.unsubscribe(channel, queue)
 
 
-# IMPORTANT: The `/events` routes must be registered BEFORE the slug-based
+# IMPORTANT: The `/events` and `/join` routes must be registered BEFORE the slug-based
 # `/shared-conversations/{owner_username}/{share_slug}` GET, otherwise FastAPI
-# would match `/shared-conversations/TOKEN/events` against the slug pattern
-# (owner=TOKEN, slug=events) and reject it as a missing share.
+# would match `/shared-conversations/TOKEN/events` (or `/join`) against the slug
+# pattern and reject it as a missing share.
 @router.get("/shared-conversations/{share_token}/events")
 async def shared_conversation_events(
     share_token: str,
@@ -10356,6 +10429,97 @@ async def shared_conversation_events_by_slug(
     return StreamingResponse(
         _shared_conversation_event_stream(conversation_id),
         media_type="text/event-stream",
+    )
+
+
+@router.post(
+    "/shared-conversations/{share_token}/join",
+    response_model=SharedConversationResponse,
+)
+async def join_shared_conversation(
+    share_token: str,
+    request: Request,
+    password: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    share_record, authorization = (
+        await userspace_service.get_authorized_shared_conversation_record(
+            share_token,
+            current_user=user,
+            password=password,
+            share_auth_token=share_auth_token_from_request(
+                request.headers,
+                request.cookies,
+                share_token=share_token,
+            ),
+        )
+    )
+    conv = await repository.get_conversation(
+        str(authorization.get("conversation_id") or "")
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv.workspace_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Workspace shared chats cannot be added to personal chats",
+        )
+
+    db = await repository._get_db()
+    role = "editor" if authorization.get("can_edit") else "viewer"
+    await _add_or_update_conversation_member(db, conv.id, user.id, role)
+    return await _to_shared_conversation_response(
+        conv,
+        share_record,
+        authorization,
+        user,
+    )
+
+
+@router.post(
+    "/shared-conversations/{owner_username}/{share_slug}/join",
+    response_model=SharedConversationResponse,
+)
+async def join_shared_conversation_by_slug(
+    owner_username: str,
+    share_slug: str,
+    request: Request,
+    password: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    share_record, authorization = (
+        await userspace_service.get_authorized_shared_conversation_record_by_slug(
+            owner_username,
+            share_slug,
+            current_user=user,
+            password=password,
+            share_auth_token=share_auth_token_from_request(
+                request.headers,
+                request.cookies,
+                owner_username=owner_username,
+                share_slug=share_slug,
+            ),
+        )
+    )
+    conv = await repository.get_conversation(
+        str(authorization.get("conversation_id") or "")
+    )
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv.workspace_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Workspace shared chats cannot be added to personal chats",
+        )
+
+    db = await repository._get_db()
+    role = "editor" if authorization.get("can_edit") else "viewer"
+    await _add_or_update_conversation_member(db, conv.id, user.id, role)
+    return await _to_shared_conversation_response(
+        conv,
+        share_record,
+        authorization,
+        user,
     )
 
 
@@ -12260,9 +12424,7 @@ async def update_conversation_members(
             # Normalize non-owner members trying to be owner to editor
             if role == "owner" and mid != (conversation.userId or user.id):
                 role = "editor"
-            await db.conversationmember.create(
-                data={"conversationId": conversation_id, "userId": mid, "role": role}
-            )
+            await _add_or_update_conversation_member(db, conversation_id, mid, role)
 
         return {"success": True}
     finally:
