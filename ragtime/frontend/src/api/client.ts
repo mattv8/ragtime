@@ -3046,24 +3046,24 @@ export const api = {
     return `${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/events${suffix}`;
   },
 
-  async sendSharedConversationMessage(shareToken: string, request: SendMessageRequest, password?: string): Promise<{ message: ChatMessage; conversation: Conversation }> {
+  async sendSharedConversationMessage(shareToken: string, request: SendMessageRequest, password?: string): Promise<{ message: ChatMessage; conversation: Conversation; task?: import('@/types').ChatTask | null }> {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
     const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}/messages${suffix}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     });
-    return handleResponse<{ message: ChatMessage; conversation: Conversation }>(response);
+    return handleResponse<{ message: ChatMessage; conversation: Conversation; task?: import('@/types').ChatTask | null }>(response);
   },
 
-  async sendSharedConversationMessageBySlug(ownerUsername: string, shareSlug: string, request: SendMessageRequest, password?: string): Promise<{ message: ChatMessage; conversation: Conversation }> {
+  async sendSharedConversationMessageBySlug(ownerUsername: string, shareSlug: string, request: SendMessageRequest, password?: string): Promise<{ message: ChatMessage; conversation: Conversation; task?: import('@/types').ChatTask | null }> {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
     const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/messages${suffix}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
     });
-    return handleResponse<{ message: ChatMessage; conversation: Conversation }>(response);
+    return handleResponse<{ message: ChatMessage; conversation: Conversation; task?: import('@/types').ChatTask | null }>(response);
   },
 
   async executeUserSpaceSharedComponent(shareToken: string, request: ExecuteComponentRequest): Promise<ExecuteComponentResponse> {

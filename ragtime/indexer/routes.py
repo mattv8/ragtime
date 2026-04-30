@@ -9607,6 +9607,91 @@ async def _send_message_to_loaded_conversation(
     }
 
 
+async def _send_background_message_to_loaded_conversation(
+    conv: Conversation,
+    request: SendMessageRequest,
+    user: User,
+    *,
+    workspace_id: Optional[str],
+    blocked_tool_names: Optional[set[str]] = None,
+    workspace_context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    conversation_id = conv.id
+    if blocked_tool_names is None:
+        _, blocked_tool_names, workspace_context = (
+            await _resolve_workspace_runtime_scope(
+                conv,
+                user,
+                workspace_id,
+                _workspace_chat_required_role(workspace_id),
+            )
+        )
+
+    if not rag.is_ready:
+        raise HTTPException(
+            status_code=503, detail="RAG service initializing, please retry"
+        )
+
+    await _validate_conversation_model_before_send(conv.model)
+
+    user_message = request.message.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    existing_task = await repository.get_active_task_for_conversation(conversation_id)
+    if existing_task:
+        return {
+            "message": ChatMessage(
+                role="user",
+                content=user_message,
+                timestamp=existing_task.created_at,
+            ),
+            "conversation": _to_conversation_response(conv),
+            "task": _to_chat_task_response(existing_task),
+        }
+
+    updated_conversation = await repository.add_message(
+        conversation_id,
+        "user",
+        user_message,
+    )
+    schedule_title_generation(conversation_id, user_message)
+    if updated_conversation is None:
+        raise HTTPException(status_code=500, detail="Failed to add user message")
+    conv = updated_conversation
+
+    input_est = _estimate_input_tokens(user_message)
+    attempt_id = await create_usage_attempt(
+        user_id=user.id,
+        request_source="ui",
+        provider=conv.model or "",
+        model=conv.model or "",
+        conversation_id=conversation_id,
+        input_tokens=input_est,
+    )
+
+    task_id = await background_task_service.start_task_async(
+        conversation_id,
+        user_message,
+        blocked_tool_names=blocked_tool_names,
+        workspace_context=workspace_context,
+        usage_attempt_id=attempt_id,
+    )
+    task = await repository.get_chat_task(task_id)
+    if not task:
+        raise HTTPException(status_code=500, detail="Failed to create background task")
+
+    return {
+        "message": ChatMessage(
+            role="user",
+            content=user_message,
+            timestamp=conv.messages[-1].timestamp,
+        ),
+        "conversation": _to_conversation_response(conv),
+        "task": _to_chat_task_response(task),
+    }
+
+
 async def _link_assistant_snapshot_tool_calls(
     conv: Optional[Conversation],
     workspace_id: Optional[str],
@@ -10384,7 +10469,7 @@ async def send_shared_conversation_message(
     if not has_direct_access:
         blocked_tool_names = set(rag.get_blocked_config_tool_names([]))
 
-    return await _send_message_to_loaded_conversation(
+    return await _send_background_message_to_loaded_conversation(
         conv,
         body,
         actor,
@@ -10440,7 +10525,7 @@ async def send_shared_conversation_message_by_slug(
     if not has_direct_access:
         blocked_tool_names = set(rag.get_blocked_config_tool_names([]))
 
-    return await _send_message_to_loaded_conversation(
+    return await _send_background_message_to_loaded_conversation(
         conv,
         body,
         actor,

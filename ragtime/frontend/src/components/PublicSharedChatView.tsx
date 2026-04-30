@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Info } from 'lucide-react';
 
 import { api } from '@/api';
-import type { AuthStatus, Conversation, MessageEvent, PublicShareTargetResponse, SharedConversationResponse, User } from '@/types';
+import type { AuthStatus, ChatTask, Conversation, MessageEvent, PublicShareTargetResponse, SharedConversationResponse, User } from '@/types';
 import { formatChatTimestamp } from '@/utils';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
 
@@ -223,6 +223,7 @@ function SharedChatSurface({
       setSharedConversation((previous) => previous ? {
         ...previous,
         conversation: response.conversation,
+        active_task: response.task ?? previous.active_task ?? null,
       } : previous);
       setMessageDraft('');
       setAttachments([]);
@@ -235,6 +236,7 @@ function SharedChatSurface({
   }, [attachments, messageDraft, ownerUsername, shareSlug, shareToken, submittedSharePassword]);
 
   const conversation: Conversation | null = sharedConversation?.conversation || null;
+  const activeTask: ChatTask | null = sharedConversation?.active_task || null;
   const canEdit = Boolean(sharedConversation?.can_edit);
   const ownerLabel = sharedConversation?.owner_display_name || sharedConversation?.owner_username || 'unknown';
 
@@ -248,9 +250,28 @@ function SharedChatSurface({
   // Server already pre-slices messages based on the share record's
   // scope_anchor_message_idx + scope_direction (the scope is bound to the share
   // link, not to URL params, so it can't be bypassed by clients).
+  const streamingMessage = useMemo<Conversation['messages'][number] | null>(() => {
+    if (!activeTask) return null;
+    if (activeTask.status !== 'pending' && activeTask.status !== 'running') return null;
+
+    const content = activeTask.streaming_state?.content ?? activeTask.response_content ?? '';
+    const events = activeTask.streaming_state?.events ?? [];
+    if (!content.trim() && events.length === 0) return null;
+
+    return {
+      role: 'assistant',
+      content,
+      timestamp: activeTask.last_update_at,
+      events,
+      tool_calls: activeTask.streaming_state?.tool_calls ?? [],
+    };
+  }, [activeTask]);
+
   const visibleMessages = useMemo(
-    () => conversation?.messages || [],
-    [conversation?.messages],
+    () => streamingMessage
+      ? [...(conversation?.messages || []), streamingMessage]
+      : (conversation?.messages || []),
+    [conversation?.messages, streamingMessage],
   );
 
   const contextLimitForPie = sharedConversation?.context_limit && sharedConversation.context_limit > 0
@@ -273,10 +294,10 @@ function SharedChatSurface({
 
   // Auto-scroll to latest message
   useEffect(() => {
-    if (!loading && conversation?.messages.length) {
+    if (!loading && visibleMessages.length) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
-  }, [loading, conversation?.messages.length]);
+  }, [loading, visibleMessages.length, activeTask?.streaming_state?.content_length]);
 
   // Auto-resize textarea
   const handleTextareaInput = useCallback(() => {
@@ -475,7 +496,7 @@ function SharedChatSurface({
                                         output: event.output,
                                         presentation: event.presentation,
                                         connection: event.connection,
-                                        status: 'complete',
+                                        status: event.output === undefined ? 'running' : 'complete',
                                       };
                                       return (
                                         <div key={`shared-tool-${idx}-${eventIdx}`} className="chat-tool-calls">
