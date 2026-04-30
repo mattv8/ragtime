@@ -973,7 +973,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
 
         {loading ? (
           <p className="muted">Loading tools...</p>
-        ) : tools.length === 0 && groups.length === 0 ? (
+        ) : tools.length === 0 ? (
           <div className="empty-state">
             <p>No tools configured yet.</p>
             <p className="muted">
@@ -1078,30 +1078,6 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
         </>
         )}
       </div>
-
-      {!showWizard && tools.length === 0 && (
-        <div className="card">
-          <h2>About Tools</h2>
-          <p className="fieldset-help">
-            Tools give the AI assistant the ability to query your systems directly during conversations.
-            When you ask a question, the AI can use these tools to fetch real-time data.
-          </p>
-
-          <div className="tool-types-info">
-            {Object.entries(TOOL_TYPE_INFO).map(([type, info]) => (
-              <div key={type} className="tool-type-info">
-                <span className="tool-type-icon">
-                  <Icon name={getToolIconType(info.icon)} size={20} />
-                </span>
-                <div>
-                  <strong>{info.name}</strong>
-                  <p>{info.description}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Mounts section */}
       <div className="card" id="tools-mount-sources">

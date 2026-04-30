@@ -3002,47 +3002,6 @@ button.tool-call-userspace-write-path-link:hover {
   margin: 0.75em 0;
 }
 /* =============================================================================
-   TOOL TYPES INFO
-   ============================================================================= */
-.tool-types-info {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: var(--space-md);
-  margin-top: var(--space-md);
-}
-.tool-type-info {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-md);
-  padding: var(--space-md);
-  background: var(--color-surface-hover);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-}
-.tool-type-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  color: var(--color-accent);
-  margin-top: 2px;
-}
-.tool-type-info strong {
-  display: block;
-  color: var(--color-text-primary);
-  font-weight: 600;
-  margin-bottom: var(--space-xs);
-}
-.tool-type-info p {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  line-height: var(--leading-normal);
-}
-
-/* =============================================================================
    CONVERSATION SEARCH + ARCHIVE
    ============================================================================= */
 .chat-conversation-search {
