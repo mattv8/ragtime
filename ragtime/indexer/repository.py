@@ -1971,6 +1971,8 @@ class IndexerRepository:
         user_id: Optional[str] = None,
         include_all: bool = False,
         workspace_id: Optional[str] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
     ) -> list[Conversation]:
         """
         List conversations, newest first.
@@ -1978,6 +1980,8 @@ class IndexerRepository:
         Args:
             user_id: Filter by user ID (required unless include_all=True)
             include_all: If True, return all conversations (admin only)
+            since: If provided, only conversations with updatedAt >= since are returned.
+            until: If provided, only conversations with updatedAt < until are returned.
         """
         db = await self._get_db()
 
@@ -2015,6 +2019,14 @@ class IndexerRepository:
                 {"userId": user_id},
                 {"members": {"some": {"userId": user_id}}},
             ]
+
+        if since is not None or until is not None:
+            range_filter: dict[str, Any] = {}
+            if since is not None:
+                range_filter["gte"] = since
+            if until is not None:
+                range_filter["lt"] = until
+            where_clause["updatedAt"] = range_filter
 
         prisma_convs = await db.conversation.find_many(
             where=where_clause if where_clause else None,  # type: ignore[arg-type]

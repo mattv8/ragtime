@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { ReactNode } from 'react';
+import { X } from 'lucide-react';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 
 // Generic model interface that both AvailableModel and LLMModel satisfy
@@ -86,8 +87,10 @@ export function ModelSelector<T extends BaseModel>({
   const [isOpen, setIsOpen] = useState(false);
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
   const [submenuPosition, setSubmenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const expandTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const collapseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const groupRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -124,6 +127,22 @@ export function ModelSelector<T extends BaseModel>({
   const displayGroups = useMemo(() => {
     return groupedModels.filter(group => group.otherModels.length > 0 || !group.group.startsWith('Other'));
   }, [groupedModels]);
+
+  // Flat filtered list when search is active. Searches across every model in
+  // every group (including non-latest variants) so users can jump straight to
+  // a specific version without expanding submenus.
+  const filteredModels = useMemo((): T[] => {
+    const needle = searchQuery.trim().toLowerCase();
+    if (!needle) return [];
+    return models.filter((model) => {
+      const haystack = [model.name, model.id, model.group || '']
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(needle);
+    });
+  }, [models, searchQuery]);
+  const isSearching = searchQuery.trim().length > 0;
 
   // Get expanded group data
   const expandedGroupData = useMemo(() => {
@@ -167,6 +186,7 @@ export function ModelSelector<T extends BaseModel>({
         setIsOpen(false);
         setExpandedGroup(null);
         setSubmenuPosition(null);
+        setSearchQuery('');
       }
     }
 
@@ -174,6 +194,19 @@ export function ModelSelector<T extends BaseModel>({
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
+  }, [isOpen]);
+
+  // Reset search and focus the input each time the dropdown opens.
+  useEffect(() => {
+    if (!isOpen) {
+      setSearchQuery('');
+      return;
+    }
+    // Defer focus so the trigger's click event finishes before stealing focus.
+    const handle = setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 0);
+    return () => clearTimeout(handle);
   }, [isOpen]);
 
   // Clean up timeouts on unmount
@@ -248,6 +281,7 @@ export function ModelSelector<T extends BaseModel>({
     setIsOpen(false);
     setExpandedGroup(null);
     setSubmenuPosition(null);
+    setSearchQuery('');
   }, [onModelChange]);
 
   const handleSelectGroup = useCallback((group: GroupedModels<T>) => {
@@ -313,9 +347,74 @@ export function ModelSelector<T extends BaseModel>({
 
       {isOpen && (
         <div className="model-selector-dropdown" ref={dropdownRef}>
+          {/* Inline search filter — only shown when there's something to filter */}
+          {models.length > 1 && (
+            <div className="model-selector-search">
+              <input
+                ref={searchInputRef}
+                type="text"
+                className="model-selector-search-input"
+                placeholder="Search models..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    if (searchQuery) {
+                      setSearchQuery('');
+                    } else {
+                      setIsOpen(false);
+                    }
+                  }
+                }}
+                aria-label="Filter models"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  className="model-selector-search-clear"
+                  onClick={() => {
+                    setSearchQuery('');
+                    searchInputRef.current?.focus();
+                  }}
+                  title="Clear search"
+                  aria-label="Clear search"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Scrollable inner container for main menu items */}
           <div className="model-selector-dropdown-inner">
-            {displayGroups.map((group) => {
+            {isSearching ? (
+              filteredModels.length === 0 ? (
+                <div className="model-selector-empty">No models match "{searchQuery.trim()}"</div>
+              ) : (
+                filteredModels.map((model) => {
+                  const key = selectionKeyFor(model);
+                  const isSelected = selectedModelId === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`model-selector-item ${isSelected ? 'is-selected' : ''}`}
+                      onClick={() => handleSelectModel(key)}
+                      title={model.id}
+                    >
+                      <span className="model-selector-item-name">{model.name}</span>
+                      {model.group && !model.group.startsWith('Other') && (
+                        <span className="model-selector-expand-indicator" aria-hidden="true">
+                          {model.group}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })
+              )
+            ) : (
+              displayGroups.map((group) => {
               const hasSubmodels = group.otherModels.length > 0;
               const isExpanded = expandedGroup === group.group;
 
@@ -341,11 +440,12 @@ export function ModelSelector<T extends BaseModel>({
                   </button>
                 </div>
               );
-            })}
+            })
+            )}
           </div>
 
           {/* Submenu rendered with position:fixed to escape overflow:hidden */}
-          {expandedGroupData && expandedGroupData.otherModels.length > 0 && submenuPosition && (
+          {!isSearching && expandedGroupData && expandedGroupData.otherModels.length > 0 && submenuPosition && (
             <div
               className="model-selector-submenu"
               style={{ top: submenuPosition.top, left: submenuPosition.left }}

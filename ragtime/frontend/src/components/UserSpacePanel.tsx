@@ -668,6 +668,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [deleteConfirmWorkspaceId, setDeleteConfirmWorkspaceId] = useState<string | null>(null);
   const [isWorkspaceMenuOpen, setIsWorkspaceMenuOpen] = useState(false);
+  const [workspacePickerSearch, setWorkspacePickerSearch] = useState('');
+  const workspacePickerSearchInputRef = useRef<HTMLInputElement>(null);
   const [showMembersModal, setShowMembersModal] = useState(false);
   const [showAgentAccessModal, setShowAgentAccessModal] = useState(false);
   const [showAdminWorkspacesModal, setShowAdminWorkspacesModal] = useState(false);
@@ -2592,6 +2594,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setDeleteConfirmWorkspaceId(null);
       setEditingWorkspaceNameId(null);
       setWorkspaceNameDraft('');
+      setWorkspacePickerSearch('');
+    } else {
+      // autofocus filter input when menu opens (only when search is rendered)
+      window.setTimeout(() => workspacePickerSearchInputRef.current?.focus(), 0);
     }
   }, [isWorkspaceMenuOpen]);
 
@@ -5948,8 +5954,55 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
             {isWorkspaceMenuOpen && workspaces.length > 0 && (
               <div className="model-selector-dropdown userspace-workspace-dropdown">
+                {workspaces.length > 1 && (
+                  <div className="model-selector-search">
+                    <input
+                      ref={workspacePickerSearchInputRef}
+                      type="text"
+                      className="model-selector-search-input"
+                      placeholder="Search workspaces..."
+                      value={workspacePickerSearch}
+                      onChange={(e) => setWorkspacePickerSearch(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          if (workspacePickerSearch) {
+                            setWorkspacePickerSearch('');
+                          } else {
+                            setIsWorkspaceMenuOpen(false);
+                          }
+                        }
+                      }}
+                      aria-label="Filter workspaces"
+                    />
+                    {workspacePickerSearch && (
+                      <button
+                        type="button"
+                        className="model-selector-search-clear"
+                        onClick={() => {
+                          setWorkspacePickerSearch('');
+                          workspacePickerSearchInputRef.current?.focus();
+                        }}
+                        title="Clear search"
+                        aria-label="Clear search"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                )}
                 <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace list">
-                  {workspaces.map((ws) => {
+                  {(() => {
+                    const needle = workspacePickerSearch.trim().toLowerCase();
+                    const filteredWorkspaces = needle
+                      ? workspaces.filter((ws) => ws.name.toLowerCase().includes(needle))
+                      : workspaces;
+                    if (filteredWorkspaces.length === 0) {
+                      return (
+                        <div className="model-selector-empty">No workspaces match "{workspacePickerSearch.trim()}"</div>
+                      );
+                    }
+                    return filteredWorkspaces.map((ws) => {
                     const workspaceChatState = workspaceChatStates[ws.id] ?? DEFAULT_WORKSPACE_CHAT_STATE;
                     const canDeleteWorkspace =
                       ws.owner_user_id === currentUser.id ||
@@ -5972,25 +6025,29 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                       >
                         {isRenamingWorkspace ? (
                           <div className="userspace-workspace-inline-edit">
-                            <input
-                              type="text"
+                            <textarea
+                              ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
                               className="userspace-workspace-rename-input"
                               value={workspaceNameDraft}
-                              onChange={(event) => setWorkspaceNameDraft(event.target.value)}
+                              onChange={(event) => {
+                                setWorkspaceNameDraft(event.target.value);
+                                event.target.style.height = 'auto';
+                                event.target.style.height = `${event.target.scrollHeight}px`;
+                              }}
                               onClick={(event) => event.stopPropagation()}
                               onKeyDown={(event) => {
-                                if (event.key === 'Enter') {
+                                event.stopPropagation();
+                                if (event.key === 'Enter' && !event.shiftKey) {
                                   event.preventDefault();
-                                  event.stopPropagation();
                                   void handleSaveWorkspaceRename(ws);
                                 }
                                 if (event.key === 'Escape') {
                                   event.preventDefault();
-                                  event.stopPropagation();
                                   handleCancelWorkspaceRename();
                                 }
                               }}
                               autoFocus
+                              rows={1}
                             />
                           </div>
                         ) : (
@@ -6133,7 +6190,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                         )}
                       </div>
                     );
-                  })}
+                  });
+                  })()}
                 </div>
               </div>
             )}
@@ -6212,7 +6270,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 Archive export: {activeWorkspace.archive_export_task_phase.replace(/_/g, ' ')}
               </span>
             )}
-            {activeWorkspace?.archive_import_task_phase && (
+            {archiveImportInProgress && activeWorkspace?.archive_import_task_phase && (
               <span className="userspace-status-pill userspace-status-pill-info" title="Workspace archive import status">
                 Archive import: {activeWorkspace.archive_import_task_phase.replace(/_/g, ' ')}
               </span>

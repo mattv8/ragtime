@@ -9999,16 +9999,44 @@ async def _resolve_workspace_runtime_scope(
 @router.get("/conversations", response_model=List[ConversationResponse])
 async def list_conversations(
     workspace_id: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
     user: User = Depends(get_current_user),
 ):
-    """List chat conversations for the current user."""
+    """List chat conversations for the current user.
+
+    Optional ``since`` / ``until`` ISO-8601 timestamps filter on
+    ``updated_at``. ``since`` is inclusive (>=); ``until`` is exclusive (<).
+    """
     await _assert_workspace_access(workspace_id, user, "viewer")
     # Admins can see all, regular users only see their own
     is_admin = user.role == "admin"
+
+    def _parse_iso(value: Optional[str], field: str) -> Optional[datetime]:
+        if value is None or value == "":
+            return None
+        try:
+            # Support trailing 'Z' (Zulu time) which fromisoformat does not.
+            cleaned = value.replace("Z", "+00:00") if value.endswith("Z") else value
+            parsed = datetime.fromisoformat(cleaned)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid ISO-8601 timestamp for '{field}': {value}",
+            ) from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    since_dt = _parse_iso(since, "since")
+    until_dt = _parse_iso(until, "until")
+
     convs = await repository.list_conversations(
         user_id=user.id,
         include_all=is_admin,
         workspace_id=workspace_id,
+        since=since_dt,
+        until=until_dt,
     )
     return [_to_conversation_response(c) for c in convs]
 

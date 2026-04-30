@@ -620,8 +620,10 @@ textarea:focus {
 .userspace-workspace-item {
   gap: var(--space-xxs, 2px);
   padding: 3px 6px 3px 8px;
-  height: 30px;
+  min-height: 30px;
+  height: auto;
   box-sizing: border-box;
+  align-items: flex-start;
 }
 
 .userspace-workspace-item.is-deleting {
@@ -652,10 +654,11 @@ textarea:focus {
 
 .userspace-workspace-select-btn {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   flex: 1;
   min-width: 0;
-  height: 24px;
+  min-height: 24px;
+  height: auto;
   background: none;
   border: none;
   color: inherit;
@@ -663,6 +666,13 @@ textarea:focus {
   text-align: left;
   cursor: pointer;
   padding: 2px;
+}
+
+.userspace-workspace-item .model-selector-item-name {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.25;
 }
 
 /* Live/interrupted state indicators inside workspace trigger and dropdown rows */
@@ -694,21 +704,25 @@ textarea:focus {
 
 .userspace-workspace-inline-edit {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   flex: 1;
   min-width: 0;
-  height: 24px;
+  min-height: 24px;
+  height: auto;
   padding: 0;
 }
 
 .userspace-workspace-rename-input {
   width: 100%;
   min-width: 0;
-  height: 24px;
-  line-height: 24px;
+  min-height: 24px;
+  height: auto;
+  line-height: 1.25;
   padding: 0 8px;
   box-sizing: border-box;
   font-size: var(--text-sm);
+  resize: none;
+  overflow: hidden;
 }
 
 .userspace-workspace-item-actions {

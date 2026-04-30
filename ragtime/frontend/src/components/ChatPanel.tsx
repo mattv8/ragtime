@@ -3627,6 +3627,144 @@ const ChatTitle = memo(({ title }: { title: string }) => {
   return <>{displayTitle}</>;
 });
 
+// --- Conversation search + archive helpers ----------------------------------
+// Per-user preference: how many days back the sidebar shows by default.
+// Conversations older than this cutoff are "archived" and lazy-loaded only
+// when the user opens the archive modal or types a search query.
+const CHAT_ARCHIVE_AGE_DAYS_KEY_PREFIX = 'chat-archive-age-days:';
+const CHAT_ARCHIVE_AGE_DAYS_DEFAULT = 30;
+const CHAT_ARCHIVE_AGE_PRESET_DAYS = [1, 7, 30, 365] as const;
+
+function normalizeArchiveAgePreset(days: number): number {
+  if (!Number.isFinite(days) || days <= 1) return 1;
+  if (days <= 7) return 7;
+  if (days <= 30) return 30;
+  return 365;
+}
+
+function getArchiveAgeLabel(days: number): string {
+  const normalized = normalizeArchiveAgePreset(days);
+  if (normalized === 1) return '1d';
+  if (normalized === 7) return '1wk';
+  if (normalized === 30) return '1mo';
+  return '1yr';
+}
+
+function getNextArchiveAgePreset(days: number): number {
+  const normalized = normalizeArchiveAgePreset(days);
+  const index = CHAT_ARCHIVE_AGE_PRESET_DAYS.indexOf(normalized as (typeof CHAT_ARCHIVE_AGE_PRESET_DAYS)[number]);
+  const nextIndex = index >= 0 ? (index + 1) % CHAT_ARCHIVE_AGE_PRESET_DAYS.length : 0;
+  return CHAT_ARCHIVE_AGE_PRESET_DAYS[nextIndex];
+}
+
+function getArchiveAgeStorageKey(userId: string): string {
+  return `${CHAT_ARCHIVE_AGE_DAYS_KEY_PREFIX}${userId}`;
+}
+
+function readStoredArchiveAgeDays(userId: string): number {
+  try {
+    const raw = localStorage.getItem(getArchiveAgeStorageKey(userId));
+    if (raw === null) return CHAT_ARCHIVE_AGE_DAYS_DEFAULT;
+    const parsed = parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) return CHAT_ARCHIVE_AGE_DAYS_DEFAULT;
+    return normalizeArchiveAgePreset(parsed);
+  } catch {
+    return CHAT_ARCHIVE_AGE_DAYS_DEFAULT;
+  }
+}
+
+function archiveCutoffIso(daysAgo: number): string | null {
+  if (!Number.isFinite(daysAgo) || daysAgo <= 0) return null;
+  const cutoff = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
+  return cutoff.toISOString();
+}
+
+function isConversationOlderThanWindow(conversation: Conversation, daysAgo: number): boolean {
+  const cutoffIso = archiveCutoffIso(daysAgo);
+  if (!cutoffIso) return false;
+  const updatedAtMs = Date.parse(conversation.updated_at);
+  const cutoffMs = Date.parse(cutoffIso);
+  if (!Number.isFinite(updatedAtMs) || !Number.isFinite(cutoffMs)) {
+    return false;
+  }
+  return updatedAtMs < cutoffMs;
+}
+
+// Best-effort plain-text view of a message for content searching. Mirrors
+// what the user sees on screen, but flattens to a single string. Tool I/O
+// blobs are intentionally excluded — they're noisy and rarely searchable.
+function getConversationSearchText(conversation: Conversation): string {
+  const parts: string[] = [conversation.title || ''];
+  for (const msg of conversation.messages) {
+    try {
+      const { text } = parseMessageContent(msg.content);
+      if (text) parts.push(text);
+    } catch {
+      // Ignore message parse failures — we don't want a single bad
+      // message to make the whole conversation un-searchable.
+    }
+  }
+  return parts.join('\n');
+}
+
+function conversationMatchesQuery(conversation: Conversation, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return getConversationSearchText(conversation).toLowerCase().includes(needle);
+}
+
+function buildConversationSnippet(conversation: Conversation, query: string, radius = 60): string | null {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return null;
+  // Skip if the title alone matches — the title is highlighted separately.
+  if ((conversation.title || '').toLowerCase().includes(needle)) return null;
+  for (const msg of conversation.messages) {
+    let text: string;
+    try {
+      text = parseMessageContent(msg.content).text;
+    } catch {
+      continue;
+    }
+    if (!text) continue;
+    const idx = text.toLowerCase().indexOf(needle);
+    if (idx === -1) continue;
+    const start = Math.max(0, idx - radius);
+    const end = Math.min(text.length, idx + needle.length + radius);
+    const prefix = start > 0 ? '…' : '';
+    const suffix = end < text.length ? '…' : '';
+    return `${prefix}${text.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
+  }
+  return null;
+}
+
+const HighlightedText = memo(function HighlightedText({ text, query }: { text: string; query: string }) {
+  if (!text) return null;
+  const needle = query.trim();
+  if (!needle) return <>{text}</>;
+  const lowerText = text.toLowerCase();
+  const lowerNeedle = needle.toLowerCase();
+  const segments: ReactNode[] = [];
+  let cursor = 0;
+  let keyId = 0;
+  while (cursor < text.length) {
+    const matchIndex = lowerText.indexOf(lowerNeedle, cursor);
+    if (matchIndex === -1) {
+      segments.push(<span key={`s-${keyId++}`}>{text.slice(cursor)}</span>);
+      break;
+    }
+    if (matchIndex > cursor) {
+      segments.push(<span key={`s-${keyId++}`}>{text.slice(cursor, matchIndex)}</span>);
+    }
+    segments.push(
+      <mark key={`m-${keyId++}`} className="chat-search-highlight">
+        {text.slice(matchIndex, matchIndex + lowerNeedle.length)}
+      </mark>,
+    );
+    cursor = matchIndex + lowerNeedle.length;
+  }
+  return <>{segments}</>;
+});
+
 interface ChatPanelProps {
   currentUser: User;
   debugMode?: boolean;
@@ -3711,6 +3849,7 @@ export function ChatPanel({
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [isConversationSwitchLoading, setIsConversationSwitchLoading] = useState(false);
+  const [isCreatingFreshConversation, setIsCreatingFreshConversation] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -3791,6 +3930,20 @@ export function ChatPanel({
   const [lastSentMessage, setLastSentMessage] = useState<string>('');
   const [isConnectionError, setIsConnectionError] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  // Sidebar conversation search + archive lazy-load state. Archive holds
+  // conversations older than the active cutoff; loaded only on demand to
+  // keep ?view=chat boot fast for users with long histories.
+  const [conversationSearchQuery, setConversationSearchQuery] = useState('');
+  const [archiveAgeDays, setArchiveAgeDays] = useState<number>(() => readStoredArchiveAgeDays(currentUser.id));
+  const [archivedConversations, setArchivedConversations] = useState<Conversation[]>([]);
+  const [archiveLoaded, setArchiveLoaded] = useState(false);
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [workspaceArchivedConversations, setWorkspaceArchivedConversations] = useState<Conversation[]>([]);
+  const [workspaceArchiveLoaded, setWorkspaceArchiveLoaded] = useState(false);
+  const [workspaceArchiveLoading, setWorkspaceArchiveLoading] = useState(false);
+  const [showArchiveModal, setShowArchiveModal] = useState(false);
+  const [archiveSearchQuery, setArchiveSearchQuery] = useState('');
   const isAdmin = currentUser.role === 'admin';
   const isReadOnly = readOnly && !(allowAdminReadOnlyBypass && isAdmin);
   const effectiveReadOnlyMessage = readOnlyMessage || 'Workspace is read-only. Viewers can review messages but cannot send prompts.';
@@ -3897,6 +4050,8 @@ export function ChatPanel({
     refresh: refreshModels,
   } = useAvailableModels();
   const [isWorkspaceConversationMenuOpen, setIsWorkspaceConversationMenuOpen] = useState(false);
+  const [workspaceConversationSearchQuery, setWorkspaceConversationSearchQuery] = useState('');
+  const workspaceConversationSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [conversationMembers, setConversationMembers] = useState<ConversationMember[]>([]);
   const [conversationToolIds, setConversationToolIds] = useState<string[]>([]);
@@ -4440,6 +4595,17 @@ export function ChatPanel({
   }, [isWorkspaceConversationMenuOpen]);
 
   useEffect(() => {
+    if (!isWorkspaceConversationMenuOpen) {
+      setWorkspaceConversationSearchQuery('');
+      return;
+    }
+    const handle = setTimeout(() => {
+      workspaceConversationSearchInputRef.current?.focus();
+    }, 0);
+    return () => clearTimeout(handle);
+  }, [isWorkspaceConversationMenuOpen]);
+
+  useEffect(() => {
     setIsWorkspaceConversationMenuOpen(false);
   }, [activeConversation?.id, workspaceId, embedded]);
 
@@ -4460,42 +4626,6 @@ export function ChatPanel({
     return Math.max(DEFAULT_CONTEXT_LIMIT, maxAvailableLimit);
   }, [availableModels]);
 
-  const groupedConversations = useMemo(() => {
-    if (!isAdmin) return [] as Array<{ key: string; label: string; conversations: Conversation[]; isCurrentUserGroup: boolean }>;
-
-    const groups = conversations.reduce<Record<string, { label: string; conversations: Conversation[]; isCurrentUserGroup: boolean }>>((acc, conv) => {
-      const key = getOwnerKey(conv);
-      const label = getOwnerLabel(conv);
-      const existing = acc[key];
-      acc[key] = existing
-        ? {
-            label: existing.label || label,
-            conversations: [...existing.conversations, conv],
-            isCurrentUserGroup: existing.isCurrentUserGroup || conv.user_id === currentUser.id,
-          }
-        : {
-            label,
-            conversations: [conv],
-            isCurrentUserGroup: conv.user_id === currentUser.id,
-          };
-      return acc;
-    }, {});
-
-    return Object.entries(groups)
-      .map(([key, value]) => ({
-        key,
-        label: value.label,
-        conversations: value.conversations,
-        isCurrentUserGroup: value.isCurrentUserGroup,
-      }))
-      .sort((a, b) => {
-        if (a.isCurrentUserGroup !== b.isCurrentUserGroup) {
-          return a.isCurrentUserGroup ? -1 : 1;
-        }
-        return a.label.localeCompare(b.label);
-      });
-  }, [conversations, currentUser.id, getOwnerKey, getOwnerLabel, isAdmin]);
-
   useEffect(() => {
     if (!isAdmin) {
       if (Object.keys(collapsedGroups).length > 0) {
@@ -4511,14 +4641,14 @@ export function ChatPanel({
       conversations.forEach(conv => {
         const key = getOwnerKey(conv);
         if (!(key in next)) {
-          next[key] = true; // collapsed by default
+          next[key] = conv.user_id !== currentUser.id; // current user's group expanded by default
           changed = true;
         }
       });
 
       return changed ? next : prev;
     });
-  }, [collapsedGroups, conversations, getOwnerKey, isAdmin]);
+  }, [collapsedGroups, conversations, currentUser.id, getOwnerKey, isAdmin]);
 
   const toggleGroup = useCallback((key: string) => {
     setCollapsedGroups(prev => ({ ...prev, [key]: !prev[key] }));
@@ -4702,6 +4832,14 @@ export function ChatPanel({
     setConversations([]);
     setActiveConversation(null);
     setIsConversationSwitchLoading(false);
+    setArchivedConversations([]);
+    setArchiveLoaded(false);
+    setWorkspaceArchivedConversations([]);
+    setWorkspaceArchiveLoaded(false);
+    setArchiveError(null);
+    setShowArchiveModal(false);
+    setArchiveSearchQuery('');
+    setConversationSearchQuery('');
     if (!workspaceId) {
       loadConversations();
     } else {
@@ -4735,7 +4873,12 @@ export function ChatPanel({
   }, [activeConversation?.id]);
 
   const applyWorkspaceChatState = useCallback((nextWorkspaceState: WorkspaceChatStateResponse) => {
-    const visibleConversations = nextWorkspaceState.conversations;
+    const visibleConversations = nextWorkspaceState.conversations.filter((conversation) => {
+      if (conversation.id === nextWorkspaceState.selected_conversation_id) {
+        return true;
+      }
+      return !isConversationOlderThanWindow(conversation, archiveAgeDays);
+    });
 
     setConversations((prev) => {
       let changed = prev.length !== visibleConversations.length;
@@ -4805,7 +4948,7 @@ export function ChatPanel({
     setInterruptedTask(interruptedT ?? null);
     syncConversationActiveTaskId(selectedConversationId, null);
     setIsConversationListLoading(false);
-  }, [syncConversationActiveTaskId]);
+  }, [archiveAgeDays, syncConversationActiveTaskId]);
 
   const loadConversations = async () => {
     setIsConversationListLoading(true);
@@ -4813,10 +4956,11 @@ export function ChatPanel({
       const workspaceState = workspaceId
         ? (workspaceChatState ?? await api.getWorkspaceChatState(workspaceId, activeConversationRef.current?.id ?? null))
         : null;
+      const sinceIso = archiveCutoffIso(archiveAgeDays);
       const [data, workspacePage] = await Promise.all([
         workspaceState?.conversations
           ? Promise.resolve(workspaceState.conversations)
-          : api.listConversations(workspaceId),
+          : api.listConversations(workspaceId, sinceIso ? { since: sinceIso } : undefined),
         !workspaceId
           ? api.listUserSpaceWorkspaces(0, 200).catch((workspaceErr) => {
               console.warn('Failed to load userspace workspaces for conversation filtering:', workspaceErr);
@@ -4840,7 +4984,9 @@ export function ChatPanel({
       const visibleConversations = data.filter((conversation) => {
         const linkedWorkspaceId = getLinkedWorkspaceId(conversation);
         if (workspaceId) {
-          return linkedWorkspaceId === workspaceId;
+          if (linkedWorkspaceId !== workspaceId) return false;
+          if (conversation.id === activeConversationRef.current?.id) return true;
+          return !isConversationOlderThanWindow(conversation, archiveAgeDays);
         }
         return !linkedWorkspaceId && !userspaceConversationIds.has(conversation.id);
       });
@@ -4872,6 +5018,122 @@ export function ChatPanel({
       setIsConversationListLoading(false);
     }
   };
+
+  // Lazy-load global conversations older than the active cutoff.
+  const loadArchivedConversations = useCallback(async () => {
+    if (workspaceId) return;
+    if (archiveLoaded || archiveLoading) return;
+    setArchiveLoading(true);
+    setArchiveError(null);
+    try {
+      const cutoff = archiveCutoffIso(archiveAgeDays);
+      const [data, workspacePage] = await Promise.all([
+        cutoff
+          ? api.listConversations(undefined, { until: cutoff })
+          : Promise.resolve([] as Conversation[]),
+        api.listUserSpaceWorkspaces(0, 200).catch((workspaceErr) => {
+          console.warn('Failed to load userspace workspaces for archive filtering:', workspaceErr);
+          return null;
+        }),
+      ]);
+      const userspaceConversationIds = new Set<string>(
+        workspacePage ? workspacePage.items.flatMap((workspace) => workspace.conversation_ids || []) : [],
+      );
+      const filtered = data.filter((conversation) => {
+        const linkedWorkspaceId = conversation.workspace_id
+          ?? (conversation as Conversation & { workspaceId?: string | null }).workspaceId
+          ?? null;
+        return !linkedWorkspaceId && !userspaceConversationIds.has(conversation.id);
+      });
+      setArchivedConversations(filtered);
+      setArchiveLoaded(true);
+    } catch (err) {
+      console.error('Failed to load archived conversations:', err);
+      setArchiveError(err instanceof Error ? err.message : 'Failed to load older chats');
+    } finally {
+      setArchiveLoading(false);
+    }
+  }, [workspaceId, archiveLoaded, archiveLoading, archiveAgeDays]);
+
+  // Lazy-load workspace conversations older than the active cutoff so search
+  // in the workspace picker can still match older chats without showing them
+  // by default in the main list.
+  const loadArchivedWorkspaceConversations = useCallback(async () => {
+    if (!workspaceId) return;
+    if (workspaceArchiveLoaded || workspaceArchiveLoading) return;
+    setWorkspaceArchiveLoading(true);
+    try {
+      const cutoff = archiveCutoffIso(archiveAgeDays);
+      const data = cutoff
+        ? await api.listConversations(workspaceId, { until: cutoff })
+        : [];
+      const filtered = data.filter((conversation) => {
+        const linkedWorkspaceId = conversation.workspace_id
+          ?? (conversation as Conversation & { workspaceId?: string | null }).workspaceId
+          ?? null;
+        return linkedWorkspaceId === workspaceId;
+      });
+      setWorkspaceArchivedConversations(filtered);
+      setWorkspaceArchiveLoaded(true);
+    } catch (err) {
+      console.error('Failed to load archived workspace conversations:', err);
+    } finally {
+      setWorkspaceArchiveLoading(false);
+    }
+  }, [workspaceId, workspaceArchiveLoaded, workspaceArchiveLoading, archiveAgeDays]);
+
+  // Auto-load archive when the user starts searching so results from older
+  // chats appear without an extra click. Debounced through the search input.
+  useEffect(() => {
+    if (workspaceId) return;
+    if (!conversationSearchQuery.trim()) return;
+    if (archiveLoaded || archiveLoading) return;
+    void loadArchivedConversations();
+  }, [conversationSearchQuery, workspaceId, archiveLoaded, archiveLoading, loadArchivedConversations]);
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    if (!workspaceConversationSearchQuery.trim()) return;
+    if (workspaceArchiveLoaded || workspaceArchiveLoading) return;
+    void loadArchivedWorkspaceConversations();
+  }, [
+    workspaceConversationSearchQuery,
+    workspaceId,
+    workspaceArchiveLoaded,
+    workspaceArchiveLoading,
+    loadArchivedWorkspaceConversations,
+  ]);
+
+  // Persist the archive cutoff per-user.
+  useEffect(() => {
+    try {
+      localStorage.setItem(getArchiveAgeStorageKey(currentUser.id), String(archiveAgeDays));
+    } catch {
+      // localStorage may be unavailable (private mode) — ignore.
+    }
+  }, [archiveAgeDays, currentUser.id]);
+
+  // When the user changes the cutoff, mark the existing archive lists as
+  // stale so search/modal trigger a fresh fetch. We intentionally keep the
+  // current items in state so the UI does not flash empty during refetch.
+  useEffect(() => {
+    setArchiveLoaded(false);
+    setWorkspaceArchiveLoaded(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [archiveAgeDays]);
+
+  // While the archive modal is open, refetch whenever the cached data is
+  // stale (e.g. after toggling the archive window).
+  useEffect(() => {
+    if (!showArchiveModal) return;
+    if (workspaceId) return;
+    if (archiveLoaded || archiveLoading) return;
+    void loadArchivedConversations();
+  }, [showArchiveModal, archiveLoaded, archiveLoading, workspaceId, loadArchivedConversations]);
+
+  const cycleArchiveAgePreset = useCallback(() => {
+    setArchiveAgeDays((current) => getNextArchiveAgePreset(current));
+  }, []);
 
   useEffect(() => {
     if (!workspaceId || !workspaceChatState) return;
@@ -5245,14 +5507,17 @@ export function ChatPanel({
   }, []);
 
   const createNewConversation = async () => {
-    if (isReadOnly) return;
+    if (isReadOnly || isCreatingFreshConversation) return;
     try {
+      setIsCreatingFreshConversation(true);
       shouldAutoScrollRef.current = true;
       const conversation = await api.createConversation(undefined, workspaceId);
       applyCreatedConversation(conversation);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create conversation');
+    } finally {
+      setIsCreatingFreshConversation(false);
     }
   };
 
@@ -5785,10 +6050,12 @@ export function ChatPanel({
   };
 
   const startFreshConversation = async () => {
-    if (isReadOnly) return;
+    if (isReadOnly || isCreatingFreshConversation) return;
     // Start a fresh conversation and detach from any currently streaming one.
     shouldAutoScrollRef.current = true;
     try {
+      setIsCreatingFreshConversation(true);
+      setIsConversationSwitchLoading(true);
       clearActiveStreamingUi();
       const conversation = await api.createConversation(undefined, workspaceId);
       applyCreatedConversation(conversation);
@@ -5798,6 +6065,9 @@ export function ChatPanel({
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create conversation');
+    } finally {
+      setIsCreatingFreshConversation(false);
+      setIsConversationSwitchLoading(false);
     }
   };
 
@@ -6460,6 +6730,7 @@ export function ChatPanel({
 
   const showWorkspaceConversationSelect = embedded && Boolean(workspaceId);
   const workspaceConversationOptions = conversations.filter((conv) => conv.title !== 'Untitled Chat');
+  const workspaceArchivedConversationOptions = workspaceArchivedConversations.filter((conv) => conv.title !== 'Untitled Chat');
   const shareableConversationUsers = useMemo(() => {
     if (!conversationShareableUserIds || conversationShareableUserIds.length === 0) {
       return allUsers;
@@ -6472,28 +6743,37 @@ export function ChatPanel({
   }, [allUsers, conversationOwnerId, conversationShareableUserIds]);
   const showInlineToolSelector = canUseConversationTools;
 
-  const renderConversationItem = (conv: Conversation) => {
-    const metaText = `${conv.messages.length} messages | ${formatChatTimestamp(conv.updated_at)}`;
+  const renderConversationItem = (conv: Conversation, options?: { searchQuery?: string; onClickOverride?: () => void }) => {
+    const searchQuery = options?.searchQuery ?? '';
+    const metaMessageCount = `${conv.messages.length} msg${conv.messages.length === 1 ? '' : 's'}`;
+    const metaTimestamp = formatChatTimestamp(conv.updated_at);
     const isActive = activeConversation?.id === conv.id;
+    const snippet = searchQuery.trim() ? buildConversationSnippet(conv, searchQuery) : null;
+    const handleItemClick = options?.onClickOverride ?? (() => selectConversation(conv));
 
     return (
       <div
         key={conv.id}
         className={`chat-conversation-item ${isActive ? 'active' : ''}${editingTitle === conv.id ? ' is-renaming' : ''}`}
-        onClick={() => selectConversation(conv)}
+        onClick={handleItemClick}
       >
         {editingTitle === conv.id ? (
-          <input
-            type="text"
+          <textarea
+            ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
             value={titleInput}
-            onChange={(e) => setTitleInput(e.target.value)}
+            onChange={(e) => {
+              setTitleInput(e.target.value);
+              e.target.style.height = 'auto';
+              e.target.style.height = `${e.target.scrollHeight}px`;
+            }}
             onBlur={() => saveTitle(conv.id)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') saveTitle(conv.id);
+              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveTitle(conv.id); }
               if (e.key === 'Escape') setEditingTitle(null);
             }}
             onClick={(e) => e.stopPropagation()}
             autoFocus
+            rows={1}
             className="chat-title-input"
           />
         ) : (
@@ -6504,11 +6784,20 @@ export function ChatPanel({
                   <MiniLoadingSpinner variant="icon" size={12} />
                 </span>
               )}
-              <ChatTitle title={conv.title} />
+              {searchQuery.trim()
+                ? <HighlightedText text={conv.title || 'Untitled Chat'} query={searchQuery} />
+                : <ChatTitle title={conv.title} />
+              }
             </div>
             <div className="chat-conversation-meta">
-              {metaText}
+              <span className="chat-meta-count">{metaMessageCount}</span>
+              <span className="chat-meta-time">{metaTimestamp}</span>
             </div>
+            {snippet && (
+              <div className="chat-conversation-snippet" title={snippet}>
+                <HighlightedText text={snippet} query={searchQuery} />
+              </div>
+            )}
           </>
         )}
         {editingTitle !== conv.id && (
@@ -6613,16 +6902,34 @@ export function ChatPanel({
     <div className={`chat-panel ${embedded ? 'chat-panel-embedded' : ''}${showWorkspaceConversationSelect ? ' chat-panel-workspace' : ''}${isFullscreen ? ' chat-panel-fullscreen' : ''}`} style={panelStyle}>
       {/* Conversations Sidebar */}
       {!embedded && showSidebar && <div className="chat-sidebar open">
-        <div className="chat-sidebar-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <h3>Conversations</h3>
-            {conversations.some(c => c.active_task_id) && (
-              <span title="Processing in background">
-                <MiniLoadingSpinner variant="icon" size={14} />
-              </span>
+        {!workspaceId && (
+          <div className="chat-conversation-search">
+            <input
+              type="text"
+              className="chat-conversation-search-input"
+              placeholder="Search chats..."
+              value={conversationSearchQuery}
+              onChange={(e) => setConversationSearchQuery(e.target.value)}
+              aria-label="Search conversations by title or content"
+            />
+            {conversationSearchQuery && (
+              <button
+                type="button"
+                className="chat-conversation-search-clear"
+                onClick={() => setConversationSearchQuery('')}
+                title="Clear search"
+                aria-label="Clear search"
+              >
+                <X size={12} />
+              </button>
             )}
+            {(archiveLoading && conversationSearchQuery) || conversations.some(c => c.active_task_id) ? (
+              <span className="chat-conversation-search-spinner" title={archiveLoading && conversationSearchQuery ? 'Loading older chats' : 'Processing in background'}>
+                <MiniLoadingSpinner variant="icon" size={12} />
+              </span>
+            ) : null}
           </div>
-        </div>
+        )}
 
         <div className={`chat-conversation-list ${!isAdmin ? 'chat-conversation-list-non-admin' : ''}`} aria-busy={isConversationListLoading}>
           {isConversationListLoading ? (
@@ -6634,35 +6941,111 @@ export function ChatPanel({
                 </div>
               ))}
             </div>
-          ) : conversations.length === 0 ? (
-            <div className="chat-empty-state">
-              <p>No conversations yet</p>
-              <button className="btn" onClick={createNewConversation}>
-                Start a conversation
-              </button>
-            </div>
-          ) : isAdmin ? (
-            groupedConversations.map(group => {
-              const isCollapsed = collapsedGroups[group.key] ?? true;
+          ) : (() => {
+            const trimmedQuery = conversationSearchQuery.trim();
+            // While searching, fold archived hits into the visible list so
+            // matches across older chats surface inline.
+            const baseConversations = trimmedQuery && !workspaceId
+              ? [
+                  ...conversations,
+                  ...archivedConversations.filter((archived) => !conversations.some((c) => c.id === archived.id)),
+                ]
+              : conversations;
+            const filteredConversations = trimmedQuery
+              ? baseConversations.filter((c) => conversationMatchesQuery(c, trimmedQuery))
+              : baseConversations;
+
+            if (filteredConversations.length === 0) {
+              if (trimmedQuery) {
+                return (
+                  <div className="chat-empty-state chat-empty-state-search">
+                    <p>No chats match "{trimmedQuery}".</p>
+                    {!workspaceId && !archiveLoaded && !archiveLoading && (
+                      <button className="btn btn-secondary btn-sm" onClick={() => void loadArchivedConversations()}>
+                        Search older chats
+                      </button>
+                    )}
+                  </div>
+                );
+              }
               return (
-                <div key={group.key} className="chat-conversation-group">
-                  <button className="chat-group-header" onClick={() => toggleGroup(group.key)}>
-                    <span className="chat-group-name">{group.label}</span>
-                    <span className="chat-group-count">{group.conversations.length}</span>
-                    <span className="chat-group-toggle">{isCollapsed ? '▶' : '▼'}</span>
+                <div className="chat-empty-state">
+                  <p>No conversations yet</p>
+                  <button className="btn" onClick={createNewConversation}>
+                    Start a conversation
                   </button>
-                  {!isCollapsed && (
-                    <div className="chat-group-list">
-                      {group.conversations.map(renderConversationItem)}
-                    </div>
-                  )}
                 </div>
               );
-            })
-          ) : (
-            conversations.map(renderConversationItem)
-          )}
+            }
+
+            const renderItem = (conv: Conversation) => renderConversationItem(conv, { searchQuery: trimmedQuery });
+
+            if (isAdmin) {
+              // Re-group filtered list so admin grouping still works while searching.
+              const groups = new Map<string, { key: string; label: string; conversations: Conversation[]; isCurrentUserGroup: boolean }>();
+              for (const conv of filteredConversations) {
+                const key = getOwnerKey(conv);
+                const label = getOwnerLabel(conv);
+                const existing = groups.get(key);
+                if (existing) {
+                  existing.conversations.push(conv);
+                  existing.isCurrentUserGroup = existing.isCurrentUserGroup || conv.user_id === currentUser.id;
+                } else {
+                  groups.set(key, {
+                    key,
+                    label,
+                    conversations: [conv],
+                    isCurrentUserGroup: conv.user_id === currentUser.id,
+                  });
+                }
+              }
+              const groupList = Array.from(groups.values()).sort((a, b) => {
+                if (a.isCurrentUserGroup !== b.isCurrentUserGroup) return a.isCurrentUserGroup ? -1 : 1;
+                return a.label.localeCompare(b.label);
+              });
+              return groupList.map((group) => {
+                // When searching, expand groups so matches are visible.
+                const isCollapsed = trimmedQuery ? false : (collapsedGroups[group.key] ?? !group.isCurrentUserGroup);
+                return (
+                  <div key={group.key} className="chat-conversation-group">
+                    <button className="chat-group-header" onClick={() => toggleGroup(group.key)}>
+                      <span className="chat-group-name">{group.label}</span>
+                      <span className="chat-group-count">{group.conversations.length}</span>
+                      <span className="chat-group-toggle">{isCollapsed ? '▶' : '▼'}</span>
+                    </button>
+                    {!isCollapsed && (
+                      <div className="chat-group-list">
+                        {group.conversations.map(renderItem)}
+                      </div>
+                    )}
+                  </div>
+                );
+              });
+            }
+            return filteredConversations.map(renderItem);
+          })()}
         </div>
+
+        {!workspaceId && !isConversationListLoading && (
+          <div className="chat-sidebar-footer">
+            <button
+              type="button"
+              className="chat-show-older-btn"
+              onClick={() => {
+                setShowArchiveModal(true);
+                setArchiveSearchQuery('');
+                if (!archiveLoaded && !archiveLoading) void loadArchivedConversations();
+              }}
+              title={`Show chats older than ${getArchiveAgeLabel(archiveAgeDays)}`}
+            >
+              <Clock size={13} aria-hidden="true" />
+              <span>Show Older</span>
+              {archiveLoaded && archivedConversations.length > 0 && (
+                <span className="chat-show-older-count">{archivedConversations.length}</span>
+              )}
+            </button>
+          </div>
+        )}
       </div>}
 
       {!embedded && (
@@ -6734,8 +7117,65 @@ export function ChatPanel({
 
                     {isWorkspaceConversationMenuOpen && (
                       <div className="model-selector-dropdown chat-workspace-conversation-dropdown">
+                        {workspaceConversationOptions.length > 1 && (
+                        <div className="model-selector-search">
+                          <input
+                            ref={workspaceConversationSearchInputRef}
+                            type="text"
+                            className="model-selector-search-input"
+                            placeholder="Search chats..."
+                            value={workspaceConversationSearchQuery}
+                            onChange={(e) => setWorkspaceConversationSearchQuery(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape') {
+                                e.preventDefault();
+                                if (workspaceConversationSearchQuery) {
+                                  setWorkspaceConversationSearchQuery('');
+                                } else {
+                                  setIsWorkspaceConversationMenuOpen(false);
+                                }
+                              }
+                            }}
+                            aria-label="Filter workspace chats"
+                          />
+                          {workspaceConversationSearchQuery && (
+                            <button
+                              type="button"
+                              className="model-selector-search-clear"
+                              onClick={() => {
+                                setWorkspaceConversationSearchQuery('');
+                                workspaceConversationSearchInputRef.current?.focus();
+                              }}
+                              title="Clear search"
+                              aria-label="Clear search"
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
+                        </div>
+                        )}
                         <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace chats">
-                          {workspaceConversationOptions.map((conversation) => {
+                          {(() => {
+                            const needle = workspaceConversationSearchQuery.trim().toLowerCase();
+                            const searchBase = needle
+                              ? [
+                                  ...workspaceConversationOptions,
+                                  ...workspaceArchivedConversationOptions.filter(
+                                    (archived) => !workspaceConversationOptions.some((c) => c.id === archived.id),
+                                  ),
+                                ]
+                              : workspaceConversationOptions;
+                            const filtered = needle
+                              ? searchBase.filter((c) => conversationMatchesQuery(c, needle))
+                              : searchBase;
+                            if (filtered.length === 0) {
+                              return (
+                                <div className="model-selector-empty">
+                                  {needle ? `No chats match "${workspaceConversationSearchQuery.trim()}"` : 'No chats yet'}
+                                </div>
+                              );
+                            }
+                            return filtered.map((conversation) => {
                             const isSelected = conversation.id === activeConversation.id;
                             const isEditing = editingTitle === conversation.id;
                             const isLive = Boolean(conversation.active_task_id) || (isSelected && Boolean(activeTask));
@@ -6755,6 +7195,9 @@ export function ChatPanel({
                                   void selectConversation(conversation);
                                 }}
                                 onKeyDown={(event) => {
+                                  if (isEditing) {
+                                    return;
+                                  }
                                   if (event.key === 'Enter' || event.key === ' ') {
                                     event.preventDefault();
                                     setIsWorkspaceConversationMenuOpen(false);
@@ -6764,13 +7207,18 @@ export function ChatPanel({
                               >
                                 <div className="chat-workspace-conversation-content">
                                   {isEditing ? (
-                                    <input
-                                      type="text"
+                                    <textarea
+                                      ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
                                       value={titleInput}
-                                      onChange={(e) => setTitleInput(e.target.value)}
+                                      onChange={(e) => {
+                                        setTitleInput(e.target.value);
+                                        e.target.style.height = 'auto';
+                                        e.target.style.height = `${e.target.scrollHeight}px`;
+                                      }}
                                       onBlur={() => void saveTitle(conversation.id)}
                                       onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
+                                        e.stopPropagation();
+                                        if (e.key === 'Enter' && !e.shiftKey) {
                                           e.preventDefault();
                                           void saveTitle(conversation.id);
                                         }
@@ -6781,12 +7229,28 @@ export function ChatPanel({
                                       }}
                                       onClick={(e) => e.stopPropagation()}
                                       autoFocus
+                                      rows={1}
                                       className="chat-title-input chat-workspace-conversation-title-input"
                                     />
                                   ) : (
-                                    <span className="model-selector-item-name chat-workspace-conversation-item-name">
-                                      {conversation.title || 'Untitled Chat'}
-                                    </span>
+                                    <>
+                                      <span className="model-selector-item-name chat-workspace-conversation-item-name">
+                                        {workspaceConversationSearchQuery.trim()
+                                          ? <HighlightedText text={conversation.title || 'Untitled Chat'} query={workspaceConversationSearchQuery} />
+                                          : (conversation.title || 'Untitled Chat')}
+                                      </span>
+                                      {(() => {
+                                        const snippet = workspaceConversationSearchQuery.trim()
+                                          ? buildConversationSnippet(conversation, workspaceConversationSearchQuery)
+                                          : null;
+                                        if (!snippet) return null;
+                                        return (
+                                          <div className="chat-conversation-snippet chat-workspace-conversation-snippet" title={snippet}>
+                                            <HighlightedText text={snippet} query={workspaceConversationSearchQuery} />
+                                          </div>
+                                        );
+                                      })()}
+                                    </>
                                   )}
                                 </div>
 
@@ -6860,24 +7324,33 @@ export function ChatPanel({
                                 )}
                               </div>
                             );
-                          })}
+                          });
+                          })()}
                         </div>
                       </div>
                     )}
                   </div>
                 ) : (
-                  <div className="chat-header-title-row">
+                  <div className={`chat-header-title-row${editingHeaderTitle === activeConversation.id ? ' is-editing' : ''}`}>
                     {editingHeaderTitle === activeConversation.id ? (
-                      <input
-                        type="text"
+                      <textarea
+                        ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
                         value={titleInput}
-                        onChange={(e) => setTitleInput(e.target.value)}
+                        onChange={(e) => {
+                          setTitleInput(e.target.value);
+                          e.target.style.height = 'auto';
+                          e.target.style.height = `${e.target.scrollHeight}px`;
+                        }}
                         onBlur={() => saveTitle(activeConversation.id)}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter') void saveTitle(activeConversation.id);
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            void saveTitle(activeConversation.id);
+                          }
                           if (e.key === 'Escape') setEditingHeaderTitle(null);
                         }}
                         autoFocus
+                        rows={1}
                         className="chat-title-input chat-header-title-input"
                       />
                     ) : (
@@ -6988,9 +7461,23 @@ export function ChatPanel({
                     {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
                   </button>
                 )}
-                <button className="btn btn-sm btn-secondary chat-new-chat-btn" onClick={startFreshConversation} title="Start a new conversation" disabled={isReadOnly}>
-                  <MessageSquarePlus size={14} className="chat-new-chat-icon" aria-hidden="true" />
-                  <span className="chat-new-chat-label">New Chat</span>
+                <button
+                  className="btn btn-sm btn-secondary chat-new-chat-btn"
+                  onClick={startFreshConversation}
+                  title={isCreatingFreshConversation ? 'Creating a new conversation...' : 'Start a new conversation'}
+                  disabled={isReadOnly || isCreatingFreshConversation}
+                >
+                  {isCreatingFreshConversation ? (
+                    <>
+                      <MiniLoadingSpinner variant="icon" size={14} className="chat-new-chat-spinner" ariaHidden />
+                      <span className="chat-new-chat-label">Creating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <MessageSquarePlus size={14} className="chat-new-chat-icon" aria-hidden="true" />
+                      <span className="chat-new-chat-label">New Chat</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>
@@ -6998,7 +7485,7 @@ export function ChatPanel({
             {/* Messages */}
             {!isMessagesCollapsed && (
             <div className="chat-messages" ref={chatMessagesRef} onScroll={handleScroll}>
-              {isConversationSwitchLoading ? (
+              {(isConversationSwitchLoading || isCreatingFreshConversation) ? (
                 renderMessageBubbleSkeletons()
               ) : activeConversation.messages.length === 0 && !isStreaming ? (
                 <div className="chat-welcome">
@@ -7620,12 +8107,25 @@ export function ChatPanel({
             </div>
             )}
           </>
+        ) : isCreatingFreshConversation ? (
+          renderFullChatSkeleton()
         ) : (
           <div className="chat-no-conversation">
             <h2>Welcome to Chat</h2>
             <p>Select a conversation or start a new one to begin.</p>
-            <button className="btn" onClick={createNewConversation}>
-              New Conversation
+            <button
+              className="btn"
+              onClick={createNewConversation}
+              disabled={isCreatingFreshConversation}
+            >
+              {isCreatingFreshConversation ? (
+                <>
+                  <MiniLoadingSpinner variant="icon" size={14} ariaHidden />
+                  Creating...
+                </>
+              ) : (
+                'New Conversation'
+              )}
             </button>
           </div>
         )}
@@ -7849,6 +8349,102 @@ export function ChatPanel({
               <X size={24} />
             </button>
             <img src={modalImageUrl} alt="Enlarged view" />
+          </div>
+        </div>
+      )}
+
+      {/* Archived Chats Modal */}
+      {showArchiveModal && !embedded && !workspaceId && (
+        <div
+          className="modal-overlay chat-archive-modal-overlay"
+          onClick={() => setShowArchiveModal(false)}
+          onKeyDown={(e) => e.key === 'Escape' && setShowArchiveModal(false)}
+        >
+          <div className="modal chat-archive-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="chat-archive-modal-toolbar">
+              <div className="chat-conversation-search chat-conversation-search-modal">
+                <input
+                  type="text"
+                  className="chat-conversation-search-input"
+                  placeholder="Search older chats..."
+                  value={archiveSearchQuery}
+                  onChange={(e) => setArchiveSearchQuery(e.target.value)}
+                  autoFocus
+                  aria-label="Search older conversations"
+                />
+                {archiveSearchQuery && (
+                  <button
+                    type="button"
+                    className="chat-conversation-search-clear"
+                    onClick={() => setArchiveSearchQuery('')}
+                    title="Clear search"
+                    aria-label="Clear search"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+              <div className="chat-archive-settings">
+                <div className="chat-archive-settings-form">
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-md"
+                    onClick={cycleArchiveAgePreset}
+                    title="Sidebar keeps recent chats visible and auto-hides older ones. Click to cycle archive window: 1d, 1wk, 1mo, 1yr."
+                  >
+                    {getArchiveAgeLabel(archiveAgeDays)}
+                  </button>
+                  <button className="modal-close" onClick={() => setShowArchiveModal(false)} title="Close" aria-label="Close">
+                    &times;
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="modal-body chat-archive-modal-body">
+              {archiveLoading && !archiveLoaded && archivedConversations.length === 0 ? (
+                <div className="chat-empty-state" aria-live="polite">
+                  <p>Loading older chats...</p>
+                </div>
+              ) : archiveError ? (
+                <div className="chat-empty-state">
+                  <p>{archiveError}</p>
+                  <button className="btn btn-secondary btn-sm" onClick={() => void loadArchivedConversations()}>
+                    Retry
+                  </button>
+                </div>
+              ) : (() => {
+                const trimmed = archiveSearchQuery.trim();
+                const list = trimmed
+                  ? archivedConversations.filter((c) => conversationMatchesQuery(c, trimmed))
+                  : archivedConversations;
+                if (list.length === 0) {
+                  return (
+                    <div className="chat-empty-state">
+                      <p>{trimmed
+                        ? `No older chats match "${trimmed}".`
+                        : archiveAgeDays > 0
+                          ? `No chats older than ${archiveAgeDays} day${archiveAgeDays === 1 ? '' : 's'}.`
+                          : 'Auto-hide is off — all chats are already shown in the sidebar.'}</p>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="chat-conversation-list chat-conversation-list-non-admin chat-archive-conversation-list">
+                    {list.map((conv) => renderConversationItem(conv, {
+                      searchQuery: trimmed,
+                      onClickOverride: () => {
+                        setShowArchiveModal(false);
+                        // Pull the older chat into the visible list so the
+                        // chat panel can render it immediately without a
+                        // refetch loop.
+                        setConversations((prev) => prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]);
+                        void selectConversation(conv);
+                      },
+                    }))}
+                  </div>
+                );
+              })()}
+            </div>
           </div>
         </div>
       )}

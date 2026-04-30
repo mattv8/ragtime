@@ -1473,10 +1473,24 @@ export const api = {
   },
 
   /**
-   * List all conversations
+   * List all conversations.
+   *
+   * Optional ``since`` / ``until`` are ISO-8601 timestamps that filter the
+   * server response by ``updated_at``. ``since`` is inclusive, ``until`` is
+   * exclusive — pass both to load only the "archive" window.
    */
-  async listConversations(workspaceId?: string): Promise<Conversation[]> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations`, workspaceId));
+  async listConversations(
+    workspaceId?: string,
+    options?: { since?: string | null; until?: string | null },
+  ): Promise<Conversation[]> {
+    let url = withWorkspaceQuery(`${API_BASE}/conversations`, workspaceId);
+    const extra: string[] = [];
+    if (options?.since) extra.push(`since=${encodeURIComponent(options.since)}`);
+    if (options?.until) extra.push(`until=${encodeURIComponent(options.until)}`);
+    if (extra.length) {
+      url += url.includes('?') ? `&${extra.join('&')}` : `?${extra.join('&')}`;
+    }
+    const response = await apiFetch(url);
     return handleResponse<Conversation[]>(response);
   },
 
