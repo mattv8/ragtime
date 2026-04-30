@@ -80,6 +80,7 @@ MODEL_FAMILY_PATTERNS: dict[str, list[tuple[str, str | None]]] = {
     ],
     "ollama": [(r"^([a-z0-9]+)", None)],
     "llama_cpp": [(r"^([a-z0-9]+)", None)],
+    "lmstudio": [(r"^([a-z0-9]+)", None)],
     "github_copilot": [
         # GitHub-hosted OpenAI families
         (r"^(openai/)?gpt-4o", "GPT-4o"),

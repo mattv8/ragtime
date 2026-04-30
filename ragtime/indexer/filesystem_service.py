@@ -1327,6 +1327,9 @@ class FilesystemIndexerService:
                 llama_cpp_base_url=app_settings.get(
                     "llama_cpp_base_url", "http://host.docker.internal:8081"
                 ),
+                lmstudio_base_url=app_settings.get(
+                    "lmstudio_base_url", "http://host.docker.internal:1234"
+                ),
             )
             logger.debug(
                 f"Embedding model context limit: {embedding_context_limit} tokens"

@@ -394,6 +394,21 @@ async def get_embeddings_model(
             base_url=f"{base_url}/v1",
         )
 
+    if provider == "lmstudio":
+        from langchain_openai import OpenAIEmbeddings
+
+        base_url = str(
+            _get_setting(
+                settings, "lmstudio_base_url", "http://host.docker.internal:1234"
+            )
+            or "http://host.docker.internal:1234"
+        ).rstrip("/")
+        return OpenAIEmbeddings(
+            model=model,
+            api_key="lmstudio-local",
+            base_url=f"{base_url}/v1",
+        )
+
     message = f"Unknown embedding provider: {provider}"
     if return_none_on_error:
         log.warning(message)

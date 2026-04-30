@@ -2,6 +2,7 @@
 Indexer data models and schemas.
 """
 
+
 import hashlib
 import json
 from datetime import datetime
@@ -19,7 +20,6 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
     normalize_userspace_preview_sandbox_flags,
 )
-
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -462,7 +462,7 @@ class AppSettings(BaseModel):
     # Embedding Configuration (for FAISS indexing)
     embedding_provider: str = Field(
         default="ollama",
-        description="Embedding provider: 'ollama', 'openai', or 'llama_cpp'",
+        description="Embedding provider: 'ollama', 'openai', 'llama_cpp', or 'lmstudio'",
     )
     embedding_model: str = Field(
         default="nomic-embed-text",
@@ -503,11 +503,26 @@ class AppSettings(BaseModel):
         default="http://host.docker.internal:8081",
         description="llama.cpp embedding server URL (computed from protocol/host/port)",
     )
+    lmstudio_protocol: str = Field(
+        default="http",
+        description="LM Studio embedding server protocol: 'http' or 'https'",
+    )
+    lmstudio_host: str = Field(
+        default="host.docker.internal",
+        description="LM Studio embedding server hostname or IP address",
+    )
+    lmstudio_port: int = Field(
+        default=1234, ge=1, le=65535, description="LM Studio embedding server port"
+    )
+    lmstudio_base_url: str = Field(
+        default="http://host.docker.internal:1234",
+        description="LM Studio embedding server URL (computed from protocol/host/port)",
+    )
 
     # LLM Configuration (for chat/RAG responses)
     llm_provider: str = Field(
         default="openai",
-        description="LLM provider: 'openai', 'anthropic', 'ollama', 'llama_cpp', 'github_copilot', or 'github_models'",
+        description="LLM provider: 'openai', 'anthropic', 'ollama', 'llama_cpp', 'lmstudio', 'github_copilot', or 'github_models'",
     )
     llm_model: str = Field(
         default="gpt-4-turbo",
@@ -570,6 +585,20 @@ class AppSettings(BaseModel):
     llm_llama_cpp_base_url: str = Field(
         default="http://host.docker.internal:8080",
         description="llama.cpp LLM server URL (computed from protocol/host/port)",
+    )
+    llm_lmstudio_protocol: str = Field(
+        default="http", description="LM Studio LLM server protocol: 'http' or 'https'"
+    )
+    llm_lmstudio_host: str = Field(
+        default="host.docker.internal",
+        description="LM Studio LLM server hostname or IP address",
+    )
+    llm_lmstudio_port: int = Field(
+        default=1234, ge=1, le=65535, description="LM Studio LLM server port"
+    )
+    llm_lmstudio_base_url: str = Field(
+        default="http://host.docker.internal:1234",
+        description="LM Studio LLM server URL (computed from protocol/host/port)",
     )
     openai_api_key: str = Field(
         default="",
@@ -1018,6 +1047,10 @@ class UpdateSettingsRequest(BaseModel):
     llama_cpp_host: Optional[str] = None
     llama_cpp_port: Optional[int] = Field(default=None, ge=1, le=65535)
     llama_cpp_base_url: Optional[str] = None
+    lmstudio_protocol: Optional[str] = None
+    lmstudio_host: Optional[str] = None
+    lmstudio_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    lmstudio_base_url: Optional[str] = None
     # LLM settings
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
@@ -1050,6 +1083,10 @@ class UpdateSettingsRequest(BaseModel):
     llm_llama_cpp_host: Optional[str] = None
     llm_llama_cpp_port: Optional[int] = Field(default=None, ge=1, le=65535)
     llm_llama_cpp_base_url: Optional[str] = None
+    llm_lmstudio_protocol: Optional[str] = None
+    llm_lmstudio_host: Optional[str] = None
+    llm_lmstudio_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    llm_lmstudio_base_url: Optional[str] = None
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     github_models_api_token: Optional[str] = None

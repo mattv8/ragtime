@@ -100,6 +100,9 @@ const DEFAULT_LLAMA_CPP_CHAT_PORT = 8080;
 const DEFAULT_LLAMA_CPP_EMBEDDING_PORT = 8081;
 const DEFAULT_LLAMA_CPP_HOST = 'host.docker.internal';
 const DEFAULT_LLAMA_CPP_PROTOCOL = 'http';
+const DEFAULT_LMSTUDIO_PORT = 1234;
+const DEFAULT_LMSTUDIO_HOST = 'host.docker.internal';
+const DEFAULT_LMSTUDIO_PROTOCOL = 'http';
 
 const COPILOT_MODEL_FETCH_OPTIONS = {
   includeDirectoryModels: true,
@@ -185,6 +188,20 @@ function getScopedModelId(selectionKey: string): string {
   return delimiter >= 0 ? selectionKey.slice(delimiter + 2) : selectionKey;
 }
 
+function getLmstudioInstanceId(instances: Record<string, unknown>[] | undefined): string {
+  if (!instances || instances.length === 0) {
+    return '';
+  }
+  const first = instances[0];
+  for (const key of ['instance_id', 'identifier', 'id', 'model_identifier']) {
+    const value = first[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return '';
+}
+
 function toggleScopedModelSelection(currentSelection: Set<string>, model: AvailableModel): Set<string> {
   const selectionKey = toScopedModelIdentifier(model);
   const nextSelection = new Set(currentSelection);
@@ -263,6 +280,10 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
   | 'llama_cpp_host'
   | 'llama_cpp_port'
   | 'llama_cpp_base_url'
+  | 'lmstudio_protocol'
+  | 'lmstudio_host'
+  | 'lmstudio_port'
+  | 'lmstudio_base_url'
   | 'ollama_embedding_timeout_seconds'
   | 'default_ocr_mode'
   | 'default_ocr_vision_model'
@@ -280,6 +301,10 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
     llama_cpp_host: data.llama_cpp_host,
     llama_cpp_port: data.llama_cpp_port,
     llama_cpp_base_url: data.llama_cpp_base_url,
+    lmstudio_protocol: data.lmstudio_protocol,
+    lmstudio_host: data.lmstudio_host,
+    lmstudio_port: data.lmstudio_port,
+    lmstudio_base_url: data.lmstudio_base_url,
     ollama_embedding_timeout_seconds: data.ollama_embedding_timeout_seconds,
     default_ocr_mode: data.default_ocr_mode,
     default_ocr_vision_model: data.default_ocr_vision_model,
@@ -378,6 +403,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
   const [embeddingModelsError, setEmbeddingModelsError] = useState<string | null>(null);
   const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModel[]>([]);
   const [embeddingModelsLoaded, setEmbeddingModelsLoaded] = useState(false);
+  const [lmstudioModelActionLoading, setLmstudioModelActionLoading] = useState(false);
 
   // Model filter modal state
   const [showModelFilterModal, setShowModelFilterModal] = useState(false);
@@ -525,7 +551,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
 
   // Fetch LLM models from provider API
   const fetchLlmModels = useCallback(async (
-    provider: 'openai' | 'anthropic' | 'llama_cpp' | 'github_copilot',
+    provider: 'openai' | 'anthropic' | 'llama_cpp' | 'lmstudio' | 'github_copilot',
     apiKey?: string,
     options?: {
       authMode?: 'oauth' | 'pat';
@@ -594,6 +620,18 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
       ),
     });
   }, [fetchLlmModels, formData.llm_llama_cpp_host, formData.llm_llama_cpp_port, formData.llm_llama_cpp_protocol]);
+
+  const fetchLmstudioLlmModels = useCallback(async () => {
+    await fetchLlmModels('lmstudio', undefined, {
+      baseUrl: buildLocalBaseUrl(
+        formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
+        formData.llm_lmstudio_host || DEFAULT_LMSTUDIO_HOST,
+        formData.llm_lmstudio_port || DEFAULT_LMSTUDIO_PORT,
+        DEFAULT_LMSTUDIO_HOST,
+        DEFAULT_LMSTUDIO_PORT,
+      ),
+    });
+  }, [fetchLlmModels, formData.llm_lmstudio_host, formData.llm_lmstudio_port, formData.llm_lmstudio_protocol]);
 
   const fetchCopilotModels = useCallback(async () => {
     await fetchLlmModels('github_copilot', undefined, {
@@ -832,6 +870,129 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     }
   }, [formData.embedding_model, formData.llama_cpp_host, formData.llama_cpp_port, formData.llama_cpp_protocol]);
 
+  const fetchLmstudioEmbeddingModels = useCallback(async () => {
+    setEmbeddingModelsFetching(true);
+    setEmbeddingModelsError(null);
+    setEmbeddingModels([]);
+    setEmbeddingModelsLoaded(false);
+
+    try {
+      const response = await api.fetchEmbeddingModels({
+        provider: 'lmstudio',
+        base_url: buildLocalBaseUrl(
+          formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
+          formData.lmstudio_host || DEFAULT_LMSTUDIO_HOST,
+          formData.lmstudio_port || DEFAULT_LMSTUDIO_PORT,
+          DEFAULT_LMSTUDIO_HOST,
+          DEFAULT_LMSTUDIO_PORT,
+        ),
+        model: formData.embedding_model || undefined,
+      });
+
+      if (response.success) {
+        setEmbeddingModels(response.models);
+        setEmbeddingModelsLoaded(true);
+        if (response.default_model) {
+          setFormData((prev) => ({
+            ...prev,
+            embedding_model: prev.embedding_model || response.default_model,
+          }));
+        }
+      } else {
+        setEmbeddingModelsError(response.message);
+      }
+    } catch (err) {
+      setEmbeddingModelsError(err instanceof Error ? err.message : 'Failed to fetch embedding models');
+    } finally {
+      setEmbeddingModelsFetching(false);
+    }
+  }, [formData.embedding_model, formData.lmstudio_host, formData.lmstudio_port, formData.lmstudio_protocol]);
+
+  const getLmstudioChatBaseUrl = useCallback(() => buildLocalBaseUrl(
+    formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
+    formData.llm_lmstudio_host || DEFAULT_LMSTUDIO_HOST,
+    formData.llm_lmstudio_port || DEFAULT_LMSTUDIO_PORT,
+    DEFAULT_LMSTUDIO_HOST,
+    DEFAULT_LMSTUDIO_PORT,
+  ), [formData.llm_lmstudio_host, formData.llm_lmstudio_port, formData.llm_lmstudio_protocol]);
+
+  const getLmstudioEmbeddingBaseUrl = useCallback(() => buildLocalBaseUrl(
+    formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
+    formData.lmstudio_host || DEFAULT_LMSTUDIO_HOST,
+    formData.lmstudio_port || DEFAULT_LMSTUDIO_PORT,
+    DEFAULT_LMSTUDIO_HOST,
+    DEFAULT_LMSTUDIO_PORT,
+  ), [formData.lmstudio_host, formData.lmstudio_port, formData.lmstudio_protocol]);
+
+  const loadSelectedLmstudioModel = useCallback(async (role: 'llm' | 'embedding') => {
+    const model = ((role === 'llm' ? formData.llm_model : formData.embedding_model) || '').trim();
+    if (!model) {
+      const message = role === 'llm' ? 'Select an LM Studio chat model first' : 'Select an LM Studio embedding model first';
+      role === 'llm' ? setLlmModelsError(message) : setEmbeddingModelsError(message);
+      return;
+    }
+
+    setLmstudioModelActionLoading(true);
+    role === 'llm' ? setLlmModelsError(null) : setEmbeddingModelsError(null);
+    try {
+      const response = await api.loadLmstudioModel({
+        base_url: role === 'llm' ? getLmstudioChatBaseUrl() : getLmstudioEmbeddingBaseUrl(),
+        model,
+      });
+      if (!response.success) {
+        throw new Error(response.message);
+      }
+      toast.success('LM Studio model load requested');
+      if (role === 'llm') {
+        await fetchLmstudioLlmModels();
+      } else {
+        await fetchLmstudioEmbeddingModels();
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load LM Studio model';
+      role === 'llm' ? setLlmModelsError(message) : setEmbeddingModelsError(message);
+    } finally {
+      setLmstudioModelActionLoading(false);
+    }
+  }, [fetchLmstudioEmbeddingModels, fetchLmstudioLlmModels, formData.embedding_model, formData.llm_model, getLmstudioChatBaseUrl, getLmstudioEmbeddingBaseUrl, toast]);
+
+  const unloadSelectedLmstudioModel = useCallback(async (role: 'llm' | 'embedding') => {
+    const model = ((role === 'llm' ? formData.llm_model : formData.embedding_model) || '').trim();
+    const modelInfo = role === 'llm'
+      ? llmModels.find((item) => item.id === model)
+      : embeddingModels.find((item) => item.id === model);
+    const instanceId = getLmstudioInstanceId(modelInfo?.loaded_instances);
+    if (!model && !instanceId) {
+      const message = role === 'llm' ? 'Select a loaded LM Studio chat model first' : 'Select a loaded LM Studio embedding model first';
+      role === 'llm' ? setLlmModelsError(message) : setEmbeddingModelsError(message);
+      return;
+    }
+
+    setLmstudioModelActionLoading(true);
+    role === 'llm' ? setLlmModelsError(null) : setEmbeddingModelsError(null);
+    try {
+      const response = await api.unloadLmstudioModel({
+        base_url: role === 'llm' ? getLmstudioChatBaseUrl() : getLmstudioEmbeddingBaseUrl(),
+        instance_id: instanceId || undefined,
+        model: model || undefined,
+      });
+      if (!response.success) {
+        throw new Error(response.message);
+      }
+      toast.success('LM Studio model unload requested');
+      if (role === 'llm') {
+        await fetchLmstudioLlmModels();
+      } else {
+        await fetchLmstudioEmbeddingModels();
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to unload LM Studio model';
+      role === 'llm' ? setLlmModelsError(message) : setEmbeddingModelsError(message);
+    } finally {
+      setLmstudioModelActionLoading(false);
+    }
+  }, [embeddingModels, fetchLmstudioEmbeddingModels, fetchLmstudioLlmModels, formData.embedding_model, formData.llm_model, getLmstudioChatBaseUrl, getLmstudioEmbeddingBaseUrl, llmModels, toast]);
+
   // --- Shared model-fetching helpers for Chat & OpenAPI modal ---
   const fetchModelsForModal = useCallback(async (): Promise<{ models: AvailableModel[]; response: Awaited<ReturnType<typeof api.getAllModels>> }> => {
     const response = await api.getAllModels();
@@ -1025,6 +1186,10 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         llm_llama_cpp_host: data.llm_llama_cpp_host,
         llm_llama_cpp_port: data.llm_llama_cpp_port,
         llm_llama_cpp_base_url: data.llm_llama_cpp_base_url,
+        llm_lmstudio_protocol: data.llm_lmstudio_protocol,
+        llm_lmstudio_host: data.llm_lmstudio_host,
+        llm_lmstudio_port: data.llm_lmstudio_port,
+        llm_lmstudio_base_url: data.llm_lmstudio_base_url,
         openai_api_key: data.openai_api_key,
         anthropic_api_key: data.anthropic_api_key,
         github_models_api_token: data.github_models_api_token,
@@ -1375,6 +1540,16 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           DEFAULT_LLAMA_CPP_HOST,
           DEFAULT_LLAMA_CPP_EMBEDDING_PORT,
         ),
+        lmstudio_protocol: formData.lmstudio_protocol,
+        lmstudio_host: formData.lmstudio_host,
+        lmstudio_port: formData.lmstudio_port,
+        lmstudio_base_url: buildLocalBaseUrl(
+          formData.lmstudio_protocol,
+          formData.lmstudio_host,
+          formData.lmstudio_port,
+          DEFAULT_LMSTUDIO_HOST,
+          DEFAULT_LMSTUDIO_PORT,
+        ),
         ollama_embedding_timeout_seconds: formData.ollama_embedding_timeout_seconds,
         sequential_index_loading: formData.sequential_index_loading,
         default_ocr_mode: formData.default_ocr_mode,
@@ -1457,6 +1632,18 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           formData.llm_llama_cpp_port,
           DEFAULT_LLAMA_CPP_HOST,
           DEFAULT_LLAMA_CPP_CHAT_PORT,
+        );
+      }
+      if (normalizedProvider === 'lmstudio') {
+        dataToSave.llm_lmstudio_protocol = formData.llm_lmstudio_protocol;
+        dataToSave.llm_lmstudio_host = formData.llm_lmstudio_host;
+        dataToSave.llm_lmstudio_port = formData.llm_lmstudio_port;
+        dataToSave.llm_lmstudio_base_url = buildLocalBaseUrl(
+          formData.llm_lmstudio_protocol,
+          formData.llm_lmstudio_host,
+          formData.llm_lmstudio_port,
+          DEFAULT_LMSTUDIO_HOST,
+          DEFAULT_LMSTUDIO_PORT,
         );
       }
       const updated = await api.updateSettings(dataToSave);
@@ -1948,6 +2135,11 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     (formData.llm_llama_cpp_host ?? settings?.llm_llama_cpp_host)?.trim() &&
     (formData.llm_llama_cpp_port ?? settings?.llm_llama_cpp_port)
   );
+  const lmstudioConfigured = Boolean(
+    (formData.llm_lmstudio_protocol ?? settings?.llm_lmstudio_protocol) &&
+    (formData.llm_lmstudio_host ?? settings?.llm_lmstudio_host)?.trim() &&
+    (formData.llm_lmstudio_port ?? settings?.llm_lmstudio_port)
+  );
   const embeddingOpenAiConfigured = Boolean((formData.openai_api_key ?? settings?.openai_api_key)?.trim());
   const embeddingOllamaConfigured = Boolean(
     (formData.ollama_protocol ?? settings?.ollama_protocol) &&
@@ -1958,6 +2150,11 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     (formData.llama_cpp_protocol ?? settings?.llama_cpp_protocol) &&
     (formData.llama_cpp_host ?? settings?.llama_cpp_host)?.trim() &&
     (formData.llama_cpp_port ?? settings?.llama_cpp_port)
+  );
+  const embeddingLmstudioConfigured = Boolean(
+    (formData.lmstudio_protocol ?? settings?.lmstudio_protocol) &&
+    (formData.lmstudio_host ?? settings?.lmstudio_host)?.trim() &&
+    (formData.lmstudio_port ?? settings?.lmstudio_port)
   );
   const activeAuthProvider = AUTH_PROVIDER_OPTIONS[0];
   const ldapConfigured = Boolean(ldapFormData.ldap_host.trim() || ldapConfig?.server_url?.trim());
@@ -2211,6 +2408,13 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 />
                 <span className="llm-provider-status-label">llama.cpp</span>
               </span>
+              <span className="llm-provider-status-item" title={lmstudioConfigured ? 'LM Studio configured' : 'LM Studio not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${lmstudioConfigured ? 'configured' : ''}`}
+                  aria-label={lmstudioConfigured ? 'LM Studio configured' : 'LM Studio not configured'}
+                />
+                <span className="llm-provider-status-label">LM Studio</span>
+              </span>
               <span className="llm-provider-status-item" title={(copilotConfigured || copilotPatConfigured) ? 'GitHub Copilot configured' : 'GitHub Copilot not configured'}>
                 <span
                   className={`llm-provider-status-dot ${(copilotConfigured || copilotPatConfigured) ? 'configured' : ''}`}
@@ -2230,7 +2434,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
             <select
               value={formData.llm_provider || 'openai'}
               onChange={(e) => {
-                const newProvider = e.target.value as 'openai' | 'anthropic' | 'ollama' | 'llama_cpp' | 'github_copilot';
+                const newProvider = e.target.value as 'openai' | 'anthropic' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'github_copilot';
                 setFormData({
                   ...formData,
                   llm_provider: newProvider,
@@ -2256,6 +2460,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               <option value="anthropic">Anthropic (Claude)</option>
               <option value="ollama">Ollama</option>
               <option value="llama_cpp">llama.cpp</option>
+              <option value="lmstudio">LM Studio</option>
               <option value="github_copilot">GitHub Copilot</option>
             </select>
             {/* Quick-fill from embedding Ollama when it has a real host */}
@@ -2271,6 +2476,23 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                     llm_ollama_port: formData.ollama_port || DEFAULT_OLLAMA_PORT,
                   });
                   resetLlmOllamaState();
+                }}
+              >
+                Use Embedding Server
+              </button>
+            )}
+            {formData.llm_provider === 'lmstudio' && formData.embedding_provider === 'lmstudio' && formData.lmstudio_host?.trim() && (
+              <button
+                type="button"
+                className="btn btn-test"
+                onClick={() => {
+                  setFormData({
+                    ...formData,
+                    llm_lmstudio_protocol: formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
+                    llm_lmstudio_host: formData.lmstudio_host || '',
+                    llm_lmstudio_port: formData.lmstudio_port || DEFAULT_LMSTUDIO_PORT,
+                  });
+                  resetLlmModelsState();
                 }}
               >
                 Use Embedding Server
@@ -2349,6 +2571,55 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
               onFetchModels={fetchLlamaCppLlmModels}
             />
+          )}
+
+          {formData.llm_provider === 'lmstudio' && (
+            <>
+              <OllamaConnectionForm
+                protocol={formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL}
+                host={formData.llm_lmstudio_host || DEFAULT_LMSTUDIO_HOST}
+                port={formData.llm_lmstudio_port || DEFAULT_LMSTUDIO_PORT}
+                model={formData.llm_model || ''}
+                connected={llmModelsLoaded && formData.llm_provider === 'lmstudio'}
+                connecting={llmModelsFetching}
+                error={formData.llm_provider === 'lmstudio' ? llmModelsError : null}
+                models={llmModels.map((m) => ({
+                  id: m.id,
+                  name: m.name,
+                  context_limit: m.context_limit,
+                  loaded: m.loaded,
+                }))}
+                providerLabel="LM Studio"
+                defaultPort={DEFAULT_LMSTUDIO_PORT}
+                hostPlaceholder={DEFAULT_LMSTUDIO_HOST}
+                modelLabel="Model"
+                modelPlaceholder="gemma-4-31b-it-mlx"
+                connectedHelpText="Select a chat-capable model from LM Studio."
+                disconnectedHelpText="Click &quot;Fetch Models&quot; to discover LM Studio models, or enter a model key manually."
+                onProtocolChange={(protocol) => {
+                  setFormData({ ...formData, llm_lmstudio_protocol: protocol });
+                  resetLlmModelsState();
+                }}
+                onHostChange={(host) => {
+                  setFormData({ ...formData, llm_lmstudio_host: host });
+                  resetLlmModelsState();
+                }}
+                onPortChange={(port) => {
+                  setFormData({ ...formData, llm_lmstudio_port: port });
+                  resetLlmModelsState();
+                }}
+                onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
+                onFetchModels={fetchLmstudioLlmModels}
+              />
+              <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0, marginTop: 0 }}>
+                <button type="button" className="btn btn-test" onClick={() => loadSelectedLmstudioModel('llm')} disabled={lmstudioModelActionLoading || !formData.llm_model}>
+                  Load Selected
+                </button>
+                <button type="button" className="btn btn-test" onClick={() => unloadSelectedLmstudioModel('llm')} disabled={lmstudioModelActionLoading || !formData.llm_model}>
+                  Unload Selected
+                </button>
+              </div>
+            </>
           )}
 
           {/* API Key - show appropriate one based on provider */}
@@ -2696,7 +2967,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           </div>
 
           {/* Show OpenAI key field for embeddings if using Anthropic or Ollama for LLM */}
-          {(formData.llm_provider === 'anthropic' || formData.llm_provider === 'ollama' || formData.llm_provider === 'llama_cpp' || formData.llm_provider === 'github_copilot') && formData.embedding_provider === 'openai' && (
+          {(formData.llm_provider === 'anthropic' || formData.llm_provider === 'ollama' || formData.llm_provider === 'llama_cpp' || formData.llm_provider === 'lmstudio' || formData.llm_provider === 'github_copilot') && formData.embedding_provider === 'openai' && (
             <div className="form-group">
               <label>OpenAI API Key (for embeddings)</label>
               <input
@@ -3060,6 +3331,13 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 />
                 <span className="llm-provider-status-label">llama.cpp</span>
               </span>
+              <span className="llm-provider-status-item" title={embeddingLmstudioConfigured ? 'LM Studio configured' : 'LM Studio not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${embeddingLmstudioConfigured ? 'configured' : ''}`}
+                  aria-label={embeddingLmstudioConfigured ? 'LM Studio configured' : 'LM Studio not configured'}
+                />
+                <span className="llm-provider-status-label">LM Studio</span>
+              </span>
             </span>
           </legend>
           <p className="fieldset-help">
@@ -3073,7 +3351,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               <select
                 value={formData.embedding_provider || 'ollama'}
                 onChange={(e) => {
-                  const newProvider = e.target.value as 'ollama' | 'openai' | 'llama_cpp';
+                  const newProvider = e.target.value as 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio';
                   setFormData({
                     ...formData,
                     embedding_provider: newProvider,
@@ -3083,7 +3361,9 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                         ? 'nomic-embed-text'
                         : newProvider === 'llama_cpp'
                           ? ''
-                          : 'text-embedding-3-small',
+                          : newProvider === 'lmstudio'
+                            ? ''
+                            : 'text-embedding-3-small',
                   });
                   // Reset Ollama connection state when switching providers
                   if (newProvider !== 'ollama') {
@@ -3097,6 +3377,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               >
                 <option value="ollama">Ollama</option>
                 <option value="llama_cpp">llama.cpp</option>
+                <option value="lmstudio">LM Studio</option>
                 <option value="openai">OpenAI</option>
               </select>
               {/* Quick-fill from LLM Ollama when it has a real host */}
@@ -3117,9 +3398,26 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                   Use LLM Server
                 </button>
               )}
+              {formData.embedding_provider === 'lmstudio' && formData.llm_provider === 'lmstudio' && formData.llm_lmstudio_host?.trim() && (
+                <button
+                  type="button"
+                  className="btn btn-test"
+                  onClick={() => {
+                    setFormData({
+                      ...formData,
+                      lmstudio_protocol: formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
+                      lmstudio_host: formData.llm_lmstudio_host || '',
+                      lmstudio_port: formData.llm_lmstudio_port || DEFAULT_LMSTUDIO_PORT,
+                    });
+                    resetEmbeddingModelsState();
+                  }}
+                >
+                  Use LLM Server
+                </button>
+              )}
               </div>
               <p className="field-help">
-                Note: Anthropic does not offer embedding models. Use Ollama, llama.cpp, or OpenAI for document embeddings.
+                Note: Anthropic does not offer embedding models. Use Ollama, llama.cpp, LM Studio, or OpenAI for document embeddings.
               </p>
             </div>
             {/* Show embedding dimension info */}
@@ -3128,7 +3426,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               const selectedOllamaModel = ollamaModels.find(m => m.name === formData.embedding_model);
               const selectedOpenAIModel = embeddingModels.find(m => m.id === formData.embedding_model);
               const selectedLlamaCppModel = embeddingModels.find(m => m.id === formData.embedding_model);
-              const selectedModelDimension = selectedOllamaModel?.dimensions || selectedOpenAIModel?.dimensions || selectedLlamaCppModel?.dimensions;
+              const selectedLmstudioModel = embeddingModels.find(m => m.id === formData.embedding_model);
+              const selectedModelDimension = selectedOllamaModel?.dimensions || selectedOpenAIModel?.dimensions || selectedLlamaCppModel?.dimensions || selectedLmstudioModel?.dimensions;
               const storedDimension = settings?.embedding_dimension;
 
               // Determine if there's a mismatch between stored and selected
@@ -3238,6 +3537,56 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
               onFetchModels={fetchLlamaCppEmbeddingModels}
             />
+          )}
+
+          {formData.embedding_provider === 'lmstudio' && (
+            <>
+              <OllamaConnectionForm
+                protocol={formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL}
+                host={formData.lmstudio_host || DEFAULT_LMSTUDIO_HOST}
+                port={formData.lmstudio_port || DEFAULT_LMSTUDIO_PORT}
+                model={formData.embedding_model || ''}
+                connected={embeddingModelsLoaded && formData.embedding_provider === 'lmstudio'}
+                connecting={embeddingModelsFetching}
+                error={formData.embedding_provider === 'lmstudio' ? embeddingModelsError : null}
+                models={embeddingModels.map((m) => ({
+                  id: m.id,
+                  name: m.name,
+                  dimensions: m.dimensions,
+                  context_limit: m.context_limit,
+                  loaded: m.loaded,
+                }))}
+                providerLabel="LM Studio"
+                defaultPort={DEFAULT_LMSTUDIO_PORT}
+                hostPlaceholder={DEFAULT_LMSTUDIO_HOST}
+                modelLabel="Embedding Model"
+                modelPlaceholder="text-embedding-nomic-embed-text-v1.5"
+                connectedHelpText="Select an embedding model from LM Studio."
+                disconnectedHelpText="Click &quot;Fetch Models&quot; to discover LM Studio embedding models, or enter a model key manually."
+                onProtocolChange={(protocol) => {
+                  setFormData({ ...formData, lmstudio_protocol: protocol });
+                  resetEmbeddingModelsState();
+                }}
+                onHostChange={(host) => {
+                  setFormData({ ...formData, lmstudio_host: host });
+                  resetEmbeddingModelsState();
+                }}
+                onPortChange={(port) => {
+                  setFormData({ ...formData, lmstudio_port: port });
+                  resetEmbeddingModelsState();
+                }}
+                onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
+                onFetchModels={fetchLmstudioEmbeddingModels}
+              />
+              <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0, marginTop: 0 }}>
+                <button type="button" className="btn btn-test" onClick={() => loadSelectedLmstudioModel('embedding')} disabled={lmstudioModelActionLoading || !formData.embedding_model}>
+                  Load Selected
+                </button>
+                <button type="button" className="btn btn-test" onClick={() => unloadSelectedLmstudioModel('embedding')} disabled={lmstudioModelActionLoading || !formData.embedding_model}>
+                  Unload Selected
+                </button>
+              </div>
+            </>
           )}
 
           {formData.embedding_provider === 'openai' && (

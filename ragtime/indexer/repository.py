@@ -959,6 +959,14 @@ class IndexerRepository:
                 "llamaCppBaseUrl",
                 "http://host.docker.internal:8081",
             ),
+            lmstudio_protocol=getattr(settings, "lmstudioProtocol", "http"),
+            lmstudio_host=getattr(settings, "lmstudioHost", "host.docker.internal"),
+            lmstudio_port=getattr(settings, "lmstudioPort", 1234),
+            lmstudio_base_url=getattr(
+                settings,
+                "lmstudioBaseUrl",
+                "http://host.docker.internal:1234",
+            ),
             # LLM settings
             llm_provider=settings.llmProvider,
             llm_model=settings.llmModel,
@@ -984,6 +992,16 @@ class IndexerRepository:
                 settings,
                 "llmLlamaCppBaseUrl",
                 "http://host.docker.internal:8080",
+            ),
+            llm_lmstudio_protocol=getattr(settings, "llmLmstudioProtocol", "http"),
+            llm_lmstudio_host=getattr(
+                settings, "llmLmstudioHost", "host.docker.internal"
+            ),
+            llm_lmstudio_port=getattr(settings, "llmLmstudioPort", 1234),
+            llm_lmstudio_base_url=getattr(
+                settings,
+                "llmLmstudioBaseUrl",
+                "http://host.docker.internal:1234",
             ),
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
@@ -1119,6 +1137,10 @@ class IndexerRepository:
             "llama_cpp_host": "llamaCppHost",
             "llama_cpp_port": "llamaCppPort",
             "llama_cpp_base_url": "llamaCppBaseUrl",
+            "lmstudio_protocol": "lmstudioProtocol",
+            "lmstudio_host": "lmstudioHost",
+            "lmstudio_port": "lmstudioPort",
+            "lmstudio_base_url": "lmstudioBaseUrl",
             # LLM settings
             "llm_provider": "llmProvider",
             "llm_model": "llmModel",
@@ -1135,6 +1157,10 @@ class IndexerRepository:
             "llm_llama_cpp_host": "llmLlamaCppHost",
             "llm_llama_cpp_port": "llmLlamaCppPort",
             "llm_llama_cpp_base_url": "llmLlamaCppBaseUrl",
+            "llm_lmstudio_protocol": "llmLmstudioProtocol",
+            "llm_lmstudio_host": "llmLmstudioHost",
+            "llm_lmstudio_port": "llmLmstudioPort",
+            "llm_lmstudio_base_url": "llmLmstudioBaseUrl",
             "openai_api_key": "openaiApiKey",
             "anthropic_api_key": "anthropicApiKey",
             "github_models_api_token": "githubModelsApiToken",

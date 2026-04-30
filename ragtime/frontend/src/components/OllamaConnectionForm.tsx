@@ -136,6 +136,7 @@ export function OllamaConnectionForm({
                 {m.size ? ` (${(m.size / 1024 / 1024 / 1024).toFixed(1)}GB)` : ''}
                 {m.dimensions ? ` [${m.dimensions} dims]` : ''}
                 {m.context_limit ? ` [${m.context_limit.toLocaleString()} ctx]` : ''}
+                {m.loaded === true ? ' [loaded]' : m.loaded === false ? ' [not loaded]' : ''}
               </option>
             ))}
           </select>

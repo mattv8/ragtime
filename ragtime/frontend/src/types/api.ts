@@ -482,7 +482,7 @@ export interface UserSpacePreviewSandboxFlagOption {
 }
 
 // Canonical providers used by current UI flows.
-export type LlmProvider = 'openai' | 'anthropic' | 'ollama' | 'llama_cpp' | 'github_copilot';
+export type LlmProvider = 'openai' | 'anthropic' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'github_copilot';
 // Legacy wire compatibility for older persisted/provider values.
 export type LlmProviderWire = LlmProvider | 'github_models';
 
@@ -491,7 +491,7 @@ export interface AppSettings {
   // Server branding
   server_name: string;
   // Embedding Configuration (for FAISS indexing)
-  embedding_provider: 'ollama' | 'openai' | 'llama_cpp';
+  embedding_provider: 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio';
   embedding_model: string;
   embedding_dimensions?: number | null;
   // Ollama connection settings for embeddings (separate fields)
@@ -503,6 +503,10 @@ export interface AppSettings {
   llama_cpp_host: string;
   llama_cpp_port: number;
   llama_cpp_base_url: string;
+  lmstudio_protocol: 'http' | 'https';
+  lmstudio_host: string;
+  lmstudio_port: number;
+  lmstudio_base_url: string;
   // LLM Configuration (for chat/RAG responses)
   llm_provider: LlmProviderWire;
   llm_model: string;
@@ -520,6 +524,10 @@ export interface AppSettings {
   llm_llama_cpp_host: string;
   llm_llama_cpp_port: number;
   llm_llama_cpp_base_url: string;
+  llm_lmstudio_protocol: 'http' | 'https';
+  llm_lmstudio_host: string;
+  llm_lmstudio_port: number;
+  llm_lmstudio_base_url: string;
   openai_api_key: string;
   anthropic_api_key: string;
   github_models_api_token: string;
@@ -594,7 +602,7 @@ export interface UpdateSettingsRequest {
   // Server branding
   server_name?: string;
   // Embedding settings
-  embedding_provider?: 'ollama' | 'openai' | 'llama_cpp';
+  embedding_provider?: 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio';
   embedding_model?: string;
   embedding_dimensions?: number | null;
   ollama_protocol?: 'http' | 'https';
@@ -605,6 +613,10 @@ export interface UpdateSettingsRequest {
   llama_cpp_host?: string;
   llama_cpp_port?: number;
   llama_cpp_base_url?: string;
+  lmstudio_protocol?: 'http' | 'https';
+  lmstudio_host?: string;
+  lmstudio_port?: number;
+  lmstudio_base_url?: string;
   // LLM settings
   llm_provider?: LlmProviderWire;
   llm_model?: string;
@@ -622,6 +634,10 @@ export interface UpdateSettingsRequest {
   llm_llama_cpp_host?: string;
   llm_llama_cpp_port?: number;
   llm_llama_cpp_base_url?: string;
+  llm_lmstudio_protocol?: 'http' | 'https';
+  llm_lmstudio_host?: string;
+  llm_lmstudio_port?: number;
+  llm_lmstudio_base_url?: string;
   openai_api_key?: string;
   anthropic_api_key?: string;
   github_models_api_token?: string;
@@ -702,6 +718,7 @@ export interface OllamaModel {
   dimensions?: number;
   context_limit?: number;
   is_embedding_model?: boolean;
+  loaded?: boolean;
 }
 
 export interface OllamaTestResponse {
@@ -736,7 +753,7 @@ export interface OllamaVisionModelsResponse {
 
 // LLM Provider Model Fetching
 export interface LLMModelsRequest {
-  provider: Extract<LlmProvider, 'openai' | 'anthropic' | 'llama_cpp' | 'github_copilot'>;
+  provider: Extract<LlmProvider, 'openai' | 'anthropic' | 'llama_cpp' | 'lmstudio' | 'github_copilot'>;
   api_key?: string;
   base_url?: string;
   auth_mode?: 'oauth' | 'pat';
@@ -758,6 +775,12 @@ export interface LLMModel {
   reasoning_supported?: boolean;
   thinking_budget_supported?: boolean;
   effort_levels?: string[];
+  loaded?: boolean;
+  loaded_instances?: Record<string, unknown>[];
+  state?: string;
+  architecture?: string;
+  quantization?: string;
+  format?: string;
 }
 
 export interface LLMModelsResponse {
@@ -805,7 +828,7 @@ export interface CopilotAuthStatusResponse {
 
 // Embedding Provider Model Fetching
 export interface EmbeddingModelsRequest {
-  provider: 'openai' | 'llama_cpp';
+  provider: 'openai' | 'llama_cpp' | 'lmstudio';
   api_key?: string;
   base_url?: string;
   model?: string;
@@ -815,6 +838,31 @@ export interface EmbeddingModel {
   id: string;
   name: string;
   dimensions?: number;
+  context_limit?: number;
+  loaded?: boolean;
+  loaded_instances?: Record<string, unknown>[];
+  state?: string;
+  architecture?: string;
+  quantization?: string;
+  format?: string;
+}
+
+export interface LmStudioModelLoadRequest {
+  base_url?: string;
+  model: string;
+  context_length?: number;
+}
+
+export interface LmStudioModelUnloadRequest {
+  base_url?: string;
+  instance_id?: string;
+  model?: string;
+}
+
+export interface LmStudioModelActionResponse {
+  success: boolean;
+  message: string;
+  data?: Record<string, unknown> | null;
 }
 
 export interface EmbeddingModelsResponse {
@@ -2971,6 +3019,12 @@ export interface AvailableModel {
   reasoning_supported?: boolean;
   thinking_budget_supported?: boolean;
   effort_levels?: string[];
+  loaded?: boolean;
+  loaded_instances?: Record<string, unknown>[];
+  state?: string;
+  architecture?: string;
+  quantization?: string;
+  format?: string;
 }
 
 export interface ProviderModelState {

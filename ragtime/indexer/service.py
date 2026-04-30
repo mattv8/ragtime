@@ -2981,6 +2981,7 @@ class IndexerService:
             provider=app_settings.embedding_provider,
             ollama_base_url=app_settings.ollama_base_url,
             llama_cpp_base_url=getattr(app_settings, "llama_cpp_base_url", None),
+            lmstudio_base_url=getattr(app_settings, "lmstudio_base_url", None),
         )
         logger.debug(
             f"Embedding model context limit: {max_allowed_tokens} tokens "

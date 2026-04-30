@@ -24,6 +24,12 @@ class ModelResolutionTests(unittest.TestCase):
             ("llama_cpp", "my-chat-model"),
         )
 
+    def test_parse_model_identifier_accepts_lmstudio(self) -> None:
+        self.assertEqual(
+            _parse_model_identifier("lmstudio::gemma-4-31b-it-mlx"),
+            ("lmstudio", "gemma-4-31b-it-mlx"),
+        )
+
     def test_openapi_normalization_accepts_llama_cpp_token(self) -> None:
         self.assertEqual(
             _normalize_openapi_model_id("llama_cpp", "llama_cpp::my-chat-model"),
@@ -36,6 +42,20 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(
             _owned_by_from_openapi_model_id("openai", "lc::my-chat-model"),
             "llama_cpp",
+        )
+
+    def test_openapi_normalization_accepts_lmstudio_token(self) -> None:
+        self.assertEqual(
+            _normalize_openapi_model_id("lmstudio", "lmstudio::gemma-4-31b-it-mlx"),
+            "ls::gemma-4-31b-it-mlx",
+        )
+        self.assertEqual(
+            _normalize_runtime_model("openai", "ls::gemma-4-31b-it-mlx"),
+            "lmstudio::gemma-4-31b-it-mlx",
+        )
+        self.assertEqual(
+            _owned_by_from_openapi_model_id("openai", "ls::gemma-4-31b-it-mlx"),
+            "lmstudio",
         )
 
     def test_extract_version_parts_prefers_model_id_detail(self) -> None:

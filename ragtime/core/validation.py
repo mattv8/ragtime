@@ -11,8 +11,8 @@ from typing import Optional
 import httpx
 from fastapi import HTTPException
 
+from ragtime.core import llama_cpp, lmstudio
 from ragtime.core.logging import get_logger
-from ragtime.core import llama_cpp
 from ragtime.core.ollama import NUM_GPU, is_reachable, list_models
 
 logger = get_logger(__name__)
@@ -52,6 +52,9 @@ async def validate_embedding_provider() -> ValidationResult:
             "llama_cpp_base_url": getattr(
                 app_settings, "llama_cpp_base_url", llama_cpp.DEFAULT_EMBEDDING_BASE_URL
             ),
+            "lmstudio_base_url": getattr(
+                app_settings, "lmstudio_base_url", lmstudio.DEFAULT_BASE_URL
+            ),
             "openai_api_key": app_settings.openai_api_key,
         }
 
@@ -69,13 +72,15 @@ async def validate_embedding_provider() -> ValidationResult:
             return await _validate_ollama_embeddings(settings, model)
         elif provider == "llama_cpp":
             return await _validate_llama_cpp_embeddings(settings, model)
+        elif provider == "lmstudio":
+            return await _validate_lmstudio_embeddings(settings, model)
         elif provider == "openai":
             return await _validate_openai_embeddings(settings, model)
         else:
             return ValidationResult(
                 valid=False,
                 error=f"Unknown embedding provider: {provider}",
-                details="Supported providers are 'ollama', 'openai', and 'llama_cpp'.",
+                details="Supported providers are 'ollama', 'openai', 'llama_cpp', and 'lmstudio'.",
             )
 
     except Exception as e:
@@ -276,6 +281,65 @@ async def _validate_llama_cpp_embeddings(
         return ValidationResult(
             valid=False,
             error="llama.cpp validation failed",
+            details=str(e),
+        )
+
+    return ValidationResult(valid=True)
+
+
+async def _validate_lmstudio_embeddings(settings: dict, model: str) -> ValidationResult:
+    """Validate LM Studio embedding provider reachability and model probe."""
+    base_url = lmstudio.normalize_base_url(
+        settings.get("lmstudio_base_url"),
+        lmstudio.DEFAULT_BASE_URL,
+    )
+
+    reachable, error_msg = await lmstudio.is_reachable(base_url)
+    if not reachable:
+        return ValidationResult(
+            valid=False,
+            error="Cannot reach LM Studio embedding server",
+            details=error_msg
+            or f"Failed to connect to LM Studio at {base_url}. Start the LM Studio server and check Settings.",
+        )
+
+    try:
+        embedding_models = await lmstudio.list_embedding_models(base_url)
+        available_ids = [item.id for item in embedding_models]
+        if model not in available_ids:
+            return ValidationResult(
+                valid=False,
+                error=f"LM Studio embedding model '{model}' not found",
+                details=(
+                    f"Available embedding models: {', '.join(available_ids) or 'none'}. "
+                    "Download or select an embedding model in LM Studio."
+                ),
+            )
+
+        dimension = await lmstudio.probe_embedding_dimension(base_url, model)
+        if not dimension:
+            return ValidationResult(
+                valid=False,
+                error="Failed to generate test embedding",
+                details=f"LM Studio returned no embedding vector for model '{model}'. Load the embedding model in LM Studio and try again.",
+            )
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text[:300] if e.response.text else str(e)
+        return ValidationResult(
+            valid=False,
+            error=f"LM Studio model '{model}' could not generate embeddings",
+            details=detail,
+        )
+    except httpx.TimeoutException:
+        return ValidationResult(
+            valid=False,
+            error="LM Studio embedding generation timeout",
+            details=f"Model '{model}' took too long to respond. It may still be loading.",
+        )
+    except Exception as e:
+        return ValidationResult(
+            valid=False,
+            error="LM Studio validation failed",
             details=str(e),
         )
 

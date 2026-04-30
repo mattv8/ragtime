@@ -3,6 +3,7 @@ export const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
   anthropic: 'Anthropic',
   ollama: 'Ollama',
   llama_cpp: 'llama.cpp',
+  lmstudio: 'LM Studio',
   github_copilot: 'Github Copilot',
   github_models: 'Github Copilot',
 };

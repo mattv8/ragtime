@@ -48,6 +48,7 @@ from langchain_openai.chat_models.base import (
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from ragtime.config import settings
+from ragtime.core import llama_cpp, lmstudio
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
@@ -70,7 +71,6 @@ from ragtime.core.model_limits import (
     supports_responses_api,
     supports_thinking_budget,
 )
-from ragtime.core import llama_cpp
 from ragtime.core.ollama import (
     DEFAULT_WARMUP_TIMEOUT_SECONDS,
     KEEP_ALIVE,
@@ -2442,6 +2442,8 @@ class RAGComponents:
             logger.info(f"Using Ollama LLM: {model}")
         elif provider == "llama_cpp":
             logger.info(f"Using llama.cpp LLM: {model}")
+        elif provider == "lmstudio":
+            logger.info(f"Using LM Studio LLM: {model}")
         elif provider == "anthropic":
             logger.info(f"Using Anthropic LLM: {model}")
         elif provider == "github_models":
@@ -2495,6 +2497,23 @@ class RAGComponents:
             )
             return 4096
 
+        if provider == "lmstudio":
+            base_url = self._app_settings.get(
+                "llm_lmstudio_base_url",
+                lmstudio.DEFAULT_BASE_URL,
+            )
+            detected_limit = await lmstudio.get_model_context_length(model, base_url)
+            if detected_limit:
+                logger.info(
+                    f"Using detected context limit for LM Studio model {model}: {detected_limit}"
+                )
+                return detected_limit
+
+            logger.warning(
+                f"Could not detect limits for LM Studio model {model}, using default 4096"
+            )
+            return 4096
+
         detected_limit = await get_output_limit(model)
         if detected_limit:
             logger.info(f"Using detected output limit for {model}: {detected_limit}")
@@ -2523,7 +2542,7 @@ class RAGComponents:
 
             def _extract_rows(payload: Any) -> list[dict[str, Any]]:
                 if isinstance(payload, dict):
-                    data = payload.get("data", payload)
+                    data = payload.get("data", payload.get("models", payload))
                     if isinstance(data, list):
                         return [row for row in data if isinstance(row, dict)]
                     return []
@@ -2664,6 +2683,32 @@ class RAGComponents:
                 temperature=0,
                 streaming=True,
                 api_key="llama-cpp-local",
+                base_url=f"{base_url}/v1",
+                max_tokens=max_tokens,
+                request_timeout=LLM_REQUEST_TIMEOUT_SECONDS,
+            )
+
+        if provider_normalized == "lmstudio":
+            base_url = str(
+                self._app_settings.get(
+                    "llm_lmstudio_base_url",
+                    lmstudio.DEFAULT_BASE_URL,
+                )
+                or lmstudio.DEFAULT_BASE_URL
+            ).rstrip("/")
+            await _hydrate_openai_compatible_capabilities(
+                metadata_urls=[
+                    f"{base_url}/api/v1/models",
+                    f"{base_url}/api/v0/models",
+                ],
+                headers={},
+                requested_model=model,
+            )
+            return _CopilotChatOpenAI(
+                model=model,
+                temperature=0,
+                streaming=True,
+                api_key="lmstudio-local",
                 base_url=f"{base_url}/v1",
                 max_tokens=max_tokens,
                 request_timeout=LLM_REQUEST_TIMEOUT_SECONDS,
@@ -2875,6 +2920,20 @@ class RAGComponents:
             return OpenAIEmbeddings(
                 model=model,
                 api_key="llama-cpp-local",
+                base_url=f"{base_url}/v1",
+            )
+        elif provider == "lmstudio":
+            base_url = str(
+                self._app_settings.get(
+                    "lmstudio_base_url",
+                    lmstudio.DEFAULT_BASE_URL,
+                )
+                or lmstudio.DEFAULT_BASE_URL
+            ).rstrip("/")
+            logger.info(f"Using LM Studio embeddings: {model} at {base_url}")
+            return OpenAIEmbeddings(
+                model=model,
+                api_key="lmstudio-local",
                 base_url=f"{base_url}/v1",
             )
         else:
@@ -11947,6 +12006,7 @@ except Exception as e:
                 "anthropic",
                 "ollama",
                 "llama_cpp",
+                "lmstudio",
                 "github_copilot",
                 "github_models",
             }
@@ -11981,6 +12041,19 @@ except Exception as e:
                 llama_cpp.DEFAULT_CHAT_BASE_URL,
             )
             model_limit = await llama_cpp.get_model_context_length(model, base_url)
+            if model_limit and resolved > model_limit:
+                logger.debug(
+                    f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}"
+                )
+                return model_limit
+            return resolved
+
+        if provider == "lmstudio":
+            base_url = self._app_settings.get(
+                "llm_lmstudio_base_url",
+                lmstudio.DEFAULT_BASE_URL,
+            )
+            model_limit = await lmstudio.get_model_context_length(model, base_url)
             if model_limit and resolved > model_limit:
                 logger.debug(
                     f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}"
@@ -12132,6 +12205,15 @@ except Exception as e:
                     llama_cpp.DEFAULT_CHAT_BASE_URL,
                 )
                 detected = await llama_cpp.get_model_context_length(
+                    effective_model_id, base_url
+                )
+                context_limit = max(1, detected or 8192)
+            elif provider == "lmstudio":
+                base_url = (self._app_settings or {}).get(
+                    "llm_lmstudio_base_url",
+                    lmstudio.DEFAULT_BASE_URL,
+                )
+                detected = await lmstudio.get_model_context_length(
                     effective_model_id, base_url
                 )
                 context_limit = max(1, detected or 8192)

@@ -203,6 +203,18 @@ class SettingsCache:
                     "llamaCppBaseUrl",
                     "http://host.docker.internal:8081",
                 ),
+                "lmstudio_protocol": getattr(
+                    prisma_settings, "lmstudioProtocol", "http"
+                ),
+                "lmstudio_host": getattr(
+                    prisma_settings, "lmstudioHost", "host.docker.internal"
+                ),
+                "lmstudio_port": getattr(prisma_settings, "lmstudioPort", 1234),
+                "lmstudio_base_url": getattr(
+                    prisma_settings,
+                    "lmstudioBaseUrl",
+                    "http://host.docker.internal:1234",
+                ),
                 "llm_ollama_protocol": getattr(
                     prisma_settings, "llmOllamaProtocol", "http"
                 ),
@@ -226,6 +238,18 @@ class SettingsCache:
                     prisma_settings,
                     "llmLlamaCppBaseUrl",
                     "http://host.docker.internal:8080",
+                ),
+                "llm_lmstudio_protocol": getattr(
+                    prisma_settings, "llmLmstudioProtocol", "http"
+                ),
+                "llm_lmstudio_host": getattr(
+                    prisma_settings, "llmLmstudioHost", "host.docker.internal"
+                ),
+                "llm_lmstudio_port": getattr(prisma_settings, "llmLmstudioPort", 1234),
+                "llm_lmstudio_base_url": getattr(
+                    prisma_settings,
+                    "llmLmstudioBaseUrl",
+                    "http://host.docker.internal:1234",
                 ),
                 # MCP settings
                 "mcp_enabled": prisma_settings.mcpEnabled,
@@ -324,10 +348,26 @@ class SettingsCache:
                 "ollama_host": "localhost",
                 "ollama_port": 11434,
                 "ollama_base_url": "http://localhost:11434",
+                "llama_cpp_protocol": "http",
+                "llama_cpp_host": "host.docker.internal",
+                "llama_cpp_port": 8081,
+                "llama_cpp_base_url": "http://host.docker.internal:8081",
+                "lmstudio_protocol": "http",
+                "lmstudio_host": "host.docker.internal",
+                "lmstudio_port": 1234,
+                "lmstudio_base_url": "http://host.docker.internal:1234",
                 "llm_ollama_protocol": "http",
                 "llm_ollama_host": "localhost",
                 "llm_ollama_port": 11434,
                 "llm_ollama_base_url": "http://localhost:11434",
+                "llm_llama_cpp_protocol": "http",
+                "llm_llama_cpp_host": "host.docker.internal",
+                "llm_llama_cpp_port": 8080,
+                "llm_llama_cpp_base_url": "http://host.docker.internal:8080",
+                "llm_lmstudio_protocol": "http",
+                "llm_lmstudio_host": "host.docker.internal",
+                "llm_lmstudio_port": 1234,
+                "llm_lmstudio_base_url": "http://host.docker.internal:1234",
                 # MCP settings
                 "mcp_enabled": False,
                 "mcp_default_route_auth": False,
