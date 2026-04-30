@@ -13,6 +13,11 @@ from fastapi import HTTPException
 
 from ragtime.core import llama_cpp, lmstudio
 from ragtime.core.logging import get_logger
+from ragtime.core.model_providers import (
+    EMBEDDING_PROVIDER_NAMES,
+    normalize_provider_name,
+    resolve_provider_base_url,
+)
 from ragtime.core.ollama import NUM_GPU, is_reachable, list_models
 
 logger = get_logger(__name__)
@@ -44,22 +49,8 @@ async def validate_embedding_provider() -> ValidationResult:
 
         app_settings = await repository.get_settings()
 
-        # Convert AppSettings to dict for consistent access
-        settings = {
-            "embedding_provider": app_settings.embedding_provider,
-            "embedding_model": app_settings.embedding_model,
-            "ollama_base_url": app_settings.ollama_base_url,
-            "llama_cpp_base_url": getattr(
-                app_settings, "llama_cpp_base_url", llama_cpp.DEFAULT_EMBEDDING_BASE_URL
-            ),
-            "lmstudio_base_url": getattr(
-                app_settings, "lmstudio_base_url", lmstudio.DEFAULT_BASE_URL
-            ),
-            "openai_api_key": app_settings.openai_api_key,
-        }
-
-        provider = settings.get("embedding_provider", "ollama").lower()
-        model = settings.get("embedding_model", "")
+        provider = normalize_provider_name(app_settings.embedding_provider or "ollama")
+        model = app_settings.embedding_model or ""
 
         if not model:
             return ValidationResult(
@@ -68,20 +59,20 @@ async def validate_embedding_provider() -> ValidationResult:
                 details="Please configure an embedding model in Settings before indexing.",
             )
 
-        if provider == "ollama":
-            return await _validate_ollama_embeddings(settings, model)
-        elif provider == "llama_cpp":
-            return await _validate_llama_cpp_embeddings(settings, model)
-        elif provider == "lmstudio":
-            return await _validate_lmstudio_embeddings(settings, model)
-        elif provider == "openai":
-            return await _validate_openai_embeddings(settings, model)
-        else:
+        validators = {
+            "ollama": _validate_ollama_embeddings,
+            "llama_cpp": _validate_llama_cpp_embeddings,
+            "lmstudio": _validate_lmstudio_embeddings,
+            "openai": _validate_openai_embeddings,
+        }
+        validator = validators.get(provider)
+        if validator is None:
             return ValidationResult(
                 valid=False,
                 error=f"Unknown embedding provider: {provider}",
-                details="Supported providers are 'ollama', 'openai', 'llama_cpp', and 'lmstudio'.",
+                details=f"Supported providers are {', '.join(EMBEDDING_PROVIDER_NAMES)}.",
             )
+        return await validator(app_settings, model)
 
     except Exception as e:
         logger.exception("Error validating embedding provider")
@@ -92,9 +83,9 @@ async def validate_embedding_provider() -> ValidationResult:
         )
 
 
-async def _validate_ollama_embeddings(settings: dict, model: str) -> ValidationResult:
+async def _validate_ollama_embeddings(settings: object, model: str) -> ValidationResult:
     """Validate Ollama embedding provider is reachable and model exists."""
-    base_url = settings.get("ollama_base_url", "http://localhost:11434")
+    base_url = resolve_provider_base_url(settings, "ollama", "embedding")
 
     try:
         # First check if Ollama is reachable
@@ -168,9 +159,9 @@ async def _validate_ollama_embeddings(settings: dict, model: str) -> ValidationR
         )
 
 
-async def _validate_openai_embeddings(settings: dict, model: str) -> ValidationResult:
+async def _validate_openai_embeddings(settings: object, model: str) -> ValidationResult:
     """Validate OpenAI embedding provider has API key configured."""
-    api_key = settings.get("openai_api_key", "")
+    api_key = getattr(settings, "openai_api_key", "")
 
     if not api_key:
         return ValidationResult(
@@ -238,112 +229,107 @@ async def _validate_openai_embeddings(settings: dict, model: str) -> ValidationR
     return ValidationResult(valid=True)
 
 
+async def _validate_local_openai_compatible_embeddings(
+    provider: str,
+    settings: object,
+    model: str,
+    *,
+    reachability_check,
+    dimension_probe,
+    list_models_func=None,
+) -> ValidationResult:
+    """Validate local OpenAI-compatible embedding providers."""
+    base_url = resolve_provider_base_url(settings, provider, "embedding")
+    label = "llama.cpp" if provider == "llama_cpp" else "LM Studio"
+
+    reachable, error_msg = await reachability_check(base_url)
+    if not reachable:
+        startup_hint = (
+            "Start llama-server with --embedding and check Settings."
+            if provider == "llama_cpp"
+            else "Start the LM Studio server and check Settings."
+        )
+        return ValidationResult(
+            valid=False,
+            error=f"Cannot reach {label} embedding server",
+            details=error_msg
+            or f"Failed to connect to {label} at {base_url}. {startup_hint}",
+        )
+
+    try:
+        if list_models_func is not None:
+            embedding_models = await list_models_func(base_url)
+            available_ids = [item.id for item in embedding_models]
+            if model not in available_ids:
+                return ValidationResult(
+                    valid=False,
+                    error=f"{label} embedding model '{model}' not found",
+                    details=(
+                        f"Available embedding models: {', '.join(available_ids) or 'none'}. "
+                        "Download or select an embedding model in LM Studio."
+                    ),
+                )
+
+        dimension = await dimension_probe(base_url, model)
+        if not dimension:
+            details = (
+                f"llama.cpp returned no embedding vector for model '{model}'. Start the server with --embedding and use an embedding-capable model."
+                if provider == "llama_cpp"
+                else f"LM Studio returned no embedding vector for model '{model}'. Load the embedding model in LM Studio and try again."
+            )
+            return ValidationResult(
+                valid=False,
+                error="Failed to generate test embedding",
+                details=details,
+            )
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text[:300] if e.response.text else str(e)
+        return ValidationResult(
+            valid=False,
+            error=f"{label} model '{model}' could not generate embeddings",
+            details=detail,
+        )
+    except httpx.TimeoutException:
+        return ValidationResult(
+            valid=False,
+            error=f"{label} embedding generation timeout",
+            details=f"Model '{model}' took too long to respond. It may still be loading.",
+        )
+    except Exception as e:
+        return ValidationResult(
+            valid=False,
+            error=f"{label} validation failed",
+            details=str(e),
+        )
+
+    return ValidationResult(valid=True)
+
+
 async def _validate_llama_cpp_embeddings(
-    settings: dict, model: str
+    settings: object, model: str
 ) -> ValidationResult:
     """Validate llama.cpp embedding provider reachability and model probe."""
-    base_url = llama_cpp.normalize_base_url(
-        settings.get("llama_cpp_base_url"),
-        llama_cpp.DEFAULT_EMBEDDING_BASE_URL,
+    return await _validate_local_openai_compatible_embeddings(
+        "llama_cpp",
+        settings,
+        model,
+        reachability_check=llama_cpp.is_reachable,
+        dimension_probe=llama_cpp.probe_embedding_dimension,
     )
 
-    reachable, error_msg = await llama_cpp.is_reachable(base_url)
-    if not reachable:
-        return ValidationResult(
-            valid=False,
-            error="Cannot reach llama.cpp embedding server",
-            details=error_msg
-            or f"Failed to connect to llama.cpp at {base_url}. Start llama-server with --embedding and check Settings.",
-        )
 
-    try:
-        dimension = await llama_cpp.probe_embedding_dimension(base_url, model)
-        if not dimension:
-            return ValidationResult(
-                valid=False,
-                error="Failed to generate test embedding",
-                details=f"llama.cpp returned no embedding vector for model '{model}'. Start the server with --embedding and use an embedding-capable model.",
-            )
-    except httpx.HTTPStatusError as e:
-        detail = e.response.text[:300] if e.response.text else str(e)
-        return ValidationResult(
-            valid=False,
-            error=f"llama.cpp model '{model}' could not generate embeddings",
-            details=detail,
-        )
-    except httpx.TimeoutException:
-        return ValidationResult(
-            valid=False,
-            error="llama.cpp embedding generation timeout",
-            details=f"Model '{model}' took too long to respond. It may still be loading.",
-        )
-    except Exception as e:
-        return ValidationResult(
-            valid=False,
-            error="llama.cpp validation failed",
-            details=str(e),
-        )
-
-    return ValidationResult(valid=True)
-
-
-async def _validate_lmstudio_embeddings(settings: dict, model: str) -> ValidationResult:
+async def _validate_lmstudio_embeddings(
+    settings: object, model: str
+) -> ValidationResult:
     """Validate LM Studio embedding provider reachability and model probe."""
-    base_url = lmstudio.normalize_base_url(
-        settings.get("lmstudio_base_url"),
-        lmstudio.DEFAULT_BASE_URL,
+    return await _validate_local_openai_compatible_embeddings(
+        "lmstudio",
+        settings,
+        model,
+        reachability_check=lmstudio.is_reachable,
+        dimension_probe=lmstudio.probe_embedding_dimension,
+        list_models_func=lmstudio.list_embedding_models,
     )
-
-    reachable, error_msg = await lmstudio.is_reachable(base_url)
-    if not reachable:
-        return ValidationResult(
-            valid=False,
-            error="Cannot reach LM Studio embedding server",
-            details=error_msg
-            or f"Failed to connect to LM Studio at {base_url}. Start the LM Studio server and check Settings.",
-        )
-
-    try:
-        embedding_models = await lmstudio.list_embedding_models(base_url)
-        available_ids = [item.id for item in embedding_models]
-        if model not in available_ids:
-            return ValidationResult(
-                valid=False,
-                error=f"LM Studio embedding model '{model}' not found",
-                details=(
-                    f"Available embedding models: {', '.join(available_ids) or 'none'}. "
-                    "Download or select an embedding model in LM Studio."
-                ),
-            )
-
-        dimension = await lmstudio.probe_embedding_dimension(base_url, model)
-        if not dimension:
-            return ValidationResult(
-                valid=False,
-                error="Failed to generate test embedding",
-                details=f"LM Studio returned no embedding vector for model '{model}'. Load the embedding model in LM Studio and try again.",
-            )
-    except httpx.HTTPStatusError as e:
-        detail = e.response.text[:300] if e.response.text else str(e)
-        return ValidationResult(
-            valid=False,
-            error=f"LM Studio model '{model}' could not generate embeddings",
-            details=detail,
-        )
-    except httpx.TimeoutException:
-        return ValidationResult(
-            valid=False,
-            error="LM Studio embedding generation timeout",
-            details=f"Model '{model}' took too long to respond. It may still be loading.",
-        )
-    except Exception as e:
-        return ValidationResult(
-            valid=False,
-            error="LM Studio validation failed",
-            details=str(e),
-        )
-
-    return ValidationResult(valid=True)
 
 
 async def require_valid_embedding_provider() -> None:

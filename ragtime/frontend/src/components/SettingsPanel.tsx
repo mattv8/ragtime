@@ -19,6 +19,13 @@ import {
   normalizeUserSpacePreviewSandboxFlags,
 } from '@/utils/userspacePreview/sandbox';
 import { CHAT_MODEL_PROVIDER_LABELS, parseScopedModelIdentifier } from '@/utils/modelDisplay';
+import {
+  PROVIDER_CONNECTIONS,
+  buildProviderBaseUrl,
+  normalizeProviderAlias,
+  providersEquivalent,
+  type ProviderConnectionDescriptor,
+} from '@/utils/modelProviders';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -92,17 +99,17 @@ function isSettingsSaveControlButton(button: HTMLButtonElement): boolean {
   return normalizeSettingsSearchText(button.textContent || '').includes('save');
 }
 
-const DEFAULT_OLLAMA_PORT = 11434;
-const DEFAULT_OLLAMA_HOST = 'localhost';
-const DEFAULT_OLLAMA_PROTOCOL = 'http';
-const DEFAULT_OLLAMA_BASE_URL = `${DEFAULT_OLLAMA_PROTOCOL}://${DEFAULT_OLLAMA_HOST}:${DEFAULT_OLLAMA_PORT}`;
-const DEFAULT_LLAMA_CPP_CHAT_PORT = 8080;
-const DEFAULT_LLAMA_CPP_EMBEDDING_PORT = 8081;
-const DEFAULT_LLAMA_CPP_HOST = 'host.docker.internal';
-const DEFAULT_LLAMA_CPP_PROTOCOL = 'http';
-const DEFAULT_LMSTUDIO_PORT = 1234;
-const DEFAULT_LMSTUDIO_HOST = 'host.docker.internal';
-const DEFAULT_LMSTUDIO_PROTOCOL = 'http';
+const DEFAULT_OLLAMA_PORT = PROVIDER_CONNECTIONS.ollamaEmbedding.defaultPort;
+const DEFAULT_OLLAMA_HOST = PROVIDER_CONNECTIONS.ollamaEmbedding.defaultHost;
+const DEFAULT_OLLAMA_PROTOCOL = PROVIDER_CONNECTIONS.ollamaEmbedding.defaultProtocol;
+const DEFAULT_OLLAMA_BASE_URL = PROVIDER_CONNECTIONS.ollamaEmbedding.defaultBaseUrl;
+const DEFAULT_LLAMA_CPP_CHAT_PORT = PROVIDER_CONNECTIONS.llamaCppLlm.defaultPort;
+const DEFAULT_LLAMA_CPP_EMBEDDING_PORT = PROVIDER_CONNECTIONS.llamaCppEmbedding.defaultPort;
+const DEFAULT_LLAMA_CPP_HOST = PROVIDER_CONNECTIONS.llamaCppLlm.defaultHost;
+const DEFAULT_LLAMA_CPP_PROTOCOL = PROVIDER_CONNECTIONS.llamaCppLlm.defaultProtocol;
+const DEFAULT_LMSTUDIO_PORT = PROVIDER_CONNECTIONS.lmstudioLlm.defaultPort;
+const DEFAULT_LMSTUDIO_HOST = PROVIDER_CONNECTIONS.lmstudioLlm.defaultHost;
+const DEFAULT_LMSTUDIO_PROTOCOL = PROVIDER_CONNECTIONS.lmstudioLlm.defaultProtocol;
 
 const COPILOT_MODEL_FETCH_OPTIONS = {
   includeDirectoryModels: true,
@@ -111,21 +118,20 @@ const COPILOT_MODEL_FETCH_OPTIONS = {
 } as const;
 
 function normalizeLlmProvider(provider: LlmProviderWire | null | undefined): Exclude<LlmProviderWire, 'github_models'> | null | undefined {
-  return provider === 'github_models' ? 'github_copilot' : provider;
+  return normalizeProviderAlias(provider) as Exclude<LlmProviderWire, 'github_models'> | null | undefined;
 }
 
 function buildOllamaBaseUrl(protocol?: 'http' | 'https' | null, host?: string | null, port?: number | null): string {
-  return `${protocol || 'http'}://${host || 'localhost'}:${port || DEFAULT_OLLAMA_PORT}`;
+  return buildProviderBaseUrl(PROVIDER_CONNECTIONS.ollamaEmbedding, protocol, host, port);
 }
 
 function buildLocalBaseUrl(
   protocol: 'http' | 'https' | null | undefined,
   host: string | null | undefined,
   port: number | null | undefined,
-  defaultHost: string,
-  defaultPort: number,
+  connection: ProviderConnectionDescriptor,
 ): string {
-  return `${protocol || 'http'}://${host || defaultHost}:${port || defaultPort}`;
+  return buildProviderBaseUrl(connection, protocol, host, port);
 }
 
 function isUnsetDefaultOllamaConnection(
@@ -239,16 +245,10 @@ function formatModelIdentifierForDisplay(identifier: string | null | undefined, 
     return 'not configured';
   }
 
-  const providerMatches = (candidate: string, target: string) => {
-    if (candidate === target) return true;
-    return (candidate === 'github_models' && target === 'github_copilot')
-      || (candidate === 'github_copilot' && target === 'github_models');
-  };
-
   const exactMatch = models.find((m) => (
     m.id === modelId
     && provider
-    && providerMatches(m.provider, provider)
+    && providersEquivalent(m.provider, provider)
   ));
   if (exactMatch) {
     const label = CHAT_MODEL_PROVIDER_LABELS[exactMatch.provider] || exactMatch.provider;
@@ -609,29 +609,37 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     }
   }, []);
 
-  const fetchLlamaCppLlmModels = useCallback(async () => {
-    await fetchLlmModels('llama_cpp', undefined, {
-      baseUrl: buildLocalBaseUrl(
-        formData.llm_llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL,
-        formData.llm_llama_cpp_host || DEFAULT_LLAMA_CPP_HOST,
-        formData.llm_llama_cpp_port || DEFAULT_LLAMA_CPP_CHAT_PORT,
-        DEFAULT_LLAMA_CPP_HOST,
-        DEFAULT_LLAMA_CPP_CHAT_PORT,
-      ),
+  const fetchLocalLlmModels = useCallback(async (
+    provider: 'llama_cpp' | 'lmstudio',
+    connection: ProviderConnectionDescriptor,
+    protocol: 'http' | 'https' | null | undefined,
+    host: string | null | undefined,
+    port: number | null | undefined,
+  ) => {
+    await fetchLlmModels(provider, undefined, {
+      baseUrl: buildLocalBaseUrl(protocol, host, port, connection),
     });
-  }, [fetchLlmModels, formData.llm_llama_cpp_host, formData.llm_llama_cpp_port, formData.llm_llama_cpp_protocol]);
+  }, [fetchLlmModels]);
+
+  const fetchLlamaCppLlmModels = useCallback(async () => {
+    await fetchLocalLlmModels(
+      'llama_cpp',
+      PROVIDER_CONNECTIONS.llamaCppLlm,
+      formData.llm_llama_cpp_protocol,
+      formData.llm_llama_cpp_host,
+      formData.llm_llama_cpp_port,
+    );
+  }, [fetchLocalLlmModels, formData.llm_llama_cpp_host, formData.llm_llama_cpp_port, formData.llm_llama_cpp_protocol]);
 
   const fetchLmstudioLlmModels = useCallback(async () => {
-    await fetchLlmModels('lmstudio', undefined, {
-      baseUrl: buildLocalBaseUrl(
-        formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
-        formData.llm_lmstudio_host || DEFAULT_LMSTUDIO_HOST,
-        formData.llm_lmstudio_port || DEFAULT_LMSTUDIO_PORT,
-        DEFAULT_LMSTUDIO_HOST,
-        DEFAULT_LMSTUDIO_PORT,
-      ),
-    });
-  }, [fetchLlmModels, formData.llm_lmstudio_host, formData.llm_lmstudio_port, formData.llm_lmstudio_protocol]);
+    await fetchLocalLlmModels(
+      'lmstudio',
+      PROVIDER_CONNECTIONS.lmstudioLlm,
+      formData.llm_lmstudio_protocol,
+      formData.llm_lmstudio_host,
+      formData.llm_lmstudio_port,
+    );
+  }, [fetchLocalLlmModels, formData.llm_lmstudio_host, formData.llm_lmstudio_port, formData.llm_lmstudio_protocol]);
 
   const fetchCopilotModels = useCallback(async () => {
     await fetchLlmModels('github_copilot', undefined, {
@@ -832,7 +840,13 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     }
   }, [formData.embedding_model]);
 
-  const fetchLlamaCppEmbeddingModels = useCallback(async () => {
+  const fetchLocalEmbeddingModels = useCallback(async (
+    provider: 'llama_cpp' | 'lmstudio',
+    connection: ProviderConnectionDescriptor,
+    protocol: 'http' | 'https' | null | undefined,
+    host: string | null | undefined,
+    port: number | null | undefined,
+  ) => {
     setEmbeddingModelsFetching(true);
     setEmbeddingModelsError(null);
     setEmbeddingModels([]);
@@ -840,14 +854,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
 
     try {
       const response = await api.fetchEmbeddingModels({
-        provider: 'llama_cpp',
-        base_url: buildLocalBaseUrl(
-          formData.llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL,
-          formData.llama_cpp_host || DEFAULT_LLAMA_CPP_HOST,
-          formData.llama_cpp_port || DEFAULT_LLAMA_CPP_EMBEDDING_PORT,
-          DEFAULT_LLAMA_CPP_HOST,
-          DEFAULT_LLAMA_CPP_EMBEDDING_PORT,
-        ),
+        provider,
+        base_url: buildLocalBaseUrl(protocol, host, port, connection),
         model: formData.embedding_model || undefined,
       });
 
@@ -868,60 +876,40 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     } finally {
       setEmbeddingModelsFetching(false);
     }
-  }, [formData.embedding_model, formData.llama_cpp_host, formData.llama_cpp_port, formData.llama_cpp_protocol]);
+  }, [formData.embedding_model]);
+
+  const fetchLlamaCppEmbeddingModels = useCallback(async () => {
+    await fetchLocalEmbeddingModels(
+      'llama_cpp',
+      PROVIDER_CONNECTIONS.llamaCppEmbedding,
+      formData.llama_cpp_protocol,
+      formData.llama_cpp_host,
+      formData.llama_cpp_port,
+    );
+  }, [fetchLocalEmbeddingModels, formData.llama_cpp_host, formData.llama_cpp_port, formData.llama_cpp_protocol]);
 
   const fetchLmstudioEmbeddingModels = useCallback(async () => {
-    setEmbeddingModelsFetching(true);
-    setEmbeddingModelsError(null);
-    setEmbeddingModels([]);
-    setEmbeddingModelsLoaded(false);
-
-    try {
-      const response = await api.fetchEmbeddingModels({
-        provider: 'lmstudio',
-        base_url: buildLocalBaseUrl(
-          formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
-          formData.lmstudio_host || DEFAULT_LMSTUDIO_HOST,
-          formData.lmstudio_port || DEFAULT_LMSTUDIO_PORT,
-          DEFAULT_LMSTUDIO_HOST,
-          DEFAULT_LMSTUDIO_PORT,
-        ),
-        model: formData.embedding_model || undefined,
-      });
-
-      if (response.success) {
-        setEmbeddingModels(response.models);
-        setEmbeddingModelsLoaded(true);
-        if (response.default_model) {
-          setFormData((prev) => ({
-            ...prev,
-            embedding_model: prev.embedding_model || response.default_model,
-          }));
-        }
-      } else {
-        setEmbeddingModelsError(response.message);
-      }
-    } catch (err) {
-      setEmbeddingModelsError(err instanceof Error ? err.message : 'Failed to fetch embedding models');
-    } finally {
-      setEmbeddingModelsFetching(false);
-    }
-  }, [formData.embedding_model, formData.lmstudio_host, formData.lmstudio_port, formData.lmstudio_protocol]);
+    await fetchLocalEmbeddingModels(
+      'lmstudio',
+      PROVIDER_CONNECTIONS.lmstudioEmbedding,
+      formData.lmstudio_protocol,
+      formData.lmstudio_host,
+      formData.lmstudio_port,
+    );
+  }, [fetchLocalEmbeddingModels, formData.lmstudio_host, formData.lmstudio_port, formData.lmstudio_protocol]);
 
   const getLmstudioChatBaseUrl = useCallback(() => buildLocalBaseUrl(
-    formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
-    formData.llm_lmstudio_host || DEFAULT_LMSTUDIO_HOST,
-    formData.llm_lmstudio_port || DEFAULT_LMSTUDIO_PORT,
-    DEFAULT_LMSTUDIO_HOST,
-    DEFAULT_LMSTUDIO_PORT,
+    formData.llm_lmstudio_protocol,
+    formData.llm_lmstudio_host,
+    formData.llm_lmstudio_port,
+    PROVIDER_CONNECTIONS.lmstudioLlm,
   ), [formData.llm_lmstudio_host, formData.llm_lmstudio_port, formData.llm_lmstudio_protocol]);
 
   const getLmstudioEmbeddingBaseUrl = useCallback(() => buildLocalBaseUrl(
-    formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
-    formData.lmstudio_host || DEFAULT_LMSTUDIO_HOST,
-    formData.lmstudio_port || DEFAULT_LMSTUDIO_PORT,
-    DEFAULT_LMSTUDIO_HOST,
-    DEFAULT_LMSTUDIO_PORT,
+    formData.lmstudio_protocol,
+    formData.lmstudio_host,
+    formData.lmstudio_port,
+    PROVIDER_CONNECTIONS.lmstudioEmbedding,
   ), [formData.lmstudio_host, formData.lmstudio_port, formData.lmstudio_protocol]);
 
   const loadSelectedLmstudioModel = useCallback(async (role: 'llm' | 'embedding') => {
@@ -1537,8 +1525,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           formData.llama_cpp_protocol,
           formData.llama_cpp_host,
           formData.llama_cpp_port,
-          DEFAULT_LLAMA_CPP_HOST,
-          DEFAULT_LLAMA_CPP_EMBEDDING_PORT,
+          PROVIDER_CONNECTIONS.llamaCppEmbedding,
         ),
         lmstudio_protocol: formData.lmstudio_protocol,
         lmstudio_host: formData.lmstudio_host,
@@ -1547,8 +1534,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           formData.lmstudio_protocol,
           formData.lmstudio_host,
           formData.lmstudio_port,
-          DEFAULT_LMSTUDIO_HOST,
-          DEFAULT_LMSTUDIO_PORT,
+          PROVIDER_CONNECTIONS.lmstudioEmbedding,
         ),
         ollama_embedding_timeout_seconds: formData.ollama_embedding_timeout_seconds,
         sequential_index_loading: formData.sequential_index_loading,
@@ -1630,8 +1616,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           formData.llm_llama_cpp_protocol,
           formData.llm_llama_cpp_host,
           formData.llm_llama_cpp_port,
-          DEFAULT_LLAMA_CPP_HOST,
-          DEFAULT_LLAMA_CPP_CHAT_PORT,
+          PROVIDER_CONNECTIONS.llamaCppLlm,
         );
       }
       if (normalizedProvider === 'lmstudio') {
@@ -1642,8 +1627,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           formData.llm_lmstudio_protocol,
           formData.llm_lmstudio_host,
           formData.llm_lmstudio_port,
-          DEFAULT_LMSTUDIO_HOST,
-          DEFAULT_LMSTUDIO_PORT,
+          PROVIDER_CONNECTIONS.lmstudioLlm,
         );
       }
       const updated = await api.updateSettings(dataToSave);

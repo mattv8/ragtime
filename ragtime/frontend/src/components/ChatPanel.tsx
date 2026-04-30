@@ -14,6 +14,11 @@ import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
 import {
+  KNOWN_PROVIDER_KEYS,
+  normalizeProviderAlias,
+  providersEquivalent,
+} from '@/utils/modelProviders';
+import {
   formatChatTimestamp,
   getCookieValue,
   setSessionCookieValue,
@@ -301,22 +306,6 @@ interface ChartConfig {
 
 // Global URL regex for efficient linkification
 const URL_PATTERN = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s])/g;
-
-const KNOWN_PROVIDER_KEYS = new Set(['openai', 'anthropic', 'ollama', 'llama_cpp', 'lmstudio', 'github_copilot', 'github_models']);
-
-function normalizeProviderAlias(provider?: string | null): string {
-  const value = (provider || '').trim().toLowerCase();
-  return value === 'github_models' ? 'github_copilot' : value;
-}
-
-function providersEquivalent(selected?: string | null, actual?: string | null): boolean {
-  const selectedNorm = normalizeProviderAlias(selected);
-  const actualNorm = normalizeProviderAlias(actual);
-  if (!selectedNorm || !actualNorm) {
-    return false;
-  }
-  return selectedNorm === actualNorm;
-}
 
 function inferProviderFromModelId(modelId: string): string | null {
   const raw = (modelId || '').trim();
@@ -5770,7 +5759,7 @@ export function ChatPanel({
       const parsedSelection = parseStoredModelIdentifier(newModel);
       const requestedModelId = (parsedSelection.modelId || newModel).trim();
       const requestedProvider = normalizeProviderAlias(parsedSelection.provider);
-      const requestedProviderForApi = KNOWN_PROVIDER_KEYS.has(requestedProvider)
+      const requestedProviderForApi = requestedProvider && KNOWN_PROVIDER_KEYS.has(requestedProvider)
         ? (requestedProvider as LlmProviderWire)
         : undefined;
 

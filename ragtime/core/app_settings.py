@@ -14,12 +14,125 @@ from ragtime.core.encryption import (
     decrypt_secret,
 )
 from ragtime.core.logging import get_logger
+from ragtime.core.model_providers import (
+    LLAMA_CPP_EMBEDDING_CONNECTION,
+    LLAMA_CPP_LLM_CONNECTION,
+    LMSTUDIO_CONNECTION,
+    LMSTUDIO_LLM_CONNECTION,
+    OLLAMA_EMBEDDING_CONNECTION,
+    OLLAMA_LLM_CONNECTION,
+    ProviderConnection,
+)
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     normalize_userspace_preview_sandbox_flags,
 )
 
 logger = get_logger(__name__)
+
+
+PROVIDER_CONNECTION_PRISMA_FIELDS: tuple[
+    tuple[ProviderConnection, dict[str, str]], ...
+] = (
+    (
+        OLLAMA_EMBEDDING_CONNECTION,
+        {
+            "protocol": "ollamaProtocol",
+            "host": "ollamaHost",
+            "port": "ollamaPort",
+            "base_url": "ollamaBaseUrl",
+        },
+    ),
+    (
+        LLAMA_CPP_EMBEDDING_CONNECTION,
+        {
+            "protocol": "llamaCppProtocol",
+            "host": "llamaCppHost",
+            "port": "llamaCppPort",
+            "base_url": "llamaCppBaseUrl",
+        },
+    ),
+    (
+        LMSTUDIO_CONNECTION,
+        {
+            "protocol": "lmstudioProtocol",
+            "host": "lmstudioHost",
+            "port": "lmstudioPort",
+            "base_url": "lmstudioBaseUrl",
+        },
+    ),
+    (
+        OLLAMA_LLM_CONNECTION,
+        {
+            "protocol": "llmOllamaProtocol",
+            "host": "llmOllamaHost",
+            "port": "llmOllamaPort",
+            "base_url": "llmOllamaBaseUrl",
+        },
+    ),
+    (
+        LLAMA_CPP_LLM_CONNECTION,
+        {
+            "protocol": "llmLlamaCppProtocol",
+            "host": "llmLlamaCppHost",
+            "port": "llmLlamaCppPort",
+            "base_url": "llmLlamaCppBaseUrl",
+        },
+    ),
+    (
+        LMSTUDIO_LLM_CONNECTION,
+        {
+            "protocol": "llmLmstudioProtocol",
+            "host": "llmLmstudioHost",
+            "port": "llmLmstudioPort",
+            "base_url": "llmLmstudioBaseUrl",
+        },
+    ),
+)
+
+
+def _provider_connection_settings(prisma_settings) -> dict:
+    values = {}
+    for connection, prisma_fields in PROVIDER_CONNECTION_PRISMA_FIELDS:
+        values.update(
+            {
+                connection.protocol_field: getattr(
+                    prisma_settings,
+                    prisma_fields["protocol"],
+                    connection.default_protocol,
+                ),
+                connection.host_field: getattr(
+                    prisma_settings,
+                    prisma_fields["host"],
+                    connection.default_host,
+                ),
+                connection.port_field: getattr(
+                    prisma_settings,
+                    prisma_fields["port"],
+                    connection.default_port,
+                ),
+                connection.base_url_field: getattr(
+                    prisma_settings,
+                    prisma_fields["base_url"],
+                    connection.default_base_url,
+                ),
+            }
+        )
+    return values
+
+
+def _provider_connection_defaults() -> dict:
+    values = {}
+    for connection, _prisma_fields in PROVIDER_CONNECTION_PRISMA_FIELDS:
+        values.update(
+            {
+                connection.protocol_field: connection.default_protocol,
+                connection.host_field: connection.default_host,
+                connection.port_field: connection.default_port,
+                connection.base_url_field: connection.default_base_url,
+            }
+        )
+    return values
 
 
 class SettingsCache:
@@ -187,70 +300,7 @@ class SettingsCache:
                 "embedding_provider": prisma_settings.embeddingProvider,
                 "embedding_model": prisma_settings.embeddingModel,
                 "embedding_dimensions": prisma_settings.embeddingDimensions,
-                "ollama_protocol": prisma_settings.ollamaProtocol,
-                "ollama_host": prisma_settings.ollamaHost,
-                "ollama_port": prisma_settings.ollamaPort,
-                "ollama_base_url": prisma_settings.ollamaBaseUrl,
-                "llama_cpp_protocol": getattr(
-                    prisma_settings, "llamaCppProtocol", "http"
-                ),
-                "llama_cpp_host": getattr(
-                    prisma_settings, "llamaCppHost", "host.docker.internal"
-                ),
-                "llama_cpp_port": getattr(prisma_settings, "llamaCppPort", 8081),
-                "llama_cpp_base_url": getattr(
-                    prisma_settings,
-                    "llamaCppBaseUrl",
-                    "http://host.docker.internal:8081",
-                ),
-                "lmstudio_protocol": getattr(
-                    prisma_settings, "lmstudioProtocol", "http"
-                ),
-                "lmstudio_host": getattr(
-                    prisma_settings, "lmstudioHost", "host.docker.internal"
-                ),
-                "lmstudio_port": getattr(prisma_settings, "lmstudioPort", 1234),
-                "lmstudio_base_url": getattr(
-                    prisma_settings,
-                    "lmstudioBaseUrl",
-                    "http://host.docker.internal:1234",
-                ),
-                "llm_ollama_protocol": getattr(
-                    prisma_settings, "llmOllamaProtocol", "http"
-                ),
-                "llm_ollama_host": getattr(
-                    prisma_settings, "llmOllamaHost", "localhost"
-                ),
-                "llm_ollama_port": getattr(prisma_settings, "llmOllamaPort", 11434),
-                "llm_ollama_base_url": getattr(
-                    prisma_settings,
-                    "llmOllamaBaseUrl",
-                    "http://localhost:11434",
-                ),
-                "llm_llama_cpp_protocol": getattr(
-                    prisma_settings, "llmLlamaCppProtocol", "http"
-                ),
-                "llm_llama_cpp_host": getattr(
-                    prisma_settings, "llmLlamaCppHost", "host.docker.internal"
-                ),
-                "llm_llama_cpp_port": getattr(prisma_settings, "llmLlamaCppPort", 8080),
-                "llm_llama_cpp_base_url": getattr(
-                    prisma_settings,
-                    "llmLlamaCppBaseUrl",
-                    "http://host.docker.internal:8080",
-                ),
-                "llm_lmstudio_protocol": getattr(
-                    prisma_settings, "llmLmstudioProtocol", "http"
-                ),
-                "llm_lmstudio_host": getattr(
-                    prisma_settings, "llmLmstudioHost", "host.docker.internal"
-                ),
-                "llm_lmstudio_port": getattr(prisma_settings, "llmLmstudioPort", 1234),
-                "llm_lmstudio_base_url": getattr(
-                    prisma_settings,
-                    "llmLmstudioBaseUrl",
-                    "http://host.docker.internal:1234",
-                ),
+                **_provider_connection_settings(prisma_settings),
                 # MCP settings
                 "mcp_enabled": prisma_settings.mcpEnabled,
                 "mcp_default_route_auth": prisma_settings.mcpDefaultRouteAuth,
@@ -344,30 +394,7 @@ class SettingsCache:
                 "embedding_provider": "ollama",
                 "embedding_model": "nomic-embed-text",
                 "embedding_dimensions": None,
-                "ollama_protocol": "http",
-                "ollama_host": "localhost",
-                "ollama_port": 11434,
-                "ollama_base_url": "http://localhost:11434",
-                "llama_cpp_protocol": "http",
-                "llama_cpp_host": "host.docker.internal",
-                "llama_cpp_port": 8081,
-                "llama_cpp_base_url": "http://host.docker.internal:8081",
-                "lmstudio_protocol": "http",
-                "lmstudio_host": "host.docker.internal",
-                "lmstudio_port": 1234,
-                "lmstudio_base_url": "http://host.docker.internal:1234",
-                "llm_ollama_protocol": "http",
-                "llm_ollama_host": "localhost",
-                "llm_ollama_port": 11434,
-                "llm_ollama_base_url": "http://localhost:11434",
-                "llm_llama_cpp_protocol": "http",
-                "llm_llama_cpp_host": "host.docker.internal",
-                "llm_llama_cpp_port": 8080,
-                "llm_llama_cpp_base_url": "http://host.docker.internal:8080",
-                "llm_lmstudio_protocol": "http",
-                "llm_lmstudio_host": "host.docker.internal",
-                "llm_lmstudio_port": 1234,
-                "llm_lmstudio_base_url": "http://host.docker.internal:1234",
+                **_provider_connection_defaults(),
                 # MCP settings
                 "mcp_enabled": False,
                 "mcp_default_route_auth": False,

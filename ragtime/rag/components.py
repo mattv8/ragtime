@@ -71,6 +71,13 @@ from ragtime.core.model_limits import (
     supports_responses_api,
     supports_thinking_budget,
 )
+from ragtime.core.model_providers import (
+    LLM_PROVIDER_NAMES,
+    get_provider,
+    normalize_provider_name,
+    providers_equivalent,
+    resolve_provider_base_url,
+)
 from ragtime.core.ollama import (
     DEFAULT_WARMUP_TIMEOUT_SECONDS,
     KEEP_ALIVE,
@@ -2427,7 +2434,9 @@ class RAGComponents:
     async def _init_llm(self):
         """Initialize LLM based on database settings."""
         assert self._app_settings is not None  # Set by initialize()
-        provider = self._app_settings.get("llm_provider", "openai").lower()
+        provider = normalize_provider_name(
+            self._app_settings.get("llm_provider", "openai")
+        )
         model = self._app_settings.get("llm_model", "gpt-4-turbo")
         max_tokens = await self._resolve_llm_max_tokens(provider, model)
         self.llm = await self._build_llm(provider, model, max_tokens)
@@ -2438,22 +2447,55 @@ class RAGComponents:
             )
             return
 
-        if provider == "ollama":
-            logger.info(f"Using Ollama LLM: {model}")
-        elif provider == "llama_cpp":
-            logger.info(f"Using llama.cpp LLM: {model}")
-        elif provider == "lmstudio":
-            logger.info(f"Using LM Studio LLM: {model}")
-        elif provider == "anthropic":
-            logger.info(f"Using Anthropic LLM: {model}")
-        elif provider == "github_models":
-            logger.info(f"Using GitHub Models LLM: {model}")
-        elif provider == "github_copilot":
-            logger.info(f"Using GitHub Copilot LLM: {model}")
-        elif hasattr(self.llm, "model_name"):
+        if provider == "openai" and hasattr(self.llm, "model_name"):
             logger.info(f"Using OpenAI LLM: {self.llm.model_name}")
         else:
-            logger.info(f"Using OpenAI LLM: {model}")
+            logger.info(f"Using {self._provider_label(provider)} LLM: {model}")
+
+    def _provider_label(self, provider: str) -> str:
+        descriptor = get_provider(provider)
+        return descriptor.label if descriptor else provider
+
+    def _resolve_provider_base_url(self, provider: str, role: str) -> str:
+        assert self._app_settings is not None
+        return resolve_provider_base_url(self._app_settings, provider, role)  # type: ignore[arg-type]
+
+    async def _resolve_local_context_limit(
+        self,
+        provider: str,
+        model: str,
+    ) -> int | None:
+        normalized_provider = normalize_provider_name(provider)
+        base_url = self._resolve_provider_base_url(normalized_provider, "llm")
+        if normalized_provider == "ollama":
+            return await get_model_context_length(model, base_url)
+        if normalized_provider == "llama_cpp":
+            return await llama_cpp.get_model_context_length(model, base_url)
+        if normalized_provider == "lmstudio":
+            return await lmstudio.get_model_context_length(model, base_url)
+        return None
+
+    def _build_local_openai_embedding_model(
+        self,
+        provider: str,
+        model: str,
+    ) -> OpenAIEmbeddings:
+        normalized_provider = normalize_provider_name(provider)
+        base_url = self._resolve_provider_base_url(
+            normalized_provider, "embedding"
+        ).rstrip("/")
+        api_keys = {
+            "llama_cpp": "llama-cpp-local",
+            "lmstudio": "lmstudio-local",
+        }
+        logger.info(
+            f"Using {self._provider_label(normalized_provider)} embeddings: {model} at {base_url}"
+        )
+        return OpenAIEmbeddings(
+            model=model,
+            api_key=api_keys[normalized_provider],
+            base_url=f"{base_url}/v1",
+        )
 
     async def _resolve_llm_max_tokens(self, provider: str, model: str) -> int:
         """Resolve max tokens for an LLM request using configured limits."""
@@ -2463,54 +2505,19 @@ class RAGComponents:
         if max_tokens < 100000:
             return max_tokens
 
-        if provider == "ollama":
-            base_url = self._app_settings.get(
-                "llm_ollama_base_url",
-                self._app_settings.get("ollama_base_url", "http://localhost:11434"),
+        normalized_provider = normalize_provider_name(provider)
+        if normalized_provider in {"ollama", "llama_cpp", "lmstudio"}:
+            detected_limit = await self._resolve_local_context_limit(
+                normalized_provider, model
             )
-            detected_limit = await get_model_context_length(model, base_url)
             if detected_limit:
                 logger.info(
-                    f"Using detected context limits for Ollama model {model}: {detected_limit}"
+                    f"Using detected context limit for {self._provider_label(normalized_provider)} model {model}: {detected_limit}"
                 )
                 return detected_limit
 
             logger.warning(
-                f"Could not detect limits for Ollama model {model}, using default 4096"
-            )
-            return 4096
-
-        if provider == "llama_cpp":
-            base_url = self._app_settings.get(
-                "llm_llama_cpp_base_url",
-                llama_cpp.DEFAULT_CHAT_BASE_URL,
-            )
-            detected_limit = await llama_cpp.get_model_context_length(model, base_url)
-            if detected_limit:
-                logger.info(
-                    f"Using detected context limit for llama.cpp model {model}: {detected_limit}"
-                )
-                return detected_limit
-
-            logger.warning(
-                f"Could not detect limits for llama.cpp model {model}, using default 4096"
-            )
-            return 4096
-
-        if provider == "lmstudio":
-            base_url = self._app_settings.get(
-                "llm_lmstudio_base_url",
-                lmstudio.DEFAULT_BASE_URL,
-            )
-            detected_limit = await lmstudio.get_model_context_length(model, base_url)
-            if detected_limit:
-                logger.info(
-                    f"Using detected context limit for LM Studio model {model}: {detected_limit}"
-                )
-                return detected_limit
-
-            logger.warning(
-                f"Could not detect limits for LM Studio model {model}, using default 4096"
+                f"Could not detect limits for {self._provider_label(normalized_provider)} model {model}, using default 4096"
             )
             return 4096
 
@@ -2530,7 +2537,12 @@ class RAGComponents:
     ) -> Optional[Any]:
         """Build an LLM client for a provider/model pair, or return None when unavailable."""
         assert self._app_settings is not None
-        provider_normalized = provider.lower().strip()
+        raw_provider = str(provider or "").lower().strip()
+        provider_normalized = (
+            "github_models"
+            if raw_provider == "github_models"
+            else normalize_provider_name(provider)
+        )
 
         async def _hydrate_openai_compatible_capabilities(
             *,
@@ -2665,16 +2677,17 @@ class RAGComponents:
                 logger.warning("langchain-ollama not installed")
                 return None
 
-        if provider_normalized == "llama_cpp":
-            base_url = str(
-                self._app_settings.get(
-                    "llm_llama_cpp_base_url",
-                    llama_cpp.DEFAULT_CHAT_BASE_URL,
-                )
-                or llama_cpp.DEFAULT_CHAT_BASE_URL
+        if provider_normalized in {"llama_cpp", "lmstudio"}:
+            base_url = self._resolve_provider_base_url(
+                provider_normalized, "llm"
             ).rstrip("/")
+            metadata_urls = (
+                [f"{base_url}/v1/models", f"{base_url}/models"]
+                if provider_normalized == "llama_cpp"
+                else [f"{base_url}/api/v1/models", f"{base_url}/api/v0/models"]
+            )
             await _hydrate_openai_compatible_capabilities(
-                metadata_urls=[f"{base_url}/v1/models", f"{base_url}/models"],
+                metadata_urls=metadata_urls,
                 headers={},
                 requested_model=model,
             )
@@ -2682,33 +2695,11 @@ class RAGComponents:
                 model=model,
                 temperature=0,
                 streaming=True,
-                api_key="llama-cpp-local",
-                base_url=f"{base_url}/v1",
-                max_tokens=max_tokens,
-                request_timeout=LLM_REQUEST_TIMEOUT_SECONDS,
-            )
-
-        if provider_normalized == "lmstudio":
-            base_url = str(
-                self._app_settings.get(
-                    "llm_lmstudio_base_url",
-                    lmstudio.DEFAULT_BASE_URL,
-                )
-                or lmstudio.DEFAULT_BASE_URL
-            ).rstrip("/")
-            await _hydrate_openai_compatible_capabilities(
-                metadata_urls=[
-                    f"{base_url}/api/v1/models",
-                    f"{base_url}/api/v0/models",
-                ],
-                headers={},
-                requested_model=model,
-            )
-            return _CopilotChatOpenAI(
-                model=model,
-                temperature=0,
-                streaming=True,
-                api_key="lmstudio-local",
+                api_key=(
+                    "llama-cpp-local"
+                    if provider_normalized == "llama_cpp"
+                    else "lmstudio-local"
+                ),
                 base_url=f"{base_url}/v1",
                 max_tokens=max_tokens,
                 request_timeout=LLM_REQUEST_TIMEOUT_SECONDS,
@@ -2891,13 +2882,13 @@ class RAGComponents:
     async def _get_embedding_model(self):
         """Get embedding model based on database settings."""
         assert self._app_settings is not None  # Set by initialize()
-        provider = self._app_settings.get("embedding_provider", "ollama").lower()
+        provider = normalize_provider_name(
+            self._app_settings.get("embedding_provider", "ollama")
+        )
         model = self._app_settings.get("embedding_model", "nomic-embed-text")
 
         if provider == "ollama":
-            base_url = self._app_settings.get(
-                "ollama_base_url", "http://localhost:11434"
-            )
+            base_url = self._resolve_provider_base_url(provider, "embedding")
             logger.info(f"Using Ollama embeddings: {model} at {base_url}")
             return OllamaEmbeddings(
                 model=model, base_url=base_url, num_gpu=NUM_GPU, keep_alive=KEEP_ALIVE
@@ -2908,34 +2899,8 @@ class RAGComponents:
                 logger.warning("OpenAI embeddings selected but no API key configured")
             logger.info(f"Using OpenAI embeddings: {model}")
             return OpenAIEmbeddings(model=model, openai_api_key=api_key)  # type: ignore[call-arg]
-        elif provider == "llama_cpp":
-            base_url = str(
-                self._app_settings.get(
-                    "llama_cpp_base_url",
-                    llama_cpp.DEFAULT_EMBEDDING_BASE_URL,
-                )
-                or llama_cpp.DEFAULT_EMBEDDING_BASE_URL
-            ).rstrip("/")
-            logger.info(f"Using llama.cpp embeddings: {model} at {base_url}")
-            return OpenAIEmbeddings(
-                model=model,
-                api_key="llama-cpp-local",
-                base_url=f"{base_url}/v1",
-            )
-        elif provider == "lmstudio":
-            base_url = str(
-                self._app_settings.get(
-                    "lmstudio_base_url",
-                    lmstudio.DEFAULT_BASE_URL,
-                )
-                or lmstudio.DEFAULT_BASE_URL
-            ).rstrip("/")
-            logger.info(f"Using LM Studio embeddings: {model} at {base_url}")
-            return OpenAIEmbeddings(
-                model=model,
-                api_key="lmstudio-local",
-                base_url=f"{base_url}/v1",
-            )
+        elif provider in {"llama_cpp", "lmstudio"}:
+            return self._build_local_openai_embedding_model(provider, model)
         else:
             raise ValueError(f"Unknown embedding provider: {provider}")
 
@@ -11997,22 +11962,11 @@ except Exception as e:
             return None, model
 
         prefix, _, remainder = model.partition("::")
-        if prefix in {"github_copilot", "github_models"}:
+        normalized_prefix = normalize_provider_name(prefix)
+        if normalized_prefix == "github_copilot":
             remainder = remainder.lstrip("/")
-        if (
-            prefix
-            in {
-                "openai",
-                "anthropic",
-                "ollama",
-                "llama_cpp",
-                "lmstudio",
-                "github_copilot",
-                "github_models",
-            }
-            and remainder
-        ):
-            return prefix, remainder
+        if normalized_prefix in LLM_PROVIDER_NAMES and remainder:
+            return normalized_prefix, remainder
 
         return None, model
 
@@ -12022,38 +11976,11 @@ except Exception as e:
 
         resolved = await self._resolve_llm_max_tokens(provider, model)
 
-        if provider == "ollama":
-            base_url = self._app_settings.get(
-                "llm_ollama_base_url",
-                self._app_settings.get("ollama_base_url", "http://localhost:11434"),
+        normalized_provider = normalize_provider_name(provider)
+        if normalized_provider in {"ollama", "llama_cpp", "lmstudio"}:
+            model_limit = await self._resolve_local_context_limit(
+                normalized_provider, model
             )
-            model_limit = await get_model_context_length(model, base_url)
-            if model_limit and resolved > model_limit:
-                logger.debug(
-                    f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}"
-                )
-                return model_limit
-            return resolved
-
-        if provider == "llama_cpp":
-            base_url = self._app_settings.get(
-                "llm_llama_cpp_base_url",
-                llama_cpp.DEFAULT_CHAT_BASE_URL,
-            )
-            model_limit = await llama_cpp.get_model_context_length(model, base_url)
-            if model_limit and resolved > model_limit:
-                logger.debug(
-                    f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}"
-                )
-                return model_limit
-            return resolved
-
-        if provider == "lmstudio":
-            base_url = self._app_settings.get(
-                "llm_lmstudio_base_url",
-                lmstudio.DEFAULT_BASE_URL,
-            )
-            model_limit = await lmstudio.get_model_context_length(model, base_url)
             if model_limit and resolved > model_limit:
                 logger.debug(
                     f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}"
@@ -12080,7 +12007,9 @@ except Exception as e:
         """
         if not self._app_settings or not self.llm:
             return
-        provider = str(self._app_settings.get("llm_provider", "openai")).lower()
+        provider = normalize_provider_name(
+            self._app_settings.get("llm_provider", "openai")
+        )
         if provider != "github_copilot":
             return
         fresh_token = await ensure_copilot_token_fresh()
@@ -12116,15 +12045,18 @@ except Exception as e:
             return self.llm
 
         configured_model = str(self._app_settings.get("llm_model", "")).strip()
-        configured_provider = str(
+        configured_provider = normalize_provider_name(
             self._app_settings.get("llm_provider", "openai")
-        ).lower()
+        )
 
         if (
             configured_model
             and model_id == configured_model
             and self.llm is not None
-            and (provider_override is None or provider_override == configured_provider)
+            and (
+                provider_override is None
+                or providers_equivalent(provider_override, configured_provider)
+            )
         ):
             await self._ensure_copilot_llm_fresh()
             return self.llm
@@ -12135,10 +12067,7 @@ except Exception as e:
         # conversation/default models. GitHub Copilot serves OpenAI-family
         # model IDs, so legacy values like "openai::gpt-5.1-codex-mini"
         # should still route through the configured Copilot provider.
-        if provider_override == "openai" and configured_provider in {
-            "github_copilot",
-            "github_models",
-        }:
+        if provider_override == "openai" and configured_provider == "github_copilot":
             provider = configured_provider
 
         max_tokens = await self._resolve_chat_request_max_tokens(provider, model_id)
@@ -12186,35 +12115,12 @@ except Exception as e:
             else "gpt-4-turbo"
         )
         try:
-            provider = str(
+            provider = normalize_provider_name(
                 (self._app_settings or {}).get("llm_provider", "openai")
-            ).lower()
-            if provider == "ollama":
-                # Use Ollama API as single source of truth for context window
-                base_url = (self._app_settings or {}).get(
-                    "llm_ollama_base_url",
-                    (self._app_settings or {}).get(
-                        "ollama_base_url", "http://localhost:11434"
-                    ),
-                )
-                detected = await get_model_context_length(effective_model_id, base_url)
-                context_limit = max(1, detected or 8192)
-            elif provider == "llama_cpp":
-                base_url = (self._app_settings or {}).get(
-                    "llm_llama_cpp_base_url",
-                    llama_cpp.DEFAULT_CHAT_BASE_URL,
-                )
-                detected = await llama_cpp.get_model_context_length(
-                    effective_model_id, base_url
-                )
-                context_limit = max(1, detected or 8192)
-            elif provider == "lmstudio":
-                base_url = (self._app_settings or {}).get(
-                    "llm_lmstudio_base_url",
-                    lmstudio.DEFAULT_BASE_URL,
-                )
-                detected = await lmstudio.get_model_context_length(
-                    effective_model_id, base_url
+            )
+            if provider in {"ollama", "llama_cpp", "lmstudio"}:
+                detected = await self._resolve_local_context_limit(
+                    provider, effective_model_id
                 )
                 context_limit = max(1, detected or 8192)
             else:

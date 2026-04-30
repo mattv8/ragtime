@@ -76,6 +76,14 @@ from ragtime.core.model_limits import (
     update_model_limit,
     update_model_output_limit,
 )
+from ragtime.core.model_providers import (
+    EMBEDDING_PROVIDER_NAMES,
+    LLM_PROVIDER_NAMES,
+    get_provider,
+    normalize_provider_name,
+    providers_equivalent,
+    resolve_provider_base_url,
+)
 from ragtime.core.ollama import (
     extract_capabilities,
     extract_effective_context_length,
@@ -6375,29 +6383,92 @@ async def fetch_embedding_models(
     Uses models.dev metadata to identify embedding-capable models.
     Supports OpenAI and local llama.cpp embedding servers.
     """
-    if request.provider == "openai":
+    normalized_provider = normalize_provider_name(request.provider)
+    if normalized_provider == "openai":
         return await _fetch_openai_embedding_models(request.api_key)
-    elif request.provider == "llama_cpp":
-        base_url = request.base_url
-        if not base_url:
-            settings = await repository.get_settings()
-            base_url = str(
-                getattr(settings, "llama_cpp_base_url", "")
-                or llama_cpp.DEFAULT_EMBEDDING_BASE_URL
-            ).strip()
-        return await _fetch_llama_cpp_embedding_models(
+
+    if normalized_provider in {"llama_cpp", "lmstudio"}:
+        settings = await repository.get_settings()
+        base_url = resolve_provider_base_url(
+            settings,
+            normalized_provider,
+            "embedding",
+            override=request.base_url,
+        )
+        return await _fetch_local_embedding_models(
+            normalized_provider,
             base_url,
             selected_model=request.model,
         )
-    elif request.provider == "lmstudio":
-        return await _fetch_lmstudio_embedding_models(
-            request.base_url,
-            selected_model=request.model,
+
+    return EmbeddingModelsResponse(
+        success=False,
+        message=f"Unknown or unsupported embedding provider: {request.provider}. Supported: {', '.join(EMBEDDING_PROVIDER_NAMES)}",
+    )
+
+
+def _to_embedding_model(model: Any) -> EmbeddingModel:
+    """Map provider-specific model metadata to the shared API model shape."""
+    return EmbeddingModel(
+        id=model.id,
+        name=model.name,
+        dimensions=getattr(model, "dimensions", None),
+        context_limit=getattr(model, "context_limit", None),
+        loaded=getattr(model, "loaded", None),
+        loaded_instances=getattr(model, "loaded_instances", None),
+        state=getattr(model, "state", None),
+        architecture=getattr(model, "architecture", None),
+        quantization=getattr(model, "quantization", None),
+        format=getattr(model, "format", None),
+    )
+
+
+async def _fetch_local_embedding_models(
+    provider: str,
+    base_url: str,
+    *,
+    selected_model: str = "",
+) -> EmbeddingModelsResponse:
+    """Fetch embedding models from local OpenAI-compatible providers."""
+    normalized_provider = normalize_provider_name(provider)
+    provider_info = get_provider(normalized_provider)
+    label = provider_info.label if provider_info else provider
+    try:
+        if normalized_provider == "llama_cpp":
+            normalized_base_url = llama_cpp.normalize_base_url(
+                base_url,
+                llama_cpp.DEFAULT_EMBEDDING_BASE_URL,
+            )
+            discovered = await llama_cpp.list_embedding_models(
+                normalized_base_url,
+                selected_model=selected_model,
+            )
+        elif normalized_provider == "lmstudio":
+            normalized_base_url = lmstudio.normalize_base_url(
+                base_url,
+                lmstudio.DEFAULT_BASE_URL,
+            )
+            discovered = await lmstudio.list_embedding_models(
+                normalized_base_url,
+                selected_model=selected_model,
+            )
+        else:
+            return EmbeddingModelsResponse(
+                success=False,
+                message=f"Unsupported local embedding provider: {provider}",
+            )
+
+        models = [_to_embedding_model(model) for model in discovered]
+        return EmbeddingModelsResponse(
+            success=True,
+            message=f"Found {len(models)} {label} embedding model(s).",
+            models=models,
+            default_model=models[0].id if models else None,
         )
-    else:
+    except Exception as e:
         return EmbeddingModelsResponse(
             success=False,
-            message=f"Unknown or unsupported embedding provider: {request.provider}. Supported: 'openai', 'llama_cpp', 'lmstudio'",
+            message=f"Failed to fetch {label} embedding models: {str(e)}",
         )
 
 
@@ -6407,41 +6478,9 @@ async def _fetch_lmstudio_embedding_models(
     selected_model: str = "",
 ) -> EmbeddingModelsResponse:
     """Fetch embedding models from LM Studio native metadata."""
-    try:
-        normalized_base_url = lmstudio.normalize_base_url(
-            base_url,
-            lmstudio.DEFAULT_BASE_URL,
-        )
-        models = await lmstudio.list_embedding_models(
-            normalized_base_url,
-            selected_model=selected_model,
-        )
-        embedding_models = [
-            EmbeddingModel(
-                id=model.id,
-                name=model.name,
-                dimensions=model.dimensions,
-                context_limit=model.context_limit,
-                loaded=model.loaded,
-                loaded_instances=model.loaded_instances,
-                state=model.state,
-                architecture=model.architecture,
-                quantization=model.quantization,
-                format=model.format,
-            )
-            for model in models
-        ]
-        return EmbeddingModelsResponse(
-            success=True,
-            message=f"Found {len(embedding_models)} LM Studio embedding model(s).",
-            models=embedding_models,
-            default_model=embedding_models[0].id if embedding_models else None,
-        )
-    except Exception as e:
-        return EmbeddingModelsResponse(
-            success=False,
-            message=f"Failed to fetch LM Studio embedding models: {str(e)}",
-        )
+    return await _fetch_local_embedding_models(
+        "lmstudio", base_url, selected_model=selected_model
+    )
 
 
 async def _fetch_llama_cpp_embedding_models(
@@ -6450,30 +6489,9 @@ async def _fetch_llama_cpp_embedding_models(
     selected_model: str = "",
 ) -> EmbeddingModelsResponse:
     """Fetch/probe embedding models from a llama.cpp server."""
-    try:
-        normalized_base_url = llama_cpp.normalize_base_url(
-            base_url,
-            llama_cpp.DEFAULT_EMBEDDING_BASE_URL,
-        )
-        models = await llama_cpp.list_embedding_models(
-            normalized_base_url,
-            selected_model=selected_model,
-        )
-        embedding_models = [
-            EmbeddingModel(id=model.id, name=model.name, dimensions=model.dimensions)
-            for model in models
-        ]
-        return EmbeddingModelsResponse(
-            success=True,
-            message=f"Found {len(embedding_models)} llama.cpp embedding model(s).",
-            models=embedding_models,
-            default_model=embedding_models[0].id if embedding_models else None,
-        )
-    except Exception as e:
-        return EmbeddingModelsResponse(
-            success=False,
-            message=f"Failed to fetch llama.cpp embedding models: {str(e)}",
-        )
+    return await _fetch_local_embedding_models(
+        "llama_cpp", base_url, selected_model=selected_model
+    )
 
 
 async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsResponse:
@@ -6686,20 +6704,11 @@ def _providers_equivalent(selected: str, actual: str) -> bool:
     allowedChatModels as 'openai::gpt-5.x-codex' should still match when the
     model is served by the github_copilot provider.
     """
-    if selected == actual:
-        return True
-    if {selected, actual} <= {"github_copilot", "github_models"}:
-        return True
-    # GitHub Copilot proxies OpenAI models; allow openai-registered models to
-    # match when served by github_copilot or github_models.
-    if {selected, actual} <= {"openai", "github_copilot", "github_models"}:
-        return True
-    return False
+    return providers_equivalent(selected, actual)
 
 
 def _normalize_provider_alias(provider: Optional[str]) -> str:
-    value = (provider or "").strip().lower()
-    return "github_copilot" if value == "github_models" else value
+    return normalize_provider_name(provider)
 
 
 async def _is_model_discovery_loading() -> bool:
@@ -6777,25 +6786,17 @@ def _find_discovered_model(models: List[LLMModel], model_id: str) -> Optional[LL
 
 def _resolve_ollama_chat_base_url(settings: AppSettings) -> str:
     """Resolve the effective Ollama base URL used for chat model discovery."""
-    base_url = str(getattr(settings, "llm_ollama_base_url", "") or "").strip()
-    if not base_url or base_url == "http://localhost:11434":
-        base_url = str(getattr(settings, "ollama_base_url", "") or "").strip()
-    return base_url
+    return resolve_provider_base_url(settings, "ollama", "llm")
 
 
 def _resolve_llama_cpp_chat_base_url(settings: AppSettings) -> str:
     """Resolve the effective llama.cpp base URL used for chat model discovery."""
-    return str(
-        getattr(settings, "llm_llama_cpp_base_url", "")
-        or llama_cpp.DEFAULT_CHAT_BASE_URL
-    ).strip()
+    return resolve_provider_base_url(settings, "llama_cpp", "llm")
 
 
 def _resolve_lmstudio_chat_base_url(settings: AppSettings) -> str:
     """Resolve the effective LM Studio base URL used for chat model discovery."""
-    return str(
-        getattr(settings, "llm_lmstudio_base_url", "") or lmstudio.DEFAULT_BASE_URL
-    ).strip()
+    return resolve_provider_base_url(settings, "lmstudio", "llm")
 
 
 async def _fetch_github_provider_models(
@@ -6889,6 +6890,111 @@ async def _fetch_github_provider_models(
     return result
 
 
+async def _fetch_llm_models_for_provider(
+    provider: str,
+    *,
+    settings: AppSettings,
+    api_key: str = "",
+    auth_mode: Optional[str] = None,
+    base_url: str = "",
+    include_directory_models: bool = False,
+    include_anthropic_models: bool = False,
+    include_google_models: bool = False,
+    force_refresh: bool = False,
+    raise_on_unconfigured: bool = False,
+) -> LLMModelsResponse | None:
+    """Fetch LLM models for a provider using one shared dispatch point."""
+    normalized_provider = normalize_provider_name(provider)
+    provider_info = get_provider(normalized_provider)
+    if provider_info is None or not provider_info.supports_llm:
+        return None
+
+    if normalized_provider == "openai":
+        token = str(api_key or settings.openai_api_key or "").strip()
+        if not token:
+            if raise_on_unconfigured:
+                raise HTTPException(status_code=400, detail="OpenAI is not configured")
+            return LLMModelsResponse(success=False, message="OpenAI is not configured")
+        return await _fetch_openai_models(token)
+
+    if normalized_provider == "anthropic":
+        token = str(api_key or settings.anthropic_api_key or "").strip()
+        if not token:
+            if raise_on_unconfigured:
+                raise HTTPException(status_code=400, detail="Anthropic is not configured")
+            return LLMModelsResponse(success=False, message="Anthropic is not configured")
+        return await _fetch_anthropic_models(token)
+
+    if normalized_provider == "ollama":
+        resolved_base_url = resolve_provider_base_url(
+            settings, normalized_provider, "llm", override=base_url
+        )
+        if not resolved_base_url:
+            if raise_on_unconfigured:
+                raise HTTPException(status_code=400, detail="Ollama is not configured")
+            return LLMModelsResponse(success=False, message="Ollama is not configured")
+        return await _fetch_ollama_llm_models(resolved_base_url)
+
+    if normalized_provider == "llama_cpp":
+        resolved_base_url = resolve_provider_base_url(
+            settings, normalized_provider, "llm", override=base_url
+        )
+        if not resolved_base_url:
+            if raise_on_unconfigured:
+                raise HTTPException(status_code=400, detail="llama.cpp is not configured")
+            return LLMModelsResponse(success=False, message="llama.cpp is not configured")
+        return await _fetch_llama_cpp_llm_models(resolved_base_url)
+
+    if normalized_provider == "lmstudio":
+        resolved_base_url = resolve_provider_base_url(
+            settings, normalized_provider, "llm", override=base_url
+        )
+        if not resolved_base_url:
+            if raise_on_unconfigured:
+                raise HTTPException(status_code=400, detail="LM Studio is not configured")
+            return LLMModelsResponse(success=False, message="LM Studio is not configured")
+        return await _fetch_lmstudio_llm_models(resolved_base_url)
+
+    if normalized_provider == "github_copilot":
+        return await _fetch_github_provider_models(
+            provider=provider,
+            settings=settings,
+            api_key=api_key,
+            auth_mode=auth_mode,
+            include_directory_models=include_directory_models,
+            include_anthropic_models=include_anthropic_models,
+            include_google_models=include_google_models,
+            force_refresh=force_refresh,
+        )
+
+    return None
+
+
+async def _safe_fetch_llm_models_task(
+    provider: str,
+    fetch: Awaitable[LLMModelsResponse],
+    *,
+    none_on_error: bool = False,
+) -> tuple[str, LLMModelsResponse | None]:
+    """Run a provider model fetch with consistent logging/error shaping."""
+    normalized_provider = normalize_provider_name(provider)
+    provider_label = (get_provider(normalized_provider) or get_provider(provider))
+    label = provider_label.label if provider_label else provider
+    try:
+        return (normalized_provider, await fetch)
+    except Exception as e:
+        logger.warning("Failed to fetch %s models: %s", label, e)
+        if none_on_error:
+            return (normalized_provider, None)
+        return (
+            normalized_provider,
+            LLMModelsResponse(
+                success=False,
+                message=f"Failed to fetch {label} models: {str(e)}",
+            ),
+        )
+
+
 async def _validate_conversation_model_selection(
     *,
     provider: str,
@@ -6904,44 +7010,17 @@ async def _validate_conversation_model_selection(
             detail="Application settings are unavailable",
         )
 
-    normalized_provider = provider.strip().lower()
+    normalized_provider = normalize_provider_name(provider)
     normalized_model = model_id.strip().lstrip("/")
-    result: Optional[LLMModelsResponse] = None
-
-    if normalized_provider == "openai":
-        api_key = str(settings.openai_api_key or "").strip()
-        if not api_key:
-            raise HTTPException(status_code=400, detail="OpenAI is not configured")
-        result = await _fetch_openai_models(api_key)
-    elif normalized_provider == "anthropic":
-        api_key = str(settings.anthropic_api_key or "").strip()
-        if not api_key:
-            raise HTTPException(status_code=400, detail="Anthropic is not configured")
-        result = await _fetch_anthropic_models(api_key)
-    elif normalized_provider == "ollama":
-        base_url = _resolve_ollama_chat_base_url(settings)
-        if not base_url:
-            raise HTTPException(status_code=400, detail="Ollama is not configured")
-        result = await _fetch_ollama_llm_models(base_url)
-    elif normalized_provider == "llama_cpp":
-        base_url = _resolve_llama_cpp_chat_base_url(settings)
-        if not base_url:
-            raise HTTPException(status_code=400, detail="llama.cpp is not configured")
-        result = await _fetch_llama_cpp_llm_models(base_url)
-    elif normalized_provider == "lmstudio":
-        base_url = _resolve_lmstudio_chat_base_url(settings)
-        if not base_url:
-            raise HTTPException(status_code=400, detail="LM Studio is not configured")
-        result = await _fetch_lmstudio_llm_models(base_url)
-    elif normalized_provider in {"github_models", "github_copilot"}:
-        result = await _fetch_github_provider_models(
-            provider=normalized_provider,
-            settings=settings,
-            include_directory_models=include_directory_models,
-            include_anthropic_models=True,
-            include_google_models=True,
-            force_refresh=force_refresh,
-        )
+    result = await _fetch_llm_models_for_provider(
+        normalized_provider,
+        settings=settings,
+        include_directory_models=include_directory_models,
+        include_anthropic_models=True,
+        include_google_models=True,
+        force_refresh=force_refresh,
+        raise_on_unconfigured=True,
+    )
 
     if result is None:
         return
@@ -7575,34 +7654,23 @@ async def fetch_llm_models(
 
     Queries the provider's API and returns a list of available chat/completion models.
     """
-    if request.provider == "openai":
-        return await _fetch_openai_models(request.api_key)
-    elif request.provider == "anthropic":
-        return await _fetch_anthropic_models(request.api_key)
-    elif request.provider in {"github_copilot", "github_models"}:
-        settings = await repository.get_settings()
-        return await _fetch_github_provider_models(
-            provider=request.provider,
-            settings=settings,
-            api_key=request.api_key,
-            auth_mode=request.auth_mode,
-            include_directory_models=request.include_directory_models,
-            include_anthropic_models=request.include_anthropic_models,
-            include_google_models=request.include_google_models,
-        )
-    elif request.provider == "llama_cpp":
-        base_url = request.base_url
-        if not base_url:
-            settings = await repository.get_settings()
-            base_url = _resolve_llama_cpp_chat_base_url(settings)
-        return await _fetch_llama_cpp_llm_models(base_url)
-    elif request.provider == "lmstudio":
-        return await _fetch_lmstudio_llm_models(request.base_url)
-    else:
-        return LLMModelsResponse(
-            success=False,
-            message=f"Unknown provider: {request.provider}. Supported: 'openai', 'anthropic', 'llama_cpp', 'lmstudio', 'github_copilot'",
-        )
+    settings = await repository.get_settings()
+    result = await _fetch_llm_models_for_provider(
+        request.provider,
+        settings=settings,
+        api_key=request.api_key,
+        auth_mode=request.auth_mode,
+        base_url=request.base_url,
+        include_directory_models=request.include_directory_models,
+        include_anthropic_models=request.include_anthropic_models,
+        include_google_models=request.include_google_models,
+    )
+    if result is not None:
+        return result
+    return LLMModelsResponse(
+        success=False,
+        message=f"Unknown provider: {request.provider}. Supported: {', '.join(LLM_PROVIDER_NAMES)}",
+    )
 
 
 def _merge_llm_model_results(
@@ -8736,118 +8804,29 @@ async def get_available_chat_models():
     }
 
     # --- Build parallel fetch tasks for each configured provider ---
-
-    async def _fetch_openai_task() -> tuple[str, LLMModelsResponse]:
-        try:
-            return ("openai", await _fetch_openai_models(app_settings.openai_api_key))
-        except Exception as e:
-            logger.warning(f"Failed to fetch OpenAI models: {e}")
-            return (
-                "openai",
-                LLMModelsResponse(
-                    success=False,
-                    message=f"Failed to fetch OpenAI models: {str(e)}",
-                ),
-            )
-
-    async def _fetch_anthropic_task() -> tuple[str, LLMModelsResponse]:
-        try:
-            return (
-                "anthropic",
-                await _fetch_anthropic_models(app_settings.anthropic_api_key),
-            )
-        except Exception as e:
-            logger.warning(f"Failed to fetch Anthropic models: {e}")
-            return (
-                "anthropic",
-                LLMModelsResponse(
-                    success=False,
-                    message=f"Failed to fetch Anthropic models: {str(e)}",
-                ),
-            )
-
-    async def _fetch_ollama_task(url: str) -> tuple[str, LLMModelsResponse]:
-        try:
-            return ("ollama", await _fetch_ollama_llm_models(url))
-        except Exception as e:
-            logger.warning(f"Failed to fetch Ollama models: {e}")
-            return (
-                "ollama",
-                LLMModelsResponse(
-                    success=False,
-                    message=f"Failed to fetch Ollama models: {str(e)}",
-                ),
-            )
-
-    async def _fetch_llama_cpp_task(url: str) -> tuple[str, LLMModelsResponse]:
-        try:
-            return ("llama_cpp", await _fetch_llama_cpp_llm_models(url))
-        except Exception as e:
-            logger.warning(f"Failed to fetch llama.cpp models: {e}")
-            return (
-                "llama_cpp",
-                LLMModelsResponse(
-                    success=False,
-                    message=f"Failed to fetch llama.cpp models: {str(e)}",
-                ),
-            )
-
-    async def _fetch_lmstudio_task(url: str) -> tuple[str, LLMModelsResponse]:
-        try:
-            return ("lmstudio", await _fetch_lmstudio_llm_models(url))
-        except Exception as e:
-            logger.warning(f"Failed to fetch LM Studio models: {e}")
-            return (
-                "lmstudio",
-                LLMModelsResponse(
-                    success=False,
-                    message=f"Failed to fetch LM Studio models: {str(e)}",
-                ),
-            )
-
-    async def _fetch_github_pat_task(
-        token: str, provider_name: str
-    ) -> tuple[str, LLMModelsResponse]:
-        try:
-            result = await _fetch_github_models_catalog(token)
-            return ("github_copilot", result)
-        except Exception as e:
-            logger.warning(f"Failed to fetch GitHub models: {e}")
-            return (
-                "github_copilot",
-                LLMModelsResponse(
-                    success=False,
-                    message=f"Failed to fetch GitHub models: {str(e)}",
-                ),
-            )
-
-    async def _fetch_github_oauth_task(
-        token: str, base_url: str
-    ) -> tuple[str, LLMModelsResponse]:
-        try:
-            result = await _fetch_github_copilot_models(token, base_url)
-            return ("github_copilot", result)
-        except Exception as e:
-            logger.warning(f"Failed to fetch GitHub models: {e}")
-            return (
-                "github_copilot",
-                LLMModelsResponse(
-                    success=False,
-                    message=f"Failed to fetch GitHub models: {str(e)}",
-                ),
-            )
-
     tasks: list[asyncio.Task] = []
 
     if app_settings.openai_api_key and len(app_settings.openai_api_key) > 10:
         provider_states["openai"].configured = True
         provider_states["openai"].connected = True
-        tasks.append(asyncio.create_task(_fetch_openai_task()))
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "openai", _fetch_openai_models(app_settings.openai_api_key)
+                )
+            )
+        )
 
     if app_settings.anthropic_api_key and len(app_settings.anthropic_api_key) > 10:
         provider_states["anthropic"].configured = True
         provider_states["anthropic"].connected = True
-        tasks.append(asyncio.create_task(_fetch_anthropic_task()))
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "anthropic", _fetch_anthropic_models(app_settings.anthropic_api_key)
+                )
+            )
+        )
 
     ollama_url = getattr(app_settings, "llm_ollama_base_url", "") or ""
     if not ollama_url or ollama_url == "http://localhost:11434":
@@ -8855,19 +8834,37 @@ async def get_available_chat_models():
     if ollama_url:
         provider_states["ollama"].configured = True
         provider_states["ollama"].connected = True
-        tasks.append(asyncio.create_task(_fetch_ollama_task(ollama_url)))
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "ollama", _fetch_ollama_llm_models(ollama_url)
+                )
+            )
+        )
 
     llama_cpp_url = _resolve_llama_cpp_chat_base_url(app_settings)
     if llama_cpp_url:
         provider_states["llama_cpp"].configured = True
         provider_states["llama_cpp"].connected = True
-        tasks.append(asyncio.create_task(_fetch_llama_cpp_task(llama_cpp_url)))
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "llama_cpp", _fetch_llama_cpp_llm_models(llama_cpp_url)
+                )
+            )
+        )
 
     lmstudio_url = _resolve_lmstudio_chat_base_url(app_settings)
     if lmstudio_url:
         provider_states["lmstudio"].configured = True
         provider_states["lmstudio"].connected = True
-        tasks.append(asyncio.create_task(_fetch_lmstudio_task(lmstudio_url)))
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "lmstudio", _fetch_lmstudio_llm_models(lmstudio_url)
+                )
+            )
+        )
 
     github_models_token = (app_settings.github_models_api_token or "").strip()
     github_copilot_token = (app_settings.github_copilot_access_token or "").strip()
@@ -8886,7 +8883,9 @@ async def get_available_chat_models():
         provider_states["github_copilot"].connected = True
         tasks.append(
             asyncio.create_task(
-                _fetch_github_pat_task(github_models_token, "github_models")
+                _safe_fetch_llm_models_task(
+                    "github_copilot", _fetch_github_models_catalog(github_models_token)
+                )
             )
         )
     elif github_auth_mode == "oauth" and (github_copilot_token or github_refresh_token):
@@ -8897,10 +8896,13 @@ async def get_available_chat_models():
         if github_copilot_token and len(github_copilot_token) > 10:
             tasks.append(
                 asyncio.create_task(
-                    _fetch_github_oauth_task(
-                        github_copilot_token,
-                        app_settings.github_copilot_base_url
-                        or COPILOT_DEFAULT_BASE_URL,
+                    _safe_fetch_llm_models_task(
+                        "github_copilot",
+                        _fetch_github_copilot_models(
+                            github_copilot_token,
+                            app_settings.github_copilot_base_url
+                            or COPILOT_DEFAULT_BASE_URL,
+                        ),
                     )
                 )
             )
@@ -9130,102 +9132,67 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
     all_models: List[AvailableModel] = []
 
     # --- Build parallel fetch tasks for each configured provider ---
-
-    async def _fetch_openai_task() -> tuple[str, LLMModelsResponse | None]:
-        try:
-            return ("openai", await _fetch_openai_models(app_settings.openai_api_key))
-        except Exception as e:
-            logger.warning(f"Failed to fetch OpenAI models: {e}")
-            return ("openai", None)
-
-    async def _fetch_anthropic_task() -> tuple[str, LLMModelsResponse | None]:
-        try:
-            return (
-                "anthropic",
-                await _fetch_anthropic_models(app_settings.anthropic_api_key),
-            )
-        except Exception as e:
-            logger.warning(f"Failed to fetch Anthropic models: {e}")
-            return ("anthropic", None)
-
-    async def _fetch_ollama_task(url: str) -> tuple[str, LLMModelsResponse | None]:
-        try:
-            return ("ollama", await _fetch_ollama_llm_models(url))
-        except Exception as e:
-            logger.warning(f"Failed to fetch Ollama models: {e}")
-            return ("ollama", None)
-
-    async def _fetch_llama_cpp_task(
-        url: str,
-    ) -> tuple[str, LLMModelsResponse | None]:
-        try:
-            return ("llama_cpp", await _fetch_llama_cpp_llm_models(url))
-        except Exception as e:
-            logger.warning(f"Failed to fetch llama.cpp models: {e}")
-            return ("llama_cpp", None)
-
-    async def _fetch_lmstudio_task(
-        url: str,
-    ) -> tuple[str, LLMModelsResponse | None]:
-        try:
-            return ("lmstudio", await _fetch_lmstudio_llm_models(url))
-        except Exception as e:
-            logger.warning(f"Failed to fetch LM Studio models: {e}")
-            return ("lmstudio", None)
-
-    async def _fetch_github_pat_task(
-        token: str, provider_name: str
-    ) -> tuple[str, LLMModelsResponse | None]:
-        try:
-            result = await _fetch_github_models_catalog(token)
-            if result.success and provider_name == "github_copilot":
-                directory_result = await _fetch_copilot_directory_models(
-                    include_anthropic=True,
-                    include_google=True,
-                )
-                result = _merge_llm_model_results(result, directory_result)
-            return ("github_copilot", result)
-        except Exception as e:
-            logger.warning(f"Failed to fetch GitHub models: {e}")
-            return ("github_copilot", None)
-
-    async def _fetch_github_oauth_task(
-        token: str, base_url: str
-    ) -> tuple[str, LLMModelsResponse | None]:
-        try:
-            result = await _fetch_github_copilot_models(token, base_url)
-            if result.success:
-                directory_result = await _fetch_copilot_directory_models(
-                    include_anthropic=True,
-                    include_google=True,
-                )
-                result = _merge_llm_model_results(result, directory_result)
-            return ("github_copilot", result)
-        except Exception as e:
-            logger.warning(f"Failed to fetch GitHub models: {e}")
-            return ("github_copilot", None)
-
     tasks: list[asyncio.Task] = []
 
     if app_settings.openai_api_key and len(app_settings.openai_api_key) > 10:
-        tasks.append(asyncio.create_task(_fetch_openai_task()))
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "openai",
+                    _fetch_openai_models(app_settings.openai_api_key),
+                    none_on_error=True,
+                )
+            )
+        )
 
     if app_settings.anthropic_api_key and len(app_settings.anthropic_api_key) > 10:
-        tasks.append(asyncio.create_task(_fetch_anthropic_task()))
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "anthropic",
+                    _fetch_anthropic_models(app_settings.anthropic_api_key),
+                    none_on_error=True,
+                )
+            )
+        )
 
     ollama_url = getattr(app_settings, "llm_ollama_base_url", "") or ""
     if not ollama_url or ollama_url == "http://localhost:11434":
         ollama_url = getattr(app_settings, "ollama_base_url", "") or ""
     if ollama_url:
-        tasks.append(asyncio.create_task(_fetch_ollama_task(ollama_url)))
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "ollama",
+                    _fetch_ollama_llm_models(ollama_url),
+                    none_on_error=True,
+                )
+            )
+        )
 
     llama_cpp_url = _resolve_llama_cpp_chat_base_url(app_settings)
     if llama_cpp_url:
-        tasks.append(asyncio.create_task(_fetch_llama_cpp_task(llama_cpp_url)))
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "llama_cpp",
+                    _fetch_llama_cpp_llm_models(llama_cpp_url),
+                    none_on_error=True,
+                )
+            )
+        )
 
     lmstudio_url = _resolve_lmstudio_chat_base_url(app_settings)
     if lmstudio_url:
-        tasks.append(asyncio.create_task(_fetch_lmstudio_task(lmstudio_url)))
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "lmstudio",
+                    _fetch_lmstudio_llm_models(lmstudio_url),
+                    none_on_error=True,
+                )
+            )
+        )
 
     github_models_token = (app_settings.github_models_api_token or "").strip()
     github_copilot_token = (app_settings.github_copilot_access_token or "").strip()
@@ -9235,7 +9202,11 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
     elif github_auth_mode == "pat" and github_models_token:
         tasks.append(
             asyncio.create_task(
-                _fetch_github_pat_task(github_models_token, "github_models")
+                _safe_fetch_llm_models_task(
+                    "github_copilot",
+                    _fetch_github_models_catalog(github_models_token),
+                    none_on_error=True,
+                )
             )
         )
     elif (
@@ -9245,9 +9216,16 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
     ):
         tasks.append(
             asyncio.create_task(
-                _fetch_github_oauth_task(
-                    github_copilot_token,
-                    app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
+                _safe_fetch_llm_models_task(
+                    "github_copilot",
+                    _fetch_github_provider_models(
+                        provider="github_copilot",
+                        settings=app_settings,
+                        include_directory_models=True,
+                        include_anthropic_models=True,
+                        include_google_models=True,
+                    ),
+                    none_on_error=True,
                 )
             )
         )
