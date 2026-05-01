@@ -6983,6 +6983,8 @@ async def _fetch_llm_models_for_provider(
             resolved_base_url,
             api_key=str(settings.lmstudio_api_key or "") or None,
         )
+
+    if normalized_provider == "github_copilot":
         return await _fetch_github_provider_models(
             provider=provider,
             settings=settings,
@@ -8518,6 +8520,20 @@ def _extract_provider_capability_metadata(
     )
 
 
+def _is_selectable_provider_model(row: dict[str, Any]) -> bool:
+    """Return whether a provider model row should be shown to users."""
+    if row.get("model_picker_enabled") is False:
+        return False
+
+    capabilities = row.get("capabilities")
+    if isinstance(capabilities, dict):
+        model_type = str(capabilities.get("type") or "").strip().lower()
+        if model_type and model_type not in {"chat", "completion"}:
+            return False
+
+    return True
+
+
 async def _fetch_github_copilot_models(
     access_token: str,
     base_url: str = COPILOT_DEFAULT_BASE_URL,
@@ -8591,6 +8607,9 @@ async def _fetch_github_copilot_models(
 
                     successful_sources += 1
                     for row in rows:
+                        if not _is_selectable_provider_model(row):
+                            continue
+
                         raw_id = str(row.get("id", "")).strip()
                         if not raw_id:
                             continue
@@ -8732,6 +8751,8 @@ async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
         models: list[LLMModel] = []
         for row in rows:
             if not isinstance(row, dict):
+                continue
+            if not _is_selectable_provider_model(row):
                 continue
 
             model_id = str(row.get("id", "")).strip()

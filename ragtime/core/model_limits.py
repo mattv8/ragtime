@@ -85,6 +85,7 @@ MODEL_FAMILY_PATTERNS: dict[str, list[tuple[str, str | None]]] = {
     "github_copilot": [
         # GitHub-hosted OpenAI families
         (r"^(openai/)?gpt-4o", "GPT-4o"),
+        (r"^(?:openai/)?gpt-41-copilot", "GPT-4.1"),
         # Codex family must come before generic numeric captures.
         (r"^(?:openai/)?gpt-\d+(?:\.\d+)?-codex", "Codex"),
         (r"^(?:openai/)?gpt-(\d+\.\d+)(?:$|[-_])", None),
@@ -109,7 +110,7 @@ MODEL_FAMILY_PATTERNS: dict[str, list[tuple[str, str | None]]] = {
         (r"(?:google/)?gemini-(\d+)(?:\.\d+)?(?:$|[-_])", None),
         (r"gemini", "Gemini"),
         (r"(xai/)?grok", "Grok"),
-        (r"o\d", "O-Series"),
+        (r"^(?:openai/)?o\d+(?:$|[-_])", "O-Series"),
     ],
     "github_models": [
         # Codex family must come before generic numeric captures.
