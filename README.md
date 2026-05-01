@@ -549,6 +549,25 @@ docker compose up -d
 
 ### Troubleshooting
 
+#### SSH Tools Fail from Colima on macOS but Hosts Are Reachable
+
+SSH checks run from inside the Colima VM, so macOS-reachable hosts may still fail if Colima's user-mode networking is stale. To confirm, test TCP connectivity from each layer:
+
+```bash
+nc -vz -w 3 <HOST_IP> 22                                                                      # macOS
+colima ssh -- bash -lc 'timeout 4 bash -lc "</dev/tcp/<HOST_IP>/22" && echo open || echo failed'  # Colima VM
+docker exec ragtime-dev bash -lc 'timeout 4 bash -lc "</dev/tcp/<HOST_IP>/22" && echo open || echo failed'  # container
+```
+
+If only macOS can connect, restart Colima and the stack:
+
+```bash
+colima stop && colima start
+docker compose -f docker/docker-compose.dev.yml up --build
+```
+
+If the problem persists, kill stale Lima usernet helpers: `ps ax | grep 'limactl usernet'` and keep only the PID in `~/.colima/_lima/_networks/user-v2/usernet_user-v2.pid`.
+
 #### NumPy CPU Compatibility Error
 
 If you see an error like:
