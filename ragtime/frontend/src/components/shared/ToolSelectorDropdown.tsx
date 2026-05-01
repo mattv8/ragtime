@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Settings, ChevronRight } from 'lucide-react';
 
 export interface ToolGroupInfo {
@@ -21,6 +21,8 @@ interface ToolSelectorDropdownProps {
   selectedToolGroupIds?: Set<string>;
   onToggleToolGroup?: (groupId: string) => void;
   toolGroups?: ToolGroupInfo[];
+  /** Which direction the dropdown opens. 'down' (default) for toolbars, 'up' for inline chat input. */
+  openDirection?: 'down' | 'up';
   disabled?: boolean;
   readOnly?: boolean;
   saving?: boolean;
@@ -37,6 +39,7 @@ export function ToolSelectorDropdown({
   selectedToolGroupIds,
   onToggleToolGroup,
   toolGroups,
+  openDirection = 'down',
   disabled = false,
   readOnly = false,
   saving = false,
@@ -46,7 +49,31 @@ export function ToolSelectorDropdown({
 }: ToolSelectorDropdownProps) {
   const [showDropdown, setShowDropdown] = useState(false);
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number; minWidth: number } | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Compute fixed position so the dropdown draws over iframes without layout shift
+  const computeDropdownPosition = useCallback(() => {
+    if (!dropdownRef.current) return;
+    const rect = dropdownRef.current.getBoundingClientRect();
+    if (openDirection === 'up') {
+      // Position above the trigger button; actual height unknown until rendered, use 0 as placeholder
+      setDropdownPosition({ top: rect.top, left: rect.right, minWidth: rect.width });
+    } else {
+      setDropdownPosition({ top: rect.bottom, left: rect.right, minWidth: rect.width });
+    }
+  }, [openDirection]);
+
+  useEffect(() => {
+    if (!showDropdown) return;
+    computeDropdownPosition();
+    window.addEventListener('scroll', computeDropdownPosition, true);
+    window.addEventListener('resize', computeDropdownPosition);
+    return () => {
+      window.removeEventListener('scroll', computeDropdownPosition, true);
+      window.removeEventListener('resize', computeDropdownPosition);
+    };
+  }, [showDropdown, computeDropdownPosition]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -173,8 +200,17 @@ export function ToolSelectorDropdown({
         <Settings size={14} />
         <span className="tool-count-badge">{effectiveSelectedCount}</span>
       </button>
-      {showDropdown && (
-        <div className="userspace-tool-dropdown">
+      {showDropdown && dropdownPosition && (
+        <div
+          className="userspace-tool-dropdown"
+          style={{
+            top: openDirection === 'up' ? undefined : dropdownPosition.top,
+            bottom: openDirection === 'up' ? `calc(100vh - ${dropdownPosition.top}px)` : undefined,
+            left: dropdownPosition.left,
+            minWidth: dropdownPosition.minWidth,
+            transform: 'translateX(-100%)',
+          }}
+        >
           <h4>{title}</h4>
           {readOnly && <p className="userspace-muted">Read-only access</p>}
           <div className="userspace-tool-list">

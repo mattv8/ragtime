@@ -1152,10 +1152,8 @@ textarea:focus {
 }
 
 .userspace-tool-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 50;
+  position: fixed;
+  z-index: 9000;
   width: 320px;
   max-height: 400px;
   overflow: auto;

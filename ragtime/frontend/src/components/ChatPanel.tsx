@@ -8055,6 +8055,7 @@ export function ChatPanel({
                         selectedToolGroupIds={effectiveToolGroupIdSet}
                         onToggleToolGroup={handleToggleInlineToolGroup}
                         toolGroups={effectiveToolGroups}
+                        openDirection="up"
                         disabled={effectiveSavingTools}
                         readOnly={false}
                         saving={effectiveSavingTools}
@@ -8083,6 +8084,7 @@ export function ChatPanel({
                           selectedToolGroupIds={effectiveToolGroupIdSet}
                           onToggleToolGroup={handleToggleInlineToolGroup}
                           toolGroups={effectiveToolGroups}
+                          openDirection="up"
                           disabled={effectiveSavingTools}
                           readOnly={false}
                           saving={effectiveSavingTools}
