@@ -3045,6 +3045,7 @@ export interface AvailableModelsResponse {
   default_model: string | null;
   automatic_default_model?: string | null;
   current_model: string | null;
+  discovered_model_identifiers?: string[];
   allowed_models: string[];  // List of allowed model IDs (for settings UI)
   allowed_openapi_models: string[];  // Separately curated OpenAPI model list
   models_loading?: boolean;

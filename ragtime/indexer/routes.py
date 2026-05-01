@@ -6698,6 +6698,9 @@ class AvailableModelsResponse(BaseModel):
     default_model: Optional[str] = None
     automatic_default_model: Optional[str] = None
     current_model: Optional[str] = None  # Currently selected model in settings
+    discovered_model_identifiers: List[str] = (
+        []
+    )  # Unfiltered provider-scoped identifiers from live discovery
     allowed_models: List[str] = []  # List of allowed model IDs (for settings UI)
     allowed_openapi_models: List[str] = []  # Separately curated OpenAPI model list
     models_loading: bool = False
@@ -7092,13 +7095,23 @@ def _identifier_in_allowed_models(identifier: str, allowed_models: List[str]) ->
     if not identifier:
         return False
 
+    def _model_id_variants(model_id: str) -> set[str]:
+        raw = str(model_id or "").strip().lstrip("/")
+        if not raw:
+            return set()
+        variants = {raw}
+        if "/" in raw:
+            variants.add(raw.split("/", 1)[1])
+        return variants
+
     candidate_provider, candidate_model_id = _parse_model_identifier(identifier)
-    if not candidate_model_id:
+    candidate_ids = _model_id_variants(candidate_model_id)
+    if not candidate_ids:
         return False
 
     for allowed in allowed_models:
         allowed_provider, allowed_model_id = _parse_model_identifier(allowed)
-        if allowed_model_id != candidate_model_id:
+        if not candidate_ids.intersection(_model_id_variants(allowed_model_id)):
             continue
         if allowed_provider is None or candidate_provider is None:
             return True
@@ -9088,6 +9101,10 @@ async def get_available_chat_models():
     if current_model_match:
         default_model = current_model_match.id
 
+    discovered_model_identifiers = list(
+        dict.fromkeys(_build_scoped_model_identifier(model) for model in all_models)
+    )
+
     # Filter by allowed models if specified.
     # Supports legacy model IDs and provider-scoped keys: provider::model_id.
     allowed_models = [
@@ -9096,51 +9113,11 @@ async def get_available_chat_models():
         if str(value).strip()
     ]
     if allowed_models:
-        scoped_provider_by_model: dict[str, str] = {}
-        legacy_model_ids: set[str] = set()
-        for value in allowed_models:
-            if "::" in value:
-                provider, _, model_id = value.partition("::")
-                provider = provider.strip().lower()
-                model_id = model_id.strip()
-                if (
-                    provider
-                    in {
-                        "openai",
-                        "anthropic",
-                        "ollama",
-                        "llama_cpp",
-                        "lmstudio",
-                        "github_copilot",
-                        "github_models",
-                    }
-                    and model_id
-                ):
-                    scoped_provider_by_model[model_id] = provider
-                    continue
-            legacy_model_ids.add(value)
-
-        def _lookup_filter_provider(model_id: str) -> str:
-            """Look up the filter provider, handling publisher-prefixed IDs.
-
-            Catalog models use publisher-prefixed IDs (e.g. 'openai/gpt-4o')
-            while directory/OAuth models use bare slugs ('gpt-4o').  The filter
-            may have been saved in either format, so try both.
-            """
-            provider = scoped_provider_by_model.get(model_id, "")
-            if not provider and "/" in model_id:
-                provider = scoped_provider_by_model.get(model_id.split("/", 1)[1], "")
-            return provider
-
         all_models = [
             model
             for model in all_models
-            if (
-                _providers_equivalent(_lookup_filter_provider(model.id), model.provider)
-                or (
-                    model.id in legacy_model_ids
-                    and not _lookup_filter_provider(model.id)
-                )
+            if _identifier_in_allowed_models(
+                _build_scoped_model_identifier(model), allowed_models
             )
         ]
 
@@ -9192,6 +9169,7 @@ async def get_available_chat_models():
             else None
         ),
         current_model=current_model,
+        discovered_model_identifiers=discovered_model_identifiers,
         models_loading=models_loading,
         copilot_refresh_in_progress=copilot_refresh_in_progress,
         provider_states=list(provider_states.values()),
@@ -9388,6 +9366,9 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
         models=all_models,
         default_model=app_settings.llm_model,
         current_model=app_settings.llm_model,
+        discovered_model_identifiers=list(
+            dict.fromkeys(_build_scoped_model_identifier(model) for model in all_models)
+        ),
         allowed_models=allowed_models,
         allowed_openapi_models=app_settings.allowed_openapi_models or [],
     )
@@ -9592,13 +9573,6 @@ async def _send_message_to_loaded_conversation(
             )
         )
 
-    if not rag.is_ready:
-        raise HTTPException(
-            status_code=503, detail="RAG service initializing, please retry"
-        )
-
-    await _validate_conversation_model_before_send(conv.model)
-
     user_message = request.message.strip()
     if not user_message:
         raise HTTPException(status_code=400, detail="Message is required")
@@ -9612,6 +9586,13 @@ async def _send_message_to_loaded_conversation(
     if updated_conversation is None:
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
+
+    if not rag.is_ready:
+        raise HTTPException(
+            status_code=503, detail="RAG service initializing, please retry"
+        )
+
+    await _validate_conversation_model_before_send(conv.model)
 
     chat_history: list[BaseMessage] = []
     for msg_idx, msg in enumerate(conv.messages[:-1]):
@@ -12051,6 +12032,13 @@ async def send_message_background(
     # Add user message to conversation first
     await repository.add_message(conversation_id, "user", user_message)
     schedule_title_generation(conversation_id, user_message)
+
+    if not rag.is_ready:
+        raise HTTPException(
+            status_code=503, detail="RAG service initializing, please retry"
+        )
+
+    await _validate_conversation_model_before_send(conv.model)
 
     # Create usage attempt before starting background task
     input_est = _estimate_input_tokens(user_message)

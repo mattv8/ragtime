@@ -104,6 +104,10 @@ export function ModelSelector<T extends BaseModel>({
     return getModelSelectionKey ? getModelSelectionKey(model) : model.id;
   }, [getModelSelectionKey]);
 
+  const isModelSelected = useCallback((model: T): boolean => {
+    return selectedModelId === selectionKeyFor(model);
+  }, [selectedModelId, selectionKeyFor]);
+
   // Group models and identify latest in each group
   const groupedModels = useMemo((): GroupedModels<T>[] => {
     const groups: Record<string, T[]> = {};
@@ -421,7 +425,7 @@ export function ModelSelector<T extends BaseModel>({
               ) : (
                 filteredModels.map((model) => {
                   const key = selectionKeyFor(model);
-                  const isSelected = selectedModelId === key;
+                  const isSelected = isModelSelected(model);
                   return (
                     <button
                       key={key}
@@ -444,19 +448,20 @@ export function ModelSelector<T extends BaseModel>({
               displayGroups.map((group) => {
               const hasSubmodels = group.otherModels.length > 0;
               const isExpanded = expandedGroup === group.group;
+              const isSelected = isModelSelected(group.latestModel) || group.otherModels.some(isModelSelected);
 
               return (
                 <div
                   key={group.group}
                   ref={(el) => setGroupRef(group.group, el)}
-                  className={`model-selector-group ${isExpanded ? 'is-expanded' : ''}`}
+                  className={`model-selector-group ${isExpanded ? 'is-expanded' : ''}${isSelected ? ' is-selected' : ''}`}
                   onMouseEnter={() => handleGroupMouseEnter(group.group, hasSubmodels)}
                   onMouseLeave={handleGroupMouseLeave}
                 >
                   <button
                     type="button"
                     className={`model-selector-item model-selector-group-item ${
-                      selectedModel?.group === group.group ? 'is-selected' : ''
+                      isSelected ? 'is-selected' : ''
                     }`}
                     onClick={() => handleSelectGroup(group)}
                   >
@@ -483,7 +488,7 @@ export function ModelSelector<T extends BaseModel>({
               <button
                 type="button"
                 className={`model-selector-item model-selector-subitem ${
-                  selectedModelId === selectionKeyFor(expandedGroupData.latestModel) ? 'is-selected' : ''
+                  isModelSelected(expandedGroupData.latestModel) ? 'is-selected' : ''
                 }`}
                 onClick={() => handleSelectModel(selectionKeyFor(expandedGroupData.latestModel))}
               >
@@ -497,7 +502,7 @@ export function ModelSelector<T extends BaseModel>({
                   key={selectionKeyFor(model)}
                   type="button"
                   className={`model-selector-item model-selector-subitem ${
-                    selectedModelId === selectionKeyFor(model) ? 'is-selected' : ''
+                    isModelSelected(model) ? 'is-selected' : ''
                   }`}
                   onClick={() => handleSelectModel(selectionKeyFor(model))}
                 >

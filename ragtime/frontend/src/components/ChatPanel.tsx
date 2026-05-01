@@ -8,7 +8,7 @@ import 'katex/dist/katex.min.css';
 import { diffLines } from 'diff';
 import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2 } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, AvailableModel } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, AvailableModel } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -307,16 +307,6 @@ interface ChartConfig {
 // Global URL regex for efficient linkification
 const URL_PATTERN = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s])/g;
 
-function inferProviderFromModelId(modelId: string): string | null {
-  const raw = (modelId || '').trim();
-  const slashIndex = raw.indexOf('/');
-  if (slashIndex <= 0) {
-    return null;
-  }
-  const maybeProvider = normalizeProviderAlias(raw.slice(0, slashIndex));
-  return KNOWN_PROVIDER_KEYS.has(maybeProvider) ? maybeProvider : null;
-}
-
 function toProviderScopedModelKey(provider: string | null | undefined, modelId: string): string {
   const normalizedProvider = normalizeProviderAlias(provider);
   return normalizedProvider ? `${normalizedProvider}::${modelId}` : modelId;
@@ -324,10 +314,7 @@ function toProviderScopedModelKey(provider: string | null | undefined, modelId: 
 
 type ResolvedConversationModelSelection = {
   modelId: string;
-  explicitProvider: string | null;
-  resolvedProvider: string | null;
   matchedModel?: AvailableModel;
-  hasSelectedConversationModel: boolean;
 };
 
 function resolveConversationModelSelection(
@@ -359,17 +346,9 @@ function resolveConversationModelSelection(
     }
   }
 
-  const inferredProvider = inferProviderFromModelId(modelId);
-  const resolvedProvider = normalizeProviderAlias(
-    matchedModel?.provider || explicitProvider || inferredProvider,
-  ) || null;
-
   return {
     modelId,
-    explicitProvider,
-    resolvedProvider,
     matchedModel,
-    hasSelectedConversationModel: Boolean(modelId),
   };
 }
 
@@ -385,6 +364,16 @@ function mergeConversationFromWorkspaceSnapshot(
   const incomingUpdatedAt = conversationUpdatedAtMs(incoming);
   const currentUpdatedAt = conversationUpdatedAtMs(current);
   const incomingIsNewer = incomingUpdatedAt > currentUpdatedAt;
+  // Workspace state snapshots can occasionally arrive without message payloads;
+  // never let an empty incoming list wipe a populated local conversation.
+  if (current.messages.length > 0 && incoming.messages.length === 0) {
+    return {
+      ...current,
+      ...incoming,
+      model: incomingIsNewer ? (incoming.model || current.model) : (current.model || incoming.model),
+      messages: current.messages,
+    };
+  }
   const shouldUseIncomingMessages = incomingIsNewer
     || incoming.messages.length > current.messages.length
     || (incoming.messages.length === current.messages.length && incomingUpdatedAt >= currentUpdatedAt);
@@ -398,19 +387,6 @@ function mergeConversationFromWorkspaceSnapshot(
       ? incoming.messages
       : current.messages,
   };
-}
-
-function findProviderState(
-  providerStates: ProviderModelState[] | undefined,
-  provider: string | null,
-): ProviderModelState | null {
-  const target = normalizeProviderAlias(provider);
-  if (!target || !providerStates?.length) {
-    return null;
-  }
-  return (
-    providerStates.find((state) => providersEquivalent(state.provider, target)) || null
-  );
 }
 
 // Helper component to parse URLs and render them as clickable links
@@ -4096,8 +4072,6 @@ export function ChatPanel({
   const {
     models: availableModels,
     loading: modelsLoading,
-    error: modelsError,
-    readiness: modelsReadiness,
     refresh: refreshModels,
   } = useAvailableModels();
   const [isWorkspaceConversationMenuOpen, setIsWorkspaceConversationMenuOpen] = useState(false);
@@ -5447,56 +5421,6 @@ export function ChatPanel({
     return defaultContextLimit;
   }, [availableModels, defaultContextLimit]);
 
-  const sendReadinessBlockReason = useMemo(() => {
-    if (!activeConversation) {
-      return null;
-    }
-
-    const selection = resolveConversationModelSelection(activeConversation.model || '', availableModels);
-    const providerState = findProviderState(modelsReadiness?.provider_states, selection.resolvedProvider);
-
-    const hasKnownActiveModel = Boolean(selection.matchedModel);
-    const hasProviderFailure = Boolean(
-      providerState
-      && providerState.configured
-      && !providerState.loading
-      && (!providerState.connected || !providerState.available),
-    );
-    if (hasProviderFailure) {
-      return providerState?.error || 'Selected model provider is disconnected.';
-    }
-
-    if (providerState && !providerState.configured && selection.resolvedProvider) {
-      return 'Selected model provider is not configured.';
-    }
-
-    // `conversation.model` is the source of truth for the active chat selection.
-    // `availableModels` is only the filtered picker catalog, so absence there does
-    // not mean "no model selected" for the current conversation.
-    if (modelsLoading && !hasKnownActiveModel && !selection.hasSelectedConversationModel) {
-      return 'Loading available models...';
-    }
-
-    if (
-      selection.resolvedProvider === 'github_copilot'
-      && modelsReadiness?.copilot_refresh_in_progress
-      && !hasKnownActiveModel
-      && !selection.hasSelectedConversationModel
-    ) {
-      return 'Refreshing GitHub Copilot credentials...';
-    }
-
-    if (!hasKnownActiveModel && !selection.hasSelectedConversationModel && modelsError) {
-      return 'Failed to load available models. Please refresh and try again.';
-    }
-
-    if (!hasKnownActiveModel && !selection.hasSelectedConversationModel && !modelsLoading && selection.resolvedProvider) {
-      return 'Selected model is not available from the configured provider.';
-    }
-
-    return null;
-  }, [activeConversation, availableModels, modelsError, modelsLoading, modelsReadiness]);
-
   const applyCreatedConversation = useCallback((conversation: Conversation) => {
     setConversations(prev => [conversation, ...prev]);
     setActiveConversation(conversation);
@@ -5820,12 +5744,28 @@ export function ChatPanel({
         await connectTaskStream(task.id);
     } catch (err: any) {
        console.error(err);
-       if (!startedTaskId && previousConversation) {
+       let messagePersisted = false;
+       if (!startedTaskId) {
+         try {
+           const refreshed = await api.getConversation(conversationId, workspaceId);
+           const previousMessageCount = previousConversation?.messages.length ?? 0;
+           messagePersisted = refreshed.messages.length > previousMessageCount;
+           setActiveConversation(refreshed);
+           setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
+           syncConversationActiveTaskId(conversationId, refreshed.active_task_id ?? null);
+         } catch (refreshErr) {
+           console.error('Failed to refresh conversation after task start error:', refreshErr);
+         }
+       }
+       if (!startedTaskId && !messagePersisted && previousConversation) {
          setActiveConversation(previousConversation);
          setConversations(prev => prev.map(c => c.id === conversationId ? previousConversation : c));
          syncConversationActiveTaskId(conversationId, previousConversation.active_task_id ?? null);
        }
        clearActiveStreamingUi();
+       if (messagePersisted && err && typeof err === 'object') {
+         (err as { messagePersisted?: boolean }).messagePersisted = true;
+       }
        throw err;
     }
   }, [activeConversation, clearActiveStreamingUi, connectTaskStream, syncConversationActiveTaskId, workspaceId]);
@@ -6140,10 +6080,6 @@ export function ChatPanel({
   // Direct message send - bypasses inputValue state for programmatic sending
   const sendMessageDirect = async (message: string) => {
     if (!message.trim() || !activeConversation || isStreaming || isReadOnly) return;
-    if (sendReadinessBlockReason) {
-      setError(sendReadinessBlockReason);
-      return;
-    }
     shouldAutoScrollRef.current = true;
 
     const userMessage = message.trim();
@@ -6199,16 +6135,12 @@ export function ChatPanel({
       setIsStreaming(false);
       setStreamingContent('');
       setStreamingEvents([]);
-      return false;
+      return Boolean(err && typeof err === 'object' && 'messagePersisted' in err && (err as { messagePersisted?: boolean }).messagePersisted);
     }
   };
 
   const sendMessage = async () => {
     if ((!inputValue.trim() && attachments.length === 0) || !activeConversation || isStreaming || isReadOnly) return;
-    if (sendReadinessBlockReason) {
-      setError(sendReadinessBlockReason);
-      return;
-    }
 
     const userMessage = inputValue.trim();
     const messageAttachments = [...attachments];
@@ -6534,6 +6466,17 @@ export function ChatPanel({
       void refreshBranchPoints(conversationId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to retry message');
+      setIsStreaming(false);
+      setStreamingContent('');
+      setStreamingEvents([]);
+      try {
+        const refreshed = await api.getConversation(conversationId, workspaceId);
+        setActiveConversation(refreshed);
+        setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
+        syncConversationActiveTaskId(conversationId, refreshed.active_task_id ?? null);
+      } catch (refreshErr) {
+        console.error('Failed to refresh conversation after replay error:', refreshErr);
+      }
     }
   }, [activeConversation, isStreaming, isReadOnly, createBranchForMessageMutation, findUserMessageIndexAtOrBefore, workspaceId, refreshBranchPoints, connectTaskStream, syncConversationActiveTaskId]);
 
@@ -7109,6 +7052,12 @@ export function ChatPanel({
                           type="button"
                           className="chat-workspace-interrupt-dismiss"
                           title="A conversation was interrupted — click to dismiss"
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                          }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                          }}
                           onClick={(e) => {
                             e.stopPropagation();
                             if (workspaceId) dismissInterruptAlert(currentUser.id, workspaceId);
@@ -7973,8 +7922,7 @@ export function ChatPanel({
                     <button
                       className="btn-resend"
                       onClick={resendMessage}
-                      disabled={Boolean(sendReadinessBlockReason)}
-                      title={sendReadinessBlockReason || 'Re-send'}
+                      title="Re-send"
                     >
                       Re-send
                     </button>
@@ -8070,10 +8018,8 @@ export function ChatPanel({
                           type="button"
                           className="btn chat-send-btn-inline"
                           onClick={sendMessage}
-                          disabled={!activeConversation || Boolean(sendReadinessBlockReason) || !contextUsage.hasHeadroom}
-                          title={sendReadinessBlockReason
-                            ? sendReadinessBlockReason
-                            : contextUsage.hasHeadroom
+                          disabled={!activeConversation || !contextUsage.hasHeadroom}
+                          title={contextUsage.hasHeadroom
                               ? 'Send message'
                               : `Context headroom too low (${contextUsage.projectedInputPercent}%)`}
                         >
