@@ -19,6 +19,7 @@ import {
 } from '@/utils';
 import { useCodeMirrorLanguageExtension } from '@/utils/codemirrorLanguage';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
+import { fetchUserSpaceToolCatalog, getUserSpaceGroupToolIds } from '@/utils/userSpaceTools';
 import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { AgentAccessButton } from './shared/AgentAccessButton';
 import { AgentAccessModal } from './shared/AgentAccessModal';
@@ -2230,22 +2231,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     };
   }, [activeWorkspaceId, files, previewEntryPath]);
 
-  useEffect(() => {
-    const loadTools = async () => {
-      try {
-        const [tools, groups] = await Promise.all([
-          api.listUserSpaceAvailableTools(),
-          api.listUserSpaceToolGroups(),
-        ]);
-        setAvailableTools(tools);
-        setToolGroups(groups.map((g) => ({ id: g.id, name: g.name })));
-      } catch (err) {
-        console.warn('Failed to load User Space tools', err);
-      }
-    };
-
-    loadTools();
+  const loadTools = useCallback(async () => {
+    const catalog = await fetchUserSpaceToolCatalog();
+    if (catalog.toolsError) {
+      console.warn('Failed to load User Space tools', catalog.toolsError);
+    }
+    if (catalog.toolGroupsError) {
+      console.warn('Failed to load User Space tool groups', catalog.toolGroupsError);
+    }
+    setAvailableTools(catalog.availableTools);
+    setToolGroups(catalog.toolGroups);
   }, []);
+
+  useEffect(() => {
+    void loadTools();
+  }, [loadTools]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId || availableTools.length > 0) {
+      return;
+    }
+    void loadTools();
+  }, [activeWorkspaceId, availableTools.length, loadTools]);
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
@@ -3075,9 +3082,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const handleToggleWorkspaceToolGroup = useCallback(async (groupId: string) => {
     if (!activeWorkspace || !canEditWorkspace) return;
 
-    const groupToolIds = availableTools
-      .filter((tool) => tool.group_id === groupId)
-      .map((tool) => tool.id);
+    const groupToolIds = getUserSpaceGroupToolIds(availableTools, groupId);
     const currentGroupIds = new Set(activeWorkspace.selected_tool_group_ids ?? []);
     const nextGroupIds = new Set(currentGroupIds);
     const nextToolIds = new Set(activeWorkspace.selected_tool_ids ?? []);

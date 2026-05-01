@@ -13,6 +13,7 @@ import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resize
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
+import { fetchUserSpaceToolCatalog, getUserSpaceGroupToolIds } from '@/utils/userSpaceTools';
 import {
   KNOWN_PROVIDER_KEYS,
   modelIdentifierInList,
@@ -3583,12 +3584,6 @@ export function parseMessageContent(content: string | ContentPart[]): { text: st
   return { text, attachments };
 }
 
-function getGroupToolIds(tools: UserSpaceAvailableTool[], groupId: string): string[] {
-  return tools
-    .filter((tool) => tool.group_id === groupId)
-    .map((tool) => tool.id);
-}
-
 // Component to display message attachments
 interface MessageAttachmentsProps {
   attachments: ContentPart[];
@@ -5246,12 +5241,15 @@ export function ChatPanel({
 
   const fetchAvailableTools = useCallback(async () => {
     try {
-      const [tools, groups] = await Promise.all([
-        api.listUserSpaceAvailableTools(),
-        api.listUserSpaceToolGroups(),
-      ]);
-      setAvailableTools(tools);
-      setToolGroups(groups.map((g) => ({ id: g.id, name: g.name })));
+      const catalog = await fetchUserSpaceToolCatalog();
+      if (catalog.toolsError) {
+        console.error('Failed to fetch available tools:', catalog.toolsError);
+      }
+      if (catalog.toolGroupsError) {
+        console.error('Failed to fetch tool groups:', catalog.toolGroupsError);
+      }
+      setAvailableTools(catalog.availableTools);
+      setToolGroups(catalog.toolGroups);
     } catch (err) {
       console.error('Failed to fetch available tools:', err);
       setAvailableTools([]);
@@ -5330,14 +5328,14 @@ export function ChatPanel({
 
   const handleToggleConversationTool = useCallback(async (toolId: string) => {
     if (!activeConversation || isConversationViewer) return;
-    const targetTool = availableTools.find((tool) => tool.id === toolId);
+    const targetTool = effectiveAvailableTools.find((tool) => tool.id === toolId);
     const currentGroupIds = new Set(conversationToolGroupIds);
 
     if (targetTool?.group_id && currentGroupIds.has(targetTool.group_id)) {
       const nextGroupIds = new Set(currentGroupIds);
       nextGroupIds.delete(targetTool.group_id);
       const nextSelected = new Set(
-        getGroupToolIds(availableTools, targetTool.group_id).filter((id) => id !== toolId)
+        getUserSpaceGroupToolIds(effectiveAvailableTools, targetTool.group_id).filter((id) => id !== toolId)
       );
 
       await persistConversationToolSelection(
@@ -5360,11 +5358,11 @@ export function ChatPanel({
       Array.from(currentGroupIds),
       'Failed to update tool selection',
     );
-  }, [activeConversation, availableTools, conversationToolGroupIds, isConversationViewer, persistConversationToolSelection, resolvedConversationToolIds]);
+  }, [activeConversation, conversationToolGroupIds, effectiveAvailableTools, isConversationViewer, persistConversationToolSelection, resolvedConversationToolIds]);
 
   const handleToggleConversationToolGroup = useCallback(async (groupId: string) => {
     if (!activeConversation || isConversationViewer) return;
-    const groupToolIds = getGroupToolIds(availableTools, groupId);
+    const groupToolIds = getUserSpaceGroupToolIds(effectiveAvailableTools, groupId);
     const nextGroupIds = new Set(conversationToolGroupIds);
     if (nextGroupIds.has(groupId)) {
       nextGroupIds.delete(groupId);
@@ -5384,7 +5382,7 @@ export function ChatPanel({
       Array.from(nextGroupIds),
       'Failed to update tool group selection',
     );
-  }, [activeConversation, availableTools, conversationToolGroupIds, isConversationViewer, persistConversationToolSelection, resolvedConversationToolIds]);
+  }, [activeConversation, conversationToolGroupIds, effectiveAvailableTools, isConversationViewer, persistConversationToolSelection, resolvedConversationToolIds]);
 
   const handleToggleInlineTool = useCallback(async (toolId: string) => {
     if (useWorkspaceToolSource && onToggleWorkspaceTool) {
@@ -7424,12 +7422,12 @@ export function ChatPanel({
                 )}
                 {canUseConversationTools && (
                   <ToolSelectorDropdown
-                    availableTools={availableTools}
+                    availableTools={effectiveAvailableTools}
                     selectedToolIds={resolvedConversationToolIdSet}
                     onToggleTool={handleToggleConversationTool}
                     selectedToolGroupIds={conversationToolGroupIdSet}
                     onToggleToolGroup={handleToggleConversationToolGroup}
-                    toolGroups={toolGroups}
+                    toolGroups={effectiveToolGroups}
                     disabled={false}
                     readOnly={false}
                     saving={savingTools}
