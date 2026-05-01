@@ -328,6 +328,20 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     return () => clearTimeout(timer);
   }, [settingsFilterInput]);
 
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      settingsFilterInputRef.current?.focus();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [loading]);
+
   // Section-specific saving states
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
   const [llmSaving, setLlmSaving] = useState(false);
