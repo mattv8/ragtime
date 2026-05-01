@@ -8,7 +8,7 @@ import 'katex/dist/katex.min.css';
 import { diffLines } from 'diff';
 import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2 } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ProviderModelState, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, AvailableModel } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -320,6 +320,57 @@ function inferProviderFromModelId(modelId: string): string | null {
 function toProviderScopedModelKey(provider: string | null | undefined, modelId: string): string {
   const normalizedProvider = normalizeProviderAlias(provider);
   return normalizedProvider ? `${normalizedProvider}::${modelId}` : modelId;
+}
+
+type ResolvedConversationModelSelection = {
+  modelId: string;
+  explicitProvider: string | null;
+  resolvedProvider: string | null;
+  matchedModel?: AvailableModel;
+  hasSelectedConversationModel: boolean;
+};
+
+function resolveConversationModelSelection(
+  storedModel: string | null | undefined,
+  availableModels: AvailableModel[],
+): ResolvedConversationModelSelection {
+  const parsed = parseStoredModelIdentifier(storedModel || '');
+  const modelId = parsed.modelId.trim();
+  const explicitProvider = normalizeProviderAlias(parsed.provider) || null;
+
+  let matchedModel: AvailableModel | undefined;
+  if (modelId) {
+    if (explicitProvider) {
+      matchedModel = availableModels.find(
+        (model) => providersEquivalent(model.provider, explicitProvider) && model.id === modelId,
+      );
+    }
+    if (!matchedModel) {
+      matchedModel = availableModels.find((model) => model.id === modelId);
+    }
+    if (!matchedModel && modelId.includes('/')) {
+      const slashIndex = modelId.indexOf('/');
+      const inferredProvider = normalizeProviderAlias(modelId.slice(0, slashIndex));
+      const providerModelId = modelId.slice(slashIndex + 1);
+      matchedModel = availableModels.find((model) =>
+        model.id === providerModelId
+        && providersEquivalent(model.provider, explicitProvider || inferredProvider)
+      );
+    }
+  }
+
+  const inferredProvider = inferProviderFromModelId(modelId);
+  const resolvedProvider = normalizeProviderAlias(
+    matchedModel?.provider || explicitProvider || inferredProvider,
+  ) || null;
+
+  return {
+    modelId,
+    explicitProvider,
+    resolvedProvider,
+    matchedModel,
+    hasSelectedConversationModel: Boolean(modelId),
+  };
 }
 
 function conversationUpdatedAtMs(conversation: Conversation | null | undefined): number {
@@ -5384,43 +5435,13 @@ export function ChatPanel({
   // Resolve context limit from stored conversation model value.
   // Handles provider-scoped and legacy model id formats to avoid 8k fallback mismatches.
   const getContextLimit = useCallback((storedModel: string): number => {
-    const parsed = parseStoredModelIdentifier(storedModel);
-    const modelId = parsed.modelId.trim();
-    const provider = normalizeProviderAlias(parsed.provider);
-
-    if (!modelId) {
+    const selection = resolveConversationModelSelection(storedModel, availableModels);
+    if (!selection.modelId) {
       return defaultContextLimit;
     }
 
-    const exactProviderMatch = provider
-      ? availableModels.find((model) => providersEquivalent(model.provider, provider) && model.id === modelId)
-      : undefined;
-    if (exactProviderMatch) {
-      return exactProviderMatch.context_limit;
-    }
-
-    const exactModelMatch = availableModels.find((model) => model.id === modelId);
-    if (exactModelMatch) {
-      return exactModelMatch.context_limit;
-    }
-
-    const slashIndex = modelId.indexOf('/');
-    if (slashIndex > 0) {
-      const inferredProvider = normalizeProviderAlias(modelId.slice(0, slashIndex));
-      const providerModelId = modelId.slice(slashIndex + 1);
-
-      const providerScopedMatch = availableModels.find((model) =>
-        model.id === providerModelId
-        && providersEquivalent(model.provider, provider || inferredProvider)
-      );
-      if (providerScopedMatch) {
-        return providerScopedMatch.context_limit;
-      }
-
-      const unscopedMatch = availableModels.find((model) => model.id === providerModelId);
-      if (unscopedMatch) {
-        return unscopedMatch.context_limit;
-      }
+    if (selection.matchedModel) {
+      return selection.matchedModel.context_limit;
     }
 
     return defaultContextLimit;
@@ -5431,38 +5452,10 @@ export function ChatPanel({
       return null;
     }
 
-    const parsed = parseStoredModelIdentifier(activeConversation.model || '');
-    const modelId = parsed.modelId.trim();
-    const explicitProvider = normalizeProviderAlias(parsed.provider);
+    const selection = resolveConversationModelSelection(activeConversation.model || '', availableModels);
+    const providerState = findProviderState(modelsReadiness?.provider_states, selection.resolvedProvider);
 
-    let matchedModel = undefined;
-    if (modelId) {
-      if (explicitProvider) {
-        matchedModel = availableModels.find(
-          (model) => providersEquivalent(model.provider, explicitProvider) && model.id === modelId,
-        );
-      }
-      if (!matchedModel) {
-        matchedModel = availableModels.find((model) => model.id === modelId);
-      }
-      if (!matchedModel && modelId.includes('/')) {
-        const slashIndex = modelId.indexOf('/');
-        const inferredProvider = normalizeProviderAlias(modelId.slice(0, slashIndex));
-        const providerModelId = modelId.slice(slashIndex + 1);
-        matchedModel = availableModels.find((model) =>
-          model.id === providerModelId
-          && providersEquivalent(model.provider, explicitProvider || inferredProvider),
-        );
-      }
-    }
-
-    const inferredProvider = inferProviderFromModelId(modelId);
-    const resolvedProvider = normalizeProviderAlias(
-      matchedModel?.provider || explicitProvider || inferredProvider,
-    ) || null;
-    const providerState = findProviderState(modelsReadiness?.provider_states, resolvedProvider);
-
-    const hasKnownActiveModel = Boolean(matchedModel);
+    const hasKnownActiveModel = Boolean(selection.matchedModel);
     const hasProviderFailure = Boolean(
       providerState
       && providerState.configured
@@ -5473,27 +5466,31 @@ export function ChatPanel({
       return providerState?.error || 'Selected model provider is disconnected.';
     }
 
-    if (providerState && !providerState.configured && resolvedProvider) {
+    if (providerState && !providerState.configured && selection.resolvedProvider) {
       return 'Selected model provider is not configured.';
     }
 
-    if (modelsLoading && !hasKnownActiveModel) {
+    // `conversation.model` is the source of truth for the active chat selection.
+    // `availableModels` is only the filtered picker catalog, so absence there does
+    // not mean "no model selected" for the current conversation.
+    if (modelsLoading && !hasKnownActiveModel && !selection.hasSelectedConversationModel) {
       return 'Loading available models...';
     }
 
     if (
-      resolvedProvider === 'github_copilot'
+      selection.resolvedProvider === 'github_copilot'
       && modelsReadiness?.copilot_refresh_in_progress
       && !hasKnownActiveModel
+      && !selection.hasSelectedConversationModel
     ) {
       return 'Refreshing GitHub Copilot credentials...';
     }
 
-    if (!hasKnownActiveModel && modelsError) {
+    if (!hasKnownActiveModel && !selection.hasSelectedConversationModel && modelsError) {
       return 'Failed to load available models. Please refresh and try again.';
     }
 
-    if (!hasKnownActiveModel && !modelsLoading && resolvedProvider) {
+    if (!hasKnownActiveModel && !selection.hasSelectedConversationModel && !modelsLoading && selection.resolvedProvider) {
       return 'Selected model is not available from the configured provider.';
     }
 
@@ -7417,34 +7414,10 @@ export function ChatPanel({
                 <ModelSelector
                   models={availableModels}
                   selectedModelId={(() => {
-                    const parsedActiveModel = parseStoredModelIdentifier(activeConversation.model || '');
-                    const explicitProvider = normalizeProviderAlias(parsedActiveModel.provider);
-                    const activeModelId = parsedActiveModel.modelId;
-
-                    let selected = undefined;
-                    if (activeModelId && explicitProvider) {
-                      selected = availableModels.find((model) => (
-                        model.id === activeModelId
-                        && providersEquivalent(model.provider, explicitProvider)
-                      ));
-                    }
-                    if (!selected && activeModelId) {
-                      selected = availableModels.find((model) => model.id === activeModelId);
-                    }
-
-                    if (!selected && activeModelId.includes('/')) {
-                      const slashIndex = activeModelId.indexOf('/');
-                      const inferredProvider = normalizeProviderAlias(activeModelId.slice(0, slashIndex));
-                      const providerModelId = activeModelId.slice(slashIndex + 1);
-                      selected = availableModels.find((model) => (
-                        model.id === providerModelId
-                        && providersEquivalent(model.provider, explicitProvider || inferredProvider)
-                      ));
-                    }
-
-                    return selected
-                      ? toProviderScopedModelKey(selected.provider, selected.id)
-                      : activeModelId;
+                    const selection = resolveConversationModelSelection(activeConversation.model || '', availableModels);
+                    return selection.matchedModel
+                      ? toProviderScopedModelKey(selection.matchedModel.provider, selection.matchedModel.id)
+                      : selection.modelId;
                   })()}
                   onModelChange={changeModel}
                   getModelSelectionKey={(model) => toProviderScopedModelKey(model.provider, model.id)}
