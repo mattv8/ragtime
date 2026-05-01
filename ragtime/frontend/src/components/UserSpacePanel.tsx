@@ -6084,9 +6084,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                             }}
                           >
                             <span className="model-selector-item-name">{ws.name}</span>
-                            {workspaceChatState.hasLive && (
-                              <MiniLoadingSpinner variant="icon" size={14} title="Chat in progress" />
-                            )}
                             {!workspaceChatState.hasLive && workspaceChatState.hasInterrupted && (
                               <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
                                 <AlertCircle size={13} />
@@ -6203,6 +6200,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                         {!canDeleteWorkspace && (
                           <span className="userspace-workspace-owner-hint" title="Only workspace owners can delete workspaces">
                             Shared
+                          </span>
+                        )}
+
+                        {workspaceChatState.hasLive && (
+                          <span className="userspace-workspace-item-state" title="Chat in progress">
+                            <MiniLoadingSpinner variant="icon" size={14} ariaHidden />
                           </span>
                         )}
                       </div>

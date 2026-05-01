@@ -1034,6 +1034,28 @@ textarea.chat-header-title-input {
     z-index: 2;
     box-shadow: 0 2px 4px color-mix(in srgb, var(--color-shadow, #000) 25%, transparent);
   }
+  .chat-panel-workspace .chat-workspace-conversation-trigger > .mini-loading-spinner-icon-wrapper,
+  .chat-panel-workspace .chat-workspace-conversation-trigger > .userspace-icon-spin {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    border: none;
+    border-radius: 999px;
+    background: var(--color-surface);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2;
+    box-shadow: 0 2px 4px color-mix(in srgb, var(--color-shadow, #000) 25%, transparent);
+  }
+  .chat-panel-workspace .chat-workspace-conversation-trigger > .mini-loading-spinner-icon-wrapper > .userspace-icon-spin,
+  .chat-panel-workspace .chat-workspace-conversation-trigger > .userspace-icon-spin {
+    width: 11px;
+    height: 11px;
+  }
   .chat-panel-workspace .chat-workspace-conversation-trigger > .chat-workspace-interrupt-dismiss .alert-icon,
   .chat-panel-workspace .chat-workspace-conversation-trigger > .chat-workspace-interrupt-dismiss .dismiss-icon {
     width: 11px;

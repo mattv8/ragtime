@@ -14,7 +14,7 @@ export function MiniLoadingSpinner({ variant = 'css', size, className, title, ar
   if (variant === 'icon') {
     const iconClassName = ['userspace-icon-spin', className].filter(Boolean).join(' ');
     const icon = <Loader2 size={size ?? 14} className={iconClassName} aria-hidden={ariaHidden} />;
-    return title ? <span title={title}>{icon}</span> : icon;
+    return title ? <span className="mini-loading-spinner-icon-wrapper" title={title}>{icon}</span> : icon;
   }
   const spinnerClassName = ['userspace-toolbar-live-spinner', className].filter(Boolean).join(' ');
   return <span className={spinnerClassName} title={title} aria-hidden={ariaHidden} />;
