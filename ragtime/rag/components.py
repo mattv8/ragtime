@@ -6662,24 +6662,80 @@ except Exception as e:
         return str(content)
 
     @staticmethod
+    def _lmstudio_channel_headers() -> tuple[str, ...]:
+        labels = ("thought", "thinking", "reasoning", "analysis")
+        open_markers = ("<|channel>", "<|channel|>")
+        close_markers = ("<channel|>", "<|channel|>")
+        separators = ("\n", " ", "")
+        return tuple(
+            f"{open_marker}{label}{separator}{close_marker}"
+            for label in labels
+            for open_marker in open_markers
+            for separator in separators
+            for close_marker in close_markers
+        )
+
+    @classmethod
+    def _strip_lmstudio_channel_headers(cls, text: str) -> str:
+        """Remove Gemma channel headers that LM Studio streams as content."""
+        if not text:
+            return ""
+
+        stripped = text
+        for header in cls._lmstudio_channel_headers():
+            stripped = stripped.replace(header, "")
+        return stripped
+
+    @classmethod
+    def _filter_lmstudio_channel_headers(
+        cls, pending: str, content: str, *, final: bool = False
+    ) -> tuple[str, str]:
+        """Suppress complete or partially streamed LM Studio channel headers."""
+        combined = cls._strip_lmstudio_channel_headers(f"{pending}{content}")
+        if not combined:
+            return "", ""
+
+        headers = cls._lmstudio_channel_headers()
+        if final and any(header.startswith(combined) for header in headers):
+            return "", ""
+
+        longest_pending = ""
+        max_suffix_len = min(len(combined), max(len(header) for header in headers))
+        for suffix_len in range(1, max_suffix_len + 1):
+            suffix = combined[-suffix_len:]
+            if any(header.startswith(suffix) for header in headers):
+                longest_pending = suffix
+
+        if longest_pending and not final:
+            return combined[: -len(longest_pending)], longest_pending
+
+        return combined, ""
+
+    @staticmethod
     def _extract_text_from_stream_content(content: Any) -> str:
         """Extract plain text from streaming content payloads."""
         if not content:
             return ""
 
         if isinstance(content, str):
-            return content
+            return RAGComponents._strip_lmstudio_channel_headers(content)
 
         if isinstance(content, list):
             text_parts: list[str] = []
             for block in content:
                 if isinstance(block, dict):
-                    text_parts.append(str(block.get("text", "")))
+                    text_parts.append(
+                        RAGComponents._strip_lmstudio_channel_headers(
+                            str(block.get("text", ""))
+                        )
+                    )
                 else:
-                    text_parts.append(str(block))
+                    text_parts.append(
+                        RAGComponents._strip_lmstudio_channel_headers(str(block))
+                    )
             return "".join(text_parts)
 
-        return str(content)
+        return RAGComponents._strip_lmstudio_channel_headers(str(content))
 
     @staticmethod
     def _extract_text_from_responses_output_items(output_items: Any) -> str:
@@ -12592,6 +12648,7 @@ except Exception as e:
                         active_tool_runs: set[str] = set()
                         streamed_content_by_chat_run: dict[str, str] = {}
                         streamed_reasoning_by_chat_run: dict[str, str] = {}
+                        channel_header_buffers_by_chat_run: dict[str, str] = {}
                         _generating_tool_lines: dict[str, int] = {}
                         _generating_tool_names: dict[str, str] = {}
                         _tool_start_times: dict[str, tuple[float, str]] = {}
@@ -12960,6 +13017,23 @@ except Exception as e:
                                                 chunk.content
                                             )
                                         )
+                                        content_buffer_key = run_id or "__default__"
+                                        content, pending_channel_header = (
+                                            self._filter_lmstudio_channel_headers(
+                                                channel_header_buffers_by_chat_run.get(
+                                                    content_buffer_key, ""
+                                                ),
+                                                content,
+                                            )
+                                        )
+                                        if pending_channel_header:
+                                            channel_header_buffers_by_chat_run[
+                                                content_buffer_key
+                                            ] = pending_channel_header
+                                        else:
+                                            channel_header_buffers_by_chat_run.pop(
+                                                content_buffer_key, None
+                                            )
                                         if content:
                                             if content.strip():
                                                 attempt_emitted_content = True
@@ -13169,6 +13243,7 @@ except Exception as e:
                             synthesis_text_chunks = 0
                             streamed_synthesis_text = ""
                             streamed_synthesis_reasoning = ""
+                            synthesis_channel_header_buffer = ""
                             async for chunk in request_llm.astream(synthesis_messages):
                                 synthesis_chunk_count += 1
                                 reasoning_text = (
@@ -13184,6 +13259,12 @@ except Exception as e:
                                 if hasattr(chunk, "content") and chunk.content:
                                     content = self._extract_text_from_stream_content(
                                         chunk.content
+                                    )
+                                    content, synthesis_channel_header_buffer = (
+                                        self._filter_lmstudio_channel_headers(
+                                            synthesis_channel_header_buffer,
+                                            content,
+                                        )
                                     )
                                     if content:
                                         synthesis_text_chunks += 1
@@ -13203,6 +13284,19 @@ except Exception as e:
                                             ).keys()
                                         ),
                                     )
+                            if synthesis_channel_header_buffer:
+                                content, synthesis_channel_header_buffer = (
+                                    self._filter_lmstudio_channel_headers(
+                                        synthesis_channel_header_buffer,
+                                        "",
+                                        final=True,
+                                    )
+                                )
+                                if content:
+                                    synthesis_text_chunks += 1
+                                    streamed_synthesis_text += content
+                                    attempt_emitted_content = True
+                                    yield content
                             logger.info(
                                 "Synthesis stream completed: chunks=%d reasoning=%d text=%d emitted_content=%s",
                                 synthesis_chunk_count,
@@ -13355,6 +13449,7 @@ except Exception as e:
                     (self._app_settings or {}).get("llm_model", "")
                 )
                 try:
+                    direct_channel_header_buffer = ""
                     async for chunk in request_llm.astream(messages):
                         reasoning_text = self._extract_reasoning_from_stream_chunk(
                             chunk
@@ -13366,8 +13461,24 @@ except Exception as e:
                             content = self._extract_text_from_stream_content(
                                 chunk.content
                             )
+                            content, direct_channel_header_buffer = (
+                                self._filter_lmstudio_channel_headers(
+                                    direct_channel_header_buffer,
+                                    content,
+                                )
+                            )
                             if content:
                                 yield content
+                    if direct_channel_header_buffer:
+                        content, direct_channel_header_buffer = (
+                            self._filter_lmstudio_channel_headers(
+                                direct_channel_header_buffer,
+                                "",
+                                final=True,
+                            )
+                        )
+                        if content:
+                            yield content
                 finally:
                     debug_metadata = self._build_request_debug_metadata(
                         mode=request_context["mode"],
