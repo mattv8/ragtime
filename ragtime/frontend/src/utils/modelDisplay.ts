@@ -1,3 +1,5 @@
+import { normalizeProviderAlias } from './modelProviders';
+
 export const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
@@ -42,12 +44,12 @@ function toTitleCase(value: string): string {
 
 export function formatProviderDisplayName(value: string | null | undefined): string {
   const { provider } = parseScopedModelIdentifier(value);
-  const normalized = (provider || value || '').trim().toLowerCase();
+  const normalized = normalizeProviderAlias(provider || value || '') || '';
   if (CHAT_MODEL_PROVIDER_LABELS[normalized]) {
     return CHAT_MODEL_PROVIDER_LABELS[normalized];
   }
-  if (provider) {
-    return toTitleCase(provider);
+  if (provider || value) {
+    return toTitleCase(normalized || provider || value || '');
   }
   if (!normalized) {
     return 'Unknown';
@@ -63,7 +65,7 @@ export function formatModelDisplayName(value: string | null | undefined, provide
   }
 
   const providerHintParsed = parseScopedModelIdentifier(providerHint).provider || providerHint;
-  const scopedPrefix = (provider || providerHintParsed || '').trim();
+  const scopedPrefix = normalizeProviderAlias(provider || providerHintParsed || '') || '';
   const unscoped = scopedPrefix && fallback.startsWith(`${scopedPrefix}::`)
     ? fallback.slice(scopedPrefix.length + 2)
     : fallback;

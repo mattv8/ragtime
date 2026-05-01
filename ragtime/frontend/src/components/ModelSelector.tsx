@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
+import { normalizeProviderAlias } from '@/utils/modelProviders';
 
 // Generic model interface that both AvailableModel and LLMModel satisfy
 interface BaseModel {
@@ -55,11 +56,14 @@ function inferCompactFamilyLabel(model: BaseModel): string | null {
 }
 
 function inferCompactFamilyLabelFromId(modelId: string): string | null {
-  const normalizedId = modelId
+  const scopedId = modelId
     .toLowerCase()
-    .replace(/^.*::/, '')
-    .replace(/^anthropic\//, '')
-    .replace(/^github_copilot\//, '');
+    .replace(/^.*::/, '');
+  const slashIndex = scopedId.indexOf('/');
+  const normalizedId = slashIndex > 0
+    && ['anthropic', 'github_copilot'].includes(normalizeProviderAlias(scopedId.slice(0, slashIndex)) || '')
+    ? scopedId.slice(slashIndex + 1)
+    : scopedId;
   return inferCompactFamilyLabel({
     id: normalizedId,
     name: modelId,

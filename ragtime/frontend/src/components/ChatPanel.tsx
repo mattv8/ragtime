@@ -5386,14 +5386,14 @@ export function ChatPanel({
   const getContextLimit = useCallback((storedModel: string): number => {
     const parsed = parseStoredModelIdentifier(storedModel);
     const modelId = parsed.modelId.trim();
-    const provider = parsed.provider?.trim().toLowerCase();
+    const provider = normalizeProviderAlias(parsed.provider);
 
     if (!modelId) {
       return defaultContextLimit;
     }
 
     const exactProviderMatch = provider
-      ? availableModels.find((model) => model.provider.toLowerCase() === provider && model.id === modelId)
+      ? availableModels.find((model) => providersEquivalent(model.provider, provider) && model.id === modelId)
       : undefined;
     if (exactProviderMatch) {
       return exactProviderMatch.context_limit;
@@ -5406,11 +5406,12 @@ export function ChatPanel({
 
     const slashIndex = modelId.indexOf('/');
     if (slashIndex > 0) {
-      const inferredProvider = modelId.slice(0, slashIndex).toLowerCase();
+      const inferredProvider = normalizeProviderAlias(modelId.slice(0, slashIndex));
       const providerModelId = modelId.slice(slashIndex + 1);
 
       const providerScopedMatch = availableModels.find((model) =>
-        model.id === providerModelId && (provider ? model.provider.toLowerCase() === provider : model.provider.toLowerCase() === inferredProvider)
+        model.id === providerModelId
+        && providersEquivalent(model.provider, provider || inferredProvider)
       );
       if (providerScopedMatch) {
         return providerScopedMatch.context_limit;
