@@ -668,6 +668,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [deleteConfirmWorkspaceId, setDeleteConfirmWorkspaceId] = useState<string | null>(null);
   const [isWorkspaceMenuOpen, setIsWorkspaceMenuOpen] = useState(false);
+  const [workspaceDropdownPosition, setWorkspaceDropdownPosition] = useState<{ top: number; left: number } | null>(null);
   const [workspacePickerSearch, setWorkspacePickerSearch] = useState('');
   const workspacePickerSearchInputRef = useRef<HTMLInputElement>(null);
   const [showMembersModal, setShowMembersModal] = useState(false);
@@ -2595,10 +2596,23 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setEditingWorkspaceNameId(null);
       setWorkspaceNameDraft('');
       setWorkspacePickerSearch('');
-    } else {
-      // autofocus filter input when menu opens (only when search is rendered)
-      window.setTimeout(() => workspacePickerSearchInputRef.current?.focus(), 0);
+      return;
     }
+    // Compute fixed dropdown position so it draws over iframes without layout shift
+    function computePosition() {
+      if (!workspaceDropdownRef.current) return;
+      const rect = workspaceDropdownRef.current.getBoundingClientRect();
+      setWorkspaceDropdownPosition({ top: rect.bottom, left: rect.left });
+    }
+    computePosition();
+    window.addEventListener('scroll', computePosition, true);
+    window.addEventListener('resize', computePosition);
+    // autofocus filter input when menu opens (only when search is rendered)
+    window.setTimeout(() => workspacePickerSearchInputRef.current?.focus(), 0);
+    return () => {
+      window.removeEventListener('scroll', computePosition, true);
+      window.removeEventListener('resize', computePosition);
+    };
   }, [isWorkspaceMenuOpen]);
 
   useEffect(() => {
@@ -5953,7 +5967,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             </button>
 
             {isWorkspaceMenuOpen && workspaces.length > 0 && (
-              <div className="model-selector-dropdown userspace-workspace-dropdown">
+              <div
+                className="model-selector-dropdown userspace-workspace-dropdown"
+                style={workspaceDropdownPosition ? { top: workspaceDropdownPosition.top, left: workspaceDropdownPosition.left } : undefined}
+              >
                 {workspaces.length > 1 && (
                   <div className="model-selector-search">
                     <input

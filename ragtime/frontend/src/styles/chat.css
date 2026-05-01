@@ -810,16 +810,14 @@ textarea.chat-header-title-input {
   flex-shrink: 0;
 }
 .model-selector-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
+  position: fixed;
   min-width: 180px;
   /* Transparent shell — child cards carry all visual styling */
   background: transparent;
   border: none;
   border-radius: 0;
   box-shadow: none;
-  z-index: 1000;
+  z-index: 9000;
   display: flex;
   flex-direction: column;
   gap: 0px;
@@ -1454,6 +1452,7 @@ textarea.chat-header-title-input {
   overflow: visible;
   box-sizing: border-box;
   position: relative;
+  z-index: 800;
 }
 /* Content-driven auto-resize: smooth grow, fast shrink */
 .chat-input-area.auto-resizing {

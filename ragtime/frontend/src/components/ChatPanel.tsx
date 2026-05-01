@@ -5825,8 +5825,8 @@ export function ChatPanel({
          setConversations(prev => prev.map(c => c.id === conversationId ? previousConversation : c));
          syncConversationActiveTaskId(conversationId, previousConversation.active_task_id ?? null);
        }
-       setError(err.message || 'Failed to start task');
        clearActiveStreamingUi();
+       throw err;
     }
   }, [activeConversation, clearActiveStreamingUi, connectTaskStream, syncConversationActiveTaskId, workspaceId]);
 
@@ -6181,6 +6181,7 @@ export function ChatPanel({
     try {
       // Use background task streaming
       await startTaskAndStream(activeConversation.id, userMessage);
+      return true;
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to send message';
@@ -6198,6 +6199,7 @@ export function ChatPanel({
       setIsStreaming(false);
       setStreamingContent('');
       setStreamingEvents([]);
+      return false;
     }
   };
 
@@ -6220,9 +6222,16 @@ export function ChatPanel({
     // Convert attachments to content parts if present
     if (messageAttachments.length > 0) {
       const contentParts = attachmentsToContentParts(userMessage, messageAttachments);
-      sendMessageDirect(JSON.stringify(contentParts));
+      const sent = await sendMessageDirect(JSON.stringify(contentParts));
+      if (!sent) {
+        setInputValue(userMessage);
+        setAttachments(messageAttachments);
+      }
     } else {
-      sendMessageDirect(userMessage);
+      const sent = await sendMessageDirect(userMessage);
+      if (!sent) {
+        setInputValue(userMessage);
+      }
     }
   };
 

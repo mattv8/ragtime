@@ -91,6 +91,7 @@ export function ModelSelector<T extends BaseModel>({
   const [isOpen, setIsOpen] = useState(false);
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
   const [submenuPosition, setSubmenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -182,6 +183,24 @@ export function ModelSelector<T extends BaseModel>({
     }
     return selectedModel.name;
   }, [selectedModel, selectedModelId, placeholder, variant, groupedModels]);
+
+  // Compute and track fixed dropdown position so it draws over iframes without layout shift
+  const computeDropdownPosition = useCallback(() => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    setDropdownPosition({ top: rect.bottom, left: rect.left });
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    computeDropdownPosition();
+    window.addEventListener('scroll', computeDropdownPosition, true);
+    window.addEventListener('resize', computeDropdownPosition);
+    return () => {
+      window.removeEventListener('scroll', computeDropdownPosition, true);
+      window.removeEventListener('resize', computeDropdownPosition);
+    };
+  }, [isOpen, computeDropdownPosition]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -350,7 +369,11 @@ export function ModelSelector<T extends BaseModel>({
       </button>
 
       {isOpen && (
-        <div className="model-selector-dropdown" ref={dropdownRef}>
+        <div
+          className="model-selector-dropdown"
+          ref={dropdownRef}
+          style={dropdownPosition ? { top: dropdownPosition.top, left: dropdownPosition.left } : undefined}
+        >
           {/* Inline search filter — only shown when there's something to filter */}
           {models.length > 1 && (
             <div className="model-selector-search">
