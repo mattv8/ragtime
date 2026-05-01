@@ -6765,6 +6765,24 @@ def _build_scoped_model_identifier(model: AvailableModel) -> str:
     return f"{model.provider}::{model.id}"
 
 
+def _build_discovered_model_identifiers(models: List[AvailableModel]) -> List[str]:
+    """Build de-duplicated provider-scoped identifiers from discovered models."""
+    return list(
+        dict.fromkeys(_build_scoped_model_identifier(model) for model in models)
+    )
+
+
+def _model_id_variants(model_id: str) -> set[str]:
+    """Return comparable model ID variants for publisher-prefixed IDs."""
+    raw = str(model_id or "").strip().lstrip("/")
+    if not raw:
+        return set()
+    variants = {raw}
+    if "/" in raw:
+        variants.add(raw.split("/", 1)[1])
+    return variants
+
+
 def _find_available_model_for_identifier(
     models: List[AvailableModel], identifier: Optional[str]
 ) -> Optional[AvailableModel]:
@@ -7033,9 +7051,11 @@ async def _validate_conversation_model_selection(
     model_id: str,
     include_directory_models: bool = False,
     force_refresh: bool = False,
+    settings: Any = None,
 ) -> None:
     """Force-refresh provider discovery before accepting a picker model change."""
-    settings = await repository.get_settings()
+    if settings is None:
+        settings = await repository.get_settings()
     if not settings:
         raise HTTPException(
             status_code=503,
@@ -7076,33 +7096,125 @@ async def _validate_conversation_model_before_send(stored_model: str) -> None:
     if not model_id:
         return
 
+    settings = await repository.get_settings()
+    if not settings:
+        raise HTTPException(
+            status_code=503,
+            detail="Application settings are unavailable",
+        )
+
     if not provider:
-        settings = await repository.get_settings()
         provider = (
             str(getattr(settings, "llm_provider", "openai") or "openai").strip().lower()
         )
 
+    normalized_provider = normalize_provider_name(provider)
+    allowed_models = [
+        str(value).strip()
+        for value in (getattr(settings, "allowed_chat_models", None) or [])
+        if str(value).strip()
+    ]
+    if allowed_models and not _identifier_in_allowed_models(
+        f"{normalized_provider}::{model_id}", allowed_models
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Selected model has been removed from Chat Models. Select another model to continue.",
+        )
+
     await _validate_conversation_model_selection(
-        provider=provider,
+        provider=normalized_provider,
         model_id=model_id,
         include_directory_models=False,
-        force_refresh=(provider == "github_copilot"),
+        force_refresh=(normalized_provider == "github_copilot"),
+        settings=settings,
     )
+
+
+def _generation_failure_message(error: Exception) -> str:
+    """Return user-facing text for a generation failure event."""
+    detail = getattr(error, "detail", None)
+    if detail:
+        return str(detail)
+    text = str(error).strip()
+    return text or "Generation failed."
+
+
+async def _persist_generation_failure_message(
+    conversation_id: str, error: Exception
+) -> None:
+    """Persist a visible assistant error event without adding it to LLM history."""
+    message = _generation_failure_message(error)
+    try:
+        await repository.add_message(
+            conversation_id,
+            "assistant",
+            "",
+            events=[{"type": "error", "content": message}],
+        )
+    except Exception:
+        logger.exception("Failed to persist generation failure message")
+
+
+async def _validate_generation_ready_after_user_message(
+    conversation_id: str,
+    stored_model: str,
+) -> None:
+    """Validate generation readiness after the submitted user message is saved."""
+    try:
+        if not rag.is_ready:
+            raise HTTPException(
+                status_code=503, detail="RAG service initializing, please retry"
+            )
+        await _validate_conversation_model_before_send(stored_model)
+    except Exception as exc:
+        await _persist_generation_failure_message(conversation_id, exc)
+        raise
+
+
+async def _create_background_chat_task_after_user_message(
+    *,
+    conversation_id: str,
+    user_message: str,
+    user: User,
+    conv: Conversation,
+    blocked_tool_names: Optional[set[str]],
+    workspace_context: Optional[dict[str, Any]],
+) -> Any:
+    """Create a background chat task, persisting failed-generation state on errors."""
+    try:
+        input_est = _estimate_input_tokens(user_message)
+        attempt_id = await create_usage_attempt(
+            user_id=user.id,
+            request_source="ui",
+            provider=conv.model or "",
+            model=conv.model or "",
+            conversation_id=conversation_id,
+            input_tokens=input_est,
+        )
+
+        task_id = await background_task_service.start_task_async(
+            conversation_id,
+            user_message,
+            blocked_tool_names=blocked_tool_names,
+            workspace_context=workspace_context,
+            usage_attempt_id=attempt_id,
+        )
+        task = await repository.get_chat_task(task_id)
+        if not task:
+            raise HTTPException(
+                status_code=500, detail="Failed to create background task"
+            )
+        return task
+    except Exception as exc:
+        await _persist_generation_failure_message(conversation_id, exc)
+        raise
 
 
 def _identifier_in_allowed_models(identifier: str, allowed_models: List[str]) -> bool:
     """Check whether a candidate identifier matches any allowed model entry."""
     if not identifier:
         return False
-
-    def _model_id_variants(model_id: str) -> set[str]:
-        raw = str(model_id or "").strip().lstrip("/")
-        if not raw:
-            return set()
-        variants = {raw}
-        if "/" in raw:
-            variants.add(raw.split("/", 1)[1])
-        return variants
 
     candidate_provider, candidate_model_id = _parse_model_identifier(identifier)
     candidate_ids = _model_id_variants(candidate_model_id)
@@ -9101,9 +9213,7 @@ async def get_available_chat_models():
     if current_model_match:
         default_model = current_model_match.id
 
-    discovered_model_identifiers = list(
-        dict.fromkeys(_build_scoped_model_identifier(model) for model in all_models)
-    )
+    discovered_model_identifiers = _build_discovered_model_identifiers(all_models)
 
     # Filter by allowed models if specified.
     # Supports legacy model IDs and provider-scoped keys: provider::model_id.
@@ -9170,6 +9280,8 @@ async def get_available_chat_models():
         ),
         current_model=current_model,
         discovered_model_identifiers=discovered_model_identifiers,
+        allowed_models=allowed_models,
+        allowed_openapi_models=app_settings.allowed_openapi_models or [],
         models_loading=models_loading,
         copilot_refresh_in_progress=copilot_refresh_in_progress,
         provider_states=list(provider_states.values()),
@@ -9366,9 +9478,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
         models=all_models,
         default_model=app_settings.llm_model,
         current_model=app_settings.llm_model,
-        discovered_model_identifiers=list(
-            dict.fromkeys(_build_scoped_model_identifier(model) for model in all_models)
-        ),
+        discovered_model_identifiers=_build_discovered_model_identifiers(all_models),
         allowed_models=allowed_models,
         allowed_openapi_models=app_settings.allowed_openapi_models or [],
     )
@@ -9587,12 +9697,7 @@ async def _send_message_to_loaded_conversation(
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
 
-    if not rag.is_ready:
-        raise HTTPException(
-            status_code=503, detail="RAG service initializing, please retry"
-        )
-
-    await _validate_conversation_model_before_send(conv.model)
+    await _validate_generation_ready_after_user_message(conversation_id, conv.model)
 
     chat_history: list[BaseMessage] = []
     for msg_idx, msg in enumerate(conv.messages[:-1]):
@@ -9702,13 +9807,6 @@ async def _send_background_message_to_loaded_conversation(
             )
         )
 
-    if not rag.is_ready:
-        raise HTTPException(
-            status_code=503, detail="RAG service initializing, please retry"
-        )
-
-    await _validate_conversation_model_before_send(conv.model)
-
     user_message = request.message.strip()
     if not user_message:
         raise HTTPException(status_code=400, detail="Message is required")
@@ -9735,26 +9833,16 @@ async def _send_background_message_to_loaded_conversation(
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
 
-    input_est = _estimate_input_tokens(user_message)
-    attempt_id = await create_usage_attempt(
-        user_id=user.id,
-        request_source="ui",
-        provider=conv.model or "",
-        model=conv.model or "",
-        conversation_id=conversation_id,
-        input_tokens=input_est,
-    )
+    await _validate_generation_ready_after_user_message(conversation_id, conv.model)
 
-    task_id = await background_task_service.start_task_async(
-        conversation_id,
-        user_message,
+    task = await _create_background_chat_task_after_user_message(
+        conversation_id=conversation_id,
+        user_message=user_message,
+        user=user,
+        conv=conv,
         blocked_tool_names=blocked_tool_names,
         workspace_context=workspace_context,
-        usage_attempt_id=attempt_id,
     )
-    task = await repository.get_chat_task(task_id)
-    if not task:
-        raise HTTPException(status_code=500, detail="Failed to create background task")
 
     return {
         "message": ChatMessage(
@@ -11421,13 +11509,6 @@ async def send_message_stream(
         _workspace_chat_required_role(workspace_id),
     )
 
-    if not rag.is_ready:
-        raise HTTPException(
-            status_code=503, detail="RAG service initializing, please retry"
-        )
-
-    await _validate_conversation_model_before_send(conv.model)
-
     user_message = request.message.strip()
     if not user_message:
         raise HTTPException(status_code=400, detail="Message is required")
@@ -11440,6 +11521,8 @@ async def send_message_stream(
     conv = await repository.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=500, detail="Failed to store message")
+
+    await _validate_generation_ready_after_user_message(conversation_id, conv.model)
 
     # Build chat history for RAG
     chat_history: list[BaseMessage] = []
@@ -12012,13 +12095,6 @@ async def send_message_background(
         "editor",
     )
 
-    if not rag.is_ready:
-        raise HTTPException(
-            status_code=503, detail="RAG service initializing, please retry"
-        )
-
-    await _validate_conversation_model_before_send(conv.model)
-
     user_message = request.message.strip()
     if not user_message:
         raise HTTPException(status_code=400, detail="Message is required")
@@ -12033,37 +12109,16 @@ async def send_message_background(
     await repository.add_message(conversation_id, "user", user_message)
     schedule_title_generation(conversation_id, user_message)
 
-    if not rag.is_ready:
-        raise HTTPException(
-            status_code=503, detail="RAG service initializing, please retry"
-        )
+    await _validate_generation_ready_after_user_message(conversation_id, conv.model)
 
-    await _validate_conversation_model_before_send(conv.model)
-
-    # Create usage attempt before starting background task
-    input_est = _estimate_input_tokens(user_message)
-    attempt_id = await create_usage_attempt(
-        user_id=user.id,
-        request_source="ui",
-        provider=conv.model or "",
-        model=conv.model or "",
+    task = await _create_background_chat_task_after_user_message(
         conversation_id=conversation_id,
-        input_tokens=input_est,
-    )
-
-    # Start background task
-    task_id = await background_task_service.start_task_async(
-        conversation_id,
-        user_message,
+        user_message=user_message,
+        user=user,
+        conv=conv,
         blocked_tool_names=blocked_tool_names,
         workspace_context=workspace_context,
-        usage_attempt_id=attempt_id,
     )
-
-    # Get the created task
-    task = await repository.get_chat_task(task_id)
-    if not task:
-        raise HTTPException(status_code=500, detail="Failed to create background task")
 
     return _to_chat_task_response(task)
 

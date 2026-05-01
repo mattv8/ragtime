@@ -1,4 +1,8 @@
 import unittest
+from types import SimpleNamespace
+from unittest import mock
+
+import ragtime.indexer.routes as indexer_routes
 
 from ragtime.indexer.routes import (
     AvailableModel,
@@ -7,6 +11,7 @@ from ragtime.indexer.routes import (
     _assign_model_groups,
     _extract_version_parts,
     _group_models,
+    _identifier_in_allowed_models,
     _merge_llm_model_results,
     _parse_model_identifier,
 )
@@ -56,6 +61,24 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(
             _owned_by_from_openapi_model_id("openai", "ls::gemma-4-31b-it-mlx"),
             "lmstudio",
+        )
+
+    def test_allowed_model_matching_accepts_provider_alias_and_publisher_prefix(
+        self,
+    ) -> None:
+        self.assertTrue(
+            _identifier_in_allowed_models(
+                "github_copilot::openai/gpt-5.3-codex",
+                ["openai::gpt-5.3-codex"],
+            )
+        )
+
+    def test_allowed_model_matching_rejects_filtered_model(self) -> None:
+        self.assertFalse(
+            _identifier_in_allowed_models(
+                "github_copilot::openai/gpt-5.3-codex",
+                ["github_copilot::claude-sonnet-4.6"],
+            )
         )
 
     def test_extract_version_parts_prefers_model_id_detail(self) -> None:
@@ -261,6 +284,59 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(model.capabilities, ["reasoning"])
         self.assertEqual(model.supported_endpoints, ["/chat/completions"])
         self.assertEqual(merged.default_model, "claude-opus-4.7")
+
+
+class ModelSendEligibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_send_validation_rejects_model_removed_from_chat_models(self) -> None:
+        settings = SimpleNamespace(
+            allowed_chat_models=["github_copilot::claude-sonnet-4.6"],
+            llm_provider="github_copilot",
+        )
+
+        with (
+            mock.patch.object(
+                indexer_routes.repository,
+                "get_settings",
+                mock.AsyncMock(return_value=settings),
+            ),
+            mock.patch.object(
+                indexer_routes,
+                "_validate_conversation_model_selection",
+                mock.AsyncMock(),
+            ) as validate_live_model,
+        ):
+            with self.assertRaises(indexer_routes.HTTPException) as raised:
+                await indexer_routes._validate_conversation_model_before_send(
+                    "github_copilot::openai/gpt-5.3-codex"
+                )
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("Select another model", str(raised.exception.detail))
+        validate_live_model.assert_not_awaited()
+
+    async def test_send_validation_allows_allowed_provider_alias_variant(self) -> None:
+        settings = SimpleNamespace(
+            allowed_chat_models=["openai::gpt-5.3-codex"],
+            llm_provider="github_copilot",
+        )
+
+        with (
+            mock.patch.object(
+                indexer_routes.repository,
+                "get_settings",
+                mock.AsyncMock(return_value=settings),
+            ),
+            mock.patch.object(
+                indexer_routes,
+                "_validate_conversation_model_selection",
+                mock.AsyncMock(),
+            ) as validate_live_model,
+        ):
+            await indexer_routes._validate_conversation_model_before_send(
+                "github_copilot::openai/gpt-5.3-codex"
+            )
+
+        validate_live_model.assert_awaited_once()
 
 
 if __name__ == "__main__":

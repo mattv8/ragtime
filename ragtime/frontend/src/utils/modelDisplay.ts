@@ -1,4 +1,5 @@
-import { normalizeProviderAlias } from './modelProviders';
+import { normalizeProviderAlias, parseScopedModelIdentifier } from './modelProviders';
+export { parseScopedModelIdentifier } from './modelProviders';
 
 export const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
@@ -13,21 +14,6 @@ export const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
 export const CHAT_MODEL_DISPLAY_LABELS: Record<string, string> = {
   'gpt-5.3-codex': 'GPT 5.3 Codex',
 };
-
-export function parseScopedModelIdentifier(value: string | null | undefined): { provider: string | null; modelId: string } {
-  const raw = (value || '').trim();
-  if (!raw) {
-    return { provider: null, modelId: '' };
-  }
-  if (!raw.includes('::')) {
-    return { provider: null, modelId: raw };
-  }
-  const [provider, ...rest] = raw.split('::');
-  return {
-    provider: provider.trim() || null,
-    modelId: rest.join('::').trim(),
-  };
-}
 
 function toTitleCase(value: string): string {
   return value

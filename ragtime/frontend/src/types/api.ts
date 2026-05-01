@@ -1629,7 +1629,12 @@ export interface ReasoningEvent {
   duration_seconds?: number;
 }
 
-export type MessageEvent = ContentEvent | ToolCallEvent | ReasoningEvent;
+export interface ErrorMessageEvent {
+  type: 'error';
+  content: string;
+}
+
+export type MessageEvent = ContentEvent | ToolCallEvent | ReasoningEvent | ErrorMessageEvent;
 
 // Multimodal content types
 export interface TextContent {

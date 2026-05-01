@@ -155,6 +155,36 @@ async def _persist_partial_assistant_message(
     return True
 
 
+async def _close_stream_handles(
+    stream_iter: Any,
+    stream: Any,
+    task_id: str,
+) -> None:
+    """Best-effort close of async stream handles to stop upstream generation."""
+    closers: list[tuple[str, Any]] = []
+
+    iter_aclose = getattr(stream_iter, "aclose", None)
+    if callable(iter_aclose):
+        closers.append(("stream iterator", iter_aclose))
+
+    stream_aclose = getattr(stream, "aclose", None)
+    if callable(stream_aclose) and stream is not stream_iter:
+        closers.append(("stream", stream_aclose))
+
+    for label, closer in closers:
+        try:
+            result = closer()
+            if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+                await result
+        except Exception as close_err:
+            logger.debug(
+                "Failed to close %s for background task %s: %s",
+                label,
+                task_id,
+                close_err,
+            )
+
+
 def parse_message_content(content: str) -> Union[str, List[Dict[str, Any]]]:
     """
     Parse message content that might be a JSON-encoded multimodal payload.
@@ -919,77 +949,119 @@ class BackgroundTaskService:
                     message_index=len(conv.messages),
                 )
                 _stream_iter = _stream.__aiter__()
-                while True:
-                    try:
-                        event = await asyncio.wait_for(
-                            _stream_iter.__anext__(),
-                            timeout=_STREAM_INACTIVITY_TIMEOUT,
-                        )
-                    except StopAsyncIteration:
-                        break
-                    except asyncio.TimeoutError as exc:
-                        if full_response.strip():
-                            # Edge case: some provider streams can stall after
-                            # emitting usable assistant text (and occasionally
-                            # after a final tool start), never sending an
-                            # explicit stream end event.
-                            logger.warning(
-                                "Task %s stream inactive for %ss after partial output; "
-                                "treating as graceful stream end "
-                                "(content_chars=%d, events=%d, running_tools=%d)",
-                                task_id,
-                                _STREAM_INACTIVITY_TIMEOUT,
-                                len(full_response),
-                                len(events),
-                                len(running_tool_indices),
+                try:
+                    while True:
+                        try:
+                            event = await asyncio.wait_for(
+                                _stream_iter.__anext__(),
+                                timeout=_STREAM_INACTIVITY_TIMEOUT,
                             )
-
-                            # Close any unresolved running tool rows so the
-                            # stored event log does not leave a perpetual
-                            # "running" tool bubble.
-                            for tool_idx in list(running_tool_indices.values()):
-                                if (
-                                    0 <= tool_idx < len(events)
-                                    and events[tool_idx].get("type") == "tool"
-                                    and "output" not in events[tool_idx]
-                                ):
-                                    events[tool_idx][
-                                        "output"
-                                    ] = "Tool completed or stream ended without a final tool_end event."
-                            running_tool_indices.clear()
+                        except StopAsyncIteration:
                             break
+                        except asyncio.TimeoutError as exc:
+                            if full_response.strip():
+                                # Edge case: some provider streams can stall after
+                                # emitting usable assistant text (and occasionally
+                                # after a final tool start), never sending an
+                                # explicit stream end event.
+                                logger.warning(
+                                    "Task %s stream inactive for %ss after partial output; "
+                                    "treating as graceful stream end "
+                                    "(content_chars=%d, events=%d, running_tools=%d)",
+                                    task_id,
+                                    _STREAM_INACTIVITY_TIMEOUT,
+                                    len(full_response),
+                                    len(events),
+                                    len(running_tool_indices),
+                                )
 
-                        raise TimeoutError(
-                            f"LLM/agent stream produced no output for "
-                            f"{_STREAM_INACTIVITY_TIMEOUT}s - possible hung API call"
-                        ) from exc
+                                # Close any unresolved running tool rows so the
+                                # stored event log does not leave a perpetual
+                                # "running" tool bubble.
+                                for tool_idx in list(running_tool_indices.values()):
+                                    if (
+                                        0 <= tool_idx < len(events)
+                                        and events[tool_idx].get("type") == "tool"
+                                        and "output" not in events[tool_idx]
+                                    ):
+                                        events[tool_idx][
+                                            "output"
+                                        ] = "Tool completed or stream ended without a final tool_end event."
+                                running_tool_indices.clear()
+                                break
 
-                    if self._shutdown:
-                        await repository.update_chat_task_status(
-                            task_id,
-                            ChatTaskStatus.interrupted,
-                            error_message=DEV_SERVER_INTERRUPT_MESSAGE,
-                        )
-                        await task_event_bus.publish(
-                            task_id,
-                            {
-                                "completed": True,
-                                "status": "interrupted",
-                                "error": DEV_SERVER_INTERRUPT_MESSAGE,
-                            },
-                        )
-                        await task_event_bus.publish(
-                            f"conversation:{conversation_id}",
-                            {
-                                "event": "task_completed",
-                                "task_id": task_id,
-                                "status": "interrupted",
-                                "error": DEV_SERVER_INTERRUPT_MESSAGE,
-                            },
-                        )
-                        return
+                            raise TimeoutError(
+                                f"LLM/agent stream produced no output for "
+                                f"{_STREAM_INACTIVITY_TIMEOUT}s - possible hung API call"
+                            ) from exc
 
-                    if isinstance(event, dict):
+                        if self._shutdown:
+                            await repository.update_chat_task_status(
+                                task_id,
+                                ChatTaskStatus.interrupted,
+                                error_message=DEV_SERVER_INTERRUPT_MESSAGE,
+                            )
+                            await task_event_bus.publish(
+                                task_id,
+                                {
+                                    "completed": True,
+                                    "status": "interrupted",
+                                    "error": DEV_SERVER_INTERRUPT_MESSAGE,
+                                },
+                            )
+                            await task_event_bus.publish(
+                                f"conversation:{conversation_id}",
+                                {
+                                    "event": "task_completed",
+                                    "task_id": task_id,
+                                    "status": "interrupted",
+                                    "error": DEV_SERVER_INTERRUPT_MESSAGE,
+                                },
+                            )
+                            return
+
+                        if not isinstance(event, dict):
+                            # Text token
+                            token = event
+                            full_response += token
+
+                            if reasoning_block_started_at is not None:
+                                finalize_reasoning_block(
+                                    events, reasoning_block_started_at
+                                )
+                                reasoning_block_started_at = None
+
+                            # Add to events
+                            if events and events[-1].get("type") == "content":
+                                events[-1]["content"] += token
+                            else:
+                                events.append({"type": "content", "content": token})
+
+                            # Update streaming state less frequently (every 400ms) for text tokens
+                            # Tool events are still updated immediately above
+                            now = datetime.utcnow()
+                            if (now - last_update).total_seconds() > 0.4:
+                                result = (
+                                    await repository.update_chat_task_streaming_state(
+                                        task_id,
+                                        full_response,
+                                        events,
+                                        tool_calls,
+                                        hit_max_iterations,
+                                        current_version,
+                                    )
+                                )
+                                if result and result.streaming_state:
+                                    current_version = result.streaming_state.version
+                                    await task_event_bus.publish(
+                                        task_id, result.streaming_state.dict()
+                                    )
+                                    await _notify_conversation_progress(
+                                        conversation_id, task_id
+                                    )
+                                last_update = now
+                            continue
+
                         event_type = event.get("type")
 
                         if event_type == "tool_start":
@@ -1196,42 +1268,8 @@ class BackgroundTaskService:
                                     reasoning_text,
                                     reasoning_block_started_at,
                                 )
-                    else:
-                        # Text token
-                        token = event
-                        full_response += token
-
-                        if reasoning_block_started_at is not None:
-                            finalize_reasoning_block(events, reasoning_block_started_at)
-                            reasoning_block_started_at = None
-
-                        # Add to events
-                        if events and events[-1].get("type") == "content":
-                            events[-1]["content"] += token
-                        else:
-                            events.append({"type": "content", "content": token})
-
-                    # Update streaming state less frequently (every 400ms) for text tokens
-                    # Tool events are still updated immediately above
-                    now = datetime.utcnow()
-                    if (now - last_update).total_seconds() > 0.4:
-                        result = await repository.update_chat_task_streaming_state(
-                            task_id,
-                            full_response,
-                            events,
-                            tool_calls,
-                            hit_max_iterations,
-                            current_version,
-                        )
-                        if result and result.streaming_state:
-                            current_version = result.streaming_state.version
-                            await task_event_bus.publish(
-                                task_id, result.streaming_state.dict()
-                            )
-                            await _notify_conversation_progress(
-                                conversation_id, task_id
-                            )
-                        last_update = now
+                finally:
+                    await _close_stream_handles(_stream_iter, _stream, task_id)
 
                 # Task completed successfully - save final state
                 if not full_response.strip():

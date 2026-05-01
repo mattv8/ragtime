@@ -1169,8 +1169,12 @@ class _CopilotChatOpenAI(ChatOpenAI):
 
         body = _CopilotChatOpenAI._get_error_body(exc)
         if isinstance(body, dict):
-            error_obj = body.get("error", {})
-            return str(error_obj.get("code", "") or "").lower()
+            error_obj = body.get("error")
+            if isinstance(error_obj, dict):
+                return str(error_obj.get("code", "") or "").lower()
+            # Some providers emit plain-string error payloads.
+            # Fall back to top-level code (if present) instead of assuming mapping.
+            return str(body.get("code", "") or "").lower()
 
         return ""
 
@@ -1245,10 +1249,11 @@ class _CopilotChatOpenAI(ChatOpenAI):
 
         body = _CopilotChatOpenAI._get_error_body(exc)
         if isinstance(body, dict):
-            error_obj = body.get("error", {})
-            param = str(error_obj.get("param", "") or "").lower()
-            if param == "reasoning.summary":
-                return True
+            error_obj = body.get("error")
+            if isinstance(error_obj, dict):
+                param = str(error_obj.get("param", "") or "").lower()
+                if param == "reasoning.summary":
+                    return True
         return False
 
     @staticmethod
@@ -1259,10 +1264,11 @@ class _CopilotChatOpenAI(ChatOpenAI):
 
         body = _CopilotChatOpenAI._get_error_body(exc)
         if isinstance(body, dict):
-            error_obj = body.get("error", {})
-            param = str(error_obj.get("param", "") or "").lower()
-            if param == "reasoning.effort":
-                return True
+            error_obj = body.get("error")
+            if isinstance(error_obj, dict):
+                param = str(error_obj.get("param", "") or "").lower()
+                if param == "reasoning.effort":
+                    return True
         return False
 
     @staticmethod
@@ -1274,8 +1280,13 @@ class _CopilotChatOpenAI(ChatOpenAI):
 
         body = _CopilotChatOpenAI._get_error_body(exc)
         if isinstance(body, dict):
-            error_obj = body.get("error", {})
-            error_message = str(error_obj.get("message", "") or "").lower()
+            error_obj = body.get("error")
+            if isinstance(error_obj, dict):
+                error_message = str(error_obj.get("message", "") or "").lower()
+            elif isinstance(error_obj, str):
+                error_message = error_obj.lower()
+            else:
+                error_message = ""
             if "token expired" in error_message or "ide token expired" in error_message:
                 return True
 
@@ -2698,7 +2709,9 @@ class RAGComponents:
                 api_key=(
                     "llama-cpp-local"
                     if provider_normalized == "llama_cpp"
-                    else (self._app_settings.get("lmstudio_api_key") or "lmstudio-local")
+                    else (
+                        self._app_settings.get("lmstudio_api_key") or "lmstudio-local"
+                    )
                 ),
                 base_url=f"{base_url}/v1",
                 max_tokens=max_tokens,

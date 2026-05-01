@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { Info } from 'lucide-react';
+import { AlertCircle, Info } from 'lucide-react';
 
 import { api } from '@/api';
 import type { AuthStatus, ChatTask, Conversation, MessageEvent, PublicShareTargetResponse, SharedConversationResponse, User } from '@/types';
@@ -526,6 +526,15 @@ function SharedChatSurface({
                                       return (
                                         <div key={`shared-content-${idx}-${eventIdx}`} className="chat-message-text markdown-content">
                                           <MemoizedMarkdown content={event.content} />
+                                        </div>
+                                      );
+                                    }
+
+                                    if (event.type === 'error') {
+                                      return (
+                                        <div key={`shared-error-${idx}-${eventIdx}`} className="chat-message-generation-error" role="status">
+                                          <AlertCircle size={14} aria-hidden="true" />
+                                          <span>Generation failed: {event.content}</span>
                                         </div>
                                       );
                                     }

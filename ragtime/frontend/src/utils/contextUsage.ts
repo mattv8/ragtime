@@ -1,4 +1,5 @@
 import type { ChatMessage } from '@/types';
+import { parseScopedModelIdentifier } from './modelProviders';
 
 const CHARS_PER_TOKEN = 4;
 
@@ -8,19 +9,10 @@ export interface ParsedStoredModel {
 }
 
 export function parseStoredModelIdentifier(storedModel: string): ParsedStoredModel {
-  if (!storedModel) {
-    return { modelId: '' };
-  }
-
-  const delimiterIndex = storedModel.indexOf('::');
-  if (delimiterIndex <= 0) {
-    return { modelId: storedModel };
-  }
-
-  return {
-    provider: storedModel.slice(0, delimiterIndex),
-    modelId: storedModel.slice(delimiterIndex + 2),
-  };
+  const parsed = parseScopedModelIdentifier(storedModel);
+  return parsed.provider
+    ? { provider: parsed.provider, modelId: parsed.modelId }
+    : { modelId: parsed.modelId };
 }
 
 export function estimateTokens(text: string): number {

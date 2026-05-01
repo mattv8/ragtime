@@ -108,6 +108,71 @@ export function providersEquivalent(selected?: string | null, actual?: string | 
   return ['openai', 'github_copilot'].includes(selectedNorm) && ['openai', 'github_copilot'].includes(actualNorm);
 }
 
+export function toProviderScopedModelKey(provider: string | null | undefined, modelId: string): string {
+  const normalizedProvider = normalizeProviderAlias(provider);
+  return normalizedProvider ? `${normalizedProvider}::${modelId}` : modelId;
+}
+
+export interface ParsedModelIdentifier {
+  provider: string | null;
+  modelId: string;
+}
+
+export function parseScopedModelIdentifier(value: string | null | undefined): ParsedModelIdentifier {
+  const raw = (value || '').trim();
+  if (!raw) {
+    return { provider: null, modelId: '' };
+  }
+  const delimiterIndex = raw.indexOf('::');
+  if (delimiterIndex <= 0) {
+    return { provider: null, modelId: raw };
+  }
+  return {
+    provider: raw.slice(0, delimiterIndex).trim() || null,
+    modelId: raw.slice(delimiterIndex + 2).trim(),
+  };
+}
+
+function modelIdVariants(modelId: string): string[] {
+  const raw = (modelId || '').trim();
+  if (!raw) {
+    return [];
+  }
+
+  const variants = new Set<string>([raw]);
+  if (raw.includes('/')) {
+    variants.add(raw.split('/', 2)[1]);
+  }
+  return [...variants].filter(Boolean);
+}
+
+function modelIdentifierMatches(candidate: string, configuredIdentifier: string): boolean {
+  const parsedCandidate = parseScopedModelIdentifier(candidate);
+  const parsedConfigured = parseScopedModelIdentifier(configuredIdentifier);
+  const candidateIds = modelIdVariants(parsedCandidate.modelId || candidate);
+  const configuredIds = modelIdVariants(parsedConfigured.modelId || configuredIdentifier);
+
+  if (!candidateIds.some((modelId) => configuredIds.includes(modelId))) {
+    return false;
+  }
+
+  const candidateProvider = normalizeProviderAlias(parsedCandidate.provider);
+  const configuredProvider = normalizeProviderAlias(parsedConfigured.provider);
+  if (!candidateProvider || !configuredProvider) {
+    return true;
+  }
+
+  return providersEquivalent(candidateProvider, configuredProvider);
+}
+
+export function modelIdentifierInList(identifier: string | null | undefined, identifiers: string[] | null | undefined): boolean {
+  if (!identifier || !identifiers?.length) {
+    return false;
+  }
+
+  return identifiers.some((candidate) => modelIdentifierMatches(candidate, identifier));
+}
+
 export function buildProviderBaseUrl(
   connection: ProviderConnectionDescriptor,
   protocol?: string | null,

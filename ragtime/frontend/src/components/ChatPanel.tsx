@@ -15,8 +15,10 @@ import { ResizeHandle } from './ResizeHandle';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
 import {
   KNOWN_PROVIDER_KEYS,
+  modelIdentifierInList,
   normalizeProviderAlias,
   providersEquivalent,
+  toProviderScopedModelKey,
 } from '@/utils/modelProviders';
 import {
   formatChatTimestamp,
@@ -307,9 +309,10 @@ interface ChartConfig {
 // Global URL regex for efficient linkification
 const URL_PATTERN = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s])/g;
 
-function toProviderScopedModelKey(provider: string | null | undefined, modelId: string): string {
-  const normalizedProvider = normalizeProviderAlias(provider);
-  return normalizedProvider ? `${normalizedProvider}::${modelId}` : modelId;
+const MODEL_REMOVED_FROM_CHAT_MODELS_MESSAGE = 'Selected model has been removed from Chat Models. Select another model to continue.';
+
+function branchStartsGeneration(branchKind: ConversationBranchKind): boolean {
+  return branchKind === 'edit' || branchKind === 'replay';
 }
 
 type ResolvedConversationModelSelection = {
@@ -4072,7 +4075,9 @@ export function ChatPanel({
   const {
     models: availableModels,
     loading: modelsLoading,
+    meta: modelsMeta,
     refresh: refreshModels,
+    awaitReady: awaitModelsReady,
   } = useAvailableModels();
   const [isWorkspaceConversationMenuOpen, setIsWorkspaceConversationMenuOpen] = useState(false);
   const [workspaceConversationSearchQuery, setWorkspaceConversationSearchQuery] = useState('');
@@ -6077,6 +6082,43 @@ export function ChatPanel({
     sendMessageDirect('continue');
   };
 
+  const getBranchSendBlockReason = useCallback(async (
+    branchKind: ConversationBranchKind,
+    conversation: Conversation | null,
+  ): Promise<string | null> => {
+    if (!branchStartsGeneration(branchKind) || !conversation) {
+      return null;
+    }
+
+    const modelState = modelsLoading
+      ? await awaitModelsReady()
+      : { models: availableModels, meta: modelsMeta };
+    const allowedModels = modelState.meta?.allowed_models ?? [];
+    if (!allowedModels.length) {
+      return null;
+    }
+
+    const selection = resolveConversationModelSelection(conversation.model || '', modelState.models);
+    if (!selection.modelId) {
+      return null;
+    }
+
+    const matchedIdentifier = selection.matchedModel
+      ? toProviderScopedModelKey(selection.matchedModel.provider, selection.matchedModel.id)
+      : null;
+    const parsed = parseStoredModelIdentifier(conversation.model || '');
+    const normalizedProvider = normalizeProviderAlias(parsed.provider)
+      || (selection.modelId.includes('/') ? normalizeProviderAlias(selection.modelId.split('/', 1)[0]) : null)
+      || null;
+    const scopedIdentifier = matchedIdentifier ?? toProviderScopedModelKey(normalizedProvider, selection.modelId);
+
+    if (!modelIdentifierInList(scopedIdentifier, allowedModels)) {
+      return MODEL_REMOVED_FROM_CHAT_MODELS_MESSAGE;
+    }
+
+    return null;
+  }, [availableModels, awaitModelsReady, modelsLoading, modelsMeta]);
+
   // Direct message send - bypasses inputValue state for programmatic sending
   const sendMessageDirect = async (message: string) => {
     if (!message.trim() || !activeConversation || isStreaming || isReadOnly) return;
@@ -6128,14 +6170,20 @@ export function ChatPanel({
                           errorMessage.toLowerCase().includes('connection') ||
                           errorMessage.toLowerCase().includes('network') ||
                           errorMessage.toLowerCase().includes('fetch');
+      const messagePersisted = Boolean(
+        err
+        && typeof err === 'object'
+        && 'messagePersisted' in err
+        && (err as { messagePersisted?: boolean }).messagePersisted,
+      );
 
-      setIsConnectionError(isConnError);
-      setError(errorMessage);
+      setIsConnectionError(!messagePersisted && isConnError);
+      setError(messagePersisted ? null : errorMessage);
 
       setIsStreaming(false);
       setStreamingContent('');
       setStreamingEvents([]);
-      return Boolean(err && typeof err === 'object' && 'messagePersisted' in err && (err as { messagePersisted?: boolean }).messagePersisted);
+      return messagePersisted;
     }
   };
 
@@ -6241,7 +6289,12 @@ export function ChatPanel({
     branchKind: ConversationBranchKind,
   ) => {
     if (branchPointIndex < 0 || branchPointIndex >= messageCount) {
-      return;
+      return null;
+    }
+
+    const blockReason = await getBranchSendBlockReason(branchKind, activeConversation);
+    if (blockReason) {
+      throw new Error(blockReason);
     }
 
     const createdBranch = await api.createConversationBranch(
@@ -6324,7 +6377,9 @@ export function ChatPanel({
         console.warn('onSnapshotsMaybeChanged threw:', notifyErr);
       }
     }
-  }, [workspaceId, onSnapshotsMaybeChanged, refreshBranchPoints]);
+
+    return createdBranch;
+  }, [activeConversation, workspaceId, onSnapshotsMaybeChanged, refreshBranchPoints, getBranchSendBlockReason]);
 
   // Walk back from messageIdx to the nearest user message. Branches are
   // always anchored at user messages so the branch nav appears on a single,
@@ -6422,8 +6477,10 @@ export function ChatPanel({
 
     const userMsg = activeConversation.messages[userIdx];
     const truncateAt = userIdx;
+    const previousConversation = activeConversation;
+    let replayBranch: ConversationBranchSummary | null = null;
     try {
-      await createBranchForMessageMutation(
+      replayBranch = await createBranchForMessageMutation(
         conversationId,
         truncateAt,
         activeConversation.messages.length,
@@ -6469,14 +6526,21 @@ export function ChatPanel({
       setIsStreaming(false);
       setStreamingContent('');
       setStreamingEvents([]);
-      try {
-        const refreshed = await api.getConversation(conversationId, workspaceId);
-        setActiveConversation(refreshed);
-        setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
-        syncConversationActiveTaskId(conversationId, refreshed.active_task_id ?? null);
-      } catch (refreshErr) {
-        console.error('Failed to refresh conversation after replay error:', refreshErr);
+      if (replayBranch) {
+        try {
+          const restored = await api.switchConversationBranch(conversationId, replayBranch.id, workspaceId);
+          setActiveConversation(restored);
+          setConversations(prev => prev.map(c => c.id === restored.id ? restored : c));
+          syncConversationActiveTaskId(conversationId, restored.active_task_id ?? null);
+          void refreshBranchPoints(conversationId);
+          return;
+        } catch (restoreErr) {
+          console.error('Failed to restore replay branch after replay error:', restoreErr);
+        }
       }
+      setActiveConversation(previousConversation);
+      setConversations(prev => prev.map(c => c.id === previousConversation.id ? previousConversation : c));
+      syncConversationActiveTaskId(conversationId, previousConversation.active_task_id ?? null);
     }
   }, [activeConversation, isStreaming, isReadOnly, createBranchForMessageMutation, findUserMessageIndexAtOrBefore, workspaceId, refreshBranchPoints, connectTaskStream, syncConversationActiveTaskId]);
 
@@ -6576,11 +6640,7 @@ export function ChatPanel({
 
     const truncateAt = Math.max(0, editingMessageIdx);
 
-    // Clear the edit state
-    setEditingMessageIdx(null);
-    setEditMessageContent('');
-    setEditMessageAttachments([]);
-    setError(null);
+    let createdBranch = false;
 
     try {
       // 1. Create a branch to preserve the original messages
@@ -6590,6 +6650,13 @@ export function ChatPanel({
         activeConversation.messages.length,
         'edit',
       );
+      createdBranch = true;
+
+      // Clear the edit state after branch creation succeeds.
+      setEditingMessageIdx(null);
+      setEditMessageContent('');
+      setEditMessageAttachments([]);
+      setError(null);
 
       // 2. Local Optimistic Update
       const messagesToKeep = activeConversation.messages.slice(0, truncateAt);
@@ -6642,13 +6709,15 @@ export function ChatPanel({
       setStreamingContent('');
       setStreamingEvents([]);
 
-      // Restore authoritative state from server on error
-      try {
-        const refreshed = await api.getConversation(conversationId, workspaceId);
-        setActiveConversation(refreshed);
-        setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
-      } catch (refreshErr) {
-        console.error('Failed to refresh conversation after edit error:', refreshErr);
+      if (createdBranch) {
+        // Restore authoritative state from server on error after branch mutation.
+        try {
+          const refreshed = await api.getConversation(conversationId, workspaceId);
+          setActiveConversation(refreshed);
+          setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
+        } catch (refreshErr) {
+          console.error('Failed to refresh conversation after edit error:', refreshErr);
+        }
       }
     }
   };
@@ -7569,6 +7638,13 @@ export function ChatPanel({
                                         result.push(
                                           <div key={`event-${evIdx}`} className="chat-message-text markdown-content">
                                             <MemoizedMarkdown content={ev.content} />
+                                          </div>
+                                        );
+                                      } else if (ev.type === 'error') {
+                                        result.push(
+                                          <div key={`event-${evIdx}`} className="chat-message-generation-error" role="status">
+                                            <AlertCircle size={14} aria-hidden="true" />
+                                            <span>Generation failed: {ev.content}</span>
                                           </div>
                                         );
                                       }
