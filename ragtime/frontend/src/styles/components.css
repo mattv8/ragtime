@@ -1404,7 +1404,8 @@ textarea:focus {
 }
 
 .tool-group-tab-input {
-  width: 100px;
+  width: 120px;
+  min-height: 1lh;
   border: none;
   background: transparent;
   font-size: var(--text-sm);
@@ -1412,6 +1413,18 @@ textarea:focus {
   color: var(--color-text);
   outline: none;
   padding: 0;
+  resize: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.4;
+  font-family: inherit;
+  display: block;
+  field-sizing: content;
+}
+
+.tool-group-tab.editing {
+  align-items: flex-start;
 }
 
 .tool-group-tab-count {
@@ -1512,11 +1525,53 @@ textarea:focus {
 
 /* Drag-and-drop feedback */
 .tool-card-drag-wrap {
+  position: relative;
   transition: opacity 0.15s ease;
 }
 
 .tool-card-drag-wrap.dragging {
   opacity: 0.4;
+}
+
+/* Stack/group indicator — hovering over center of another card */
+.tool-card-drag-wrap.group-target {
+  outline: 2px solid var(--color-accent, #4a90e2);
+  outline-offset: -2px;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent, #4a90e2) 20%, transparent);
+}
+
+.tool-card-drag-wrap.group-target::after {
+  content: 'Drop to group';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-accent, #4a90e2);
+  background: color-mix(in srgb, var(--color-accent, #4a90e2) 12%, transparent);
+  border-radius: var(--radius-lg);
+  pointer-events: none;
+}
+
+/* Placeholder slot to clearly show where the dragged card will be inserted */
+.tool-reorder-drop-slot {
+  min-height: 132px;
+  border: 2px dashed var(--color-accent, #4a90e2);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-accent, #4a90e2) 10%, transparent);
+  animation: tool-reorder-slot-pulse 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes tool-reorder-slot-pulse {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 0.9;
+  }
 }
 
 .tool-ungrouped-drop-zone {

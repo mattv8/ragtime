@@ -359,6 +359,9 @@ model ToolConfig {
   // Security
   allowWrite Boolean @default(false) @map("allow_write")
 
+  // Display ordering (drag-and-drop sort within a group or ungrouped list)
+  sortOrder Int @default(0) @map("sort_order")
+
   // Connection test results
   lastTestAt     DateTime? @map("last_test_at")
   lastTestResult Boolean?  @map("last_test_result")

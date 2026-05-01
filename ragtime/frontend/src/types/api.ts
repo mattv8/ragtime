@@ -1065,6 +1065,7 @@ export interface ToolConfig {
   timeout: number;
   timeout_max_seconds: number;
   allow_write: boolean;
+  sort_order: number;
   group_id?: string | null;
   group_name?: string | null;
   disabled_reason?: string;
@@ -1118,7 +1119,12 @@ export interface UpdateToolConfigRequest {
   timeout?: number;
   timeout_max_seconds?: number;
   allow_write?: boolean;
+  sort_order?: number;
   group_id?: string | null;
+}
+
+export interface ReorderToolsRequest {
+  tool_ids: string[];
 }
 
 export interface ToolTestRequest {

@@ -16,6 +16,8 @@ type EditingField = 'name' | 'description' | null;
 
 // Heartbeat polling interval (15 seconds)
 const HEARTBEAT_INTERVAL = 15000;
+const DRAG_REORDER_PREVIEW_DELAY_MS = 80;
+type DragPreviewTarget = { toolId: string; insertBefore: boolean };
 
 function hasSchemaIndexingEnabled(tool: ToolConfig): boolean {
   return (tool.tool_type === 'postgres' || tool.tool_type === 'mssql' || tool.tool_type === 'mysql') &&
@@ -36,6 +38,15 @@ function formatMountSourceInterval(seconds: number): string {
   if (seconds < 86400) { const h = Math.floor(seconds / 3600); const m = Math.floor((seconds % 3600) / 60); return m > 0 ? `${h}h ${m}m` : `${h}h`; }
   const d = Math.floor(seconds / 86400); const h = Math.floor((seconds % 86400) / 3600);
   return h > 0 ? `${d}d ${h}h` : `${d}d`;
+}
+
+function getSuggestedGroupName(tool: ToolConfig | null | undefined): string {
+  if (!tool) {
+    return 'New Group';
+  }
+
+  const toolTypeName = TOOL_TYPE_INFO[tool.tool_type]?.name ?? 'Tool';
+  return `${tool.name} ${toolTypeName}`;
 }
 
 interface ToolCardProps {
@@ -585,10 +596,48 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     toast.success('Tool configuration saved successfully');
   };
 
+  const patchToolInState = (toolId: string, updates: Partial<ToolConfig>) => {
+    setTools((current) =>
+      current.map((tool) => tool.id === toolId ? { ...tool, ...updates } : tool)
+    );
+  };
+
+  const replaceToolInState = (updatedTool: ToolConfig) => {
+    setTools((current) => current.map((tool) => tool.id === updatedTool.id ? updatedTool : tool));
+  };
+
+  const startEditingGroup = useCallback((groupId: string, name: string) => {
+    setEditingGroupId(groupId);
+    setEditingGroupName(name);
+  }, []);
+
+  const createSuggestedGroup = useCallback(async (tool: ToolConfig | null | undefined) => {
+    const suggestedName = getSuggestedGroupName(tool);
+    const created = await api.createToolGroup({ name: suggestedName });
+
+    setGroups((current) => current.some((group) => group.id === created.id) ? current : [...current, created]);
+
+    if (created.id) {
+      startEditingGroup(created.id, suggestedName);
+    }
+
+    return { created, suggestedName };
+  }, [startEditingGroup]);
+
   const handleDeleteTool = async (toolId: string) => {
     try {
       await api.deleteToolConfig(toolId);
-      await loadTools();
+      setTools((current) => current.filter((tool) => tool.id !== toolId));
+      setHeartbeats((current) => {
+        const next = { ...current };
+        delete next[toolId];
+        return next;
+      });
+      setSchemaStats((current) => {
+        const next = { ...current };
+        delete next[toolId];
+        return next;
+      });
       toast.success('Tool deleted successfully');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to delete tool');
@@ -597,8 +646,8 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
 
   const handleToggleTool = async (toolId: string, enabled: boolean) => {
     try {
-      await api.toggleToolConfig(toolId, enabled);
-      await loadTools();
+      const result = await api.toggleToolConfig(toolId, enabled);
+      patchToolInState(toolId, { enabled: result.enabled });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to toggle tool');
     }
@@ -653,8 +702,8 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
 
   const handleInlineUpdate = async (toolId: string, updates: { name?: string; description?: string }) => {
     try {
-      await api.updateToolConfig(toolId, updates);
-      await loadTools();
+      const updatedTool = await api.updateToolConfig(toolId, updates);
+      replaceToolInState(updatedTool);
       if (updates.name) {
         toast.success('Tool name updated');
       } else {
@@ -670,12 +719,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
 
   const handleCreateGroup = async () => {
     try {
-      const created = await api.createToolGroup({ name: 'Untitled Group' });
-      await loadTools();
-      if (created?.id) {
-        setEditingGroupId(created.id);
-        setEditingGroupName('Untitled Group');
-      }
+      await createSuggestedGroup(ungroupedTools[0]);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to create group');
     }
@@ -685,9 +729,11 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     const name = editingGroupName.trim();
     if (!name) return;
     try {
-      await api.updateToolGroup(groupId, { name });
+      const updatedGroup = await api.updateToolGroup(groupId, { name });
+      setGroups((current) =>
+        current.map((group) => group.id === groupId ? updatedGroup : group)
+      );
       setEditingGroupId(null);
-      await loadTools();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to rename group');
     }
@@ -696,7 +742,10 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const handleDeleteGroup = async (groupId: string) => {
     try {
       await api.deleteToolGroup(groupId);
-      await loadTools();
+      setGroups((current) => current.filter((group) => group.id !== groupId));
+      setTools((current) =>
+        current.map((tool) => tool.group_id === groupId ? { ...tool, group_id: null } : tool)
+      );
       toast.success('Group deleted');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to delete group');
@@ -705,8 +754,12 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
 
   const handleAssignGroup = async (toolId: string, groupId: string | null) => {
     try {
-      await api.updateToolConfig(toolId, { group_id: groupId ?? '' });
-      await loadTools();
+      const previousTool = tools.find((tool) => tool.id === toolId);
+      const previousGroupId = previousTool?.group_id ?? null;
+      const updatedTool = await api.updateToolConfig(toolId, { group_id: groupId ?? '' });
+      replaceToolInState(updatedTool);
+
+      await deleteEmptyGroupIfNeeded(toolId, previousGroupId, updatedTool.group_id);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to assign group');
     }
@@ -762,6 +815,27 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const visibleTools = selectedGroup ? selectedGroup.tools : ungroupedTools;
   const showSelectedGroupEmptyState = Boolean(selectedGroupId) && visibleTools.length === 0;
 
+  const deleteEmptyGroupIfNeeded = useCallback(async (toolId: string, previousGroupId: string | null, nextGroupId: string | null | undefined) => {
+    if (!previousGroupId || previousGroupId === nextGroupId) {
+      return;
+    }
+
+    const remainingToolsInPreviousGroup = tools.filter(
+      (tool) => tool.id !== toolId && tool.group_id === previousGroupId
+    );
+
+    if (remainingToolsInPreviousGroup.length > 0) {
+      return;
+    }
+
+    await api.deleteToolGroup(previousGroupId);
+    setGroups((current) => current.filter((group) => group.id !== previousGroupId));
+
+    if (selectedGroupId === previousGroupId) {
+      setSelectedGroupId(null);
+    }
+  }, [tools, selectedGroupId]);
+
   // Click outside the group content area clears the selected group
   useEffect(() => {
     if (!selectedGroupId) return;
@@ -772,6 +846,12 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [selectedGroupId]);
+
+  const handleGroupTabsClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (selectedGroupId && e.target === e.currentTarget) {
+      setSelectedGroupId(null);
+    }
   }, [selectedGroupId]);
 
   // ---------------------------------------------------------------------------
@@ -855,7 +935,69 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const [dragToolId, setDragToolId] = useState<string | null>(null);
   const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null);
   const [dragOverUngrouped, setDragOverUngrouped] = useState(false);
+  // Within-list reorder DnD state
+  const [dragOverToolId, setDragOverToolId] = useState<string | null>(null);
+  const [dragInsertBefore, setDragInsertBefore] = useState(true);
+  // Group-by-stacking DnD state (hovering over center of another card)
+  const [dragGroupTargetId, setDragGroupTargetId] = useState<string | null>(null);
+  const dragPreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingDragPreviewRef = useRef<DragPreviewTarget | null>(null);
   const showUngroupedDropZone = !selectedGroupId && Boolean(dragToolId);
+
+  const previewInsertIndex = useMemo(() => {
+    if (!dragToolId || !dragOverToolId) {
+      return null;
+    }
+
+    const targetIdx = visibleTools.findIndex((tool) => tool.id === dragOverToolId);
+    if (targetIdx < 0) {
+      return null;
+    }
+
+    const idx = Math.max(0, Math.min(dragInsertBefore ? targetIdx : targetIdx + 1, visibleTools.length));
+
+    // Don't show a drop slot at a position that would result in no change
+    const fromIdx = visibleTools.findIndex((tool) => tool.id === dragToolId);
+    if (fromIdx >= 0 && (idx === fromIdx || idx === fromIdx + 1)) {
+      return null;
+    }
+
+    return idx;
+  }, [dragToolId, dragOverToolId, dragInsertBefore, visibleTools]);
+
+  const clearDragPreviewTimer = useCallback(() => {
+    if (dragPreviewTimerRef.current) {
+      clearTimeout(dragPreviewTimerRef.current);
+      dragPreviewTimerRef.current = null;
+    }
+  }, []);
+
+  const clearDragPreview = useCallback(() => {
+    clearDragPreviewTimer();
+    pendingDragPreviewRef.current = null;
+    setDragOverToolId(null);
+    setDragGroupTargetId(null);
+  }, [clearDragPreviewTimer]);
+
+  const scheduleDragPreview = useCallback((target: DragPreviewTarget) => {
+    clearDragPreviewTimer();
+    pendingDragPreviewRef.current = target;
+    setDragOverToolId(null);
+
+    dragPreviewTimerRef.current = setTimeout(() => {
+      const pending = pendingDragPreviewRef.current;
+      if (!pending) {
+        dragPreviewTimerRef.current = null;
+        return;
+      }
+
+      setDragOverToolId(pending.toolId);
+      setDragInsertBefore(pending.insertBefore);
+
+      dragPreviewTimerRef.current = null;
+      pendingDragPreviewRef.current = null;
+    }, DRAG_REORDER_PREVIEW_DELAY_MS);
+  }, [clearDragPreviewTimer]);
 
   const handleDragStart = useCallback((e: React.DragEvent, toolId: string) => {
     e.dataTransfer.setData('text/plain', toolId);
@@ -864,10 +1006,11 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   }, []);
 
   const handleDragEnd = useCallback(() => {
+    clearDragPreview();
     setDragToolId(null);
     setDragOverGroupId(null);
     setDragOverUngrouped(false);
-  }, []);
+  }, [clearDragPreview]);
 
   const handleGroupDragOver = useCallback((e: React.DragEvent, groupId: string) => {
     e.preventDefault();
@@ -885,12 +1028,13 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const handleGroupDrop = useCallback(async (e: React.DragEvent, groupId: string) => {
     e.preventDefault();
     const toolId = e.dataTransfer.getData('text/plain');
+    clearDragPreview();
     setDragOverGroupId(null);
     setDragToolId(null);
     if (toolId) {
       await handleAssignGroup(toolId, groupId);
     }
-  }, [handleAssignGroup]);
+  }, [handleAssignGroup, clearDragPreview]);
 
   const handleUngroupedDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -907,39 +1051,340 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const handleUngroupedDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     const toolId = e.dataTransfer.getData('text/plain');
+    clearDragPreview();
     setDragOverUngrouped(false);
     setDragToolId(null);
     if (toolId) {
       await handleAssignGroup(toolId, null);
     }
-  }, [handleAssignGroup]);
+  }, [handleAssignGroup, clearDragPreview]);
 
-  const renderToolCard = (tool: ToolConfig) => (
+  // ---- Within-list reorder handlers ----
+
+  const handleToolCardDragOver = useCallback((e: React.DragEvent, targetToolId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+
+    if (!dragToolId || dragToolId === targetToolId) {
+      return;
+    }
+
+    // Detect stack/group zone in the center of the card. Edge zones reorder.
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const relX = (e.clientX - rect.left) / rect.width;
+    const relY = (e.clientY - rect.top) / rect.height;
+    const isCenter = relX >= 0.25 && relX <= 0.75 && relY >= 0.25 && relY <= 0.75;
+
+    if (isCenter) {
+      // Center hover → show stack/group indicator, suppress reorder slot
+      if (dragGroupTargetId !== targetToolId) {
+        clearDragPreviewTimer();
+        pendingDragPreviewRef.current = null;
+        setDragOverToolId(null);
+        setDragGroupTargetId(targetToolId);
+      }
+      return;
+    }
+
+    // Edge hover → reorder mode; clear any group target
+    if (dragGroupTargetId !== null) {
+      setDragGroupTargetId(null);
+    }
+
+    const insertBefore = relX < 0.5;
+
+    if (dragOverToolId === targetToolId && dragInsertBefore === insertBefore) {
+      return;
+    }
+
+    const pending = pendingDragPreviewRef.current;
+    if (pending?.toolId === targetToolId && pending.insertBefore === insertBefore) {
+      return;
+    }
+
+    scheduleDragPreview({ toolId: targetToolId, insertBefore });
+  }, [dragToolId, dragOverToolId, dragInsertBefore, dragGroupTargetId, clearDragPreviewTimer, scheduleDragPreview]);
+
+  const handleToolCardDragLeave = useCallback((e: React.DragEvent) => {
+    const related = e.relatedTarget as HTMLElement;
+    if (
+      !(e.currentTarget as HTMLElement).contains(related) &&
+      (!related || !related.closest('.tool-reorder-drop-slot'))
+    ) {
+      clearDragPreview();
+    }
+  }, [clearDragPreview]);
+
+  const reorderVisibleTools = useCallback(async (draggedId: string, insertIdx: number) => {
+    try {
+      const reordered = [...visibleTools];
+      const fromIdx = reordered.findIndex(t => t.id === draggedId);
+
+      let moved: ToolConfig;
+      let safeInsertIdx = insertIdx;
+
+      if (fromIdx >= 0) {
+        [moved] = reordered.splice(fromIdx, 1);
+        if (fromIdx < safeInsertIdx) {
+          safeInsertIdx -= 1;
+        }
+      } else {
+        const draggedTool = tools.find(t => t.id === draggedId);
+        if (!draggedTool) return;
+        moved = await api.updateToolConfig(draggedId, { group_id: selectedGroupId ?? '' });
+      }
+
+      safeInsertIdx = Math.max(0, Math.min(safeInsertIdx, reordered.length));
+      reordered.splice(safeInsertIdx, 0, moved);
+
+      // Persist a full global order so sort_order remains unique and stable across reloads.
+      // Sending only the visible subset causes sort_order collisions with hidden tools.
+      const visibleIds = visibleTools.map((t) => t.id);
+      const visibleIdSet = new Set(visibleIds);
+      const reorderedVisibleIds = reordered.map((t) => t.id);
+
+      let fullOrderedIds: string[];
+
+      if (fromIdx >= 0) {
+        // Reorder within the currently visible subset while keeping non-visible tools in place.
+        let nextVisibleIdx = 0;
+        fullOrderedIds = tools.map((tool) => {
+          if (!visibleIdSet.has(tool.id)) {
+            return tool.id;
+          }
+          const replacement = reorderedVisibleIds[nextVisibleIdx];
+          nextVisibleIdx += 1;
+          return replacement;
+        });
+      } else {
+        // Dragged from outside the visible subset: remove old position, then insert into
+        // this subset's band at the resolved visible insertion index.
+        fullOrderedIds = tools.map((t) => t.id).filter((id) => id !== draggedId);
+
+        let globalInsertIdx = fullOrderedIds.length;
+        if (visibleIds.length > 0) {
+          if (safeInsertIdx >= visibleIds.length) {
+            const anchorId = visibleIds[visibleIds.length - 1];
+            const anchorIdx = fullOrderedIds.indexOf(anchorId);
+            if (anchorIdx >= 0) {
+              globalInsertIdx = anchorIdx + 1;
+            }
+          } else {
+            const anchorId = visibleIds[safeInsertIdx];
+            const anchorIdx = fullOrderedIds.indexOf(anchorId);
+            if (anchorIdx >= 0) {
+              globalInsertIdx = anchorIdx;
+            }
+          }
+        }
+
+        fullOrderedIds.splice(globalInsertIdx, 0, draggedId);
+      }
+
+      const updatedSortOrders = new Map(fullOrderedIds.map((id, i) => [id, i * 100]));
+      setTools((current) => {
+        const byId = new Map(current.map((tool) => [tool.id, tool]));
+        byId.set(draggedId, {
+          ...(byId.get(draggedId) ?? moved),
+          ...moved,
+          sort_order: updatedSortOrders.get(draggedId) ?? moved.sort_order,
+        });
+
+        return fullOrderedIds
+          .map((id) => {
+            const tool = byId.get(id);
+            if (!tool) return null;
+            const nextOrder = updatedSortOrders.get(id);
+            return nextOrder === undefined ? tool : { ...tool, sort_order: nextOrder };
+          })
+          .filter((tool): tool is ToolConfig => tool !== null);
+      });
+
+      await api.reorderTools({ tool_ids: fullOrderedIds });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to reorder tools');
+      await loadTools();
+    }
+  }, [visibleTools, tools, selectedGroupId, loadTools]);
+
+  const handleToolCardDrop = useCallback(async (e: React.DragEvent, targetToolId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const draggedId = e.dataTransfer.getData('text/plain');
+
+    const localDragOverId = dragOverToolId;
+    const localInsertBefore = localDragOverId ? dragInsertBefore : true;
+    const localGroupTarget = dragGroupTargetId;
+
+    clearDragPreview();
+    setDragToolId(null);
+
+    if (!draggedId || draggedId === targetToolId) return;
+
+    // Center drop → create a new group containing both tools
+    if (localGroupTarget === targetToolId) {
+      try {
+        const targetTool = tools.find((tool) => tool.id === targetToolId) ?? null;
+        const { created: newGroup } = await createSuggestedGroup(targetTool);
+        // Assign both tools to the new group (target first so it retains lower sort_order)
+        await Promise.all([
+          handleAssignGroup(targetToolId, newGroup.id),
+          handleAssignGroup(draggedId, newGroup.id),
+        ]);
+        setSelectedGroupId(newGroup.id);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to create group');
+      }
+      return;
+    }
+
+    const resolvedTargetId = localDragOverId ?? targetToolId;
+
+    const toIdx = visibleTools.findIndex((t) => t.id === resolvedTargetId);
+    if (toIdx < 0) return;
+    const insertIdx = localInsertBefore ? toIdx : toIdx + 1;
+    await reorderVisibleTools(draggedId, insertIdx);
+  }, [visibleTools, dragOverToolId, dragInsertBefore, dragGroupTargetId, reorderVisibleTools, clearDragPreview, handleAssignGroup, toast]);
+
+  const handleSlotDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const draggedId = e.dataTransfer.getData('text/plain');
+    const localDragOverId = dragOverToolId;
+    const localInsertBefore = dragInsertBefore;
+
+    clearDragPreview();
+    setDragToolId(null);
+
+    if (!draggedId || !localDragOverId || draggedId === localDragOverId) return;
+
+    const toIdx = visibleTools.findIndex(t => t.id === localDragOverId);
+    const insertIdx = localInsertBefore ? toIdx : toIdx + 1;
+    await reorderVisibleTools(draggedId, insertIdx);
+  }, [visibleTools, dragOverToolId, dragInsertBefore, reorderVisibleTools, clearDragPreview]);
+
+  const handleGridDragOver = useCallback((e: React.DragEvent) => {
+    if (!dragToolId) return;
+
+    if ((e.target as HTMLElement).closest('.tool-card-drag-wrap, .tool-reorder-drop-slot')) {
+      return;
+    }
+
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragGroupTargetId(null);
+
+    // Hovering over the grid background itself, so push drop slot to the very end
+    const lastTool = visibleTools[visibleTools.length - 1];
+    if (lastTool && lastTool.id !== dragToolId) {
+      // Guard against resetting the timer on every rapid dragover event:
+      // check the pending ref (like handleToolCardDragOver does) so we only
+      // schedule once and let the 80ms timer commit.
+      const pending = pendingDragPreviewRef.current;
+      if (pending?.toolId === lastTool.id && pending.insertBefore === false) {
+        return;
+      }
+      if (dragOverToolId !== lastTool.id || dragInsertBefore !== false) {
+        scheduleDragPreview({ toolId: lastTool.id, insertBefore: false });
+      }
+    }
+  }, [dragToolId, dragOverToolId, dragInsertBefore, visibleTools, scheduleDragPreview]);
+
+  const handleGridDrop = useCallback(async (e: React.DragEvent) => {
+    if (!dragToolId) return;
+    if ((e.target as HTMLElement).closest('.tool-card-drag-wrap, .tool-reorder-drop-slot')) {
+      return;
+    }
+
+    e.preventDefault();
+    const draggedId = e.dataTransfer.getData('text/plain');
+
+    clearDragPreview();
+    setDragToolId(null);
+
+    if (!draggedId) return;
+
+    const lastTool = visibleTools[visibleTools.length - 1];
+    if (lastTool) {
+      await reorderVisibleTools(draggedId, visibleTools.length);
+    }
+  }, [dragToolId, visibleTools, reorderVisibleTools, clearDragPreview]);
+
+  useEffect(() => {
+    return () => {
+      clearDragPreviewTimer();
+      pendingDragPreviewRef.current = null;
+    };
+  }, [clearDragPreviewTimer]);
+
+  const renderToolCard = (tool: ToolConfig) => {
+    const isBeingDragged = dragToolId === tool.id;
+    const isGroupTarget = dragGroupTargetId === tool.id;
+    return (
+      <div
+        key={tool.id}
+        draggable
+        onDragStart={(e) => handleDragStart(e, tool.id)}
+        onDragEnd={handleDragEnd}
+        onDragOver={(e) => handleToolCardDragOver(e, tool.id)}
+        onDragLeave={handleToolCardDragLeave}
+        onDrop={(e) => handleToolCardDrop(e, tool.id)}
+        className={`tool-card-drag-wrap${isBeingDragged ? ' dragging' : ''}${isGroupTarget ? ' group-target' : ''}`}
+      >
+        <ToolCard
+          tool={tool}
+          heartbeat={heartbeats[tool.id] || null}
+          onEdit={handleEditTool}
+          onDelete={handleDeleteTool}
+          onToggle={handleToggleTool}
+          onTest={handleTestTool}
+          testing={testingToolId === tool.id}
+          onPdmReindex={handlePdmReindex}
+          pdmIndexing={pdmIndexingToolId === tool.id}
+          onSchemaReindex={handleSchemaReindex}
+          schemaIndexing={schemaIndexingToolId === tool.id}
+          activeSchemaJob={activeSchemaJobsByToolId[tool.id] || null}
+          schemaStats={schemaStats[tool.id] || null}
+          onInlineUpdate={handleInlineUpdate}
+        />
+      </div>
+    );
+  };
+
+  const handleDropSlotDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+  }, []);
+
+  const renderDropSlot = (key: string) => (
     <div
-      key={tool.id}
-      draggable
-      onDragStart={(e) => handleDragStart(e, tool.id)}
-      onDragEnd={handleDragEnd}
-      className={`tool-card-drag-wrap${dragToolId === tool.id ? ' dragging' : ''}`}
-    >
-      <ToolCard
-        tool={tool}
-        heartbeat={heartbeats[tool.id] || null}
-        onEdit={handleEditTool}
-        onDelete={handleDeleteTool}
-        onToggle={handleToggleTool}
-        onTest={handleTestTool}
-        testing={testingToolId === tool.id}
-        onPdmReindex={handlePdmReindex}
-        pdmIndexing={pdmIndexingToolId === tool.id}
-        onSchemaReindex={handleSchemaReindex}
-        schemaIndexing={schemaIndexingToolId === tool.id}
-        activeSchemaJob={activeSchemaJobsByToolId[tool.id] || null}
-        schemaStats={schemaStats[tool.id] || null}
-        onInlineUpdate={handleInlineUpdate}
-      />
-    </div>
+      key={key}
+      className="tool-reorder-drop-slot"
+      aria-hidden="true"
+      onDragOver={handleDropSlotDragOver}
+      onDrop={handleSlotDrop}
+    />
   );
+
+  const renderToolCardsWithDropSlot = () => {
+    const items: JSX.Element[] = [];
+    const slotPrefix = `tool-reorder-drop-slot-${selectedGroupId ?? 'ungrouped'}`;
+
+    visibleTools.forEach((tool, idx) => {
+      if (previewInsertIndex === idx) {
+        items.push(renderDropSlot(`${slotPrefix}-${idx}`));
+      }
+      items.push(renderToolCard(tool));
+    });
+
+    if (previewInsertIndex === visibleTools.length) {
+      items.push(renderDropSlot(`${slotPrefix}-end`));
+    }
+
+    return items;
+  };
 
   return (
     <div className="tools-panel">
@@ -984,27 +1429,30 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
           <>
             {/* Group tabs + tool grid */}
             <div ref={groupContentRef} className={`tool-group-content${selectedGroupId ? ' has-selection' : ''}`}>
-            <div className={`tool-group-tabs${dragToolId ? ' dragging' : ''}`}>
+            <div
+              className={`tool-group-tabs${dragToolId ? ' dragging' : ''}`}
+              onClick={handleGroupTabsClick}
+            >
               {allGroups.length > 0 && allGroups.map(({ group, tools: groupTools }) => {
                 const isActive = selectedGroupId === group.id;
                 const isDragTarget = dragOverGroupId === group.id;
                 return (
                   <div
                     key={group.id}
-                    className={`tool-group-tab${isActive ? ' active' : ''}${isDragTarget ? ' drag-over' : ''}`}
+                    className={`tool-group-tab${isActive ? ' active' : ''}${isDragTarget ? ' drag-over' : ''}${editingGroupId === group.id ? ' editing' : ''}`}
                     onClick={() => setSelectedGroupId(isActive ? null : group.id)}
                     onDragOver={(e) => handleGroupDragOver(e, group.id)}
                     onDragLeave={(e) => handleGroupDragLeave(e, group.id)}
                     onDrop={(e) => handleGroupDrop(e, group.id)}
                   >
                       {editingGroupId === group.id ? (
-                        <input
+                        <textarea
                           className="tool-group-tab-input"
                           value={editingGroupName}
                           onChange={(e) => setEditingGroupName(e.target.value)}
                           onBlur={() => handleRenameGroup(group.id)}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleRenameGroup(group.id);
+                            if (e.key === 'Enter') { e.preventDefault(); handleRenameGroup(group.id); }
                             if (e.key === 'Escape') setEditingGroupId(null);
                           }}
                           onClick={(e) => e.stopPropagation()}
@@ -1056,19 +1504,30 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
               </div>
             ) : selectedGroupId && selectedGroup ? (
               <div className="tool-group-active-panel">
-                <div className="tools-grid">
-                  {visibleTools.map(renderToolCard)}
+                <div
+                  className="tools-grid"
+                  onDragOver={(e) => dragToolId ? handleGridDragOver(e) : undefined}
+                  onDrop={(e) => dragToolId ? handleGridDrop(e) : undefined}
+                >
+                  {renderToolCardsWithDropSlot()}
                 </div>
               </div>
             ) : (
               <div
                 className={`tool-group-section-panel${showUngroupedDropZone ? ' tool-ungrouped-drop-zone' : ''}${dragOverUngrouped ? ' drag-over' : ''}`}
-                onDragOver={showUngroupedDropZone ? handleUngroupedDragOver : undefined}
+                onDragOver={(e) => {
+                  if (showUngroupedDropZone) handleUngroupedDragOver(e);
+                  if (dragToolId) handleGridDragOver(e);
+                }}
                 onDragLeave={showUngroupedDropZone ? handleUngroupedDragLeave : undefined}
-                onDrop={showUngroupedDropZone ? handleUngroupedDrop : undefined}
+                onDrop={(e) => {
+                  const draggedTool = tools.find(t => t.id === dragToolId);
+                  if (showUngroupedDropZone && draggedTool?.group_id) handleUngroupedDrop(e);
+                  else if (dragToolId) handleGridDrop(e);
+                }}
               >
                 <div className="tools-grid">
-                  {visibleTools.map(renderToolCard)}
+                  {renderToolCardsWithDropSlot()}
                 </div>
               </div>
             )}

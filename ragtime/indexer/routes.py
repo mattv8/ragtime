@@ -206,6 +206,7 @@ from ragtime.indexer.models import (
     UpdateSettingsRequest,
     UpdateToolConfigRequest,
     UpdateToolGroupRequest,
+    ReorderToolsRequest,
     UserSpacePreviewSettingsResponse,
     VectorStoreType,
     WorkspaceChatStateResponse,
@@ -1703,6 +1704,18 @@ async def delete_tool_group(group_id: str, _user: User = Depends(require_admin))
     if not success:
         raise HTTPException(status_code=404, detail="Tool group not found")
     return {"message": "Tool group deleted"}
+
+
+@router.post("/tools/reorder", tags=["Tools"])
+async def reorder_tool_configs(
+    request: ReorderToolsRequest, _user: User = Depends(require_admin)
+):
+    """Bulk-update sort_order for tool configs to reflect a new display order. Admin only."""
+    try:
+        await repository.reorder_tool_configs(request.tool_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": "Tools reordered"}
 
 
 @router.post("/tools", response_model=ToolConfig, tags=["Tools"])

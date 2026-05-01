@@ -1421,7 +1421,9 @@ class IndexerRepository:
         """Get a tool configuration by ID."""
         db = await self._get_db()
 
-        prisma_config = await db.toolconfig.find_unique(where={"id": config_id})
+        prisma_config = await db.toolconfig.find_unique(
+            where={"id": config_id}, include={"group": True}
+        )
         if prisma_config is None:
             return None
 
@@ -1434,7 +1436,7 @@ class IndexerRepository:
         where = {"enabled": True} if enabled_only else {}
         prisma_configs = await db.toolconfig.find_many(
             where=where,  # type: ignore[arg-type]
-            order={"createdAt": "desc"},
+            order=[{"sortOrder": "asc"}, {"createdAt": "asc"}],
             include={"group": True},
         )
 
@@ -1490,6 +1492,7 @@ class IndexerRepository:
             "timeout": "timeout",
             "timeout_max_seconds": "timeoutMaxSeconds",
             "allow_write": "allowWrite",
+            "sort_order": "sortOrder",
             "last_test_at": "lastTestAt",
             "last_test_result": "lastTestResult",
             "last_test_error": "lastTestError",
@@ -1535,6 +1538,36 @@ class IndexerRepository:
         except Exception as e:
             logger.error(f"Failed to update tool config {config_id}: {e}")
             return None
+
+    async def reorder_tool_configs(self, tool_ids: list[str]) -> None:
+        """Assign sort_order to each tool in the given order (0, 100, 200, ...)."""
+        db = await self._get_db()
+
+        if not tool_ids:
+            return
+
+        if len(set(tool_ids)) != len(tool_ids):
+            raise ValueError("Tool IDs must be unique")
+
+        existing = await db.toolconfig.find_many(where={"id": {"in": tool_ids}})
+        existing_ids = {tool.id for tool in existing}
+        missing_ids = [tool_id for tool_id in tool_ids if tool_id not in existing_ids]
+        if missing_ids:
+            raise ValueError(f"Unknown tool IDs: {', '.join(missing_ids)}")
+
+        updates_json = json.dumps(
+            [
+                {"id": tool_id, "sort_order": idx * 100}
+                for idx, tool_id in enumerate(tool_ids)
+            ]
+        ).replace("'", "''")
+
+        await db.execute_raw(f"""
+            UPDATE tool_configs AS t
+            SET sort_order = v.sort_order
+            FROM jsonb_to_recordset('{updates_json}'::jsonb) AS v(id text, sort_order int)
+            WHERE t.id = v.id
+            """)
 
     async def delete_tool_config(self, config_id: str) -> bool:
         """Delete a tool configuration."""
@@ -1749,6 +1782,7 @@ class IndexerRepository:
             timeout=prisma_config.timeout,
             timeout_max_seconds=getattr(prisma_config, "timeoutMaxSeconds", 300),
             allow_write=prisma_config.allowWrite,
+            sort_order=getattr(prisma_config, "sortOrder", 0),
             group_id=group_id,
             group_name=group_name,
             last_test_at=prisma_config.lastTestAt,

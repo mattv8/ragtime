@@ -1861,6 +1861,9 @@ class ToolConfig(BaseModel):
         description="Maximum timeout user/agent can choose (0 = unlimited)",
     )
     allow_write: bool = Field(default=False, description="Allow write operations")
+    sort_order: int = Field(
+        default=0, description="Display order within group or ungrouped list"
+    )
 
     # Transient runtime status (not persisted)
     disabled_reason: Optional[str] = Field(
@@ -1905,8 +1908,19 @@ class UpdateToolConfigRequest(BaseModel):
     timeout: Optional[int] = Field(default=None, ge=0, le=86400)
     timeout_max_seconds: Optional[int] = Field(default=None, ge=0, le=86400)
     allow_write: Optional[bool] = None
+    sort_order: Optional[int] = Field(
+        default=None, description="Display order within group or ungrouped list"
+    )
     group_id: Optional[str] = Field(
         default=None, description="Tool group ID (use empty string to ungroup)"
+    )
+
+
+class ReorderToolsRequest(BaseModel):
+    """Request to bulk-reorder tool configs."""
+
+    tool_ids: list[str] = Field(
+        description="Tool IDs in the desired display order; sort_order is assigned as index * 100"
     )
 
 
