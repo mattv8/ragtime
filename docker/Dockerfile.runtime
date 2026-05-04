@@ -13,16 +13,41 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
+    bind9-dnsutils \
+    bind9-host \
+    bsdextrautils \
     curl \
+    diffutils \
     dos2unix \
+    file \
+    findutils \
+    gawk \
     git \
     grep \
+    iproute2 \
+    iputils-ping \
+    iputils-tracepath \
+    jq \
+    mtr-tiny \
+    ncat \
+    net-tools \
+    netcat-openbsd \
     nodejs \
     npm \
+    procps \
     ripgrep \
+    sed \
     sqlite3 \
+    sysstat \
+    tar \
     tini \
+    traceroute \
     unzip \
+    vim-common \
+    wget \
+    whois \
+    xxd \
+    yq \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g npm@10 corepack playwright esbuild s3rver \

@@ -2,6 +2,7 @@
 Indexer data models and schemas.
 """
 
+
 import hashlib
 import json
 from datetime import datetime
@@ -19,7 +20,6 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
     normalize_userspace_preview_sandbox_flags,
 )
-
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -2320,6 +2320,7 @@ class Conversation(BaseModel):
     active_task_id: Optional[str] = Field(
         default=None, description="ID of currently running background task"
     )
+    disabled_builtin_tool_ids: List[str] = Field(default_factory=list)
     tool_output_mode: ToolOutputMode = Field(
         default=ToolOutputMode.DEFAULT,
         description="Per-conversation tool output preference: default (use global), show (always), hide (always), auto (AI decides)",
@@ -2417,6 +2418,7 @@ class ConversationResponse(BaseModel):
     total_tokens: int
     active_task_id: Optional[str] = None
     active_branch_id: Optional[str] = None
+    disabled_builtin_tool_ids: List[str] = Field(default_factory=list)
     tool_output_mode: ToolOutputMode = Field(default=ToolOutputMode.DEFAULT)
     created_at: datetime
     updated_at: datetime

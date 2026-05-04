@@ -291,6 +291,74 @@ class RuntimeExecResponse(BaseModel):
     )
 
 
+class RuntimeExternalBrowseRequest(BaseModel):
+    url: str = Field(description="Absolute http/https URL to navigate to")
+    timeout_ms: int = Field(
+        default=20000,
+        ge=1000,
+        le=60000,
+        description="Navigation timeout in milliseconds",
+    )
+    wait_after_load_ms: int = Field(
+        default=1500,
+        ge=0,
+        le=15000,
+        description="Post-load settle delay before extracting content",
+    )
+    extract_links: bool = Field(
+        default=True,
+        description="Whether to extract a small set of top links from the page",
+    )
+    max_text_chars: int = Field(
+        default=4000,
+        ge=200,
+        le=20000,
+        description="Maximum visible-text characters to return",
+    )
+    max_links: int = Field(
+        default=20,
+        ge=0,
+        le=100,
+        description="Maximum number of links to return when extract_links is true",
+    )
+    user_agent: str = Field(
+        default="",
+        description="Optional User-Agent override; empty uses Playwright default",
+    )
+
+
+class RuntimeExternalBrowseLink(BaseModel):
+    url: str = Field(description="Absolute URL of the link")
+    text: str = Field(default="", description="Anchor text, trimmed")
+
+
+class RuntimeExternalBrowseResponse(BaseModel):
+    ok: bool = Field(description="Whether the navigation succeeded")
+    url: str = Field(description="Final URL after redirects")
+    requested_url: str = Field(description="Originally requested URL")
+    status_code: int | None = Field(
+        default=None, description="HTTP status code from the navigation"
+    )
+    title: str = Field(default="", description="Document title after render")
+    text: str = Field(default="", description="Visible page text (truncated)")
+    text_length: int = Field(
+        default=0,
+        description="Length of the full visible text before truncation",
+    )
+    truncated: bool = Field(
+        default=False,
+        description="Whether returned text was truncated",
+    )
+    links: list[RuntimeExternalBrowseLink] = Field(
+        default_factory=list,
+        description="Top extracted links from the page",
+    )
+    console_errors: list[str] = Field(
+        default_factory=list,
+        description="First few console errors observed during navigation",
+    )
+
+
 class RuntimeWorkspaceFileInfo(BaseModel):
     path: str = Field(description="Workspace-relative path")
     size_bytes: int = Field(description="Entry size in bytes")

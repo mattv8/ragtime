@@ -1,22 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Settings, ChevronRight } from 'lucide-react';
 
+interface ToolSelectorTool {
+  id: string;
+  name: string;
+  tool_type: string;
+  description?: string | null;
+  group_id?: string | null;
+  group_name?: string | null;
+}
+
 export interface ToolGroupInfo {
   id: string;
   name: string;
 }
 
 interface ToolSelectorDropdownProps {
-  availableTools: Array<{
-    id: string;
-    name: string;
-    tool_type: string;
-    description?: string | null;
-    group_id?: string | null;
-    group_name?: string | null;
-  }>;
+  availableTools: ToolSelectorTool[];
   selectedToolIds: Set<string>;
   onToggleTool: (toolId: string) => void;
+  builtInTools?: ToolSelectorTool[];
+  selectedBuiltInToolIds?: Set<string>;
+  onToggleBuiltInTool?: (toolId: string) => void;
   /** Selected tool group IDs. When a group is selected, all its tools are effectively enabled. */
   selectedToolGroupIds?: Set<string>;
   onToggleToolGroup?: (groupId: string) => void;
@@ -36,6 +41,9 @@ export function ToolSelectorDropdown({
   availableTools,
   selectedToolIds,
   onToggleTool,
+  builtInTools = [],
+  selectedBuiltInToolIds,
+  onToggleBuiltInTool,
   selectedToolGroupIds,
   onToggleToolGroup,
   toolGroups,
@@ -94,8 +102,8 @@ export function ToolSelectorDropdown({
 
   // Build grouped structure
   const { groups, ungroupedTools } = useMemo(() => {
-    const groupMap = new Map<string, { name: string; tools: typeof availableTools }>();
-    const ungrouped: typeof availableTools = [];
+    const groupMap = new Map<string, { name: string; tools: ToolSelectorTool[] }>();
+    const ungrouped: ToolSelectorTool[] = [];
 
     // Initialise groups from toolGroups prop if available
     if (toolGroups) {
@@ -126,6 +134,9 @@ export function ToolSelectorDropdown({
   }, [availableTools, toolGroups]);
 
   const hasGroups = groups.length > 0;
+  const builtInSelectedIds = selectedBuiltInToolIds ?? new Set<string>();
+  const builtInSelectedCount = builtInTools.filter((tool) => builtInSelectedIds.has(tool.id)).length;
+  const totalToolCount = availableTools.length + builtInTools.length;
 
   // Effective selected count: direct + group-expanded
   const effectiveSelectedCount = useMemo(() => {
@@ -137,11 +148,11 @@ export function ToolSelectorDropdown({
         }
       }
     }
-    return ids.size;
-  }, [selectedToolIds, selectedToolGroupIds, availableTools]);
+    return ids.size + builtInSelectedCount;
+  }, [selectedToolIds, selectedToolGroupIds, availableTools, builtInSelectedCount]);
 
   // Group checkbox state
-  const getGroupCheckState = (groupId: string, tools: typeof availableTools): 'all' | 'some' | 'none' => {
+  const getGroupCheckState = (groupId: string, tools: ToolSelectorTool[]): 'all' | 'some' | 'none' => {
     if (selectedToolGroupIds?.has(groupId)) return 'all';
     const selected = tools.filter((t) => selectedToolIds.has(t.id)).length;
     if (selected === 0) return 'none';
@@ -149,7 +160,7 @@ export function ToolSelectorDropdown({
     return 'some';
   };
 
-  const handleGroupToggle = (groupId: string, tools: typeof availableTools) => {
+  const handleGroupToggle = (groupId: string, tools: ToolSelectorTool[]) => {
     if (readOnly || saving || disabled) return;
     if (onToggleToolGroup) {
       // Use group-level selection
@@ -171,7 +182,7 @@ export function ToolSelectorDropdown({
     }
   };
 
-  const renderToolItem = (tool: typeof availableTools[0]) => (
+  const renderToolItem = (tool: ToolSelectorTool) => (
     <label key={tool.id} className="checkbox-label userspace-tool-item">
       <input
         type="checkbox"
@@ -189,12 +200,27 @@ export function ToolSelectorDropdown({
     </label>
   );
 
+  const renderBuiltInToolItem = (tool: ToolSelectorTool) => (
+    <label key={tool.id} className="checkbox-label userspace-tool-item userspace-tool-item-builtin">
+      <input
+        type="checkbox"
+        checked={builtInSelectedIds.has(tool.id)}
+        onChange={() => onToggleBuiltInTool?.(tool.id)}
+        disabled={saving || readOnly || disabled || !onToggleBuiltInTool}
+      />
+      <span>
+        <strong>{tool.name}</strong>
+        <small className="userspace-muted">Built-in</small>
+      </span>
+    </label>
+  );
+
   return (
     <div className="userspace-tool-picker-wrap" ref={dropdownRef}>
       <button
         className={`btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn ${showDropdown ? 'active' : ''}`}
         onClick={() => setShowDropdown(!showDropdown)}
-        title={`${title} (${effectiveSelectedCount}/${availableTools.length} selected)`}
+        title={`${title} (${effectiveSelectedCount}/${totalToolCount} selected)`}
         disabled={disabled}
       >
         <Settings size={14} />
@@ -214,6 +240,15 @@ export function ToolSelectorDropdown({
           <h4>{title}</h4>
           {readOnly && <p className="userspace-muted">Read-only access</p>}
           <div className="userspace-tool-list">
+            {builtInTools.length > 0 && (
+              <div className="userspace-tool-builtins">
+                <div className="userspace-tool-section-label">Built-in</div>
+                {builtInTools.map(renderBuiltInToolItem)}
+              </div>
+            )}
+            {builtInTools.length > 0 && availableTools.length > 0 && (
+              <div className="userspace-tool-divider" />
+            )}
             {hasGroups && groups.map((group) => {
               const checkState = getGroupCheckState(group.id, group.tools);
               const isExpanded = expandedGroupId === group.id;

@@ -752,6 +752,53 @@ USERSPACE_MODE_PROMPT_ADDITION = build_userspace_mode_prompt_addition(
 )
 
 
+_CHAT_DIAGNOSTICS_PROMPT_HEADER = """
+
+You have access to chat-only diagnostic tools. They run in a sandboxed environment dedicated to this conversation and are intended for ad-hoc external troubleshooting and lightweight web research, not for general computation or workspace edits.
+"""
+
+
+_CHAT_DIAGNOSTICS_TERMINAL_PROMPT_ADDITION = """- run_chat_diagnostic_command: Execute a single read-only diagnostic shell command (curl, dig, nslookup, host, openssl, jq, grep, awk, head, tail, etc.). Mutating, privileged, package-management, shell-spawning, and remote-access commands are rejected before running. Use it to probe network reachability, inspect HTTP/TLS responses, or parse command output.
+"""
+
+
+_CHAT_DIAGNOSTICS_WEB_SEARCH_PROMPT_ADDITION = """- web_search: Search the web via Tavily when TAVILY_API_KEY is configured, otherwise via the bundled SearXNG service. Returns a concise answer when available and a list of result URLs/snippets.
+"""
+
+
+_CHAT_DIAGNOSTICS_WEB_BROWSE_PROMPT_ADDITION = """- web_browse: Browse a single absolute http/https URL through a headless Playwright browser. Returns the page title, visible text (truncated), and a small set of top links.
+"""
+
+
+_CHAT_DIAGNOSTICS_PROMPT_FOOTER = """
+Use these tools when the user asks for live external information, when verifying that an external endpoint is reachable, or when grounding answers requires current web content. Cite the source URL or command output you relied on. Do not use these tools to modify files, install software, or interact with internal Ragtime services.
+"""
+
+
+def build_chat_diagnostics_prompt_addition(
+    *,
+    include_terminal: bool = True,
+    include_web_search: bool = True,
+    include_web_browse: bool = True,
+) -> str:
+    """Prompt addition describing enabled chat-only diagnostic tools."""
+    fragments: list[str] = []
+    if include_terminal:
+        fragments.append(_CHAT_DIAGNOSTICS_TERMINAL_PROMPT_ADDITION)
+    if include_web_search:
+        fragments.append(_CHAT_DIAGNOSTICS_WEB_SEARCH_PROMPT_ADDITION)
+    if include_web_browse:
+        fragments.append(_CHAT_DIAGNOSTICS_WEB_BROWSE_PROMPT_ADDITION)
+    if not fragments:
+        return ""
+    return (
+        _CHAT_DIAGNOSTICS_PROMPT_HEADER
+        + "\n"
+        + "".join(fragments)
+        + _CHAT_DIAGNOSTICS_PROMPT_FOOTER
+    )
+
+
 _WORKSPACE_CONTINUITY_MAX_KEY_FILES = 15
 _WORKSPACE_CONTINUITY_MAX_SNAPSHOT_CHARS = 200
 _WORKSPACE_CONTINUITY_EXISTING_RULES = [

@@ -1188,6 +1188,31 @@ textarea:focus {
   background: var(--color-surface-hover);
 }
 
+.userspace-tool-builtins {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.userspace-tool-section-label {
+  padding: 2px 6px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.userspace-tool-item-builtin {
+  background: color-mix(in srgb, var(--color-surface-hover) 55%, var(--color-surface));
+  border: 1px solid var(--color-border);
+}
+
+.userspace-tool-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--color-border);
+}
+
 .userspace-tool-calls-toggle {
   border-top: 1px solid var(--color-border);
   margin-top: var(--space-xs);

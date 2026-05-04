@@ -23,6 +23,7 @@ def _to_conversation_response(conversation: Conversation) -> ConversationRespons
         total_tokens=conversation.total_tokens,
         active_task_id=conversation.active_task_id,
         active_branch_id=conversation.active_branch_id,
+        disabled_builtin_tool_ids=conversation.disabled_builtin_tool_ids,
         tool_output_mode=conversation.tool_output_mode,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,

@@ -23,6 +23,7 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from ragtime.chat_runtime.presets import CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -294,6 +295,30 @@ def _normalize_message_payloads(messages_data: Any) -> list[dict[str, Any]]:
         message = _coerce_legacy_message_entry(entry)
         if message is not None:
             normalized.append(message)
+    return normalized
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    """Return unique non-empty strings from JSON-ish list values."""
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        item = item.strip()
+        if item in CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES:
+            for alias_id in CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES[item]:
+                if alias_id not in seen:
+                    normalized.append(alias_id)
+                    seen.add(alias_id)
+            continue
+        if not item or item in seen:
+            continue
+        normalized.append(item)
+        seen.add(item)
     return normalized
 
 
@@ -2997,6 +3022,9 @@ class IndexerRepository:
             display_name=getattr(user, "displayName", None) if user else None,
             messages=messages,
             total_tokens=prisma_conv.totalTokens,
+            disabled_builtin_tool_ids=_normalize_string_list(
+                getattr(prisma_conv, "disabledBuiltinToolIds", [])
+            ),
             created_at=prisma_conv.createdAt,
             updated_at=prisma_conv.updatedAt,
             active_task_id=getattr(prisma_conv, "activeTaskId", None),

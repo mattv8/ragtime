@@ -6,24 +6,29 @@ from typing import Any
 from fastapi import FastAPI
 
 from runtime.auth import ManagerAuth, OptionalManagerAuth
-from runtime.manager.models import (RuntimeContentProbeRequest,
-                                    RuntimeContentProbeResponse,
-                                    RuntimeExecRequest, RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimeFileWriteRequest,
-                                    RuntimeManagerHealthResponse,
-                                    RuntimeMountRefreshRequest,
-                                    RuntimePtyUrlResponse,
-                                    RuntimeRestartRequest,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    RuntimeSessionResponse,
-                                    RuntimeWorkspaceFileListRequest,
-                                    RuntimeWorkspaceFileListResponse,
-                                    RuntimeWorkspaceGitCommandRequest,
-                                    RuntimeWorkspaceGitCommandResponse,
-                                    RuntimeWorkspaceScmStatusResponse,
-                                    StartSessionRequest)
+from runtime.manager.models import (
+    RuntimeContentProbeRequest,
+    RuntimeContentProbeResponse,
+    RuntimeExecRequest,
+    RuntimeExecResponse,
+    RuntimeExternalBrowseRequest,
+    RuntimeExternalBrowseResponse,
+    RuntimeFileReadResponse,
+    RuntimeFileWriteRequest,
+    RuntimeManagerHealthResponse,
+    RuntimeMountRefreshRequest,
+    RuntimePtyUrlResponse,
+    RuntimeRestartRequest,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    RuntimeSessionResponse,
+    RuntimeWorkspaceFileListRequest,
+    RuntimeWorkspaceFileListResponse,
+    RuntimeWorkspaceGitCommandRequest,
+    RuntimeWorkspaceGitCommandResponse,
+    RuntimeWorkspaceScmStatusResponse,
+    StartSessionRequest,
+)
 from runtime.manager.service import SessionManager
 
 
@@ -216,6 +221,27 @@ def create_app() -> FastAPI:
             timeout_seconds=payload.timeout_seconds,
             cwd=payload.cwd,
         )
+
+    @application.post(
+        "/sessions/{provider_session_id}/external-browse",
+        response_model=RuntimeExternalBrowseResponse,
+    )
+    async def external_browse_for_session(
+        provider_session_id: str,
+        payload: RuntimeExternalBrowseRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeExternalBrowseResponse:
+        return await manager.external_browse_for_session(provider_session_id, payload)
+
+    @application.post(
+        "/external-browse",
+        response_model=RuntimeExternalBrowseResponse,
+    )
+    async def external_browse(
+        payload: RuntimeExternalBrowseRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeExternalBrowseResponse:
+        return await manager.external_browse(payload)
 
     @application.post(
         "/workspaces/{workspace_id}/files",

@@ -21,35 +21,52 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
-from runtime.manager.models import (RuntimeContentProbeRequest,
-                                    RuntimeContentProbeResponse,
-                                    RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    RuntimeWorkspaceFileInfo,
-                                    RuntimeWorkspaceFileListResponse,
-                                    RuntimeWorkspaceGitCommandResponse,
-                                    RuntimeWorkspaceScmStatusResponse,
-                                    WorkerHealthResponse,
-                                    WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
-from runtime.worker.sandbox import (SANDBOX_WORKSPACE_MOUNT, SandboxSpec,
-                                    cleanup_sandbox, ensure_sandbox_ready,
-                                    get_sandbox_spec, materialize_mounts,
-                                    sandbox_diagnostics, spawn_sandboxed)
+from runtime.manager.models import (
+    RuntimeContentProbeRequest,
+    RuntimeContentProbeResponse,
+    RuntimeExecResponse,
+    RuntimeExternalBrowseLink,
+    RuntimeExternalBrowseRequest,
+    RuntimeExternalBrowseResponse,
+    RuntimeFileReadResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    RuntimeWorkspaceFileInfo,
+    RuntimeWorkspaceFileListResponse,
+    RuntimeWorkspaceGitCommandResponse,
+    RuntimeWorkspaceScmStatusResponse,
+    WorkerHealthResponse,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
+from runtime.worker.sandbox import (
+    SANDBOX_WORKSPACE_MOUNT,
+    SandboxSpec,
+    cleanup_sandbox,
+    ensure_sandbox_ready,
+    get_sandbox_spec,
+    materialize_mounts,
+    sandbox_diagnostics,
+    spawn_sandboxed,
+)
 
-from ..core.shared import (RUNTIME_BOOTSTRAP_CONFIG_PATH,
-                           RUNTIME_BOOTSTRAP_STAMP_PATH, EntrypointStatus,
-                           RuntimeSessionState, normalize_file_path,
-                           parse_entrypoint_config)
-from ..core.workspace_ops import (PLATFORM_MANAGED_GITIGNORE_PATTERNS,
-                                  deduplicate_ancestor_paths,
-                                  list_mount_source_tree_entries,
-                                  list_workspace_tree_entries,
-                                  sync_scope_relative_paths,
-                                  workspace_mount_target_repo_relative_path,
-                                  workspace_path_matches_mount_prefix)
+from ..core.shared import (
+    RUNTIME_BOOTSTRAP_CONFIG_PATH,
+    RUNTIME_BOOTSTRAP_STAMP_PATH,
+    EntrypointStatus,
+    RuntimeSessionState,
+    normalize_file_path,
+    parse_entrypoint_config,
+)
+from ..core.workspace_ops import (
+    PLATFORM_MANAGED_GITIGNORE_PATTERNS,
+    deduplicate_ancestor_paths,
+    list_mount_source_tree_entries,
+    list_workspace_tree_entries,
+    sync_scope_relative_paths,
+    workspace_mount_target_repo_relative_path,
+    workspace_path_matches_mount_prefix,
+)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -301,7 +318,11 @@ class WorkerService:
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout_bytes, stderr_bytes = await process.communicate()
-            return process.returncode if process.returncode is not None else 1, stdout_bytes, stderr_bytes
+            return (
+                process.returncode if process.returncode is not None else 1,
+                stdout_bytes,
+                stderr_bytes,
+            )
         except FileNotFoundError as exc:
             raise HTTPException(
                 status_code=500,
@@ -356,7 +377,9 @@ class WorkerService:
         return RuntimeWorkspaceFileListResponse(
             files=[
                 self._workspace_file_info(entry)
-                for entry in sorted(entries_by_path.values(), key=lambda item: item.path)
+                for entry in sorted(
+                    entries_by_path.values(), key=lambda item: item.path
+                )
             ]
         )
 
@@ -1011,8 +1034,8 @@ class WorkerService:
         cwd_value: str,
         artifact_relative_path: str,
     ) -> bool:
-        normalized_artifact = str(artifact_relative_path or "").strip().replace(
-            "\\", "/"
+        normalized_artifact = (
+            str(artifact_relative_path or "").strip().replace("\\", "/")
         )
         if not normalized_artifact:
             return False
@@ -1050,9 +1073,11 @@ class WorkerService:
         name = (command_name or "").strip().lower()
         expected_artifact: str | None = None
 
-        if name in {"npm_ci", "npm_install", "node_dependencies"} or cmd.startswith(
-            "npm ci"
-        ) or cmd.startswith("npm install"):
+        if (
+            name in {"npm_ci", "npm_install", "node_dependencies"}
+            or cmd.startswith("npm ci")
+            or cmd.startswith("npm install")
+        ):
             expected_artifact = "node_modules"
         elif name == "node_tailwind_tooling" or (
             "npm install" in cmd and "tailwindcss" in cmd
@@ -2690,6 +2715,85 @@ class WorkerService:
             has_error_indicator=probe.get("has_error_indicator", False),
             console_errors=probe.get("console_errors", []),
         )
+
+    def _build_external_browse_response(
+        self,
+        probe: dict[str, Any] | None,
+        payload: RuntimeExternalBrowseRequest,
+    ) -> RuntimeExternalBrowseResponse:
+        probe_data = probe if isinstance(probe, dict) else {}
+        raw_links = probe.get("links") if isinstance(probe, dict) else None
+        link_models: list[RuntimeExternalBrowseLink] = []
+        if isinstance(raw_links, list):
+            for entry in raw_links:
+                if not isinstance(entry, dict):
+                    continue
+                url_value = str(entry.get("url") or "").strip()
+                if not url_value:
+                    continue
+                text_value = str(entry.get("text") or "").strip()
+                link_models.append(
+                    RuntimeExternalBrowseLink(url=url_value, text=text_value)
+                )
+
+        console_errors_raw = (
+            probe.get("console_errors") if isinstance(probe, dict) else None
+        )
+        console_errors: list[str] = []
+        if isinstance(console_errors_raw, list):
+            console_errors = [str(item) for item in console_errors_raw[:5]]
+
+        return RuntimeExternalBrowseResponse(
+            ok=bool(probe_data.get("ok", False)),
+            requested_url=str(probe_data.get("requested_url") or payload.url),
+            url=str(probe_data.get("url") or payload.url),
+            status_code=probe_data.get("status_code"),
+            title=str(probe_data.get("title") or ""),
+            text=str(probe_data.get("text") or ""),
+            text_length=int(probe_data.get("text_length") or 0),
+            truncated=bool(probe_data.get("truncated", False)),
+            links=link_models,
+            console_errors=console_errors,
+        )
+
+    async def external_browse(
+        self,
+        payload: RuntimeExternalBrowseRequest,
+        worker_session_id: str | None = None,
+    ) -> RuntimeExternalBrowseResponse:
+        """Drive the Playwright broker for an arbitrary external URL.
+
+        Used by the chat diagnostics path; not bound to a worker session or
+        workspace devserver. Callers in the control plane validate the URL
+        against the chat-diagnostics network policy before invoking this.
+        """
+        if worker_session_id:
+            async with self._lock:
+                session = self._sessions.get(worker_session_id)
+                if not session:
+                    raise HTTPException(
+                        status_code=404, detail="Worker session not found"
+                    )
+                if session.state not in {"running", "starting"}:
+                    raise HTTPException(
+                        status_code=409, detail="Worker session not active"
+                    )
+                session.updated_at = self._utc_now()
+
+        probe = await self._invoke_playwright_broker(
+            {
+                "type": "external_browse",
+                "url": payload.url,
+                "timeout_ms": int(payload.timeout_ms),
+                "wait_after_load_ms": int(payload.wait_after_load_ms),
+                "extract_links": bool(payload.extract_links),
+                "max_text_chars": int(payload.max_text_chars),
+                "max_links": int(payload.max_links),
+                "user_agent": str(payload.user_agent or ""),
+            },
+            timeout_ms=int(payload.timeout_ms),
+        )
+        return self._build_external_browse_response(probe, payload)
 
     async def build_preview_upstream_url(
         self,

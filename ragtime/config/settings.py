@@ -132,6 +132,14 @@ class Settings(BaseSettings):
         alias="RUNTIME_WORKER_AUTH_TOKEN",
         description="Bearer token for authenticating preview proxy requests to the runtime worker",
     )
+    tavily_api_key: str = Field(
+        default="",
+        alias="TAVILY_API_KEY",
+        description=(
+            "API key for Tavily web search. When unset, chat diagnostics "
+            "uses the bundled SearXNG service."
+        ),
+    )
 
     # Server
     host: str = Field(default="0.0.0.0", alias="HOST")

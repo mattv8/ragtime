@@ -1866,10 +1866,14 @@ export const api = {
   /**
    * Get conversation tools
    */
-  async getConversationTools(conversationId: string): Promise<{ tool_config_ids: string[]; tool_group_ids: string[] }> {
+  async getConversationTools(conversationId: string): Promise<{ tool_config_ids: string[]; tool_group_ids: string[]; disabled_builtin_tool_ids: string[] }> {
     const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/tools`);
-    const data = await handleResponse<{ tool_config_ids: string[]; tool_group_ids?: string[] }>(response);
-    return { tool_config_ids: data.tool_config_ids || [], tool_group_ids: data.tool_group_ids || [] };
+    const data = await handleResponse<{ tool_config_ids: string[]; tool_group_ids?: string[]; disabled_builtin_tool_ids?: string[] }>(response);
+    return {
+      tool_config_ids: data.tool_config_ids || [],
+      tool_group_ids: data.tool_group_ids || [],
+      disabled_builtin_tool_ids: data.disabled_builtin_tool_ids || [],
+    };
   },
 
   /**

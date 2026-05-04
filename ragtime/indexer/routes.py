@@ -40,10 +40,12 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
+from prisma import Json, Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS
+from ragtime.chat_runtime.presets import CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.core import llama_cpp, lmstudio
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.auth import get_browser_matched_origin
@@ -7193,6 +7195,7 @@ async def _create_background_chat_task_after_user_message(
     conv: Conversation,
     blocked_tool_names: Optional[set[str]],
     workspace_context: Optional[dict[str, Any]],
+    disabled_builtin_tool_ids: Optional[set[str]] = None,
 ) -> Any:
     """Create a background chat task, persisting failed-generation state on errors."""
     try:
@@ -7211,6 +7214,7 @@ async def _create_background_chat_task_after_user_message(
             user_message,
             blocked_tool_names=blocked_tool_names,
             workspace_context=workspace_context,
+            disabled_builtin_tool_ids=disabled_builtin_tool_ids,
             usage_attempt_id=attempt_id,
         )
         task = await repository.get_chat_task(task_id)
@@ -9510,6 +9514,9 @@ def _to_conversation_response(conv: Conversation) -> ConversationResponse:
         total_tokens=conv.total_tokens,
         active_task_id=conv.active_task_id,
         active_branch_id=conv.active_branch_id,
+        disabled_builtin_tool_ids=_normalize_disabled_builtin_tool_ids(
+            conv.disabled_builtin_tool_ids
+        ),
         tool_output_mode=conv.tool_output_mode,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
@@ -9764,6 +9771,7 @@ async def _send_message_to_loaded_conversation(
             user_id=user.id,
             current_user_context=current_user_context,
             message_index=len(conv.messages),
+            disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
         )
         output_est = _estimate_output_tokens(answer)
         await finalize_usage_attempt(
@@ -9855,6 +9863,7 @@ async def _send_background_message_to_loaded_conversation(
         conv=conv,
         blocked_tool_names=blocked_tool_names,
         workspace_context=workspace_context,
+        disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
     )
 
     return {
@@ -10072,6 +10081,30 @@ def _build_current_user_prompt_context(
         "username": normalized_username,
         "display_name": normalized_display_name or "",
     }
+
+
+def _normalize_disabled_builtin_tool_ids(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    allowed_ids = set(CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        item = item.strip()
+        if item in CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES:
+            for alias_id in CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES[item]:
+                if alias_id not in seen:
+                    normalized.append(alias_id)
+                    seen.add(alias_id)
+            continue
+        if item not in allowed_ids or item in seen:
+            continue
+        normalized.append(item)
+        seen.add(item)
+    return normalized
 
 
 async def _resolve_workspace_runtime_scope(
@@ -11605,6 +11638,7 @@ async def send_message_stream(
                 user_id=user.id,
                 current_user_context=current_user_context,
                 message_index=len(conv.messages),
+                disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
             ):
                 # Handle structured tool events
                 if isinstance(event, dict):
@@ -12131,6 +12165,7 @@ async def send_message_background(
         conv=conv,
         blocked_tool_names=blocked_tool_names,
         workspace_context=workspace_context,
+        disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
     )
 
     return _to_chat_task_response(task)
@@ -12577,6 +12612,9 @@ async def get_conversation_tools(
         return {
             "tool_config_ids": [s.toolConfigId for s in selections],
             "tool_group_ids": [s.toolGroupId for s in group_selections],
+            "disabled_builtin_tool_ids": _normalize_disabled_builtin_tool_ids(
+                getattr(conversation, "disabledBuiltinToolIds", [])
+            ),
         }
     finally:
         await db.disconnect()
@@ -12618,6 +12656,10 @@ async def update_conversation_tools(
 
         tool_config_ids = request.get("tool_config_ids", [])
         tool_group_ids = request.get("tool_group_ids", [])
+        has_builtin_update = "disabled_builtin_tool_ids" in request
+        disabled_builtin_tool_ids = _normalize_disabled_builtin_tool_ids(
+            request.get("disabled_builtin_tool_ids", [])
+        )
 
         # Delete existing selections
         await db.conversationtoolselection.delete_many(
@@ -12637,6 +12679,12 @@ async def update_conversation_tools(
         for group_id in tool_group_ids:
             await db.conversationtoolgroupselection.create(
                 data={"conversationId": conversation_id, "toolGroupId": group_id}
+            )
+
+        if has_builtin_update:
+            await db.conversation.update(
+                where={"id": conversation_id},
+                data={"disabledBuiltinToolIds": Json(disabled_builtin_tool_ids)},
             )
 
         return {"success": True}

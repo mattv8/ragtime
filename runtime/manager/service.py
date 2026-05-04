@@ -11,19 +11,25 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from runtime.manager.models import (ManagerSession, RuntimeContentProbeRequest,
-                                    RuntimeContentProbeResponse,
-                                    RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimePtyUrlResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    RuntimeSessionResponse,
-                                    RuntimeWorkspaceFileListResponse,
-                                    RuntimeWorkspaceGitCommandResponse,
-                                    RuntimeWorkspaceScmStatusResponse,
-                                    StartSessionRequest, WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
+from runtime.manager.models import (
+    ManagerSession,
+    RuntimeContentProbeRequest,
+    RuntimeContentProbeResponse,
+    RuntimeExecResponse,
+    RuntimeExternalBrowseRequest,
+    RuntimeExternalBrowseResponse,
+    RuntimeFileReadResponse,
+    RuntimePtyUrlResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    RuntimeSessionResponse,
+    RuntimeWorkspaceFileListResponse,
+    RuntimeWorkspaceGitCommandResponse,
+    RuntimeWorkspaceScmStatusResponse,
+    StartSessionRequest,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
 from runtime.worker.service import get_worker_service
 
 
@@ -329,7 +335,9 @@ class SessionManager:
                     return self._as_response(session)
 
             if not provider_session_id or pty_access_token is None:
-                raise HTTPException(status_code=500, detail="Runtime session start failed")
+                raise HTTPException(
+                    status_code=500, detail="Runtime session start failed"
+                )
 
             worker_request = WorkerStartSessionRequest(
                 workspace_id=request.workspace_id,
@@ -397,7 +405,9 @@ class SessionManager:
             async with self._lock:
                 session = self._sessions.get(provider_session_id)
                 if not session:
-                    raise HTTPException(status_code=404, detail="Runtime session not found")
+                    raise HTTPException(
+                        status_code=404, detail="Runtime session not found"
+                    )
                 worker_session_id = session.worker_session_id
                 response_session = replace(session)
             try:
@@ -430,7 +440,9 @@ class SessionManager:
             async with self._lock:
                 session = self._sessions.get(provider_session_id)
                 if not session:
-                    raise HTTPException(status_code=404, detail="Runtime session not found")
+                    raise HTTPException(
+                        status_code=404, detail="Runtime session not found"
+                    )
                 worker_session_id = session.worker_session_id
             worker_data = await asyncio.wait_for(
                 self._worker_service.restart_session(
@@ -445,7 +457,9 @@ class SessionManager:
             async with self._lock:
                 session = self._sessions.get(provider_session_id)
                 if not session or session.worker_session_id != worker_session_id:
-                    raise HTTPException(status_code=404, detail="Runtime session not found")
+                    raise HTTPException(
+                        status_code=404, detail="Runtime session not found"
+                    )
                 self._apply_worker_state(session, worker_data)
                 now = self._utc_now()
                 session.updated_at = now
@@ -463,7 +477,9 @@ class SessionManager:
             async with self._lock:
                 session = self._sessions.get(provider_session_id)
                 if not session:
-                    raise HTTPException(status_code=404, detail="Runtime session not found")
+                    raise HTTPException(
+                        status_code=404, detail="Runtime session not found"
+                    )
                 worker_session_id = session.worker_session_id
             worker_data = await asyncio.wait_for(
                 self._worker_service.refresh_mounts(
@@ -476,7 +492,9 @@ class SessionManager:
             async with self._lock:
                 session = self._sessions.get(provider_session_id)
                 if not session or session.worker_session_id != worker_session_id:
-                    raise HTTPException(status_code=404, detail="Runtime session not found")
+                    raise HTTPException(
+                        status_code=404, detail="Runtime session not found"
+                    )
                 self._apply_worker_state(session, worker_data)
                 now = self._utc_now()
                 session.updated_at = now
@@ -580,6 +598,35 @@ class SessionManager:
             command,
             timeout_seconds=timeout_seconds,
             cwd=cwd,
+        )
+
+    async def external_browse(
+        self,
+        payload: "RuntimeExternalBrowseRequest",
+    ) -> "RuntimeExternalBrowseResponse":
+        method = getattr(self._worker_service, "external_browse", None)
+        if method is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Runtime external browse capability not available",
+            )
+        return await asyncio.wait_for(
+            method(payload),
+            timeout=max(self._worker_call_timeout, int(payload.timeout_ms / 1000) + 5),
+        )
+
+    async def external_browse_for_session(
+        self,
+        provider_session_id: str,
+        payload: RuntimeExternalBrowseRequest,
+    ) -> RuntimeExternalBrowseResponse:
+        session = self._get_session_or_raise(provider_session_id)
+        return await asyncio.wait_for(
+            self._worker_service.external_browse(
+                payload,
+                worker_session_id=session.worker_session_id,
+            ),
+            timeout=max(self._worker_call_timeout, int(payload.timeout_ms / 1000) + 5),
         )
 
     async def list_workspace_files(

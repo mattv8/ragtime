@@ -14,22 +14,37 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import (APIRouter, FastAPI, HTTPException, Request, WebSocket,
-                     WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import Response, StreamingResponse
 
 from runtime.auth import OptionalWorkerAuth, WorkerAuth
-from runtime.manager.models import (RuntimeContentProbeRequest,
-                                    RuntimeContentProbeResponse,
-                                    RuntimeExecRequest, RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    WorkerHealthResponse,
-                                    WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
-from runtime.worker.sandbox import (SandboxSpec, ensure_sandbox_ready,
-                                    make_sandbox_preexec, sandbox_env)
+from runtime.manager.models import (
+    RuntimeContentProbeRequest,
+    RuntimeContentProbeResponse,
+    RuntimeExecRequest,
+    RuntimeExecResponse,
+    RuntimeExternalBrowseRequest,
+    RuntimeExternalBrowseResponse,
+    RuntimeFileReadResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    WorkerHealthResponse,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
+from runtime.worker.sandbox import (
+    SandboxSpec,
+    ensure_sandbox_ready,
+    make_sandbox_preexec,
+    sandbox_env,
+)
 from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
@@ -322,6 +337,43 @@ async def exec_command(
     )
 
 
+@router.post(
+    "/worker/sessions/{worker_session_id}/external-browse",
+    response_model=RuntimeExternalBrowseResponse,
+)
+async def external_browse_for_session(
+    worker_session_id: str,
+    payload: RuntimeExternalBrowseRequest,
+    _auth: None = WorkerAuth,
+) -> RuntimeExternalBrowseResponse:
+    return await get_worker_service().external_browse(
+        payload,
+        worker_session_id=worker_session_id,
+    )
+
+
+@router.post(
+    "/worker/external-browse",
+    response_model=RuntimeExternalBrowseResponse,
+)
+async def external_browse(
+    payload: RuntimeExternalBrowseRequest,
+    _auth: None = WorkerAuth,
+) -> RuntimeExternalBrowseResponse:
+    """Drive Playwright against an arbitrary http/https URL.
+
+    URL safety is enforced upstream (control plane); this endpoint trusts the
+    manager-issued bearer token and only exposes the broker capability.
+    """
+    service = get_worker_service()
+    method = getattr(service, "external_browse", None)
+    if method is None:
+        raise HTTPException(
+            status_code=503, detail="Runtime external browse not available"
+        )
+    return await method(payload)
+
+
 @router.api_route(
     "/worker/sessions/{worker_session_id}/preview", methods=_PROXY_METHODS
 )
@@ -480,9 +532,8 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     # Prefer the X-PTY-Token header so the per-session token never appears
     # in URL-based access logs. The query-string fallback is retained for
     # backward compatibility with callers that still embed it in the URL.
-    token = (
-        websocket.headers.get("x-pty-token", "")
-        or websocket.query_params.get("token", "")
+    token = websocket.headers.get("x-pty-token", "") or websocket.query_params.get(
+        "token", ""
     )
     try:
         session = await get_worker_service().verify_pty_token(worker_session_id, token)

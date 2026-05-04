@@ -484,6 +484,113 @@ async function runContentProbe(request) {
   }
 }
 
+async function runExternalBrowse(request) {
+  const activeBrowser = await ensureBrowser();
+  const contextOptions = {
+    viewport: { width: 1280, height: 800 },
+    deviceScaleFactor: 1,
+  };
+  const userAgent = String(request.user_agent || '').trim();
+  if (userAgent) {
+    contextOptions.userAgent = userAgent;
+  }
+  const context = await activeBrowser.newContext(contextOptions);
+
+  try {
+    const page = await context.newPage();
+    const targetUrl = String(request.url || '');
+    const timeoutMs = Number(request.timeout_ms || 20000);
+    const waitAfterLoadMs = Number(request.wait_after_load_ms || 1500);
+    const extractLinks = Boolean(request.extract_links);
+    const maxTextChars = Math.max(200, Math.min(20000, Number(request.max_text_chars || 4000)));
+    const maxLinks = Math.max(0, Math.min(100, Number(request.max_links || 20)));
+    const consoleErrors = [];
+
+    if (!targetUrl) {
+      throw makeError('External browse request is missing target URL.');
+    }
+
+    page.setDefaultTimeout(timeoutMs);
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') {
+        consoleErrors.push(msg.text().slice(0, 300));
+      }
+    });
+    page.on('pageerror', (err) => {
+      consoleErrors.push(String(err).slice(0, 300));
+    });
+
+    let response = null;
+    try {
+      response = await page.goto(targetUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: timeoutMs,
+      });
+    } catch (error) {
+      throw makeError(
+        `Navigation failed: ${error && error.message ? error.message : String(error)}`,
+        'navigation_failed'
+      );
+    }
+
+    await page.waitForLoadState('networkidle', {
+      timeout: Math.min(timeoutMs, 8000),
+    }).catch(() => null);
+
+    await waitForSettle(page, waitAfterLoadMs);
+
+    const extracted = await page.evaluate(({ withLinks, linkCap }) => {
+      const body = document.body;
+      const fullText = body && body.innerText ? body.innerText.trim() : '';
+      const title = document.title || '';
+      let links = [];
+      if (withLinks) {
+        const seen = new Set();
+        const anchors = Array.from(document.querySelectorAll('a[href]'));
+        for (const anchor of anchors) {
+          if (links.length >= linkCap) break;
+          const href = anchor.getAttribute('href') || '';
+          let absolute = '';
+          try {
+            absolute = new URL(href, document.baseURI).toString();
+          } catch (_) {
+            continue;
+          }
+          if (!/^https?:/i.test(absolute)) continue;
+          if (seen.has(absolute)) continue;
+          seen.add(absolute);
+          const text = (anchor.innerText || anchor.textContent || '').trim().slice(0, 200);
+          links.push({ url: absolute, text });
+        }
+      }
+      return {
+        title,
+        full_text: fullText,
+        links,
+      };
+    }, { withLinks: extractLinks, linkCap: maxLinks });
+
+    const fullText = String(extracted.full_text || '');
+    const truncated = fullText.length > maxTextChars;
+    const text = truncated ? fullText.slice(0, maxTextChars) : fullText;
+
+    return {
+      ok: true,
+      requested_url: targetUrl,
+      url: page.url(),
+      status_code: response ? response.status() : null,
+      title: extracted.title || '',
+      text,
+      text_length: fullText.length,
+      truncated,
+      links: Array.isArray(extracted.links) ? extracted.links : [],
+      console_errors: consoleErrors.slice(0, 5),
+    };
+  } finally {
+    await context.close().catch(() => null);
+  }
+}
+
 async function handleRequest(request) {
   if (!request || typeof request !== 'object') {
     throw makeError('Playwright broker received an invalid request.', 'bad_request');
@@ -493,6 +600,9 @@ async function handleRequest(request) {
   }
   if (request.type === 'content_probe') {
     return await runContentProbe(request);
+  }
+  if (request.type === 'external_browse') {
+    return await runExternalBrowse(request);
   }
   throw makeError(`Unsupported Playwright broker request type: ${String(request.type || '')}`, 'bad_request');
 }

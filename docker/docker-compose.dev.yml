@@ -25,6 +25,28 @@ services:
       timeout: 5s
       retries: 5
 
+  searxng:
+    image: ghcr.io/searxng/searxng:latest
+    container_name: searxng-dev
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-cache:/var/cache/searxng
+    networks:
+      - default
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8080/', timeout=5).read()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
   # Unified Ragtime service (RAG API + Indexer)
   ragtime:
     build:
@@ -79,6 +101,8 @@ services:
         condition: service_healthy
       runtime:
         condition: service_healthy
+      searxng:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -122,3 +146,4 @@ networks:
 volumes:
   ragtime-db-data:
   ragtime-node-modules:  # Persist frontend node_modules across rebuilds
+  searxng-cache:

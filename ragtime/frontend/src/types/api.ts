@@ -1729,6 +1729,7 @@ export interface Conversation {
   total_tokens: number;
   active_task_id: string | null;  // ID of currently running background task
   active_branch_id?: string | null;  // ID of currently active chat branch
+  disabled_builtin_tool_ids?: string[];
   tool_output_mode: ToolOutputMode;  // Per-conversation tool output preference
   created_at: string;
   updated_at: string;
@@ -1822,6 +1823,7 @@ export interface UpdateConversationMembersRequest {
 export interface UpdateConversationToolsRequest {
   tool_config_ids: string[];
   tool_group_ids?: string[];
+  disabled_builtin_tool_ids?: string[];
 }
 
 // =============================================================================

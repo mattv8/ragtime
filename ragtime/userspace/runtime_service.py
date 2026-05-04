@@ -24,6 +24,14 @@ from starlette.websockets import WebSocket
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
+from ragtime.core.runtime_manager_client import (
+    RuntimeManagerRequestConfig as _RuntimeManagerRequestConfig,
+)
+from ragtime.core.runtime_manager_client import (
+    get_runtime_manager_request_config,
+    runtime_manager_enabled,
+    runtime_manager_request,
+)
 from ragtime.core.workspace_ops import normalize_runtime_file_path
 from ragtime.indexer.workspace_state import build_workspace_chat_state
 from ragtime.userspace.models import (
@@ -80,15 +88,6 @@ class _CollabDocState:
     content: str
     version: int = 0
     clients: set[WebSocket] = field(default_factory=set)
-
-
-@dataclass(frozen=True)
-class _RuntimeManagerRequestConfig:
-    base_url: str
-    headers: dict[str, str]
-    timeout_seconds: float
-    retry_attempts: int
-    retry_base_delay_seconds: float
 
 
 @dataclass(frozen=True)
@@ -1116,48 +1115,10 @@ class UserSpaceRuntimeService:
         return _RUNTIME_PROVIDER_MANAGER
 
     def _runtime_manager_request_config(self) -> _RuntimeManagerRequestConfig:
-        base_url = str(
-            getattr(
-                settings,
-                "userspace_runtime_manager_url",
-                "http://runtime:8090",
-            )
-        ).strip()
-        manager_auth_token = str(
-            getattr(settings, "userspace_runtime_manager_auth_token", "")
-        ).strip()
-        headers: dict[str, str] = {}
-        if manager_auth_token:
-            headers["Authorization"] = f"Bearer {manager_auth_token}"
-
-        timeout_seconds = float(
-            getattr(settings, "userspace_runtime_manager_timeout_seconds", 120.0)
-        )
-        retry_attempts = max(
-            1,
-            int(
-                getattr(
-                    settings,
-                    "userspace_runtime_manager_retry_attempts",
-                    3,
-                )
-            ),
-        )
-        retry_base_delay_seconds = float(
-            getattr(settings, "userspace_runtime_manager_retry_delay_seconds", 0.2)
-        )
-
-        return _RuntimeManagerRequestConfig(
-            base_url=base_url.rstrip("/"),
-            headers=headers,
-            timeout_seconds=timeout_seconds,
-            retry_attempts=retry_attempts,
-            retry_base_delay_seconds=retry_base_delay_seconds,
-        )
+        return get_runtime_manager_request_config()
 
     def _runtime_manager_enabled(self) -> bool:
-        manager_url = self._runtime_manager_request_config().base_url
-        return manager_url.startswith("http://") or manager_url.startswith("https://")
+        return runtime_manager_enabled(self._runtime_manager_request_config())
 
     def _require_runtime_manager(self) -> None:
         if self._runtime_manager_enabled():
@@ -1174,62 +1135,11 @@ class UserSpaceRuntimeService:
         *,
         json_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        config = self._runtime_manager_request_config()
-        base_url = config.base_url
-        url = f"{base_url}/{path.lstrip('/')}"
-        timeout = httpx.Timeout(config.timeout_seconds)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            response: httpx.Response | None = None
-            for attempt in range(1, config.retry_attempts + 1):
-                try:
-                    response = await client.request(
-                        method,
-                        url,
-                        json=json_payload,
-                        headers=config.headers,
-                    )
-                except Exception as exc:
-                    if attempt < config.retry_attempts:
-                        await asyncio.sleep(config.retry_base_delay_seconds * attempt)
-                        continue
-                    exc_type = exc.__class__.__name__
-                    exc_message = str(exc).strip()
-                    detail = f"Runtime manager unavailable ({exc_type})"
-                    if exc_message:
-                        detail = f"{detail}: {exc_message}"
-                    raise HTTPException(
-                        status_code=502,
-                        detail=detail,
-                    ) from exc
-
-                if response.status_code >= 500 and attempt < config.retry_attempts:
-                    await asyncio.sleep(config.retry_base_delay_seconds * attempt)
-                    continue
-                break
-
-        if response is None:
-            raise HTTPException(
-                status_code=502,
-                detail="Runtime manager unavailable (no response)",
-            )
-
-        if response.status_code >= 400:
-            body_preview = response.text[:256]
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    "Runtime manager request failed "
-                    f"({response.status_code}): {body_preview}"
-                ),
-            )
-
-        if not response.content:
-            return {}
-        try:
-            data = response.json()
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
+        return await runtime_manager_request(
+            method,
+            path,
+            json_payload=json_payload,
+        )
 
     async def _runtime_provider_start_session(
         self,
@@ -1440,6 +1350,20 @@ class UserSpaceRuntimeService:
         return await self._runtime_manager_request(
             "POST",
             f"/sessions/{provider_session_id}/content-probe",
+            json_payload=payload,
+        )
+
+    async def _runtime_provider_external_browse(
+        self,
+        provider_session_id: str | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not provider_session_id:
+            raise HTTPException(status_code=404, detail="Runtime session unavailable")
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "POST",
+            f"/sessions/{provider_session_id}/external-browse",
             json_payload=payload,
         )
 
@@ -3369,6 +3293,41 @@ class UserSpaceRuntimeService:
             "inject_mock_context": bool(inject_mock_context),
         }
         return await self._runtime_provider_content_probe(
+            session.provider_session_id,
+            payload,
+        )
+
+    async def browse_workspace_external_url(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        url: str,
+        timeout_ms: int = 20000,
+        wait_after_load_ms: int = 1500,
+        extract_links: bool = True,
+        max_text_chars: int = 4000,
+        max_links: int = 20,
+        user_agent: str = "",
+    ) -> dict[str, Any]:
+        """Browse an external URL through the workspace runtime session.
+
+        Unlike the chat-level browse path, this always goes through the
+        caller's active runtime session so it follows the same workspace
+        sandbox lifecycle and environment anchoring as other runtime tools.
+        """
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        payload: dict[str, Any] = {
+            "url": str(url or ""),
+            "timeout_ms": int(timeout_ms),
+            "wait_after_load_ms": int(wait_after_load_ms),
+            "extract_links": bool(extract_links),
+            "max_text_chars": int(max_text_chars),
+            "max_links": int(max_links),
+            "user_agent": str(user_agent or ""),
+        }
+        return await self._runtime_provider_external_browse(
             session.provider_session_id,
             payload,
         )

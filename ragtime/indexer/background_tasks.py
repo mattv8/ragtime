@@ -784,6 +784,7 @@ class BackgroundTaskService:
         existing_task_id: Optional[str] = None,
         blocked_tool_names: Optional[set[str]] = None,
         workspace_context: Optional[dict[str, str]] = None,
+        disabled_builtin_tool_ids: Optional[set[str]] = None,
         usage_attempt_id: Optional[str] = None,
     ) -> str:
         """
@@ -947,6 +948,7 @@ class BackgroundTaskService:
                     user_id=conv.user_id,
                     chat_task_id=task_id,
                     message_index=len(conv.messages),
+                    disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 )
                 _stream_iter = _stream.__aiter__()
                 try:
@@ -1582,6 +1584,7 @@ class BackgroundTaskService:
         user_message: str,
         blocked_tool_names: Optional[set[str]] = None,
         workspace_context: Optional[dict[str, str]] = None,
+        disabled_builtin_tool_ids: Optional[set[str]] = None,
         usage_attempt_id: Optional[str] = None,
     ) -> str:
         """
@@ -1607,6 +1610,7 @@ class BackgroundTaskService:
             task.id,
             blocked_tool_names=blocked_tool_names,
             workspace_context=workspace_context,
+            disabled_builtin_tool_ids=disabled_builtin_tool_ids,
             usage_attempt_id=usage_attempt_id,
         )
 

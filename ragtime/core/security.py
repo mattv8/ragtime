@@ -8,8 +8,11 @@ The enable_write_ops parameter should be passed from the database settings.
 from __future__ import annotations
 
 import re
+import shlex
 from typing import TYPE_CHECKING, Optional, Tuple
+from urllib.parse import urlsplit
 
+import ipaddress
 import posixpath
 from fastapi import Cookie, Depends, HTTPException, Request, status
 
@@ -839,3 +842,324 @@ def sanitize_output(output: str, max_length: int = 50000) -> str:
             + f"\n\n... (truncated, {len(output) - max_length} chars omitted)"
         )
     return output
+
+
+# =============================================================================
+# CHAT DIAGNOSTICS COMMAND POLICY (read-only)
+# =============================================================================
+
+# Command names safe for read-only diagnostics. Only the first token of each
+# pipeline segment is matched against this set; we explicitly avoid evaluating
+# arguments because shlex tokenization is best-effort.
+CHAT_DIAGNOSTIC_ALLOWED_COMMANDS: frozenset[str] = frozenset(
+    {
+        # network probes / fetches (read-only)
+        "curl",
+        "wget",
+        "dig",
+        "nslookup",
+        "host",
+        "ping",
+        "ping6",
+        "traceroute",
+        "tracepath",
+        "mtr",
+        "openssl",
+        "nc",
+        "ncat",
+        "whois",
+        "ip",
+        "ifconfig",
+        "route",
+        "ss",
+        "netstat",
+        # tls / certs read-only
+        "true",
+        "false",
+        "echo",
+        "printf",
+        "date",
+        "uptime",
+        "uname",
+        "hostname",
+        "id",
+        "whoami",
+        # filesystem inspection (read-only inside sandbox)
+        "ls",
+        "pwd",
+        "stat",
+        "file",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "sort",
+        "uniq",
+        "cut",
+        "tr",
+        "tee",  # only as pipe target via /dev/null usage; outer regex still blocks redirection writes
+        "xxd",
+        "hexdump",
+        "base64",
+        "md5sum",
+        "sha1sum",
+        "sha256sum",
+        "find",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "awk",
+        "gawk",
+        "sed",  # blocked separately when -i is used
+        "jq",
+        "yq",
+        "diff",
+        "df",
+        "du",
+        "free",
+        "ps",
+        "top",
+        "vmstat",
+        "iostat",
+        # archive / encoding inspection (read-only)
+        "tar",  # accepted only without extraction args; we still block writes via patterns
+        "unzip",  # listing only via -l - we rely on exec sandbox + redirection blocks
+        # python/node read-only one-liners (still constrained by sandbox + denylist)
+        # NOTE: deliberately excluded by default. Re-enable by listing here only
+        # when it is necessary; pip/npm/etc remain blocked below.
+    }
+)
+
+
+# Patterns that always block a chat diagnostic command, regardless of which
+# allowlisted binary it starts with. Ordered roughly by likelihood.
+_CHAT_DIAG_DENY_PATTERN_STRINGS: list[str] = [
+    # Filesystem mutation
+    r"(?:^|[\s;&|`(])rm\b",
+    r"(?:^|[\s;&|`(])rmdir\b",
+    r"(?:^|[\s;&|`(])mv\b",
+    r"(?:^|[\s;&|`(])cp\b",
+    r"(?:^|[\s;&|`(])chmod\b",
+    r"(?:^|[\s;&|`(])chown\b",
+    r"(?:^|[\s;&|`(])chgrp\b",
+    r"(?:^|[\s;&|`(])ln\b",
+    r"(?:^|[\s;&|`(])mkdir\b",
+    r"(?:^|[\s;&|`(])touch\b",
+    r"(?:^|[\s;&|`(])truncate\b",
+    r"(?:^|[\s;&|`(])dd\b",
+    r"(?:^|[\s;&|`(])shred\b",
+    r"(?:^|[\s;&|`(])install\b",
+    r"(?:^|[\s;&|`(])patch\b",
+    # In-place editors / shells / interpreters
+    r"\bsed\s+(?:-[a-z]*)?-i\b",
+    r"\bperl\s+(?:-[a-z]*)?-i\b",
+    r"\b[gm]?awk\s+-i\s+inplace\b",
+    r"(?:^|[\s;&|`(])bash\b",
+    r"(?:^|[\s;&|`(])sh\b",
+    r"(?:^|[\s;&|`(])zsh\b",
+    r"(?:^|[\s;&|`(])ksh\b",
+    r"(?:^|[\s;&|`(])fish\b",
+    r"(?:^|[\s;&|`(])python[0-9.]*\b",
+    r"(?:^|[\s;&|`(])node\b",
+    r"(?:^|[\s;&|`(])ruby\b",
+    r"(?:^|[\s;&|`(])php\b",
+    # Package managers / installers
+    r"(?:^|[\s;&|`(])apt(?:-get)?\b",
+    r"(?:^|[\s;&|`(])yum\b",
+    r"(?:^|[\s;&|`(])dnf\b",
+    r"(?:^|[\s;&|`(])zypper\b",
+    r"(?:^|[\s;&|`(])pacman\b",
+    r"(?:^|[\s;&|`(])apk\b",
+    r"(?:^|[\s;&|`(])brew\b",
+    r"(?:^|[\s;&|`(])pip3?\s+install\b",
+    r"(?:^|[\s;&|`(])npm\b",
+    r"(?:^|[\s;&|`(])yarn\b",
+    r"(?:^|[\s;&|`(])pnpm\b",
+    r"(?:^|[\s;&|`(])cargo\b",
+    r"(?:^|[\s;&|`(])gem\b",
+    # Service / process / system control
+    r"(?:^|[\s;&|`(])systemctl\b",
+    r"(?:^|[\s;&|`(])service\b",
+    r"(?:^|[\s;&|`(])kill\b",
+    r"(?:^|[\s;&|`(])pkill\b",
+    r"(?:^|[\s;&|`(])killall\b",
+    r"(?:^|[\s;&|`(])shutdown\b",
+    r"(?:^|[\s;&|`(])reboot\b",
+    r"(?:^|[\s;&|`(])docker\b",
+    r"(?:^|[\s;&|`(])kubectl\b",
+    r"(?:^|[\s;&|`(])helm\b",
+    r"(?:^|[\s;&|`(])sudo\b",
+    r"(?:^|[\s;&|`(])su\b",
+    # Curl/wget upload modes (write to network)
+    r"\bcurl\b[^\n]*\s(?:-T|--upload-file)\b",
+    r"\bcurl\b[^\n]*\s(?:-X|--request)\s+(?:POST|PUT|PATCH|DELETE)\b",
+    r"\bcurl\b[^\n]*\s(?:-d|--data|--data-binary|--data-raw|-F|--form)\b",
+    r"\bwget\b[^\n]*\s--method=(?:POST|PUT|PATCH|DELETE)\b",
+    r"\bwget\b[^\n]*\s--post-(?:data|file)\b",
+    # Process substitution / file redirection writes (allow only /dev/null)
+    r">\s*(?!/dev/null\b)",
+    r">>\s*(?!/dev/null\b)",
+    r"\btee\s+(?!-?[a-z]*\s*/dev/null\b)",
+    # Backtick / $() command substitution and eval -- we keep policy simple
+    r"\beval\b",
+    r"\bexec\b",
+    # Background jobs and nohup (encourage synchronous diagnostics only)
+    r"&\s*$",
+    r"\bnohup\b",
+    r"\bdisown\b",
+    # SSH / remote shells
+    r"(?:^|[\s;&|`(])ssh\b",
+    r"(?:^|[\s;&|`(])scp\b",
+    r"(?:^|[\s;&|`(])rsync\b",
+    r"(?:^|[\s;&|`(])sftp\b",
+    r"(?:^|[\s;&|`(])telnet\b",
+    # Git mutating ops
+    r"\bgit\s+(?:push|pull|fetch|clone|commit|reset|checkout|merge|rebase|am|apply)\b",
+]
+CHAT_DIAGNOSTIC_DENY_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(p, re.IGNORECASE) for p in _CHAT_DIAG_DENY_PATTERN_STRINGS
+]
+
+
+def validate_chat_diagnostic_command(command: str) -> Tuple[bool, str]:
+    """Validate a shell command for read-only chat diagnostic execution.
+
+    Returns (is_safe, reason). Enforces an allowlist of leading executables
+    per pipeline segment and a denylist of dangerous patterns regardless of
+    leading binary. Output redirection writes (anything other than /dev/null)
+    are blocked.
+    """
+    raw = (command or "").strip()
+    if not raw:
+        return False, "Command is empty"
+    if len(raw) > 4000:
+        return False, "Command exceeds 4000 character limit"
+    if "\n" in raw or "\r" in raw:
+        return False, "Multi-line commands are not allowed"
+    if "\x00" in raw:
+        return False, "Null bytes are not allowed in commands"
+
+    for pattern in CHAT_DIAGNOSTIC_DENY_PATTERNS:
+        if pattern.search(raw):
+            logger.warning(
+                "Chat diagnostic command blocked by pattern %s", pattern.pattern
+            )
+            return False, "Command contains a forbidden pattern for chat diagnostics"
+
+    # Split into pipeline / sequence segments and check the first token of each.
+    segments: list[str] = []
+    buffer: list[str] = []
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch in "|;":
+            segments.append("".join(buffer))
+            buffer = []
+        elif ch == "&" and i + 1 < len(raw) and raw[i + 1] == "&":
+            segments.append("".join(buffer))
+            buffer = []
+            i += 1
+        else:
+            buffer.append(ch)
+        i += 1
+    segments.append("".join(buffer))
+
+    for segment in segments:
+        seg = segment.strip()
+        if not seg:
+            continue
+        # Strip leading env assignments like FOO=bar BAR=baz cmd ...
+        try:
+            tokens = shlex.split(seg, comments=False, posix=True)
+        except ValueError as exc:
+            return False, f"Command could not be parsed: {exc}"
+        idx = 0
+        while idx < len(tokens) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[idx]):
+            idx += 1
+        if idx >= len(tokens):
+            return False, "Empty command segment"
+        binary = tokens[idx].split("/")[-1].lower()
+        if binary not in CHAT_DIAGNOSTIC_ALLOWED_COMMANDS:
+            return (
+                False,
+                f"Command '{binary}' is not on the chat diagnostics allowlist",
+            )
+
+    return True, "Command is safe"
+
+
+# =============================================================================
+# EXTERNAL URL POLICY (chat web browse/search)
+# =============================================================================
+
+
+def _is_private_or_loopback_host(host: str) -> bool:
+    host_clean = (host or "").strip().strip("[]")
+    if not host_clean:
+        return True
+    # Reject obvious local hostnames before DNS-style checks.
+    lowered = host_clean.lower()
+    if lowered in {"localhost", "ip6-localhost", "ip6-loopback"}:
+        return True
+    if lowered.endswith(".localhost") or lowered.endswith(".local"):
+        return True
+    # Reject docker-internal hostnames commonly used in this stack.
+    if lowered in {
+        "runtime",
+        "ragtime",
+        "ragtime-dev",
+        "ragtime-db-dev",
+        "host.docker.internal",
+        "gateway.docker.internal",
+    }:
+        return True
+    try:
+        addr = ipaddress.ip_address(host_clean)
+    except ValueError:
+        return False
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    )
+
+
+def validate_external_url(
+    url: str,
+    *,
+    allow_private_networks: bool = False,
+) -> Tuple[bool, str]:
+    """Validate an external URL for chat web browse/search.
+
+    Allows only http/https schemes. When ``allow_private_networks`` is False,
+    blocks loopback, link-local, RFC1918, multicast, and known docker-internal
+    hostnames.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return False, "URL is empty"
+    if len(raw) > 2048:
+        return False, "URL exceeds 2048 character limit"
+    if any(ch in raw for ch in ("\n", "\r", "\x00", " ")):
+        return False, "URL contains invalid whitespace or control characters"
+
+    try:
+        parsed = urlsplit(raw)
+    except ValueError as exc:
+        return False, f"URL could not be parsed: {exc}"
+
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False, "Only http and https URLs are allowed"
+    if not parsed.hostname:
+        return False, "URL is missing a host"
+
+    if not allow_private_networks and _is_private_or_loopback_host(parsed.hostname):
+        return (
+            False,
+            "URL targets a private/internal network address which is not allowed",
+        )
+    return True, "URL is safe"

@@ -909,6 +909,9 @@ model Conversation {
   // Tool output mode for this conversation
   toolOutputMode ConversationToolOutputMode @default(default) @map("tool_output_mode")
 
+  // Built-in chat diagnostic tools explicitly disabled for this conversation
+  disabledBuiltinToolIds Json @default("[]") @map("disabled_builtin_tool_ids")
+
   // Background task tracking - active task for this conversation
   activeTaskId String? @map("active_task_id")
 

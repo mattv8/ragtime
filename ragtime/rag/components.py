@@ -47,6 +47,15 @@ from langchain_openai.chat_models.base import (
 )
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
+from ragtime.chat_runtime import chat_runtime_service
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_BLOCK_PRIVATE_NETWORKS
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_ENABLED
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SEARCH_MAX_RESULTS
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID
+from ragtime.chat_runtime.presets import CHAT_WEB_BROWSE_TOOL_ID
+from ragtime.chat_runtime.presets import CHAT_WEB_SEARCH_TOOL_ID
 from ragtime.config import settings
 from ragtime.core import llama_cpp, lmstudio
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
@@ -91,6 +100,8 @@ from ragtime.core.ollama import (
 from ragtime.core.security import (
     _SSH_ENV_VAR_RE,
     sanitize_output,
+    validate_chat_diagnostic_command,
+    validate_external_url,
     validate_odoo_code,
     validate_sql_query,
     validate_ssh_command,
@@ -126,6 +137,7 @@ from ragtime.rag.prompts import (
     UI_VISUALIZATION_USERSPACE_PROMPT,
     build_current_user_prompt_fragment,
     build_current_user_turn_reminder_line,
+    build_chat_diagnostics_prompt_addition,
     build_index_system_prompt,
     build_tool_system_prompt,
     build_userspace_entrypoint_nudge,
@@ -8099,6 +8111,53 @@ except Exception as e:
                 description="Brief description of why the screenshot is needed",
             )
 
+        class BrowseUserSpaceExternalUrlInput(BaseModel):
+            workspace_id: Optional[str] = Field(
+                default=None,
+                description=(
+                    "Optional target workspace ID for cross-workspace access. "
+                    "Omit to browse from this workspace's runtime session."
+                ),
+            )
+            url: str = Field(
+                description=(
+                    "Absolute http/https URL to open through the workspace runtime's "
+                    "Playwright browser."
+                )
+            )
+            timeout_ms: int = Field(
+                default=20000,
+                ge=1000,
+                le=60000,
+                description="Navigation timeout in milliseconds.",
+            )
+            wait_after_load_ms: int = Field(
+                default=1500,
+                ge=0,
+                le=15000,
+                description="Post-load settle delay before extracting content.",
+            )
+            max_text_chars: int = Field(
+                default=4000,
+                ge=200,
+                le=20000,
+                description="Maximum visible page text characters to return.",
+            )
+            max_links: int = Field(
+                default=20,
+                ge=0,
+                le=100,
+                description="Maximum number of extracted links to include.",
+            )
+            user_agent: str = Field(
+                default="",
+                description="Optional User-Agent override.",
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why the external browse is needed",
+            )
+
         class RunTerminalCommandInput(BaseModel):
             workspace_id: Optional[str] = Field(
                 default=None,
@@ -11103,6 +11162,104 @@ except Exception as e:
 
             return json.dumps(terminal_payload, indent=2)
 
+        async def browse_userspace_external_url(
+            url: str,
+            timeout_ms: int = 20000,
+            wait_after_load_ms: int = 1500,
+            max_text_chars: int = 4000,
+            max_links: int = 20,
+            user_agent: str = "",
+            reason: str = "",
+            workspace_id: Optional[str] = None,
+            **_: Any,
+        ) -> str:
+            del reason
+            target_ws, target_uid = await _resolve_target_workspace(
+                workspace_id, "read"
+            )
+            workspace_id = target_ws
+            user_id = target_uid
+            cleaned_url = (url or "").strip()
+            if not cleaned_url:
+                raise ToolException("url is required and must not be empty.")
+
+            ok, error_message = validate_external_url(
+                cleaned_url,
+                allow_private_networks=not CHAT_DIAGNOSTICS_BLOCK_PRIVATE_NETWORKS,
+            )
+            if not ok:
+                return _render_userspace_tool_payload(
+                    tool_name="browse_userspace_external_url",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=True,
+                    failure_class=self._classify_userspace_failure(error_message),
+                    next_best_tool="run_terminal_command",
+                    error=error_message,
+                    action_required="Provide a public http/https URL and retry the browse operation.",
+                    url=cleaned_url,
+                )
+
+            try:
+                payload = await userspace_runtime_service.browse_workspace_external_url(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    url=cleaned_url,
+                    timeout_ms=timeout_ms,
+                    wait_after_load_ms=wait_after_load_ms,
+                    extract_links=True,
+                    max_text_chars=max_text_chars,
+                    max_links=max_links,
+                    user_agent=user_agent,
+                )
+            except HTTPException as exc:
+                detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
+                return _render_userspace_tool_payload(
+                    tool_name="browse_userspace_external_url",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=True,
+                    failure_class=self._classify_userspace_failure(detail_text),
+                    next_best_tool="run_terminal_command",
+                    error=f"External browse failed: {detail_text}",
+                    action_required="Inspect runtime availability and the target URL before retrying.",
+                    url=cleaned_url,
+                )
+            except Exception as exc:
+                return _render_userspace_tool_payload(
+                    tool_name="browse_userspace_external_url",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=True,
+                    failure_class="runtime_capture_failed",
+                    next_best_tool="run_terminal_command",
+                    error=f"External browse failed unexpectedly: {exc}",
+                    action_required="Inspect runtime availability and retry browse_userspace_external_url.",
+                    url=cleaned_url,
+                )
+
+            return _render_userspace_tool_payload(
+                tool_name="browse_userspace_external_url",
+                status="completed",
+                message="External URL browsed through workspace runtime.",
+                persisted=False,
+                retryable=True,
+                failure_class="none",
+                next_best_tool="patch_userspace_file",
+                url=payload.get("url") or cleaned_url,
+                requested_url=payload.get("requested_url") or cleaned_url,
+                status_code=payload.get("status_code"),
+                title=payload.get("title") or "",
+                text=payload.get("text") or "",
+                text_length=int(payload.get("text_length") or 0),
+                truncated=bool(payload.get("truncated", False)),
+                links=payload.get("links") or [],
+                console_errors=payload.get("console_errors") or [],
+            )
+
         return [
             _create_userspace_tool(
                 coroutine=assay_userspace_code,
@@ -11234,6 +11391,16 @@ except Exception as e:
                     "(blank screen, crashes, broken layout). Saves PNG files under a dedicated per-workspace runtime artifacts directory."
                 ),
                 args_schema=CaptureUserSpaceScreenshotInput,
+            ),
+            _create_userspace_tool(
+                coroutine=browse_userspace_external_url,
+                name="browse_userspace_external_url",
+                description=(
+                    "Browse a public external URL through the active workspace runtime session's "
+                    "Playwright browser. Use this when you need rendered page text, title, and links "
+                    "from inside the runtime environment rather than raw curl output."
+                ),
+                args_schema=BrowseUserSpaceExternalUrlInput,
             ),
             _create_userspace_tool(
                 coroutine=run_terminal_command,
@@ -11415,6 +11582,385 @@ except Exception as e:
         )
         return continuity
 
+    def _build_chat_diagnostic_tools(
+        self,
+        *,
+        conversation_id: Optional[str],
+        request_user_id: str,
+        enabled_builtin_tool_ids: Optional[set[str]] = None,
+    ) -> list[StructuredTool]:
+        """Build chat-mode-only diagnostic tools (read-only term + web browse).
+
+        These tools are wired in chat-mode requests when chat diagnostics are
+        enabled and no userspace workspace context is present. The runtime
+        sandbox lifecycle is owned by ``chat_runtime_service`` and is keyed by
+        the conversation id.
+        """
+        if not chat_runtime_service.is_enabled():
+            return []
+
+        enabled_tool_ids = (
+            set(CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS)
+            if enabled_builtin_tool_ids is None
+            else set(enabled_builtin_tool_ids).intersection(
+                CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS
+            )
+        )
+        if not enabled_tool_ids:
+            return []
+
+        # Conversation id is preferred; fall back to a per-user namespace so
+        # anonymous tool usage still operates inside an isolated sandbox.
+        effective_conversation_id = (conversation_id or "").strip()
+        if not effective_conversation_id:
+            effective_conversation_id = (
+                f"chat-anon-{(request_user_id or 'anonymous').strip() or 'anonymous'}"
+            )
+
+        cmd_timeout_max = max(
+            1,
+            min(120, int(CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS)),
+        )
+        block_private = CHAT_DIAGNOSTICS_BLOCK_PRIVATE_NETWORKS
+
+        class _RunChatDiagnosticCommandInput(BaseModel):
+            command: str = Field(
+                description=(
+                    "The exact diagnostic shell command to run. Must be a "
+                    "read-only network/system inspection command (curl, dig, "
+                    "openssl, jq, grep, etc.). No file mutation, package "
+                    "installs, sudo, docker, or interactive shells."
+                )
+            )
+            timeout_seconds: int = Field(
+                default=min(30, cmd_timeout_max),
+                ge=1,
+                le=cmd_timeout_max,
+                description=(
+                    "Maximum wall-clock seconds before the command is "
+                    "force-terminated. Bounded by server config."
+                ),
+            )
+            reason: str = Field(
+                default="",
+                description=(
+                    "Short human-readable reason for running this command "
+                    "(captured in audit logs)."
+                ),
+            )
+
+        class _ChatWebSearchInput(BaseModel):
+            query: str = Field(
+                description="Web search query to run via the configured chat search provider."
+            )
+            max_results: int = Field(
+                default=int(CHAT_DIAGNOSTICS_SEARCH_MAX_RESULTS),
+                ge=1,
+                le=25,
+                description="Maximum number of search hits to return.",
+            )
+            reason: str = Field(
+                default="",
+                description=(
+                    "Short human-readable reason for the lookup "
+                    "(captured in audit logs)."
+                ),
+            )
+
+        class _ChatWebBrowseInput(BaseModel):
+            url: str = Field(description="Absolute http/https URL to fetch and render.")
+            reason: str = Field(
+                default="",
+                description=(
+                    "Short human-readable reason for the lookup "
+                    "(captured in audit logs)."
+                ),
+            )
+
+        async def _run_chat_diagnostic_command(
+            command: str,
+            timeout_seconds: int = min(30, cmd_timeout_max),
+            reason: str = "",
+        ) -> str:
+            ok, error_message = validate_chat_diagnostic_command(command)
+            if not ok:
+                logger.info(
+                    "chat_diagnostic_command rejected conv=%s user=%s reason=%s err=%s",
+                    effective_conversation_id,
+                    request_user_id or "anonymous",
+                    (reason or "")[:120],
+                    error_message,
+                )
+                raise ToolException(
+                    json.dumps(
+                        {
+                            "tool": "run_chat_diagnostic_command",
+                            "status": "rejected_not_persisted",
+                            "error": error_message,
+                        }
+                    )
+                )
+
+            t0 = time.monotonic()
+            try:
+                response = await chat_runtime_service.exec_command(
+                    conversation_id=effective_conversation_id,
+                    command=command,
+                    timeout_seconds=int(timeout_seconds),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "chat_diagnostic_command runtime error conv=%s err=%s",
+                    effective_conversation_id,
+                    _format_exception_message(exc),
+                )
+                raise ToolException(
+                    json.dumps(
+                        {
+                            "tool": "run_chat_diagnostic_command",
+                            "status": "runtime_error",
+                            "error": _format_exception_message(exc),
+                        }
+                    )
+                )
+
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            cmd_head = (command.strip().split() or [""])[0][:32]
+            logger.info(
+                "chat_diagnostic_command ran conv=%s user=%s cmd=%s exit=%s "
+                "duration_ms=%d reason=%s",
+                effective_conversation_id,
+                request_user_id or "anonymous",
+                cmd_head,
+                response.get("exit_code"),
+                duration_ms,
+                (reason or "")[:120],
+            )
+            return json.dumps(
+                {
+                    "tool": "run_chat_diagnostic_command",
+                    "status": "ok",
+                    "exit_code": response.get("exit_code"),
+                    "stdout": response.get("stdout") or "",
+                    "stderr": response.get("stderr") or "",
+                    "timed_out": bool(response.get("timed_out", False)),
+                    "truncated": bool(response.get("truncated", False)),
+                    "duration_ms": duration_ms,
+                }
+            )
+
+        async def _web_search(
+            query: str,
+            max_results: int = int(CHAT_DIAGNOSTICS_SEARCH_MAX_RESULTS),
+            reason: str = "",
+        ) -> str:
+            cleaned_query = (query or "").strip()
+            if not cleaned_query:
+                raise ToolException(
+                    json.dumps(
+                        {
+                            "tool": CHAT_WEB_SEARCH_TOOL_ID,
+                            "status": "rejected_not_persisted",
+                            "error": "Provide a query.",
+                        }
+                    )
+                )
+
+            t0 = time.monotonic()
+            try:
+                search_payload = await chat_runtime_service.search_web(
+                    conversation_id=effective_conversation_id,
+                    query=cleaned_query,
+                    max_results=int(max_results),
+                )
+                duration_ms = int((time.monotonic() - t0) * 1000)
+                logger.info(
+                    "chat_web_search conv=%s user=%s q_len=%d hits=%d "
+                    "duration_ms=%d reason=%s",
+                    effective_conversation_id,
+                    request_user_id or "anonymous",
+                    len(cleaned_query),
+                    int(search_payload.get("result_count") or 0),
+                    duration_ms,
+                    (reason or "")[:120],
+                )
+                return json.dumps(
+                    {
+                        "tool": CHAT_WEB_SEARCH_TOOL_ID,
+                        "status": "ok",
+                        "mode": "search",
+                        "ok": bool(search_payload.get("ok", False)),
+                        "blocked": bool(search_payload.get("blocked", False)),
+                        "error": search_payload.get("error") or "",
+                        "query": cleaned_query,
+                        "provider": search_payload.get("provider") or "",
+                        "answer": search_payload.get("answer") or "",
+                        "results": search_payload.get("results") or [],
+                        "result_count": int(search_payload.get("result_count") or 0),
+                        "engine_url": search_payload.get("engine_url") or "",
+                        "response_time": search_payload.get("response_time"),
+                        "request_id": search_payload.get("request_id") or "",
+                        "duration_ms": duration_ms,
+                    }
+                )
+            except ToolException:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "chat_web_search runtime error conv=%s err=%s",
+                    effective_conversation_id,
+                    _format_exception_message(exc),
+                )
+                raise ToolException(
+                    json.dumps(
+                        {
+                            "tool": CHAT_WEB_SEARCH_TOOL_ID,
+                            "status": "runtime_error",
+                            "error": _format_exception_message(exc),
+                        }
+                    )
+                )
+
+        async def _web_browse(
+            url: str,
+            reason: str = "",
+        ) -> str:
+            cleaned_url = (url or "").strip()
+            if not cleaned_url:
+                raise ToolException(
+                    json.dumps(
+                        {
+                            "tool": CHAT_WEB_BROWSE_TOOL_ID,
+                            "status": "rejected_not_persisted",
+                            "error": "Provide a url.",
+                        }
+                    )
+                )
+
+            t0 = time.monotonic()
+            try:
+                ok, error_message = validate_external_url(
+                    cleaned_url,
+                    allow_private_networks=not block_private,
+                )
+                if not ok:
+                    logger.info(
+                        "chat_web_browse url rejected conv=%s err=%s",
+                        effective_conversation_id,
+                        error_message,
+                    )
+                    raise ToolException(
+                        json.dumps(
+                            {
+                                "tool": CHAT_WEB_BROWSE_TOOL_ID,
+                                "status": "rejected_not_persisted",
+                                "error": error_message,
+                            }
+                        )
+                    )
+                page = await chat_runtime_service.browse_url(
+                    conversation_id=effective_conversation_id,
+                    url=cleaned_url,
+                )
+                duration_ms = int((time.monotonic() - t0) * 1000)
+                logger.info(
+                    "chat_web_browse_url conv=%s user=%s host=%s "
+                    "duration_ms=%d reason=%s",
+                    effective_conversation_id,
+                    request_user_id or "anonymous",
+                    cleaned_url[:120],
+                    duration_ms,
+                    (reason or "")[:120],
+                )
+                return json.dumps(
+                    {
+                        "tool": CHAT_WEB_BROWSE_TOOL_ID,
+                        "status": "ok",
+                        "mode": "browse",
+                        "ok": bool(page.get("ok", False)),
+                        "url": page.get("url") or cleaned_url,
+                        "requested_url": page.get("requested_url") or cleaned_url,
+                        "status_code": page.get("status_code"),
+                        "title": page.get("title") or "",
+                        "text": page.get("text") or "",
+                        "text_length": int(page.get("text_length") or 0),
+                        "truncated": bool(page.get("truncated", False)),
+                        "links": page.get("links") or [],
+                        "console_errors": page.get("console_errors") or [],
+                        "duration_ms": duration_ms,
+                    }
+                )
+            except ToolException:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "chat_web_browse runtime error conv=%s err=%s",
+                    effective_conversation_id,
+                    _format_exception_message(exc),
+                )
+                raise ToolException(
+                    json.dumps(
+                        {
+                            "tool": CHAT_WEB_BROWSE_TOOL_ID,
+                            "status": "runtime_error",
+                            "error": _format_exception_message(exc),
+                        }
+                    )
+                )
+
+        tools: list[StructuredTool] = []
+        if CHAT_DIAGNOSTIC_COMMAND_TOOL_ID in enabled_tool_ids:
+            tools.append(
+                StructuredTool.from_function(
+                    coroutine=_run_chat_diagnostic_command,
+                    name=CHAT_DIAGNOSTIC_COMMAND_TOOL_ID,
+                    description=(
+                        "Run a single read-only diagnostic shell command in a "
+                        "sandboxed chat-only environment. Use for curl/dig/openssl/"
+                        "grep-style external diagnosis. The command is policy-checked "
+                        "before execution; mutating, privileged, package-management, "
+                        "and shell-spawning commands are rejected without persisting "
+                        "the request. Output is bounded; stdout/stderr may be "
+                        "truncated."
+                    ),
+                    args_schema=_RunChatDiagnosticCommandInput,
+                    handle_tool_error=True,
+                    handle_validation_error=True,
+                )
+            )
+        if CHAT_WEB_SEARCH_TOOL_ID in enabled_tool_ids:
+            tools.append(
+                StructuredTool.from_function(
+                    coroutine=_web_search,
+                    name=CHAT_WEB_SEARCH_TOOL_ID,
+                    description=(
+                        "Search the web from a sandboxed chat-only runtime. Uses "
+                        "Tavily when TAVILY_API_KEY is configured, otherwise the "
+                        "bundled SearXNG service. Use for current web research and "
+                        "source discovery."
+                    ),
+                    args_schema=_ChatWebSearchInput,
+                    handle_tool_error=True,
+                    handle_validation_error=True,
+                )
+            )
+        if CHAT_WEB_BROWSE_TOOL_ID in enabled_tool_ids:
+            tools.append(
+                StructuredTool.from_function(
+                    coroutine=_web_browse,
+                    name=CHAT_WEB_BROWSE_TOOL_ID,
+                    description=(
+                        "Browse a single absolute http/https URL from a sandboxed "
+                        "chat-only Playwright browser. Use for direct page inspection "
+                        "after web_search finds a source or when the user provides a URL."
+                    ),
+                    args_schema=_ChatWebBrowseInput,
+                    handle_tool_error=True,
+                    handle_validation_error=True,
+                )
+            )
+        return tools
+
     async def _build_request_runtime_context(
         self,
         *,
@@ -11425,6 +11971,8 @@ except Exception as e:
         add_chat_visualization_prompt: bool,
         user_id: Optional[str] = None,
         current_user_context: Optional[dict[str, Any]] = None,
+        conversation_id: Optional[str] = None,
+        disabled_builtin_tool_ids: Optional[set[str]] = None,
     ) -> dict[str, Any]:
         """Build request-scoped runtime tools, mode, and prompt additions once."""
         t0 = time.monotonic()
@@ -11675,6 +12223,31 @@ except Exception as e:
                     blocked_tool_names
                 )
             )
+
+            if CHAT_DIAGNOSTICS_ENABLED:
+                enabled_builtin_tool_ids = set(CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS)
+                if disabled_builtin_tool_ids:
+                    enabled_builtin_tool_ids.difference_update(
+                        disabled_builtin_tool_ids
+                    )
+                chat_diag_tools = self._build_chat_diagnostic_tools(
+                    conversation_id=conversation_id,
+                    request_user_id=request_user_id,
+                    enabled_builtin_tool_ids=enabled_builtin_tool_ids,
+                )
+                if chat_diag_tools:
+                    runtime_tools.extend(chat_diag_tools)
+                    prompt_additions += build_chat_diagnostics_prompt_addition(
+                        include_terminal=(
+                            CHAT_DIAGNOSTIC_COMMAND_TOOL_ID in enabled_builtin_tool_ids
+                        ),
+                        include_web_search=(
+                            CHAT_WEB_SEARCH_TOOL_ID in enabled_builtin_tool_ids
+                        ),
+                        include_web_browse=(
+                            CHAT_WEB_BROWSE_TOOL_ID in enabled_builtin_tool_ids
+                        ),
+                    )
 
         if user_identity_prompt_fragment:
             prompt_additions = user_identity_prompt_fragment + prompt_additions
@@ -12238,6 +12811,7 @@ except Exception as e:
         current_user_context: Optional[dict[str, Any]] = None,
         chat_task_id: Optional[str] = None,
         message_index: Optional[int] = None,
+        disabled_builtin_tool_ids: Optional[set[str]] = None,
     ) -> str:
         """
         Process a user query through the RAG pipeline (non-streaming).
@@ -12268,6 +12842,8 @@ except Exception as e:
                 add_chat_visualization_prompt=True,
                 user_id=user_id,
                 current_user_context=current_user_context,
+                conversation_id=conversation_id,
+                disabled_builtin_tool_ids=disabled_builtin_tool_ids,
             )
             system_prompt = self._build_request_system_prompt(
                 is_ui=request_context["prompt_is_ui"],
@@ -12492,6 +13068,7 @@ except Exception as e:
         current_user_context: Optional[dict[str, Any]] = None,
         chat_task_id: Optional[str] = None,
         message_index: Optional[int] = None,
+        disabled_builtin_tool_ids: Optional[set[str]] = None,
     ):
         """
         Process a user query with true token-by-token streaming.
@@ -12531,6 +13108,8 @@ except Exception as e:
             add_chat_visualization_prompt=is_ui,
             user_id=user_id,
             current_user_context=current_user_context,
+            conversation_id=conversation_id,
+            disabled_builtin_tool_ids=disabled_builtin_tool_ids,
         )
         system_prompt = self._build_request_system_prompt(
             is_ui=request_context["prompt_is_ui"],
@@ -12734,6 +13313,10 @@ except Exception as e:
                                         )
 
                                 ui_tools = {"create_chart", "create_datatable"}
+                                json_display_integrity_tools = {
+                                    CHAT_WEB_SEARCH_TOOL_ID,
+                                    CHAT_WEB_BROWSE_TOOL_ID,
+                                }
                                 # Userspace write tools embed the full file content
                                 # in a `file` key which inflates the output beyond
                                 # the 2000-char display limit. Strip only the bulky
@@ -12795,20 +13378,20 @@ except Exception as e:
                                 has_table_metadata = isinstance(
                                     display_output, str
                                 ) and display_output.startswith(TABLE_METADATA_START)
-                                # Userspace write tools emit structured JSON whose
-                                # batched form must remain parseable client-side
-                                # (one diff card per entry). Truncating to 2000
-                                # chars cuts trailing entries and forces the
-                                # frontend to fall back to single-entry rendering,
-                                # so exempt them after the targeted strip above.
-                                # read_userspace_file batches are exempted for the
-                                # same reason; per-entry content is bounded by the
-                                # tool's own line-range / file-size limits.
+                                # Structured JSON tool payloads must remain
+                                # parseable client-side. Truncating to 2000 chars
+                                # cuts off closing braces and forces the frontend
+                                # to fall back to raw output rendering.
+                                # Userspace write tools are exempt after the
+                                # targeted strip above; read/list tools and chat
+                                # web tools are already bounded by their own tool
+                                # limits and frontend scroll containers.
                                 if (
                                     isinstance(display_output, str)
                                     and len(display_output) > 2000
                                     and tool_name not in ui_tools
                                     and tool_name not in _userspace_write_tools
+                                    and tool_name not in json_display_integrity_tools
                                     and tool_name != "read_userspace_file"
                                     and tool_name != "list_userspace_files"
                                     and not has_table_metadata

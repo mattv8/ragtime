@@ -42,6 +42,29 @@ import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorD
 import { UserSpaceFileDiffView, formatDiffStatus } from './shared/UserSpaceFileDiffView';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 
+const CHAT_BUILT_IN_TOOLS: UserSpaceAvailableTool[] = [
+  {
+    id: 'run_chat_diagnostic_command',
+    name: 'Local terminal',
+    tool_type: 'built-in',
+    description: 'Run read-only diagnostic shell commands in a chat sandbox.',
+  },
+  {
+    id: 'web_search',
+    name: 'Web search',
+    tool_type: 'built-in',
+    description: 'Search the web from a chat sandbox.',
+  },
+  {
+    id: 'web_browse',
+    name: 'Web browse',
+    tool_type: 'built-in',
+    description: 'Browse a specific URL from a chat sandbox.',
+  },
+];
+
+const CHAT_BUILT_IN_TOOL_IDS = CHAT_BUILT_IN_TOOLS.map((tool) => tool.id);
+
 interface CodeBlockProps {
   inline?: boolean;
   className?: string;
@@ -1889,6 +1912,145 @@ function parseTerminalOutput(output: string | undefined | null): ParsedTerminalO
   }
 }
 
+interface ParsedWebSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+  score?: number;
+  favicon?: string;
+  engine?: string;
+}
+
+interface ParsedWebSearchOutput {
+  status: string;
+  ok: boolean;
+  blocked: boolean;
+  error: string;
+  query: string;
+  provider: string;
+  answer: string;
+  results: ParsedWebSearchResult[];
+  resultCount: number;
+  engineUrl: string;
+  durationMs?: number;
+}
+
+interface ParsedWebBrowseLink {
+  url: string;
+  text: string;
+}
+
+interface ParsedWebBrowseOutput {
+  status: string;
+  ok: boolean;
+  error: string;
+  url: string;
+  requestedUrl: string;
+  statusCode: number | null;
+  title: string;
+  text: string;
+  textLength: number;
+  truncated: boolean;
+  links: ParsedWebBrowseLink[];
+  consoleErrors: string[];
+  durationMs?: number;
+}
+
+function parseWebSearchOutput(output: string | undefined | null): ParsedWebSearchOutput | null {
+  if (!output) return null;
+  try {
+    const parsed = JSON.parse(output) as Record<string, unknown>;
+    if (parsed.tool !== 'web_search') return null;
+
+    const rawResults = Array.isArray(parsed.results) ? parsed.results : [];
+    const results: ParsedWebSearchResult[] = [];
+    for (const item of rawResults) {
+      if (!item || typeof item !== 'object') continue;
+      const record = item as Record<string, unknown>;
+      const url = typeof record.url === 'string' ? record.url : '';
+      const title = typeof record.title === 'string' ? record.title : '';
+      if (!url || !title) continue;
+      const snippet = typeof record.snippet === 'string' ? record.snippet : '';
+      const result: ParsedWebSearchResult = { title, url, snippet };
+      if (typeof record.score === 'number') result.score = record.score;
+      if (typeof record.favicon === 'string' && record.favicon.trim()) {
+        result.favicon = record.favicon;
+      }
+      if (typeof record.engine === 'string' && record.engine.trim()) {
+        result.engine = record.engine;
+      }
+      results.push(result);
+    }
+
+    return {
+      status: typeof parsed.status === 'string' ? parsed.status : 'unknown',
+      ok: parsed.ok === true,
+      blocked: parsed.blocked === true,
+      error: typeof parsed.error === 'string' ? parsed.error : '',
+      query: typeof parsed.query === 'string' ? parsed.query : '',
+      provider: typeof parsed.provider === 'string' ? parsed.provider : '',
+      answer: typeof parsed.answer === 'string' ? parsed.answer : '',
+      results,
+      resultCount: typeof parsed.result_count === 'number'
+        ? parsed.result_count
+        : results.length,
+      engineUrl: typeof parsed.engine_url === 'string' ? parsed.engine_url : '',
+      durationMs: typeof parsed.duration_ms === 'number' ? parsed.duration_ms : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseWebBrowseOutput(output: string | undefined | null): ParsedWebBrowseOutput | null {
+  if (!output) return null;
+  try {
+    const parsed = JSON.parse(output) as Record<string, unknown>;
+    if (parsed.tool !== 'web_browse') return null;
+
+    const rawLinks = Array.isArray(parsed.links) ? parsed.links : [];
+    const links: ParsedWebBrowseLink[] = [];
+    for (const item of rawLinks) {
+      if (!item || typeof item !== 'object') continue;
+      const record = item as Record<string, unknown>;
+      const url = typeof record.url === 'string' ? record.url : '';
+      if (!url) continue;
+      const text = typeof record.text === 'string' ? record.text : '';
+      links.push({ url, text });
+    }
+
+    const rawConsoleErrors = Array.isArray(parsed.console_errors) ? parsed.console_errors : [];
+    const consoleErrors: string[] = [];
+    for (const item of rawConsoleErrors) {
+      if (typeof item === 'string' && item.trim()) consoleErrors.push(item);
+    }
+
+    const statusCodeRaw = parsed.status_code;
+    let statusCode: number | null = null;
+    if (typeof statusCodeRaw === 'number' && Number.isFinite(statusCodeRaw)) {
+      statusCode = statusCodeRaw;
+    }
+
+    return {
+      status: typeof parsed.status === 'string' ? parsed.status : 'unknown',
+      ok: parsed.ok === true,
+      error: typeof parsed.error === 'string' ? parsed.error : '',
+      url: typeof parsed.url === 'string' ? parsed.url : '',
+      requestedUrl: typeof parsed.requested_url === 'string' ? parsed.requested_url : '',
+      statusCode,
+      title: typeof parsed.title === 'string' ? parsed.title : '',
+      text: typeof parsed.text === 'string' ? parsed.text : '',
+      textLength: typeof parsed.text_length === 'number' ? parsed.text_length : 0,
+      truncated: parsed.truncated === true,
+      links,
+      consoleErrors,
+      durationMs: typeof parsed.duration_ms === 'number' ? parsed.duration_ms : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export const ToolCallDisplay = memo(function ToolCallDisplay({
   toolCall,
   defaultExpanded = false,
@@ -2257,6 +2419,17 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     }
     return null;
   }, [toolCall.tool, effectiveOutput, hasErrorInOutput]);
+
+  // Parse web_search / web_browse structured payloads for pretty rendering
+  const webSearchOutput = useMemo(() => {
+    if (toolCall.tool !== 'web_search' || !effectiveOutput) return null;
+    return parseWebSearchOutput(effectiveOutput);
+  }, [toolCall.tool, effectiveOutput]);
+
+  const webBrowseOutput = useMemo(() => {
+    if (toolCall.tool !== 'web_browse' || !effectiveOutput) return null;
+    return parseWebBrowseOutput(effectiveOutput);
+  }, [toolCall.tool, effectiveOutput]);
 
   // Check if this is a datatable tool
   const datatableData = useMemo(() => {
@@ -2948,6 +3121,276 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         );
       }
 
+      case 'web_search': {
+        if (!webSearchOutput) {
+          return (
+            <div className="tool-call-section">
+              <div className="tool-call-section-header">
+                <span className="tool-call-section-label">Result:</span>
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={() => copyToClipboard(displayText || effectiveOutput, 'result')}
+                  title="Copy result"
+                >
+                  {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
+              <pre className="tool-call-code">{displayText}</pre>
+            </div>
+          );
+        }
+
+        const search = webSearchOutput;
+        const isErrorState = !search.ok || search.blocked || Boolean(search.error);
+        const metaParts: string[] = [];
+        if (search.provider) metaParts.push(search.provider);
+        metaParts.push(`${search.resultCount} result${search.resultCount === 1 ? '' : 's'}`);
+        if (typeof search.durationMs === 'number') {
+          metaParts.push(`${search.durationMs} ms`);
+        }
+        const queryText = search.query || (toolCall.input?.query as string) || '';
+        const copyResults = () => {
+          const lines = search.results.map((r) => `- ${r.title}\n  ${r.url}\n  ${r.snippet}`).join('\n\n');
+          copyToClipboard(
+            [search.answer ? `Answer: ${search.answer}\n` : '', lines].filter(Boolean).join('\n'),
+            'result',
+          );
+        };
+
+        return (
+          <div className="tool-call-section tool-call-web-section">
+            <div className="tool-call-section-header">
+              <span className="tool-call-section-label">
+                <Search size={12} />
+                <span>Web search</span>
+              </span>
+              <div className="tool-call-terminal-header-actions">
+                {queryText && (
+                  <button
+                    className="tool-call-copy-btn"
+                    onClick={() => copyToClipboard(queryText, 'query')}
+                    title="Copy query"
+                  >
+                    {copiedQuery ? <Check size={12} /> : <Copy size={12} />}
+                  </button>
+                )}
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={copyResults}
+                  title="Copy results"
+                  disabled={search.results.length === 0 && !search.answer}
+                >
+                  {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
+            </div>
+            {queryText && (
+              <div className="tool-call-web-query" title={queryText}>
+                <Search size={12} aria-hidden="true" />
+                <span>{queryText}</span>
+              </div>
+            )}
+            <div className="tool-call-web-meta">{metaParts.join(' \u00b7 ')}</div>
+            {isErrorState && (
+              <div className="tool-call-web-error">
+                <AlertCircle size={12} />
+                <span>{search.error || (search.blocked ? 'Search was blocked.' : 'Search failed.')}</span>
+              </div>
+            )}
+            {search.answer && (
+              <div className="tool-call-web-answer">
+                <div className="tool-call-web-answer-label">Answer</div>
+                <div className="tool-call-web-answer-body">{search.answer}</div>
+              </div>
+            )}
+            {search.results.length > 0 ? (
+              <ol className="tool-call-web-results">
+                {search.results.map((result, idx) => (
+                  <li className="tool-call-web-result" key={`${result.url}-${idx}`}>
+                    <div className="tool-call-web-result-head">
+                      {result.favicon ? (
+                        <img
+                          src={result.favicon}
+                          alt=""
+                          className="tool-call-web-result-favicon"
+                          loading="lazy"
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                        />
+                      ) : (
+                        <Globe size={12} className="tool-call-web-result-favicon-fallback" aria-hidden="true" />
+                      )}
+                      <a
+                        className="tool-call-web-result-title"
+                        href={result.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={result.url}
+                      >
+                        {result.title}
+                      </a>
+                    </div>
+                    <a
+                      className="tool-call-web-result-url"
+                      href={result.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={result.url}
+                    >
+                      {result.url}
+                    </a>
+                    {result.snippet && (
+                      <p className="tool-call-web-result-snippet">{result.snippet}</p>
+                    )}
+                    {result.engine && (
+                      <div className="tool-call-web-result-engine">{result.engine}</div>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            ) : !isErrorState ? (
+              <div className="tool-call-web-empty">No results returned.</div>
+            ) : null}
+          </div>
+        );
+      }
+
+      case 'web_browse': {
+        if (!webBrowseOutput) {
+          return (
+            <div className="tool-call-section">
+              <div className="tool-call-section-header">
+                <span className="tool-call-section-label">Result:</span>
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={() => copyToClipboard(displayText || effectiveOutput, 'result')}
+                  title="Copy result"
+                >
+                  {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
+              <pre className="tool-call-code">{displayText}</pre>
+            </div>
+          );
+        }
+
+        const browse = webBrowseOutput;
+        const isErrorState = !browse.ok || Boolean(browse.error);
+        const finalUrl = browse.url || browse.requestedUrl;
+        const requestedUrl = browse.requestedUrl || (toolCall.input?.url as string) || '';
+        const showResolvedUrl = Boolean(finalUrl && finalUrl !== requestedUrl);
+        const metaParts: string[] = [];
+        if (browse.statusCode != null) metaParts.push(`HTTP ${browse.statusCode}`);
+        if (browse.textLength > 0) metaParts.push(`${browse.textLength.toLocaleString()} chars`);
+        if (browse.truncated) metaParts.push('truncated');
+        if (typeof browse.durationMs === 'number') metaParts.push(`${browse.durationMs} ms`);
+
+        return (
+          <div className="tool-call-section tool-call-web-section">
+            <div className="tool-call-section-header">
+              <span className="tool-call-section-label">
+                <Globe size={12} />
+                <span>Web page</span>
+              </span>
+              <div className="tool-call-terminal-header-actions">
+                {finalUrl && (
+                  <a
+                    className="tool-call-copy-btn tool-call-web-open-btn"
+                    href={finalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open in new tab"
+                  >
+                    <Link size={12} />
+                  </a>
+                )}
+                {browse.text && (
+                  <button
+                    className="tool-call-copy-btn"
+                    onClick={() => copyToClipboard(browse.text, 'result')}
+                    title="Copy page text"
+                  >
+                    {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                  </button>
+                )}
+              </div>
+            </div>
+            {requestedUrl && (
+              <a
+                className="tool-call-web-query"
+                href={requestedUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={requestedUrl}
+              >
+                <Globe size={12} aria-hidden="true" />
+                <span>{requestedUrl}</span>
+              </a>
+            )}
+            <div className="tool-call-web-page-head">
+              {browse.title && (
+                <div className="tool-call-web-page-title" title={browse.title}>
+                  {browse.title}
+                </div>
+              )}
+              {showResolvedUrl && finalUrl && (
+                <a
+                  className="tool-call-web-page-url"
+                  href={finalUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={finalUrl}
+                >
+                  {finalUrl}
+                </a>
+              )}
+              {metaParts.length > 0 && (
+                <div className="tool-call-web-meta">{metaParts.join(' \u00b7 ')}</div>
+              )}
+            </div>
+            {isErrorState && (
+              <div className="tool-call-web-error">
+                <AlertCircle size={12} />
+                <span>{browse.error || 'Browse failed.'}</span>
+              </div>
+            )}
+            {browse.text && (
+              <div className="tool-call-web-page-text-wrap">
+                <pre className="tool-call-web-page-text">{browse.text}</pre>
+              </div>
+            )}
+            {browse.links.length > 0 && (
+              <details className="tool-call-web-links">
+                <summary>{browse.links.length} link{browse.links.length === 1 ? '' : 's'}</summary>
+                <ul className="tool-call-web-links-list">
+                  {browse.links.map((link, idx) => (
+                    <li key={`${link.url}-${idx}`} className="tool-call-web-link-item">
+                      <a
+                        href={link.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={link.url}
+                      >
+                        {link.text || link.url}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            {browse.consoleErrors.length > 0 && (
+              <details className="tool-call-web-console-errors">
+                <summary>{browse.consoleErrors.length} console error{browse.consoleErrors.length === 1 ? '' : 's'}</summary>
+                <ul>
+                  {browse.consoleErrors.map((err, idx) => (
+                    <li key={idx}>{err}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        );
+      }
+
       default: {
         return (
           <div className="tool-call-section">
@@ -3023,7 +3466,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               <pre className="tool-call-code tool-call-error-text">{retryError}</pre>
             </div>
           )}
-          {inputDisplay && !userspaceWriteResult && !userspaceReadResult && toolCall.tool !== 'list_userspace_files' && !isTerminalCommand && (
+          {inputDisplay && !userspaceWriteResult && !userspaceReadResult && toolCall.tool !== 'list_userspace_files' && !isTerminalCommand && toolCall.tool !== 'web_search' && toolCall.tool !== 'web_browse' && (
             <div className="tool-call-section">
               <div className="tool-call-section-header">
                 <span className="tool-call-section-label">Query:</span>
@@ -4081,6 +4524,7 @@ export function ChatPanel({
   const [conversationMembers, setConversationMembers] = useState<ConversationMember[]>([]);
   const [conversationToolIds, setConversationToolIds] = useState<string[]>([]);
   const [conversationToolGroupIds, setConversationToolGroupIds] = useState<string[]>([]);
+  const [conversationDisabledBuiltInToolIds, setConversationDisabledBuiltInToolIds] = useState<string[]>([]);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
   const [toolGroups, setToolGroups] = useState<ToolGroupInfo[]>([]);
   const [showMembersModal, setShowMembersModal] = useState(false);
@@ -4143,6 +4587,14 @@ export function ChatPanel({
   const effectiveToolGroups = useWorkspaceToolSource
     ? (workspaceToolGroups ?? [])
     : toolGroups;
+  const hasWorkspaceConversationContext = Boolean(
+    workspaceId || activeConversation?.workspace_id || activeConversation?.workspaceId,
+  );
+  const conversationBuiltInTools = hasWorkspaceConversationContext ? [] : CHAT_BUILT_IN_TOOLS;
+  const selectedConversationBuiltInToolIdSet = useMemo(() => {
+    const disabledIds = new Set(conversationDisabledBuiltInToolIds);
+    return new Set(CHAT_BUILT_IN_TOOL_IDS.filter((id) => !disabledIds.has(id)));
+  }, [conversationDisabledBuiltInToolIds]);
   const conversationToolGroupIdSet = useMemo(
     () => new Set(conversationToolGroupIds),
     [conversationToolGroupIds]
@@ -5215,10 +5667,12 @@ export function ChatPanel({
       const data = await api.getConversationTools(conversationId);
       setConversationToolIds(data.tool_config_ids);
       setConversationToolGroupIds(data.tool_group_ids);
+      setConversationDisabledBuiltInToolIds(data.disabled_builtin_tool_ids);
     } catch (err) {
       console.error('Failed to fetch conversation tools:', err);
       setConversationToolIds([]);
       setConversationToolGroupIds([]);
+      setConversationDisabledBuiltInToolIds([]);
     }
   }, []);
 
@@ -5267,6 +5721,7 @@ export function ChatPanel({
       void refreshBranchPoints(activeConversationId);
     } else {
       setConversationMembers([]);
+      setConversationDisabledBuiltInToolIds([]);
       setBranchPoints([]);
     }
   }, [activeConversationId, fetchConversationMembers, fetchConversationTools, useWorkspaceToolSource, refreshBranchPoints]);
@@ -5325,6 +5780,46 @@ export function ChatPanel({
       setSavingTools(false);
     }
   }, [activeConversation]);
+
+  const persistConversationBuiltInToolSelection = useCallback(async (nextDisabledBuiltInToolIds: string[]) => {
+    if (!activeConversation) return;
+
+    setSavingTools(true);
+    try {
+      await api.updateConversationTools(activeConversation.id, {
+        tool_config_ids: resolvedConversationToolIds,
+        tool_group_ids: conversationToolGroupIds,
+        disabled_builtin_tool_ids: nextDisabledBuiltInToolIds,
+      });
+      setConversationDisabledBuiltInToolIds(nextDisabledBuiltInToolIds);
+      const updatedConversation: Conversation = {
+        ...activeConversation,
+        disabled_builtin_tool_ids: nextDisabledBuiltInToolIds,
+      };
+      setActiveConversation(updatedConversation);
+      setConversations(prev => prev.map(c => c.id === updatedConversation.id ? updatedConversation : c));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update built-in tool selection');
+    } finally {
+      setSavingTools(false);
+    }
+  }, [activeConversation, conversationToolGroupIds, resolvedConversationToolIds]);
+
+  const handleToggleConversationBuiltInTool = useCallback(async (toolId: string) => {
+    if (!activeConversation || isConversationViewer || hasWorkspaceConversationContext) return;
+    if (!CHAT_BUILT_IN_TOOL_IDS.includes(toolId)) return;
+
+    const nextDisabled = new Set(conversationDisabledBuiltInToolIds);
+    if (nextDisabled.has(toolId)) {
+      nextDisabled.delete(toolId);
+    } else {
+      nextDisabled.add(toolId);
+    }
+
+    await persistConversationBuiltInToolSelection(
+      CHAT_BUILT_IN_TOOL_IDS.filter((id) => nextDisabled.has(id)),
+    );
+  }, [activeConversation, conversationDisabledBuiltInToolIds, hasWorkspaceConversationContext, isConversationViewer, persistConversationBuiltInToolSelection]);
 
   const handleToggleConversationTool = useCallback(async (toolId: string) => {
     if (!activeConversation || isConversationViewer) return;
@@ -5429,6 +5924,7 @@ export function ChatPanel({
     setActiveConversation(conversation);
     setConversationToolIds([]);
     setConversationToolGroupIds([]);
+    setConversationDisabledBuiltInToolIds(conversation.disabled_builtin_tool_ids || []);
   }, []);
 
   const createNewConversation = async () => {
@@ -7425,6 +7921,9 @@ export function ChatPanel({
                     availableTools={effectiveAvailableTools}
                     selectedToolIds={resolvedConversationToolIdSet}
                     onToggleTool={handleToggleConversationTool}
+                    builtInTools={conversationBuiltInTools}
+                    selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
+                    onToggleBuiltInTool={handleToggleConversationBuiltInTool}
                     selectedToolGroupIds={conversationToolGroupIdSet}
                     onToggleToolGroup={handleToggleConversationToolGroup}
                     toolGroups={effectiveToolGroups}
@@ -8050,6 +8549,9 @@ export function ChatPanel({
                         availableTools={effectiveAvailableTools}
                         selectedToolIds={resolvedEffectiveToolIdSet}
                         onToggleTool={handleToggleInlineTool}
+                        builtInTools={conversationBuiltInTools}
+                        selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
+                        onToggleBuiltInTool={handleToggleConversationBuiltInTool}
                         selectedToolGroupIds={effectiveToolGroupIdSet}
                         onToggleToolGroup={handleToggleInlineToolGroup}
                         toolGroups={effectiveToolGroups}
@@ -8079,6 +8581,9 @@ export function ChatPanel({
                           availableTools={effectiveAvailableTools}
                           selectedToolIds={resolvedEffectiveToolIdSet}
                           onToggleTool={handleToggleInlineTool}
+                          builtInTools={conversationBuiltInTools}
+                          selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
+                          onToggleBuiltInTool={handleToggleConversationBuiltInTool}
                           selectedToolGroupIds={effectiveToolGroupIdSet}
                           onToggleToolGroup={handleToggleInlineToolGroup}
                           toolGroups={effectiveToolGroups}
