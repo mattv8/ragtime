@@ -30,8 +30,11 @@ services:
     container_name: searxng-dev
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080/
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-ragtime-internal-searxng}
+    configs:
+      - source: searxng-settings
+        target: /etc/searxng/settings.yml
     volumes:
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
       - searxng-cache:/var/cache/searxng
     networks:
       - default
@@ -41,7 +44,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8080/', timeout=5).read()",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=5).read()",
         ]
       interval: 30s
       timeout: 10s
@@ -142,6 +145,16 @@ services:
 networks:
   default:
     driver: bridge
+
+configs:
+  searxng-settings:
+    content: |
+      use_default_settings: true
+
+      search:
+        formats:
+          - html
+          - json
 
 volumes:
   ragtime-db-data:

@@ -232,6 +232,33 @@ flowchart LR
          timeout: 5s
          retries: 5
 
+     searxng:
+       image: ghcr.io/searxng/searxng:latest
+       container_name: searxng
+       restart: unless-stopped
+       environment:
+         SEARXNG_BASE_URL: http://searxng:8080/
+         SEARXNG_SECRET: ${SEARXNG_SECRET:-ragtime-internal-searxng}
+       configs:
+         - source: searxng-settings
+           target: /etc/searxng/settings.yml
+       volumes:
+         - searxng-cache:/var/cache/searxng
+       networks:
+         - ragtime-network
+       healthcheck:
+         test:
+           [
+             "CMD",
+             "python",
+             "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=5).read()",
+           ]
+         interval: 30s
+         timeout: 10s
+         retries: 5
+         start_period: 10s
+
      # Ragtime RAG API
      ragtime:
        # For older CPUs without X86_V2 support, use the legacy tag:
@@ -267,6 +294,8 @@ flowchart LR
            condition: service_healthy
          runtime:
            condition: service_started
+         searxng:
+           condition: service_healthy
        healthcheck:
          test: ["CMD", "sh", "-c", "if [ \"$ENABLE_HTTPS\" = \"true\" ]; then curl -fsk https://localhost:8000/health; else curl -fs http://localhost:8000/health; fi"]
          interval: 30s
@@ -307,11 +336,22 @@ flowchart LR
      ragtime-network:
        driver: bridge
 
+   configs:
+     searxng-settings:
+       content: |
+         use_default_settings: true
+
+         search:
+           formats:
+             - html
+             - json
+
    volumes:
      ragtime-db-data:
+     searxng-cache:
    ```
 
-   > **Note:** All configuration variables are loaded from the `.env` file via `env_file`. The `environment` section only overrides `DATABASE_URL` to use the container network.
+   > **Note:** Ragtime configuration variables are loaded from the `.env` file via `env_file`. The `ragtime.environment` section only overrides values that should use the internal container network.
 
    </details>
 
