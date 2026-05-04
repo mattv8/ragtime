@@ -348,7 +348,7 @@ Once the required tools are healthy, continue with [MCP Integration](#model-cont
 
 ### Creating Indexes
 
-The Indexer UI (http://localhost:8000, **Indexes** tab) supports multiple index types:
+The Indexer UI (http://localhost:8000, **Indexes** tab) supports multiple index types (see [Vector Store Abstraction](#vector-store-abstraction) for backend details):
 
 | Method | Vector Store | Storage | Use Case |
 |--------|--------------|---------|----------|
@@ -362,34 +362,23 @@ Jobs run async with progress streaming to the UI.
 
 ### Preview DNS Setup (Reverse Proxy Deployments)
 
-This deployment step configures userspace preview subdomains. For workspace behavior context, see [Workspaces](#workspaces).
+This step configures the wildcard DNS and proxy routing required for workspace live previews (see [Workspaces](#workspaces) for conceptual details).
 
-Userspace previews use per-workspace subdomains. By default, Ragtime derives the preview host from its public origin: `https://ragtime.example.com` becomes `https://<workspace>.ragtime.example.com`. Set `USERSPACE_PREVIEW_BASE_DOMAIN` only if previews should use a different wildcard domain such as `example-userspaces.com`.
-
-1. Choose whether to keep the derived preview host family or override it explicitly:
-  - Derived default: `https://ragtime.example.com` -> `https://<workspace>.ragtime.example.com`
-  - Explicit override: `USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com` -> `https://<workspace>.example-userspaces.com`
-2. Add a wildcard DNS record for the chosen preview base domain:
-  - `*.ragtime.example.com` or `*.example-userspaces.com` -> your public Ragtime entrypoint (A, AAAA, or CNAME)
-3. Ensure your reverse proxy accepts wildcard hosts for that domain and routes them to Ragtime.
-4. Ensure TLS certificates cover the wildcard domain if you use HTTPS.
-5. Set `.env` variables only when needed:
+1. **Choose a preview base domain:** Ragtime defaults to prepending the workspace name to its public origin (e.g., `https://ragtime.example.com` -> `https://<workspace>.ragtime.example.com`). To use a separate wildcard domain, set `USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com`.
+2. **Add a wildcard DNS record** for the chosen domain pointing to your Ragtime entrypoint.
+3. **Configure your reverse proxy** to route these wildcard requests to Ragtime and ensure TLS certificates cover them.
+4. **Update `.env`** (only if needed):
 
 ```bash
-# Set this when the public Ragtime origin differs from what the app sees on
-# incoming requests, such as behind TLS termination.
 EXTERNAL_BASE_URL=https://ragtime.example.com
-
-# Set this only if previews should use a different wildcard host family than
-# the main Ragtime host.
 USERSPACE_PREVIEW_BASE_DOMAIN=example-userspaces.com
 ```
 
-Notes:
-- Leave `EXTERNAL_BASE_URL` unset unless Ragtime sees a different origin than users do, or you need public URLs pinned to a canonical host.
+**Notes:**
+- Set `EXTERNAL_BASE_URL` only if Ragtime sees a different origin than users do (e.g., behind TLS termination), or to pin public URLs to a canonical host.
 - Keep `SESSION_COOKIE_SECURE=true` when traffic is HTTPS at the edge.
 - Forward `Host` and `X-Forwarded-Proto` headers through the proxy.
-- In local development with `DEBUG_MODE=true`, Ragtime uses `userspace-preview.lvh.me` automatically.
+- In local development (`DEBUG_MODE=true`), previews automatically use `userspace-preview.lvh.me`.
 
 ## Concepts
 
@@ -399,10 +388,8 @@ Core concepts that affect how Ragtime is deployed and used.
 
 **Workspaces** combine files, conversations, selected infrastructure tools, and an isolated runtime preview session in one agentic sandbox. They are Replit-like, but wired into Ragtime's tools and indexed context so agents can work against live systems.
 
-- Previews are runtime-only and proxied from session-managed devservers.
-- Public sharing uses direct routes (`/{owner}/{slug}` and `/shared/{token}`); both route families launch shared previews.
+- Public sharing uses direct routes (`/{owner}/{slug}` and `/shared/{token}`) which launch shared previews.
 - Password-protected shares are handled server-side with a full-page prompt.
-- Preview DNS and reverse-proxy setup is in [Preview DNS Setup (Reverse Proxy Deployments)](#preview-dns-setup-reverse-proxy-deployments).
 
 ### Vector Store Abstraction
 
@@ -420,7 +407,7 @@ How to connect external clients and coding assistants to Ragtime.
 
 Ragtime exposes its tools via the [Model Context Protocol](https://modelcontextprotocol.io), allowing AI coding assistants to interact with your databases, execute shell commands, and search your indexed codebases.
 
-By default, MCP is disabled until you enable it in Settings. If disabled, `/mcp` responds with HTTP 503.
+By default, MCP is disabled until you enable it in Settings. If disabled, `/mcp` responds with HTTP 503. For security and authentication rules, see [Network & Access](#network--access).
 
 #### Available MCP Tools
 
@@ -495,7 +482,7 @@ Replace `ragtime` with your container name if different (find it with `docker ps
 1. In OpenWebUI, go to **Settings** > **Connections** > **OpenAI API**
 2. Add a new connection:
    - **API Base URL**: `http://ragtime:8000/v1` (or `http://localhost:8000/v1` if running locally)
-   - **API Key**: Your configured `API_KEY` (or any value if not set)
+   - **API Key**: Your configured `API_KEY` (see [Network & Access](#network--access)) (or any value if not set)
 3. Select your server's model name (default: "ragtime", configurable in Settings > Server Branding)
 
 ## Operations
