@@ -887,6 +887,22 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     });
   }, [activeRightTab, activeWorkspaceId, launchPreviewSurface]);
 
+  const handlePreviewSessionExpired = useCallback(() => {
+    const now = Date.now();
+    if (now - lastPreviewSessionExpiredRefreshRef.current < 5000) {
+      console.warn('[UserSpacePanel] Suppressing rapid preview session refresh');
+      return;
+    }
+    lastPreviewSessionExpiredRefreshRef.current = now;
+
+    if (activeWorkspaceId) {
+      void launchPreviewSurface(activeWorkspaceId, {
+        clearOnError: false,
+        updateFrameUrl: true,
+      });
+    }
+  }, [activeWorkspaceId, launchPreviewSurface]);
+
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(180);
   const [leftPaneFraction, setLeftPaneFraction] = useState(0.5);
@@ -6710,21 +6726,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 workspaceId={activeWorkspaceId ?? undefined}
                 onExecutionStateChange={setPreviewExecuting}
                 previewNotice={previewNotice}
-                onPreviewSessionExpired={useCallback(() => {
-                  const now = Date.now();
-                  if (now - lastPreviewSessionExpiredRefreshRef.current < 5000) {
-                    console.warn('[UserSpacePanel] Suppressing rapid preview session refresh');
-                    return;
-                  }
-                  lastPreviewSessionExpiredRefreshRef.current = now;
-
-                  if (activeWorkspaceId) {
-                    void launchPreviewSurface(activeWorkspaceId, {
-                      clearOnError: false,
-                      updateFrameUrl: true,
-                    });
-                  }
-                }, [activeWorkspaceId, launchPreviewSurface])}
+                onPreviewSessionExpired={handlePreviewSessionExpired}
               />
             </div>
           ) : (
