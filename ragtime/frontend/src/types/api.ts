@@ -482,7 +482,7 @@ export interface UserSpacePreviewSandboxFlagOption {
 }
 
 // Canonical providers used by current UI flows.
-export type LlmProvider = 'openai' | 'anthropic' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'github_copilot';
+export type LlmProvider = 'openai' | 'anthropic' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot';
 // Legacy wire compatibility for older persisted/provider values.
 export type LlmProviderWire = LlmProvider | 'github_models';
 
@@ -491,7 +491,7 @@ export interface AppSettings {
   // Server branding
   server_name: string;
   // Embedding Configuration (for FAISS indexing)
-  embedding_provider: 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio';
+  embedding_provider: 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio' | 'omlx';
   embedding_model: string;
   embedding_dimensions?: number | null;
   // Ollama connection settings for embeddings (separate fields)
@@ -508,6 +508,11 @@ export interface AppSettings {
   lmstudio_port: number;
   lmstudio_base_url: string;
   lmstudio_api_key: string;
+  omlx_protocol: 'http' | 'https';
+  omlx_host: string;
+  omlx_port: number;
+  omlx_base_url: string;
+  omlx_api_key: string;
   // LLM Configuration (for chat/RAG responses)
   llm_provider: LlmProviderWire;
   llm_model: string;
@@ -529,6 +534,10 @@ export interface AppSettings {
   llm_lmstudio_host: string;
   llm_lmstudio_port: number;
   llm_lmstudio_base_url: string;
+  llm_omlx_protocol: 'http' | 'https';
+  llm_omlx_host: string;
+  llm_omlx_port: number;
+  llm_omlx_base_url: string;
   openai_api_key: string;
   anthropic_api_key: string;
   github_models_api_token: string;
@@ -603,7 +612,7 @@ export interface UpdateSettingsRequest {
   // Server branding
   server_name?: string;
   // Embedding settings
-  embedding_provider?: 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio';
+  embedding_provider?: 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio' | 'omlx';
   embedding_model?: string;
   embedding_dimensions?: number | null;
   ollama_protocol?: 'http' | 'https';
@@ -619,6 +628,11 @@ export interface UpdateSettingsRequest {
   lmstudio_port?: number;
   lmstudio_base_url?: string;
   lmstudio_api_key?: string;
+  omlx_protocol?: 'http' | 'https';
+  omlx_host?: string;
+  omlx_port?: number;
+  omlx_base_url?: string;
+  omlx_api_key?: string;
   // LLM settings
   llm_provider?: LlmProviderWire;
   llm_model?: string;
@@ -640,6 +654,10 @@ export interface UpdateSettingsRequest {
   llm_lmstudio_host?: string;
   llm_lmstudio_port?: number;
   llm_lmstudio_base_url?: string;
+  llm_omlx_protocol?: 'http' | 'https';
+  llm_omlx_host?: string;
+  llm_omlx_port?: number;
+  llm_omlx_base_url?: string;
   openai_api_key?: string;
   anthropic_api_key?: string;
   github_models_api_token?: string;
@@ -755,7 +773,7 @@ export interface OllamaVisionModelsResponse {
 
 // LLM Provider Model Fetching
 export interface LLMModelsRequest {
-  provider: Extract<LlmProvider, 'openai' | 'anthropic' | 'llama_cpp' | 'lmstudio' | 'github_copilot'>;
+  provider: Extract<LlmProvider, 'openai' | 'anthropic' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot'>;
   api_key?: string;
   base_url?: string;
   auth_mode?: 'oauth' | 'pat';
@@ -830,7 +848,7 @@ export interface CopilotAuthStatusResponse {
 
 // Embedding Provider Model Fetching
 export interface EmbeddingModelsRequest {
-  provider: 'openai' | 'llama_cpp' | 'lmstudio';
+  provider: 'openai' | 'llama_cpp' | 'lmstudio' | 'omlx';
   api_key?: string;
   base_url?: string;
   model?: string;

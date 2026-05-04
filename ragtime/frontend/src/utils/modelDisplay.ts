@@ -7,6 +7,7 @@ export const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
   ollama: 'Ollama',
   llama_cpp: 'llama.cpp',
   lmstudio: 'LM Studio',
+  omlx: 'oMLX',
   github_copilot: 'Github Copilot',
   github_models: 'Github Copilot',
 };

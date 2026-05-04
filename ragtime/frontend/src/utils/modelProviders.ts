@@ -15,6 +15,7 @@ export const LLM_PROVIDER_KEYS = [
   'ollama',
   'llama_cpp',
   'lmstudio',
+  'omlx',
   'github_copilot',
 ] as const;
 
@@ -23,6 +24,7 @@ export const EMBEDDING_PROVIDER_KEYS = [
   'ollama',
   'llama_cpp',
   'lmstudio',
+  'omlx',
 ] as const;
 
 export const KNOWN_PROVIDER_KEYS = new Set<string>([
@@ -91,6 +93,26 @@ export const PROVIDER_CONNECTIONS = {
     defaultHost: 'host.docker.internal',
     defaultPort: 1234,
     defaultBaseUrl: 'http://host.docker.internal:1234',
+  },
+  omlxEmbedding: {
+    protocolField: 'omlx_protocol',
+    hostField: 'omlx_host',
+    portField: 'omlx_port',
+    baseUrlField: 'omlx_base_url',
+    defaultProtocol: 'http',
+    defaultHost: 'host.docker.internal',
+    defaultPort: 8000,
+    defaultBaseUrl: 'http://host.docker.internal:8000',
+  },
+  omlxLlm: {
+    protocolField: 'llm_omlx_protocol',
+    hostField: 'llm_omlx_host',
+    portField: 'llm_omlx_port',
+    baseUrlField: 'llm_omlx_base_url',
+    defaultProtocol: 'http',
+    defaultHost: 'host.docker.internal',
+    defaultPort: 8000,
+    defaultBaseUrl: 'http://host.docker.internal:8000',
   },
 } satisfies Record<string, ProviderConnectionDescriptor>;
 

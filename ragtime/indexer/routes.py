@@ -46,7 +46,7 @@ from starlette.responses import StreamingResponse
 
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS
 from ragtime.chat_runtime.presets import CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
-from ragtime.core import llama_cpp, lmstudio
+from ragtime.core import llama_cpp, lmstudio, omlx
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.container_capabilities import get_container_capabilities
@@ -6350,7 +6350,8 @@ class EmbeddingModelsRequest(BaseModel):
     """Request to fetch available embedding models from a provider."""
 
     provider: str = Field(
-        ..., description="Embedding provider: 'openai', 'llama_cpp', or 'lmstudio'"
+        ...,
+        description="Embedding provider: 'openai', 'llama_cpp', 'lmstudio', or 'omlx'",
     )
     api_key: str = Field(default="", description="API key for the provider")
     base_url: str = Field(default="", description="Base URL for local providers")
@@ -6402,7 +6403,7 @@ async def fetch_embedding_models(
     if normalized_provider == "openai":
         return await _fetch_openai_embedding_models(request.api_key)
 
-    if normalized_provider in {"llama_cpp", "lmstudio"}:
+    if normalized_provider in {"llama_cpp", "lmstudio", "omlx"}:
         settings = await repository.get_settings()
         base_url = resolve_provider_base_url(
             settings,
@@ -6415,9 +6416,13 @@ async def fetch_embedding_models(
             base_url,
             selected_model=request.model,
             api_key=(
-                str(settings.lmstudio_api_key or "") or None
+                str(request.api_key or settings.lmstudio_api_key or "") or None
                 if normalized_provider == "lmstudio"
-                else None
+                else (
+                    str(request.api_key or settings.omlx_api_key or "") or None
+                    if normalized_provider == "omlx"
+                    else None
+                )
             ),
         )
 
@@ -6476,6 +6481,19 @@ async def _fetch_local_embedding_models(
             discovered = cast(
                 list[Any],
                 await lmstudio.list_embedding_models(
+                    normalized_base_url,
+                    selected_model=selected_model,
+                    api_key=api_key,
+                ),
+            )
+        elif normalized_provider == "omlx":
+            normalized_base_url = omlx.normalize_base_url(
+                base_url,
+                omlx.DEFAULT_BASE_URL,
+            )
+            discovered = cast(
+                list[Any],
+                await omlx.list_embedding_models(
                     normalized_base_url,
                     selected_model=selected_model,
                     api_key=api_key,
@@ -6617,7 +6635,7 @@ class LLMModelsRequest(BaseModel):
 
     provider: str = Field(
         ...,
-        description="LLM provider: 'openai', 'anthropic', 'llama_cpp', 'lmstudio', or 'github_copilot'",
+        description="LLM provider: 'openai', 'anthropic', 'llama_cpp', 'lmstudio', 'omlx', or 'github_copilot'",
     )
     api_key: str = Field(default="", description="API key/token for the provider")
     auth_mode: Optional[str] = Field(
@@ -6849,6 +6867,11 @@ def _resolve_lmstudio_chat_base_url(settings: AppSettings) -> str:
     return resolve_provider_base_url(settings, "lmstudio", "llm")
 
 
+def _resolve_omlx_chat_base_url(settings: AppSettings) -> str:
+    """Resolve the effective oMLX base URL used for chat model discovery."""
+    return resolve_provider_base_url(settings, "omlx", "llm")
+
+
 async def _fetch_github_provider_models(
     *,
     provider: str,
@@ -7017,7 +7040,20 @@ async def _fetch_llm_models_for_provider(
             )
         return await _fetch_lmstudio_llm_models(
             resolved_base_url,
-            api_key=str(settings.lmstudio_api_key or "") or None,
+            api_key=str(api_key or settings.lmstudio_api_key or "") or None,
+        )
+
+    if normalized_provider == "omlx":
+        resolved_base_url = resolve_provider_base_url(
+            settings, normalized_provider, "llm", override=base_url
+        )
+        if not resolved_base_url:
+            if raise_on_unconfigured:
+                raise HTTPException(status_code=400, detail="oMLX is not configured")
+            return LLMModelsResponse(success=False, message="oMLX is not configured")
+        return await _fetch_omlx_llm_models(
+            resolved_base_url,
+            api_key=str(api_key or settings.omlx_api_key or "") or None,
         )
 
     if normalized_provider == "github_copilot":
@@ -8316,6 +8352,44 @@ async def _fetch_lmstudio_llm_models(
         )
 
 
+async def _fetch_omlx_llm_models(
+    base_url: str, api_key: str | None = None
+) -> LLMModelsResponse:
+    """Fetch available chat models from oMLX OpenAI-compatible metadata."""
+    try:
+        normalized_base_url = omlx.normalize_base_url(
+            base_url,
+            omlx.DEFAULT_BASE_URL,
+        )
+        discovered = await omlx.list_chat_models(normalized_base_url, api_key=api_key)
+        models = [
+            LLMModel(
+                id=model.id,
+                name=model.name,
+                context_limit=model.context_limit,
+                max_output_tokens=model.context_limit,
+                capabilities=model.capabilities,
+                supported_endpoints=model.supported_endpoints,
+            )
+            for model in discovered
+        ]
+        for model in models:
+            update_model_function_calling(model.id, True)
+            if model.context_limit:
+                update_model_limit(model.id, model.context_limit)
+        return LLMModelsResponse(
+            success=True,
+            message=f"Found {len(models)} oMLX model(s).",
+            models=models,
+            default_model=models[0].id if models else None,
+        )
+    except Exception as e:
+        return LLMModelsResponse(
+            success=False,
+            message=f"Failed to fetch oMLX models: {str(e)}",
+        )
+
+
 class LmStudioModelLoadRequest(BaseModel):
     """Request to load an LM Studio model through the native API."""
 
@@ -9023,6 +9097,7 @@ async def get_available_chat_models():
         "ollama": ProviderModelState(provider="ollama"),
         "llama_cpp": ProviderModelState(provider="llama_cpp"),
         "lmstudio": ProviderModelState(provider="lmstudio"),
+        "omlx": ProviderModelState(provider="omlx"),
         "github_copilot": ProviderModelState(provider="github_copilot"),
     }
 
@@ -9089,6 +9164,20 @@ async def get_available_chat_models():
                 _safe_fetch_llm_models_task(
                     "lmstudio",
                     _fetch_lmstudio_llm_models(lmstudio_url, api_key=_lmstudio_api_key),
+                )
+            )
+        )
+
+    omlx_url = _resolve_omlx_chat_base_url(app_settings)
+    if omlx_url:
+        provider_states["omlx"].configured = True
+        provider_states["omlx"].connected = True
+        _omlx_api_key = str(getattr(app_settings, "omlx_api_key", "") or "") or None
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "omlx",
+                    _fetch_omlx_llm_models(omlx_url, api_key=_omlx_api_key),
                 )
             )
         )
@@ -9384,6 +9473,19 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                 _safe_fetch_llm_models_task(
                     "lmstudio",
                     _fetch_lmstudio_llm_models(lmstudio_url, api_key=_lmstudio_api_key),
+                    none_on_error=True,
+                )
+            )
+        )
+
+    omlx_url = _resolve_omlx_chat_base_url(app_settings)
+    if omlx_url:
+        _omlx_api_key = str(getattr(app_settings, "omlx_api_key", "") or "") or None
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "omlx",
+                    _fetch_omlx_llm_models(omlx_url, api_key=_omlx_api_key),
                     none_on_error=True,
                 )
             )

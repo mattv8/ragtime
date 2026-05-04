@@ -137,7 +137,7 @@ model AppSettings {
   serverName String @default("Ragtime") @map("server_name") // Customizable server/model name
 
   // Embedding Configuration (for FAISS indexing)
-  embeddingProvider   String @default("ollama") @map("embedding_provider") // "ollama", "openai", or "llama_cpp"
+  embeddingProvider   String @default("ollama") @map("embedding_provider") // "ollama", "openai", "llama_cpp", "lmstudio", or "omlx"
   embeddingModel      String @default("nomic-embed-text") @map("embedding_model")
   embeddingDimensions Int?   @map("embedding_dimensions") // Target dims for OpenAI text-embedding-3-* (MRL)
   // Ollama connection settings (separate fields for UI)
@@ -154,9 +154,14 @@ model AppSettings {
   lmstudioPort        Int     @default(1234) @map("lmstudio_port")
   lmstudioBaseUrl     String  @default("http://host.docker.internal:1234") @map("lmstudio_base_url")
   lmstudioApiKey      String? @map("lmstudio_api_key")
+  omlxProtocol        String  @default("http") @map("omlx_protocol")
+  omlxHost            String  @default("host.docker.internal") @map("omlx_host")
+  omlxPort            Int     @default(8000) @map("omlx_port")
+  omlxBaseUrl         String  @default("http://host.docker.internal:8000") @map("omlx_base_url")
+  omlxApiKey          String? @map("omlx_api_key")
 
   // LLM Configuration (for chat/RAG responses)
-  llmProvider                    String    @default("openai") @map("llm_provider") // "openai", "anthropic", "ollama", "llama_cpp", "lmstudio", "github_copilot", or "github_models"
+  llmProvider                    String    @default("openai") @map("llm_provider") // "openai", "anthropic", "ollama", "llama_cpp", "lmstudio", "omlx", "github_copilot", or "github_models"
   llmModel                       String    @default("gpt-4-turbo") @map("llm_model")
   llmMaxTokens                   Int       @default(4096) @map("llm_max_tokens") // Max output tokens
   imagePayloadMaxWidth           Int       @default(1024) @map("image_payload_max_width") // Max width (px) for image attachments
@@ -175,6 +180,10 @@ model AppSettings {
   llmLmstudioHost                String    @default("host.docker.internal") @map("llm_lmstudio_host")
   llmLmstudioPort                Int       @default(1234) @map("llm_lmstudio_port")
   llmLmstudioBaseUrl             String    @default("http://host.docker.internal:1234") @map("llm_lmstudio_base_url")
+  llmOmlxProtocol                String    @default("http") @map("llm_omlx_protocol")
+  llmOmlxHost                    String    @default("host.docker.internal") @map("llm_omlx_host")
+  llmOmlxPort                    Int       @default(8000) @map("llm_omlx_port")
+  llmOmlxBaseUrl                 String    @default("http://host.docker.internal:8000") @map("llm_omlx_base_url")
   openaiApiKey                   String    @default("") @map("openai_api_key")
   anthropicApiKey                String    @default("") @map("anthropic_api_key")
   githubModelsApiToken           String    @default("") @map("github_models_api_token")

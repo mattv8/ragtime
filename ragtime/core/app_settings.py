@@ -19,6 +19,8 @@ from ragtime.core.model_providers import (
     LLAMA_CPP_LLM_CONNECTION,
     LMSTUDIO_CONNECTION,
     LMSTUDIO_LLM_CONNECTION,
+    OMLX_CONNECTION,
+    OMLX_LLM_CONNECTION,
     OLLAMA_EMBEDDING_CONNECTION,
     OLLAMA_LLM_CONNECTION,
     ProviderConnection,
@@ -62,6 +64,15 @@ PROVIDER_CONNECTION_PRISMA_FIELDS: tuple[
         },
     ),
     (
+        OMLX_CONNECTION,
+        {
+            "protocol": "omlxProtocol",
+            "host": "omlxHost",
+            "port": "omlxPort",
+            "base_url": "omlxBaseUrl",
+        },
+    ),
+    (
         OLLAMA_LLM_CONNECTION,
         {
             "protocol": "llmOllamaProtocol",
@@ -86,6 +97,15 @@ PROVIDER_CONNECTION_PRISMA_FIELDS: tuple[
             "host": "llmLmstudioHost",
             "port": "llmLmstudioPort",
             "base_url": "llmLmstudioBaseUrl",
+        },
+    ),
+    (
+        OMLX_LLM_CONNECTION,
+        {
+            "protocol": "llmOmlxProtocol",
+            "host": "llmOmlxHost",
+            "port": "llmOmlxPort",
+            "base_url": "llmOmlxBaseUrl",
         },
     ),
 )
@@ -185,6 +205,7 @@ class SettingsCache:
             postgres_password = prisma_settings.postgresPassword or ""
             mcp_password = prisma_settings.mcpDefaultRoutePassword
             lmstudio_api_key = getattr(prisma_settings, "lmstudioApiKey", None) or ""
+            omlx_api_key = getattr(prisma_settings, "omlxApiKey", None) or ""
 
             openai_key = decrypt_secret(openai_key)
             anthropic_key = decrypt_secret(anthropic_key)
@@ -196,6 +217,7 @@ class SettingsCache:
             )
             postgres_password = decrypt_secret(postgres_password)
             lmstudio_api_key = decrypt_secret(lmstudio_api_key)
+            omlx_api_key = decrypt_secret(omlx_api_key)
             # Note: mcp_default_route_password stays encrypted for auth verification
             # It's decrypted in the verification function
 
@@ -269,6 +291,7 @@ class SettingsCache:
                 "openai_api_key": openai_key,
                 "anthropic_api_key": anthropic_key,
                 "lmstudio_api_key": lmstudio_api_key,
+                "omlx_api_key": omlx_api_key,
                 "github_models_api_token": github_models_api_token,
                 "github_copilot_access_token": github_copilot_access_token,
                 "github_copilot_refresh_token": github_copilot_refresh_token,
@@ -381,6 +404,7 @@ class SettingsCache:
                 "openai_api_key": "",
                 "anthropic_api_key": "",
                 "lmstudio_api_key": "",
+                "omlx_api_key": "",
                 "github_models_api_token": "",
                 "github_copilot_access_token": "",
                 "github_copilot_refresh_token": "",

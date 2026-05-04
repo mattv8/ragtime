@@ -57,7 +57,7 @@ from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID
 from ragtime.chat_runtime.presets import CHAT_WEB_BROWSE_TOOL_ID
 from ragtime.chat_runtime.presets import CHAT_WEB_SEARCH_TOOL_ID
 from ragtime.config import settings
-from ragtime.core import llama_cpp, lmstudio
+from ragtime.core import llama_cpp, lmstudio, omlx
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
@@ -2496,6 +2496,8 @@ class RAGComponents:
             return await llama_cpp.get_model_context_length(model, base_url)
         if normalized_provider == "lmstudio":
             return await lmstudio.get_model_context_length(model, base_url)
+        if normalized_provider == "omlx":
+            return await omlx.get_model_context_length(model, base_url)
         return None
 
     def _build_local_openai_embedding_model(
@@ -2503,6 +2505,7 @@ class RAGComponents:
         provider: str,
         model: str,
     ) -> OpenAIEmbeddings:
+        assert self._app_settings is not None
         normalized_provider = normalize_provider_name(provider)
         base_url = self._resolve_provider_base_url(
             normalized_provider, "embedding"
@@ -2510,6 +2513,7 @@ class RAGComponents:
         api_keys = {
             "llama_cpp": "llama-cpp-local",
             "lmstudio": self._app_settings.get("lmstudio_api_key") or "lmstudio-local",
+            "omlx": self._app_settings.get("omlx_api_key") or "omlx-local",
         }
         logger.info(
             f"Using {self._provider_label(normalized_provider)} embeddings: {model} at {base_url}"
@@ -2529,7 +2533,7 @@ class RAGComponents:
             return max_tokens
 
         normalized_provider = normalize_provider_name(provider)
-        if normalized_provider in {"ollama", "llama_cpp", "lmstudio"}:
+        if normalized_provider in {"ollama", "llama_cpp", "lmstudio", "omlx"}:
             detected_limit = await self._resolve_local_context_limit(
                 normalized_provider, model
             )
@@ -2700,18 +2704,28 @@ class RAGComponents:
                 logger.warning("langchain-ollama not installed")
                 return None
 
-        if provider_normalized in {"llama_cpp", "lmstudio"}:
+        if provider_normalized in {"llama_cpp", "lmstudio", "omlx"}:
             base_url = self._resolve_provider_base_url(
                 provider_normalized, "llm"
             ).rstrip("/")
-            metadata_urls = (
-                [f"{base_url}/v1/models", f"{base_url}/models"]
-                if provider_normalized == "llama_cpp"
-                else [f"{base_url}/api/v1/models", f"{base_url}/api/v0/models"]
+            if provider_normalized == "llama_cpp":
+                metadata_urls = [f"{base_url}/v1/models", f"{base_url}/models"]
+            elif provider_normalized == "lmstudio":
+                metadata_urls = [
+                    f"{base_url}/api/v1/models",
+                    f"{base_url}/api/v0/models",
+                ]
+            else:
+                metadata_urls = [f"{base_url}/v1/models"]
+            metadata_headers = (
+                {"Authorization": f"Bearer {self._app_settings.get('omlx_api_key')}"}
+                if provider_normalized == "omlx"
+                and self._app_settings.get("omlx_api_key")
+                else {}
             )
             await _hydrate_openai_compatible_capabilities(
                 metadata_urls=metadata_urls,
-                headers={},
+                headers=metadata_headers,
                 requested_model=model,
             )
             return _CopilotChatOpenAI(
@@ -2719,11 +2733,12 @@ class RAGComponents:
                 temperature=0,
                 streaming=True,
                 api_key=(
-                    "llama-cpp-local"
-                    if provider_normalized == "llama_cpp"
-                    else (
-                        self._app_settings.get("lmstudio_api_key") or "lmstudio-local"
-                    )
+                    {
+                        "llama_cpp": "llama-cpp-local",
+                        "lmstudio": self._app_settings.get("lmstudio_api_key")
+                        or "lmstudio-local",
+                        "omlx": self._app_settings.get("omlx_api_key") or "omlx-local",
+                    }[provider_normalized]
                 ),
                 base_url=f"{base_url}/v1",
                 max_tokens=max_tokens,
@@ -2924,7 +2939,7 @@ class RAGComponents:
                 logger.warning("OpenAI embeddings selected but no API key configured")
             logger.info(f"Using OpenAI embeddings: {model}")
             return OpenAIEmbeddings(model=model, openai_api_key=api_key)  # type: ignore[call-arg]
-        elif provider in {"llama_cpp", "lmstudio"}:
+        elif provider in {"llama_cpp", "lmstudio", "omlx"}:
             return self._build_local_openai_embedding_model(provider, model)
         else:
             raise ValueError(f"Unknown embedding provider: {provider}")

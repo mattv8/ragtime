@@ -110,6 +110,28 @@ LMSTUDIO_LLM_CONNECTION = ProviderConnection(
     default_base_url="http://host.docker.internal:1234",
 )
 
+OMLX_CONNECTION = ProviderConnection(
+    protocol_field="omlx_protocol",
+    host_field="omlx_host",
+    port_field="omlx_port",
+    base_url_field="omlx_base_url",
+    default_protocol="http",
+    default_host="host.docker.internal",
+    default_port=8000,
+    default_base_url="http://host.docker.internal:8000",
+)
+
+OMLX_LLM_CONNECTION = ProviderConnection(
+    protocol_field="llm_omlx_protocol",
+    host_field="llm_omlx_host",
+    port_field="llm_omlx_port",
+    base_url_field="llm_omlx_base_url",
+    default_protocol="http",
+    default_host="host.docker.internal",
+    default_port=8000,
+    default_base_url="http://host.docker.internal:8000",
+)
+
 
 MODEL_PROVIDERS: dict[str, ModelProvider] = {
     "openai": ModelProvider(
@@ -153,6 +175,19 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
         label="LM Studio",
         llm_connection=LMSTUDIO_LLM_CONNECTION,
         embedding_connection=LMSTUDIO_CONNECTION,
+        supports_llm=True,
+        supports_embeddings=True,
+        openai_compatible_chat=True,
+        openai_compatible_embeddings=True,
+        local=True,
+    ),
+    "omlx": ModelProvider(
+        name="omlx",
+        label="oMLX",
+        llm_connection=OMLX_LLM_CONNECTION,
+        embedding_connection=OMLX_CONNECTION,
+        llm_api_key_field="omlx_api_key",
+        embedding_api_key_field="omlx_api_key",
         supports_llm=True,
         supports_embeddings=True,
         openai_compatible_chat=True,

@@ -522,11 +522,30 @@ class AppSettings(BaseModel):
         default="",
         description="LM Studio API key (optional; used for both LLM and embedding roles when set)",
     )
+    omlx_protocol: str = Field(
+        default="http",
+        description="oMLX embedding server protocol: 'http' or 'https'",
+    )
+    omlx_host: str = Field(
+        default="host.docker.internal",
+        description="oMLX embedding server hostname or IP address",
+    )
+    omlx_port: int = Field(
+        default=8000, ge=1, le=65535, description="oMLX embedding server port"
+    )
+    omlx_base_url: str = Field(
+        default="http://host.docker.internal:8000",
+        description="oMLX embedding server URL (computed from protocol/host/port)",
+    )
+    omlx_api_key: str = Field(
+        default="",
+        description="oMLX API key (optional; used for both LLM and embedding roles when set)",
+    )
 
     # LLM Configuration (for chat/RAG responses)
     llm_provider: str = Field(
         default="openai",
-        description="LLM provider: 'openai', 'anthropic', 'ollama', 'llama_cpp', 'lmstudio', 'github_copilot', or 'github_models'",
+        description="LLM provider: 'openai', 'anthropic', 'ollama', 'llama_cpp', 'lmstudio', 'omlx', 'github_copilot', or 'github_models'",
     )
     llm_model: str = Field(
         default="gpt-4-turbo",
@@ -603,6 +622,20 @@ class AppSettings(BaseModel):
     llm_lmstudio_base_url: str = Field(
         default="http://host.docker.internal:1234",
         description="LM Studio LLM server URL (computed from protocol/host/port)",
+    )
+    llm_omlx_protocol: str = Field(
+        default="http", description="oMLX LLM server protocol: 'http' or 'https'"
+    )
+    llm_omlx_host: str = Field(
+        default="host.docker.internal",
+        description="oMLX LLM server hostname or IP address",
+    )
+    llm_omlx_port: int = Field(
+        default=8000, ge=1, le=65535, description="oMLX LLM server port"
+    )
+    llm_omlx_base_url: str = Field(
+        default="http://host.docker.internal:8000",
+        description="oMLX LLM server URL (computed from protocol/host/port)",
     )
     openai_api_key: str = Field(
         default="",
@@ -1056,6 +1089,11 @@ class UpdateSettingsRequest(BaseModel):
     lmstudio_port: Optional[int] = Field(default=None, ge=1, le=65535)
     lmstudio_base_url: Optional[str] = None
     lmstudio_api_key: Optional[str] = None
+    omlx_protocol: Optional[str] = None
+    omlx_host: Optional[str] = None
+    omlx_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    omlx_base_url: Optional[str] = None
+    omlx_api_key: Optional[str] = None
     # LLM settings
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
@@ -1092,6 +1130,10 @@ class UpdateSettingsRequest(BaseModel):
     llm_lmstudio_host: Optional[str] = None
     llm_lmstudio_port: Optional[int] = Field(default=None, ge=1, le=65535)
     llm_lmstudio_base_url: Optional[str] = None
+    llm_omlx_protocol: Optional[str] = None
+    llm_omlx_host: Optional[str] = None
+    llm_omlx_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    llm_omlx_base_url: Optional[str] = None
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     github_models_api_token: Optional[str] = None

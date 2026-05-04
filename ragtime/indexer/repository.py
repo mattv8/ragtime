@@ -949,6 +949,7 @@ class IndexerRepository:
             )
         if mcp_password:
             mcp_password = decrypt_secret(mcp_password)
+        omlx_api_key = decrypt_secret(getattr(settings, "omlxApiKey", None) or "")
 
         try:
             userspace_preview_sandbox_flags = normalize_userspace_preview_sandbox_flags(
@@ -995,6 +996,15 @@ class IndexerRepository:
             lmstudio_api_key=decrypt_secret(
                 getattr(settings, "lmstudioApiKey", None) or ""
             ),
+            omlx_protocol=getattr(settings, "omlxProtocol", "http"),
+            omlx_host=getattr(settings, "omlxHost", "host.docker.internal"),
+            omlx_port=getattr(settings, "omlxPort", 8000),
+            omlx_base_url=getattr(
+                settings,
+                "omlxBaseUrl",
+                "http://host.docker.internal:8000",
+            ),
+            omlx_api_key=omlx_api_key,
             # LLM settings
             llm_provider=settings.llmProvider,
             llm_model=settings.llmModel,
@@ -1030,6 +1040,14 @@ class IndexerRepository:
                 settings,
                 "llmLmstudioBaseUrl",
                 "http://host.docker.internal:1234",
+            ),
+            llm_omlx_protocol=getattr(settings, "llmOmlxProtocol", "http"),
+            llm_omlx_host=getattr(settings, "llmOmlxHost", "host.docker.internal"),
+            llm_omlx_port=getattr(settings, "llmOmlxPort", 8000),
+            llm_omlx_base_url=getattr(
+                settings,
+                "llmOmlxBaseUrl",
+                "http://host.docker.internal:8000",
             ),
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
@@ -1170,6 +1188,11 @@ class IndexerRepository:
             "lmstudio_port": "lmstudioPort",
             "lmstudio_base_url": "lmstudioBaseUrl",
             "lmstudio_api_key": "lmstudioApiKey",
+            "omlx_protocol": "omlxProtocol",
+            "omlx_host": "omlxHost",
+            "omlx_port": "omlxPort",
+            "omlx_base_url": "omlxBaseUrl",
+            "omlx_api_key": "omlxApiKey",
             # LLM settings
             "llm_provider": "llmProvider",
             "llm_model": "llmModel",
@@ -1190,6 +1213,10 @@ class IndexerRepository:
             "llm_lmstudio_host": "llmLmstudioHost",
             "llm_lmstudio_port": "llmLmstudioPort",
             "llm_lmstudio_base_url": "llmLmstudioBaseUrl",
+            "llm_omlx_protocol": "llmOmlxProtocol",
+            "llm_omlx_host": "llmOmlxHost",
+            "llm_omlx_port": "llmOmlxPort",
+            "llm_omlx_base_url": "llmOmlxBaseUrl",
             "openai_api_key": "openaiApiKey",
             "anthropic_api_key": "anthropicApiKey",
             "github_models_api_token": "githubModelsApiToken",
@@ -1275,6 +1302,7 @@ class IndexerRepository:
             "github_copilot_oauth_refresh_token",
             "postgres_password",
             "lmstudio_api_key",
+            "omlx_api_key",
         ]
         for field in secret_fields:
             if field in updates and updates[field]:

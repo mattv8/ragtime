@@ -110,6 +110,9 @@ const DEFAULT_LLAMA_CPP_PROTOCOL = PROVIDER_CONNECTIONS.llamaCppLlm.defaultProto
 const DEFAULT_LMSTUDIO_PORT = PROVIDER_CONNECTIONS.lmstudioLlm.defaultPort;
 const DEFAULT_LMSTUDIO_HOST = PROVIDER_CONNECTIONS.lmstudioLlm.defaultHost;
 const DEFAULT_LMSTUDIO_PROTOCOL = PROVIDER_CONNECTIONS.lmstudioLlm.defaultProtocol;
+const DEFAULT_OMLX_PORT = PROVIDER_CONNECTIONS.omlxLlm.defaultPort;
+const DEFAULT_OMLX_HOST = PROVIDER_CONNECTIONS.omlxLlm.defaultHost;
+const DEFAULT_OMLX_PROTOCOL = PROVIDER_CONNECTIONS.omlxLlm.defaultProtocol;
 
 const COPILOT_MODEL_FETCH_OPTIONS = {
   includeDirectoryModels: true,
@@ -271,6 +274,11 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
   | 'lmstudio_port'
   | 'lmstudio_base_url'
   | 'lmstudio_api_key'
+  | 'omlx_protocol'
+  | 'omlx_host'
+  | 'omlx_port'
+  | 'omlx_base_url'
+  | 'omlx_api_key'
   | 'ollama_embedding_timeout_seconds'
   | 'default_ocr_mode'
   | 'default_ocr_vision_model'
@@ -293,6 +301,11 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
     lmstudio_port: data.lmstudio_port,
     lmstudio_base_url: data.lmstudio_base_url,
     lmstudio_api_key: data.lmstudio_api_key,
+    omlx_protocol: data.omlx_protocol,
+    omlx_host: data.omlx_host,
+    omlx_port: data.omlx_port,
+    omlx_base_url: data.omlx_base_url,
+    omlx_api_key: data.omlx_api_key,
     ollama_embedding_timeout_seconds: data.ollama_embedding_timeout_seconds,
     default_ocr_mode: data.default_ocr_mode,
     default_ocr_vision_model: data.default_ocr_vision_model,
@@ -553,7 +566,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
 
   // Fetch LLM models from provider API
   const fetchLlmModels = useCallback(async (
-    provider: 'openai' | 'anthropic' | 'llama_cpp' | 'lmstudio' | 'github_copilot',
+    provider: 'openai' | 'anthropic' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot',
     apiKey?: string,
     options?: {
       authMode?: 'oauth' | 'pat';
@@ -612,13 +625,14 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
   }, []);
 
   const fetchLocalLlmModels = useCallback(async (
-    provider: 'llama_cpp' | 'lmstudio',
+    provider: 'llama_cpp' | 'lmstudio' | 'omlx',
     connection: ProviderConnectionDescriptor,
     protocol: 'http' | 'https' | null | undefined,
     host: string | null | undefined,
     port: number | null | undefined,
+    apiKey?: string,
   ) => {
-    await fetchLlmModels(provider, undefined, {
+    await fetchLlmModels(provider, apiKey, {
       baseUrl: buildLocalBaseUrl(protocol, host, port, connection),
     });
   }, [fetchLlmModels]);
@@ -640,8 +654,20 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
       formData.llm_lmstudio_protocol,
       formData.llm_lmstudio_host,
       formData.llm_lmstudio_port,
+      formData.lmstudio_api_key,
     );
-  }, [fetchLocalLlmModels, formData.llm_lmstudio_host, formData.llm_lmstudio_port, formData.llm_lmstudio_protocol]);
+  }, [fetchLocalLlmModels, formData.llm_lmstudio_host, formData.llm_lmstudio_port, formData.llm_lmstudio_protocol, formData.lmstudio_api_key]);
+
+  const fetchOmlxLlmModels = useCallback(async () => {
+    await fetchLocalLlmModels(
+      'omlx',
+      PROVIDER_CONNECTIONS.omlxLlm,
+      formData.llm_omlx_protocol,
+      formData.llm_omlx_host,
+      formData.llm_omlx_port,
+      formData.omlx_api_key,
+    );
+  }, [fetchLocalLlmModels, formData.llm_omlx_host, formData.llm_omlx_port, formData.llm_omlx_protocol, formData.omlx_api_key]);
 
   const fetchCopilotModels = useCallback(async () => {
     await fetchLlmModels('github_copilot', undefined, {
@@ -843,11 +869,12 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
   }, [formData.embedding_model]);
 
   const fetchLocalEmbeddingModels = useCallback(async (
-    provider: 'llama_cpp' | 'lmstudio',
+    provider: 'llama_cpp' | 'lmstudio' | 'omlx',
     connection: ProviderConnectionDescriptor,
     protocol: 'http' | 'https' | null | undefined,
     host: string | null | undefined,
     port: number | null | undefined,
+    apiKey?: string,
   ) => {
     setEmbeddingModelsFetching(true);
     setEmbeddingModelsError(null);
@@ -857,6 +884,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     try {
       const response = await api.fetchEmbeddingModels({
         provider,
+        api_key: apiKey,
         base_url: buildLocalBaseUrl(protocol, host, port, connection),
         model: formData.embedding_model || undefined,
       });
@@ -897,8 +925,20 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
       formData.lmstudio_protocol,
       formData.lmstudio_host,
       formData.lmstudio_port,
+      formData.lmstudio_api_key,
     );
-  }, [fetchLocalEmbeddingModels, formData.lmstudio_host, formData.lmstudio_port, formData.lmstudio_protocol]);
+  }, [fetchLocalEmbeddingModels, formData.lmstudio_host, formData.lmstudio_port, formData.lmstudio_protocol, formData.lmstudio_api_key]);
+
+  const fetchOmlxEmbeddingModels = useCallback(async () => {
+    await fetchLocalEmbeddingModels(
+      'omlx',
+      PROVIDER_CONNECTIONS.omlxEmbedding,
+      formData.omlx_protocol,
+      formData.omlx_host,
+      formData.omlx_port,
+      formData.omlx_api_key,
+    );
+  }, [fetchLocalEmbeddingModels, formData.omlx_host, formData.omlx_port, formData.omlx_protocol, formData.omlx_api_key]);
 
   const getLmstudioChatBaseUrl = useCallback(() => buildLocalBaseUrl(
     formData.llm_lmstudio_protocol,
@@ -1182,6 +1222,10 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         llm_lmstudio_host: data.llm_lmstudio_host,
         llm_lmstudio_port: data.llm_lmstudio_port,
         llm_lmstudio_base_url: data.llm_lmstudio_base_url,
+        llm_omlx_protocol: data.llm_omlx_protocol,
+        llm_omlx_host: data.llm_omlx_host,
+        llm_omlx_port: data.llm_omlx_port,
+        llm_omlx_base_url: data.llm_omlx_base_url,
         openai_api_key: data.openai_api_key,
         anthropic_api_key: data.anthropic_api_key,
         github_models_api_token: data.github_models_api_token,
@@ -1541,6 +1585,16 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           PROVIDER_CONNECTIONS.lmstudioEmbedding,
         ),
         lmstudio_api_key: formData.lmstudio_api_key,
+        omlx_protocol: formData.omlx_protocol,
+        omlx_host: formData.omlx_host,
+        omlx_port: formData.omlx_port,
+        omlx_base_url: buildLocalBaseUrl(
+          formData.omlx_protocol,
+          formData.omlx_host,
+          formData.omlx_port,
+          PROVIDER_CONNECTIONS.omlxEmbedding,
+        ),
+        omlx_api_key: formData.omlx_api_key,
         ollama_embedding_timeout_seconds: formData.ollama_embedding_timeout_seconds,
         sequential_index_loading: formData.sequential_index_loading,
         default_ocr_mode: formData.default_ocr_mode,
@@ -1635,6 +1689,18 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
           PROVIDER_CONNECTIONS.lmstudioLlm,
         );
         dataToSave.lmstudio_api_key = formData.lmstudio_api_key;
+      }
+      if (normalizedProvider === 'omlx') {
+        dataToSave.llm_omlx_protocol = formData.llm_omlx_protocol;
+        dataToSave.llm_omlx_host = formData.llm_omlx_host;
+        dataToSave.llm_omlx_port = formData.llm_omlx_port;
+        dataToSave.llm_omlx_base_url = buildLocalBaseUrl(
+          formData.llm_omlx_protocol,
+          formData.llm_omlx_host,
+          formData.llm_omlx_port,
+          PROVIDER_CONNECTIONS.omlxLlm,
+        );
+        dataToSave.omlx_api_key = formData.omlx_api_key;
       }
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
@@ -2130,6 +2196,11 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     (formData.llm_lmstudio_host ?? settings?.llm_lmstudio_host)?.trim() &&
     (formData.llm_lmstudio_port ?? settings?.llm_lmstudio_port)
   );
+  const omlxConfigured = Boolean(
+    (formData.llm_omlx_protocol ?? settings?.llm_omlx_protocol) &&
+    (formData.llm_omlx_host ?? settings?.llm_omlx_host)?.trim() &&
+    (formData.llm_omlx_port ?? settings?.llm_omlx_port)
+  );
   const embeddingOpenAiConfigured = Boolean((formData.openai_api_key ?? settings?.openai_api_key)?.trim());
   const embeddingOllamaConfigured = Boolean(
     (formData.ollama_protocol ?? settings?.ollama_protocol) &&
@@ -2145,6 +2216,11 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     (formData.lmstudio_protocol ?? settings?.lmstudio_protocol) &&
     (formData.lmstudio_host ?? settings?.lmstudio_host)?.trim() &&
     (formData.lmstudio_port ?? settings?.lmstudio_port)
+  );
+  const embeddingOmlxConfigured = Boolean(
+    (formData.omlx_protocol ?? settings?.omlx_protocol) &&
+    (formData.omlx_host ?? settings?.omlx_host)?.trim() &&
+    (formData.omlx_port ?? settings?.omlx_port)
   );
   const activeAuthProvider = AUTH_PROVIDER_OPTIONS[0];
   const ldapConfigured = Boolean(ldapFormData.ldap_host.trim() || ldapConfig?.server_url?.trim());
@@ -2405,6 +2481,13 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 />
                 <span className="llm-provider-status-label">LM Studio</span>
               </span>
+              <span className="llm-provider-status-item" title={omlxConfigured ? 'oMLX configured' : 'oMLX not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${omlxConfigured ? 'configured' : ''}`}
+                  aria-label={omlxConfigured ? 'oMLX configured' : 'oMLX not configured'}
+                />
+                <span className="llm-provider-status-label">oMLX</span>
+              </span>
               <span className="llm-provider-status-item" title={(copilotConfigured || copilotPatConfigured) ? 'GitHub Copilot configured' : 'GitHub Copilot not configured'}>
                 <span
                   className={`llm-provider-status-dot ${(copilotConfigured || copilotPatConfigured) ? 'configured' : ''}`}
@@ -2424,7 +2507,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
             <select
               value={formData.llm_provider || 'openai'}
               onChange={(e) => {
-                const newProvider = e.target.value as 'openai' | 'anthropic' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'github_copilot';
+                const newProvider = e.target.value as 'openai' | 'anthropic' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot';
                 setFormData({
                   ...formData,
                   llm_provider: newProvider,
@@ -2451,6 +2534,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               <option value="ollama">Ollama</option>
               <option value="llama_cpp">llama.cpp</option>
               <option value="lmstudio">LM Studio</option>
+              <option value="omlx">oMLX</option>
               <option value="github_copilot">GitHub Copilot</option>
             </select>
             {/* Quick-fill from embedding Ollama when it has a real host */}
@@ -2481,6 +2565,23 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                     llm_lmstudio_protocol: formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
                     llm_lmstudio_host: formData.lmstudio_host || '',
                     llm_lmstudio_port: formData.lmstudio_port || DEFAULT_LMSTUDIO_PORT,
+                  });
+                  resetLlmModelsState();
+                }}
+              >
+                Use Embedding Server
+              </button>
+            )}
+            {formData.llm_provider === 'omlx' && formData.embedding_provider === 'omlx' && formData.omlx_host?.trim() && (
+              <button
+                type="button"
+                className="btn btn-test"
+                onClick={() => {
+                  setFormData({
+                    ...formData,
+                    llm_omlx_protocol: formData.omlx_protocol || DEFAULT_OMLX_PROTOCOL,
+                    llm_omlx_host: formData.omlx_host || '',
+                    llm_omlx_port: formData.omlx_port || DEFAULT_OMLX_PORT,
                   });
                   resetLlmModelsState();
                 }}
@@ -2637,6 +2738,60 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                   );
                 })()}
               />
+            </>
+          )}
+
+          {formData.llm_provider === 'omlx' && (
+            <>
+              <div className="form-group">
+                <label>oMLX API Key</label>
+                <input
+                  type="password"
+                  value={formData.omlx_api_key || ''}
+                  onChange={(e) => setFormData({ ...formData, omlx_api_key: e.target.value })}
+                  placeholder="optional"
+                  autoComplete="off"
+                />
+                <p className="form-help">Optional. Leave blank if oMLX is running without authentication.</p>
+              </div>
+              <OllamaConnectionForm
+                protocol={formData.llm_omlx_protocol || DEFAULT_OMLX_PROTOCOL}
+                host={formData.llm_omlx_host || DEFAULT_OMLX_HOST}
+                port={formData.llm_omlx_port || DEFAULT_OMLX_PORT}
+                model={formData.llm_model || ''}
+                connected={llmModelsLoaded && formData.llm_provider === 'omlx'}
+                connecting={llmModelsFetching}
+                error={formData.llm_provider === 'omlx' ? llmModelsError : null}
+                models={llmModels.map((m) => ({
+                  id: m.id,
+                  name: m.name,
+                  context_limit: m.context_limit,
+                }))}
+                providerLabel="oMLX"
+                defaultPort={DEFAULT_OMLX_PORT}
+                hostPlaceholder={DEFAULT_OMLX_HOST}
+                modelLabel="Model"
+                modelPlaceholder="qwen3-coder-next-8bit"
+                connectedHelpText="Select a model from oMLX."
+                disconnectedHelpText="Click &quot;Fetch Models&quot; to discover oMLX models, or enter a model id manually."
+                onProtocolChange={(protocol) => {
+                  setFormData({ ...formData, llm_omlx_protocol: protocol });
+                  resetLlmModelsState();
+                }}
+                onHostChange={(host) => {
+                  setFormData({ ...formData, llm_omlx_host: host });
+                  resetLlmModelsState();
+                }}
+                onPortChange={(port) => {
+                  setFormData({ ...formData, llm_omlx_port: port });
+                  resetLlmModelsState();
+                }}
+                onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
+                onFetchModels={fetchOmlxLlmModels}
+              />
+              <p className="field-help">
+                oMLX manages model loading in its own admin UI and serves selected models through its OpenAI-compatible API.
+              </p>
             </>
           )}
 
@@ -3356,6 +3511,13 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 />
                 <span className="llm-provider-status-label">LM Studio</span>
               </span>
+              <span className="llm-provider-status-item" title={embeddingOmlxConfigured ? 'oMLX configured' : 'oMLX not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${embeddingOmlxConfigured ? 'configured' : ''}`}
+                  aria-label={embeddingOmlxConfigured ? 'oMLX configured' : 'oMLX not configured'}
+                />
+                <span className="llm-provider-status-label">oMLX</span>
+              </span>
             </span>
           </legend>
           <p className="fieldset-help">
@@ -3369,7 +3531,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               <select
                 value={formData.embedding_provider || 'ollama'}
                 onChange={(e) => {
-                  const newProvider = e.target.value as 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio';
+                  const newProvider = e.target.value as 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio' | 'omlx';
                   setFormData({
                     ...formData,
                     embedding_provider: newProvider,
@@ -3381,6 +3543,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                           ? ''
                           : newProvider === 'lmstudio'
                             ? ''
+                            : newProvider === 'omlx'
+                              ? ''
                             : 'text-embedding-3-small',
                   });
                   // Reset Ollama connection state when switching providers
@@ -3396,6 +3560,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 <option value="ollama">Ollama</option>
                 <option value="llama_cpp">llama.cpp</option>
                 <option value="lmstudio">LM Studio</option>
+                <option value="omlx">oMLX</option>
                 <option value="openai">OpenAI</option>
               </select>
               {/* Quick-fill from LLM Ollama when it has a real host */}
@@ -3433,9 +3598,26 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                   Use LLM Server
                 </button>
               )}
+              {formData.embedding_provider === 'omlx' && formData.llm_provider === 'omlx' && formData.llm_omlx_host?.trim() && (
+                <button
+                  type="button"
+                  className="btn btn-test"
+                  onClick={() => {
+                    setFormData({
+                      ...formData,
+                      omlx_protocol: formData.llm_omlx_protocol || DEFAULT_OMLX_PROTOCOL,
+                      omlx_host: formData.llm_omlx_host || '',
+                      omlx_port: formData.llm_omlx_port || DEFAULT_OMLX_PORT,
+                    });
+                    resetEmbeddingModelsState();
+                  }}
+                >
+                  Use LLM Server
+                </button>
+              )}
               </div>
               <p className="field-help">
-                Note: Anthropic does not offer embedding models. Use Ollama, llama.cpp, LM Studio, or OpenAI for document embeddings.
+                Note: Anthropic does not offer embedding models. Use Ollama, llama.cpp, LM Studio, oMLX, or OpenAI for document embeddings.
               </p>
             </div>
             {/* Show embedding dimension info */}
@@ -3632,6 +3814,61 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                   );
                 })()}
               />
+            </>
+          )}
+
+          {formData.embedding_provider === 'omlx' && (
+            <>
+              <div className="form-group">
+                <label>oMLX API Key</label>
+                <input
+                  type="password"
+                  value={formData.omlx_api_key || ''}
+                  onChange={(e) => setFormData({ ...formData, omlx_api_key: e.target.value })}
+                  placeholder="optional"
+                  autoComplete="off"
+                />
+                <p className="form-help">Optional. Leave blank if oMLX is running without authentication.</p>
+              </div>
+              <OllamaConnectionForm
+                protocol={formData.omlx_protocol || DEFAULT_OMLX_PROTOCOL}
+                host={formData.omlx_host || DEFAULT_OMLX_HOST}
+                port={formData.omlx_port || DEFAULT_OMLX_PORT}
+                model={formData.embedding_model || ''}
+                connected={embeddingModelsLoaded && formData.embedding_provider === 'omlx'}
+                connecting={embeddingModelsFetching}
+                error={formData.embedding_provider === 'omlx' ? embeddingModelsError : null}
+                models={embeddingModels.map((m) => ({
+                  id: m.id,
+                  name: m.name,
+                  dimensions: m.dimensions,
+                  context_limit: m.context_limit,
+                }))}
+                providerLabel="oMLX"
+                defaultPort={DEFAULT_OMLX_PORT}
+                hostPlaceholder={DEFAULT_OMLX_HOST}
+                modelLabel="Embedding Model"
+                modelPlaceholder="bge-m3"
+                connectedHelpText="Select an embedding model from oMLX."
+                disconnectedHelpText="Click &quot;Fetch Models&quot; to discover oMLX models, or enter a model id manually."
+                onProtocolChange={(protocol) => {
+                  setFormData({ ...formData, omlx_protocol: protocol });
+                  resetEmbeddingModelsState();
+                }}
+                onHostChange={(host) => {
+                  setFormData({ ...formData, omlx_host: host });
+                  resetEmbeddingModelsState();
+                }}
+                onPortChange={(port) => {
+                  setFormData({ ...formData, omlx_port: port });
+                  resetEmbeddingModelsState();
+                }}
+                onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
+                onFetchModels={fetchOmlxEmbeddingModels}
+              />
+              <p className="field-help">
+                oMLX uses its OpenAI-compatible embeddings endpoint; non-embedding models may appear but fail dimension probing.
+              </p>
             </>
           )}
 

@@ -412,6 +412,20 @@ async def get_embeddings_model(
             base_url=f"{base_url}/v1",
         )
 
+    if provider == "omlx":
+        from langchain_openai import OpenAIEmbeddings
+
+        base_url = str(
+            _get_setting(settings, "omlx_base_url", "http://host.docker.internal:8000")
+            or "http://host.docker.internal:8000"
+        ).rstrip("/")
+        api_key = str(_get_setting(settings, "omlx_api_key", "") or "omlx-local")
+        return OpenAIEmbeddings(
+            model=model,
+            api_key=api_key,
+            base_url=f"{base_url}/v1",
+        )
+
     message = f"Unknown embedding provider: {provider}"
     if return_none_on_error:
         log.warning(message)
