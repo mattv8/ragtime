@@ -177,9 +177,9 @@ flowchart LR
    # Maximum concurrent runtime sessions in running/starting state (default: 12)
    # RUNTIME_MAX_SESSIONS=12
 
-    # Chat web search uses the bundled internal SearXNG service by default.
-    # Set TAVILY_API_KEY to use Tavily instead (get a key at https://app.tavily.com/home).
-    # TAVILY_API_KEY=
+   # Chat web search uses the bundled internal SearXNG service by default.
+   # Set TAVILY_API_KEY to use Tavily instead (get a key at https://app.tavily.com/home).
+   # TAVILY_API_KEY=
 
    ############################################################
    # Developer Only - Typically do not modify below this line #
