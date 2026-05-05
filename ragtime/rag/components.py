@@ -12109,6 +12109,10 @@ except Exception as e:
                     if tid not in existing:
                         allowed_tool_config_ids.append(tid)
                         existing.add(tid)
+            elif not allowed_tool_config_ids:
+                allowed_tool_config_ids = (
+                    await repository.list_healthy_enabled_tool_ids()
+                )
 
             include_sqlite_persistence = workspace.sqlite_persistence_mode == "include"
 

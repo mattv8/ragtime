@@ -8,7 +8,7 @@
 // =============================================================================
 
 export type UserRole = 'user' | 'admin';
-export type AuthProvider = 'ldap' | 'local';
+export type AuthProvider = 'ldap' | 'local' | 'local_managed';
 
 export interface User {
   id: string;
@@ -18,6 +18,106 @@ export interface User {
   role: UserRole;
   auth_provider: AuthProvider;
   role_manually_set?: boolean;
+  source_provider?: AuthProvider | null;
+  source_synced_at?: string | null;
+  source_expires_at?: string | null;
+  cached_groups?: string[];
+  manual_group_ids?: string[];
+  ldap_group_ids?: string[];
+  /** Deprecated alias for manual_group_ids. */
+  local_group_ids?: string[];
+}
+
+export interface AuthProviderConfig {
+  local_users_enabled: boolean;
+  ldap_lazy_sync_enabled: boolean;
+  manual_role_override_wins: boolean;
+  cache_ttl_minutes: number;
+}
+
+export interface UpdateAuthProviderConfigRequest {
+  local_users_enabled?: boolean;
+  ldap_lazy_sync_enabled?: boolean;
+  manual_role_override_wins?: boolean;
+  cache_ttl_minutes?: number;
+}
+
+export interface LocalUserCreateRequest {
+  username: string;
+  password: string;
+  display_name?: string | null;
+  email?: string | null;
+  role?: UserRole;
+}
+
+export interface LocalUserUpdateRequest {
+  password?: string;
+  display_name?: string | null;
+  email?: string | null;
+  role?: UserRole;
+}
+
+export interface AuthGroup {
+  id: string;
+  key: string;
+  display_name: string;
+  description: string;
+  provider: AuthProvider;
+  source_id?: string | null;
+  source_dn?: string | null;
+  role?: UserRole | null;
+  member_count: number;
+  manual_member_count: number;
+  ldap_member_count: number;
+  member_previews: AuthGroupMemberPreview[];
+  is_logon_group: boolean;
+}
+
+export interface AuthGroupMemberPreview {
+  username: string;
+  display_name: string;
+}
+
+export interface AuthGroupListResponse {
+  groups: AuthGroup[];
+}
+
+export interface AuthGroupUpsertRequest {
+  key?: string;
+  display_name: string;
+  description?: string;
+  role?: UserRole | null;
+  is_logon_group?: boolean;
+}
+
+export interface SetUserGroupsRequest {
+  group_ids: string[];
+}
+
+export interface LdapUserSearchRequest {
+  username: string;
+}
+
+export interface LdapUserTypeaheadRequest {
+  query: string;
+  limit?: number;
+}
+
+export interface LdapUserProfile {
+  username: string;
+  source_dn?: string | null;
+  display_name?: string | null;
+  email?: string | null;
+  role: UserRole;
+  groups: string[];
+}
+
+export interface LdapUserImportResponse {
+  user: User;
+}
+
+export interface LdapUserTypeaheadResponse {
+  users: LdapUserProfile[];
 }
 
 export interface LoginRequest {
@@ -193,8 +293,8 @@ export interface LdapConfig {
   base_dn: string;
   user_search_base: string;
   user_search_filter: string;
-  admin_group_dn: string;
-  user_group_dn: string;
+  admin_group_dns: string[];
+  user_group_dns: string[];
   discovered_ous: string[];
   discovered_groups: { dn: string; name: string }[];
 }

@@ -57,18 +57,20 @@ export function ToolSelectorDropdown({
 }: ToolSelectorDropdownProps) {
   const [showDropdown, setShowDropdown] = useState(false);
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
-  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number; minWidth: number } | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number; minWidth: number; maxHeight: number } | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Compute fixed position so the dropdown draws over iframes without layout shift
   const computeDropdownPosition = useCallback(() => {
     if (!dropdownRef.current) return;
     const rect = dropdownRef.current.getBoundingClientRect();
+    const MARGIN = 8;
     if (openDirection === 'up') {
-      // Position above the trigger button; actual height unknown until rendered, use 0 as placeholder
-      setDropdownPosition({ top: rect.top, left: rect.right, minWidth: rect.width });
+      const maxHeight = Math.max(80, rect.top - MARGIN);
+      setDropdownPosition({ top: rect.top, left: rect.right, minWidth: rect.width, maxHeight });
     } else {
-      setDropdownPosition({ top: rect.bottom, left: rect.right, minWidth: rect.width });
+      const maxHeight = Math.max(80, window.innerHeight - rect.bottom - MARGIN);
+      setDropdownPosition({ top: rect.bottom, left: rect.right, minWidth: rect.width, maxHeight });
     }
   }, [openDirection]);
 
@@ -234,6 +236,7 @@ export function ToolSelectorDropdown({
             bottom: openDirection === 'up' ? `calc(100vh - ${dropdownPosition.top}px)` : undefined,
             left: dropdownPosition.left,
             minWidth: dropdownPosition.minWidth,
+            maxHeight: dropdownPosition.maxHeight,
             transform: 'translateX(-100%)',
           }}
         >

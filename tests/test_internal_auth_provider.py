@@ -1,0 +1,186 @@
+import sys
+import unittest
+from enum import Enum
+from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
+
+prisma_module = ModuleType("prisma")
+prisma_enums_module = ModuleType("prisma.enums")
+
+
+class AuthProvider(str, Enum):
+    ldap = "ldap"
+    local = "local"
+    local_managed = "local_managed"
+
+
+class UserRole(str, Enum):
+    user = "user"
+    admin = "admin"
+
+
+class Json(list):
+    pass
+
+
+setattr(prisma_enums_module, "AuthProvider", AuthProvider)
+setattr(prisma_enums_module, "UserRole", UserRole)
+setattr(prisma_module, "enums", prisma_enums_module)
+setattr(prisma_module, "Json", Json)
+sys.modules.setdefault("prisma", prisma_module)
+sys.modules["prisma.enums"] = prisma_enums_module
+
+database_module = ModuleType("ragtime.core.database")
+
+
+async def get_db() -> None:
+    raise RuntimeError("Database access is not needed for this test")
+
+
+setattr(database_module, "get_db", get_db)
+sys.modules["ragtime.core.database"] = database_module
+
+from ragtime.core.auth import (  # noqa: E402
+    _group_entry_rid,
+    _ldap_entry_has_group_dn,
+    _ldap_profile_from_entry,
+    _passes_local_logon_gate,
+    hash_local_password,
+    verify_local_password,
+)
+
+
+class InternalAuthProviderTests(unittest.TestCase):
+    def test_local_password_hash_round_trips_and_rejects_wrong_password(self) -> None:
+        stored = hash_local_password("correct horse battery staple")
+
+        self.assertTrue(verify_local_password("correct horse battery staple", stored))
+        self.assertFalse(verify_local_password("wrong password", stored))
+        self.assertFalse(verify_local_password("correct horse battery staple", None))
+
+    def test_ldap_profile_projection_keeps_identity_and_group_cache(self) -> None:
+        entry = SimpleNamespace(
+            entry_dn="CN=Jane Doe,OU=Users,DC=example,DC=com",
+            sAMAccountName="jdoe",
+            displayName="Jane Doe",
+            mail="jane@example.com",
+            memberOf=["CN=Engineering,OU=Groups,DC=example,DC=com"],
+        )
+
+        profile = _ldap_profile_from_entry(
+            user_entry=entry,
+            input_username="jane@example.com",
+            role=UserRole.admin,
+        )
+
+        self.assertEqual(profile.username, "jdoe")
+        self.assertEqual(profile.source_provider, "ldap")
+        self.assertEqual(profile.source_dn, "CN=Jane Doe,OU=Users,DC=example,DC=com")
+        self.assertEqual(profile.display_name, "Jane Doe")
+        self.assertEqual(profile.email, "jane@example.com")
+        self.assertEqual(profile.role, "admin")
+        self.assertEqual(profile.groups, ["CN=Engineering,OU=Groups,DC=example,DC=com"])
+
+    def test_ldap_membership_helper_matches_direct_member_of_case_insensitively(
+        self,
+    ) -> None:
+        entry = SimpleNamespace(
+            memberOf=["CN=Engineering,OU=Groups,DC=example,DC=com"],
+        )
+
+        self.assertTrue(
+            _ldap_entry_has_group_dn(
+                user_entry=entry,
+                group_dn="cn=engineering,ou=groups,dc=example,dc=com",
+            )
+        )
+
+    def test_ldap_membership_helper_matches_primary_group_rid(self) -> None:
+        entry = SimpleNamespace(memberOf=[], primaryGroupID="513")
+        ldap_config = SimpleNamespace()
+
+        with patch("ragtime.core.auth._ldap_group_rid", return_value=513):
+            self.assertTrue(
+                _ldap_entry_has_group_dn(
+                    user_entry=entry,
+                    group_dn="CN=Domain Users,DC=example,DC=com",
+                    ldap_config=ldap_config,
+                    bind_password="secret",
+                )
+            )
+
+    def test_group_entry_rid_supports_token_and_object_sid(self) -> None:
+        self.assertEqual(
+            _group_entry_rid(SimpleNamespace(primaryGroupToken="512")), 512
+        )
+        self.assertEqual(
+            _group_entry_rid(
+                SimpleNamespace(objectSid=SimpleNamespace(value=b"\x01\x02\x03\x04"))
+            ),
+            67305985,
+        )
+
+
+class InternalLogonGateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_user_passes_when_no_gate_groups_exist(self) -> None:
+        class AuthGroupDelegate:
+            async def find_many(self, where):
+                return []
+
+        db = SimpleNamespace(authgroup=AuthGroupDelegate())
+
+        async def fake_get_db():
+            return db
+
+        with patch("ragtime.core.auth.get_db", new=fake_get_db):
+            self.assertTrue(
+                await _passes_local_logon_gate(SimpleNamespace(id="user-1"))
+            )
+
+    async def test_local_user_must_belong_to_one_gate_group(self) -> None:
+        class AuthGroupDelegate:
+            async def find_many(self, where):
+                return [SimpleNamespace(id="gate-1")]
+
+        class MembershipDelegate:
+            async def find_many(self, where):
+                return [SimpleNamespace(groupId="gate-1")]
+
+        db = SimpleNamespace(
+            authgroup=AuthGroupDelegate(),
+            authgroupmembership=MembershipDelegate(),
+        )
+
+        async def fake_get_db():
+            return db
+
+        with patch("ragtime.core.auth.get_db", new=fake_get_db):
+            self.assertTrue(
+                await _passes_local_logon_gate(SimpleNamespace(id="user-1"))
+            )
+
+    async def test_local_user_fails_when_outside_gate_groups(self) -> None:
+        class AuthGroupDelegate:
+            async def find_many(self, where):
+                return [SimpleNamespace(id="gate-1")]
+
+        class MembershipDelegate:
+            async def find_many(self, where):
+                return [SimpleNamespace(groupId="other-1")]
+
+        db = SimpleNamespace(
+            authgroup=AuthGroupDelegate(),
+            authgroupmembership=MembershipDelegate(),
+        )
+
+        async def fake_get_db():
+            return db
+
+        with patch("ragtime.core.auth.get_db", new=fake_get_db):
+            self.assertFalse(
+                await _passes_local_logon_gate(SimpleNamespace(id="user-1"))
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

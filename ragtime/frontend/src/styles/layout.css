@@ -2453,6 +2453,14 @@ body {
   flex-wrap: wrap;
 }
 
+.users-admin-table-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+  flex-wrap: wrap;
+}
+
 .users-pager-meta {
   color: var(--color-text-secondary);
   font-size: 0.78rem;

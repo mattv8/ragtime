@@ -464,6 +464,17 @@ function readStoredUserSpaceFullscreen(cookieName: string): boolean {
   return normalized === '1' || normalized === 'true';
 }
 
+function resolveDefaultSelectedToolIds(
+  selectedToolIds: string[],
+  selectedToolGroupIds: string[],
+  availableTools: UserSpaceAvailableTool[],
+): string[] {
+  if (selectedToolIds.length > 0 || selectedToolGroupIds.length > 0) {
+    return selectedToolIds;
+  }
+  return availableTools.map((tool) => tool.id);
+}
+
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -1122,8 +1133,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   }, [fileContent, fileContentCache, files, selectedFilePath]);
 
   const resolvedSelectedToolIds = useMemo(
-    () => activeWorkspace?.selected_tool_ids ?? [],
-    [activeWorkspace?.selected_tool_ids]
+    () => resolveDefaultSelectedToolIds(
+      activeWorkspace?.selected_tool_ids ?? [],
+      activeWorkspace?.selected_tool_group_ids ?? [],
+      availableTools,
+    ),
+    [activeWorkspace?.selected_tool_ids, activeWorkspace?.selected_tool_group_ids, availableTools]
   );
   const selectedToolIds = useMemo(
     () => new Set(resolvedSelectedToolIds),
@@ -3074,7 +3089,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       return;
     }
 
-    const nextSelected = new Set(activeWorkspace.selected_tool_ids ?? []);
+    const nextSelected = new Set(resolvedSelectedToolIds);
     if (nextSelected.has(toolId)) {
       nextSelected.delete(toolId);
     } else {
@@ -3093,7 +3108,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } finally {
       setSavingWorkspaceTools(false);
     }
-  }, [activeWorkspace, availableTools, canEditWorkspace]);
+  }, [activeWorkspace, availableTools, canEditWorkspace, resolvedSelectedToolIds]);
 
   const handleToggleWorkspaceToolGroup = useCallback(async (groupId: string) => {
     if (!activeWorkspace || !canEditWorkspace) return;
@@ -3101,7 +3116,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     const groupToolIds = getUserSpaceGroupToolIds(availableTools, groupId);
     const currentGroupIds = new Set(activeWorkspace.selected_tool_group_ids ?? []);
     const nextGroupIds = new Set(currentGroupIds);
-    const nextToolIds = new Set(activeWorkspace.selected_tool_ids ?? []);
+    const nextToolIds = new Set(resolvedSelectedToolIds);
     if (nextGroupIds.has(groupId)) {
       nextGroupIds.delete(groupId);
       for (const toolId of groupToolIds) {
@@ -3123,7 +3138,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } finally {
       setSavingWorkspaceTools(false);
     }
-  }, [activeWorkspace, availableTools, canEditWorkspace]);
+  }, [activeWorkspace, availableTools, canEditWorkspace, resolvedSelectedToolIds]);
 
   const handleToggleSqlitePersistence = useCallback(async () => {
     if (!activeWorkspace || !canEditWorkspace) return;

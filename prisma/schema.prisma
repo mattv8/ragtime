@@ -732,6 +732,7 @@ model PdmEmbedding {
 enum AuthProvider {
   ldap
   local
+  local_managed
 }
 
 /// User role for access control
@@ -785,6 +786,12 @@ model User {
   username        String       @unique // For LDAP: samAccountName/uid, for local: prefixed with "local:"
   authProvider    AuthProvider @default(ldap) @map("auth_provider")
   ldapDn          String?      @map("ldap_dn") // LDAP distinguished name (null for local users)
+  sourceProvider  AuthProvider? @map("source_provider") // Original upstream provider for cached/synced identities
+  sourceId        String?      @map("source_id") // Provider-specific immutable identifier when available
+  passwordHash    String?      @map("password_hash") // PBKDF2 hash for local_managed users only
+  cachedGroups    Json         @default("[]") @map("cached_groups") // Provider-neutral projected group keys/DNs
+  sourceSyncedAt  DateTime?    @map("source_synced_at")
+  sourceExpiresAt DateTime?    @map("source_expires_at")
   email           String?
   displayName     String?      @map("display_name")
   role            UserRole     @default(user)
@@ -810,8 +817,84 @@ model User {
   apiRequestLogs                       ApiRequestLog[]
   agentGrantsGranted                   WorkspaceAgentGrant[]                 @relation("AgentGrantGranter")
   conversationSharesOwned              ConversationShare[]                   @relation("ConversationShareOwner")
+  authGroupMemberships                 AuthGroupMembership[]
+  authSyncEvents                       AuthSyncEvent[]
 
+  @@index([authProvider])
+  @@index([sourceProvider, sourceId])
+  @@index([sourceExpiresAt])
   @@map("users")
+}
+
+/// Global auth-provider behavior flags. Kept provider-neutral for future OIDC/SAML sources.
+model AuthProviderConfig {
+  id                     String   @id @default("default")
+  localUsersEnabled      Boolean  @default(true) @map("local_users_enabled")
+  ldapLazySyncEnabled    Boolean  @default(true) @map("ldap_lazy_sync_enabled")
+  manualRoleOverrideWins Boolean  @default(true) @map("manual_role_override_wins")
+  cacheTtlMinutes        Int      @default(240) @map("cache_ttl_minutes")
+  updatedAt              DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("auth_provider_config")
+}
+
+/// Provider-neutral auth group. Local groups can contain internal and LDAP-synced users.
+model AuthGroup {
+  id             String       @id @default(uuid())
+  key            String       @unique
+  displayName    String       @map("display_name")
+  description    String       @default("")
+  provider       AuthProvider @default(local_managed)
+  sourceId       String?      @map("source_id")
+  sourceDn       String?      @map("source_dn")
+  role           UserRole?    @map("role")
+  isLogonGroup   Boolean      @default(false) @map("is_logon_group")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  memberships AuthGroupMembership[]
+
+  @@index([provider])
+  @@index([sourceDn])
+  @@map("auth_groups")
+}
+
+/// Membership between users and group memberships with provider/source metadata.
+model AuthGroupMembership {
+  id             String       @id @default(uuid())
+  userId         String       @map("user_id")
+  groupId        String       @map("group_id")
+  sourceProvider AuthProvider @default(local_managed) @map("source_provider")
+  sourceSyncedAt DateTime?    @map("source_synced_at")
+  expiresAt      DateTime?    @map("expires_at")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  user  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group AuthGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, groupId])
+  @@index([groupId])
+  @@index([sourceProvider, expiresAt])
+  @@map("auth_group_memberships")
+}
+
+/// Lightweight auth sync/audit events for lazy LDAP projection and local management actions.
+model AuthSyncEvent {
+  id             String       @id @default(uuid())
+  userId         String?      @map("user_id")
+  username       String
+  sourceProvider AuthProvider @map("source_provider")
+  action         String
+  status         String
+  detail         String       @default("")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([sourceProvider, createdAt])
+  @@map("auth_sync_events")
 }
 
 /// User session with JWT token
@@ -849,8 +932,8 @@ model LdapConfig {
   userSearchFilter String @default("(uid={username})") @map("user_search_filter")
 
   // Group-based ACL
-  adminGroupDn String @default("") @map("admin_group_dn") // Members get admin role
-  userGroupDn  String @default("") @map("user_group_dn") // Members get user role (optional, all auth'd users if empty)
+  adminGroupDns String[] @default([]) @map("admin_group_dns") // Members get admin role
+  userGroupDns  String[] @default([]) @map("user_group_dns") // Optional logon gates; all auth'd users if empty
 
   // Discovery cache (JSON array of discovered OUs/groups)
   discoveredOus    Json @default("[]") @map("discovered_ous")

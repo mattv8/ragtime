@@ -92,6 +92,17 @@ function getConversationBranchSelectionKey(branchPointIndex: number, anchorIndex
   return `${branchPointIndex}:${anchorIndex}`;
 }
 
+function resolveDefaultSelectedToolIds(
+  selectedToolIds: string[],
+  selectedToolGroupIds: string[],
+  availableTools: UserSpaceAvailableTool[],
+): string[] {
+  if (selectedToolIds.length > 0 || selectedToolGroupIds.length > 0) {
+    return selectedToolIds;
+  }
+  return availableTools.map((tool) => tool.id);
+}
+
 // Renders markdown code blocks with inset styling and copy support
 function CodeBlock({ className, children }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
@@ -4564,8 +4575,8 @@ export function ChatPanel({
     ? (workspaceSelectedToolIds ?? [])
     : conversationToolIds;
   const resolvedConversationToolIds = useMemo(
-    () => conversationToolIds,
-    [conversationToolIds]
+    () => resolveDefaultSelectedToolIds(conversationToolIds, conversationToolGroupIds, effectiveAvailableTools),
+    [conversationToolIds, conversationToolGroupIds, effectiveAvailableTools]
   );
   const resolvedEffectiveToolIds = useMemo(
     () => effectiveToolIds,

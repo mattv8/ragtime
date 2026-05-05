@@ -1,14 +1,17 @@
 import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Lock, LockOpen, Info, Search, ExternalLink, X, Eye, EyeOff } from 'lucide-react';
+import { Lock, LockOpen, Info, Search, ExternalLink, X, Eye, EyeOff, Pencil } from 'lucide-react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire, UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar, User } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, AuthProviderConfig, AuthGroup, LdapUserProfile, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire, UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar, User } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
+import { Popover } from './Popover';
 import { InlineCopyButton } from './shared/InlineCopyButton';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
+import { AuthAdminModalHost } from './shared/AuthAdminModals';
+import { CheckboxDropdown } from './shared/CheckboxDropdown';
 import { renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
 import { useToast, ToastContainer } from './shared/Toast';
 
@@ -85,6 +88,37 @@ function generateMcpSecret(): string {
 
 function normalizeSettingsSearchText(value: string): string {
   return value.trim().toLowerCase();
+}
+
+const SETTINGS_FILTER_QUERY_PARAM = 'search';
+
+function readSettingsFilterStateFromUrl(): { input: string; tags: string[] } {
+  const params = new URLSearchParams(window.location.search);
+  const rawSearch = params.get(SETTINGS_FILTER_QUERY_PARAM) || '';
+  const tags = rawSearch
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return { input: '', tags };
+}
+
+function writeSettingsFilterStateToUrl(input: string, tags: string[]): void {
+  const params = new URLSearchParams(window.location.search);
+  const searchValue = [...tags, input]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(',');
+
+  if (searchValue) {
+    params.set(SETTINGS_FILTER_QUERY_PARAM, searchValue);
+  } else {
+    params.delete(SETTINGS_FILTER_QUERY_PARAM);
+  }
+
+  const nextSearch = params.toString();
+  const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
+  window.history.replaceState(null, '', nextUrl);
 }
 
 function settingsTextMatchesQuery(text: string | null | undefined, queries: string[]): boolean {
@@ -218,9 +252,14 @@ function toggleScopedModelSelection(currentSelection: Set<string>, model: Availa
 
 const AUTH_PROVIDER_OPTIONS = [
   {
+    value: 'local_managed',
+    label: 'Internal Users',
+    description: 'Manage users and groups stored in the local database. Authentication uses local password hashes.',
+  },
+  {
     value: 'ldap',
     label: 'LDAP / Active Directory',
-    description: 'External directory authentication for shared identity and group-based access.',
+    description: 'Configure the LDAP/AD server connection, lazy-sync behavior, and optionally pre-import LDAP identities into the local cache.',
   },
 ] as const;
 
@@ -326,20 +365,26 @@ interface SettingsPanelProps {
 
 export function SettingsPanel({ currentUser, onServerNameChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
   const { refresh: refreshModels } = useAvailableModels();
+  const initialSettingsFilterState = useMemo(() => readSettingsFilterStateFromUrl(), []);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [userspacePreviewSettings, setUserspacePreviewSettings] = useState<UserSpacePreviewSettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [toasts, toast] = useToast();
-  const [settingsFilterTags, setSettingsFilterTags] = useState<string[]>([]);
-  const [settingsFilterInput, setSettingsFilterInput] = useState('');
+  const [settingsFilterTags, setSettingsFilterTags] = useState<string[]>(initialSettingsFilterState.tags);
+  const [settingsFilterInput, setSettingsFilterInput] = useState(initialSettingsFilterState.input);
   const [debouncedFilterInput, setDebouncedFilterInput] = useState('');
   const [settingsFilterHasMatches, setSettingsFilterHasMatches] = useState(true);
   const settingsFilterInputRef = useRef<HTMLInputElement | null>(null);
+  const [activeAuthProviderValue, setActiveAuthProviderValue] = useState<typeof AUTH_PROVIDER_OPTIONS[number]['value']>('local_managed');
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedFilterInput(settingsFilterInput), 200);
     return () => clearTimeout(timer);
   }, [settingsFilterInput]);
+
+  useEffect(() => {
+    writeSettingsFilterStateToUrl(settingsFilterInput, settingsFilterTags);
+  }, [settingsFilterInput, settingsFilterTags]);
 
   useEffect(() => {
     if (loading) {
@@ -452,14 +497,27 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     bind_password: '',
     user_search_base: '',
     user_search_filter: '(uid={username})',
-    admin_group_dn: '',
-    user_group_dn: '',
+    admin_group_dns: [] as string[],
+    user_group_dns: [] as string[],
   });
   const [ldapTesting, setLdapTesting] = useState(false);
   const [ldapTestResult, setLdapTestResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [ldapSaving, setLdapSaving] = useState(false);
   const [ldapDiscoveredOus, setLdapDiscoveredOus] = useState<string[]>([]);
   const [ldapDiscoveredGroups, setLdapDiscoveredGroups] = useState<{ dn: string; name: string }[]>([]);
+  const [authProviderConfig, setAuthProviderConfig] = useState<AuthProviderConfig | null>(null);
+  const [authProviderConfigSaving, setAuthProviderConfigSaving] = useState(false);
+  const [authGroups, setAuthGroups] = useState<AuthGroup[]>([]);
+  const [showCreateLocalUserModal, setShowCreateLocalUserModal] = useState(false);
+  const [showManageAuthGroupsModal, setShowManageAuthGroupsModal] = useState(false);
+  const [ldapUserSearchName, setLdapUserSearchName] = useState('');
+  const [ldapUserSearching, setLdapUserSearching] = useState(false);
+  const [ldapUserSearchResults, setLdapUserSearchResults] = useState<LdapUserProfile[]>([]);
+  const [showLdapUserSearchResults, setShowLdapUserSearchResults] = useState(false);
+  const [suppressLdapUserSearchDropdown, setSuppressLdapUserSearchDropdown] = useState(false);
+  const [ldapUserImporting, setLdapUserImporting] = useState(false);
+  const [ldapUserPreview, setLdapUserPreview] = useState<LdapUserProfile | null>(null);
+  const ldapUserSearchRequestSeqRef = useRef(0);
+  const ldapUserSearchContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Form state
   const [formData, setFormData] = useState<UpdateSettingsRequest>({});
@@ -1189,13 +1247,17 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
   const loadSettings = useCallback(async () => {
     try {
       setLoading(true);
-      const [{ settings: rawSettings }, previewSettings] = await Promise.all([
+      const [{ settings: rawSettings }, previewSettings, providerConfig, groups] = await Promise.all([
         api.getSettings(),
         api.getUserSpacePreviewSettings(),
+        api.getAuthProviderConfig(),
+        api.listAuthGroups(),
       ]);
       const data = sanitizeOllamaDefaults(rawSettings);
       setSettings(data);
       setUserspacePreviewSettings(previewSettings);
+      setAuthProviderConfig(providerConfig);
+      setAuthGroups(groups);
       const normalizedLlmProvider = normalizeLlmProvider(data.llm_provider);
       setFormData({
         // Server branding
@@ -1344,8 +1406,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
             bind_password: '', // Never returned from server
             user_search_base: ldapData.user_search_base || '',
             user_search_filter: ldapData.user_search_filter || '(uid={username})',
-            admin_group_dn: ldapData.admin_group_dn || '',
-            user_group_dn: ldapData.user_group_dn || '',
+            admin_group_dns: ldapData.admin_group_dns || [],
+            user_group_dns: ldapData.user_group_dns || [],
           });
 
           // Auto-discover LDAP structure in background
@@ -1470,29 +1532,146 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     }
   };
 
-  // Save LDAP configuration
-  const handleSaveLdapConfig = async () => {
-    setLdapSaving(true);
+  const saveLdapConfig = async () => {
+    const serverUrl = buildServerUrl();
+    const updated = await api.updateLdapConfig({
+      server_url: serverUrl || undefined,
+      allow_self_signed: ldapFormData.allow_self_signed,
+      bind_dn: ldapFormData.bind_dn || undefined,
+      bind_password: ldapFormData.bind_password || undefined,
+      user_search_base: ldapFormData.user_search_base || undefined,
+      user_search_filter: ldapFormData.user_search_filter || undefined,
+      admin_group_dns: ldapFormData.admin_group_dns,
+      user_group_dns: ldapFormData.user_group_dns,
+    });
+    setLdapConfig(updated);
+    setAuthGroups(await api.listAuthGroups());
+  };
 
+  const refreshAuthGroups = useCallback(async () => {
     try {
-      const serverUrl = buildServerUrl();
-      const updated = await api.updateLdapConfig({
-        server_url: serverUrl || undefined,
-        allow_self_signed: ldapFormData.allow_self_signed,
-        bind_dn: ldapFormData.bind_dn || undefined,
-        bind_password: ldapFormData.bind_password || undefined,
-        user_search_base: ldapFormData.user_search_base || undefined,
-        user_search_filter: ldapFormData.user_search_filter || undefined,
-        // Send empty string explicitly to clear these fields (don't convert to undefined)
-        admin_group_dn: ldapFormData.admin_group_dn,
-        user_group_dn: ldapFormData.user_group_dn,
-      });
-      setLdapConfig(updated);
-      toast.success('LDAP configuration saved successfully');
+      setAuthGroups(await api.listAuthGroups());
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save LDAP configuration');
+      toast.error(err instanceof Error ? err.message : 'Failed to load Group Memberships');
+    }
+  }, [toast]);
+
+  const openManageAuthGroupsModal = useCallback(() => {
+    setShowManageAuthGroupsModal(true);
+    void refreshAuthGroups();
+  }, [refreshAuthGroups]);
+
+  const closeManageAuthGroupsModal = useCallback(() => {
+    setShowManageAuthGroupsModal(false);
+  }, []);
+
+  const handleSaveAuthProviderConfig = async () => {
+    setAuthProviderConfigSaving(true);
+    try {
+      await saveLdapConfig();
+
+      if (authProviderConfig) {
+        const updated = await api.updateAuthProviderConfig(authProviderConfig);
+        setAuthProviderConfig(updated);
+      }
+
+      toast.success('Authentication settings saved');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save authentication settings');
     } finally {
-      setLdapSaving(false);
+      setAuthProviderConfigSaving(false);
+    }
+  };
+
+  const handleSelectLdapUserSuggestion = useCallback((profile: LdapUserProfile) => {
+    setLdapUserPreview(profile);
+    setLdapUserSearchName(profile.username || profile.email || '');
+    setShowLdapUserSearchResults(false);
+    setSuppressLdapUserSearchDropdown(true);
+  }, []);
+
+  const ldapUserSearchEnabled = Boolean(ldapFormData.ldap_host.trim() || ldapConfig?.server_url?.trim());
+
+  useEffect(() => {
+    const query = ldapUserSearchName.trim();
+    if (suppressLdapUserSearchDropdown) {
+      setShowLdapUserSearchResults(false);
+      setLdapUserSearching(false);
+      return;
+    }
+
+    if (!ldapUserSearchEnabled || query.length < 2) {
+      setLdapUserSearchResults([]);
+      setShowLdapUserSearchResults(false);
+      setLdapUserSearching(false);
+      return;
+    }
+
+    const requestSeq = ldapUserSearchRequestSeqRef.current + 1;
+    ldapUserSearchRequestSeqRef.current = requestSeq;
+    setLdapUserSearching(true);
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await api.searchLdapUsers({ query, limit: 8 });
+        if (ldapUserSearchRequestSeqRef.current !== requestSeq) {
+          return;
+        }
+        setLdapUserSearchResults(response.users || []);
+        setShowLdapUserSearchResults(true);
+      } catch {
+        if (ldapUserSearchRequestSeqRef.current !== requestSeq) {
+          return;
+        }
+        setLdapUserSearchResults([]);
+        setShowLdapUserSearchResults(true);
+      } finally {
+        if (ldapUserSearchRequestSeqRef.current === requestSeq) {
+          setLdapUserSearching(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [ldapUserSearchEnabled, ldapUserSearchName, suppressLdapUserSearchDropdown]);
+
+  useEffect(() => {
+    if (!showLdapUserSearchResults) {
+      return;
+    }
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target) {
+        return;
+      }
+      if (!ldapUserSearchContainerRef.current?.contains(target)) {
+        setShowLdapUserSearchResults(false);
+      }
+    };
+
+    window.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      window.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showLdapUserSearchResults]);
+
+  const handleImportLdapUser = async () => {
+    setLdapUserImporting(true);
+    try {
+      const targetUsername = (ldapUserPreview?.username || ldapUserSearchName || '').trim();
+      if (!targetUsername) {
+        toast.error('Select an LDAP user first');
+        return;
+      }
+      await api.importLdapUser({ username: targetUsername });
+      toast.success('LDAP user imported into local cache');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to import LDAP user');
+    } finally {
+      setLdapUserImporting(false);
     }
   };
 
@@ -2222,7 +2401,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     (formData.omlx_host ?? settings?.omlx_host)?.trim() &&
     (formData.omlx_port ?? settings?.omlx_port)
   );
-  const activeAuthProvider = AUTH_PROVIDER_OPTIONS[0];
+  const activeAuthProvider = AUTH_PROVIDER_OPTIONS.find((provider) => provider.value === activeAuthProviderValue) || AUTH_PROVIDER_OPTIONS[0];
   const ldapConfigured = Boolean(ldapFormData.ldap_host.trim() || ldapConfig?.server_url?.trim());
   const isAdmin = currentUser?.role === 'admin';
   const manualDefaultChatModel = (() => {
@@ -2279,7 +2458,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
             }
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Tab' && settingsFilterInput.trim()) {
+            if ((e.key === 'Tab' || e.key === 'Enter') && settingsFilterInput.trim()) {
               e.preventDefault();
               const tag = settingsFilterInput.trim();
               if (!settingsFilterTags.includes(tag)) {
@@ -4179,267 +4358,469 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         {/* Authentication Provider Configuration */}
         <fieldset>
           <legend className="legend-with-status">
-            <span>Authentication Provider</span>
+            <span>Authentication Providers</span>
             <span className="legend-divider" aria-hidden="true" />
             <span className="llm-provider-status-inline" aria-label="Authentication provider configuration status">
-              <span className="llm-provider-status-item" title={ldapConfigured ? `${activeAuthProvider.label} configured` : `${activeAuthProvider.label} not configured`}>
+              <span
+                className="llm-provider-status-item"
+                title={(authProviderConfig?.local_users_enabled ?? true) ? 'Internal users enabled' : 'Internal users disabled'}
+              >
+                <span
+                  className={`llm-provider-status-dot ${(authProviderConfig?.local_users_enabled ?? true) ? 'configured' : ''}`}
+                  aria-hidden="true"
+                />
+                <span className="llm-provider-status-label">INTERNAL</span>
+              </span>
+              <span
+                className="llm-provider-status-item"
+                title={ldapConfigured ? 'LDAP configured' : 'LDAP not configured'}
+              >
                 <span
                   className={`llm-provider-status-dot ${ldapConfigured ? 'configured' : ''}`}
-                  aria-label={ldapConfigured ? `${activeAuthProvider.label} configured` : `${activeAuthProvider.label} not configured`}
+                  aria-hidden="true"
                 />
-                <span className="llm-provider-status-label">{activeAuthProvider.value.toUpperCase()}</span>
+                <span className="llm-provider-status-label">LDAP</span>
               </span>
             </span>
           </legend>
           <p className="fieldset-help">
-            Choose and configure how users authenticate. Additional providers can be added here later without restructuring the rest of the settings page.
+            Both providers can be configured independently. Login attempts are tried in order: the env-based local admin, then internal users, then LDAP. OAuth and PKCE clients continue to use the existing login and token endpoints.
           </p>
 
-          <div className="form-group">
-            <label>Provider</label>
-            <select value={activeAuthProvider.value} disabled>
-              {AUTH_PROVIDER_OPTIONS.map((provider) => (
-                <option key={provider.value} value={provider.value}>{provider.label}</option>
-              ))}
-            </select>
-            <p className="field-help">
-              {activeAuthProvider.description} LDAP / Active Directory is the only available provider right now; local user database and OIDC can be added here later.
-            </p>
-          </div>
-
-          <div style={{ marginBottom: '16px' }}>
-            <h4 style={{ margin: '0 0 8px' }}>{activeAuthProvider.label} Settings</h4>
-            <p className="field-help" style={{ marginBottom: 0 }}>
-              Configure LDAP/Active Directory authentication. Leave host empty to disable directory auth and use local admin only.
-            </p>
-          </div>
-
-          {/* Server Connection */}
-          <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr 70px', gap: '12px', marginBottom: '16px' }}>
-            <div className="form-group">
-              <label>Protocol</label>
-              <select
-                value={ldapFormData.ldap_protocol}
-                onChange={(e) => {
-                  const protocol = e.target.value as 'ldap' | 'ldaps';
-                  const defaultPort = protocol === 'ldaps' ? 636 : 389;
-                  setLdapFormData({ ...ldapFormData, ldap_protocol: protocol, ldap_port: defaultPort });
-                }}
-              >
-                <option value="ldaps">ldaps://</option>
-                <option value="ldap">ldap://</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label>Host</label>
-              <input
-                type="text"
-                value={ldapFormData.ldap_host}
-                onChange={(e) =>
-                  setLdapFormData({ ...ldapFormData, ldap_host: e.target.value })
-                }
-                placeholder="ldap.example.com"
-              />
-            </div>
-            <div className="form-group">
-              <label>Port</label>
-              <input
-                type="number"
-                value={ldapFormData.ldap_port}
-                onChange={(e) =>
-                  setLdapFormData({ ...ldapFormData, ldap_port: parseInt(e.target.value, 10) || 636 })
-                }
-              />
-            </div>
-          </div>
-
-          {/* Self-signed certificate option - only show for ldaps */}
-          {ldapFormData.ldap_protocol === 'ldaps' && (
-            <div className="form-row">
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={ldapFormData.allow_self_signed}
-                  onChange={(e) =>
-                    setLdapFormData({ ...ldapFormData, allow_self_signed: e.target.checked })
-                  }
-                />
-                Allow self-signed certificates
-              </label>
-              <p className="field-help" style={{ marginTop: '0.25rem' }}>
-                Skip SSL certificate validation. Use only for testing or with internal CAs.
-              </p>
-            </div>
-          )}
-
-          {/* Bind Account */}
           <div className="form-row">
-            <div className="form-group" style={{ flex: 2 }}>
-              <label>Bind DN / Username</label>
-              <input
-                type="text"
-                value={ldapFormData.bind_dn}
-                onChange={(e) =>
-                  setLdapFormData({ ...ldapFormData, bind_dn: e.target.value })
-                }
-                placeholder="user@domain.com or CN=admin,DC=example,DC=com"
-              />
-              <p className="field-help">
-                AD: user@domain.com or DOMAIN\user. OpenLDAP: full DN like cn=admin,dc=example,dc=com
-              </p>
-            </div>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Bind Password</label>
-              <input
-                type="password"
-                value={ldapFormData.bind_password}
-                onChange={(e) =>
-                  setLdapFormData({ ...ldapFormData, bind_password: e.target.value })
-                }
-                placeholder={ldapConfig?.bind_dn ? '(password saved)' : 'Enter password'}
-              />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <div className="connection-test-row">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={handleTestLdapConnection}
-                disabled={ldapTesting || !ldapFormData.ldap_host || !ldapFormData.bind_dn || !ldapFormData.bind_password}
+            <div className="form-group">
+              <label>Configure</label>
+              <select
+                value={activeAuthProvider.value}
+                onChange={(e) => setActiveAuthProviderValue(e.target.value as typeof AUTH_PROVIDER_OPTIONS[number]['value'])}
               >
-                {ldapTesting ? 'Testing...' : 'Test Connection & Discover'}
-              </button>
-              {ldapTestResult?.success && (
-                <span className="connection-status success">
-                  {ldapTestResult.message}
-                </span>
-              )}
-              {ldapTestResult && !ldapTestResult.success && (
-                <span className="connection-status error">{ldapTestResult.message}</span>
-              )}
+                {AUTH_PROVIDER_OPTIONS.map((provider) => (
+                  <option key={provider.value} value={provider.value}>{provider.label}</option>
+                ))}
+              </select>
+              <p className="field-help">{activeAuthProvider.description}</p>
             </div>
+
+            {authProviderConfig && (
+              <div className="form-group">
+                <label>Internal Users</label>
+                <div className="auth-provider-toggle-control">
+                  <label
+                    className="toggle-switch"
+                    title={authProviderConfig.local_users_enabled ? 'Enabled' : 'Disabled'}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={authProviderConfig.local_users_enabled}
+                      onChange={(e) => setAuthProviderConfig({ ...authProviderConfig, local_users_enabled: e.target.checked })}
+                    />
+                    <span className="toggle-slider"></span>
+                  </label>
+                  <span className="auth-provider-toggle-state">
+                    {authProviderConfig.local_users_enabled ? 'Enabled' : 'Disabled'}
+                  </span>
+                </div>
+                <p className="field-help auth-provider-help-tight">When disabled, only the env-based local admin and LDAP (if configured) can sign in.</p>
+              </div>
+            )}
           </div>
 
-          {/* Show search config when we have discovered OUs (from test or auto-load) */}
-          {ldapDiscoveredOus.length > 0 && (
+          {activeAuthProvider.value === 'local_managed' && (
             <>
-              <div className="form-row">
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label>User Search Base</label>
-                  <select
-                    value={ldapFormData.user_search_base}
-                    onChange={(e) =>
-                      setLdapFormData({ ...ldapFormData, user_search_base: e.target.value })
-                    }
+              <div className="form-group">
+                <h4>Internal Users &amp; Groups</h4>
+                <p className="fieldset-help auth-provider-help-tight">Create local users and groups from focused dialogs to keep this page compact.</p>
+                <div className="auth-provider-actions-row auth-provider-launchers">
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      setShowCreateLocalUserModal(true);
+                    }}
                   >
-                    <option value="">Select a search base...</option>
-                    {ldapDiscoveredOus.map((ou) => (
-                      <option key={ou} value={ou}>
-                        {formatDnForDisplay(ou, ldapDiscoveredOus[0] || ou)}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="field-help">
-                    Where to search for users. Select the root domain to search all users, or a specific OU to limit scope.
-                  </p>
-                  {ldapFormData.user_search_base && (
-                    <p className="field-help" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', marginTop: '0.25rem' }}>
-                      DN: {ldapFormData.user_search_base}
-                    </p>
-                  )}
-                </div>
-
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label>User Search Filter</label>
-                  <input
-                    type="text"
-                    value={ldapFormData.user_search_filter}
-                    onChange={(e) =>
-                      setLdapFormData({ ...ldapFormData, user_search_filter: e.target.value })
-                    }
-                    placeholder="(uid={username})"
-                  />
-                  <p className="field-help">
-                    LDAP filter to find users. Use {'{username}'} as placeholder.
-                  </p>
-                </div>
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Admin Group DN</label>
-                  <select
-                    value={ldapFormData.admin_group_dn}
-                    onChange={(e) =>
-                      setLdapFormData({ ...ldapFormData, admin_group_dn: e.target.value })
-                    }
+                    Create Internal User
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={openManageAuthGroupsModal}
                   >
-                    <option value="">No admin group (all users are standard)</option>
-                    {ldapDiscoveredGroups.map((g) => (
-                      <option key={g.dn} value={g.dn}>{g.name}</option>
-                    ))}
-                  </select>
-                  <p className="field-help">
-                    Members of this group get admin privileges
-                  </p>
-                </div>
-                <div className="form-group">
-                  <label>User Group DN (optional)</label>
-                  <select
-                    value={ldapFormData.user_group_dn}
-                    onChange={(e) =>
-                      setLdapFormData({ ...ldapFormData, user_group_dn: e.target.value })
-                    }
-                  >
-                    <option value="">Any user can login</option>
-                    {ldapDiscoveredGroups.map((g) => (
-                      <option key={g.dn} value={g.dn}>{g.name}</option>
-                    ))}
-                  </select>
-                  <p className="field-help">
-                    If set, users must be members of this group to login
-                  </p>
+                    <Pencil size={16} />
+                    Manage Group Memberships
+                  </button>
                 </div>
               </div>
             </>
           )}
 
-          {/* Show current config if loaded but not testing */}
-          {ldapConfig?.server_url && !ldapTestResult?.success && (
-            <div className="form-group">
-              <div className="meta-pills">
-                <span className="meta-pill">
-                  <span className="meta-pill-label">Server</span>
-                  <span className="meta-pill-value">{ldapConfig.server_url}</span>
-                </span>
-                {ldapConfig.user_search_base && (
-                  <span className="meta-pill">
-                    <span className="meta-pill-label">Base</span>
-                    <span className="meta-pill-value">{ldapConfig.user_search_base}</span>
-                  </span>
-                )}
-                {ldapConfig.admin_group_dn && (
-                  <span className="meta-pill">
-                    <span className="meta-pill-label">Admin Group</span>
-                    <span className="meta-pill-value">{ldapConfig.admin_group_dn}</span>
-                  </span>
-                )}
+          {activeAuthProvider.value === 'ldap' && (
+            <>
+              <h4 style={{ margin: '0 0 4px' }}>Server Connection</h4>
+              <p className="fieldset-help">Connect to your LDAP or Active Directory server.</p>
+
+              <div className="form-row-4" style={{ gridTemplateColumns: '110px 1fr 90px' }}>
+                <div className="form-group">
+                  <label>Protocol</label>
+                  <select
+                    value={ldapFormData.ldap_protocol}
+                    onChange={(e) => {
+                      const protocol = e.target.value as 'ldap' | 'ldaps';
+                      const defaultPort = protocol === 'ldaps' ? 636 : 389;
+                      setLdapFormData({ ...ldapFormData, ldap_protocol: protocol, ldap_port: defaultPort });
+                    }}
+                  >
+                    <option value="ldaps">ldaps://</option>
+                    <option value="ldap">ldap://</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Host</label>
+                  <input
+                    type="text"
+                    value={ldapFormData.ldap_host}
+                    onChange={(e) => setLdapFormData({ ...ldapFormData, ldap_host: e.target.value })}
+                    placeholder="ldap.example.com"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Port</label>
+                  <input
+                    type="number"
+                    value={ldapFormData.ldap_port}
+                    onChange={(e) => setLdapFormData({ ...ldapFormData, ldap_port: parseInt(e.target.value, 10) || 636 })}
+                  />
+                </div>
               </div>
-            </div>
+
+              {ldapFormData.ldap_protocol === 'ldaps' && (
+                <div className="form-group">
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={ldapFormData.allow_self_signed}
+                      onChange={(e) => setLdapFormData({ ...ldapFormData, allow_self_signed: e.target.checked })}
+                      style={{ marginRight: '0.5rem' }}
+                    />
+                    <span>Allow self-signed certificates</span>
+                  </label>
+                  <p className="field-help">Skip SSL certificate validation. Use only for testing or with internal CAs.</p>
+                </div>
+              )}
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Bind DN / Username</label>
+                  <input
+                    type="text"
+                    value={ldapFormData.bind_dn}
+                    onChange={(e) => setLdapFormData({ ...ldapFormData, bind_dn: e.target.value })}
+                    placeholder="user@domain.com or CN=admin,DC=example,DC=com"
+                  />
+                  <p className="field-help">AD: user@domain.com or DOMAIN\user. OpenLDAP: full DN like cn=admin,dc=example,dc=com</p>
+                </div>
+                <div className="form-group">
+                  <label>Bind Password</label>
+                  <input
+                    type="password"
+                    value={ldapFormData.bind_password}
+                    onChange={(e) => setLdapFormData({ ...ldapFormData, bind_password: e.target.value })}
+                    placeholder={ldapConfig?.bind_dn ? '(password saved)' : 'Enter password'}
+                  />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <div className="connection-test-row">
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={handleTestLdapConnection}
+                    disabled={ldapTesting || !ldapFormData.ldap_host || !ldapFormData.bind_dn || !ldapFormData.bind_password}
+                  >
+                    {ldapTesting ? 'Testing...' : 'Test Connection & Discover'}
+                  </button>
+                  {ldapTestResult?.success && (
+                    <span className="connection-status success">{ldapTestResult.message}</span>
+                  )}
+                  {ldapTestResult && !ldapTestResult.success && (
+                    <span className="connection-status error">{ldapTestResult.message}</span>
+                  )}
+                </div>
+              </div>
+
+              {ldapDiscoveredOus.length > 0 && (
+                <>
+                  <h4 style={{ margin: '1rem 0 4px' }}>Search Configuration</h4>
+                  <p className="fieldset-help">Discovered from your directory. Refine where users and groups are looked up.</p>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label>User Search Base</label>
+                      <select
+                        value={ldapFormData.user_search_base}
+                        onChange={(e) => setLdapFormData({ ...ldapFormData, user_search_base: e.target.value })}
+                      >
+                        <option value="">Select a search base...</option>
+                        {ldapDiscoveredOus.map((ou) => (
+                          <option key={ou} value={ou}>
+                            {formatDnForDisplay(ou, ldapDiscoveredOus[0] || ou)}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="field-help">Where to search for users. Select the root domain to search all users, or a specific OU to limit scope.</p>
+                      {ldapFormData.user_search_base && (
+                        <p className="field-help" style={{ fontFamily: 'var(--font-mono)' }}>
+                          DN: {ldapFormData.user_search_base}
+                        </p>
+                      )}
+                    </div>
+                    <div className="form-group">
+                      <label>User Search Filter</label>
+                      <input
+                        type="text"
+                        value={ldapFormData.user_search_filter}
+                        onChange={(e) => setLdapFormData({ ...ldapFormData, user_search_filter: e.target.value })}
+                        placeholder="(uid={username})"
+                      />
+                      <p className="field-help">LDAP filter to find users. Use {'{username}'} as placeholder.</p>
+                    </div>
+                  </div>
+
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label>Admin Group DNs</label>
+                      <CheckboxDropdown
+                        options={ldapDiscoveredGroups.map((group) => ({
+                          id: group.dn,
+                          label: group.name,
+                          description: group.dn,
+                        }))}
+                        selectedIds={ldapFormData.admin_group_dns}
+                        onChange={(ids) => setLdapFormData({ ...ldapFormData, admin_group_dns: ids })}
+                        placeholder="No admin groups selected"
+                        searchPlaceholder="Search LDAP groups..."
+                      />
+                      <p className="field-help">Members of any selected group get admin privileges.</p>
+                    </div>
+                    <div className="form-group">
+                      <label>User Group DNs (optional)</label>
+                      <CheckboxDropdown
+                        options={ldapDiscoveredGroups.map((group) => ({
+                          id: group.dn,
+                          label: group.name,
+                          description: group.dn,
+                        }))}
+                        selectedIds={ldapFormData.user_group_dns}
+                        onChange={(ids) => setLdapFormData({ ...ldapFormData, user_group_dns: ids })}
+                        placeholder="Any LDAP user can log in"
+                        searchPlaceholder="Search LDAP groups..."
+                      />
+                      <p className="field-help">If set, users must be members of at least one selected group to login.</p>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {ldapConfig?.server_url && !ldapTestResult?.success && (
+                <div className="form-group">
+                  <div className="meta-pills">
+                    <span className="meta-pill">
+                      <span className="meta-pill-label">Server</span>
+                      <span className="meta-pill-value">{ldapConfig.server_url}</span>
+                    </span>
+                    {ldapConfig.user_search_base && (
+                      <span className="meta-pill">
+                        <span className="meta-pill-label">Base</span>
+                        <span className="meta-pill-value">{ldapConfig.user_search_base}</span>
+                      </span>
+                    )}
+                    {ldapConfig.admin_group_dns.length > 0 && (
+                      <span className="meta-pill">
+                        <span className="meta-pill-label">Admin Groups</span>
+                        <span className="meta-pill-value">{ldapConfig.admin_group_dns.length}</span>
+                      </span>
+                    )}
+                    {ldapConfig.user_group_dns.length > 0 && (
+                      <span className="meta-pill">
+                        <span className="meta-pill-label">Logon Gates</span>
+                        <span className="meta-pill-value">{ldapConfig.user_group_dns.length}</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <details style={{ marginBottom: '16px' }} id="setting-authentication_advanced">
+                <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Settings</summary>
+
+                <h4 style={{ margin: '1rem 0 4px' }}>Sync &amp; Cache</h4>
+                <p className="fieldset-help">Controls how LDAP identities are projected into the local database. LDAP passwords are never cached; only identity, groups, and role projection.</p>
+                {authProviderConfig && (
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={authProviderConfig.ldap_lazy_sync_enabled}
+                          onChange={(e) => setAuthProviderConfig({ ...authProviderConfig, ldap_lazy_sync_enabled: e.target.checked })}
+                          style={{ marginRight: '0.5rem' }}
+                        />
+                        <span>Lazy sync LDAP identities on login</span>
+                      </label>
+                      <p className="field-help">When a user authenticates via LDAP, cache their identity and groups locally for the TTL below.</p>
+                    </div>
+                    <div className="form-group">
+                      <label>Cache TTL (minutes)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={10080}
+                        value={authProviderConfig.cache_ttl_minutes}
+                        onChange={(e) => setAuthProviderConfig({ ...authProviderConfig, cache_ttl_minutes: parseInt(e.target.value, 10) || 1 })}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <h4 style={{ margin: '1rem 0 4px' }}>Pre-import LDAP User</h4>
+                <p className="fieldset-help">Optionally cache an LDAP identity into the local database before they sign in &mdash; useful for assigning role or group overrides ahead of time. The user still authenticates with their LDAP password.</p>
+                <div className="form-group">
+                  <label>Search LDAP User</label>
+                  <div className="ldap-user-search-row">
+                    <div className="ldap-user-search-typeahead" ref={ldapUserSearchContainerRef}>
+                      <input
+                        type="text"
+                        value={ldapUserSearchName}
+                        onChange={(e) => {
+                          setLdapUserSearchName(e.target.value);
+                          setLdapUserPreview(null);
+                        }}
+                        onKeyUp={() => {
+                          if (suppressLdapUserSearchDropdown) {
+                            setSuppressLdapUserSearchDropdown(false);
+                          }
+                        }}
+                        onFocus={() => {
+                          if (!suppressLdapUserSearchDropdown && (ldapUserSearchResults.length > 0 || ldapUserSearchName.trim().length >= 2)) {
+                            setShowLdapUserSearchResults(true);
+                          }
+                        }}
+                        placeholder={ldapConfigured ? 'Search by username or email' : 'Configure LDAP first'}
+                        disabled={!ldapConfigured}
+                      />
+                      {ldapUserSearching && (
+                        <div className="ldap-user-search-status">Searching...</div>
+                      )}
+                      {showLdapUserSearchResults && ldapUserSearchEnabled && (
+                        <div className="ldap-user-search-dropdown" role="listbox" aria-label="LDAP user search results">
+                          {ldapUserSearchResults.length > 0 ? ldapUserSearchResults.map((profile) => (
+                            <button
+                              key={`${profile.source_dn || profile.username}-${profile.email || ''}`}
+                              type="button"
+                              className="ldap-user-search-option"
+                              onClick={() => handleSelectLdapUserSuggestion(profile)}
+                            >
+                              <span className="ldap-user-search-option-title">{profile.display_name || profile.username}</span>
+                              <span className="ldap-user-search-option-meta">
+                                <span className="ldap-user-search-option-username">{profile.username}</span>
+                                {profile.email && <span className="ldap-user-search-option-email">{profile.email}</span>}
+                              </span>
+                            </button>
+                          )) : (
+                            <div className="ldap-user-search-empty">No matching LDAP users</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={handleImportLdapUser}
+                      disabled={ldapUserImporting || !ldapConfigured || !ldapUserSearchName.trim()}
+                    >
+                      {ldapUserImporting ? 'Syncing...' : 'Sync User'}
+                    </button>
+                  </div>
+                </div>
+                {ldapUserPreview && (
+                  <div className="form-group">
+                    <div className="meta-pills">
+                      <span className="meta-pill"><span className="meta-pill-label">User</span><span className="meta-pill-value">{ldapUserPreview.display_name || ldapUserPreview.username}</span></span>
+                      <span className="meta-pill"><span className="meta-pill-label">Role</span><span className="meta-pill-value">{ldapUserPreview.role}</span></span>
+                      <span className="meta-pill"><span className="meta-pill-label">Groups</span><span className="meta-pill-value">{ldapUserPreview.groups.length}</span></span>
+                    </div>
+                  </div>
+                )}
+              </details>
+            </>
           )}
 
-          <div className="form-group">
-            <button
-              type="button"
-              className="btn"
-              onClick={handleSaveLdapConfig}
-              disabled={ldapSaving}
-            >
-              {ldapSaving ? 'Saving...' : 'Save LDAP Configuration'}
-            </button>
+          <div className="form-group" style={{ marginTop: '1rem' }}>
+            <h4 style={{ margin: '0 0 4px' }}>Current Group Memberships</h4>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: 'var(--space-sm)' }}>
+              <p className="fieldset-help auth-provider-help-tight" style={{ margin: 0 }}>Internal groups are managed here. LDAP groups are projected from synced LDAP user memberships.</p>
+            </div>
+            {authGroups.length > 0 && (
+              <div className="meta-pills auth-provider-pills">
+                {authGroups.slice(0, 8).map((group) => {
+                  const isLdap = group.provider === 'ldap';
+                  const isAdmin = group.role === 'admin';
+                  const isLogon = Boolean(group.is_logon_group);
+                  const memberPreviews = group.member_previews ?? [];
+                  return (
+                    <Popover
+                      key={group.id}
+                      trigger="hover"
+                      position="right"
+                      content={
+                        <div className="auth-group-members-popover">
+                          <div className="auth-group-members-popover-header">{group.display_name} members</div>
+                          {memberPreviews.length === 0 ? (
+                            <div className="auth-group-members-popover-status">No members in this group.</div>
+                          ) : (
+                            <ul className="auth-group-members-popover-list">
+                              {memberPreviews.map((member) => {
+                                const displayName = member.display_name || member.username;
+                                return (
+                                  <li key={`${group.id}-${member.username}`} className="auth-group-members-popover-item">
+                                    <span className="auth-group-member-display-name">{displayName}</span>
+                                    <span className="auth-group-member-handle">@{member.username}</span>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </div>
+                      }
+                    >
+                      <span className={`meta-pill auth-provider-pill auth-provider-pill-${group.provider}${isAdmin ? ' auth-provider-pill-admin' : ''}${isLogon ? ' auth-provider-pill-logon' : ''}`}>
+                        <span className="meta-pill-value">{group.display_name}</span>
+                        <span className="auth-provider-pill-count">({group.member_count})</span>
+                        {isLdap && <span className="auth-provider-pill-source-badge">LDAP</span>}
+                        {isAdmin && <span className="auth-provider-pill-admin-badge">Admin</span>}
+                        {isLogon && <span className="auth-provider-pill-logon-badge">Logon</span>}
+                      </span>
+                    </Popover>
+                  );
+                })}
+              </div>
+            )}
+            {authGroups.length === 0 && (
+              <p className="muted" style={{ margin: 0 }}>No groups created yet.</p>
+            )}
           </div>
+
+          {authProviderConfig && (
+            <div className="form-group">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleSaveAuthProviderConfig}
+                disabled={authProviderConfigSaving}
+              >
+                {authProviderConfigSaving ? 'Saving...' : 'Save Authentication Policy'}
+              </button>
+            </div>
+          )}
         </fieldset>
 
         {/* Search Configuration */}
@@ -5104,6 +5485,16 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
 
 
       </form>
+
+      <AuthAdminModalHost
+        createUserOpen={showCreateLocalUserModal}
+        manageGroupsOpen={showManageAuthGroupsModal}
+        authGroups={authGroups}
+        onAuthGroupsChange={setAuthGroups}
+        onCloseCreateUser={() => setShowCreateLocalUserModal(false)}
+        onCloseManageGroups={closeManageAuthGroupsModal}
+        toast={toast}
+      />
 
       {settings?.updated_at && (
         <p className="muted" style={{ marginTop: '1rem', fontSize: '0.85rem' }}>

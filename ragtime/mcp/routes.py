@@ -32,7 +32,7 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from ragtime.core.app_settings import get_app_settings
-from ragtime.core.auth import validate_session
+from ragtime.core.auth import user_matches_group_identifier, validate_session
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
@@ -321,112 +321,21 @@ async def _validate_oauth2_token(
         if not allowed_group_dn:
             return True
 
-        # Check if user is in the allowed LDAP group
+        # Check if user is in the allowed provider group. LDAP users are checked
+        # live when a DN is supplied; internal/local groups use cached memberships.
         db = await get_db()
         user = await db.user.find_unique(where={"id": token_data.user_id})
         if not user:
             logger.debug(f"User {token_data.user_id} not found in database")
             return False
-
-        # Local admin users bypass LDAP group restrictions
-        # They are trusted and don't have LDAP group membership
-        if user.authProvider == "local" and user.role == "admin":
+        matched = await user_matches_group_identifier(user, allowed_group_dn)
+        if matched:
+            logger.debug(f"User {user.username} matches group {allowed_group_dn}")
+        else:
             logger.debug(
-                f"Local admin '{user.username}' bypasses LDAP group restriction"
+                f"User {user.username} does not match group {allowed_group_dn}"
             )
-            return True
-
-        # Get user's LDAP DN and check group membership
-        if not user.ldapDn:
-            # Non-admin local users cannot access group-restricted routes
-            logger.debug(
-                f"User {user.username} has no LDAP DN and is not local admin - denying access"
-            )
-            return False
-
-        # Re-check LDAP group membership for the user
-        from ragtime.core.auth import _get_ldap_connection, get_ldap_config
-        from ragtime.core.encryption import decrypt_secret
-
-        ldap_config = await get_ldap_config()
-        if not ldap_config.serverUrl:
-            logger.debug("LDAP not configured - denying OAuth2 access")
-            return False
-
-        bind_password = decrypt_secret(ldap_config.bindPassword)
-        conn = _get_ldap_connection(
-            ldap_config.serverUrl,
-            ldap_config.bindDn,
-            bind_password,
-            ldap_config.allowSelfSigned,
-        )
-        if not conn:
-            logger.warning("Failed to connect to LDAP for group membership check")
-            return False
-
-        try:
-            # Get user's memberOf and primaryGroupID
-            conn.search(
-                search_base=user.ldapDn,
-                search_filter="(objectClass=*)",
-                search_scope="BASE",
-                attributes=["memberOf", "primaryGroupID"],
-            )
-
-            if not conn.entries:
-                conn.unbind()
-                return False
-
-            entry = conn.entries[0]
-            member_of = []
-            if hasattr(entry, "memberOf") and entry.memberOf:
-                member_of = [str(g).lower() for g in entry.memberOf]
-
-            primary_group_id = None
-            if hasattr(entry, "primaryGroupID") and entry.primaryGroupID:
-                primary_group_id = int(str(entry.primaryGroupID))
-
-            # Case-insensitive DN comparison
-            allowed_group_lower = allowed_group_dn.lower()
-
-            # Check direct membership
-            if allowed_group_lower in member_of:
-                conn.unbind()
-                logger.debug(f"User {user.username} is member of {allowed_group_dn}")
-                return True
-
-            # Check primary group
-            if primary_group_id:
-                conn.search(
-                    search_base=allowed_group_dn,
-                    search_filter="(objectClass=*)",
-                    search_scope="BASE",
-                    attributes=["primaryGroupToken"],
-                )
-                if conn.entries:
-                    group_entry = conn.entries[0]
-                    if (
-                        hasattr(group_entry, "primaryGroupToken")
-                        and group_entry.primaryGroupToken
-                    ):
-                        group_rid = int(str(group_entry.primaryGroupToken))
-                        if group_rid == primary_group_id:
-                            conn.unbind()
-                            logger.debug(
-                                f"User {user.username}'s primary group (RID {primary_group_id}) "
-                                f"matches {allowed_group_dn}"
-                            )
-                            return True
-
-            conn.unbind()
-            logger.debug(f"User {user.username} is NOT a member of {allowed_group_dn}")
-            return False
-
-        except Exception as e:
-            logger.debug(f"LDAP group check failed: {e}")
-            if conn.bound:
-                conn.unbind()
-            return False
+        return matched
 
     except Exception as e:
         logger.debug(f"OAuth2 token validation failed: {e}")
@@ -478,21 +387,14 @@ async def _get_user_matching_filter(scope: Scope) -> str | None:
         )
 
         # Local admin users bypass filtering - see all tools
-        if user.authProvider == "local" and user.role == "admin":
+        if (
+            str(getattr(user.authProvider, "value", user.authProvider)) == "local"
+            and user.role == "admin"
+        ):
             logger.debug(
                 f"Local admin '{user.username}' bypasses default route filtering"
             )
             return None
-
-        # Get user's LDAP groups
-        if not user.ldapDn:
-            logger.debug(
-                f"_get_user_matching_filter: User {user.username} has no LDAP DN"
-            )
-            # Non-LDAP users see all tools (no filtering)
-            return None
-
-        logger.debug(f"_get_user_matching_filter: User LDAP DN={user.ldapDn}")
 
         # Get all enabled default route filters, ordered by priority descending
         filters = await db.mcpdefaultroutefilter.find_many(
@@ -505,97 +407,15 @@ async def _get_user_matching_filter(scope: Scope) -> str | None:
         if not filters:
             # No filters configured - show all tools
             return None
+        for f in filters:
+            if await user_matches_group_identifier(user, f.ldapGroupDn):
+                logger.debug(
+                    f"User {user.username} matches filter '{f.name}' via group {f.ldapGroupDn}"
+                )
+                return f.id
 
-        # Get LDAP connection to check group membership
-        from ragtime.core.auth import _get_ldap_connection, get_ldap_config
-        from ragtime.core.encryption import decrypt_secret
-
-        ldap_config = await get_ldap_config()
-        if not ldap_config.serverUrl:
-            logger.debug("_get_user_matching_filter: No LDAP server URL configured")
-            return None
-
-        bind_password = decrypt_secret(ldap_config.bindPassword)
-        conn = _get_ldap_connection(
-            ldap_config.serverUrl,
-            ldap_config.bindDn,
-            bind_password,
-            ldap_config.allowSelfSigned,
-        )
-        if not conn:
-            return None
-
-        try:
-            # Get user's memberOf and primaryGroupID
-            conn.search(
-                search_base=user.ldapDn,
-                search_filter="(objectClass=*)",
-                search_scope="BASE",
-                attributes=["memberOf", "primaryGroupID"],
-            )
-
-            if not conn.entries:
-                conn.unbind()
-                return None
-
-            entry = conn.entries[0]
-            user_groups: set[str] = set()
-            if hasattr(entry, "memberOf") and entry.memberOf:
-                user_groups = {str(g).lower() for g in entry.memberOf}
-
-            primary_group_id = None
-            if hasattr(entry, "primaryGroupID") and entry.primaryGroupID:
-                primary_group_id = int(str(entry.primaryGroupID))
-
-            # Check each filter in priority order
-            for f in filters:
-                filter_group_dn = f.ldapGroupDn.lower()
-
-                # Check direct membership
-                if filter_group_dn in user_groups:
-                    conn.unbind()
-                    logger.debug(
-                        f"User {user.username} matches filter '{f.name}' "
-                        f"via group {f.ldapGroupDn}"
-                    )
-                    return f.id
-
-                # Check primary group
-                if primary_group_id:
-                    try:
-                        conn.search(
-                            search_base=f.ldapGroupDn,
-                            search_filter="(objectClass=*)",
-                            search_scope="BASE",
-                            attributes=["primaryGroupToken"],
-                        )
-                        if conn.entries:
-                            group_entry = conn.entries[0]
-                            if (
-                                hasattr(group_entry, "primaryGroupToken")
-                                and group_entry.primaryGroupToken
-                            ):
-                                group_rid = int(str(group_entry.primaryGroupToken))
-                                if group_rid == primary_group_id:
-                                    conn.unbind()
-                                    logger.debug(
-                                        f"User {user.username} matches filter '{f.name}' "
-                                        f"via primary group"
-                                    )
-                                    return f.id
-                    except Exception:
-                        # Continue to next filter if this one fails
-                        pass
-
-            conn.unbind()
-            logger.debug(f"User {user.username} has no matching default route filter")
-            return None
-
-        except Exception as e:
-            logger.debug(f"LDAP group check for filter matching failed: {e}")
-            if conn.bound:
-                conn.unbind()
-            return None
+        logger.debug(f"User {user.username} has no matching default route filter")
+        return None
 
     except Exception as e:
         logger.debug(f"Failed to get matching filter for user: {e}")

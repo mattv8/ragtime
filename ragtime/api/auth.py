@@ -26,7 +26,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 from prisma import Json
-from prisma.enums import UserRole
+from prisma.enums import AuthProvider, UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
@@ -38,13 +38,19 @@ from ragtime.core.api_accounting import (
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import (
     authenticate,
+    create_or_update_local_managed_user,
     create_access_token,
     create_session,
     discover_ldap_structure,
+    get_auth_provider_config,
     get_ldap_config,
+    import_ldap_user_profile,
     invalidate_session,
     lookup_bind_dn,
     resolve_ldap_role_for_user_dn,
+    search_ldap_user_profile,
+    search_ldap_user_profiles,
+    update_auth_provider_config,
 )
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
@@ -324,6 +330,16 @@ class UserResponse(BaseModel):
     role: str
     auth_provider: str
     role_manually_set: bool = False
+    source_provider: Optional[str] = None
+    source_synced_at: Optional[datetime] = None
+    source_expires_at: Optional[datetime] = None
+    cached_groups: list[str] = Field(default_factory=list)
+    manual_group_ids: list[str] = Field(default_factory=list)
+    ldap_group_ids: list[str] = Field(default_factory=list)
+    local_group_ids: list[str] = Field(
+        default_factory=list,
+        description="Deprecated alias for manual_group_ids.",
+    )
 
 
 class UserListResponse(BaseModel):
@@ -352,6 +368,119 @@ class ResetUserRoleResponse(BaseModel):
     role_manually_set: bool
 
 
+class AuthProviderConfigResponse(BaseModel):
+    """Provider-neutral authentication policy response."""
+
+    local_users_enabled: bool
+    ldap_lazy_sync_enabled: bool
+    manual_role_override_wins: bool
+    cache_ttl_minutes: int
+
+
+class UpdateAuthProviderConfigRequest(BaseModel):
+    """Update provider-neutral authentication policy flags."""
+
+    local_users_enabled: Optional[bool] = None
+    ldap_lazy_sync_enabled: Optional[bool] = None
+    manual_role_override_wins: Optional[bool] = None
+    cache_ttl_minutes: Optional[int] = Field(None, ge=1, le=10080)
+
+
+class LocalUserCreateRequest(BaseModel):
+    """Create an internal managed user."""
+
+    username: str = Field(..., min_length=1, max_length=255)
+    password: str = Field(..., min_length=8, max_length=1024)
+    display_name: Optional[str] = Field(None, max_length=255)
+    email: Optional[str] = Field(None, max_length=255)
+    role: Literal["user", "admin"] = "user"
+
+
+class LocalUserUpdateRequest(BaseModel):
+    """Update an internal managed user."""
+
+    password: Optional[str] = Field(None, min_length=8, max_length=1024)
+    display_name: Optional[str] = Field(None, max_length=255)
+    email: Optional[str] = Field(None, max_length=255)
+    role: Optional[Literal["user", "admin"]] = None
+
+
+class AuthGroupResponse(BaseModel):
+    """Auth group response."""
+
+    id: str
+    key: str
+    display_name: str
+    description: str
+    provider: str
+    source_id: Optional[str] = None
+    source_dn: Optional[str] = None
+    role: Optional[str] = None
+    member_count: int = 0
+    manual_member_count: int = 0
+    ldap_member_count: int = 0
+    member_previews: list["AuthGroupMemberPreview"] = Field(default_factory=list)
+    member_labels: list[str] = Field(default_factory=list)
+    is_logon_group: bool = False
+
+
+class AuthGroupMemberPreview(BaseModel):
+    """Member identity preview for auth group hover popovers."""
+
+    username: str
+    display_name: str
+
+
+class AuthGroupListResponse(BaseModel):
+    groups: list[AuthGroupResponse]
+
+
+class AuthGroupUpsertRequest(BaseModel):
+    """Create or update a local auth group."""
+
+    key: Optional[str] = Field(None, max_length=255)
+    display_name: str = Field(..., min_length=1, max_length=255)
+    description: str = Field(default="", max_length=1000)
+    role: Optional[Literal["user", "admin"]] = None
+    is_logon_group: bool = False
+
+
+class SetUserGroupsRequest(BaseModel):
+    """Replace a user's manual internal group memberships."""
+
+    group_ids: list[str] = Field(default_factory=list)
+
+
+class LdapUserSearchRequest(BaseModel):
+    """Search for one LDAP user using configured bind credentials."""
+
+    username: str = Field(..., min_length=1, max_length=255)
+
+
+class LdapUserProfileResponse(BaseModel):
+    username: str
+    source_dn: Optional[str] = None
+    display_name: Optional[str] = None
+    email: Optional[str] = None
+    role: str
+    groups: list[str] = Field(default_factory=list)
+
+
+class LdapUserTypeaheadRequest(BaseModel):
+    """Typeahead lookup for LDAP users using fallback uid/email attributes."""
+
+    query: str = Field(..., min_length=1, max_length=255)
+    limit: int = Field(8, ge=1, le=25)
+
+
+class LdapUserTypeaheadResponse(BaseModel):
+    users: list[LdapUserProfileResponse] = Field(default_factory=list)
+
+
+class LdapUserImportResponse(BaseModel):
+    user: UserResponse
+
+
 class LdapConfigRequest(BaseModel):
     """LDAP configuration update request."""
 
@@ -373,8 +502,10 @@ class LdapConfigRequest(BaseModel):
     user_search_filter: Optional[str] = Field(
         None, description="User search filter (use {username} placeholder)"
     )
-    admin_group_dn: Optional[str] = Field(None, description="Admin group DN")
-    user_group_dn: Optional[str] = Field(None, description="User group DN (optional)")
+    admin_group_dns: Optional[list[str]] = Field(None, description="Admin group DNs")
+    user_group_dns: Optional[list[str]] = Field(
+        None, description="User group DNs that are allowed to log in"
+    )
 
 
 class LdapConfigResponse(BaseModel):
@@ -386,8 +517,8 @@ class LdapConfigResponse(BaseModel):
     base_dn: str
     user_search_base: str
     user_search_filter: str
-    admin_group_dn: str
-    user_group_dn: str
+    admin_group_dns: list[str]
+    user_group_dns: list[str]
     discovered_ous: list[str]
     discovered_groups: list[dict]
 
@@ -471,6 +602,208 @@ class AuthStatusResponse(BaseModel):
     )
 
 
+async def _user_response(user: User) -> UserResponse:
+    cached_groups = getattr(user, "cachedGroups", None)
+    db = await get_db()
+    memberships = await db.authgroupmembership.find_many(where={"userId": user.id})
+    group_ids = [membership.groupId for membership in memberships]
+    groups = (
+        await db.authgroup.find_many(where={"id": {"in": group_ids}})
+        if group_ids
+        else []
+    )
+    groups_by_id = {group.id: group for group in groups}
+    manual_group_ids: list[str] = []
+    ldap_group_ids: list[str] = []
+    for membership in memberships:
+        group = groups_by_id.get(membership.groupId)
+        if not group:
+            continue
+        membership_provider = _auth_provider_value(membership.sourceProvider)
+        group_provider = _auth_provider_value(group.provider)
+        if membership_provider == "local_managed" and group_provider == "local_managed":
+            manual_group_ids.append(membership.groupId)
+        elif membership_provider == "ldap":
+            ldap_group_ids.append(membership.groupId)
+
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        display_name=user.displayName,
+        email=user.email,
+        role=user.role,
+        auth_provider=user.authProvider,
+        role_manually_set=user.roleManuallySet,
+        source_provider=getattr(user, "sourceProvider", None),
+        source_synced_at=getattr(user, "sourceSyncedAt", None),
+        source_expires_at=getattr(user, "sourceExpiresAt", None),
+        cached_groups=cached_groups if isinstance(cached_groups, list) else [],
+        manual_group_ids=manual_group_ids,
+        ldap_group_ids=ldap_group_ids,
+        local_group_ids=manual_group_ids,
+    )
+
+
+def _auth_provider_config_response(config) -> AuthProviderConfigResponse:
+    return AuthProviderConfigResponse(
+        local_users_enabled=config.local_users_enabled,
+        ldap_lazy_sync_enabled=config.ldap_lazy_sync_enabled,
+        manual_role_override_wins=config.manual_role_override_wins,
+        cache_ttl_minutes=config.cache_ttl_minutes,
+    )
+
+
+def _auth_provider_value(provider) -> str:
+    return str(getattr(provider, "value", provider) or "")
+
+
+def _role_from_form_value(role: str | None) -> UserRole | None:
+    if role == "admin":
+        return UserRole.admin
+    if role == "user":
+        return UserRole.user
+    return None
+
+
+def _normalize_dn_list(values: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        dn = str(value or "").strip()
+        key = dn.casefold()
+        if not dn or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(dn)
+    return normalized
+
+
+async def _sync_ldap_auth_group_assignments(
+    *, admin_group_dns: list[str], user_group_dns: list[str]
+) -> None:
+    db = await get_db()
+    ldap_groups = await db.authgroup.find_many(where={"provider": AuthProvider.ldap})
+    admin_dns = {dn.casefold() for dn in admin_group_dns}
+    user_dns = {dn.casefold() for dn in user_group_dns}
+    for group in ldap_groups:
+        source_dn = (group.sourceDn or "").strip().casefold()
+        await db.authgroup.update(
+            where={"id": group.id},
+            data={
+                "role": UserRole.admin if source_dn in admin_dns else None,
+                "isLogonGroup": source_dn in user_dns,
+            },
+        )
+
+
+async def _set_ldap_group_assignment(
+    group, *, role: UserRole | None, is_logon_group: bool
+) -> None:
+    if _auth_provider_value(group.provider) != "ldap" or not group.sourceDn:
+        return
+
+    db = await get_db()
+    config = await db.ldapconfig.find_first()
+    if not config:
+        return
+
+    source_dn = group.sourceDn.strip()
+    source_key = source_dn.casefold()
+    admin_group_dns = [
+        dn
+        for dn in _normalize_dn_list(getattr(config, "adminGroupDns", []))
+        if dn.casefold() != source_key
+    ]
+    user_group_dns = [
+        dn
+        for dn in _normalize_dn_list(getattr(config, "userGroupDns", []))
+        if dn.casefold() != source_key
+    ]
+    if role == UserRole.admin:
+        admin_group_dns.append(source_dn)
+    if is_logon_group:
+        user_group_dns.append(source_dn)
+
+    await db.ldapconfig.update(
+        where={"id": config.id},
+        data={
+            "adminGroupDns": admin_group_dns,
+            "userGroupDns": user_group_dns,
+        },
+    )
+
+
+async def _auth_group_response(group) -> AuthGroupResponse:
+    db = await get_db()
+    memberships = await db.authgroupmembership.find_many(where={"groupId": group.id})
+    member_count = len(memberships)
+    manual_member_count = sum(
+        1
+        for membership in memberships
+        if _auth_provider_value(membership.sourceProvider) == "local_managed"
+    )
+    ldap_member_count = sum(
+        1
+        for membership in memberships
+        if _auth_provider_value(membership.sourceProvider) == "ldap"
+    )
+    user_ids = list({membership.userId for membership in memberships})
+    users = await db.user.find_many(where={"id": {"in": user_ids}}) if user_ids else []
+    users_by_id = {user.id: user for user in users}
+    member_labels: list[str] = []
+    member_previews: list[AuthGroupMemberPreview] = []
+    seen_labels: set[str] = set()
+    seen_usernames: set[str] = set()
+    for membership in memberships:
+        user = users_by_id.get(membership.userId)
+        if not user:
+            continue
+        username = (user.username or "").strip()
+        if username:
+            normalized_username = username.casefold()
+            if normalized_username not in seen_usernames:
+                seen_usernames.add(normalized_username)
+                member_previews.append(
+                    AuthGroupMemberPreview(
+                        username=username,
+                        display_name=(user.displayName or username).strip() or username,
+                    )
+                )
+        label = (user.displayName or user.username or "").strip()
+        if not label:
+            continue
+        normalized = label.casefold()
+        if normalized in seen_labels:
+            continue
+        seen_labels.add(normalized)
+        member_labels.append(label)
+
+    member_labels.sort(key=str.casefold)
+    member_previews.sort(
+        key=lambda preview: (
+            preview.display_name.casefold(),
+            preview.username.casefold(),
+        )
+    )
+
+    return AuthGroupResponse(
+        id=group.id,
+        key=group.key,
+        display_name=group.displayName,
+        description=group.description,
+        provider=group.provider,
+        source_id=group.sourceId,
+        source_dn=group.sourceDn,
+        role=group.role,
+        member_count=member_count,
+        manual_member_count=manual_member_count,
+        ldap_member_count=ldap_member_count,
+        member_previews=member_previews,
+        member_labels=member_labels,
+        is_logon_group=bool(getattr(group, "isLogonGroup", False)),
+    )
+
+
 # =============================================================================
 # Public Endpoints (No Auth Required)
 # =============================================================================
@@ -523,6 +856,31 @@ async def _build_local_auth_method_status() -> AuthMethodStatus:
         available=True,
         status="available",
         detail="Ready",
+    )
+
+
+async def _build_local_managed_auth_method_status() -> AuthMethodStatus:
+    """Build internal managed users auth status for login UI."""
+    config = await get_auth_provider_config()
+    if not config.local_users_enabled:
+        return AuthMethodStatus(
+            key="local_managed",
+            label="Internal Users",
+            configured=True,
+            available=False,
+            status="unavailable",
+            detail="Disabled",
+        )
+
+    db = await get_db()
+    user_count = await db.user.count(where={"authProvider": AuthProvider.local_managed})
+    return AuthMethodStatus(
+        key="local_managed",
+        label="Internal Users",
+        configured=True,
+        available=True,
+        status="available",
+        detail=f"{user_count} managed user{'s' if user_count != 1 else ''}",
     )
 
 
@@ -613,6 +971,7 @@ async def _build_auth_method_statuses(ldap_config) -> list[AuthMethodStatus]:
     """Build auth method statuses in one place for easier future expansion."""
     statuses = await asyncio.gather(
         _build_ldap_auth_method_status(ldap_config),
+        _build_local_managed_auth_method_status(),
         _build_local_auth_method_status(),
     )
     return list(statuses)
@@ -958,12 +1317,9 @@ async def oauth2_token(
                 "username and password are required for password grant",
             )
 
-        # Check if LDAP is configured (OAuth2 requires LDAP)
-        ldap_config = await get_ldap_config()
-        if not ldap_config.serverUrl or not ldap_config.bindDn:
-            return _oauth_error("server_error", "OAuth2 requires LDAP to be configured")
-
-        # Authenticate via LDAP
+        # Authenticate through the shared provider dispatch. This keeps OAuth2
+        # clients on the same endpoint while allowing internal users, LDAP users,
+        # and future providers to coexist behind authenticate().
         result = await authenticate(username, password)
 
         if not result.success:
@@ -1018,15 +1374,7 @@ async def oauth2_token(
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(user: User = Depends(get_current_user)):
     """Get current authenticated user info."""
-    return UserResponse(
-        id=user.id,
-        username=user.username,
-        display_name=user.displayName,
-        email=user.email,
-        role=user.role,
-        auth_provider=user.authProvider,
-        role_manually_set=user.roleManuallySet,
-    )
+    return await _user_response(user)
 
 
 # =============================================================================
@@ -1134,8 +1482,8 @@ async def get_ldap_configuration(_user: User = Depends(require_admin)):
         base_dn=config.baseDn,
         user_search_base=config.userSearchBase,
         user_search_filter=config.userSearchFilter,
-        admin_group_dn=config.adminGroupDn,
-        user_group_dn=config.userGroupDn,
+        admin_group_dns=_normalize_dn_list(config.adminGroupDns),
+        user_group_dns=_normalize_dn_list(config.userGroupDns),
         discovered_ous=(
             config.discoveredOus if isinstance(config.discoveredOus, list) else []
         ),
@@ -1162,8 +1510,10 @@ async def update_ldap_configuration(
     # Keep existing (encrypted) password if not provided, otherwise encrypt new password
     if body.bind_password:
         bind_password = encrypt_secret(body.bind_password)
+        bind_password_for_discovery = body.bind_password
     else:
         bind_password = existing.bindPassword
+        bind_password_for_discovery = decrypt_secret(existing.bindPassword)
     allow_self_signed = (
         body.allow_self_signed
         if body.allow_self_signed is not None
@@ -1174,18 +1524,16 @@ async def update_ldap_configuration(
         if body.user_search_filter is not None
         else existing.userSearchFilter
     )
-    # Empty string means "clear the value", None means "keep existing"
-    admin_group_dn = (
-        body.admin_group_dn
-        if body.admin_group_dn is not None
-        else existing.adminGroupDn
+    admin_group_dns = _normalize_dn_list(
+        body.admin_group_dns
+        if body.admin_group_dns is not None
+        else existing.adminGroupDns
     )
-    user_group_dn = (
-        body.user_group_dn if body.user_group_dn is not None else existing.userGroupDn
+    user_group_dns = _normalize_dn_list(
+        body.user_group_dns
+        if body.user_group_dns is not None
+        else existing.userGroupDns
     )
-    # Normalize empty strings to empty (not None) for storage
-    admin_group_dn = admin_group_dn or ""
-    user_group_dn = user_group_dn or ""
 
     # Discover structure if user_search_base not provided and we have connection details
     discovery = None
@@ -1206,7 +1554,7 @@ async def update_ldap_configuration(
         discovery = await discover_ldap_structure(
             server_url=server_url,
             bind_dn=bind_dn,
-            bind_password=bind_password,
+            bind_password=bind_password_for_discovery,
             allow_self_signed=allow_self_signed,
         )
         if discovery.success:
@@ -1227,8 +1575,8 @@ async def update_ldap_configuration(
                 "baseDn": base_dn,
                 "userSearchBase": user_search_base or "",
                 "userSearchFilter": user_search_filter or "(uid={username})",
-                "adminGroupDn": admin_group_dn or "",
-                "userGroupDn": user_group_dn or "",
+                "adminGroupDns": admin_group_dns,
+                "userGroupDns": user_group_dns,
                 "discoveredOus": Json(discovered_ous),
                 "discoveredGroups": Json(discovered_groups),
             },
@@ -1240,12 +1588,16 @@ async def update_ldap_configuration(
                 "baseDn": base_dn,
                 "userSearchBase": user_search_base or "",
                 "userSearchFilter": user_search_filter or "(uid={username})",
-                "adminGroupDn": admin_group_dn or "",
-                "userGroupDn": user_group_dn or "",
+                "adminGroupDns": admin_group_dns,
+                "userGroupDns": user_group_dns,
                 "discoveredOus": Json(discovered_ous),
                 "discoveredGroups": Json(discovered_groups),
             },
         },
+    )
+    await _sync_ldap_auth_group_assignments(
+        admin_group_dns=admin_group_dns,
+        user_group_dns=user_group_dns,
     )
 
     logger.info("LDAP configuration updated")
@@ -1257,8 +1609,8 @@ async def update_ldap_configuration(
         base_dn=config.baseDn,
         user_search_base=config.userSearchBase,
         user_search_filter=config.userSearchFilter,
-        admin_group_dn=config.adminGroupDn,
-        user_group_dn=config.userGroupDn,
+        admin_group_dns=_normalize_dn_list(config.adminGroupDns),
+        user_group_dns=_normalize_dn_list(config.userGroupDns),
         discovered_ous=(
             config.discoveredOus if isinstance(config.discoveredOus, list) else []
         ),
@@ -1293,6 +1645,329 @@ async def test_ldap_connection(
         )
 
 
+@router.post("/ldap/search-user", response_model=LdapUserProfileResponse)
+async def search_ldap_user(
+    body: LdapUserSearchRequest,
+    _user: User = Depends(require_admin),
+):
+    """Search configured LDAP for one user without importing it."""
+    profile = await search_ldap_user_profile(body.username)
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="LDAP user not found or not authorized by configured groups",
+        )
+    return LdapUserProfileResponse(
+        username=profile.username,
+        source_dn=profile.source_dn,
+        display_name=profile.display_name,
+        email=profile.email,
+        role=profile.role,
+        groups=profile.groups,
+    )
+
+
+@router.post("/ldap/search-users", response_model=LdapUserTypeaheadResponse)
+async def search_ldap_users(
+    body: LdapUserTypeaheadRequest,
+    _user: User = Depends(require_admin),
+):
+    """Search configured LDAP for multiple users (typeahead/autocomplete)."""
+    profiles = await search_ldap_user_profiles(body.query, limit=body.limit)
+    return LdapUserTypeaheadResponse(
+        users=[
+            LdapUserProfileResponse(
+                username=profile.username,
+                source_dn=profile.source_dn,
+                display_name=profile.display_name,
+                email=profile.email,
+                role=profile.role,
+                groups=profile.groups,
+            )
+            for profile in profiles
+        ]
+    )
+
+
+@router.post("/ldap/import-user", response_model=LdapUserImportResponse)
+async def import_ldap_user(
+    body: LdapUserSearchRequest,
+    _user: User = Depends(require_admin),
+):
+    """Import one LDAP identity into the local cache without storing a password."""
+    imported = await import_ldap_user_profile(body.username)
+    if imported is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="LDAP user not found or not authorized by configured groups",
+        )
+    return LdapUserImportResponse(user=await _user_response(imported))
+
+
+@router.get("/provider/config", response_model=AuthProviderConfigResponse)
+async def get_provider_config(_user: User = Depends(require_admin)):
+    """Get provider-neutral authentication policy flags."""
+    return _auth_provider_config_response(await get_auth_provider_config())
+
+
+@router.put("/provider/config", response_model=AuthProviderConfigResponse)
+async def update_provider_config(
+    body: UpdateAuthProviderConfigRequest,
+    _user: User = Depends(require_admin),
+):
+    """Update provider-neutral authentication policy flags."""
+    updated = await update_auth_provider_config(
+        local_users_enabled=body.local_users_enabled,
+        ldap_lazy_sync_enabled=body.ldap_lazy_sync_enabled,
+        manual_role_override_wins=body.manual_role_override_wins,
+        cache_ttl_minutes=body.cache_ttl_minutes,
+    )
+    return _auth_provider_config_response(updated)
+
+
+@router.post("/local/users", response_model=UserResponse)
+async def create_local_user(
+    body: LocalUserCreateRequest,
+    _user: User = Depends(require_admin),
+):
+    """Create an internal managed user."""
+    role = UserRole.admin if body.role == "admin" else UserRole.user
+    try:
+        user = await create_or_update_local_managed_user(
+            username=body.username,
+            password=body.password,
+            display_name=body.display_name,
+            email=body.email,
+            role=role,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return await _user_response(user)
+
+
+@router.patch("/local/users/{user_id}", response_model=UserResponse)
+async def update_local_user(
+    user_id: str,
+    body: LocalUserUpdateRequest,
+    _user: User = Depends(require_admin),
+):
+    """Update an internal managed user profile or password."""
+    db = await get_db()
+    existing = await db.user.find_unique(where={"id": user_id})
+    if not existing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+    if _auth_provider_value(existing.authProvider) != "local_managed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only internal managed users can be edited here",
+        )
+    role = existing.role
+    if body.role:
+        role = UserRole.admin if body.role == "admin" else UserRole.user
+    try:
+        user = await create_or_update_local_managed_user(
+            user_id=user_id,
+            username=existing.username,
+            password=body.password,
+            display_name=(
+                body.display_name
+                if body.display_name is not None
+                else existing.displayName
+            ),
+            email=(body.email if body.email is not None else existing.email),
+            role=role,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return await _user_response(user)
+
+
+def _normalize_group_key(value: str) -> str:
+    normalized = "-".join(value.strip().lower().split())
+    normalized = "".join(
+        ch for ch in normalized if ch.isalnum() or ch in {"-", "_", "."}
+    )
+    return normalized or "group"
+
+
+@router.get("/groups", response_model=AuthGroupListResponse)
+async def list_auth_groups(_user: User = Depends(require_admin)):
+    """List Group Memberships."""
+    db = await get_db()
+    groups = await db.authgroup.find_many(order={"displayName": "asc"})
+    return AuthGroupListResponse(
+        groups=[await _auth_group_response(group) for group in groups]
+    )
+
+
+@router.post("/groups", response_model=AuthGroupResponse)
+async def create_auth_group(
+    body: AuthGroupUpsertRequest,
+    _user: User = Depends(require_admin),
+):
+    """Create a local managed auth group."""
+    db = await get_db()
+    key = body.key or _normalize_group_key(body.display_name)
+    role = _role_from_form_value(body.role)
+    try:
+        group = await db.authgroup.create(
+            data={
+                "key": key,
+                "displayName": body.display_name,
+                "description": body.description,
+                "provider": AuthProvider.local_managed,
+                "role": role,
+                "isLogonGroup": body.is_logon_group,
+            }
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to create group: {exc}",
+        )
+    return await _auth_group_response(group)
+
+
+@router.patch("/groups/{group_id}", response_model=AuthGroupResponse)
+async def update_auth_group(
+    group_id: str,
+    body: AuthGroupUpsertRequest,
+    _user: User = Depends(require_admin),
+):
+    """Update auth group role and logon-gate assignments."""
+    db = await get_db()
+    group = await db.authgroup.find_unique(where={"id": group_id})
+    if not group:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
+        )
+    role = _role_from_form_value(body.role)
+    group_provider = _auth_provider_value(group.provider)
+    update_data = {
+        "role": role,
+        "isLogonGroup": body.is_logon_group,
+    }
+    if group_provider == "local_managed":
+        update_data.update(
+            {
+                "key": body.key or group.key,
+                "displayName": body.display_name,
+                "description": body.description,
+            }
+        )
+    updated = await db.authgroup.update(where={"id": group_id}, data=update_data)
+    await _set_ldap_group_assignment(
+        updated,
+        role=role,
+        is_logon_group=body.is_logon_group,
+    )
+    return await _auth_group_response(updated)
+
+
+@router.delete("/groups/{group_id}")
+async def delete_auth_group(
+    group_id: str,
+    _user: User = Depends(require_admin),
+):
+    """Delete an auth group and its memberships."""
+    db = await get_db()
+    group = await db.authgroup.find_unique(where={"id": group_id})
+    if not group:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
+        )
+    if _auth_provider_value(group.provider) != "local_managed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "LDAP-synced groups cannot be deleted manually because they are "
+                "recreated from LDAP membership sync"
+            ),
+        )
+    await db.authgroup.delete(where={"id": group_id})
+    return {"success": True}
+
+
+@router.put("/users/{user_id}/groups", response_model=UserResponse)
+async def set_user_groups(
+    user_id: str,
+    body: SetUserGroupsRequest,
+    current_user: User = Depends(require_admin),
+):
+    """Replace a user's manual internal group memberships."""
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change your own groups",
+        )
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": user_id})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    desired = set(body.group_ids)
+    desired_groups = (
+        await db.authgroup.find_many(where={"id": {"in": list(desired)}})
+        if desired
+        else []
+    )
+    found_group_ids = {group.id for group in desired_groups}
+    unknown_group_ids = sorted(desired - found_group_ids)
+    if unknown_group_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown group id: {unknown_group_ids[0]}",
+        )
+    for group in desired_groups:
+        if _auth_provider_value(group.provider) != "local_managed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Manual group assignment only supports internal groups",
+            )
+
+    existing = await db.authgroupmembership.find_many(
+        where={"userId": user_id, "sourceProvider": AuthProvider.local_managed}
+    )
+    for membership in existing:
+        if membership.groupId not in desired:
+            await db.authgroupmembership.delete(where={"id": membership.id})
+
+    for group in desired_groups:
+        await db.authgroupmembership.upsert(
+            where={"userId_groupId": {"userId": user_id, "groupId": group.id}},
+            data={
+                "create": {
+                    "userId": user_id,
+                    "groupId": group.id,
+                    "sourceProvider": AuthProvider.local_managed,
+                },
+                "update": {"sourceProvider": AuthProvider.local_managed},
+            },
+        )
+
+    if not user.roleManuallySet:
+        if any(group.role == UserRole.admin for group in desired_groups):
+            await db.user.update(where={"id": user_id}, data={"role": UserRole.admin})
+        elif user.ldapDn:
+            resolved_role, _error = await resolve_ldap_role_for_user_dn(
+                user.ldapDn,
+                ldap_username_hint=user.username,
+            )
+            await db.user.update(
+                where={"id": user_id},
+                data={"role": resolved_role or UserRole.user},
+            )
+        else:
+            await db.user.update(where={"id": user_id}, data={"role": UserRole.user})
+
+    refreshed = await db.user.find_unique(where={"id": user_id})
+    return await _user_response(refreshed)
+
+
 # =============================================================================
 # User Management
 # =============================================================================
@@ -1314,18 +1989,7 @@ async def list_users(
     )
 
     return UserListResponse(
-        users=[
-            UserResponse(
-                id=u.id,
-                username=u.username,
-                display_name=u.displayName,
-                email=u.email,
-                role=u.role,
-                auth_provider=u.authProvider,
-                role_manually_set=u.roleManuallySet,
-            )
-            for u in users
-        ],
+        users=[await _user_response(u) for u in users],
         total=total,
         skip=skip,
         take=take,
@@ -1414,7 +2078,7 @@ async def reset_user_role_override(
             detail="User not found",
         )
 
-    if str(user.authProvider) != "ldap":
+    if _auth_provider_value(user.authProvider) != "ldap":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Role reset is only supported for LDAP users",

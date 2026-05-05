@@ -361,18 +361,21 @@ export function App() {
     // Don't modify URL during OAuth authorization flow
     if (oauthParams) return;
 
-    const params = new URLSearchParams();
+    const params = new URLSearchParams(window.location.search);
+    const existingConversationId = params.get('conversation');
     // Non-admins should only have user-space or chat views in URL
     const viewToSync = (!isAdmin && activeView !== 'chat' && activeView !== 'userspace') ? 'userspace' : activeView;
     params.set('view', viewToSync);
+    params.delete('conversation');
     if (viewToSync === 'chat') {
-      const existingConversationId = new URLSearchParams(window.location.search).get('conversation');
       if (existingConversationId && existingConversationId.trim()) {
         params.set('conversation', existingConversationId.trim());
       }
     }
     if (highlightSetting) {
       params.set('highlight', highlightSetting);
+    } else {
+      params.delete('highlight');
     }
     const newUrl = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({}, '', newUrl);

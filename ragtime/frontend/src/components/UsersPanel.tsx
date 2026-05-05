@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
+import { Pencil, Shield, UserPlus } from 'lucide-react';
 import { api, ApiError } from '@/api';
 import type {
   User,
+  AuthGroup,
   UserUsageSummary,
   ProviderModelBreakdown,
   DailyUsageTrend,
@@ -32,7 +34,9 @@ import { DataTable, type DataTableColumn, type TableSortConfig } from './shared/
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { useToast, ToastContainer } from './shared/Toast';
+import { CheckboxDropdown } from './shared/CheckboxDropdown';
 import { formatProviderDisplayName, formatModelDisplayName } from '@/utils/modelDisplay';
+import { AuthAdminModalHost } from './shared/AuthAdminModals';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Filler, Tooltip, Legend);
 
@@ -98,6 +102,22 @@ function paginate<T>(items: T[], page: number, pageSize: number): { pageItems: T
   const safePage = Math.min(Math.max(1, page), totalPages);
   const start = (safePage - 1) * pageSize;
   return { pageItems: items.slice(start, start + pageSize), totalPages, safePage };
+}
+
+function isInternalAuthGroup(group: AuthGroup): boolean {
+  return group.provider === 'local_managed';
+}
+
+function getUserManualGroupIds(user: User): string[] {
+  return user.manual_group_ids ?? user.local_group_ids ?? [];
+}
+
+function formatGroupIdentifierForDisplay(identifier: string): string {
+  const firstPart = identifier.split(',', 1)[0] || identifier;
+  if (firstPart.includes('=')) {
+    return firstPart.split('=').slice(1).join('=') || identifier;
+  }
+  return firstPart;
 }
 
 type PanelTab = 'management' | 'usage';
@@ -185,16 +205,135 @@ function TablePager({ page, totalPages, totalItems, pageSize, onPageChange, onPa
   );
 }
 
+interface UserEditModalProps {
+  user: User;
+  authGroups: AuthGroup[];
+  actionLoading: string | null;
+  onRoleChange: (userId: string, role: 'admin' | 'user') => Promise<void>;
+  onResetRoleOverride: (userId: string) => Promise<void>;
+  onLocalGroupsChange: (userId: string, groupIds: string[]) => Promise<void>;
+  onClose: () => void;
+}
+
+function UserEditModal({
+  user,
+  authGroups,
+  actionLoading,
+  onRoleChange,
+  onResetRoleOverride,
+  onLocalGroupsChange,
+  onClose,
+}: UserEditModalProps) {
+  const internalAuthGroups = authGroups.filter(isInternalAuthGroup);
+  const manualGroupIds = getUserManualGroupIds(user);
+  const ldapGroupIds = new Set(user.ldap_group_ids ?? []);
+  const ldapAuthGroups = authGroups.filter((group) => group.provider === 'ldap');
+  const ldapGroups = ldapAuthGroups.filter((group) => ldapGroupIds.has(group.id));
+  const ldapGroupDns = new Set(ldapGroups.map((group) => group.source_dn).filter(Boolean));
+  const groupOptions = [
+    ...internalAuthGroups.map((group) => {
+      const badges: string[] = [];
+      if (group.is_logon_group) badges.push('Logon');
+      if (group.role === 'admin') badges.push('Admin');
+      return {
+        id: group.id,
+        label: group.display_name,
+        badge: badges.length ? badges : undefined,
+      };
+    }),
+    ...ldapAuthGroups.map((group) => {
+      const badges: string[] = ['LDAP'];
+      if (group.is_logon_group) badges.push('Logon');
+      if (group.role === 'admin') badges.push('Admin');
+      return {
+        id: group.id,
+        label: group.display_name,
+        badge: badges,
+        disabled: true,
+        checked: ldapGroupIds.has(group.id),
+      };
+    }),
+    ...(user.cached_groups ?? [])
+      .filter((groupDn) => !ldapGroupDns.has(groupDn))
+      .map((groupDn) => ({
+        id: `cached-ldap:${groupDn}`,
+        label: formatGroupIdentifierForDisplay(groupDn),
+        badge: 'LDAP',
+        disabled: true,
+        checked: true,
+      })),
+  ];
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Override - {user.display_name || user.username}</h3>
+          <button className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+        <div className="modal-body">
+          <div className="form-group">
+            <label>Role</label>
+            <select
+              value={user.role}
+              disabled={actionLoading === user.id}
+              onChange={(e) => void onRoleChange(user.id, e.target.value as 'admin' | 'user')}
+            >
+              <option value="user">user</option>
+              <option value="admin">admin</option>
+            </select>
+            {user.role_manually_set && (
+              <div className="users-role-override-row" style={{ marginTop: 6 }}>
+                <span className="users-role-override-badge">Role overridden.</span>
+                <button
+                  type="button"
+                  className="users-role-reset-btn"
+                  disabled={actionLoading === user.id}
+                  onClick={() => void onResetRoleOverride(user.id)}
+                >
+                  Reset to default
+                </button>
+              </div>
+            )}
+          </div>
+          {groupOptions.length > 0 ? (
+            <div className="form-group">
+              <label>Group Memberships</label>
+              <CheckboxDropdown
+                options={groupOptions}
+                selectedIds={manualGroupIds}
+                onChange={(ids) => void onLocalGroupsChange(user.id, ids)}
+                placeholder="No manual groups assigned"
+                searchPlaceholder="Search Group Memberships..."
+                disabled={actionLoading === user.id}
+              />
+              <p className="field-help">Internal groups can be assigned manually. LDAP groups are read-only here and stay controlled by directory sync.</p>
+            </div>
+          ) : user.auth_provider === 'ldap' && (
+            <div className="form-group">
+              <label>Group Memberships</label>
+              <p className="field-help">No LDAP group memberships are currently cached for this user.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function UsersPanel({ currentUser }: UsersPanelProps) {
   const [activeTab, setActiveTab] = useState<PanelTab>('management');
 
   const [users, setUsers] = useState<User[]>([]);
+  const [authGroups, setAuthGroups] = useState<AuthGroup[]>([]);
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
   const [workspaceStateById, setWorkspaceStateById] = useState<Record<string, WorkspaceConversationStateSummaryItem>>({});
   const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDeleteTask>>({});
 
   const [loading, setLoading] = useState(true);
   const [toasts, toast] = useToast();
+
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
 
   const [usageSummary, setUsageSummary] = useState<UserUsageSummary[]>([]);
   const [providerBreakdown, setProviderBreakdown] = useState<ProviderModelBreakdown[]>([]);
@@ -211,6 +350,8 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   const [usageLoading, setUsageLoading] = useState(false);
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [showCreateLocalUserModal, setShowCreateLocalUserModal] = useState(false);
+  const [showManageAuthGroupsModal, setShowManageAuthGroupsModal] = useState(false);
 
   const [trendTab, setTrendTab] = useState<TrendTab>('reliability');
   const [mcpUsageTab, setMcpUsageTab] = useState<McpUsageTab>('chart');
@@ -248,6 +389,11 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   const loadUsers = useCallback(async () => {
     const res = await api.listUsers();
     setUsers(res);
+  }, []);
+
+  const loadAuthGroups = useCallback(async () => {
+    const groups = await api.listAuthGroups();
+    setAuthGroups(groups);
   }, []);
 
   const fetchUsageDetails = useCallback(async (d: number): Promise<Pick<UsageDataSnapshot, 'userDailySeries'>> => {
@@ -317,6 +463,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     try {
       await Promise.all([
         loadUsers(),
+        loadAuthGroups(),
         loadWorkspaces(),
       ]);
     } catch (e: unknown) {
@@ -324,7 +471,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     } finally {
       setLoading(false);
     }
-  }, [loadUsers, loadWorkspaces]);
+  }, [loadAuthGroups, loadUsers, loadWorkspaces]);
 
   const loadUsageData = useCallback(async (d: number) => {
     const cached = usageCacheRef.current[d];
@@ -435,6 +582,18 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       )));
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Failed to reset role override');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleLocalGroupsChange = async (userId: string, groupIds: string[]) => {
+    setActionLoading(userId);
+    try {
+      const updated = await api.setUserGroups(userId, { group_ids: groupIds });
+      setUsers((prev) => prev.map((u) => (u.id === userId ? updated : u)));
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to update user groups');
     } finally {
       setActionLoading(null);
     }
@@ -1595,6 +1754,12 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                                 <span className={`users-auth-badge users-auth-${user.auth_provider}`}>
                                   {user.auth_provider}
                                 </span>
+                                {user.source_provider && user.source_provider !== user.auth_provider && (
+                                  <div className="users-subnum">source: {user.source_provider}</div>
+                                )}
+                                {user.source_synced_at && (
+                                  <div className="users-subnum">synced {new Date(user.source_synced_at).toLocaleDateString()}</div>
+                                )}
                               </td>
                               <td className="num">
                                 <div>{formatNumber(chatCount)}</div>
@@ -1638,45 +1803,37 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                                 )}
                               </td>
                               <td>
-                                {isRowSelf ? (
-                                  <span className="users-role-badge users-role-admin">{user.role}</span>
-                                ) : (
-                                  <>
-                                    <select
-                                      className="users-role-select"
-                                      value={user.role}
-                                      disabled={actionLoading === user.id}
-                                      onChange={(e) => handleRoleChange(user.id, e.target.value as 'admin' | 'user')}
-                                    >
-                                      <option value="user">user</option>
-                                      <option value="admin">admin</option>
-                                    </select>
-                                    {user.auth_provider === 'ldap' && user.role_manually_set && (
-                                      <div className="users-role-override-row">
-                                        <span className="users-role-override-badge">Overridden,</span>
-                                        <button
-                                          type="button"
-                                          className="users-role-reset-btn"
-                                          disabled={actionLoading === user.id}
-                                          onClick={() => handleResetRoleOverride(user.id)}
-                                        >
-                                          reset?
-                                        </button>
-                                      </div>
-                                    )}
-                                  </>
+                                <span className={`users-role-badge${user.role === 'admin' ? ' users-role-admin' : ''}`}>{user.role}</span>
+                                {user.role_manually_set && (
+                                  <div className="users-subnum">overridden</div>
+                                )}
+                                {getUserManualGroupIds(user).length > 0 && (
+                                  <div className="users-subnum">{getUserManualGroupIds(user).length} manual group{getUserManualGroupIds(user).length !== 1 ? 's' : ''}</div>
+                                )}
+                                {(user.ldap_group_ids?.length ?? 0) > 0 && (
+                                  <div className="users-subnum">{user.ldap_group_ids!.length} LDAP group{user.ldap_group_ids!.length !== 1 ? 's' : ''}</div>
                                 )}
                               </td>
                               <td className="num">
                                 {isRowSelf ? (
                                   <span className="users-action-muted">-</span>
                                 ) : (
-                                  <DeleteConfirmButton
-                                    onDelete={() => handleDelete(user.id)}
-                                    disabled={actionLoading === user.id}
-                                    deleting={actionLoading === user.id}
-                                    title="Delete user"
-                                  />
+                                  <div className="users-confirm-group">
+                                    <button
+                                      type="button"
+                                      className="btn btn-sm btn-secondary users-btn-inline"
+                                      title="Edit role and groups"
+                                      onClick={() => setEditingUserId(user.id)}
+                                    >
+                                      <Pencil size={13} />
+                                    </button>
+                                    <DeleteConfirmButton
+                                      onDelete={() => handleDelete(user.id)}
+                                      disabled={actionLoading === user.id}
+                                      deleting={actionLoading === user.id}
+                                      title="Delete user"
+                                    />
+                                  </div>
                                 )}
                               </td>
                             </tr>
@@ -1721,6 +1878,16 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                     onPageChange={setManagementPage}
                     onPageSizeChange={(size) => { setManagementPageSize(size); setManagementPage(1); }}
                   />
+                  <div className="users-admin-table-actions">
+                    <button type="button" className="btn btn-secondary" onClick={() => setShowCreateLocalUserModal(true)}>
+                      <UserPlus size={16} />
+                      Create Internal User
+                    </button>
+                    <button type="button" className="btn btn-secondary" onClick={() => setShowManageAuthGroupsModal(true)}>
+                      <Shield size={16} />
+                      Manage Group Memberships
+                    </button>
+                  </div>
                 </>
               )}
             </div>
@@ -2055,6 +2222,33 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
 
         </>
       )}
+
+      {editingUserId !== null && (() => {
+        const editUser = users.find((u) => u.id === editingUserId);
+        if (!editUser) return null;
+        return (
+          <UserEditModal
+            user={editUser}
+            authGroups={authGroups}
+            actionLoading={actionLoading}
+            onRoleChange={handleRoleChange}
+            onResetRoleOverride={handleResetRoleOverride}
+            onLocalGroupsChange={handleLocalGroupsChange}
+            onClose={() => setEditingUserId(null)}
+          />
+        );
+      })()}
+
+      <AuthAdminModalHost
+        createUserOpen={showCreateLocalUserModal}
+        manageGroupsOpen={showManageAuthGroupsModal}
+        authGroups={authGroups}
+        onAuthGroupsChange={setAuthGroups}
+        onUsersChanged={loadUsers}
+        onCloseCreateUser={() => setShowCreateLocalUserModal(false)}
+        onCloseManageGroups={() => setShowManageAuthGroupsModal(false)}
+        toast={toast}
+      />
     </div>
   );
 }

@@ -10136,6 +10136,10 @@ async def _resolve_selected_tool_ids_for_request(
             conversation_selected_group_ids
         )
         selected_tool_ids.update(group_tool_ids)
+    elif not selected_tool_ids:
+        # Default chat behavior: when no explicit per-conversation selection
+        # exists, allow all healthy enabled tools.
+        selected_tool_ids.update(await repository.list_healthy_enabled_tool_ids())
 
     workspace_context = None
     if effective_workspace_id:
@@ -10151,6 +10155,10 @@ async def _resolve_selected_tool_ids_for_request(
                 workspace.selected_tool_group_ids
             )
             selected_tool_ids.update(group_tool_ids)
+        elif not selected_tool_ids:
+            # Workspaces created before tool-selection persistence may have no
+            # explicit rows; treat that as default-all.
+            selected_tool_ids.update(await repository.list_healthy_enabled_tool_ids())
         # Resolve any cross-workspace agent grants originating from this workspace
         # so userspace tools can target other workspaces the user has explicitly
         # granted access to. Stored as JSON-friendly mapping for downstream use.
@@ -12698,9 +12706,14 @@ async def get_conversation_tools(
             where={"conversationId": conversation_id}
         )
 
+        tool_config_ids = [s.toolConfigId for s in selections]
+        tool_group_ids = [s.toolGroupId for s in group_selections]
+        if not tool_config_ids and not tool_group_ids:
+            tool_config_ids = await repository.list_healthy_enabled_tool_ids()
+
         return {
-            "tool_config_ids": [s.toolConfigId for s in selections],
-            "tool_group_ids": [s.toolGroupId for s in group_selections],
+            "tool_config_ids": tool_config_ids,
+            "tool_group_ids": tool_group_ids,
             "disabled_builtin_tool_ids": _normalize_disabled_builtin_tool_ids(
                 getattr(conversation, "disabledBuiltinToolIds", [])
             ),
