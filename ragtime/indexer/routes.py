@@ -149,6 +149,7 @@ from ragtime.indexer.models import (
     CheckRepoVisibilityRequest,
     ConfigurationWarning,
     Conversation,
+    ConversationCountResponse,
     ConversationBranchPointInfo,
     ConversationBranchSummary,
     ConversationResponse,
@@ -10267,6 +10268,9 @@ async def list_conversations(
     workspace_id: Optional[str] = None,
     since: Optional[str] = None,
     until: Optional[str] = None,
+    limit: Optional[int] = Query(default=None, ge=1, le=200),
+    cursor_updated_at: Optional[str] = None,
+    cursor_id: Optional[str] = None,
     user: User = Depends(get_current_user),
 ):
     """List chat conversations for the current user.
@@ -10280,6 +10284,19 @@ async def list_conversations(
 
     since_dt = _parse_conversation_time_filter(since, "since")
     until_dt = _parse_conversation_time_filter(until, "until")
+    cursor_updated_at_dt = _parse_conversation_time_filter(
+        cursor_updated_at, "cursor_updated_at"
+    )
+    if cursor_updated_at_dt is None and cursor_id:
+        raise HTTPException(
+            status_code=400,
+            detail="cursor_id requires cursor_updated_at",
+        )
+    if cursor_updated_at_dt is not None and not cursor_id:
+        raise HTTPException(
+            status_code=400,
+            detail="cursor_updated_at requires cursor_id",
+        )
 
     convs = await repository.list_conversations(
         user_id=user.id,
@@ -10287,6 +10304,9 @@ async def list_conversations(
         workspace_id=workspace_id,
         since=since_dt,
         until=until_dt,
+        limit=limit,
+        cursor_updated_at=cursor_updated_at_dt,
+        cursor_id=cursor_id,
     )
     return [_to_conversation_response(c) for c in convs]
 
@@ -10308,6 +10328,26 @@ async def list_conversation_summaries(
         workspace_id=workspace_id,
         since=_parse_conversation_time_filter(since, "since"),
         until=_parse_conversation_time_filter(until, "until"),
+    )
+
+
+@router.get("/conversations/count", response_model=ConversationCountResponse)
+async def count_conversations(
+    workspace_id: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Return the number of conversations matching the current filter set."""
+    await _assert_workspace_access(workspace_id, user, "viewer")
+    return ConversationCountResponse(
+        count=await repository.count_conversations(
+            user_id=user.id,
+            include_all=user.role == "admin",
+            workspace_id=workspace_id,
+            since=_parse_conversation_time_filter(since, "since"),
+            until=_parse_conversation_time_filter(until, "until"),
+        )
     )
 
 

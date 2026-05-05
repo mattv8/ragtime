@@ -1870,6 +1870,10 @@ export interface ConversationSummary {
   updated_at: string;
 }
 
+export interface ConversationCountResponse {
+  count: number;
+}
+
 export type ConversationBranchKind = 'edit' | 'delete' | 'replay';
 
 export interface ConversationBranchSummary {

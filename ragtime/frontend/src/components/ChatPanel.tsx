@@ -4172,6 +4172,40 @@ function isConversationOlderThanWindow(conversation: Conversation, daysAgo: numb
   return updatedAtMs < cutoffMs;
 }
 
+type ConversationArchiveCursor = {
+  updatedAt: string;
+  id: string;
+};
+
+const ARCHIVE_PAGE_SIZE = 50;
+
+function getConversationWorkspaceId(conversation: Conversation): string | null {
+  const camelWorkspaceId = (conversation as Conversation & { workspaceId?: string | null }).workspaceId;
+  return conversation.workspace_id ?? camelWorkspaceId ?? null;
+}
+
+function getConversationArchiveCursor(conversations: Conversation[]): ConversationArchiveCursor | null {
+  const lastConversation = conversations[conversations.length - 1];
+  if (!lastConversation) return null;
+  return {
+    updatedAt: lastConversation.updated_at,
+    id: lastConversation.id,
+  };
+}
+
+function mergeConversationPages(current: Conversation[], incoming: Conversation[]): Conversation[] {
+  if (current.length === 0) return incoming;
+  if (incoming.length === 0) return current;
+  const seen = new Set(current.map((conversation) => conversation.id));
+  const merged = [...current];
+  incoming.forEach((conversation) => {
+    if (seen.has(conversation.id)) return;
+    seen.add(conversation.id);
+    merged.push(conversation);
+  });
+  return merged;
+}
+
 // Best-effort plain-text view of a message for content searching. Mirrors
 // what the user sees on screen, but flattens to a single string. Tool I/O
 // blobs are intentionally excluded — they're noisy and rarely searchable.
@@ -4418,9 +4452,14 @@ export function ChatPanel({
   const [conversationSearchQuery, setConversationSearchQuery] = useState('');
   const [archiveAgeDays, setArchiveAgeDays] = useState<number>(() => readStoredArchiveAgeDays(currentUser.id));
   const [archivedConversations, setArchivedConversations] = useState<Conversation[]>([]);
+  const [archivedConversationCount, setArchivedConversationCount] = useState<number | null>(null);
+  const [archiveCountLoaded, setArchiveCountLoaded] = useState(false);
+  const [archiveCountLoading, setArchiveCountLoading] = useState(false);
   const [archiveLoaded, setArchiveLoaded] = useState(false);
+  const [archiveFullyLoaded, setArchiveFullyLoaded] = useState(false);
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [archiveCursor, setArchiveCursor] = useState<ConversationArchiveCursor | null>(null);
   const [workspaceArchivedConversations, setWorkspaceArchivedConversations] = useState<Conversation[]>([]);
   const [workspaceArchiveLoaded, setWorkspaceArchiveLoaded] = useState(false);
   const [workspaceArchiveLoading, setWorkspaceArchiveLoading] = useState(false);
@@ -4759,6 +4798,7 @@ export function ChatPanel({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
+  const userspaceConversationIdsRef = useRef<Set<string>>(new Set());
   const shouldAutoScrollRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -5326,13 +5366,21 @@ export function ChatPanel({
     setActiveConversation(null);
     setIsConversationSwitchLoading(false);
     setArchivedConversations([]);
+    setArchivedConversationCount(null);
+    setArchiveCountLoaded(false);
+    setArchiveCountLoading(false);
     setArchiveLoaded(false);
+    setArchiveFullyLoaded(false);
+    setArchiveLoading(false);
+    setArchiveCursor(null);
     setWorkspaceArchivedConversations([]);
     setWorkspaceArchiveLoaded(false);
+    setWorkspaceArchiveLoading(false);
     setArchiveError(null);
     setShowArchiveModal(false);
     setArchiveSearchQuery('');
     setConversationSearchQuery('');
+    userspaceConversationIdsRef.current = new Set();
     if (!workspaceId) {
       loadConversations();
     } else {
@@ -5463,19 +5511,15 @@ export function ChatPanel({
       ]);
       let userspaceConversationIds = new Set<string>();
 
-      const getLinkedWorkspaceId = (conversation: Conversation): string | null => {
-        const camelWorkspaceId = (conversation as Conversation & { workspaceId?: string | null }).workspaceId;
-        return conversation.workspace_id ?? camelWorkspaceId ?? null;
-      };
-
       if (workspacePage) {
         userspaceConversationIds = new Set(
           workspacePage.items.flatMap((workspace) => workspace.conversation_ids || [])
         );
       }
+      userspaceConversationIdsRef.current = userspaceConversationIds;
 
       const visibleConversations = data.filter((conversation) => {
-        const linkedWorkspaceId = getLinkedWorkspaceId(conversation);
+        const linkedWorkspaceId = getConversationWorkspaceId(conversation);
         if (workspaceId) {
           if (linkedWorkspaceId !== workspaceId) return false;
           if (conversation.id === activeConversationRef.current?.id) return true;
@@ -5512,41 +5556,75 @@ export function ChatPanel({
     }
   };
 
+  const filterStandaloneConversations = useCallback((items: Conversation[]): Conversation[] => {
+    const userspaceConversationIds = userspaceConversationIdsRef.current;
+    return items.filter((conversation) => {
+      const linkedWorkspaceId = getConversationWorkspaceId(conversation);
+      return !linkedWorkspaceId && !userspaceConversationIds.has(conversation.id);
+    });
+  }, []);
+
   // Lazy-load global conversations older than the active cutoff.
-  const loadArchivedConversations = useCallback(async () => {
+  const loadArchivedConversationCount = useCallback(async () => {
     if (workspaceId) return;
-    if (archiveLoaded || archiveLoading) return;
-    setArchiveLoading(true);
-    setArchiveError(null);
+    if (archiveCountLoaded || archiveCountLoading) return;
+    setArchiveCountLoading(true);
     try {
       const cutoff = archiveCutoffIso(archiveAgeDays);
-      const [data, workspacePage] = await Promise.all([
-        cutoff
-          ? api.listConversations(undefined, { until: cutoff })
-          : Promise.resolve([] as Conversation[]),
-        api.listUserSpaceWorkspaces(0, 200).catch((workspaceErr) => {
-          console.warn('Failed to load userspace workspaces for archive filtering:', workspaceErr);
-          return null;
-        }),
-      ]);
-      const userspaceConversationIds = new Set<string>(
-        workspacePage ? workspacePage.items.flatMap((workspace) => workspace.conversation_ids || []) : [],
-      );
-      const filtered = data.filter((conversation) => {
-        const linkedWorkspaceId = conversation.workspace_id
-          ?? (conversation as Conversation & { workspaceId?: string | null }).workspaceId
-          ?? null;
-        return !linkedWorkspaceId && !userspaceConversationIds.has(conversation.id);
-      });
-      setArchivedConversations(filtered);
+      const response = cutoff
+        ? await api.countConversations(undefined, { until: cutoff })
+        : { count: 0 };
+      setArchivedConversationCount(response.count);
+      setArchiveCountLoaded(true);
+    } catch (err) {
+      console.warn('Failed to load archived conversation count:', err);
+    } finally {
+      setArchiveCountLoading(false);
+    }
+  }, [workspaceId, archiveCountLoaded, archiveCountLoading, archiveAgeDays]);
+
+  const loadArchivedConversations = useCallback(async () => {
+    if (workspaceId) return;
+    if (archiveLoading) return;
+    if (archiveLoaded && archiveFullyLoaded) return;
+
+    const isResetLoad = !archiveLoaded;
+    setArchiveLoading(true);
+    if (isResetLoad) {
+      setArchiveError(null);
+    }
+    try {
+      const cutoff = archiveCutoffIso(archiveAgeDays);
+      const data = cutoff
+        ? await api.listConversations(undefined, {
+            until: cutoff,
+            limit: ARCHIVE_PAGE_SIZE,
+            cursorUpdatedAt: isResetLoad ? null : archiveCursor?.updatedAt ?? null,
+            cursorId: isResetLoad ? null : archiveCursor?.id ?? null,
+          })
+        : [];
+      const filtered = filterStandaloneConversations(data);
+      const nextArchivedConversations = isResetLoad
+        ? filtered
+        : mergeConversationPages(archivedConversations, filtered);
+
+      setArchivedConversations(nextArchivedConversations);
+      setArchiveCursor(getConversationArchiveCursor(data));
       setArchiveLoaded(true);
+      setArchiveFullyLoaded(data.length < ARCHIVE_PAGE_SIZE);
+      setArchivedConversationCount((current) => {
+        if (current === null) {
+          return data.length < ARCHIVE_PAGE_SIZE ? nextArchivedConversations.length : null;
+        }
+        return Math.max(current, nextArchivedConversations.length);
+      });
     } catch (err) {
       console.error('Failed to load archived conversations:', err);
       setArchiveError(err instanceof Error ? err.message : 'Failed to load older chats');
     } finally {
       setArchiveLoading(false);
     }
-  }, [workspaceId, archiveLoaded, archiveLoading, archiveAgeDays]);
+  }, [workspaceId, archiveLoading, archiveLoaded, archiveFullyLoaded, archiveAgeDays, archiveCursor, archivedConversations, filterStandaloneConversations]);
 
   // Lazy-load workspace conversations older than the active cutoff so search
   // in the workspace picker can still match older chats without showing them
@@ -5575,14 +5653,32 @@ export function ChatPanel({
     }
   }, [workspaceId, workspaceArchiveLoaded, workspaceArchiveLoading, archiveAgeDays]);
 
+  // Preload the standalone archive in the background once the main list is
+  // ready so the sidebar badge can show the current count without waiting for
+  // the archive modal to open.
+  useEffect(() => {
+    if (workspaceId || embedded) return;
+    if (isConversationListLoading) return;
+    if (archiveCountLoaded || archiveCountLoading) return;
+    void loadArchivedConversationCount();
+  }, [
+    workspaceId,
+    embedded,
+    isConversationListLoading,
+    archiveCountLoaded,
+    archiveCountLoading,
+    loadArchivedConversationCount,
+  ]);
+
   // Auto-load archive when the user starts searching so results from older
   // chats appear without an extra click. Debounced through the search input.
   useEffect(() => {
     if (workspaceId) return;
     if (!conversationSearchQuery.trim()) return;
-    if (archiveLoaded || archiveLoading) return;
+    if (archiveLoading) return;
+    if (archiveLoaded && archiveFullyLoaded) return;
     void loadArchivedConversations();
-  }, [conversationSearchQuery, workspaceId, archiveLoaded, archiveLoading, loadArchivedConversations]);
+  }, [conversationSearchQuery, workspaceId, archiveLoaded, archiveFullyLoaded, archiveLoading, loadArchivedConversations]);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -5610,7 +5706,11 @@ export function ChatPanel({
   // stale so search/modal trigger a fresh fetch. We intentionally keep the
   // current items in state so the UI does not flash empty during refetch.
   useEffect(() => {
+    setArchivedConversationCount(null);
+    setArchiveCountLoaded(false);
     setArchiveLoaded(false);
+    setArchiveFullyLoaded(false);
+    setArchiveCursor(null);
     setWorkspaceArchiveLoaded(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [archiveAgeDays]);
@@ -5623,6 +5723,23 @@ export function ChatPanel({
     if (archiveLoaded || archiveLoading) return;
     void loadArchivedConversations();
   }, [showArchiveModal, archiveLoaded, archiveLoading, workspaceId, loadArchivedConversations]);
+
+  useEffect(() => {
+    if (!showArchiveModal) return;
+    if (workspaceId) return;
+    if (!archiveSearchQuery.trim()) return;
+    if (archiveLoading) return;
+    if (archiveLoaded && archiveFullyLoaded) return;
+    void loadArchivedConversations();
+  }, [showArchiveModal, archiveSearchQuery, workspaceId, archiveLoaded, archiveFullyLoaded, archiveLoading, loadArchivedConversations]);
+
+  const handleArchiveModalScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    if (archiveLoading || !archiveLoaded || archiveFullyLoaded) return;
+    const target = event.currentTarget;
+    const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
+    if (remaining > 160) return;
+    void loadArchivedConversations();
+  }, [archiveLoading, archiveLoaded, archiveFullyLoaded, loadArchivedConversations]);
 
   const cycleArchiveAgePreset = useCallback(() => {
     setArchiveAgeDays((current) => getNextArchiveAgePreset(current));
@@ -7260,6 +7377,7 @@ export function ChatPanel({
   const showWorkspaceConversationSelect = embedded && Boolean(workspaceId);
   const workspaceConversationOptions = conversations.filter((conv) => conv.title !== 'Untitled Chat');
   const workspaceArchivedConversationOptions = workspaceArchivedConversations.filter((conv) => conv.title !== 'Untitled Chat');
+  const archivedConversationDisplayCount = archivedConversationCount ?? (archiveLoaded ? archivedConversations.length : null);
   const shareableConversationUsers = useMemo(() => {
     if (!conversationShareableUserIds || conversationShareableUserIds.length === 0) {
       return allUsers;
@@ -7569,8 +7687,8 @@ export function ChatPanel({
             >
               <Clock size={13} aria-hidden="true" />
               <span>Show Older</span>
-              {archiveLoaded && archivedConversations.length > 0 && (
-                <span className="chat-show-older-count">{archivedConversations.length}</span>
+              {archivedConversationDisplayCount !== null && archivedConversationDisplayCount > 0 && (
+                <span className="chat-show-older-count">{archivedConversationDisplayCount}</span>
               )}
             </button>
           </div>
@@ -8926,7 +9044,7 @@ export function ChatPanel({
                 </div>
               </div>
             </div>
-            <div className="modal-body chat-archive-modal-body">
+            <div className="modal-body chat-archive-modal-body" onScroll={handleArchiveModalScroll}>
               {archiveLoading && !archiveLoaded && archivedConversations.length === 0 ? (
                 <div className="chat-empty-state" aria-live="polite">
                   <p>Loading older chats...</p>
@@ -8967,6 +9085,11 @@ export function ChatPanel({
                         void selectConversation(conv);
                       },
                     }))}
+                    {archiveLoading && archivedConversations.length > 0 && (
+                      <div className="chat-empty-state" aria-live="polite">
+                        <p>{trimmed ? 'Searching older chats...' : 'Loading more older chats...'}</p>
+                      </div>
+                    )}
                   </div>
                 );
               })()}

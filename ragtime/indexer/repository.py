@@ -2061,6 +2061,9 @@ class IndexerRepository:
         workspace_id: Optional[str] = None,
         since: Optional[datetime] = None,
         until: Optional[datetime] = None,
+        limit: Optional[int] = None,
+        cursor_updated_at: Optional[datetime] = None,
+        cursor_id: Optional[str] = None,
     ) -> list[Conversation]:
         """
         List conversations, newest first.
@@ -2070,10 +2073,13 @@ class IndexerRepository:
             include_all: If True, return all conversations (admin only)
             since: If provided, only conversations with updatedAt >= since are returned.
             until: If provided, only conversations with updatedAt < until are returned.
+            limit: If provided, cap the result count for incremental loading.
+            cursor_updated_at: If provided, return rows strictly older than this cursor.
+            cursor_id: Tie-breaker for cursor pagination when updatedAt values match.
         """
         db = await self._get_db()
 
-        where_clause: dict[str, Any] = {}
+        where_parts: list[str] = []
         if workspace_id is not None:
             if not include_all:
                 if not user_id:
@@ -2096,33 +2102,71 @@ class IndexerRepository:
                 if not has_workspace_access:
                     return []
 
-            where_clause["workspaceId"] = workspace_id
+            where_parts.append(f"c.workspace_id = {_sql_quote_literal(workspace_id)}")
         else:
-            where_clause["workspaceId"] = None
+            where_parts.append("c.workspace_id IS NULL")
 
         if workspace_id is None and not include_all:
             if not user_id:
                 return []
-            where_clause["OR"] = [
-                {"userId": user_id},
-                {"members": {"some": {"userId": user_id}}},
-            ]
+            quoted_user_id = _sql_quote_literal(user_id)
+            where_parts.append(
+                "(c.user_id = "
+                f"{quoted_user_id} OR EXISTS ("
+                "SELECT 1 FROM conversation_members cm "
+                "WHERE cm.conversation_id = c.id "
+                f"AND cm.user_id = {quoted_user_id}))"
+            )
 
-        if since is not None or until is not None:
-            range_filter: dict[str, Any] = {}
-            if since is not None:
-                range_filter["gte"] = since
-            if until is not None:
-                range_filter["lt"] = until
-            where_clause["updatedAt"] = range_filter
+        if since is not None:
+            where_parts.append(
+                f"c.updated_at >= {_sql_quote_literal(since.isoformat())}::timestamp"
+            )
+        if until is not None:
+            where_parts.append(
+                f"c.updated_at < {_sql_quote_literal(until.isoformat())}::timestamp"
+            )
+        if cursor_updated_at is not None:
+            cursor_updated_at_sql = (
+                f"{_sql_quote_literal(cursor_updated_at.isoformat())}::timestamp"
+            )
+            cursor_id_sql = _sql_quote_literal(cursor_id or "")
+            where_parts.append(
+                "(c.updated_at < "
+                f"{cursor_updated_at_sql} OR (c.updated_at = {cursor_updated_at_sql} "
+                f"AND c.id < {cursor_id_sql}))"
+            )
+
+        where_clause = " AND ".join(where_parts) if where_parts else "TRUE"
+        limit_clause = f"LIMIT {int(limit)}" if limit is not None else ""
+        id_rows = await db.query_raw(f"""
+            SELECT c.id
+            FROM conversations c
+            WHERE {where_clause}
+            ORDER BY c.updated_at DESC, c.id DESC
+            {limit_clause}
+            """)
+
+        conversation_ids = [
+            str(row.get("id") or "") for row in id_rows if row.get("id")
+        ]
+        if not conversation_ids:
+            return []
 
         prisma_convs = await db.conversation.find_many(
-            where=where_clause if where_clause else None,  # type: ignore[arg-type]
-            order={"updatedAt": "desc"},
+            where={"id": {"in": conversation_ids}},
             include={"user": True},
         )
+        prisma_convs_by_id = {str(conv.id): conv for conv in prisma_convs}
+        ordered_conversations = [
+            prisma_convs_by_id[conversation_id]
+            for conversation_id in conversation_ids
+            if conversation_id in prisma_convs_by_id
+        ]
 
-        conversations = [self._prisma_conversation_to_model(c) for c in prisma_convs]
+        conversations = [
+            self._prisma_conversation_to_model(c) for c in ordered_conversations
+        ]
         return await self.attach_message_snapshot_links_many(conversations)
 
     async def list_conversation_summaries(
@@ -2206,6 +2250,54 @@ class IndexerRepository:
             )
             for row in rows
         ]
+
+    async def count_conversations(
+        self,
+        user_id: Optional[str] = None,
+        include_all: bool = False,
+        workspace_id: Optional[str] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+    ) -> int:
+        """Count conversations without materializing any conversation payloads."""
+        db = await self._get_db()
+        where_parts: list[str] = []
+
+        if workspace_id is not None:
+            where_parts.append(f"c.workspace_id = {_sql_quote_literal(workspace_id)}")
+        else:
+            where_parts.append("c.workspace_id IS NULL")
+
+        if workspace_id is None and not include_all:
+            if not user_id:
+                return 0
+            quoted_user_id = _sql_quote_literal(user_id)
+            where_parts.append(
+                "(c.user_id = "
+                f"{quoted_user_id} OR EXISTS ("
+                "SELECT 1 FROM conversation_members cm "
+                "WHERE cm.conversation_id = c.id "
+                f"AND cm.user_id = {quoted_user_id}))"
+            )
+
+        if since is not None:
+            where_parts.append(
+                f"c.updated_at >= {_sql_quote_literal(since.isoformat())}::timestamp"
+            )
+        if until is not None:
+            where_parts.append(
+                f"c.updated_at < {_sql_quote_literal(until.isoformat())}::timestamp"
+            )
+
+        where_clause = " AND ".join(where_parts)
+        rows = await db.query_raw(f"""
+            SELECT COUNT(*) AS conversation_count
+            FROM conversations c
+            WHERE {where_clause}
+            """)
+        if not rows:
+            return 0
+        return int(rows[0].get("conversation_count") or 0)
 
     async def list_conversations_by_ids(
         self, conversation_ids: list[str]
