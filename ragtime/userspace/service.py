@@ -8757,9 +8757,13 @@ class UserSpaceService:
                 check=False,
             )
 
-    def _workspace_from_record(self, record: Any) -> UserSpaceWorkspace:
+    def _workspace_from_record(
+        self,
+        record: Any,
+        *,
+        conversation_ids: list[str] | None = None,
+    ) -> UserSpaceWorkspace:
         member_rows = list(getattr(record, "members", []) or [])
-        conversation_rows = list(getattr(record, "conversations", []) or [])
         members: list[WorkspaceMember] = []
         owner_present = False
 
@@ -8799,11 +8803,13 @@ class UserSpaceService:
             for row in group_rows
             if getattr(row, "toolGroupId", None)
         ]
-        conversation_ids = [
-            getattr(conversation_row, "id", "")
-            for conversation_row in conversation_rows
-            if getattr(conversation_row, "id", None)
-        ]
+        if conversation_ids is None:
+            conversation_rows = list(getattr(record, "conversations", []) or [])
+            conversation_ids = [
+                getattr(conversation_row, "id", "")
+                for conversation_row in conversation_rows
+                if getattr(conversation_row, "id", None)
+            ]
 
         owner_obj = getattr(record, "owner", None)
         owner_username: str | None = None
@@ -10728,7 +10734,6 @@ class UserSpaceService:
         rows = await db.workspace.find_many(
             where=where_clause,
             include={
-                "conversations": True,
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
@@ -10740,8 +10745,41 @@ class UserSpaceService:
         )
         total = await db.workspace.count(where=where_clause)
 
+        conversation_ids_by_workspace_id: dict[str, list[str]] = {}
+        workspace_ids = [
+            str(getattr(row, "id", "")) for row in rows if getattr(row, "id", None)
+        ]
+        if workspace_ids:
+            workspace_id_sql = ", ".join(
+                self._sql_quote(workspace_id) for workspace_id in workspace_ids
+            )
+            conversation_id_rows: list[dict[str, Any]] = await db.query_raw(f"""
+                SELECT workspace_id, id
+                FROM conversations
+                WHERE workspace_id IN ({workspace_id_sql})
+                ORDER BY workspace_id ASC, updated_at DESC, id DESC
+                """)
+
+            for conversation_row in conversation_id_rows:
+                workspace_id = str(conversation_row.get("workspace_id") or "")
+                conversation_id = str(conversation_row.get("id") or "")
+                if not workspace_id or not conversation_id:
+                    continue
+                conversation_ids_by_workspace_id.setdefault(workspace_id, []).append(
+                    conversation_id
+                )
+
         return PaginatedWorkspacesResponse(
-            items=[self._workspace_from_record(row) for row in rows],
+            items=[
+                self._workspace_from_record(
+                    row,
+                    conversation_ids=conversation_ids_by_workspace_id.get(
+                        str(getattr(row, "id", "")),
+                        [],
+                    ),
+                )
+                for row in rows
+            ],
             total=total,
             offset=offset,
             limit=limit,

@@ -4193,6 +4193,10 @@ function getConversationArchiveCursor(conversations: Conversation[]): Conversati
   };
 }
 
+function getConversationMessageCount(conversation: Conversation): number {
+  return conversation.message_count ?? conversation.messages.length;
+}
+
 function mergeConversationPages(current: Conversation[], incoming: Conversation[]): Conversation[] {
   if (current.length === 0) return incoming;
   if (incoming.length === 0) return current;
@@ -5436,6 +5440,8 @@ export function ChatPanel({
           existing.active_task_id !== conversation.active_task_id
           || existing.title !== conversation.title
           || existing.model !== conversation.model
+          || existing.message_count !== conversation.message_count
+          || existing.updated_at !== conversation.updated_at
         ) {
           changed = true;
           return { ...existing, ...conversation };
@@ -5626,18 +5632,14 @@ export function ChatPanel({
     }
   }, [workspaceId, archiveLoading, archiveLoaded, archiveFullyLoaded, archiveAgeDays, archiveCursor, archivedConversations, filterStandaloneConversations]);
 
-  // Lazy-load workspace conversations older than the active cutoff so search
-  // in the workspace picker can still match older chats without showing them
-  // by default in the main list.
+  // Lazy-load full workspace conversations on search so the picker can still
+  // match message bodies without making initial workspace load carry every transcript.
   const loadArchivedWorkspaceConversations = useCallback(async () => {
     if (!workspaceId) return;
     if (workspaceArchiveLoaded || workspaceArchiveLoading) return;
     setWorkspaceArchiveLoading(true);
     try {
-      const cutoff = archiveCutoffIso(archiveAgeDays);
-      const data = cutoff
-        ? await api.listConversations(workspaceId, { until: cutoff })
-        : [];
+      const data = await api.listConversations(workspaceId);
       const filtered = data.filter((conversation) => {
         const linkedWorkspaceId = conversation.workspace_id
           ?? (conversation as Conversation & { workspaceId?: string | null }).workspaceId
@@ -5651,7 +5653,7 @@ export function ChatPanel({
     } finally {
       setWorkspaceArchiveLoading(false);
     }
-  }, [workspaceId, workspaceArchiveLoaded, workspaceArchiveLoading, archiveAgeDays]);
+  }, [workspaceId, workspaceArchiveLoaded, workspaceArchiveLoading]);
 
   // Preload the standalone archive in the background once the main list is
   // ready so the sidebar badge can show the current count without waiting for
@@ -7392,7 +7394,8 @@ export function ChatPanel({
 
   const renderConversationItem = (conv: Conversation, options?: { searchQuery?: string; onClickOverride?: () => void }) => {
     const searchQuery = options?.searchQuery ?? '';
-    const metaMessageCount = `${conv.messages.length} msg${conv.messages.length === 1 ? '' : 's'}`;
+    const messageCount = getConversationMessageCount(conv);
+    const metaMessageCount = `${messageCount} msg${messageCount === 1 ? '' : 's'}`;
     const metaTimestamp = formatChatTimestamp(conv.updated_at);
     const isActive = activeConversation?.id === conv.id;
     const snippet = searchQuery.trim() ? buildConversationSnippet(conv, searchQuery) : null;
@@ -7810,9 +7813,18 @@ export function ChatPanel({
                         <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace chats">
                           {(() => {
                             const needle = workspaceConversationSearchQuery.trim().toLowerCase();
+                            const hydratedWorkspaceConversationsById = new Map(
+                              workspaceArchivedConversationOptions.map((conversation) => [conversation.id, conversation]),
+                            );
+                            const searchableWorkspaceConversationOptions = workspaceConversationOptions.map((conversation) => {
+                              const hydrated = hydratedWorkspaceConversationsById.get(conversation.id);
+                              return hydrated && hydrated.messages.length > conversation.messages.length
+                                ? hydrated
+                                : conversation;
+                            });
                             const searchBase = needle
                               ? [
-                                  ...workspaceConversationOptions,
+                                  ...searchableWorkspaceConversationOptions,
                                   ...workspaceArchivedConversationOptions.filter(
                                     (archived) => !workspaceConversationOptions.some((c) => c.id === archived.id),
                                   ),

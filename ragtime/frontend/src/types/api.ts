@@ -1844,6 +1844,7 @@ export interface Conversation {
   username?: string;
   display_name?: string;
   messages: ChatMessage[];
+  message_count?: number | null;
   total_tokens: number;
   active_task_id: string | null;  // ID of currently running background task
   active_branch_id?: string | null;  // ID of currently active chat branch
