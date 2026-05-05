@@ -1,16 +1,18 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { Check, Square, Trash2, X } from 'lucide-react';
 import { MiniLoadingSpinner } from './MiniLoadingSpinner';
-import type { Conversation } from '@/types';
+import type { Conversation, ConversationSummary } from '@/types';
+
+type ConversationListItem = Conversation | ConversationSummary;
 
 interface UserConversationRowListProps {
-  conversations: Conversation[];
+  conversations: ConversationListItem[];
   loading?: boolean;
   disabled?: boolean;
-  onSelect: (conversation: Conversation) => void;
+  onSelect: (conversation: ConversationListItem) => void;
   onDelete: (conversationId: string) => Promise<void>;
   onCancelTask: (conversationId: string, taskId: string) => Promise<void>;
-  renderMeta?: (conversation: Conversation) => ReactNode;
+  renderMeta?: (conversation: ConversationListItem) => ReactNode;
   emptyMessage?: string;
 }
 
@@ -73,7 +75,9 @@ export function UserConversationRowList({
         const isCancelling = isActionTarget && actionType === 'cancel';
         const rowBusy = disabled || isDeleting || isCancelling;
         const title = conversation.title?.trim() || 'Untitled Chat';
-        const messageCount = conversation.messages?.length ?? 0;
+        const messageCount = 'message_count' in conversation
+          ? conversation.message_count
+          : (conversation.messages?.length ?? 0);
         const updatedAt = new Date(conversation.updated_at).toLocaleDateString();
         const metaContent = renderMeta
           ? renderMeta(conversation)

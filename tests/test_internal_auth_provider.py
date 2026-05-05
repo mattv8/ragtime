@@ -46,6 +46,7 @@ from ragtime.core.auth import (  # noqa: E402
     _ldap_profile_from_entry,
     _passes_local_logon_gate,
     hash_local_password,
+    resolve_user_effective_role,
     verify_local_password,
 )
 
@@ -179,6 +180,87 @@ class InternalLogonGateTests(unittest.IsolatedAsyncioTestCase):
         with patch("ragtime.core.auth.get_db", new=fake_get_db):
             self.assertFalse(
                 await _passes_local_logon_gate(SimpleNamespace(id="user-1"))
+            )
+
+
+class InternalRoleResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_group_admin_grant_is_removed_when_membership_is_gone(
+        self,
+    ) -> None:
+        class MembershipDelegate:
+            async def find_many(self, where):
+                return []
+
+        db = SimpleNamespace(authgroupmembership=MembershipDelegate())
+
+        async def fake_get_db():
+            return db
+
+        user = SimpleNamespace(
+            id="user-1",
+            username="jdoe",
+            authProvider=AuthProvider.local_managed,
+            role=UserRole.admin,
+            roleManuallySet=False,
+        )
+        config = SimpleNamespace(manual_role_override_wins=True)
+
+        with patch("ragtime.core.auth.get_db", new=fake_get_db):
+            self.assertEqual(
+                await resolve_user_effective_role(user, auth_config=config),
+                UserRole.user,
+            )
+
+    async def test_local_manual_admin_role_wins_when_configured(self) -> None:
+        user = SimpleNamespace(
+            id="user-1",
+            username="jdoe",
+            authProvider=AuthProvider.local_managed,
+            role=UserRole.admin,
+            roleManuallySet=True,
+        )
+        config = SimpleNamespace(manual_role_override_wins=True)
+
+        self.assertEqual(
+            await resolve_user_effective_role(user, auth_config=config),
+            UserRole.admin,
+        )
+
+    async def test_local_group_admin_grant_is_applied_from_current_membership(
+        self,
+    ) -> None:
+        class MembershipDelegate:
+            async def find_many(self, where):
+                return [SimpleNamespace(groupId="group-1")]
+
+        class AuthGroupDelegate:
+            async def find_unique(self, where):
+                return SimpleNamespace(
+                    provider=AuthProvider.local_managed,
+                    role=UserRole.admin,
+                )
+
+        db = SimpleNamespace(
+            authgroupmembership=MembershipDelegate(),
+            authgroup=AuthGroupDelegate(),
+        )
+
+        async def fake_get_db():
+            return db
+
+        user = SimpleNamespace(
+            id="user-1",
+            username="jdoe",
+            authProvider=AuthProvider.local_managed,
+            role=UserRole.user,
+            roleManuallySet=False,
+        )
+        config = SimpleNamespace(manual_role_override_wins=True)
+
+        with patch("ragtime.core.auth.get_db", new=fake_get_db):
+            self.assertEqual(
+                await resolve_user_effective_role(user, auth_config=config),
+                UserRole.admin,
             )
 
 

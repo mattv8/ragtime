@@ -64,6 +64,9 @@ const CHAT_BUILT_IN_TOOLS: UserSpaceAvailableTool[] = [
 ];
 
 const CHAT_BUILT_IN_TOOL_IDS = CHAT_BUILT_IN_TOOLS.map((tool) => tool.id);
+const CHAT_BUILT_IN_TOOL_ID_SET = new Set(CHAT_BUILT_IN_TOOL_IDS);
+const WORKSPACE_BUILT_IN_TOOL_ID_SET = new Set(['web_search', 'web_browse']);
+const WORKSPACE_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter((tool) => WORKSPACE_BUILT_IN_TOOL_ID_SET.has(tool.id));
 
 interface CodeBlockProps {
   inline?: boolean;
@@ -4601,7 +4604,9 @@ export function ChatPanel({
   const hasWorkspaceConversationContext = Boolean(
     workspaceId || activeConversation?.workspace_id || activeConversation?.workspaceId,
   );
-  const conversationBuiltInTools = hasWorkspaceConversationContext ? [] : CHAT_BUILT_IN_TOOLS;
+  const conversationBuiltInTools = hasWorkspaceConversationContext
+    ? WORKSPACE_BUILT_IN_TOOLS
+    : CHAT_BUILT_IN_TOOLS;
   const selectedConversationBuiltInToolIdSet = useMemo(() => {
     const disabledIds = new Set(conversationDisabledBuiltInToolIds);
     return new Set(CHAT_BUILT_IN_TOOL_IDS.filter((id) => !disabledIds.has(id)));
@@ -5818,7 +5823,7 @@ export function ChatPanel({
 
   const handleToggleConversationBuiltInTool = useCallback(async (toolId: string) => {
     if (!activeConversation || isConversationViewer || hasWorkspaceConversationContext) return;
-    if (!CHAT_BUILT_IN_TOOL_IDS.includes(toolId)) return;
+    if (!CHAT_BUILT_IN_TOOL_ID_SET.has(toolId)) return;
 
     const nextDisabled = new Set(conversationDisabledBuiltInToolIds);
     if (nextDisabled.has(toolId)) {

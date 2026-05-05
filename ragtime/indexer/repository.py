@@ -49,6 +49,7 @@ from ragtime.indexer.models import (
     ConversationBranch,
     ConversationBranchKind,
     ConversationBranchSummary,
+    ConversationSummaryResponse,
     IndexConfig,
     IndexJob,
     IndexStatus,
@@ -2123,6 +2124,88 @@ class IndexerRepository:
 
         conversations = [self._prisma_conversation_to_model(c) for c in prisma_convs]
         return await self.attach_message_snapshot_links_many(conversations)
+
+    async def list_conversation_summaries(
+        self,
+        user_id: Optional[str] = None,
+        include_all: bool = False,
+        workspace_id: Optional[str] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+    ) -> list[ConversationSummaryResponse]:
+        """List conversations without materializing message payloads."""
+        db = await self._get_db()
+        where_parts: list[str] = []
+
+        if workspace_id is not None:
+            where_parts.append(f"c.workspace_id = {_sql_quote_literal(workspace_id)}")
+        else:
+            where_parts.append("c.workspace_id IS NULL")
+
+        if workspace_id is None and not include_all:
+            if not user_id:
+                return []
+            quoted_user_id = _sql_quote_literal(user_id)
+            where_parts.append(
+                "(c.user_id = "
+                f"{quoted_user_id} OR EXISTS ("
+                "SELECT 1 FROM conversation_members cm "
+                "WHERE cm.conversation_id = c.id "
+                f"AND cm.user_id = {quoted_user_id}))"
+            )
+
+        if since is not None:
+            where_parts.append(
+                f"c.updated_at >= {_sql_quote_literal(since.isoformat())}::timestamp"
+            )
+        if until is not None:
+            where_parts.append(
+                f"c.updated_at < {_sql_quote_literal(until.isoformat())}::timestamp"
+            )
+
+        where_clause = " AND ".join(where_parts)
+        rows = await db.query_raw(f"""
+            SELECT
+                c.id,
+                c.title,
+                c.model,
+                c.user_id,
+                c.workspace_id,
+                u.username,
+                u.display_name,
+                CASE
+                    WHEN jsonb_typeof(c.messages) = 'array' THEN jsonb_array_length(c.messages)
+                    ELSE 0
+                END AS message_count,
+                c.total_tokens,
+                c.active_task_id,
+                c.active_branch_id,
+                c.created_at,
+                c.updated_at
+            FROM conversations c
+            LEFT JOIN users u ON u.id = c.user_id
+            WHERE {where_clause}
+            ORDER BY c.updated_at DESC
+            """)
+
+        return [
+            ConversationSummaryResponse(
+                id=str(row.get("id") or ""),
+                title=str(row.get("title") or "Untitled Chat"),
+                model=str(row.get("model") or ""),
+                user_id=row.get("user_id"),
+                workspace_id=row.get("workspace_id"),
+                username=row.get("username"),
+                display_name=row.get("display_name"),
+                message_count=int(row.get("message_count") or 0),
+                total_tokens=int(row.get("total_tokens") or 0),
+                active_task_id=row.get("active_task_id"),
+                active_branch_id=row.get("active_branch_id"),
+                created_at=row.get("created_at"),
+                updated_at=row.get("updated_at"),
+            )
+            for row in rows
+        ]
 
     async def list_conversations_by_ids(
         self, conversation_ids: list[str]

@@ -1853,6 +1853,23 @@ export interface Conversation {
   updated_at: string;
 }
 
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  model: string;
+  user_id?: string | null;
+  workspace_id?: string | null;
+  workspaceId?: string | null;
+  username?: string | null;
+  display_name?: string | null;
+  message_count: number;
+  total_tokens: number;
+  active_task_id: string | null;
+  active_branch_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type ConversationBranchKind = 'edit' | 'delete' | 'replay';
 
 export interface ConversationBranchSummary {
@@ -2302,6 +2319,7 @@ export type WorkspaceAgentGrantMode = 'read' | 'read_write';
 export interface WorkspaceAgentGrant {
   id: string;
   source_workspace_id: string;
+  source_workspace_name?: string | null;
   target_workspace_id: string;
   target_workspace_name?: string | null;
   access_mode: WorkspaceAgentGrantMode;

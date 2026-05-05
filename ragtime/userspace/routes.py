@@ -801,12 +801,14 @@ async def update_workspace_members(
 )
 async def list_workspace_agent_grants(
     workspace_id: str,
+    direction: str = Query("source", pattern="^(source|target)$"),
     user: Any = Depends(get_current_user),
 ):
-    """List active cross-workspace agent grants originating from this workspace."""
+    """List active cross-workspace agent grants for this workspace."""
     return await userspace_service.list_workspace_agent_grants(
         workspace_id,
         user.id,
+        direction="target" if direction == "target" else "source",
         is_admin=user.role == "admin",
     )
 

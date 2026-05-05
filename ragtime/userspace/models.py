@@ -136,6 +136,7 @@ class WorkspaceAgentGrant(BaseModel):
 
     id: str
     source_workspace_id: str
+    source_workspace_name: str | None = None
     target_workspace_id: str
     target_workspace_name: str | None = None
     access_mode: WorkspaceAgentGrantMode = "read"

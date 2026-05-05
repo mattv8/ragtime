@@ -27,7 +27,7 @@ import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceCollabPresenceUser, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceCollabPresenceUser, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceAgentGrant, WorkspaceAgentGrantMode, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse, WorkspaceRole } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
@@ -549,10 +549,27 @@ function getApiErrorMessage(error: unknown, fallback: string): string {
 
 function sortWorkspaceAgentGrants(grants: WorkspaceAgentGrant[]): WorkspaceAgentGrant[] {
   return [...grants].sort((left, right) => {
-    const leftLabel = left.target_workspace_name?.trim() || left.target_workspace_id;
-    const rightLabel = right.target_workspace_name?.trim() || right.target_workspace_id;
+    const leftLabel = left.source_workspace_name?.trim()
+      || left.source_workspace_id
+      || left.target_workspace_name?.trim()
+      || left.target_workspace_id;
+    const rightLabel = right.source_workspace_name?.trim()
+      || right.source_workspace_id
+      || right.target_workspace_name?.trim()
+      || right.target_workspace_id;
     return leftLabel.localeCompare(rightLabel);
   });
+}
+
+function getWorkspaceRoleForUser(workspace: UserSpaceWorkspace, user: User): WorkspaceRole {
+  if (workspace.owner_user_id === user.id) return 'owner';
+  if (user.role === 'admin') return 'owner';
+  return workspace.members.find((member) => member.user_id === user.id)?.role ?? 'viewer';
+}
+
+function canEditUserSpaceWorkspace(workspace: UserSpaceWorkspace, user: User): boolean {
+  const role = getWorkspaceRoleForUser(workspace, user);
+  return role === 'owner' || role === 'editor';
 }
 
 export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRequest = null, onFullscreenChange, onNavigateToTools, onPreviewWarningChange }: UserSpacePanelProps) {
@@ -1195,10 +1212,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
   const activeWorkspaceRole = useMemo(() => {
     if (!activeWorkspace) return 'viewer';
-    if (activeWorkspace.owner_user_id === currentUser.id) return 'owner';
-    if (currentUser.role === 'admin') return 'owner';
-    return activeWorkspace.members.find((member) => member.user_id === currentUser.id)?.role ?? 'viewer';
-  }, [activeWorkspace, currentUser.id, currentUser.role]);
+    return getWorkspaceRoleForUser(activeWorkspace, currentUser);
+  }, [activeWorkspace, currentUser]);
 
   const canEditWorkspace = activeWorkspaceRole === 'owner' || activeWorkspaceRole === 'editor';
   const isOwner = activeWorkspaceRole === 'owner';
@@ -4556,32 +4571,38 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   }, [activeWorkspace, isOwner]);
 
   const handleOpenAgentAccessModal = useCallback(async () => {
-    if (!activeWorkspace || !isOwner) return;
+    if (!activeWorkspace) return;
     setShowAgentAccessModal(true);
     setAgentGrantsLoading(true);
     try {
       const limit = Math.max(workspacesTotal || workspaces.length || 50, 50);
       const [grants, workspacePage] = await Promise.all([
-        api.listUserSpaceWorkspaceAgentGrants(activeWorkspace.id),
+        api.listUserSpaceWorkspaceAgentGrants(activeWorkspace.id, 'target'),
         api.listUserSpaceWorkspaces(0, limit),
       ]);
       setAgentGrants(sortWorkspaceAgentGrants(grants));
-      setAgentGrantWorkspaces(workspacePage.items);
+      setAgentGrantWorkspaces(workspacePage.items.filter((workspace) => (
+        workspace.id !== activeWorkspace.id && canEditUserSpaceWorkspace(workspace, currentUser)
+      )));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load agent access settings');
     } finally {
       setAgentGrantsLoading(false);
     }
-  }, [activeWorkspace, isOwner, workspaces.length, workspacesTotal]);
+  }, [activeWorkspace, currentUser, workspaces.length, workspacesTotal]);
 
-  const handleUpsertAgentGrant = useCallback(async (request: UpsertWorkspaceAgentGrantRequest) => {
-    if (!activeWorkspace || !isOwner) return;
-    setSavingAgentGrantTargetId(request.target_workspace_id);
+  const handleUpsertAgentGrant = useCallback(async (sourceWorkspaceId: string, accessMode: WorkspaceAgentGrantMode) => {
+    if (!activeWorkspace) return;
+    if (accessMode === 'read_write' && !canEditWorkspace) return;
+    setSavingAgentGrantTargetId(sourceWorkspaceId);
     try {
-      const updated = await api.upsertUserSpaceWorkspaceAgentGrant(activeWorkspace.id, request);
+      const updated = await api.upsertUserSpaceWorkspaceAgentGrant(sourceWorkspaceId, {
+        target_workspace_id: activeWorkspace.id,
+        access_mode: accessMode,
+      });
       setAgentGrants((current) => sortWorkspaceAgentGrants([
-        ...current.filter((grant) => grant.target_workspace_id !== updated.target_workspace_id),
+        ...current.filter((grant) => grant.source_workspace_id !== updated.source_workspace_id),
         updated,
       ]));
       setError(null);
@@ -4591,14 +4612,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     } finally {
       setSavingAgentGrantTargetId(null);
     }
-  }, [activeWorkspace, isOwner]);
+  }, [activeWorkspace, canEditWorkspace]);
 
-  const handleRevokeAgentGrant = useCallback(async (targetWorkspaceId: string) => {
-    if (!activeWorkspace || !isOwner) return;
-    setRevokingAgentGrantTargetId(targetWorkspaceId);
+  const handleRevokeAgentGrant = useCallback(async (sourceWorkspaceId: string) => {
+    if (!activeWorkspace) return;
+    setRevokingAgentGrantTargetId(sourceWorkspaceId);
     try {
-      await api.revokeUserSpaceWorkspaceAgentGrant(activeWorkspace.id, targetWorkspaceId);
-      setAgentGrants((current) => current.filter((grant) => grant.target_workspace_id !== targetWorkspaceId));
+      await api.revokeUserSpaceWorkspaceAgentGrant(sourceWorkspaceId, activeWorkspace.id);
+      setAgentGrants((current) => current.filter((grant) => grant.source_workspace_id !== sourceWorkspaceId));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to revoke agent access');
@@ -4606,7 +4627,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     } finally {
       setRevokingAgentGrantTargetId(null);
     }
-  }, [activeWorkspace, isOwner]);
+  }, [activeWorkspace]);
 
   const loadWorkspaceEnvVars = useCallback(async (workspaceId: string) => {
     const vars = await api.listUserSpaceWorkspaceEnvVars(workspaceId);
@@ -6319,10 +6340,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 : <FolderGit2Icon size={14} />}
             </button>
           )}
+          {activeWorkspaceId && (
+            <AgentAccessButton onClick={handleOpenAgentAccessModal} title="Manage cross-workspace agent access" />
+          )}
           {isOwner && (
             <>
               <MemberManagementButton onClick={handleOpenMembersModal} title="Manage members" />
-              <AgentAccessButton onClick={handleOpenAgentAccessModal} title="Manage cross-workspace agent access" />
               <button className="btn btn-secondary btn-sm" onClick={handleOpenEnvVarsModal} title="Environment variables">
                 <KeyRound size={14} />
               </button>
@@ -8051,14 +8074,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         <AgentAccessModal
           isOpen={showAgentAccessModal}
           onClose={() => setShowAgentAccessModal(false)}
-          sourceWorkspace={activeWorkspace}
-          availableWorkspaces={agentGrantWorkspaces}
+          targetWorkspace={activeWorkspace}
+          availableSourceWorkspaces={agentGrantWorkspaces}
           grants={agentGrants}
           onUpsert={handleUpsertAgentGrant}
           onRevoke={handleRevokeAgentGrant}
+          canGrantReadWrite={canEditWorkspace}
           loading={agentGrantsLoading}
-          savingTargetId={savingAgentGrantTargetId}
-          revokingTargetId={revokingAgentGrantTargetId}
+          savingSourceId={savingAgentGrantTargetId}
+          revokingSourceId={revokingAgentGrantTargetId}
         />
       )}
 

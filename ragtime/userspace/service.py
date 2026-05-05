@@ -184,6 +184,7 @@ from ragtime.userspace.models import (
     WorkspaceMountSyncPreviewResponse,
     WorkspaceMountSyncRequest,
     WorkspaceMountSyncResponse,
+    WorkspaceRole,
     WorkspaceScmAutoSyncPolicy,
     WorkspaceScmDirection,
     WorkspaceScmPreviewState,
@@ -12350,12 +12351,14 @@ class UserSpaceService:
         self,
         record: Any,
         *,
+        source_workspace_name: str | None = None,
         target_workspace_name: str | None = None,
         granted_by_username: str | None = None,
     ) -> WorkspaceAgentGrant:
         return WorkspaceAgentGrant(
             id=str(getattr(record, "id", "") or ""),
             source_workspace_id=str(getattr(record, "sourceWorkspaceId", "") or ""),
+            source_workspace_name=source_workspace_name,
             target_workspace_id=str(getattr(record, "targetWorkspaceId", "") or ""),
             target_workspace_name=target_workspace_name,
             access_mode=self._normalize_agent_grant_mode(
@@ -12368,21 +12371,54 @@ class UserSpaceService:
             updated_at=_coerce_utc_datetime(getattr(record, "updatedAt", None)),
         )
 
-    async def list_workspace_agent_grants(
-        self,
-        source_workspace_id: str,
+    @staticmethod
+    def _workspace_role_for_user(
+        workspace: UserSpaceWorkspace,
         user_id: str,
         *,
         is_admin: bool = False,
-    ) -> list[WorkspaceAgentGrant]:
-        """Return all active cross-workspace grants for the source workspace.
+    ) -> WorkspaceRole | None:
+        if is_admin:
+            return "owner"
+        if workspace.owner_user_id == user_id:
+            return "owner"
+        for member in workspace.members:
+            if member.user_id == user_id:
+                return member.role
+        return None
 
-        Caller must be owner of the source workspace (or admin).
+    @staticmethod
+    def _workspace_role_allows(role: WorkspaceRole | None, required_role: str) -> bool:
+        if required_role == "viewer":
+            return role in {"owner", "editor", "viewer"}
+        if required_role == "editor":
+            return role in {"owner", "editor"}
+        if required_role == "owner":
+            return role == "owner"
+        return False
+
+    async def list_workspace_agent_grants(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        direction: Literal["source", "target"] = "source",
+        is_admin: bool = False,
+    ) -> list[WorkspaceAgentGrant]:
+        """Return active cross-workspace grants for a workspace.
+
+        Source direction lists grants originating from the workspace's agent.
+        Target direction lists grants allowing agents into the workspace.
         """
-        await self._enforce_workspace_access(
-            source_workspace_id,
+        workspace = await self._enforce_workspace_access(
+            workspace_id,
             user_id,
-            required_role="owner",
+            required_role="editor" if direction == "source" else "viewer",
+            is_admin=is_admin,
+        )
+        workspace_role = self._workspace_role_for_user(
+            workspace,
+            user_id,
             is_admin=is_admin,
         )
 
@@ -12391,17 +12427,37 @@ class UserSpaceService:
         if model is None:
             return []
 
+        workspace_field = (
+            "sourceWorkspaceId" if direction == "source" else "targetWorkspaceId"
+        )
         rows = await model.find_many(
-            where={"sourceWorkspaceId": source_workspace_id},
+            where={workspace_field: workspace_id},
             order={"createdAt": "asc"},
         )
 
         results: list[WorkspaceAgentGrant] = []
         for row in rows:
+            row_access_mode = self._normalize_agent_grant_mode(
+                getattr(row, "accessMode", "read")
+            )
+            if (
+                direction == "target"
+                and row_access_mode == "read_write"
+                and not self._workspace_role_allows(workspace_role, "editor")
+            ):
+                continue
+            source_workspace_name: str | None = None
             target_workspace_name: str | None = None
             granted_by_username: str | None = None
+            source_id = str(getattr(row, "sourceWorkspaceId", "") or "")
             target_id = str(getattr(row, "targetWorkspaceId", "") or "")
             granter_id = str(getattr(row, "grantedByUserId", "") or "")
+            if source_id:
+                source_record = await db.workspace.find_unique(where={"id": source_id})
+                if source_record is not None:
+                    source_workspace_name = str(
+                        getattr(source_record, "name", "") or ""
+                    )
             if target_id:
                 target_record = await db.workspace.find_unique(where={"id": target_id})
                 if target_record is not None:
@@ -12417,6 +12473,7 @@ class UserSpaceService:
             results.append(
                 self._agent_grant_from_record(
                     row,
+                    source_workspace_name=source_workspace_name,
                     target_workspace_name=target_workspace_name,
                     granted_by_username=granted_by_username,
                 )
@@ -12434,10 +12491,10 @@ class UserSpaceService:
         """Create or update a cross-workspace agent grant.
 
         Authorization model:
-        - Caller must be owner of the source workspace (the agent's home).
-        - Caller must additionally have at least 'editor' access on the target
-          workspace, so that owners cannot grant their agents access to
-          arbitrary workspaces they do not control.
+                - Caller must have at least 'editor' access on the source workspace
+                    (the agent's home).
+                - Caller must have access on the target workspace matching the grant
+                    mode: 'viewer' for read-only grants, 'editor' for read/write grants.
         """
         target_workspace_id = (request.target_workspace_id or "").strip()
         if not target_workspace_id:
@@ -12450,16 +12507,20 @@ class UserSpaceService:
                 detail="Cannot grant a workspace cross-workspace access to itself",
             )
 
-        await self._enforce_workspace_access(
+        access_mode: WorkspaceAgentGrantMode = (
+            "read_write" if request.access_mode == "read_write" else "read"
+        )
+
+        source_workspace = await self._enforce_workspace_access(
             source_workspace_id,
             user_id,
-            required_role="owner",
+            required_role="editor",
             is_admin=is_admin,
         )
         target_workspace = await self._enforce_workspace_access(
             target_workspace_id,
             user_id,
-            required_role="editor",
+            required_role="editor" if access_mode == "read_write" else "viewer",
             is_admin=is_admin,
         )
 
@@ -12473,10 +12534,6 @@ class UserSpaceService:
                     "database client. Run prisma generate after migration."
                 ),
             )
-
-        access_mode: WorkspaceAgentGrantMode = (
-            "read_write" if request.access_mode == "read_write" else "read"
-        )
 
         existing = await model.find_first(
             where={
@@ -12535,6 +12592,7 @@ class UserSpaceService:
 
         return self._agent_grant_from_record(
             record,
+            source_workspace_name=source_workspace.name,
             target_workspace_name=target_workspace.name,
         )
 
@@ -12546,13 +12604,6 @@ class UserSpaceService:
         *,
         is_admin: bool = False,
     ) -> bool:
-        await self._enforce_workspace_access(
-            source_workspace_id,
-            user_id,
-            required_role="owner",
-            is_admin=is_admin,
-        )
-
         db = await get_db()
         model = self._workspace_agent_grant_model(db)
         if model is None:
@@ -12566,6 +12617,30 @@ class UserSpaceService:
         )
         if existing is None:
             return False
+
+        access_mode = self._normalize_agent_grant_mode(
+            getattr(existing, "accessMode", "read")
+        )
+        allowed = False
+        try:
+            await self._enforce_workspace_access(
+                source_workspace_id,
+                user_id,
+                required_role="editor",
+                is_admin=is_admin,
+            )
+            allowed = True
+        except HTTPException as exc:
+            if exc.status_code not in {403, 404}:
+                raise
+
+        if not allowed:
+            await self._enforce_workspace_access(
+                target_workspace_id,
+                user_id,
+                required_role="editor" if access_mode == "read_write" else "viewer",
+                is_admin=is_admin,
+            )
 
         await model.delete(where={"id": existing.id})
 

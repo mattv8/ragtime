@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
-import type { UpsertWorkspaceAgentGrantRequest, UserSpaceWorkspace, WorkspaceAgentGrant, WorkspaceAgentGrantMode } from '@/types';
+import type { UserSpaceWorkspace, WorkspaceAgentGrant, WorkspaceAgentGrantMode } from '@/types';
 
 interface AgentAccessModalProps {
   isOpen: boolean;
   onClose: () => void;
-  sourceWorkspace: Pick<UserSpaceWorkspace, 'id' | 'name'>;
-  availableWorkspaces: Array<Pick<UserSpaceWorkspace, 'id' | 'name'>>;
+  targetWorkspace: Pick<UserSpaceWorkspace, 'id' | 'name'>;
+  availableSourceWorkspaces: Array<Pick<UserSpaceWorkspace, 'id' | 'name'>>;
   grants: WorkspaceAgentGrant[];
-  onUpsert: (request: UpsertWorkspaceAgentGrantRequest) => Promise<void>;
-  onRevoke: (targetWorkspaceId: string) => Promise<void>;
+  onUpsert: (sourceWorkspaceId: string, accessMode: WorkspaceAgentGrantMode) => Promise<void>;
+  onRevoke: (sourceWorkspaceId: string) => Promise<void>;
+  canGrantReadWrite?: boolean;
   loading?: boolean;
-  savingTargetId?: string | null;
-  revokingTargetId?: string | null;
+  savingSourceId?: string | null;
+  revokingSourceId?: string | null;
 }
 
 function sortWorkspacesByName(
@@ -28,21 +29,22 @@ function grantModeLabel(mode: WorkspaceAgentGrantMode): string {
 export function AgentAccessModal({
   isOpen,
   onClose,
-  sourceWorkspace,
-  availableWorkspaces,
+  targetWorkspace,
+  availableSourceWorkspaces,
   grants,
   onUpsert,
   onRevoke,
+  canGrantReadWrite = false,
   loading = false,
-  savingTargetId = null,
-  revokingTargetId = null,
+  savingSourceId = null,
+  revokingSourceId = null,
 }: AgentAccessModalProps) {
-  const [targetWorkspaceId, setTargetWorkspaceId] = useState('');
+  const [sourceWorkspaceId, setSourceWorkspaceId] = useState('');
   const [accessMode, setAccessMode] = useState<WorkspaceAgentGrantMode>('read');
 
   const workspaceOptions = useMemo(
-    () => sortWorkspacesByName(availableWorkspaces.filter((workspace) => workspace.id !== sourceWorkspace.id)),
-    [availableWorkspaces, sourceWorkspace.id],
+    () => sortWorkspacesByName(availableSourceWorkspaces.filter((workspace) => workspace.id !== targetWorkspace.id)),
+    [availableSourceWorkspaces, targetWorkspace.id],
   );
 
   useEffect(() => {
@@ -50,7 +52,7 @@ export function AgentAccessModal({
       return;
     }
     const current = workspaceOptions[0]?.id ?? '';
-    setTargetWorkspaceId((previous) => {
+    setSourceWorkspaceId((previous) => {
       if (previous && workspaceOptions.some((workspace) => workspace.id === previous)) {
         return previous;
       }
@@ -59,20 +61,23 @@ export function AgentAccessModal({
     setAccessMode('read');
   }, [isOpen, workspaceOptions]);
 
+  useEffect(() => {
+    if (!canGrantReadWrite && accessMode === 'read_write') {
+      setAccessMode('read');
+    }
+  }, [accessMode, canGrantReadWrite]);
+
   const handleClose = () => {
-    if (!loading && !savingTargetId && !revokingTargetId) {
+    if (!loading && !savingSourceId && !revokingSourceId) {
       onClose();
     }
   };
 
   const handleAddGrant = async () => {
-    if (!targetWorkspaceId) {
+    if (!sourceWorkspaceId) {
       return;
     }
-    await onUpsert({
-      target_workspace_id: targetWorkspaceId,
-      access_mode: accessMode,
-    });
+    await onUpsert(sourceWorkspaceId, accessMode);
   };
 
   if (!isOpen) {
@@ -84,12 +89,12 @@ export function AgentAccessModal({
       <div className="modal-content modal-small userspace-agent-access-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <h3>Agent Access</h3>
-          <button className="modal-close" onClick={handleClose} disabled={loading || Boolean(savingTargetId) || Boolean(revokingTargetId)}>&times;</button>
+          <button className="modal-close" onClick={handleClose} disabled={loading || Boolean(savingSourceId) || Boolean(revokingSourceId)}>&times;</button>
         </div>
         <div className="modal-body">
           <div className="userspace-agent-access-intro">
-            <strong>{sourceWorkspace.name}</strong>
-            <small className="userspace-muted">Allow this workspace&apos;s agent to use file/runtime tools in another workspace you can access.</small>
+            <strong>{targetWorkspace.name}</strong>
+            <small className="userspace-muted">Allow agents from your editable workspaces to use file/runtime tools in this workspace.</small>
           </div>
 
           {loading ? (
@@ -101,43 +106,44 @@ export function AgentAccessModal({
                   <div className="userspace-agent-access-empty">No cross-workspace agent grants configured.</div>
                 ) : (
                   grants.map((grant) => {
-                    const targetLabel = grant.target_workspace_name?.trim() || grant.target_workspace_id;
-                    const disabled = savingTargetId === grant.target_workspace_id || revokingTargetId === grant.target_workspace_id;
+                    const sourceLabel = grant.source_workspace_name?.trim() || grant.source_workspace_id;
+                    const disabled = savingSourceId === grant.source_workspace_id || revokingSourceId === grant.source_workspace_id;
+                    const canManageGrant = grant.access_mode === 'read' || canGrantReadWrite;
                     return (
-                      <div key={grant.target_workspace_id} className="userspace-member-row userspace-agent-access-grant-row">
+                      <div key={grant.source_workspace_id} className="userspace-member-row userspace-agent-access-grant-row">
                         <div className="userspace-agent-access-grant-top">
                           <div className="userspace-agent-access-info">
-                            <span>{targetLabel}</span>
+                            <span>{sourceLabel}</span>
                           </div>
-                          <div className="userspace-member-role-toggle" role="group" aria-label={`Access mode for ${targetLabel}`}>
+                          <div className="userspace-member-role-toggle" role="group" aria-label={`Access mode from ${sourceLabel}`}>
                             <button
                               type="button"
                               className={`userspace-member-role-option ${grant.access_mode === 'read' ? 'active' : ''}`}
-                              onClick={() => void onUpsert({ target_workspace_id: grant.target_workspace_id, access_mode: 'read' })}
-                              disabled={disabled}
+                              onClick={() => void onUpsert(grant.source_workspace_id, 'read')}
+                              disabled={disabled || !canManageGrant}
                             >
                               Read
                             </button>
                             <button
                               type="button"
                               className={`userspace-member-role-option ${grant.access_mode === 'read_write' ? 'active' : ''}`}
-                              onClick={() => void onUpsert({ target_workspace_id: grant.target_workspace_id, access_mode: 'read_write' })}
-                              disabled={disabled}
+                              onClick={() => void onUpsert(grant.source_workspace_id, 'read_write')}
+                              disabled={disabled || !canGrantReadWrite}
                             >
                               Read / Write
                             </button>
                           </div>
                           <button
                             className="chat-action-btn"
-                            onClick={() => void onRevoke(grant.target_workspace_id)}
+                            onClick={() => void onRevoke(grant.source_workspace_id)}
                             title={`Revoke ${grantModeLabel(grant.access_mode).toLowerCase()} access`}
-                            disabled={disabled}
+                            disabled={disabled || !canManageGrant}
                           >
                             <X size={14} />
                           </button>
                         </div>
                         <div className="userspace-agent-access-workspace-id">
-                          <small className="userspace-muted">workspace_id: {grant.target_workspace_id}</small>
+                          <small className="userspace-muted">source_workspace_id: {grant.source_workspace_id}</small>
                         </div>
                       </div>
                     );
@@ -146,15 +152,15 @@ export function AgentAccessModal({
               </div>
 
               <div className="userspace-add-member userspace-agent-access-add-row">
-                <label htmlFor="userspace-agent-target-select" className="userspace-share-label">Target workspace</label>
+                <label htmlFor="userspace-agent-source-select" className="userspace-share-label">Source workspace</label>
                 <select
-                  id="userspace-agent-target-select"
-                  value={targetWorkspaceId}
-                  onChange={(event) => setTargetWorkspaceId(event.target.value)}
-                  disabled={workspaceOptions.length === 0 || Boolean(savingTargetId) || Boolean(revokingTargetId)}
+                  id="userspace-agent-source-select"
+                  value={sourceWorkspaceId}
+                  onChange={(event) => setSourceWorkspaceId(event.target.value)}
+                  disabled={workspaceOptions.length === 0 || Boolean(savingSourceId) || Boolean(revokingSourceId)}
                 >
                   {workspaceOptions.length === 0 ? (
-                    <option value="">No other accessible workspaces</option>
+                    <option value="">No editable source workspaces</option>
                   ) : (
                     workspaceOptions.map((workspace) => (
                       <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
@@ -167,7 +173,7 @@ export function AgentAccessModal({
                     type="button"
                     className={`userspace-member-role-option ${accessMode === 'read' ? 'active' : ''}`}
                     onClick={() => setAccessMode('read')}
-                    disabled={workspaceOptions.length === 0 || Boolean(savingTargetId) || Boolean(revokingTargetId)}
+                    disabled={workspaceOptions.length === 0 || Boolean(savingSourceId) || Boolean(revokingSourceId)}
                   >
                     Read
                   </button>
@@ -175,7 +181,7 @@ export function AgentAccessModal({
                     type="button"
                     className={`userspace-member-role-option ${accessMode === 'read_write' ? 'active' : ''}`}
                     onClick={() => setAccessMode('read_write')}
-                    disabled={workspaceOptions.length === 0 || Boolean(savingTargetId) || Boolean(revokingTargetId)}
+                    disabled={workspaceOptions.length === 0 || !canGrantReadWrite || Boolean(savingSourceId) || Boolean(revokingSourceId)}
                   >
                     Read / Write
                   </button>
@@ -186,15 +192,15 @@ export function AgentAccessModal({
           )}
         </div>
         <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={handleClose} disabled={loading || Boolean(savingTargetId) || Boolean(revokingTargetId)}>
+          <button className="btn btn-secondary" onClick={handleClose} disabled={loading || Boolean(savingSourceId) || Boolean(revokingSourceId)}>
             Close
           </button>
           <button
             className="btn btn-primary"
             onClick={() => void handleAddGrant()}
-            disabled={loading || !targetWorkspaceId || workspaceOptions.length === 0 || Boolean(savingTargetId) || Boolean(revokingTargetId)}
+            disabled={loading || !sourceWorkspaceId || workspaceOptions.length === 0 || Boolean(savingSourceId) || Boolean(revokingSourceId)}
           >
-            {savingTargetId === targetWorkspaceId ? 'Saving...' : 'Add / Update Grant'}
+            {savingSourceId === sourceWorkspaceId ? 'Saving...' : 'Add / Update Grant'}
           </button>
         </div>
       </div>

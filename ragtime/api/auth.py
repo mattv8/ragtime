@@ -47,6 +47,8 @@ from ragtime.core.auth import (
     import_ldap_user_profile,
     invalidate_session,
     lookup_bind_dn,
+    recompute_auth_group_member_roles,
+    recompute_user_effective_role,
     resolve_ldap_role_for_user_dn,
     search_ldap_user_profile,
     search_ldap_user_profiles,
@@ -1739,6 +1741,7 @@ async def create_local_user(
             display_name=body.display_name,
             email=body.email,
             role=role,
+            role_manually_set=role == UserRole.admin,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -1778,6 +1781,7 @@ async def update_local_user(
             ),
             email=(body.email if body.email is not None else existing.email),
             role=role,
+            role_manually_set=True if body.role is not None else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -1863,6 +1867,7 @@ async def update_auth_group(
         role=role,
         is_logon_group=body.is_logon_group,
     )
+    await recompute_auth_group_member_roles(group_id)
     return await _auth_group_response(updated)
 
 
@@ -1886,7 +1891,11 @@ async def delete_auth_group(
                 "recreated from LDAP membership sync"
             ),
         )
+    memberships = await db.authgroupmembership.find_many(where={"groupId": group_id})
+    affected_user_ids = sorted({membership.userId for membership in memberships})
     await db.authgroup.delete(where={"id": group_id})
+    for affected_user_id in affected_user_ids:
+        await recompute_user_effective_role(affected_user_id)
     return {"success": True}
 
 
@@ -1949,22 +1958,12 @@ async def set_user_groups(
             },
         )
 
-    if not user.roleManuallySet:
-        if any(group.role == UserRole.admin for group in desired_groups):
-            await db.user.update(where={"id": user_id}, data={"role": UserRole.admin})
-        elif user.ldapDn:
-            resolved_role, _error = await resolve_ldap_role_for_user_dn(
-                user.ldapDn,
-                ldap_username_hint=user.username,
-            )
-            await db.user.update(
-                where={"id": user_id},
-                data={"role": resolved_role or UserRole.user},
-            )
-        else:
-            await db.user.update(where={"id": user_id}, data={"role": UserRole.user})
-
-    refreshed = await db.user.find_unique(where={"id": user_id})
+    refreshed = await recompute_user_effective_role(user_id)
+    if not refreshed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
     return await _user_response(refreshed)
 
 

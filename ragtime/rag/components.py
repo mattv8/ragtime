@@ -11605,12 +11605,11 @@ except Exception as e:
         request_user_id: str,
         enabled_builtin_tool_ids: Optional[set[str]] = None,
     ) -> list[StructuredTool]:
-        """Build chat-mode-only diagnostic tools (read-only term + web browse).
+        """Build sandboxed diagnostic tools for chat and workspace requests.
 
-        These tools are wired in chat-mode requests when chat diagnostics are
-        enabled and no userspace workspace context is present. The runtime
-        sandbox lifecycle is owned by ``chat_runtime_service`` and is keyed by
-        the conversation id.
+        These tools are intentionally request-scoped and are not part of
+        admin-configured tool catalogs. The runtime sandbox lifecycle is owned
+        by ``chat_runtime_service`` and is keyed by the conversation id.
         """
         if not chat_runtime_service.is_enabled():
             return []
@@ -12098,6 +12097,12 @@ except Exception as e:
                 request_user_id,
             )
             allowed_tool_config_ids = list(workspace.selected_tool_ids)
+            workspace_builtin_tool_ids = {
+                CHAT_WEB_SEARCH_TOOL_ID,
+                CHAT_WEB_BROWSE_TOOL_ID,
+            }
+            if disabled_builtin_tool_ids:
+                workspace_builtin_tool_ids.difference_update(disabled_builtin_tool_ids)
 
             # Expand group selections: add all enabled tools from selected groups
             if workspace.selected_tool_group_ids:
@@ -12148,12 +12153,20 @@ except Exception as e:
                 request_user_id,
                 accessible_workspace_modes=accessible_workspace_modes,
             )
+            workspace_builtin_tools: list[StructuredTool] = []
+            if CHAT_DIAGNOSTICS_ENABLED and workspace_builtin_tool_ids:
+                workspace_builtin_tools = self._build_chat_diagnostic_tools(
+                    conversation_id=conversation_id,
+                    request_user_id=request_user_id,
+                    enabled_builtin_tool_ids=workspace_builtin_tool_ids,
+                )
             runtime_tools = [
                 tool
                 for tool in runtime_tools
                 if getattr(tool, "name", "") not in {"create_chart", "create_datatable"}
             ]
             runtime_tools.extend(userspace_tools)
+            runtime_tools.extend(workspace_builtin_tools)
             runtime_tools = self._apply_mode_specific_tool_description_overrides(
                 runtime_tools,
                 mode="userspace",
@@ -12196,6 +12209,16 @@ except Exception as e:
                 has_live_data_tools=bool(allowed_tool_config_ids),
                 workspace_continuity=continuity_ctx,
             )
+            if CHAT_DIAGNOSTICS_ENABLED and workspace_builtin_tool_ids:
+                prompt_additions += build_chat_diagnostics_prompt_addition(
+                    include_terminal=False,
+                    include_web_search=(
+                        CHAT_WEB_SEARCH_TOOL_ID in workspace_builtin_tool_ids
+                    ),
+                    include_web_browse=(
+                        CHAT_WEB_BROWSE_TOOL_ID in workspace_builtin_tool_ids
+                    ),
+                )
 
             # Cache nudge fragment by entrypoint state signature.
             nudge_cache_key = (

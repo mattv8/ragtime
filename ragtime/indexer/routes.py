@@ -152,6 +152,7 @@ from ragtime.indexer.models import (
     ConversationBranchPointInfo,
     ConversationBranchSummary,
     ConversationResponse,
+    ConversationSummaryResponse,
     ConversationShareLink,
     ConversationShareLinkListResponse,
     ConversationShareLinkStatus,
@@ -10017,6 +10018,25 @@ class ConversationTaskStateResponse(BaseModel):
     )
 
 
+def _parse_conversation_time_filter(
+    value: Optional[str],
+    field: str,
+) -> Optional[datetime]:
+    if value is None or value == "":
+        return None
+    try:
+        cleaned = value.replace("Z", "+00:00") if value.endswith("Z") else value
+        parsed = datetime.fromisoformat(cleaned)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid ISO-8601 timestamp for '{field}': {value}",
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 class WorkspaceConversationStateSummaryRequest(BaseModel):
     workspace_ids: List[str] = Field(
         default_factory=list,
@@ -10258,24 +10278,8 @@ async def list_conversations(
     # Admins can see all, regular users only see their own
     is_admin = user.role == "admin"
 
-    def _parse_iso(value: Optional[str], field: str) -> Optional[datetime]:
-        if value is None or value == "":
-            return None
-        try:
-            # Support trailing 'Z' (Zulu time) which fromisoformat does not.
-            cleaned = value.replace("Z", "+00:00") if value.endswith("Z") else value
-            parsed = datetime.fromisoformat(cleaned)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid ISO-8601 timestamp for '{field}': {value}",
-            ) from exc
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed
-
-    since_dt = _parse_iso(since, "since")
-    until_dt = _parse_iso(until, "until")
+    since_dt = _parse_conversation_time_filter(since, "since")
+    until_dt = _parse_conversation_time_filter(until, "until")
 
     convs = await repository.list_conversations(
         user_id=user.id,
@@ -10285,6 +10289,26 @@ async def list_conversations(
         until=until_dt,
     )
     return [_to_conversation_response(c) for c in convs]
+
+
+@router.get(
+    "/conversations/summaries", response_model=List[ConversationSummaryResponse]
+)
+async def list_conversation_summaries(
+    workspace_id: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """List lightweight conversation rows without message payloads."""
+    await _assert_workspace_access(workspace_id, user, "viewer")
+    return await repository.list_conversation_summaries(
+        user_id=user.id,
+        include_all=user.role == "admin",
+        workspace_id=workspace_id,
+        since=_parse_conversation_time_filter(since, "since"),
+        until=_parse_conversation_time_filter(until, "until"),
+    )
 
 
 @router.get(

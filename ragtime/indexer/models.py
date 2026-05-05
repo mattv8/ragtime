@@ -2466,6 +2466,24 @@ class ConversationResponse(BaseModel):
     updated_at: datetime
 
 
+class ConversationSummaryResponse(BaseModel):
+    """Lightweight conversation row for admin/user list views."""
+
+    id: str
+    title: str
+    model: str
+    user_id: Optional[str] = None
+    workspace_id: Optional[str] = None
+    username: Optional[str] = None
+    display_name: Optional[str] = None
+    message_count: int = 0
+    total_tokens: int = 0
+    active_task_id: Optional[str] = None
+    active_branch_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
 ConversationShareRole = Literal["viewer", "editor"]
 ConversationShareAccessMode = Literal[
     "token",

@@ -754,7 +754,7 @@ USERSPACE_MODE_PROMPT_ADDITION = build_userspace_mode_prompt_addition(
 
 _CHAT_DIAGNOSTICS_PROMPT_HEADER = """
 
-You have access to chat-only diagnostic tools. They run in a sandboxed environment dedicated to this conversation and are intended for ad-hoc external troubleshooting and lightweight web research, not for general computation or workspace edits.
+You have access to diagnostic tools. They run in a sandboxed environment dedicated to this conversation and are intended for ad-hoc external troubleshooting and lightweight web research, not for general computation or workspace edits.
 """
 
 

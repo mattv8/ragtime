@@ -4,6 +4,7 @@ import { api, ApiError } from '@/api';
 import type {
   AvailableModel,
   Conversation,
+  ConversationSummary,
   User,
   AuthGroup,
   UserUsageSummary,
@@ -427,11 +428,11 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   const [mcpUserSort, setMcpUserSort] = useState<TableSortConfig<McpUserSortKey>>({ key: 'requests', direction: 'desc' });
 
   const [expandedUserDetail, setExpandedUserDetail] = useState<{ userId: string; mode: ExpandedUserDetailMode } | null>(null);
-  const [standaloneChatsByUserId, setStandaloneChatsByUserId] = useState<Record<string, Conversation[]>>({});
+  const [standaloneChatsByUserId, setStandaloneChatsByUserId] = useState<Record<string, ConversationSummary[]>>({});
   const [standaloneChatsLoaded, setStandaloneChatsLoaded] = useState(false);
   const [standaloneChatsLoadingUserId, setStandaloneChatsLoadingUserId] = useState<string | null>(null);
   const [workspaceLastMessageAtById, setWorkspaceLastMessageAtById] = useState<Record<string, string | null>>({});
-  const [workspaceLastConversationById, setWorkspaceLastConversationById] = useState<Record<string, Conversation | null>>({});
+  const [workspaceLastConversationById, setWorkspaceLastConversationById] = useState<Record<string, ConversationSummary | null>>({});
   const [workspaceLastMessageLoadingByUserId, setWorkspaceLastMessageLoadingByUserId] = useState<Record<string, boolean>>({});
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
 
@@ -855,8 +856,8 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       return;
     }
 
-    const allConversations = await api.listConversations();
-    const grouped = allConversations.reduce<Record<string, Conversation[]>>((acc, conversation) => {
+    const allConversations = await api.listConversationSummaries();
+    const grouped = allConversations.reduce<Record<string, ConversationSummary[]>>((acc, conversation) => {
       const linkedWorkspaceId = conversation.workspace_id ?? conversation.workspaceId ?? null;
       if (linkedWorkspaceId) {
         return acc;
@@ -948,7 +949,7 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   useEffect(() => {
     setWorkspaceLastConversationById((prev) => {
       const knownWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
-      const next: Record<string, Conversation | null> = {};
+      const next: Record<string, ConversationSummary | null> = {};
       let changed = false;
       for (const [workspaceId, conversation] of Object.entries(prev)) {
         if (knownWorkspaceIds.has(workspaceId)) {
@@ -989,12 +990,12 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     return Math.max(8192, maxAvailable);
   }, [availableModels]);
 
-  const getConversationContextMeta = useCallback((conversation: Conversation | null | undefined): string => {
+  const getConversationContextMeta = useCallback((conversation: Conversation | ConversationSummary | null | undefined): string => {
     if (!conversation) return 'n/a';
 
     const contextLimit = resolveConversationContextLimit(conversation.model, availableModels, defaultContextLimit);
     const usage = calculateConversationContextUsage({
-      messages: conversation.messages,
+      messages: 'messages' in conversation ? conversation.messages : [],
       persistedConversationTokens: conversation.total_tokens,
       contextLimit,
     });
@@ -1015,8 +1016,8 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     setWorkspaceLastMessageLoadingByUserId((prev) => ({ ...prev, [userId]: true }));
     try {
       const settled = await Promise.allSettled(missing.map(async (workspaceId) => {
-        const conversations = await api.listConversations(workspaceId);
-        const latestConversation = conversations.reduce<Conversation | null>((latest, conversation) => {
+        const conversations = await api.listConversationSummaries(workspaceId);
+        const latestConversation = conversations.reduce<ConversationSummary | null>((latest, conversation) => {
           if (!latest) return conversation;
           return toEpochMs(conversation.updated_at) > toEpochMs(latest.updated_at)
             ? conversation
@@ -1030,7 +1031,7 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       }));
 
       const updates: Record<string, string | null> = {};
-      const lastConversationUpdates: Record<string, Conversation | null> = {};
+      const lastConversationUpdates: Record<string, ConversationSummary | null> = {};
       for (const item of settled) {
         if (item.status === 'fulfilled') {
           updates[item.value.workspaceId] = item.value.lastUpdatedAt;
@@ -1073,7 +1074,7 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     try {
       await api.deleteConversation(conversationId);
       setStandaloneChatsByUserId((prev) => {
-        const next: Record<string, Conversation[]> = {};
+        const next: Record<string, ConversationSummary[]> = {};
         for (const [userId, conversations] of Object.entries(prev)) {
           next[userId] = conversations.filter((conversation) => conversation.id !== conversationId);
         }
@@ -1090,7 +1091,7 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     try {
       await api.cancelChatTask(taskId);
       setStandaloneChatsByUserId((prev) => {
-        const next: Record<string, Conversation[]> = {};
+        const next: Record<string, ConversationSummary[]> = {};
         for (const [userId, conversations] of Object.entries(prev)) {
           next[userId] = conversations.map((conversation) => (
             conversation.id === conversationId
@@ -2230,7 +2231,9 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                         onDelete={handleDeleteConversation}
                                         onCancelTask={handleCancelConversationTask}
                                         renderMeta={(conversation) => {
-                                          const messageCount = conversation.messages?.length ?? 0;
+                                          const messageCount = 'message_count' in conversation
+                                            ? conversation.message_count
+                                            : conversation.messages?.length ?? 0;
                                           const taskState = conversation.active_task_id ? 'running' : 'idle';
                                           return (
                                             <span className="users-detail-meta users-detail-meta-chat admin-ws-item-date">

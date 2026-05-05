@@ -887,6 +887,53 @@ async def _apply_local_group_role(user: Any, base_role: UserRole) -> UserRole:
     return base_role
 
 
+async def resolve_user_effective_role(
+    user: Any,
+    *,
+    auth_config: AuthProviderConfigData | None = None,
+) -> UserRole:
+    """Resolve a user's effective role from provider state plus local groups."""
+    config = auth_config or await get_auth_provider_config()
+    if config.manual_role_override_wins and getattr(user, "roleManuallySet", False):
+        return UserRole.admin if user.role == UserRole.admin else UserRole.user
+
+    provider = _provider_value(getattr(user, "authProvider", None))
+    base_role = UserRole.user
+    if provider == "ldap" and getattr(user, "ldapDn", None):
+        resolved_role, _error = await resolve_ldap_role_for_user_dn(
+            user.ldapDn,
+            ldap_username_hint=getattr(user, "username", None),
+        )
+        base_role = resolved_role or UserRole.user
+
+    return await _apply_local_group_role(user, base_role)
+
+
+async def recompute_user_effective_role(user_id: str) -> Any | None:
+    """Persist the current effective role for one user and return the user."""
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": user_id})
+    if not user:
+        return None
+
+    effective_role = await resolve_user_effective_role(user)
+    if effective_role != user.role:
+        return await db.user.update(
+            where={"id": user.id},
+            data={"role": effective_role},
+        )
+    return user
+
+
+async def recompute_auth_group_member_roles(group_id: str) -> None:
+    """Recompute roles for every current member of an auth group."""
+    db = await get_db()
+    memberships = await db.authgroupmembership.find_many(where={"groupId": group_id})
+    user_ids = sorted({membership.userId for membership in memberships})
+    for user_id in user_ids:
+        await recompute_user_effective_role(user_id)
+
+
 async def _passes_local_logon_gate(user: Any) -> bool:
     """Return whether a local managed user is in a required logon gate group."""
     db = await get_db()
@@ -1790,7 +1837,7 @@ async def authenticate_local_managed(username: str, password: str) -> AuthResult
     if not await _passes_local_logon_gate(user):
         return AuthResult(success=False, error="User not in authorized group")
 
-    role = await _apply_local_group_role(user, user.role)
+    role = await resolve_user_effective_role(user, auth_config=auth_config)
     update_data: dict[str, Any] = {"lastLoginAt": datetime.now(timezone.utc)}
     if not (auth_config.manual_role_override_wins and user.roleManuallySet):
         update_data["role"] = role
@@ -1814,6 +1861,7 @@ async def create_or_update_local_managed_user(
     email: str | None = None,
     role: UserRole = UserRole.user,
     user_id: str | None = None,
+    role_manually_set: bool | None = None,
 ) -> Any:
     """Create or update an internal managed user."""
     normalized_username = username.strip()
@@ -1840,6 +1888,8 @@ async def create_or_update_local_managed_user(
         "email": email,
         "role": role,
     }
+    if role_manually_set is not None:
+        data["roleManuallySet"] = role_manually_set
     if password:
         data["passwordHash"] = hash_local_password(password)
 
