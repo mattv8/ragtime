@@ -10747,7 +10747,9 @@ class UserSpaceService:
 
         conversation_ids_by_workspace_id: dict[str, list[str]] = {}
         workspace_ids = [
-            str(getattr(row, "id", "")) for row in rows if getattr(row, "id", None)
+            str(getattr(row, "id", ""))
+            for row in rows
+            if getattr(row, "id", None)
         ]
         if workspace_ids:
             workspace_id_sql = ", ".join(
