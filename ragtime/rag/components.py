@@ -82,6 +82,7 @@ from ragtime.core.model_limits import (
 )
 from ragtime.core.model_providers import (
     LLM_PROVIDER_NAMES,
+    LOCAL_LLM_PROVIDER_NAMES,
     get_provider,
     normalize_provider_name,
     providers_equivalent,
@@ -2533,7 +2534,7 @@ class RAGComponents:
             return max_tokens
 
         normalized_provider = normalize_provider_name(provider)
-        if normalized_provider in {"ollama", "llama_cpp", "lmstudio", "omlx"}:
+        if normalized_provider in LOCAL_LLM_PROVIDER_NAMES:
             detected_limit = await self._resolve_local_context_limit(
                 normalized_provider, model
             )
@@ -12634,7 +12635,7 @@ except Exception as e:
         resolved = await self._resolve_llm_max_tokens(provider, model)
 
         normalized_provider = normalize_provider_name(provider)
-        if normalized_provider in {"ollama", "llama_cpp", "lmstudio"}:
+        if normalized_provider in LOCAL_LLM_PROVIDER_NAMES:
             model_limit = await self._resolve_local_context_limit(
                 normalized_provider, model
             )
@@ -12775,7 +12776,7 @@ except Exception as e:
             provider = normalize_provider_name(
                 (self._app_settings or {}).get("llm_provider", "openai")
             )
-            if provider in {"ollama", "llama_cpp", "lmstudio"}:
+            if provider in LOCAL_LLM_PROVIDER_NAMES:
                 detected = await self._resolve_local_context_limit(
                     provider, effective_model_id
                 )

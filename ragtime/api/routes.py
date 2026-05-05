@@ -18,6 +18,7 @@ from ragtime.config import settings
 from ragtime.core.api_accounting import log_api_request
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
+from ragtime.core.model_providers import LLM_PROVIDER_NAMES, normalize_provider_name
 from ragtime.core.security import get_current_user_optional
 from ragtime.indexer.background_tasks import rebuild_tool_messages_from_events
 from ragtime.indexer.routes import get_available_chat_models
@@ -45,25 +46,20 @@ _models_cache: dict[tuple, tuple[float, list[str]]] = {}
 
 # Canonical provider aliases accepted on input.
 _PROVIDER_ALIASES: dict[str, str] = {
-    "openai": "openai",
+    **{provider: provider for provider in LLM_PROVIDER_NAMES},
     "oa": "openai",
-    "anthropic": "anthropic",
     "an": "anthropic",
-    "ollama": "ollama",
     "ol": "ollama",
-    "llama_cpp": "llama_cpp",
     "llama.cpp": "llama_cpp",
     "llamacpp": "llama_cpp",
     "lc": "llama_cpp",
-    "lmstudio": "lmstudio",
     "lm_studio": "lmstudio",
     "lm-studio": "lmstudio",
     "ls": "lmstudio",
+    "om": "omlx",
     "github": "github_copilot",
     "gh": "github_copilot",
     "copilot": "github_copilot",
-    "github_copilot": "github_copilot",
-    "github_models": "github_copilot",
 }
 
 # Short provider tokens emitted by /v1/models to keep IDs compact.
@@ -73,13 +69,14 @@ _OPENAPI_PROVIDER_TOKENS: dict[str, str] = {
     "ollama": "ol",
     "llama_cpp": "lc",
     "lmstudio": "ls",
+    "omlx": "om",
     "github_copilot": "gh",
 }
 
 
 def _canonical_provider_name(provider: str) -> str:
     token = (provider or "").strip().lower()
-    return _PROVIDER_ALIASES.get(token, token)
+    return _PROVIDER_ALIASES.get(token, normalize_provider_name(token))
 
 
 def _openapi_provider_token(provider: str) -> str:

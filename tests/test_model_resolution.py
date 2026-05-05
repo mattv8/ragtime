@@ -13,6 +13,7 @@ from ragtime.indexer.routes import (
     _group_models,
     _identifier_in_allowed_models,
     _merge_llm_model_results,
+    _normalize_conversation_model_provider,
     _parse_model_identifier,
 )
 from ragtime.api.routes import (
@@ -34,6 +35,22 @@ class ModelResolutionTests(unittest.TestCase):
             _parse_model_identifier("lmstudio::gemma-4-31b-it-mlx"),
             ("lmstudio", "gemma-4-31b-it-mlx"),
         )
+
+    def test_parse_model_identifier_accepts_omlx_from_registry(self) -> None:
+        self.assertEqual(
+            _parse_model_identifier("omlx::qwen3-coder-next-8bit"),
+            ("omlx", "qwen3-coder-next-8bit"),
+        )
+
+    def test_conversation_model_provider_accepts_registered_omlx(self) -> None:
+        self.assertEqual(_normalize_conversation_model_provider("omlx"), "omlx")
+
+    def test_conversation_model_provider_rejects_unknown_provider(self) -> None:
+        with self.assertRaises(indexer_routes.HTTPException) as raised:
+            _normalize_conversation_model_provider("not_a_provider")
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("omlx", str(raised.exception.detail))
 
     def test_openapi_normalization_accepts_llama_cpp_token(self) -> None:
         self.assertEqual(
@@ -61,6 +78,20 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(
             _owned_by_from_openapi_model_id("openai", "ls::gemma-4-31b-it-mlx"),
             "lmstudio",
+        )
+
+    def test_openapi_normalization_accepts_omlx_token(self) -> None:
+        self.assertEqual(
+            _normalize_openapi_model_id("omlx", "omlx::qwen3-coder-next-8bit"),
+            "om::qwen3-coder-next-8bit",
+        )
+        self.assertEqual(
+            _normalize_runtime_model("openai", "om::qwen3-coder-next-8bit"),
+            "omlx::qwen3-coder-next-8bit",
+        )
+        self.assertEqual(
+            _owned_by_from_openapi_model_id("openai", "om::qwen3-coder-next-8bit"),
+            "omlx",
         )
 
     def test_allowed_model_matching_accepts_provider_alias_and_publisher_prefix(

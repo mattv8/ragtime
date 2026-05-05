@@ -81,6 +81,7 @@ from ragtime.core.model_limits import (
 from ragtime.core.model_providers import (
     EMBEDDING_PROVIDER_NAMES,
     LLM_PROVIDER_NAMES,
+    LOCAL_LLM_PROVIDER_NAMES,
     get_provider,
     normalize_provider_name,
     providers_equivalent,
@@ -6774,23 +6775,22 @@ def _parse_model_identifier(value: str) -> tuple[Optional[str], str]:
         return None, ""
     if "::" in raw:
         provider, _, model_id = raw.partition("::")
-        provider = provider.strip().lower()
+        provider = normalize_provider_name(provider)
         model_id = model_id.strip()
-        if (
-            provider
-            in {
-                "openai",
-                "anthropic",
-                "ollama",
-                "llama_cpp",
-                "lmstudio",
-                "github_copilot",
-                "github_models",
-            }
-            and model_id
-        ):
+        if provider in LLM_PROVIDER_NAMES and model_id:
             return provider, model_id
     return None, raw
+
+
+def _normalize_conversation_model_provider(provider: Optional[str]) -> str:
+    """Normalize and validate provider input for persisted conversation models."""
+    normalized_provider = normalize_provider_name(provider)
+    if normalized_provider and normalized_provider not in LLM_PROVIDER_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"provider must be one of: {', '.join(LLM_PROVIDER_NAMES)}",
+        )
+    return normalized_provider
 
 
 def _build_scoped_model_identifier(model: AvailableModel) -> str:
@@ -9286,7 +9286,7 @@ async def get_available_chat_models():
                     provider=provider_key,
                     context_limit=(
                         m.context_limit or 8192
-                        if provider_key in {"ollama", "llama_cpp", "lmstudio"}
+                        if provider_key in LOCAL_LLM_PROVIDER_NAMES
                         else (
                             m.context_limit
                             if isinstance(m.context_limit, int) and m.context_limit > 0
@@ -9564,7 +9564,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                     provider=provider_key,
                     context_limit=(
                         m.context_limit or 8192
-                        if provider_key in {"ollama", "llama_cpp", "lmstudio"}
+                        if provider_key in LOCAL_LLM_PROVIDER_NAMES
                         else (
                             m.context_limit
                             if isinstance(m.context_limit, int) and m.context_limit > 0
@@ -11112,20 +11112,7 @@ async def update_conversation_model(
     if not model:
         raise HTTPException(status_code=400, detail="Model is required")
 
-    provider = (body.get("provider") or "").strip().lower()
-    if provider and provider not in {
-        "openai",
-        "anthropic",
-        "ollama",
-        "llama_cpp",
-        "lmstudio",
-        "github_copilot",
-        "github_models",
-    }:
-        raise HTTPException(
-            status_code=400,
-            detail="provider must be one of: openai, anthropic, ollama, llama_cpp, lmstudio, github_copilot, github_models",
-        )
+    provider = _normalize_conversation_model_provider(body.get("provider"))
 
     stored_model = f"{provider}::{model}" if provider else model
 

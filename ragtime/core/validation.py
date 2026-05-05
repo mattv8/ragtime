@@ -11,7 +11,7 @@ from typing import Optional
 import httpx
 from fastapi import HTTPException
 
-from ragtime.core import llama_cpp, lmstudio
+from ragtime.core import llama_cpp, lmstudio, omlx
 from ragtime.core.logging import get_logger
 from ragtime.core.model_providers import (
     EMBEDDING_PROVIDER_NAMES,
@@ -63,6 +63,7 @@ async def validate_embedding_provider() -> ValidationResult:
             "ollama": _validate_ollama_embeddings,
             "llama_cpp": _validate_llama_cpp_embeddings,
             "lmstudio": _validate_lmstudio_embeddings,
+            "omlx": _validate_omlx_embeddings,
             "openai": _validate_openai_embeddings,
         }
         validator = validators.get(provider)
@@ -240,15 +241,19 @@ async def _validate_local_openai_compatible_embeddings(
 ) -> ValidationResult:
     """Validate local OpenAI-compatible embedding providers."""
     base_url = resolve_provider_base_url(settings, provider, "embedding")
-    label = "llama.cpp" if provider == "llama_cpp" else "LM Studio"
+    label = {
+        "llama_cpp": "llama.cpp",
+        "lmstudio": "LM Studio",
+        "omlx": "oMLX",
+    }.get(provider, provider)
 
     reachable, error_msg = await reachability_check(base_url)
     if not reachable:
-        startup_hint = (
-            "Start llama-server with --embedding and check Settings."
-            if provider == "llama_cpp"
-            else "Start the LM Studio server and check Settings."
-        )
+        startup_hint = {
+            "llama_cpp": "Start llama-server with --embedding and check Settings.",
+            "lmstudio": "Start the LM Studio server and check Settings.",
+            "omlx": "Start the oMLX server and check Settings.",
+        }.get(provider, "Start the provider server and check Settings.")
         return ValidationResult(
             valid=False,
             error=f"Cannot reach {label} embedding server",
@@ -266,16 +271,19 @@ async def _validate_local_openai_compatible_embeddings(
                     error=f"{label} embedding model '{model}' not found",
                     details=(
                         f"Available embedding models: {', '.join(available_ids) or 'none'}. "
-                        "Download or select an embedding model in LM Studio."
+                        "Load or select an embedding-capable model."
                     ),
                 )
 
         dimension = await dimension_probe(base_url, model)
         if not dimension:
-            details = (
-                f"llama.cpp returned no embedding vector for model '{model}'. Start the server with --embedding and use an embedding-capable model."
-                if provider == "llama_cpp"
-                else f"LM Studio returned no embedding vector for model '{model}'. Load the embedding model in LM Studio and try again."
+            details = {
+                "llama_cpp": f"llama.cpp returned no embedding vector for model '{model}'. Start the server with --embedding and use an embedding-capable model.",
+                "lmstudio": f"LM Studio returned no embedding vector for model '{model}'. Load the embedding model in LM Studio and try again.",
+                "omlx": f"oMLX returned no embedding vector for model '{model}'. Load an embedding-capable model in oMLX and try again.",
+            }.get(
+                provider,
+                f"{label} returned no embedding vector for model '{model}'. Load an embedding-capable model and try again.",
             )
             return ValidationResult(
                 valid=False,
@@ -329,6 +337,37 @@ async def _validate_lmstudio_embeddings(
         reachability_check=lmstudio.is_reachable,
         dimension_probe=lmstudio.probe_embedding_dimension,
         list_models_func=lmstudio.list_embedding_models,
+    )
+
+
+async def _validate_omlx_embeddings(settings: object, model: str) -> ValidationResult:
+    """Validate oMLX embedding provider reachability and model probe."""
+    api_key = getattr(settings, "omlx_api_key", "") or None
+
+    async def _is_reachable(base_url: str):
+        return await omlx.is_reachable(base_url, api_key=api_key)
+
+    async def _probe_dimension(base_url: str, model_id: str):
+        return await omlx.probe_embedding_dimension(
+            base_url,
+            model_id,
+            api_key=api_key,
+        )
+
+    async def _list_embedding_models(base_url: str):
+        return await omlx.list_embedding_models(
+            base_url,
+            selected_model=model,
+            api_key=api_key,
+        )
+
+    return await _validate_local_openai_compatible_embeddings(
+        "omlx",
+        settings,
+        model,
+        reachability_check=_is_reachable,
+        dimension_probe=_probe_dimension,
+        list_models_func=_list_embedding_models,
     )
 
 

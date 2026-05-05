@@ -215,6 +215,16 @@ LLM_PROVIDER_NAMES = tuple(
 EMBEDDING_PROVIDER_NAMES = tuple(
     name for name, provider in MODEL_PROVIDERS.items() if provider.supports_embeddings
 )
+LOCAL_LLM_PROVIDER_NAMES = tuple(
+    name
+    for name, provider in MODEL_PROVIDERS.items()
+    if provider.supports_llm and provider.local
+)
+LOCAL_EMBEDDING_PROVIDER_NAMES = tuple(
+    name
+    for name, provider in MODEL_PROVIDERS.items()
+    if provider.supports_embeddings and provider.local
+)
 
 
 def normalize_provider_name(

@@ -3,7 +3,13 @@ from typing import Optional
 from unittest.mock import patch
 
 from ragtime.core import omlx
-from ragtime.core.model_providers import get_provider
+from ragtime.core.model_providers import (
+    EMBEDDING_PROVIDER_NAMES,
+    LLM_PROVIDER_NAMES,
+    LOCAL_EMBEDDING_PROVIDER_NAMES,
+    LOCAL_LLM_PROVIDER_NAMES,
+    get_provider,
+)
 
 
 class OmlxProviderTests(unittest.TestCase):
@@ -37,6 +43,12 @@ class OmlxProviderTests(unittest.TestCase):
         assert provider.embedding_connection is not None
         self.assertEqual(provider.llm_connection.default_port, 8000)
         self.assertEqual(provider.embedding_connection.default_port, 8000)
+
+    def test_provider_registry_includes_omlx_in_derived_provider_sets(self) -> None:
+        self.assertIn("omlx", LLM_PROVIDER_NAMES)
+        self.assertIn("omlx", EMBEDDING_PROVIDER_NAMES)
+        self.assertIn("omlx", LOCAL_LLM_PROVIDER_NAMES)
+        self.assertIn("omlx", LOCAL_EMBEDDING_PROVIDER_NAMES)
 
 
 class OmlxEmbeddingDiscoveryTests(unittest.IsolatedAsyncioTestCase):
