@@ -4312,6 +4312,22 @@ textarea {
   align-items: start;
 }
 
+.ldap-bind-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: var(--space-md);
+  row-gap: 0;
+  align-items: start;
+}
+
+.ldap-bind-row > .form-group {
+  margin-bottom: 0;
+}
+
+.ldap-bind-test-group .btn {
+  width: 100%;
+}
+
 .form-row-4 {
   display: grid;
   grid-template-columns: 110px 1fr 90px auto;

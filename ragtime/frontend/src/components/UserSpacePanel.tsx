@@ -46,6 +46,7 @@ import { WorkspaceScmWizard } from './WorkspaceScmWizard';
 interface UserSpacePanelProps {
   currentUser: User;
   debugMode?: boolean;
+  openWorkspaceRequest?: { workspaceId: string; requestId: number } | null;
   onFullscreenChange?: (fullscreen: boolean) => void;
   onNavigateToTools?: (section?: string) => void;
   onPreviewWarningChange?: (warning: UserSpacePreviewWarning | null) => void;
@@ -554,7 +555,7 @@ function sortWorkspaceAgentGrants(grants: WorkspaceAgentGrant[]): WorkspaceAgent
   });
 }
 
-export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenChange, onNavigateToTools, onPreviewWarningChange }: UserSpacePanelProps) {
+export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRequest = null, onFullscreenChange, onNavigateToTools, onPreviewWarningChange }: UserSpacePanelProps) {
   const [toasts, toast] = useToast();
   const previewEntryPath = 'dashboard/main.ts';
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
@@ -1625,6 +1626,53 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     if (!activeWorkspaceId) return;
     setCookieValue(lastWorkspaceCookieName, activeWorkspaceId);
   }, [activeWorkspaceId, lastWorkspaceCookieName]);
+
+  useEffect(() => {
+    if (!openWorkspaceRequest?.workspaceId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const selectWorkspace = async () => {
+      const requestedWorkspaceId = openWorkspaceRequest.workspaceId;
+      const existingWorkspace = workspacesRef.current.find((workspace) => workspace.id === requestedWorkspaceId);
+
+      if (!existingWorkspace) {
+        try {
+          const workspace = await api.getUserSpaceWorkspace(requestedWorkspaceId);
+          if (cancelled) {
+            return;
+          }
+          setWorkspaces((prev) => (
+            prev.some((item) => item.id === workspace.id)
+              ? prev
+              : [workspace, ...prev]
+          ));
+        } catch (err) {
+          if (!cancelled) {
+            toast.error(err instanceof Error ? err.message : 'Failed to open workspace');
+          }
+          return;
+        }
+      }
+
+      if (cancelled) {
+        return;
+      }
+
+      setActiveWorkspaceId(requestedWorkspaceId);
+      setRuntimeStatus(null);
+      setActiveWorkspaceConversationId(null);
+      setActiveWorkspaceChatSnapshot(null);
+    };
+
+    void selectWorkspace();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [openWorkspaceRequest?.requestId, openWorkspaceRequest?.workspaceId, toast]);
 
   useEffect(() => {
     setActiveWorkspaceConversationId(null);

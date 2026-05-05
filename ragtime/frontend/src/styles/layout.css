@@ -2273,6 +2273,18 @@ body {
   background: var(--color-surface-hover, rgba(255,255,255,0.02));
 }
 
+.jobs-table tbody tr.users-row-self td:last-child {
+  background: var(--color-surface-hover, rgba(255,255,255,0.02));
+}
+
+.jobs-table tbody tr.users-row-self:hover {
+  background: var(--color-surface-hover, rgba(255,255,255,0.02));
+}
+
+.jobs-table tbody tr.users-row-self:hover td:last-child {
+  background: var(--color-surface-hover, rgba(255,255,255,0.02));
+}
+
 .users-action-muted {
   color: var(--color-text-secondary);
 }
@@ -2361,7 +2373,71 @@ body {
 }
 
 .users-workspace-detail-row td {
-  background: rgba(148, 163, 184, 0.05);
+  background: transparent;
+  padding: 0;
+}
+
+.users-workspace-detail-row td:last-child {
+  position: static;
+  right: auto;
+  z-index: auto;
+  background: transparent;
+}
+
+.users-detail-list-shell {
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: 4px;
+  margin: 0;
+}
+
+.users-detail-list-shell .admin-ws-item {
+  border: 1px solid transparent;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.users-detail-list-shell .admin-ws-item:hover,
+.users-detail-list-shell .admin-ws-item:focus-within {
+  border-color: var(--color-border);
+}
+
+.users-detail-list-shell .admin-ws-item-select {
+  min-width: 0;
+  gap: 12px;
+}
+
+.users-detail-meta {
+  display: grid;
+  align-items: center;
+  justify-items: start;
+  column-gap: 12px;
+  flex-shrink: 0;
+}
+
+.users-detail-meta-workspace {
+  grid-template-columns: 80px 190px 140px 220px 96px 150px;
+}
+
+.users-detail-meta-chat {
+  grid-template-columns: 80px 190px 140px 220px 96px;
+}
+
+.users-detail-col {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+@media (max-width: 1200px) {
+  .users-detail-meta-workspace,
+  .users-detail-meta-chat {
+    grid-template-columns: 1fr;
+    row-gap: 2px;
+    min-width: 0;
+  }
 }
 
 .users-card-header-inline {

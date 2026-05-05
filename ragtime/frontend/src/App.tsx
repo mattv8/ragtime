@@ -12,6 +12,16 @@ type UserSpaceSharedRoute =
   | { mode: 'slug'; ownerUsername: string; shareSlug: string }
   | null;
 
+interface WorkspaceOpenRequest {
+  workspaceId: string;
+  requestId: number;
+}
+
+interface ChatOpenRequest {
+  conversationId: string;
+  requestId: number;
+}
+
 function getInitialView(): ViewType {
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view');
@@ -152,6 +162,24 @@ export function App() {
   // Userspace fullscreen state
   const [userspaceFullscreen, setUserspaceFullscreen] = useState(false);
   const [chatFullscreen, setChatFullscreen] = useState(false);
+  const [workspaceOpenRequest, setWorkspaceOpenRequest] = useState<WorkspaceOpenRequest | null>(null);
+  const [chatOpenRequest, setChatOpenRequest] = useState<ChatOpenRequest | null>(null);
+
+  const handleOpenWorkspaceFromUsers = useCallback((workspaceId: string) => {
+    setWorkspaceOpenRequest((prev) => ({
+      workspaceId,
+      requestId: (prev?.requestId ?? 0) + 1,
+    }));
+    setActiveView('userspace');
+  }, []);
+
+  const handleOpenChatFromUsers = useCallback((conversationId: string) => {
+    setChatOpenRequest((prev) => ({
+      conversationId,
+      requestId: (prev?.requestId ?? 0) + 1,
+    }));
+    setActiveView('chat');
+  }, []);
 
   const forceLoginScreen = useCallback(() => {
     setCurrentUser(null);
@@ -756,6 +784,7 @@ export function App() {
           <UserSpacePanel
             currentUser={currentUser}
             debugMode={Boolean(authStatus?.debug_mode)}
+            openWorkspaceRequest={workspaceOpenRequest}
             onFullscreenChange={setUserspaceFullscreen}
             onPreviewWarningChange={setPreviewWarning}
             onNavigateToTools={(section) => {
@@ -767,9 +796,10 @@ export function App() {
       ) : isChatView ? (
         <div className="chat-page-container">
           <ChatPage
+            key={chatOpenRequest ? `chat-open-${chatOpenRequest.requestId}` : 'chat-main'}
             currentUser={currentUser}
             debugMode={Boolean(authStatus?.debug_mode)}
-            initialConversationId={initialConversationId}
+            initialConversationId={chatOpenRequest?.conversationId ?? initialConversationId}
             onFullscreenChange={setChatFullscreen}
           />
         </div>
@@ -789,7 +819,11 @@ export function App() {
           onHighlightComplete={() => setHighlightToolsSection(null)}
         />
       ) : activeView === 'users' ? (
-        <UsersPanel currentUser={currentUser} />
+        <UsersPanel
+          currentUser={currentUser}
+          onOpenWorkspace={handleOpenWorkspaceFromUsers}
+          onOpenChat={handleOpenChatFromUsers}
+        />
       ) : (
         <>
           {/* Document Indexes (FAISS) */}

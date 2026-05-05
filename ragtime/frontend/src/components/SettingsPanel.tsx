@@ -1504,8 +1504,26 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
   // LDAP connection test and discovery
   const handleTestLdapConnection = async () => {
     const serverUrl = buildServerUrl();
-    if (!serverUrl || !ldapFormData.bind_dn || !ldapFormData.bind_password) {
-      setLdapTestResult({ success: false, message: 'Server, Bind DN, and Bind Password are required' });
+    const normalizedBindDn = ldapFormData.bind_dn.trim();
+    const typedBindPassword = ldapFormData.bind_password;
+    const canReuseStoredCredentials = Boolean(
+      !typedBindPassword
+      && ldapConfig?.server_url
+      && ldapConfig?.bind_dn
+      && ldapConfig.server_url === serverUrl
+      && ldapConfig.bind_dn.trim().toLowerCase() === normalizedBindDn.toLowerCase()
+    );
+
+    if (!serverUrl || !normalizedBindDn) {
+      setLdapTestResult({ success: false, message: 'Server and Bind DN are required' });
+      return;
+    }
+
+    if (!typedBindPassword && !canReuseStoredCredentials) {
+      setLdapTestResult({
+        success: false,
+        message: 'Bind Password is required unless testing with unchanged saved LDAP credentials.',
+      });
       return;
     }
 
@@ -1513,12 +1531,14 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     setLdapTestResult(null);
 
     try {
-      const response = await api.discoverLdap({
-        server_url: serverUrl,
-        bind_dn: ldapFormData.bind_dn,
-        bind_password: ldapFormData.bind_password,
-        allow_self_signed: ldapFormData.allow_self_signed,
-      });
+      const response = canReuseStoredCredentials
+        ? await api.discoverLdapWithStoredCredentials()
+        : await api.discoverLdap({
+          server_url: serverUrl,
+          bind_dn: normalizedBindDn,
+          bind_password: typedBindPassword,
+          allow_self_signed: ldapFormData.allow_self_signed,
+        });
 
       setLdapDiscoveredOus(response.user_ous);
       setLdapDiscoveredGroups(response.groups);
@@ -2403,6 +2423,16 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
   );
   const activeAuthProvider = AUTH_PROVIDER_OPTIONS.find((provider) => provider.value === activeAuthProviderValue) || AUTH_PROVIDER_OPTIONS[0];
   const ldapConfigured = Boolean(ldapFormData.ldap_host.trim() || ldapConfig?.server_url?.trim());
+  const ldapCanReuseStoredCredentials = Boolean(
+    ldapConfig?.server_url
+    && ldapConfig?.bind_dn
+    && ldapConfig.server_url === buildServerUrl()
+    && ldapConfig.bind_dn.trim().toLowerCase() === ldapFormData.bind_dn.trim().toLowerCase()
+  );
+  const ldapTestDisabled = ldapTesting
+    || !ldapFormData.ldap_host.trim()
+    || !ldapFormData.bind_dn.trim()
+    || (!ldapFormData.bind_password && !ldapCanReuseStoredCredentials);
   const isAdmin = currentUser?.role === 'admin';
   const manualDefaultChatModel = (() => {
     if (formData.default_chat_model !== undefined) {
@@ -4507,7 +4537,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 </div>
               )}
 
-              <div className="form-row">
+              <div className="form-row-3 ldap-bind-row">
                 <div className="form-group">
                   <label>Bind DN / Username</label>
                   <input
@@ -4527,26 +4557,24 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                     placeholder={ldapConfig?.bind_dn ? '(password saved)' : 'Enter password'}
                   />
                 </div>
-              </div>
-
-              <div className="form-group">
-                <div className="connection-test-row">
+                <div className="form-group ldap-bind-test-group">
+                  <label>Connection Test</label>
                   <button
                     type="button"
                     className="btn btn-secondary"
                     onClick={handleTestLdapConnection}
-                    disabled={ldapTesting || !ldapFormData.ldap_host || !ldapFormData.bind_dn || !ldapFormData.bind_password}
+                    disabled={ldapTestDisabled}
                   >
                     {ldapTesting ? 'Testing...' : 'Test Connection & Discover'}
                   </button>
-                  {ldapTestResult?.success && (
-                    <span className="connection-status success">{ldapTestResult.message}</span>
-                  )}
-                  {ldapTestResult && !ldapTestResult.success && (
-                    <span className="connection-status error">{ldapTestResult.message}</span>
-                  )}
                 </div>
               </div>
+
+              {ldapTestResult && (
+                <p className={`fieldset-help ${ldapTestResult.success ? 'connection-status success' : 'connection-status error'}`}>
+                  {ldapTestResult.message}
+                </p>
+              )}
 
               {ldapDiscoveredOus.length > 0 && (
                 <>

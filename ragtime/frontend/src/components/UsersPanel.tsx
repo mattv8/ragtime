@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'rea
 import { Pencil, Shield, UserPlus } from 'lucide-react';
 import { api, ApiError } from '@/api';
 import type {
+  AvailableModel,
+  Conversation,
   User,
   AuthGroup,
   UserUsageSummary,
@@ -30,12 +32,14 @@ import {
 } from 'chart.js';
 import { Bar, Chart, Line } from 'react-chartjs-2';
 import { WorkspaceRowList } from './shared/WorkspaceRowList';
+import { UserConversationRowList } from './shared/UserConversationRowList';
 import { DataTable, type DataTableColumn, type TableSortConfig } from './shared/DataTable';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { useToast, ToastContainer } from './shared/Toast';
 import { CheckboxDropdown } from './shared/CheckboxDropdown';
 import { formatProviderDisplayName, formatModelDisplayName } from '@/utils/modelDisplay';
+import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Filler, Tooltip, Legend);
@@ -77,6 +81,48 @@ function formatBytes(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${bytes} B`;
+}
+
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return 'n/a';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'n/a';
+  return date.toLocaleString();
+}
+
+function toEpochMs(value: string | null | undefined): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function resolveConversationContextLimit(storedModel: string | null | undefined, availableModels: AvailableModel[], fallbackLimit: number): number {
+  const parsed = parseStoredModelIdentifier(storedModel || '');
+  const modelId = parsed.modelId.trim();
+  const explicitProvider = (parsed.provider || '').trim().toLowerCase();
+
+  if (!modelId) return fallbackLimit;
+
+  let matchedModel: AvailableModel | undefined;
+  if (explicitProvider) {
+    matchedModel = availableModels.find((model) => model.id === modelId && String(model.provider).toLowerCase() === explicitProvider);
+  }
+
+  if (!matchedModel) {
+    matchedModel = availableModels.find((model) => model.id === modelId);
+  }
+
+  if (!matchedModel && modelId.includes('/')) {
+    const slashIndex = modelId.indexOf('/');
+    const providerFromModelId = modelId.slice(0, slashIndex).trim().toLowerCase();
+    const providerModelId = modelId.slice(slashIndex + 1).trim();
+    matchedModel = availableModels.find((model) => (
+      model.id === providerModelId
+      && (!explicitProvider || String(model.provider).toLowerCase() === explicitProvider || String(model.provider).toLowerCase() === providerFromModelId)
+    ));
+  }
+
+  return matchedModel?.context_limit || fallbackLimit;
 }
 
 function normalizeDateLabel(value: string): string {
@@ -141,7 +187,11 @@ const ALL_DAY_RANGES = [7, 30, 90, 180, 240, 360] as const;
 
 interface UsersPanelProps {
   currentUser: User | null;
+  onOpenWorkspace: (workspaceId: string) => void;
+  onOpenChat: (conversationId: string) => void;
 }
+
+type ExpandedUserDetailMode = 'workspaces' | 'chats';
 
 interface DerivedUserStats {
   user: User;
@@ -321,7 +371,7 @@ function UserEditModal({
   );
 }
 
-export function UsersPanel({ currentUser }: UsersPanelProps) {
+export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPanelProps) {
   const [activeTab, setActiveTab] = useState<PanelTab>('management');
 
   const [users, setUsers] = useState<User[]>([]);
@@ -376,7 +426,14 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
   const [dailySort, setDailySort] = useState<TableSortConfig<DailySortKey>>({ key: 'date', direction: 'desc' });
   const [mcpUserSort, setMcpUserSort] = useState<TableSortConfig<McpUserSortKey>>({ key: 'requests', direction: 'desc' });
 
-  const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
+  const [expandedUserDetail, setExpandedUserDetail] = useState<{ userId: string; mode: ExpandedUserDetailMode } | null>(null);
+  const [standaloneChatsByUserId, setStandaloneChatsByUserId] = useState<Record<string, Conversation[]>>({});
+  const [standaloneChatsLoaded, setStandaloneChatsLoaded] = useState(false);
+  const [standaloneChatsLoadingUserId, setStandaloneChatsLoadingUserId] = useState<string | null>(null);
+  const [workspaceLastMessageAtById, setWorkspaceLastMessageAtById] = useState<Record<string, string | null>>({});
+  const [workspaceLastConversationById, setWorkspaceLastConversationById] = useState<Record<string, Conversation | null>>({});
+  const [workspaceLastMessageLoadingByUserId, setWorkspaceLastMessageLoadingByUserId] = useState<Record<string, boolean>>({});
+  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
 
   const themeColors = useThemeColors();
   const usageCacheRef = useRef<Record<number, UsageDataSnapshot>>({});
@@ -782,6 +839,273 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
     () => new Set(Object.keys(deletingWorkspaceTasks)),
     [deletingWorkspaceTasks],
   );
+
+  const workspaceConversationIdSet = useMemo(() => (
+    new Set(workspaces.flatMap((workspace) => workspace.conversation_ids))
+  ), [workspaces]);
+
+  useEffect(() => {
+    setStandaloneChatsByUserId({});
+    setStandaloneChatsLoaded(false);
+    setStandaloneChatsLoadingUserId(null);
+  }, [workspaceConversationIdSet]);
+
+  const loadStandaloneChatsSnapshot = useCallback(async () => {
+    if (standaloneChatsLoaded) {
+      return;
+    }
+
+    const allConversations = await api.listConversations();
+    const grouped = allConversations.reduce<Record<string, Conversation[]>>((acc, conversation) => {
+      const linkedWorkspaceId = conversation.workspace_id ?? conversation.workspaceId ?? null;
+      if (linkedWorkspaceId) {
+        return acc;
+      }
+      if (workspaceConversationIdSet.has(conversation.id)) {
+        return acc;
+      }
+      if (!conversation.user_id) {
+        return acc;
+      }
+
+      if (!acc[conversation.user_id]) {
+        acc[conversation.user_id] = [];
+      }
+      acc[conversation.user_id].push(conversation);
+      return acc;
+    }, {});
+
+    for (const list of Object.values(grouped)) {
+      list.sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+    }
+
+    setStandaloneChatsByUserId(grouped);
+    setStandaloneChatsLoaded(true);
+  }, [standaloneChatsLoaded, workspaceConversationIdSet]);
+
+  const loadStandaloneChatsForUser = useCallback(async (userId: string) => {
+    if (standaloneChatsByUserId[userId]) {
+      return;
+    }
+
+    setStandaloneChatsLoadingUserId(userId);
+    try {
+      await loadStandaloneChatsSnapshot();
+      setStandaloneChatsByUserId((prev) => ({
+        ...prev,
+        [userId]: prev[userId] ?? [],
+      }));
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to load user chats');
+    } finally {
+      setStandaloneChatsLoadingUserId((prev) => (prev === userId ? null : prev));
+    }
+  }, [loadStandaloneChatsSnapshot, standaloneChatsByUserId, toast]);
+
+  useEffect(() => {
+    if (activeTab !== 'management') {
+      return;
+    }
+    if (standaloneChatsLoaded) {
+      return;
+    }
+    void loadStandaloneChatsSnapshot().catch((e: unknown) => {
+      toast.error(e instanceof Error ? e.message : 'Failed to load user chats');
+    });
+  }, [activeTab, loadStandaloneChatsSnapshot, standaloneChatsLoaded, toast]);
+
+  const standaloneChatCountsByUserId = useMemo(() => (
+    Object.entries(standaloneChatsByUserId).reduce<Record<string, number>>((acc, [userId, conversations]) => {
+      acc[userId] = conversations.length;
+      return acc;
+    }, {})
+  ), [standaloneChatsByUserId]);
+
+  const toggleUserWorkspaceDetails = useCallback((userId: string) => {
+    setExpandedUserDetail((prev) => (
+      prev?.userId === userId && prev.mode === 'workspaces'
+        ? null
+        : { userId, mode: 'workspaces' }
+    ));
+  }, []);
+
+  useEffect(() => {
+    setWorkspaceLastMessageAtById((prev) => {
+      const knownWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
+      const next: Record<string, string | null> = {};
+      let changed = false;
+      for (const [workspaceId, timestamp] of Object.entries(prev)) {
+        if (knownWorkspaceIds.has(workspaceId)) {
+          next[workspaceId] = timestamp;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [workspaces]);
+
+  useEffect(() => {
+    setWorkspaceLastConversationById((prev) => {
+      const knownWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
+      const next: Record<string, Conversation | null> = {};
+      let changed = false;
+      for (const [workspaceId, conversation] of Object.entries(prev)) {
+        if (knownWorkspaceIds.has(workspaceId)) {
+          next[workspaceId] = conversation;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [workspaces]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadAvailableModels = async () => {
+      try {
+        const response = await api.getAvailableModels();
+        if (cancelled) return;
+        setAvailableModels(response.models || []);
+      } catch {
+        // Context metadata can fall back without blocking Users panel.
+      }
+    };
+
+    void loadAvailableModels();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const defaultContextLimit = useMemo(() => {
+    const maxAvailable = availableModels.reduce((max, model) => {
+      const limit = Number(model.context_limit || 0);
+      return Number.isFinite(limit) ? Math.max(max, limit) : max;
+    }, 0);
+    return Math.max(8192, maxAvailable);
+  }, [availableModels]);
+
+  const getConversationContextMeta = useCallback((conversation: Conversation | null | undefined): string => {
+    if (!conversation) return 'n/a';
+
+    const contextLimit = resolveConversationContextLimit(conversation.model, availableModels, defaultContextLimit);
+    const usage = calculateConversationContextUsage({
+      messages: conversation.messages,
+      persistedConversationTokens: conversation.total_tokens,
+      contextLimit,
+    });
+
+    return `${formatNumber(usage.totalTokens)} / ${formatNumber(contextLimit)}`;
+  }, [availableModels, defaultContextLimit]);
+
+  const loadWorkspaceLastMessageTimesForUser = useCallback(async (userId: string) => {
+    const owned = workspaces.filter((workspace) => workspace.owner_user_id === userId);
+    const missing = owned
+      .map((workspace) => workspace.id)
+      .filter((workspaceId) => !(workspaceId in workspaceLastMessageAtById));
+
+    if (missing.length === 0) {
+      return;
+    }
+
+    setWorkspaceLastMessageLoadingByUserId((prev) => ({ ...prev, [userId]: true }));
+    try {
+      const settled = await Promise.allSettled(missing.map(async (workspaceId) => {
+        const conversations = await api.listConversations(workspaceId);
+        const latestConversation = conversations.reduce<Conversation | null>((latest, conversation) => {
+          if (!latest) return conversation;
+          return toEpochMs(conversation.updated_at) > toEpochMs(latest.updated_at)
+            ? conversation
+            : latest;
+        }, null);
+        return {
+          workspaceId,
+          lastUpdatedAt: latestConversation?.updated_at ?? null,
+          latestConversation,
+        };
+      }));
+
+      const updates: Record<string, string | null> = {};
+      const lastConversationUpdates: Record<string, Conversation | null> = {};
+      for (const item of settled) {
+        if (item.status === 'fulfilled') {
+          updates[item.value.workspaceId] = item.value.lastUpdatedAt;
+          lastConversationUpdates[item.value.workspaceId] = item.value.latestConversation;
+        }
+      }
+
+      if (Object.keys(updates).length > 0) {
+        setWorkspaceLastMessageAtById((prev) => ({ ...prev, ...updates }));
+        setWorkspaceLastConversationById((prev) => ({ ...prev, ...lastConversationUpdates }));
+      }
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to load workspace message timestamps');
+    } finally {
+      setWorkspaceLastMessageLoadingByUserId((prev) => ({ ...prev, [userId]: false }));
+    }
+  }, [toast, workspaceLastMessageAtById, workspaces]);
+
+  const toggleUserChatDetails = useCallback(async (userId: string) => {
+    const isAlreadyExpanded = expandedUserDetail?.userId === userId && expandedUserDetail.mode === 'chats';
+    if (isAlreadyExpanded) {
+      setExpandedUserDetail(null);
+      return;
+    }
+
+    setExpandedUserDetail({ userId, mode: 'chats' });
+    if (!standaloneChatsByUserId[userId]) {
+      await loadStandaloneChatsForUser(userId);
+    }
+  }, [expandedUserDetail, loadStandaloneChatsForUser, standaloneChatsByUserId]);
+
+  useEffect(() => {
+    if (!expandedUserDetail || expandedUserDetail.mode !== 'workspaces') {
+      return;
+    }
+    void loadWorkspaceLastMessageTimesForUser(expandedUserDetail.userId);
+  }, [expandedUserDetail, loadWorkspaceLastMessageTimesForUser]);
+
+  const handleDeleteConversation = useCallback(async (conversationId: string) => {
+    try {
+      await api.deleteConversation(conversationId);
+      setStandaloneChatsByUserId((prev) => {
+        const next: Record<string, Conversation[]> = {};
+        for (const [userId, conversations] of Object.entries(prev)) {
+          next[userId] = conversations.filter((conversation) => conversation.id !== conversationId);
+        }
+        return next;
+      });
+      toast.success('Chat deleted');
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to delete chat');
+      throw e;
+    }
+  }, [toast]);
+
+  const handleCancelConversationTask = useCallback(async (conversationId: string, taskId: string) => {
+    try {
+      await api.cancelChatTask(taskId);
+      setStandaloneChatsByUserId((prev) => {
+        const next: Record<string, Conversation[]> = {};
+        for (const [userId, conversations] of Object.entries(prev)) {
+          next[userId] = conversations.map((conversation) => (
+            conversation.id === conversationId
+              ? { ...conversation, active_task_id: null }
+              : conversation
+          ));
+        }
+        return next;
+      });
+      toast.success('Chat task cancellation requested');
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to cancel chat task');
+      throw e;
+    }
+  }, [toast]);
 
   const userStatsRows = useMemo<DerivedUserStats[]>(() => {
     const byUserOwned = workspaces.reduce<Record<string, UserSpaceWorkspace[]>>((acc, ws) => {
@@ -1454,7 +1778,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       const sortValueA: Record<ManagementSortKey, string | number | null> = {
         user: (a.user.display_name || a.user.username),
         auth: a.user.auth_provider,
-        chats: a.usage?.total_requests || 0,
+        chats: standaloneChatCountsByUserId[a.user.id] ?? 0,
         workspaces: a.ownedWorkspaceCount,
         memberships: a.memberWorkspaceCount,
         workspaceChats: a.workspaceConversationCount,
@@ -1466,7 +1790,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       const sortValueB: Record<ManagementSortKey, string | number | null> = {
         user: (b.user.display_name || b.user.username),
         auth: b.user.auth_provider,
-        chats: b.usage?.total_requests || 0,
+        chats: standaloneChatCountsByUserId[b.user.id] ?? 0,
         workspaces: b.ownedWorkspaceCount,
         memberships: b.memberWorkspaceCount,
         workspaceChats: b.workspaceConversationCount,
@@ -1485,7 +1809,7 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
       if (bFail !== aFail) return bFail - aFail;
       return a.user.username.localeCompare(b.user.username);
     });
-  }, [managementSort.direction, managementSort.key, userStatsRows]);
+  }, [managementSort.direction, managementSort.key, standaloneChatCountsByUserId, userStatsRows]);
 
   const sortedUsageRows = useMemo(() => {
     const rows = [...usageSummary];
@@ -1734,9 +2058,24 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                       }}
                       renderRow={(row) => {
                         const user = row.user;
-                        const chatCount = row.usage?.total_requests || 0;
+                        const chatCount = standaloneChatCountsByUserId[user.id] ?? 0;
                         const failedCount = (row.usage?.failed_count || 0) + (row.usage?.interrupted_count || 0);
                         const isRowSelf = isSelf(user.id);
+                        const sortedOwnedWorkspaces = [...row.ownedWorkspaces].sort((left, right) => {
+                          const leftLast = toEpochMs(workspaceLastMessageAtById[left.id]);
+                          const rightLast = toEpochMs(workspaceLastMessageAtById[right.id]);
+                          if (rightLast !== leftLast) {
+                            return rightLast - leftLast;
+                          }
+                          return left.name.localeCompare(right.name);
+                        });
+                        const sortedStandaloneChats = [...(standaloneChatsByUserId[user.id] ?? [])].sort((left, right) => {
+                          const updatedDiff = toEpochMs(right.updated_at) - toEpochMs(left.updated_at);
+                          if (updatedDiff !== 0) {
+                            return updatedDiff;
+                          }
+                          return (left.title ?? '').localeCompare(right.title ?? '');
+                        });
 
                         return (
                           <Fragment key={user.id}>
@@ -1762,14 +2101,21 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                                 )}
                               </td>
                               <td className="num">
-                                <div>{formatNumber(chatCount)}</div>
+                                <button
+                                  type="button"
+                                  className="users-link-btn"
+                                  onClick={() => { void toggleUserChatDetails(user.id); }}
+                                  title="Show non-workspace chats"
+                                >
+                                  {formatNumber(chatCount)}
+                                </button>
                                 {failedCount > 0 && <div className="users-subnum">{failedCount} fail/int</div>}
                               </td>
                               <td className="num">
                                 <button
                                   type="button"
                                   className="users-link-btn"
-                                  onClick={() => setExpandedUserId(expandedUserId === user.id ? null : user.id)}
+                                  onClick={() => toggleUserWorkspaceDetails(user.id)}
                                   title="Show workspace operations"
                                 >
                                   {row.ownedWorkspaceCount}
@@ -1837,31 +2183,69 @@ export function UsersPanel({ currentUser }: UsersPanelProps) {
                                 )}
                               </td>
                             </tr>
-                            {expandedUserId === user.id && (
+                            {expandedUserDetail?.userId === user.id && (
                               <tr key={`${user.id}-details`} className="users-workspace-detail-row">
                                 <td colSpan={10}>
-                                  <WorkspaceRowList
-                                    workspaces={row.ownedWorkspaces}
-                                    users={users}
-                                    deletingWorkspaceIds={deletingWorkspaceIds}
-                                    onTransfer={handleTransferWorkspace}
-                                    onDelete={handleDeleteWorkspace}
-                                    emptyMessage="No owned workspaces."
-                                    renderMeta={(ws) => {
-                                      const state = workspaceStateById[ws.id];
-                                      const wsStorage = storageByWorkspaceId[ws.id];
-                                      const parts: string[] = [];
-                                      parts.push(`chats:${ws.conversation_ids.length}`);
-                                      parts.push(`members:${ws.members.length}`);
-                                      if (state?.has_live_task) parts.push('live');
-                                      if (state?.has_interrupted_task) parts.push('interrupted');
-                                      return (
-                                        <span className="admin-ws-item-date">
-                                            {parts.join(' ')} storage: {typeof wsStorage === 'number' ? formatBytes(wsStorage) : 'not sampled'}
-                                        </span>
-                                      );
-                                    }}
-                                  />
+                                  <div className="users-detail-list-shell">
+                                    {expandedUserDetail.mode === 'workspaces' ? (
+                                      <WorkspaceRowList
+                                        workspaces={sortedOwnedWorkspaces}
+                                        users={users}
+                                        deletingWorkspaceIds={deletingWorkspaceIds}
+                                        onTransfer={handleTransferWorkspace}
+                                        onDelete={handleDeleteWorkspace}
+                                        onSelect={(workspace) => onOpenWorkspace(workspace.id)}
+                                        emptyMessage="No owned workspaces."
+                                        renderMeta={(ws) => {
+                                          const state = workspaceStateById[ws.id];
+                                          const wsStorage = storageByWorkspaceId[ws.id];
+                                          const lastMessageAt = workspaceLastMessageAtById[ws.id] ?? null;
+                                          const latestConversation = workspaceLastConversationById[ws.id] ?? null;
+                                          const stateLabel = state?.has_live_task
+                                            ? 'live'
+                                            : state?.has_interrupted_task
+                                              ? 'interrupted'
+                                              : 'idle';
+                                          return (
+                                            <span className="users-detail-meta users-detail-meta-workspace admin-ws-item-date">
+                                              <span className="users-detail-col">Chats {ws.conversation_ids.length}</span>
+                                              <span className="users-detail-col">
+                                                {workspaceLastMessageLoadingByUserId[user.id]
+                                                  ? 'Last message loading'
+                                                  : formatDateTime(lastMessageAt)}
+                                              </span>
+                                              <span className="users-detail-col">Context {getConversationContextMeta(latestConversation)}</span>
+                                              <span className="users-detail-col">Model {latestConversation ? formatModelDisplayName(latestConversation.model) : 'n/a'}</span>
+                                              <span className="users-detail-col">Status {stateLabel}</span>
+                                              <span className="users-detail-col">Storage {typeof wsStorage === 'number' ? formatBytes(wsStorage) : 'not sampled'}</span>
+                                            </span>
+                                          );
+                                        }}
+                                      />
+                                    ) : (
+                                      <UserConversationRowList
+                                        conversations={sortedStandaloneChats}
+                                        loading={standaloneChatsLoadingUserId === user.id}
+                                        onSelect={(conversation) => onOpenChat(conversation.id)}
+                                        onDelete={handleDeleteConversation}
+                                        onCancelTask={handleCancelConversationTask}
+                                        renderMeta={(conversation) => {
+                                          const messageCount = conversation.messages?.length ?? 0;
+                                          const taskState = conversation.active_task_id ? 'running' : 'idle';
+                                          return (
+                                            <span className="users-detail-meta users-detail-meta-chat admin-ws-item-date">
+                                              <span className="users-detail-col">Messages {messageCount}</span>
+                                              <span className="users-detail-col">{formatDateTime(conversation.updated_at)}</span>
+                                              <span className="users-detail-col">Context {getConversationContextMeta(conversation)}</span>
+                                              <span className="users-detail-col">Model {formatModelDisplayName(conversation.model)}</span>
+                                              <span className="users-detail-col">Task {taskState}</span>
+                                            </span>
+                                          );
+                                        }}
+                                        emptyMessage="No non-workspace chats for this user."
+                                      />
+                                    )}
+                                  </div>
                                 </td>
                               </tr>
                             )}
