@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/api';
-import type { CommitHistoryInfo, IndexAnalysisResult, IndexJob, IndexInfo, VectorStoreType } from '@/types';
+import type { CommitHistoryInfo, IndexAnalysisResult, IndexJob, IndexInfo, OcrMode, OcrProvider, VectorStoreType } from '@/types';
 import { AnalysisStats } from './AnalysisStats';
 import { IndexConfigFields } from './IndexConfigFields';
 import { OcrVectorStoreFields } from './OcrVectorStoreFields';
@@ -149,10 +149,11 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [chunkSize, setChunkSize] = useState(configSnapshot?.chunk_size || 1000);
   const [chunkOverlap, setChunkOverlap] = useState(configSnapshot?.chunk_overlap || 200);
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(configSnapshot?.max_file_size_kb || 500);
-  const [ocrMode, setOcrMode] = useState<'disabled' | 'tesseract' | 'ollama'>(configSnapshot?.ocr_mode || 'disabled');
+  const [ocrMode, setOcrMode] = useState<OcrMode>(configSnapshot?.ocr_mode || 'disabled');
+  const [ocrProvider, setOcrProvider] = useState<OcrProvider | null>(configSnapshot?.ocr_provider ?? null);
   const [ocrVisionModel, setOcrVisionModel] = useState(configSnapshot?.ocr_vision_model || '');
   const [vectorStoreType, setVectorStoreType] = useState<VectorStoreType>(existingVectorStoreType ?? editIndex?.vector_store_type ?? 'faiss');
-  const [ollamaAvailable, setOllamaAvailable] = useState(false);  // Whether Ollama is configured as LLM provider
+  const [visionOcrAvailable] = useState(true);
   const [gitCloneTimeoutMinutes, setGitCloneTimeoutMinutes] = useState(configSnapshot?.git_clone_timeout_minutes || 5);
   const [gitHistoryDepth, setGitHistoryDepth] = useState(configSnapshot?.git_history_depth ?? 1);
   const [reindexIntervalHours, setReindexIntervalHours] = useState(configSnapshot?.reindex_interval_hours || 0);
@@ -161,20 +162,6 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [patternsExpanded, setPatternsExpanded] = useState(isEditMode);  // Expand by default in edit mode
   const [description, setDescription] = useState(editIndex?.description || '');
   const [indexName, setIndexName] = useState(editIndex?.display_name || editIndex?.name || '');
-
-  // Fetch settings to check if Ollama OCR is configured
-  useEffect(() => {
-    const loadSettings = async () => {
-      try {
-        const { settings } = await api.getSettings();
-        setOllamaAvailable(settings.default_ocr_mode === 'ollama');
-      } catch {
-        // If settings can't be loaded, Ollama is not available
-        setOllamaAvailable(false);
-      }
-    };
-    loadSettings();
-  }, []);
 
   // Auto-update timeout when depth changes (unless user manually overrode it)
   useEffect(() => {
@@ -201,6 +188,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setChunkOverlap(snapshot.chunk_overlap || 200);
         setMaxFileSizeKb(snapshot.max_file_size_kb || 500);
         setOcrMode(snapshot.ocr_mode || 'disabled');
+        setOcrProvider(snapshot.ocr_provider ?? null);
         setOcrVisionModel(snapshot.ocr_vision_model || '');
         setReindexIntervalHours(snapshot.reindex_interval_hours || 0);
 
@@ -220,8 +208,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setChunkOverlap(200);
         setMaxFileSizeKb(500);
         setOcrMode('disabled');
+        setOcrProvider(null);
         setOcrVisionModel('');
-        setReindexIntervalHours(0);
         setGitCloneTimeoutMinutes(5);
         setGitHistoryDepth(1);
         setTimeoutManuallySet(false);
@@ -281,6 +269,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     setChunkOverlap(200);
     setMaxFileSizeKb(500);
     setOcrMode('disabled');
+    setOcrProvider(null);
     setOcrVisionModel('');
     setVectorStoreType('faiss');
     setExclusionsApplied(false);
@@ -423,6 +412,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         chunk_overlap: chunkOverlap,
         max_file_size_kb: maxFileSizeKb,
         ocr_mode: ocrMode,
+        ocr_provider: ocrMode === 'vision' ? ocrProvider : null,
         ocr_vision_model: ocrVisionModel || undefined,
       });
       setAnalysisResult(result);
@@ -483,6 +473,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           max_file_size_kb: maxFileSizeKb,
           vector_store_type: vectorStoreType,
           ocr_mode: ocrMode,
+          ocr_provider: ocrMode === 'vision' ? ocrProvider : null,
           ocr_vision_model: ocrVisionModel || undefined,
           git_clone_timeout_minutes: gitCloneTimeoutMinutes,
           git_history_depth: gitHistoryDepth,
@@ -551,6 +542,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         chunk_overlap: chunkOverlap,
         max_file_size_kb: maxFileSizeKb,
         ocr_mode: ocrMode,
+        ocr_provider: ocrMode === 'vision' ? ocrProvider : null,
         ocr_vision_model: ocrVisionModel || undefined,
         git_clone_timeout_minutes: gitCloneTimeoutMinutes,
         git_history_depth: gitHistoryDepth,
@@ -568,6 +560,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setChunkOverlap(snap.chunk_overlap ?? chunkOverlap);
         setMaxFileSizeKb(snap.max_file_size_kb ?? maxFileSizeKb);
         setOcrMode(snap.ocr_mode ?? ocrMode);
+        setOcrProvider(snap.ocr_provider !== undefined ? snap.ocr_provider : ocrProvider);
         setOcrVisionModel(snap.ocr_vision_model ?? ocrVisionModel);
       }
 
@@ -640,7 +633,11 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           isLoading={isLoading}
           ocrMode={ocrMode}
           setOcrMode={setOcrMode}
-          ollamaAvailable={ollamaAvailable}
+          ocrProvider={ocrProvider}
+          setOcrProvider={setOcrProvider}
+          ocrVisionModel={ocrVisionModel}
+          setOcrVisionModel={setOcrVisionModel}
+          visionOcrAvailable={visionOcrAvailable}
           vectorStoreType={vectorStoreType}
           setVectorStoreType={setVectorStoreType}
           vectorStoreDisabled={true}
@@ -846,7 +843,11 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           isLoading={isLoading}
           ocrMode={ocrMode}
           setOcrMode={setOcrMode}
-          ollamaAvailable={ollamaAvailable}
+          ocrProvider={ocrProvider}
+          setOcrProvider={setOcrProvider}
+          ocrVisionModel={ocrVisionModel}
+          setOcrVisionModel={setOcrVisionModel}
+          visionOcrAvailable={visionOcrAvailable}
           vectorStoreType={vectorStoreType}
           setVectorStoreType={setVectorStoreType}
           vectorStoreDisabled={!!existingVectorStoreType}
@@ -949,7 +950,11 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           isLoading={isLoading}
           ocrMode={ocrMode}
           setOcrMode={setOcrMode}
-          ollamaAvailable={ollamaAvailable}
+          ocrProvider={ocrProvider}
+          setOcrProvider={setOcrProvider}
+          ocrVisionModel={ocrVisionModel}
+          setOcrVisionModel={setOcrVisionModel}
+          visionOcrAvailable={visionOcrAvailable}
           vectorStoreType={vectorStoreType}
           setVectorStoreType={setVectorStoreType}
           vectorStoreDisabled={!!existingVectorStoreType}

@@ -18,7 +18,7 @@ Extracts text content from various document formats:
 OCR Modes:
 - disabled: Skip image files
 - tesseract: Traditional OCR (fast, basic text extraction)
-- ollama: Semantic OCR with vision models (slower, better understanding)
+- vision: Semantic OCR with multimodal vision models (slower, better understanding)
 """
 
 import asyncio
@@ -45,7 +45,7 @@ from ragtime.core.vision_models import (
 logger = get_logger(__name__)
 
 # Type alias for OCR mode
-OcrModeType = Literal["disabled", "tesseract", "ollama"]
+OcrModeType = Literal["disabled", "tesseract", "vision"]
 
 
 def extract_text_from_file(
@@ -53,21 +53,25 @@ def extract_text_from_file(
     content: Optional[bytes] = None,
     enable_ocr: bool = False,
     ocr_mode: OcrModeType = "disabled",
+    ocr_provider: Optional[str] = None,
     ocr_vision_model: Optional[str] = None,
-    ollama_base_url: Optional[str] = None,
+    vision_base_url: Optional[str] = None,
+    vision_api_key: Optional[str] = None,
 ) -> str:
     """
     Extract text content from a file based on its extension.
 
-    For async OCR with Ollama vision models, use extract_text_from_file_async instead.
+    For async OCR with vision models, use extract_text_from_file_async instead.
 
     Args:
         file_path: Path to the file
         content: Optional pre-loaded file content (bytes)
         enable_ocr: Legacy flag - if True and ocr_mode is 'disabled', uses tesseract
-        ocr_mode: OCR mode ('disabled', 'tesseract', 'ollama')
-        ocr_vision_model: Ollama vision model for OCR (required when ocr_mode='ollama')
-        ollama_base_url: Ollama server URL (required when ocr_mode='ollama')
+        ocr_mode: OCR mode ('disabled', 'tesseract', or 'vision')
+        ocr_provider: Provider for semantic vision OCR
+        ocr_vision_model: Vision model for OCR
+        vision_base_url: Provider base URL for semantic vision OCR
+        vision_api_key: Optional provider API key
 
     Returns:
         Extracted text content as string
@@ -119,10 +123,10 @@ def extract_text_from_file(
             return _extract_html(content)
         elif suffix in OCR_EXTENSIONS and effective_ocr_mode == "tesseract":
             return _extract_image_ocr(content)
-        elif suffix in OCR_EXTENSIONS and effective_ocr_mode == "ollama":
-            # Ollama vision OCR requires async - log warning and fall back to tesseract
+        elif suffix in OCR_EXTENSIONS and effective_ocr_mode == "vision":
+            # Vision OCR requires async - log warning and fall back to tesseract
             logger.warning(
-                f"Ollama vision OCR requires async. Use extract_text_from_file_async() "
+                f"Vision OCR requires async. Use extract_text_from_file_async() "
                 f"for {file_path.name}. Falling back to tesseract."
             )
             return _extract_image_ocr(content)
@@ -141,8 +145,10 @@ def extract_text_from_file(
 async def extract_image_structured_async(
     file_path: Path,
     content: Optional[bytes] = None,
+    ocr_provider: Optional[str] = None,
     ocr_vision_model: Optional[str] = None,
-    ollama_base_url: Optional[str] = None,
+    vision_base_url: Optional[str] = None,
+    vision_api_key: Optional[str] = None,
 ):
     """
     Extract structured OCR data from an image for semantic chunking.
@@ -153,8 +159,10 @@ async def extract_image_structured_async(
     Args:
         file_path: Path to the image file
         content: Optional pre-loaded file content
-        ocr_vision_model: Ollama vision model name
-        ollama_base_url: Ollama server URL
+        ocr_provider: Provider for semantic vision OCR
+        ocr_vision_model: Vision model name
+        vision_base_url: Provider base URL
+        vision_api_key: Optional provider API key
 
     Returns:
         VisionOcrResult with structured semantic data, or None if extraction fails
@@ -164,7 +172,10 @@ async def extract_image_structured_async(
     if suffix not in OCR_EXTENSIONS:
         return None
 
-    if not ocr_vision_model or not ollama_base_url:
+    effective_provider = ocr_provider or "ollama"
+    effective_base_url = vision_base_url
+
+    if not ocr_vision_model or not effective_base_url:
         logger.warning("Structured OCR requires vision model and base URL")
         return None
 
@@ -179,8 +190,10 @@ async def extract_image_structured_async(
     try:
         return await extract_text_with_vision_structured(
             image_content=content,
-            base_url=ollama_base_url,
+            base_url=effective_base_url,
             model=ocr_vision_model,
+            provider=effective_provider,
+            api_key=vision_api_key,
             source_format=suffix,
             include_classification=True,
         )
@@ -194,11 +207,13 @@ async def extract_text_from_file_async(
     content: Optional[bytes] = None,
     enable_ocr: bool = False,
     ocr_mode: OcrModeType = "disabled",
+    ocr_provider: Optional[str] = None,
     ocr_vision_model: Optional[str] = None,
-    ollama_base_url: Optional[str] = None,
+    vision_base_url: Optional[str] = None,
+    vision_api_key: Optional[str] = None,
 ) -> str:
     """
-    Async version of extract_text_from_file with Ollama vision OCR support.
+    Async version of extract_text_from_file with vision OCR support.
 
     Document parsing is run in a thread pool to avoid blocking the event loop,
     keeping the server responsive during indexing.
@@ -207,9 +222,11 @@ async def extract_text_from_file_async(
         file_path: Path to the file
         content: Optional pre-loaded file content (bytes)
         enable_ocr: Legacy flag - if True and ocr_mode is 'disabled', uses tesseract
-        ocr_mode: OCR mode ('disabled', 'tesseract', 'ollama')
-        ocr_vision_model: Ollama vision model for OCR (required when ocr_mode='ollama')
-        ollama_base_url: Ollama server URL (required when ocr_mode='ollama')
+        ocr_mode: OCR mode ('disabled', 'tesseract', or 'vision')
+        ocr_provider: Provider for semantic vision OCR
+        ocr_vision_model: Vision model for OCR
+        vision_base_url: Provider base URL for semantic vision OCR
+        vision_api_key: Optional provider API key
 
     Returns:
         Extracted text content as string
@@ -233,15 +250,22 @@ async def extract_text_from_file_async(
     try:
         # Handle OCR cases for images
         if suffix in OCR_EXTENSIONS:
-            if effective_ocr_mode == "ollama":
-                if not ocr_vision_model or not ollama_base_url:
+            if effective_ocr_mode == "vision":
+                effective_provider = ocr_provider or "ollama"
+                effective_base_url = vision_base_url
+                if not ocr_vision_model or not effective_base_url:
                     logger.warning(
-                        f"Ollama vision OCR requires model and base_url. "
+                        f"Vision OCR requires model and base_url. "
                         f"Falling back to tesseract for {file_path.name}"
                     )
                     return await asyncio.to_thread(_extract_image_ocr, content)
                 return await _extract_image_vision_ocr(
-                    content, ollama_base_url, ocr_vision_model, source_format=suffix
+                    content,
+                    effective_base_url,
+                    ocr_vision_model,
+                    provider=effective_provider,
+                    api_key=vision_api_key,
+                    source_format=suffix,
                 )
             elif effective_ocr_mode == "tesseract":
                 return await asyncio.to_thread(_extract_image_ocr, content)
@@ -781,13 +805,15 @@ def _extract_image_ocr(content: bytes) -> str:
 
 async def _extract_image_vision_ocr(
     content: bytes,
-    ollama_base_url: str,
+    vision_base_url: str,
     vision_model: str,
+    provider: str = "ollama",
+    api_key: str | None = None,
     source_format: str | None = None,
     timeout: float = 60.0,
 ) -> str:
     """
-    Extract text from image using Ollama vision model (semantic OCR).
+    Extract text from image using a vision model (semantic OCR).
 
     This performs semantic OCR - the model understands the image content
     and extracts text while preserving meaning and structure. Images are
@@ -798,8 +824,10 @@ async def _extract_image_vision_ocr(
 
     Args:
         content: Raw image bytes
-        ollama_base_url: Ollama server URL
-        vision_model: Vision model name (e.g., 'qwen3-vl:latest')
+        vision_base_url: Provider base URL
+        vision_model: Vision model name
+        provider: OCR provider name
+        api_key: Optional provider API key
         source_format: Source file extension (e.g., '.cr2' for raw formats)
         timeout: Request timeout in seconds
 
@@ -811,8 +839,10 @@ async def _extract_image_vision_ocr(
     try:
         text = await extract_text_with_vision(
             image_content=content,
-            base_url=ollama_base_url,
+            base_url=vision_base_url,
             model=vision_model,
+            provider=provider,
+            api_key=api_key,
             timeout=timeout,
             preprocess=True,  # Enable image resizing/optimization
             source_format=source_format,  # Pass format for raw handling
@@ -820,7 +850,7 @@ async def _extract_image_vision_ocr(
         )
         elapsed = time.time() - start_time
         logger.debug(
-            f"Vision OCR ({vision_model}) completed in {elapsed:.2f}s, "
+            f"Vision OCR ({provider}/{vision_model}) completed in {elapsed:.2f}s, "
             f"extracted {len(text)} chars"
         )
         return text

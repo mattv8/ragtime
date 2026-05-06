@@ -39,6 +39,7 @@ from ragtime.core.file_constants import (
     get_embedding_safety_margin,
 )
 from ragtime.core.logging import get_logger
+from ragtime.core.model_providers import normalize_provider_name, resolve_provider_base_url
 from ragtime.core.tokenization import count_tokens
 from ragtime.indexer.chunking import (
     chunk_documents_parallel,
@@ -73,6 +74,7 @@ from ragtime.indexer.models import (
     IndexStatus,
     MemoryEstimate,
     OcrMode,
+    OcrProvider,
     VectorStoreType,
 )
 from ragtime.indexer.repository import repository
@@ -990,7 +992,7 @@ class IndexerService:
             # (e.g., git_history_depth, chunk settings, reindex_interval_hours)
             config_snapshot = (
                 getattr(existing_metadata, "configSnapshot", None)
-                or config.model_dump()
+                or config.model_dump(mode="json")
             )
 
             # Preserve existing document/chunk counts on re-index so that if the
@@ -1004,7 +1006,7 @@ class IndexerService:
             logger.debug(f"Re-indexing '{config.name}': preserving existing metadata")
         else:
             description = config.description or ""
-            config_snapshot = config.model_dump()
+            config_snapshot = config.model_dump(mode="json")
             document_count = 0
             chunk_count = 0
             size_bytes = 0
@@ -1098,6 +1100,11 @@ class IndexerService:
                     chunk_overlap=config_snapshot_data.get("chunk_overlap", 200),
                     max_file_size_kb=config_snapshot_data.get("max_file_size_kb", 500),
                     ocr_mode=OcrMode(config_snapshot_data.get("ocr_mode", "disabled")),
+                    ocr_provider=(
+                        OcrProvider(config_snapshot_data["ocr_provider"])
+                        if config_snapshot_data.get("ocr_provider")
+                        else None
+                    ),
                     ocr_vision_model=config_snapshot_data.get("ocr_vision_model"),
                     git_clone_timeout_minutes=config_snapshot_data.get(
                         "git_clone_timeout_minutes", 5
@@ -1401,6 +1408,7 @@ class IndexerService:
                 chunk_overlap=request.chunk_overlap,
                 max_file_size_kb=request.max_file_size_kb,
                 ocr_mode=request.ocr_mode,
+                ocr_provider=request.ocr_provider.value if request.ocr_provider else None,
                 ocr_vision_model=request.ocr_vision_model,
             )
 
@@ -1423,6 +1431,7 @@ class IndexerService:
         chunk_overlap: int = 200,
         max_file_size_kb: int = 500,
         ocr_mode: str = "disabled",
+        ocr_provider: Optional[str] = None,
         ocr_vision_model: Optional[str] = None,
     ) -> IndexAnalysisResult:
         """
@@ -1470,6 +1479,7 @@ class IndexerService:
                 chunk_overlap=chunk_overlap,
                 max_file_size_kb=max_file_size_kb,
                 ocr_mode=ocr_mode,
+                ocr_provider=ocr_provider,
                 ocr_vision_model=ocr_vision_model,
             )
 
@@ -1486,6 +1496,7 @@ class IndexerService:
         chunk_overlap: int,
         max_file_size_kb: int = 500,
         ocr_mode: str = "disabled",
+        ocr_provider: Optional[str] = None,
         ocr_vision_model: Optional[str] = None,
     ) -> IndexAnalysisResult:
         """
@@ -1650,7 +1661,11 @@ class IndexerService:
 
         if ocr_images_found:
             if ocr_enabled:
-                ocr_method = "Ollama Vision" if ocr_mode == "ollama" else "Tesseract"
+                ocr_method = (
+                    f"Vision ({ocr_provider or 'default provider'})"
+                    if ocr_mode == "vision"
+                    else "Tesseract"
+                )
                 warnings.append(
                     f"Found image types ({', '.join(ocr_images_found)}) that will be processed "
                     f"with {ocr_method} to extract text."
@@ -2775,6 +2790,7 @@ class IndexerService:
         documents = []
         skipped_binary = 0
         ocr_mode = config.ocr_mode
+        ocr_provider = config.ocr_provider
         ocr_vision_model = config.ocr_vision_model
         ocr_enabled = ocr_mode != OcrMode.DISABLED
 
@@ -2783,11 +2799,27 @@ class IndexerService:
         max_concurrent_loads = min((os.cpu_count() or 8) // 2, 16)
         load_semaphore = asyncio.Semaphore(max_concurrent_loads)
 
-        # For Ollama vision mode, we need async extraction and the base URL
-        ollama_base_url = None
-        if ocr_mode == OcrMode.OLLAMA:
+        vision_base_url = None
+        vision_api_key = None
+        effective_ocr_provider = ocr_provider.value if ocr_provider else None
+        if ocr_mode == OcrMode.VISION:
             settings = await get_app_settings()
-            ollama_base_url = settings.get("ollama_base_url")
+            if not effective_ocr_provider:
+                effective_ocr_provider = str(
+                    settings.get("default_ocr_provider") or "ollama"
+                )
+            effective_ocr_provider = normalize_provider_name(effective_ocr_provider)
+            if not ocr_vision_model:
+                ocr_vision_model = settings.get("default_ocr_vision_model")
+            vision_base_url = resolve_provider_base_url(
+                settings,
+                effective_ocr_provider,
+                "llm",
+            )
+            api_key_field = f"{effective_ocr_provider}_api_key"
+            if effective_ocr_provider == "openai":
+                api_key_field = "openai_api_key"
+            vision_api_key = settings.get(api_key_field)
 
         async def load_file_async(file_path: Path) -> tuple[Path, List, str | None]:
             """Async file loading with OCR support. Returns (path, docs, error)."""
@@ -2802,8 +2834,10 @@ class IndexerService:
                         content = await extract_text_from_file_async(
                             file_path,
                             ocr_mode=ocr_mode.value,
+                            ocr_provider=effective_ocr_provider,
                             ocr_vision_model=ocr_vision_model,
-                            ollama_base_url=ollama_base_url,
+                            vision_base_url=vision_base_url,
+                            vision_api_key=vision_api_key,
                         )
                         if content:
                             return (
@@ -2842,7 +2876,9 @@ class IndexerService:
                 if ocr_enabled and ext_lower in OCR_EXTENSIONS:
                     # Process image with OCR
                     ocr_method = (
-                        "Ollama Vision" if ocr_mode == OcrMode.OLLAMA else "Tesseract"
+                        f"Vision ({effective_ocr_provider or 'default provider'})"
+                            if ocr_mode == OcrMode.VISION
+                        else "Tesseract"
                     )
                     logger.debug(f"Processing image {file_path.name} with {ocr_method}")
                     files_to_load.append(file_path)
@@ -3246,7 +3282,7 @@ class IndexerService:
         # but user settings like depth/interval/patterns may have been updated
         # since then. We merge: latest DB snapshot wins for user-configurable
         # fields, job config provides the fallback.
-        job_config_snapshot = config.model_dump()
+        job_config_snapshot = config.model_dump(mode="json")
         if existing_metadata:
             db_snapshot = getattr(existing_metadata, "configSnapshot", None)
             if isinstance(db_snapshot, dict):
@@ -3258,6 +3294,7 @@ class IndexerService:
                     "chunk_overlap",
                     "max_file_size_kb",
                     "ocr_mode",
+                    "ocr_provider",
                     "ocr_vision_model",
                     "git_clone_timeout_minutes",
                     "git_history_depth",

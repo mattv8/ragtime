@@ -30,7 +30,8 @@ enum IndexStatus {
 enum OcrMode {
   disabled // No OCR - skip image files
   tesseract // Traditional OCR with Tesseract (fast, basic)
-  ollama // Semantic OCR with Ollama vision model (slower, better understanding)
+  vision // Semantic OCR with a configured multimodal provider/model
+  ollama // Legacy semantic OCR mode for Ollama vision models
 }
 
 /// Configuration for creating an index (stored as part of job)
@@ -113,7 +114,8 @@ model IndexMetadata {
 
   // OCR settings (per-index)
   ocrMode        OcrMode @default(disabled) @map("ocr_mode") // OCR mode for this index
-  ocrVisionModel String? @map("ocr_vision_model") // Ollama vision model (when ocrMode is 'ollama')
+  ocrProvider    String? @map("ocr_provider") // OCR provider when ocrMode is 'vision'
+  ocrVisionModel String? @map("ocr_vision_model") // Vision model when semantic OCR is enabled
 
   // Config snapshot (JSON)
   configSnapshot Json? @map("config_snapshot")
@@ -257,11 +259,12 @@ model AppSettings {
 
   // OCR Configuration (global defaults for new indexes)
   defaultOcrMode        OcrMode @default(disabled) @map("default_ocr_mode") // Default OCR mode for new indexes
-  defaultOcrVisionModel String? @map("default_ocr_vision_model") // Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b')
+  defaultOcrProvider    String? @default("ollama") @map("default_ocr_provider") // Default OCR provider for semantic vision OCR
+  defaultOcrVisionModel String? @map("default_ocr_vision_model") // Default vision model for semantic OCR
   ocrConcurrencyLimit   Int     @default(1) @map("ocr_concurrency_limit") // Max concurrent Ollama vision OCR requests
 
-  // Ollama Embedding Timeout
-  ollamaEmbeddingTimeoutSeconds Int @default(180) @map("ollama_embedding_timeout_seconds") // Per sub-batch timeout (seconds) for Ollama embedding calls
+  // Embedding Timeout
+  ollamaEmbeddingTimeoutSeconds Int @default(180) @map("ollama_embedding_timeout_seconds") // Per sub-batch timeout (seconds) for embedding calls across providers
 
   // User Space Configuration
   snapshotRetentionDays                 Int      @default(0) @map("snapshot_retention_days") // Snapshot retention in days (0 = unlimited)

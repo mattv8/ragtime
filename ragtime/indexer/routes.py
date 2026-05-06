@@ -70,6 +70,7 @@ from ragtime.core.model_limits import (
     get_context_limit,
     get_output_limit,
     register_model_reasoning_capabilities,
+    register_model_image_input_capability,
     register_model_supported_endpoints,
     requires_responses_api,
     supports_function_calling,
@@ -130,7 +131,7 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
 )
 from ragtime.core.validation import require_valid_embedding_provider
-from ragtime.core.vision_models import list_vision_models
+from ragtime.core.vision_models import list_provider_vision_models, list_vision_models
 from ragtime.indexer.background_tasks import (
     background_task_service,
     parse_message_content,
@@ -184,6 +185,7 @@ from ragtime.indexer.models import (
     MysqlDiscoverRequest,
     MysqlDiscoverResponse,
     OcrMode,
+    OcrProvider,
     PdmDiscoverRequest,
     PdmDiscoverResponse,
     PdmIndexJobResponse,
@@ -397,11 +399,15 @@ async def analyze_upload(
     max_file_size_kb: int = Form(default=500, ge=10, le=10000),
     ocr_mode: str = Form(
         default="disabled",
-        description="OCR mode: 'disabled', 'tesseract', or 'ollama'",
+        description="OCR mode: 'disabled', 'tesseract', 'vision', or legacy 'ollama'",
+    ),
+    ocr_provider: Optional[str] = Form(
+        default=None,
+        description="Provider for semantic vision OCR.",
     ),
     ocr_vision_model: Optional[str] = Form(
         default=None,
-        description="Ollama vision model for OCR (e.g., 'qwen3-vl:latest')",
+        description="Vision-capable model for OCR (e.g., 'gpt-4o')",
     ),
     _user: User = Depends(require_admin),
 ):
@@ -446,6 +452,7 @@ async def analyze_upload(
             chunk_overlap=chunk_overlap,
             max_file_size_kb=max_file_size_kb,
             ocr_mode=ocr_mode,
+            ocr_provider=ocr_provider,
             ocr_vision_model=ocr_vision_model,
         )
     except RuntimeError as e:
@@ -625,11 +632,15 @@ async def upload_and_index(
     chunk_overlap: int = Form(default=200, ge=0, le=1000),
     ocr_mode: str = Form(
         default="disabled",
-        description="OCR mode: 'disabled', 'tesseract', or 'ollama'",
+        description="OCR mode: 'disabled', 'tesseract', 'vision', or legacy 'ollama'",
+    ),
+    ocr_provider: Optional[str] = Form(
+        default=None,
+        description="Provider for semantic vision OCR.",
     ),
     ocr_vision_model: Optional[str] = Form(
         default=None,
-        description="Ollama vision model for OCR (e.g., 'qwen3-vl:latest')",
+        description="Vision-capable model for OCR (e.g., 'gpt-4o')",
     ),
     vector_store_type: str = Form(
         default="faiss",
@@ -671,6 +682,7 @@ async def upload_and_index(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         ocr_mode=OcrMode(ocr_mode),
+        ocr_provider=OcrProvider(ocr_provider) if ocr_provider else None,
         ocr_vision_model=ocr_vision_model,
         vector_store_type=VectorStoreType(vector_store_type),
     )
@@ -810,6 +822,11 @@ async def reindex_from_git(
         chunk_overlap=config_data.get("chunk_overlap", 200),
         max_file_size_kb=config_data.get("max_file_size_kb", 500),
         ocr_mode=OcrMode(ocr_mode_str),
+        ocr_provider=(
+            OcrProvider(config_data["ocr_provider"])
+            if config_data.get("ocr_provider")
+            else None
+        ),
         ocr_vision_model=config_data.get("ocr_vision_model"),
         git_clone_timeout_minutes=config_data.get("git_clone_timeout_minutes", 5),
         git_history_depth=config_data.get("git_history_depth", 1),
@@ -1080,11 +1097,16 @@ class UpdateIndexConfigRequest(BaseModel):
         default=None, ge=10, le=10000, description="Maximum file size in KB"
     )
     ocr_mode: Optional[str] = Field(
-        default=None, description="OCR mode: 'disabled', 'tesseract', or 'ollama'"
+        default=None,
+        description="OCR mode: 'disabled', 'tesseract', 'vision', or legacy 'ollama'",
+    )
+    ocr_provider: Optional[str] = Field(
+        default=None,
+        description="Provider for semantic vision OCR.",
     )
     ocr_vision_model: Optional[str] = Field(
         default=None,
-        description="Ollama vision model for OCR (e.g., 'qwen3-vl:latest')",
+        description="Vision-capable model for OCR (e.g., 'gpt-4o')",
     )
     git_clone_timeout_minutes: Optional[int] = Field(
         default=None,
@@ -1142,6 +1164,7 @@ async def update_index_config(
         "chunk_overlap",
         "max_file_size_kb",
         "ocr_mode",
+        "ocr_provider",
         "ocr_vision_model",
         "git_clone_timeout_minutes",
         "git_history_depth",
@@ -1163,6 +1186,8 @@ async def update_index_config(
         new_config["max_file_size_kb"] = request.max_file_size_kb
     if request.ocr_mode is not None:
         new_config["ocr_mode"] = request.ocr_mode
+    if request.ocr_provider is not None:
+        new_config["ocr_provider"] = request.ocr_provider or None
     if request.ocr_vision_model is not None:
         new_config["ocr_vision_model"] = request.ocr_vision_model
     if request.git_clone_timeout_minutes is not None:
@@ -6287,6 +6312,154 @@ class OllamaVisionModelsResponse(BaseModel):
     base_url: str = ""
 
 
+class VisionModelsRequest(BaseModel):
+    """Request to list vision-capable models for a provider."""
+
+    provider: str = Field(
+        default="ollama",
+        description="OCR provider: 'ollama', 'openai', 'omlx', 'lmstudio', or 'llama_cpp'.",
+    )
+    protocol: Optional[str] = Field(default=None, description="Protocol override")
+    host: Optional[str] = Field(default=None, description="Provider host override")
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
+    base_url: Optional[str] = Field(default=None, description="Provider base URL override")
+    api_key: Optional[str] = Field(default=None, description="Provider API key override")
+    candidate_models: List[str] = Field(
+        default_factory=list,
+        description="Optional model IDs retained for compatibility; vision listing uses provider/catalog metadata only.",
+    )
+
+
+class VisionModel(BaseModel):
+    """Information about an available vision OCR model."""
+
+    name: str
+    provider: str
+    modified_at: Optional[str] = None
+    size: Optional[int] = None
+    family: Optional[str] = None
+    parameter_size: Optional[str] = None
+    capabilities: Optional[List[str]] = None
+    context_limit: Optional[int] = None
+    loaded: Optional[bool] = None
+
+
+class VisionModelsResponse(BaseModel):
+    """Response with provider vision models."""
+
+    success: bool
+    message: str
+    models: List[VisionModel] = []
+    provider: str = ""
+    base_url: str = ""
+
+
+def _provider_api_key_from_settings(settings: AppSettings, provider: str) -> str | None:
+    if provider == "openai":
+        return settings.openai_api_key or None
+    if provider == "omlx":
+        return settings.omlx_api_key or None
+    if provider == "lmstudio":
+        return settings.lmstudio_api_key or None
+    return None
+
+
+def _vision_models_from_infos(provider: str, infos: list[Any]) -> list[VisionModel]:
+    return [
+        VisionModel(
+            name=info.name,
+            provider=getattr(info, "provider", provider),
+            modified_at=getattr(info, "modified_at", None),
+            size=getattr(info, "size", None),
+            family=getattr(info, "family", None),
+            parameter_size=getattr(info, "parameter_size", None),
+            capabilities=getattr(info, "capabilities", None),
+            context_limit=getattr(info, "context_limit", None),
+            loaded=getattr(info, "loaded", None),
+        )
+        for info in infos
+    ]
+
+
+@router.post(
+    "/vision-models",
+    response_model=VisionModelsResponse,
+    tags=["Settings"],
+)
+async def get_provider_vision_models(
+    request: VisionModelsRequest, _user: User = Depends(require_admin)
+):
+    """List vision-capable OCR models using provider or catalog metadata."""
+    app_settings = await repository.get_settings()
+    provider = normalize_provider_name(request.provider)
+    provider_info = get_provider(provider)
+    if provider_info is None or not provider_info.supports_vision_ocr:
+        return VisionModelsResponse(
+            success=False,
+            message=f"Provider '{request.provider}' does not support vision OCR.",
+            provider=provider,
+        )
+
+    base_url = (request.base_url or "").strip()
+    if not base_url and request.protocol and request.host and request.port:
+        base_url = f"{request.protocol}://{request.host}:{request.port}"
+    if not base_url:
+        base_url = resolve_provider_base_url(app_settings, provider, "llm")
+
+    api_key = str(request.api_key or "").strip() or _provider_api_key_from_settings(
+        app_settings, provider
+    )
+    candidate_models = list(request.candidate_models)
+
+    try:
+        infos = await list_provider_vision_models(
+            provider,
+            base_url=base_url,
+            api_key=api_key,
+            candidate_models=candidate_models,
+        )
+        models = _vision_models_from_infos(provider, infos)
+        return VisionModelsResponse(
+            success=True,
+            message=f"Found {len(models)} vision-capable model(s).",
+            models=models,
+            provider=provider,
+            base_url=base_url,
+        )
+    except httpx.ConnectError:
+        return VisionModelsResponse(
+            success=False,
+            message=f"Cannot connect to {provider} at {base_url}.",
+            provider=provider,
+            base_url=base_url,
+        )
+    except httpx.TimeoutException:
+        return VisionModelsResponse(
+            success=False,
+            message=f"Connection to {base_url} timed out.",
+            provider=provider,
+            base_url=base_url,
+        )
+    except httpx.HTTPStatusError as e:
+        if provider == "openai" and e.response.status_code == 401:
+            message = "Invalid OpenAI API key. Please check your OpenAI API key."
+        else:
+            message = f"{provider} model metadata request failed: HTTP {e.response.status_code}."
+        return VisionModelsResponse(
+            success=False,
+            message=message,
+            provider=provider,
+            base_url=base_url,
+        )
+    except Exception as e:
+        return VisionModelsResponse(
+            success=False,
+            message=f"Failed to list vision models: {str(e)}",
+            provider=provider,
+            base_url=base_url,
+        )
+
+
 @router.post(
     "/ollama/vision-models",
     response_model=OllamaVisionModelsResponse,
@@ -8663,10 +8836,23 @@ def _extract_provider_capability_metadata(
     reasoning_supported: bool | None = None
     thinking_budget_supported: bool | None = None
     effort_levels: list[str] = []
+    model_id = str(row.get("id") or row.get("name") or row.get("model") or "").strip()
+    image_input_supported = False
 
     supported_endpoints = row.get("supportedEndpoints")
     if isinstance(supported_endpoints, list):
         supported_endpoints_out = [str(item) for item in supported_endpoints]
+
+    input_modalities = None
+    modalities_obj = row.get("modalities")
+    if isinstance(modalities_obj, dict):
+        input_modalities = modalities_obj.get("input")
+    if input_modalities is None:
+        input_modalities = row.get("supported_input_modalities")
+    if isinstance(input_modalities, list):
+        normalized_inputs = {str(item).strip().lower() for item in input_modalities}
+        if normalized_inputs & {"image", "images", "vision"}:
+            image_input_supported = True
 
     capabilities_obj = row.get("capabilities")
     if isinstance(capabilities_obj, list):
@@ -8729,6 +8915,11 @@ def _extract_provider_capability_metadata(
     effort_levels = [level for level in effort_levels if level]
     if effort_levels:
         reasoning_supported = True
+    if image_input_supported:
+        if "image_input" not in capabilities_out:
+            capabilities_out.append("image_input")
+        if model_id:
+            register_model_image_input_capability(model_id, True)
 
     return (
         capabilities_out,

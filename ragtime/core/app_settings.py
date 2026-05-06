@@ -33,6 +33,13 @@ from ragtime.core.userspace_preview_sandbox import (
 logger = get_logger(__name__)
 
 
+def _normalize_default_ocr_mode(value: str | None) -> str:
+    mode = str(value or "").strip().lower()
+    if mode == "ollama":
+        return "vision"
+    return mode or "disabled"
+
+
 PROVIDER_CONNECTION_PRISMA_FIELDS: tuple[
     tuple[ProviderConnection, dict[str, str]], ...
 ] = (
@@ -337,8 +344,11 @@ class SettingsCache:
                 ),
                 "mcp_default_route_allowed_group": prisma_settings.mcpDefaultRouteAllowedGroup,
                 # OCR settings
-                "default_ocr_mode": getattr(
-                    prisma_settings, "defaultOcrMode", "disabled"
+                "default_ocr_mode": _normalize_default_ocr_mode(
+                    getattr(prisma_settings, "defaultOcrMode", "disabled")
+                ),
+                "default_ocr_provider": getattr(
+                    prisma_settings, "defaultOcrProvider", "ollama"
                 ),
                 "default_ocr_vision_model": getattr(
                     prisma_settings, "defaultOcrVisionModel", None
@@ -432,6 +442,7 @@ class SettingsCache:
                 "mcp_default_route_allowed_group": None,
                 # OCR settings
                 "default_ocr_mode": "disabled",
+                "default_ocr_provider": "ollama",
                 "default_ocr_vision_model": None,
                 "ocr_concurrency_limit": 1,
                 "ollama_embedding_timeout_seconds": 180,

@@ -17,6 +17,7 @@ import type {
   ConnectionConfig,
   MountInfo,
   DirectoryEntry,
+  OcrProvider,
   SolidworksPdmConnectionConfig,
 } from '@/types';
 import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO } from '@/types';
@@ -1913,6 +1914,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         max_file_size_mb: existing.max_file_size_mb ?? 10,
         max_total_files: existing.max_total_files ?? 10000,
         ocr_mode: existing.ocr_mode ?? 'disabled',
+        ocr_provider: existing.ocr_provider ?? null,
         ocr_vision_model: existing.ocr_vision_model,
         vector_store_type: existing.vector_store_type ?? 'pgvector',
         reindex_interval_hours: existing.reindex_interval_hours ?? 24,
@@ -1940,6 +1942,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       max_file_size_mb: 10,
       max_total_files: 10000,
       ocr_mode: 'disabled',
+      ocr_provider: null,
       ocr_vision_model: undefined,
       vector_store_type: 'pgvector',
       reindex_interval_hours: 24,
@@ -1980,19 +1983,18 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [pdmExtensionFilter, setPdmExtensionFilter] = useState('');
   const [pdmVariableFilter, setPdmVariableFilter] = useState('');
 
-  // Ollama availability for OCR mode
-  const [ollamaAvailable, setOllamaAvailable] = useState(false);
+  const [visionOcrAvailable, setVisionOcrAvailable] = useState(true);
 
-  // Fetch settings to check if Ollama OCR is configured
+  // Fetch settings to use the global OCR provider/model as the default override baseline.
   useEffect(() => {
     if (toolType === 'filesystem_indexer' || defaultToolType === 'filesystem_indexer') {
       api.getSettings()
-        .then(({ settings }) => {
-          setOllamaAvailable(settings.default_ocr_mode === 'ollama');
+        .then(() => {
+          setVisionOcrAvailable(true);
         })
         .catch((err) => {
           console.warn('Failed to fetch settings for Ollama check:', err);
-          setOllamaAvailable(false);
+          setVisionOcrAvailable(true);
         });
     }
   }, [toolType, defaultToolType]);
@@ -4799,10 +4801,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         <OcrVectorStoreFields
           isLoading={false}
           ocrMode={filesystemConfig.ocr_mode || 'disabled'}
-          setOcrMode={(mode) => setFilesystemConfig({ ...filesystemConfig, ocr_mode: mode })}
-          ollamaAvailable={ollamaAvailable}
+          setOcrMode={(mode) => setFilesystemConfig((prev) => ({ ...prev, ocr_mode: mode }))}
+          ocrProvider={filesystemConfig.ocr_provider ?? null}
+          setOcrProvider={(provider: OcrProvider | null) => setFilesystemConfig((prev) => ({ ...prev, ocr_provider: provider }))}
+          ocrVisionModel={filesystemConfig.ocr_vision_model || ''}
+          setOcrVisionModel={(model) => setFilesystemConfig((prev) => ({ ...prev, ocr_vision_model: model || undefined }))}
+          visionOcrAvailable={visionOcrAvailable}
           vectorStoreType={filesystemConfig.vector_store_type || 'pgvector'}
-          setVectorStoreType={(type) => setFilesystemConfig({ ...filesystemConfig, vector_store_type: type })}
+          setVectorStoreType={(type) => setFilesystemConfig((prev) => ({ ...prev, vector_store_type: type }))}
           vectorStoreDisabled={isEditing}
         />
 

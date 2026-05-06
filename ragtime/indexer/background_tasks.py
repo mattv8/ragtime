@@ -730,7 +730,7 @@ class BackgroundTaskService:
                     )
 
                     # Build config from snapshot
-                    from ragtime.indexer.models import IndexConfig, OcrMode
+                    from ragtime.indexer.models import IndexConfig, OcrMode, OcrProvider
 
                     # Handle legacy enable_ocr field and convert to ocr_mode
                     ocr_mode_str = config_snapshot.get("ocr_mode", "disabled")
@@ -751,6 +751,11 @@ class BackgroundTaskService:
                         chunk_overlap=config_snapshot.get("chunk_overlap", 200),
                         max_file_size_kb=config_snapshot.get("max_file_size_kb", 500),
                         ocr_mode=OcrMode(ocr_mode_str),
+                        ocr_provider=(
+                            OcrProvider(config_snapshot["ocr_provider"])
+                            if config_snapshot.get("ocr_provider")
+                            else None
+                        ),
                         ocr_vision_model=config_snapshot.get("ocr_vision_model"),
                         git_clone_timeout_minutes=config_snapshot.get(
                             "git_clone_timeout_minutes", 5

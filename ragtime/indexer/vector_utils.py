@@ -190,28 +190,28 @@ async def ensure_embedding_column(
 
 # Maximum chunks per embedding API call to avoid blocking too long
 EMBEDDING_SUB_BATCH_SIZE = 50
-# Bound individual Ollama embedding requests so a stuck remote call does not
+# Bound individual embedding requests so a stuck remote call does not
 # pin an indexing background task forever.
-_DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS = 180.0
+_DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 180.0
 
 
-async def _get_ollama_embedding_timeout() -> float:
+async def _get_embedding_timeout() -> float:
     """Read the per sub-batch embedding timeout from app settings."""
     try:
         settings = await get_app_settings()
         timeout_seconds = _get_setting(
             settings,
             "ollama_embedding_timeout_seconds",
-            _DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS,
+            _DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
         )
         return max(1.0, float(timeout_seconds))
     except (TypeError, ValueError) as exc:
-        logger.debug("Invalid ollama_embedding_timeout_seconds: %s", exc)
+        logger.debug("Invalid embedding timeout setting: %s", exc)
     except Exception as exc:
-        logger.debug("Could not read ollama_embedding_timeout_seconds: %s", exc)
-        return _DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS
+        logger.debug("Could not read embedding timeout setting: %s", exc)
+        return _DEFAULT_EMBEDDING_TIMEOUT_SECONDS
 
-    return _DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS
+    return _DEFAULT_EMBEDDING_TIMEOUT_SECONDS
 
 
 class EmbeddingBatchTimeoutError(RuntimeError):
@@ -249,7 +249,7 @@ async def embed_documents_subbatched(
     batch_start = 0
     current_sub_batch_size = max(1, sub_batch_size)
     uses_ollama = _uses_ollama_embeddings(embeddings)
-    embedding_timeout = await _get_ollama_embedding_timeout() if uses_ollama else None
+    embedding_timeout = await _get_embedding_timeout()
 
     while batch_start < total:
         batch_end = min(batch_start + current_sub_batch_size, total)
@@ -263,7 +263,7 @@ async def embed_documents_subbatched(
                 timeout_seconds=embedding_timeout,
             )
         except EmbeddingBatchTimeoutError as exc:
-            if uses_ollama and len(batch_texts) > 1 and current_sub_batch_size > 1:
+            if len(batch_texts) > 1 and current_sub_batch_size > 1:
                 next_batch_size = max(1, current_sub_batch_size // 2)
                 if next_batch_size != current_sub_batch_size:
                     log.warning(
@@ -392,6 +392,7 @@ async def get_embeddings_model(
             model=model,
             api_key="llama-cpp-local",
             base_url=f"{base_url}/v1",
+            check_embedding_ctx_length=False,
         )
 
     if provider == "lmstudio":
@@ -410,6 +411,7 @@ async def get_embeddings_model(
             model=model,
             api_key=api_key,
             base_url=f"{base_url}/v1",
+            check_embedding_ctx_length=False,
         )
 
     if provider == "omlx":
@@ -424,6 +426,7 @@ async def get_embeddings_model(
             model=model,
             api_key=api_key,
             base_url=f"{base_url}/v1",
+            check_embedding_ctx_length=False,
         )
 
     message = f"Unknown embedding provider: {provider}"

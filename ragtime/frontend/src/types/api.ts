@@ -339,7 +339,8 @@ export interface LdapBindDnLookupResponse {
 // =============================================================================
 
 export type IndexStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'interrupted';
-export type OcrMode = 'disabled' | 'tesseract' | 'ollama';
+export type OcrMode = 'disabled' | 'tesseract' | 'vision';
+export type OcrProvider = 'ollama' | 'openai' | 'omlx' | 'lmstudio' | 'llama_cpp';
 
 export interface IndexConfig {
   name: string;
@@ -351,8 +352,9 @@ export interface IndexConfig {
   max_file_size_kb?: number;  // Max file size in KB (default 500)
   embedding_model?: string;
   vector_store_type?: VectorStoreType;  // Vector store backend: faiss (default) or pgvector
-  ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or ollama
-  ocr_vision_model?: string;  // Ollama vision model for OCR
+  ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or vision
+  ocr_provider?: OcrProvider | null;  // Provider for semantic vision OCR
+  ocr_vision_model?: string;  // Vision model for OCR
   git_clone_timeout_minutes?: number;  // Max time for git clone (default 5 min)
   git_history_depth?: number;  // 1=shallow (default), 0=full history
   reindex_interval_hours?: number;  // Hours between auto pull & re-index (0=manual)
@@ -380,8 +382,9 @@ export interface IndexConfigSnapshot {
   chunk_size: number;
   chunk_overlap: number;
   max_file_size_kb: number;
-  ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or ollama
-  ocr_vision_model?: string;  // Ollama vision model for OCR
+  ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or vision
+  ocr_provider?: OcrProvider | null;  // Provider for semantic vision OCR
+  ocr_vision_model?: string;  // Vision model for OCR
   enable_ocr?: boolean;  // Legacy - for backward compatibility
   git_clone_timeout_minutes?: number;  // May be absent for older indexes
   git_history_depth?: number;  // 1=shallow (default), 0=full history
@@ -420,6 +423,7 @@ export interface UpdateIndexConfigRequest {
   chunk_overlap?: number;
   max_file_size_kb?: number;
   ocr_mode?: OcrMode;
+  ocr_provider?: OcrProvider | null;
   ocr_vision_model?: string;
   git_clone_timeout_minutes?: number;
   git_history_depth?: number;
@@ -513,6 +517,7 @@ export interface AnalyzeIndexRequest {
   chunk_overlap: number;
   max_file_size_kb?: number;
   ocr_mode?: OcrMode;
+  ocr_provider?: OcrProvider | null;
   ocr_vision_model?: string;
 }
 
@@ -678,7 +683,8 @@ export interface AppSettings {
   embedding_dimension?: number | null;
   embedding_config_hash?: string | null;
   // OCR Configuration
-  default_ocr_mode: 'disabled' | 'tesseract' | 'ollama';
+  default_ocr_mode: OcrMode;
+  default_ocr_provider?: OcrProvider | null;
   default_ocr_vision_model?: string | null;
   ocr_concurrency_limit: number;
   ollama_embedding_timeout_seconds: number;
@@ -796,7 +802,8 @@ export interface UpdateSettingsRequest {
   // Performance / Memory settings
   sequential_index_loading?: boolean;
   // OCR settings
-  default_ocr_mode?: 'disabled' | 'tesseract' | 'ollama';
+  default_ocr_mode?: OcrMode;
+  default_ocr_provider?: OcrProvider | null;
   default_ocr_vision_model?: string | null;
   ocr_concurrency_limit?: number;
   ollama_embedding_timeout_seconds?: number;
@@ -858,15 +865,20 @@ export interface OllamaTestResponse {
   base_url: string;
 }
 
-// Ollama Vision Models
-export interface OllamaVisionModel {
+// Vision OCR Models
+export interface VisionModel {
   name: string;
+  provider?: OcrProvider | string;
   modified_at?: string;
   size?: number;
   family?: string;
   parameter_size?: string;
   capabilities?: string[];
+  context_limit?: number;
+  loaded?: boolean;
 }
+
+export type OllamaVisionModel = VisionModel;
 
 export interface OllamaVisionModelsRequest {
   protocol: 'http' | 'https';
@@ -878,6 +890,24 @@ export interface OllamaVisionModelsResponse {
   success: boolean;
   message: string;
   models: OllamaVisionModel[];
+  base_url: string;
+}
+
+export interface VisionModelsRequest {
+  provider: OcrProvider;
+  protocol?: 'http' | 'https';
+  host?: string;
+  port?: number;
+  base_url?: string;
+  api_key?: string;
+  candidate_models?: string[];
+}
+
+export interface VisionModelsResponse {
+  success: boolean;
+  message: string;
+  models: VisionModel[];
+  provider: OcrProvider | string;
   base_url: string;
 }
 
@@ -1145,8 +1175,9 @@ export interface FilesystemConnectionConfig {
   // Safety limits
   max_file_size_mb?: number;
   max_total_files?: number;
-  ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or ollama
-  ocr_vision_model?: string;  // Ollama vision model for OCR
+  ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or vision
+  ocr_provider?: OcrProvider | null;  // Provider for semantic vision OCR
+  ocr_vision_model?: string;  // Vision model for OCR
 
   // Re-indexing schedule
   reindex_interval_hours?: number;

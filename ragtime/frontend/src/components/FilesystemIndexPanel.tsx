@@ -48,7 +48,14 @@ function FilesystemIndexCard({
   indexing,
   embeddingDimensions,
 }: FilesystemIndexCardProps) {
-  const config = tool.connection_config as { base_path?: string; index_name?: string; vector_store_type?: string };
+  const config = tool.connection_config as {
+    base_path?: string;
+    index_name?: string;
+    vector_store_type?: string;
+    ocr_mode?: string;
+    ocr_provider?: string | null;
+    ocr_vision_model?: string | null;
+  };
 
   const isActive = activeJob ? (activeJob.status === 'pending' || activeJob.status === 'indexing') : false;
   // Check both stats (active index) and config (intended index) for FAISS type
@@ -72,6 +79,13 @@ function FilesystemIndexCard({
       <span className="meta-pill path" title={config.base_path}>
         {config.base_path || 'Path not configured'}
       </span>
+      {config.ocr_mode && config.ocr_mode !== 'disabled' && (
+        <span className="meta-pill" title="OCR configuration">
+          {config.ocr_mode === 'tesseract'
+            ? 'OCR: Tesseract'
+            : `OCR: ${config.ocr_provider || 'default'}${config.ocr_vision_model ? `/${config.ocr_vision_model}` : ''}`}
+        </span>
+      )}
       {stats && stats.embedding_count > 0 && (
         <>
           <span className="meta-pill files">{stats.file_count} files</span>

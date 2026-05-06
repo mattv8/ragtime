@@ -39,6 +39,7 @@ from ragtime.core.file_constants import (
     get_embedding_safety_margin,
 )
 from ragtime.core.logging import get_logger
+from ragtime.core.model_providers import normalize_provider_name, resolve_provider_base_url
 from ragtime.indexer.chunking import (
     _chunk_with_chonkie_code,
     _chunk_with_recursive,
@@ -1349,16 +1350,33 @@ class FilesystemIndexerService:
                 config, job.tool_config_id
             ) as effective_path:
                 # Resolve OCR vision model - use config value if set, otherwise global default
+                resolved_ocr_provider = (
+                    config.ocr_provider.value if config.ocr_provider else None
+                )
                 resolved_ocr_vision_model = config.ocr_vision_model
-                if not resolved_ocr_vision_model and config.ocr_mode == OcrMode.OLLAMA:
+                if config.ocr_mode == OcrMode.VISION:
+                    if not resolved_ocr_provider:
+                        resolved_ocr_provider = str(
+                            app_settings.get("default_ocr_provider") or "ollama"
+                        )
+                    resolved_ocr_provider = normalize_provider_name(
+                        resolved_ocr_provider
+                    )
+                if (
+                    not resolved_ocr_vision_model
+                    and config.ocr_mode == OcrMode.VISION
+                ):
                     resolved_ocr_vision_model = app_settings.get(
                         "default_ocr_vision_model"
                     )
 
                 # Log OCR mode being used
-                if config.ocr_mode == OcrMode.OLLAMA and resolved_ocr_vision_model:
+                if (
+                    config.ocr_mode == OcrMode.VISION
+                    and resolved_ocr_vision_model
+                ):
                     logger.info(
-                        f"Using Ollama Vision OCR with model: {resolved_ocr_vision_model}"
+                        f"Using Vision OCR with {resolved_ocr_provider}/{resolved_ocr_vision_model}"
                     )
                 elif config.ocr_mode == OcrMode.TESSERACT:
                     logger.info("Using Tesseract OCR")
@@ -1378,6 +1396,7 @@ class FilesystemIndexerService:
                     max_file_size_mb=config.max_file_size_mb,
                     max_total_files=config.max_total_files,
                     ocr_mode=config.ocr_mode,
+                    ocr_provider=resolved_ocr_provider,
                     ocr_vision_model=resolved_ocr_vision_model,
                 )
 
@@ -1968,9 +1987,11 @@ class FilesystemIndexerService:
             metadata = {"source": file_path_str}
             suffix = file_path.suffix.lower()
 
-            # For images with Ollama OCR: use semantic chunking to keep
+            # For images with vision OCR: use semantic chunking to keep
             # classification metadata together with description
-            if suffix in OCR_EXTENSIONS and config.ocr_mode.value == "ollama":
+            if suffix in OCR_EXTENSIONS and config.ocr_mode in {
+                OcrMode.VISION,
+            }:
                 docs = await self._load_image_with_semantic_chunks(
                     file_path, config, metadata
                 )
@@ -1986,6 +2007,7 @@ class FilesystemIndexerService:
                     if hasattr(config.ocr_mode, "value")
                     else str(config.ocr_mode)
                 ),
+                ocr_provider=(config.ocr_provider.value if config.ocr_provider else None),
                 ocr_vision_model=config.ocr_vision_model,
             )
             if not content:
@@ -2052,13 +2074,27 @@ class FilesystemIndexerService:
         """
         # Get Ollama base URL
         app_settings = await get_app_settings()
-        ollama_base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
+        effective_provider = config.ocr_provider.value if config.ocr_provider else None
+        if not effective_provider:
+            effective_provider = str(app_settings.get("default_ocr_provider") or "ollama")
+        effective_provider = normalize_provider_name(effective_provider)
+        vision_base_url = resolve_provider_base_url(
+            app_settings,
+            effective_provider,
+            "llm",
+        )
+        api_key_field = f"{effective_provider}_api_key"
+        if effective_provider == "openai":
+            api_key_field = "openai_api_key"
+        vision_api_key = app_settings.get(api_key_field)
 
         # Get structured OCR result (semaphore is applied at vision_models level)
         result = await extract_image_structured_async(
             file_path,
+            ocr_provider=effective_provider,
             ocr_vision_model=config.ocr_vision_model,
-            ollama_base_url=ollama_base_url,
+            vision_base_url=vision_base_url,
+            vision_api_key=vision_api_key,
         )
 
         if not result:
@@ -2101,26 +2137,41 @@ class FilesystemIndexerService:
         self,
         file_path: Path,
         ocr_mode: str = "disabled",
+        ocr_provider: Optional[str] = None,
         ocr_vision_model: Optional[str] = None,
     ) -> str:
         """Read file content using the unified document parser (handles OCR, docs, text).
 
-        Uses async extraction to support Ollama vision OCR.
+        Uses async extraction to support vision OCR providers.
         """
-        # Get Ollama base URL from app settings for vision OCR
-        ollama_base_url = None
-        if ocr_mode == "ollama":
+        vision_base_url = None
+        vision_api_key = None
+        effective_provider = ocr_provider
+        if ocr_mode == "vision":
             app_settings = await get_app_settings()
-            ollama_base_url = app_settings.get(
-                "ollama_base_url", "http://localhost:11434"
+            if not effective_provider:
+                effective_provider = str(
+                    app_settings.get("default_ocr_provider") or "ollama"
+                )
+            effective_provider = normalize_provider_name(effective_provider)
+            vision_base_url = resolve_provider_base_url(
+                app_settings,
+                effective_provider,
+                "llm",
             )
+            api_key_field = f"{effective_provider}_api_key"
+            if effective_provider == "openai":
+                api_key_field = "openai_api_key"
+            vision_api_key = app_settings.get(api_key_field)
 
         # Semaphore is applied at vision_models level for Ollama requests
         text = await extract_text_from_file_async(
             file_path,
             ocr_mode=ocr_mode,  # type: ignore
+            ocr_provider=effective_provider,
             ocr_vision_model=ocr_vision_model,
-            ollama_base_url=ollama_base_url,
+            vision_base_url=vision_base_url,
+            vision_api_key=vision_api_key,
         )
 
         if text:
@@ -2389,7 +2440,10 @@ class FilesystemIndexerService:
                         ocr_method = (
                             "Tesseract"
                             if ocr_mode_str == "tesseract"
-                            else f"Ollama Vision ({config.ocr_vision_model or 'not configured'})"
+                            else (
+                                f"Vision ({config.ocr_provider or 'default provider'}/"
+                                f"{config.ocr_vision_model or 'not configured'})"
+                            )
                         )
                         warnings.append(
                             f"Found {img_count} image files ({', '.join(ocr_images_found)}) - "

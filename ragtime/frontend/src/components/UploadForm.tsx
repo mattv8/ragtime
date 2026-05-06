@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect, type DragEvent, type ChangeEvent } from 'react';
+import { useState, useCallback, type DragEvent, type ChangeEvent } from 'react';
 import { api } from '@/api';
-import type { IndexJob, IndexAnalysisResult, OcrMode, VectorStoreType } from '@/types';
+import type { IndexJob, IndexAnalysisResult, OcrMode, OcrProvider, VectorStoreType } from '@/types';
 import { DescriptionField } from './DescriptionField';
 import { AnalysisStats } from './AnalysisStats';
 import { IndexConfigFields } from './IndexConfigFields';
@@ -55,10 +55,11 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
   const [chunkOverlap, setChunkOverlap] = useState(200);
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(500);
   const [ocrMode, setOcrMode] = useState<OcrMode>('disabled');
+  const [ocrProvider, setOcrProvider] = useState<OcrProvider | null>(null);
   const [ocrVisionModel, setOcrVisionModel] = useState('');
   // Use existing vector store type if available (locked after first index), otherwise default to 'faiss'
   const [vectorStoreType, setVectorStoreType] = useState<VectorStoreType>(existingVectorStoreType ?? 'faiss');
-  const [ollamaAvailable, setOllamaAvailable] = useState(false);  // Whether Ollama is configured as LLM provider
+  const [visionOcrAvailable] = useState(true);
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(false);
 
@@ -77,26 +78,13 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
     setChunkOverlap(200);
     setMaxFileSizeKb(500);
     setOcrMode('disabled');
+    setOcrProvider(null);
     setOcrVisionModel('');
     // Reset to existing vector store type or default
     setVectorStoreType(existingVectorStoreType ?? 'faiss');
     setExclusionsApplied(false);
     setPatternsExpanded(false);
   }, [existingVectorStoreType]);
-
-  // Fetch settings to check if Ollama OCR is configured
-  useEffect(() => {
-    const loadSettings = async () => {
-      try {
-        const { settings } = await api.getSettings();
-        setOllamaAvailable(settings.default_ocr_mode === 'ollama');
-      } catch {
-        // If settings can't be loaded, Ollama is not available
-        setOllamaAvailable(false);
-      }
-    };
-    loadSettings();
-  }, []);
 
   const handleDragOver = useCallback((e: DragEvent) => {
     e.preventDefault();
@@ -145,7 +133,10 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
       formData.append('chunk_overlap', String(chunkOverlap));
       formData.append('max_file_size_kb', String(maxFileSizeKb));
       formData.append('ocr_mode', ocrMode);
-      if (ocrMode === 'ollama' && ocrVisionModel) {
+      if (ocrMode === 'vision' && ocrProvider) {
+        formData.append('ocr_provider', ocrProvider);
+      }
+      if (ocrMode === 'vision' && ocrVisionModel) {
         formData.append('ocr_vision_model', ocrVisionModel);
       }
 
@@ -206,7 +197,10 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
       formData.append('chunk_overlap', String(chunkOverlap));
       formData.append('ocr_mode', ocrMode);
       formData.append('vector_store_type', vectorStoreType);
-      if (ocrMode === 'ollama' && ocrVisionModel) {
+      if (ocrMode === 'vision' && ocrProvider) {
+        formData.append('ocr_provider', ocrProvider);
+      }
+      if (ocrMode === 'vision' && ocrVisionModel) {
         formData.append('ocr_vision_model', ocrVisionModel);
       }
 
@@ -276,7 +270,11 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
               isLoading={isLoading}
               ocrMode={ocrMode}
               setOcrMode={setOcrMode}
-              ollamaAvailable={ollamaAvailable}
+              ocrProvider={ocrProvider}
+              setOcrProvider={setOcrProvider}
+              ocrVisionModel={ocrVisionModel}
+              setOcrVisionModel={setOcrVisionModel}
+              visionOcrAvailable={visionOcrAvailable}
               vectorStoreType={vectorStoreType}
               setVectorStoreType={setVectorStoreType}
               vectorStoreDisabled={!!existingVectorStoreType}
@@ -377,7 +375,11 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
             isLoading={isLoading}
             ocrMode={ocrMode}
             setOcrMode={setOcrMode}
-            ollamaAvailable={ollamaAvailable}
+            ocrProvider={ocrProvider}
+            setOcrProvider={setOcrProvider}
+            ocrVisionModel={ocrVisionModel}
+            setOcrVisionModel={setOcrVisionModel}
+            visionOcrAvailable={visionOcrAvailable}
             vectorStoreType={vectorStoreType}
             setVectorStoreType={setVectorStoreType}
             vectorStoreDisabled={!!existingVectorStoreType}

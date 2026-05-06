@@ -2523,6 +2523,7 @@ class RAGComponents:
             model=model,
             api_key=api_keys[normalized_provider],
             base_url=f"{base_url}/v1",
+            check_embedding_ctx_length=False,
         )
 
     async def _resolve_llm_max_tokens(self, provider: str, model: str) -> int:

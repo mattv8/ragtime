@@ -57,9 +57,17 @@ class OcrMode(str, Enum):
 
     DISABLED = "disabled"  # No OCR - skip image files
     TESSERACT = "tesseract"  # Traditional OCR with Tesseract (fast, basic)
-    OLLAMA = (
-        "ollama"  # Semantic OCR with Ollama vision model (slower, better understanding)
-    )
+    VISION = "vision"  # Semantic OCR with a configured multimodal provider/model
+
+
+class OcrProvider(str, Enum):
+    """Provider used for semantic vision OCR."""
+
+    OLLAMA = "ollama"
+    OPENAI = "openai"
+    OMLX = "omlx"
+    LMSTUDIO = "lmstudio"
+    LLAMA_CPP = "llama_cpp"
 
 
 class VectorStoreType(str, Enum):
@@ -100,11 +108,15 @@ class IndexConfig(BaseModel):
     )
     ocr_mode: OcrMode = Field(
         default=OcrMode.DISABLED,
-        description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'ollama' (semantic OCR with vision model)",
+        description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'vision' (semantic OCR with multimodal model)",
+    )
+    ocr_provider: Optional[OcrProvider] = Field(
+        default=None,
+        description="Provider for semantic vision OCR. Defaults to global OCR provider when omitted.",
     )
     ocr_vision_model: Optional[str] = Field(
         default=None,
-        description="Ollama vision model for OCR (e.g., 'granite3.2-vision:2b'). Required when ocr_mode is 'ollama'.",
+        description="Vision-capable model for OCR. Required when ocr_mode is 'vision'.",
     )
     git_clone_timeout_minutes: int = Field(
         default=5,
@@ -177,6 +189,7 @@ class IndexConfigSnapshot(BaseModel):
     chunk_overlap: int = Field(default=200)
     max_file_size_kb: int = Field(default=500)
     ocr_mode: OcrMode = Field(default=OcrMode.DISABLED)
+    ocr_provider: Optional[OcrProvider] = Field(default=None)
     ocr_vision_model: Optional[str] = Field(default=None)
     git_clone_timeout_minutes: int = Field(default=5)
     git_history_depth: int = Field(default=1)
@@ -368,11 +381,15 @@ class AnalyzeIndexRequest(BaseModel):
     )
     ocr_mode: OcrMode = Field(
         default=OcrMode.DISABLED,
-        description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'ollama' (semantic OCR with vision model)",
+        description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'vision' (semantic OCR with multimodal model)",
+    )
+    ocr_provider: Optional[OcrProvider] = Field(
+        default=None,
+        description="Provider for semantic vision OCR. Defaults to global OCR provider when omitted.",
     )
     ocr_vision_model: Optional[str] = Field(
         default=None,
-        description="Ollama vision model for OCR (e.g., 'qwen3-vl:latest'). Required when ocr_mode is 'ollama'.",
+        description="Vision-capable model for OCR. Required when ocr_mode is 'vision'.",
     )
 
 
@@ -867,11 +884,15 @@ class AppSettings(BaseModel):
     # OCR Configuration (global defaults for new indexes)
     default_ocr_mode: OcrMode = Field(
         default=OcrMode.DISABLED,
-        description="Default OCR mode for new indexes: 'disabled' (skip images), 'tesseract' (fast), 'ollama' (semantic)",
+        description="Default OCR mode for new indexes: 'disabled' (skip images), 'tesseract' (fast), 'vision' (semantic)",
+    )
+    default_ocr_provider: Optional[OcrProvider] = Field(
+        default=OcrProvider.OLLAMA,
+        description="Default provider for semantic vision OCR.",
     )
     default_ocr_vision_model: Optional[str] = Field(
         default=None,
-        description="Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b'). Required when ocr_mode is 'ollama'.",
+        description="Default vision-capable model for OCR. Required when default_ocr_mode is 'vision'.",
     )
     ocr_concurrency_limit: int = Field(
         default=1,
@@ -880,12 +901,12 @@ class AppSettings(BaseModel):
         description="Max concurrent Ollama vision OCR requests. Higher values use more VRAM.",
     )
 
-    # Ollama Embedding Timeout
+    # Embedding Timeout
     ollama_embedding_timeout_seconds: int = Field(
         default=180,
         ge=30,
         le=600,
-        description="Per sub-batch timeout in seconds for Ollama embedding API calls. Increase for slow hardware or large models.",
+        description="Per sub-batch timeout in seconds for embedding API calls across providers. Increase for slow hardware or large models.",
     )
 
     # User Space Snapshot Retention
@@ -1233,11 +1254,15 @@ class UpdateSettingsRequest(BaseModel):
     # OCR configuration
     default_ocr_mode: Optional[str] = Field(
         default=None,
-        description="Default OCR mode: 'disabled', 'tesseract', or 'ollama'.",
+        description="Default OCR mode: 'disabled', 'tesseract', or 'vision'.",
+    )
+    default_ocr_provider: Optional[str] = Field(
+        default=None,
+        description="Default provider for semantic vision OCR.",
     )
     default_ocr_vision_model: Optional[str] = Field(
         default=None,
-        description="Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b').",
+        description="Default vision-capable model for OCR.",
     )
     ocr_concurrency_limit: Optional[int] = Field(
         default=None,
@@ -1692,11 +1717,15 @@ class FilesystemConnectionConfig(BaseModel):
     )
     ocr_mode: OcrMode = Field(
         default=OcrMode.DISABLED,
-        description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'ollama' (semantic OCR with vision model)",
+        description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'vision' (semantic OCR with multimodal model)",
+    )
+    ocr_provider: Optional[OcrProvider] = Field(
+        default=None,
+        description="Provider for semantic vision OCR. Defaults to global OCR provider when omitted.",
     )
     ocr_vision_model: Optional[str] = Field(
         default=None,
-        description="Ollama vision model for OCR (e.g., 'qwen3-vl:latest'). Required when ocr_mode is 'ollama'.",
+        description="Vision-capable model for OCR. Required when ocr_mode is 'vision'.",
     )
 
     # Re-indexing schedule

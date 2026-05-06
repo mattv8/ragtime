@@ -39,6 +39,7 @@ class ModelProvider:
     supports_embeddings: bool = False
     openai_compatible_chat: bool = False
     openai_compatible_embeddings: bool = False
+    supports_vision_ocr: bool = False
     local: bool = False
 
 
@@ -143,6 +144,7 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
         supports_embeddings=True,
         openai_compatible_chat=True,
         openai_compatible_embeddings=True,
+        supports_vision_ocr=True,
     ),
     "anthropic": ModelProvider(
         name="anthropic",
@@ -157,6 +159,7 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
         embedding_connection=OLLAMA_EMBEDDING_CONNECTION,
         supports_llm=True,
         supports_embeddings=True,
+        supports_vision_ocr=True,
         local=True,
     ),
     "llama_cpp": ModelProvider(
@@ -168,6 +171,7 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
         supports_embeddings=True,
         openai_compatible_chat=True,
         openai_compatible_embeddings=True,
+        supports_vision_ocr=True,
         local=True,
     ),
     "lmstudio": ModelProvider(
@@ -179,6 +183,7 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
         supports_embeddings=True,
         openai_compatible_chat=True,
         openai_compatible_embeddings=True,
+        supports_vision_ocr=True,
         local=True,
     ),
     "omlx": ModelProvider(
@@ -192,6 +197,7 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
         supports_embeddings=True,
         openai_compatible_chat=True,
         openai_compatible_embeddings=True,
+        supports_vision_ocr=True,
         local=True,
     ),
     "github_copilot": ModelProvider(
@@ -219,6 +225,9 @@ LOCAL_LLM_PROVIDER_NAMES = tuple(
     name
     for name, provider in MODEL_PROVIDERS.items()
     if provider.supports_llm and provider.local
+)
+VISION_OCR_PROVIDER_NAMES = tuple(
+    name for name, provider in MODEL_PROVIDERS.items() if provider.supports_vision_ocr
 )
 LOCAL_EMBEDDING_PROVIDER_NAMES = tuple(
     name

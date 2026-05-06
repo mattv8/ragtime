@@ -71,6 +71,24 @@ from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 logger = get_logger(__name__)
 
 
+def _normalize_ocr_mode_value(value: Any) -> str:
+    normalized = str(getattr(value, "value", value) or "").strip().lower()
+    if normalized == "ollama":
+        return "vision"
+    return normalized or "disabled"
+
+
+def _normalize_ocr_snapshot(config_snapshot: dict | None) -> dict | None:
+    if not isinstance(config_snapshot, dict):
+        return config_snapshot
+    normalized = dict(config_snapshot)
+    mode = _normalize_ocr_mode_value(normalized.get("ocr_mode"))
+    normalized["ocr_mode"] = mode
+    if mode == "vision" and not normalized.get("ocr_provider"):
+        normalized["ocr_provider"] = "ollama"
+    return normalized
+
+
 def _sanitize_for_postgres(text: str) -> str:
     """
     Sanitize text for PostgreSQL storage.
@@ -600,6 +618,19 @@ class IndexerRepository:
         # Encrypt gitToken for secure storage
         encrypted_git_token = encrypt_secret(git_token) if git_token else None
         prisma_vector_store_type = _to_prisma_vector_store_type(vector_store_type)
+        ocr_mode = None
+        ocr_provider = None
+        ocr_vision_model = None
+        normalized_config_snapshot = _normalize_ocr_snapshot(config_snapshot)
+        if isinstance(normalized_config_snapshot, dict):
+            ocr_mode = _normalize_ocr_mode_value(
+                normalized_config_snapshot.get("ocr_mode")
+            )
+            raw_ocr_provider = normalized_config_snapshot.get("ocr_provider")
+            ocr_provider = getattr(raw_ocr_provider, "value", raw_ocr_provider)
+            if not ocr_provider and ocr_mode == "vision":
+                ocr_provider = "ollama"
+            ocr_vision_model = normalized_config_snapshot.get("ocr_vision_model")
 
         create_data: dict = {
             "name": name,
@@ -614,6 +645,9 @@ class IndexerRepository:
             "gitBranch": git_branch,
             "gitToken": encrypted_git_token,
             "vectorStoreType": prisma_vector_store_type,
+            "ocrMode": ocr_mode or "disabled",
+            "ocrProvider": ocr_provider,
+            "ocrVisionModel": ocr_vision_model,
             "createdAt": datetime.utcnow(),
             "lastModified": datetime.utcnow(),
         }
@@ -628,6 +662,9 @@ class IndexerRepository:
             "gitBranch": git_branch,
             "gitToken": encrypted_git_token,
             "vectorStoreType": prisma_vector_store_type,
+            "ocrMode": ocr_mode or "disabled",
+            "ocrProvider": ocr_provider,
+            "ocrVisionModel": ocr_vision_model,
             "lastModified": datetime.utcnow(),
         }
 
@@ -636,9 +673,9 @@ class IndexerRepository:
             update_data["displayName"] = display_name
 
         # Only include configSnapshot if we have actual data
-        if config_snapshot is not None:
-            create_data["configSnapshot"] = Json(config_snapshot)
-            update_data["configSnapshot"] = Json(config_snapshot)
+        if normalized_config_snapshot is not None:
+            create_data["configSnapshot"] = Json(normalized_config_snapshot)
+            update_data["configSnapshot"] = Json(normalized_config_snapshot)
 
         await db.indexmetadata.upsert(
             where={"name": name},
@@ -798,7 +835,9 @@ class IndexerRepository:
         if git_branch is not None:
             update_data["gitBranch"] = git_branch
         if config_snapshot is not None:
-            update_data["configSnapshot"] = Json(config_snapshot)
+            update_data["configSnapshot"] = Json(
+                _normalize_ocr_snapshot(config_snapshot)
+            )
 
         if not update_data:
             return True  # Nothing to update
@@ -1130,7 +1169,10 @@ class IndexerRepository:
             embedding_dimension=getattr(settings, "embeddingDimension", None),
             embedding_config_hash=getattr(settings, "embeddingConfigHash", None),
             # OCR configuration
-            default_ocr_mode=getattr(settings, "defaultOcrMode", "disabled"),
+            default_ocr_mode=_normalize_ocr_mode_value(
+                getattr(settings, "defaultOcrMode", "disabled")
+            ),
+            default_ocr_provider=getattr(settings, "defaultOcrProvider", "ollama"),
             default_ocr_vision_model=getattr(settings, "defaultOcrVisionModel", None),
             ocr_concurrency_limit=getattr(settings, "ocrConcurrencyLimit", 1),
             ollama_embedding_timeout_seconds=getattr(
@@ -1277,6 +1319,7 @@ class IndexerRepository:
             "embedding_config_hash": "embeddingConfigHash",
             # OCR configuration
             "default_ocr_mode": "defaultOcrMode",
+            "default_ocr_provider": "defaultOcrProvider",
             "default_ocr_vision_model": "defaultOcrVisionModel",
             "ocr_concurrency_limit": "ocrConcurrencyLimit",
             "ollama_embedding_timeout_seconds": "ollamaEmbeddingTimeoutSeconds",

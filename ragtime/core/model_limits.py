@@ -35,6 +35,8 @@ _model_supports_responses_api: dict[str, bool] = {}
 _provider_supports_reasoning: dict[str, bool] = {}
 # Cache for provider-reported thinking-budget capabilities (authoritative)
 _provider_supports_thinking_budget: dict[str, bool] = {}
+# Cache for provider-reported or live-probed image input capabilities (authoritative)
+_provider_supports_image_input: dict[str, bool] = {}
 _cache_lock = asyncio.Lock()
 _cache_loaded = False
 
@@ -646,6 +648,55 @@ def register_model_reasoning_capabilities(
             _model_supports_reasoning[key] = True
         if thinking_budget_supported:
             _model_supports_thinking_budget[key] = True
+
+
+def register_model_image_input_capability(
+    model_id: str,
+    supported: bool,
+) -> None:
+    """Register image-input capability from provider metadata or a live probe.
+
+    This intentionally does not infer from model-name patterns. Callers should
+    only pass data reported by a provider API or confirmed by a request that
+    includes an image input.
+    """
+    normalized_model_id = str(model_id or "").strip()
+    if not normalized_model_id:
+        return
+
+    key_variants = {normalized_model_id}
+    if "/" in normalized_model_id:
+        _, _, short_id = normalized_model_id.partition("/")
+        if short_id:
+            key_variants.add(short_id)
+
+    for key in key_variants:
+        _provider_supports_image_input[key] = bool(supported)
+
+
+def register_model_input_modalities(
+    model_id: str,
+    modalities: list[str] | tuple[str, ...] | set[str],
+) -> None:
+    """Register provider-reported input modalities for a model."""
+    normalized = {str(modality or "").strip().lower() for modality in modalities}
+    if not normalized:
+        return
+    register_model_image_input_capability(
+        model_id,
+        bool(normalized & {"image", "images", "vision"}),
+    )
+
+
+async def supports_image_input(model_id: str) -> bool:
+    """Check if provider metadata or a live probe confirms image input support."""
+    await _ensure_cache_loaded()
+
+    matched = _lookup_capability_flag(_provider_supports_image_input, model_id)
+    if matched is not None:
+        return matched
+
+    return False
 
 
 async def requires_responses_api(model_id: str) -> bool:

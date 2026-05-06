@@ -2,7 +2,7 @@ import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Lock, LockOpen, Info, Search, ExternalLink, X, Eye, EyeOff, Pencil } from 'lucide-react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, AuthProviderConfig, AuthGroup, LdapUserProfile, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire, UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar, User } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, VisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, AuthProviderConfig, AuthGroup, LdapUserProfile, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire, UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar, User, OcrMode, OcrProvider } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
@@ -12,6 +12,7 @@ import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
 import { CheckboxDropdown } from './shared/CheckboxDropdown';
+import { OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
 import { renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
 import { useToast, ToastContainer } from './shared/Toast';
 
@@ -326,6 +327,7 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
   | 'omlx_api_key'
   | 'ollama_embedding_timeout_seconds'
   | 'default_ocr_mode'
+  | 'default_ocr_provider'
   | 'default_ocr_vision_model'
   | 'ocr_concurrency_limit'
 > {
@@ -353,6 +355,7 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
     omlx_api_key: data.omlx_api_key,
     ollama_embedding_timeout_seconds: data.ollama_embedding_timeout_seconds,
     default_ocr_mode: data.default_ocr_mode,
+    default_ocr_provider: data.default_ocr_provider || 'ollama',
     default_ocr_vision_model: data.default_ocr_vision_model,
     ocr_concurrency_limit: data.ocr_concurrency_limit,
   };
@@ -1324,6 +1327,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         mcp_default_route_password: data.mcp_default_route_password ?? '',
         // OCR settings
         default_ocr_mode: data.default_ocr_mode,
+        default_ocr_provider: data.default_ocr_provider || 'ollama',
         default_ocr_vision_model: data.default_ocr_vision_model,
         ocr_concurrency_limit: data.ocr_concurrency_limit,
         userspace_preview_sandbox_flags: data.userspace_preview_sandbox_flags,
@@ -1804,6 +1808,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         ollama_embedding_timeout_seconds: formData.ollama_embedding_timeout_seconds,
         sequential_index_loading: formData.sequential_index_loading,
         default_ocr_mode: formData.default_ocr_mode,
+        default_ocr_provider: formData.default_ocr_provider,
         default_ocr_vision_model: formData.default_ocr_vision_model,
         ocr_concurrency_limit: formData.ocr_concurrency_limit,
       };
@@ -2024,31 +2029,49 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
   const [globalEnvVarsSaving, setGlobalEnvVarsSaving] = useState(false);
 
 
-  const [visionModels, setVisionModels] = useState<OllamaVisionModel[]>([]);
+  const [visionModels, setVisionModels] = useState<VisionModel[]>([]);
   const [visionModelsLoading, setVisionModelsLoading] = useState(false);
   const [visionModelsError, setVisionModelsError] = useState<string | null>(null);
   const [showOcrRecommendations, setShowOcrRecommendations] = useState(false);
 
-  // Fetch vision models when OCR mode is set to 'ollama'
+  const selectedOcrProvider = (formData.default_ocr_provider || 'ollama') as OcrProvider;
+  const selectedOcrProviderLabel = OCR_PROVIDER_LABELS[selectedOcrProvider] || selectedOcrProvider;
+
   const fetchVisionModels = useCallback(async () => {
-    if (!formData.ollama_protocol || !formData.ollama_host || !formData.ollama_port) {
-      return;
+    const provider = (formData.default_ocr_provider || 'ollama') as OcrProvider;
+    const request: Parameters<typeof api.getVisionModels>[0] = { provider };
+
+    if (provider === 'ollama') {
+      if (!formData.ollama_protocol || !formData.ollama_host || !formData.ollama_port) return;
+      request.protocol = formData.ollama_protocol as 'http' | 'https';
+      request.host = formData.ollama_host;
+      request.port = formData.ollama_port;
+    } else if (provider === 'openai') {
+      request.api_key = formData.openai_api_key;
+      if (!request.api_key || request.api_key.length < 10) {
+        setVisionModelsError('Enter an OpenAI API key before loading vision models.');
+        return;
+      }
+    } else if (provider === 'omlx') {
+      request.base_url = buildLocalBaseUrl(formData.llm_omlx_protocol, formData.llm_omlx_host, formData.llm_omlx_port, PROVIDER_CONNECTIONS.omlxLlm);
+      request.api_key = formData.omlx_api_key;
+    } else if (provider === 'lmstudio') {
+      request.base_url = buildLocalBaseUrl(formData.llm_lmstudio_protocol, formData.llm_lmstudio_host, formData.llm_lmstudio_port, PROVIDER_CONNECTIONS.lmstudioLlm);
+      request.api_key = formData.lmstudio_api_key;
+    } else if (provider === 'llama_cpp') {
+      request.base_url = buildLocalBaseUrl(formData.llm_llama_cpp_protocol, formData.llm_llama_cpp_host, formData.llm_llama_cpp_port, PROVIDER_CONNECTIONS.llamaCppLlm);
     }
 
     setVisionModelsLoading(true);
     setVisionModelsError(null);
 
     try {
-      const response = await api.getOllamaVisionModels({
-        protocol: formData.ollama_protocol as 'http' | 'https',
-        host: formData.ollama_host,
-        port: formData.ollama_port,
-      });
+      const response = await api.getVisionModels(request);
 
       if (response.success) {
         setVisionModels(response.models);
         if (response.models.length === 0) {
-          setVisionModelsError('No vision-capable models found. Pull a vision model like llava or granite3.2-vision.');
+          setVisionModelsError(`No vision-capable models found for ${OCR_PROVIDER_LABELS[provider] || provider}.`);
         }
       } else {
         setVisionModelsError(response.message);
@@ -2058,14 +2081,31 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     } finally {
       setVisionModelsLoading(false);
     }
-  }, [formData.ollama_protocol, formData.ollama_host, formData.ollama_port]);
+  }, [
+    formData.default_ocr_provider,
+    formData.ollama_protocol,
+    formData.ollama_host,
+    formData.ollama_port,
+    formData.openai_api_key,
+    formData.llm_omlx_protocol,
+    formData.llm_omlx_host,
+    formData.llm_omlx_port,
+    formData.omlx_api_key,
+    formData.llm_lmstudio_protocol,
+    formData.llm_lmstudio_host,
+    formData.llm_lmstudio_port,
+    formData.lmstudio_api_key,
+    formData.llm_llama_cpp_protocol,
+    formData.llm_llama_cpp_host,
+    formData.llm_llama_cpp_port,
+  ]);
 
-  // Auto-fetch vision models when OCR mode changes to 'ollama'
+  // Auto-fetch vision models when OCR mode changes to semantic vision.
   useEffect(() => {
-    if (formData.default_ocr_mode === 'ollama' && visionModels.length === 0 && !visionModelsLoading) {
+    if (formData.default_ocr_mode === 'vision' && visionModels.length === 0 && !visionModelsLoading) {
       fetchVisionModels();
     }
-  }, [formData.default_ocr_mode, fetchVisionModels, visionModels.length, visionModelsLoading]);
+  }, [formData.default_ocr_mode, formData.default_ocr_provider, fetchVisionModels, visionModels.length, visionModelsLoading]);
 
 
 
@@ -4177,7 +4217,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
 
             <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
-                <label>Ollama Embedding Timeout (seconds)</label>
+                <label>Embedding Timeout (seconds)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <input
                     type="range"
@@ -4198,7 +4238,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                   </span>
                 </div>
                 <p className="field-help">
-                  Maximum time allowed per embedding sub-batch when using Ollama.
+                  Maximum time allowed per embedding sub-batch for any embedding provider.
                   If a batch times out, it is automatically retried with a smaller batch size.
                   Increase for slow hardware or large embedding models.
                 </p>
@@ -4236,23 +4276,26 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 Configure default OCR (Optical Character Recognition) mode for extracting text from images during indexing.
               </p>
 
-              <div className="form-row" style={formData.default_ocr_mode === 'ollama' ? { display: 'flex', flexWrap: 'nowrap', gap: 'var(--space-md)' } : undefined}>
+              <div className="form-row" style={formData.default_ocr_mode === 'vision' ? { display: 'flex', flexWrap: 'nowrap', gap: 'var(--space-md)' } : undefined}>
                 <div className="form-group" style={{ flex: 1 }}>
                   <label>Default OCR Mode</label>
                   <select
                     value={formData.default_ocr_mode || 'disabled'}
                     onChange={(e) => {
-                      const newMode = e.target.value as 'disabled' | 'tesseract' | 'ollama';
-                      setFormData({ ...formData, default_ocr_mode: newMode });
-                      // Clear vision model error when changing mode
-                      if (newMode !== 'ollama') {
+                      const newMode = e.target.value as OcrMode;
+                      setFormData({
+                        ...formData,
+                        default_ocr_mode: newMode,
+                        default_ocr_provider: formData.default_ocr_provider || 'ollama',
+                      });
+                      if (newMode !== 'vision') {
                         setVisionModelsError(null);
                       }
                     }}
                   >
                     <option value="disabled">Disabled (skip images)</option>
                     <option value="tesseract">Tesseract (fast, traditional OCR)</option>
-                    <option value="ollama">Ollama Vision (semantic OCR with AI)</option>
+                    <option value="vision">Vision Model (semantic OCR with AI)</option>
                   </select>
                   <p className="field-help">
                     {formData.default_ocr_mode === 'disabled' && (
@@ -4261,62 +4304,78 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                     {formData.default_ocr_mode === 'tesseract' && (
                       <>Fast traditional OCR using Tesseract. Good for screenshots and scanned documents with clear text.</>
                     )}
-                    {formData.default_ocr_mode === 'ollama' && (
+                    {formData.default_ocr_mode === 'vision' && (
                       <>
-                        Semantic OCR using Ollama vision models. Better at understanding complex layouts, handwriting, and context.
+                        Semantic OCR using a vision-capable model. Better at understanding complex layouts, handwriting, and context.
                       </>
                     )}
                   </p>
                 </div>
 
-                {formData.default_ocr_mode === 'ollama' && (
+                {formData.default_ocr_mode === 'vision' && (
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Vision OCR Provider</label>
+                    <select
+                      value={selectedOcrProvider}
+                      onChange={(e) => {
+                        const provider = e.target.value as OcrProvider;
+                        setFormData({
+                          ...formData,
+                          default_ocr_mode: 'vision',
+                          default_ocr_provider: provider,
+                          default_ocr_vision_model: null,
+                        });
+                        setVisionModels([]);
+                        setVisionModelsError(null);
+                      }}
+                    >
+                      {Object.entries(OCR_PROVIDER_LABELS).map(([provider, label]) => (
+                        <option key={provider} value={provider}>{label}</option>
+                      ))}
+                    </select>
+                    <p className="field-help">Uses the provider connection configured above for chat or model serving.</p>
+                  </div>
+                )}
+
+                {formData.default_ocr_mode === 'vision' && (
                   <div className="form-group" style={{ flex: 1 }}>
                     <label>Vision Model</label>
-                    {visionModelsLoading ? (
-                      <p className="muted">Loading vision models...</p>
-                    ) : visionModelsError ? (
-                      <div>
-                        <p className="error-text" style={{ marginBottom: '8px' }}>{visionModelsError}</p>
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          onClick={fetchVisionModels}
-                        >
-                          Retry
-                        </button>
-                      </div>
-                    ) : visionModels.length > 0 ? (
+                    <div style={{ display: 'flex', gap: '8px' }}>
                       <select
                         value={formData.default_ocr_vision_model || ''}
                         onChange={(e) => setFormData({ ...formData, default_ocr_vision_model: e.target.value || null })}
+                        style={{ flex: 1 }}
                       >
-                        <option value="">Select a vision model</option>
+                        <option value="">Select a model</option>
+                        {formData.default_ocr_vision_model
+                          && !visionModels.some((model) => model.name === formData.default_ocr_vision_model) && (
+                          <option value={formData.default_ocr_vision_model}>{formData.default_ocr_vision_model}</option>
+                        )}
                         {visionModels.map((model) => (
-                          <option key={model.name} value={model.name}>
+                          <option key={`${model.provider || selectedOcrProvider}:${model.name}`} value={model.name}>
                             {model.name}
-                            {model.parameter_size && ` (${model.parameter_size})`}
                           </option>
                         ))}
                       </select>
-                    ) : (
-                      <div>
-                        <p className="muted">No vision models loaded.</p>
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          onClick={fetchVisionModels}
-                        >
-                          Load Vision Models
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={fetchVisionModels}
+                        disabled={visionModelsLoading}
+                      >
+                        {visionModelsLoading ? 'Loading...' : 'Load'}
+                      </button>
+                    </div>
+                    {visionModelsError && (
+                      <p className="error-text" style={{ marginBottom: '8px' }}>{visionModelsError}</p>
                     )}
                     <p className="field-help">
-                      Select an Ollama vision model for semantic OCR.
+                      Select a {selectedOcrProviderLabel} vision model for semantic OCR. Load checks provider metadata without running a vision request.
                     </p>
                   </div>
                 )}
 
-                {formData.default_ocr_mode === 'ollama' && (
+                {formData.default_ocr_mode === 'vision' && (
                   <div className="form-group" style={{ flex: '0 0 120px' }}>
                     <label>Concurrency</label>
                     <input
@@ -4334,11 +4393,18 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                 )}
               </div>
 
-              {formData.default_ocr_mode === 'ollama' && (
+              {formData.default_ocr_mode === 'vision' && (
                 <div className="form-group" style={{ marginTop: '-0.5rem', marginBottom: '1rem' }}>
+                  {selectedOcrProvider === 'openai' && (
+                    <p className="field-help" style={{ marginBottom: '8px' }}>
+                      <span style={{ color: 'var(--warning-color, #b58900)' }}>
+                        <strong>API cost note:</strong> OpenAI vision OCR sends image content to the selected model for each processed image. Cost and latency vary by model, image size, and OCR concurrency.
+                      </span>
+                    </p>
+                  )}
                   <p className="field-help">
                     <span style={{ color: 'var(--warning-color, #b58900)' }}>
-                      <strong>Performance note:</strong> Vision models are 3-15x slower than Tesseract depending on model size.
+                      <strong>Performance note:</strong> Vision models are usually slower than Tesseract depending on provider and model size.
                       <button
                         type="button"
                         onClick={() => setShowOcrRecommendations(!showOcrRecommendations)}
@@ -4368,12 +4434,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
                         fontSize: '0.9em',
                         color: 'var(--text-color, inherit)',
                       }}>
-                        <strong>Recommended:</strong> <code>llama3.2-vision</code> (10.7B)<br />
-                        Best balance of speed and accuracy, ~6x slower than Tesseract.
-                        <br /><br />
-                        <strong>Other options:</strong><br />
-                        <code>qwen3-vl</code> (8.8B) - Highest accuracy, cleanest output, but ~14x slower.<br />
-                        <code>llava</code> (7B) - Fastest (~2x slower), but may hallucinate on document OCR.
+                        Use the smallest vision-capable model that reliably reads your document style. Local models trade speed for privacy and cost control; hosted models are often easier to operate but depend on API limits.
                       </div>
                     )}
                   </p>

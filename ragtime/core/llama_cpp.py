@@ -108,6 +108,41 @@ def extract_model_context(row: dict[str, Any]) -> int | None:
     return None
 
 
+def extract_model_capabilities(row: dict[str, Any]) -> list[str]:
+    """Extract explicit model capabilities from llama.cpp metadata rows."""
+    capabilities: list[str] = []
+    capabilities_obj = row.get("capabilities")
+    if isinstance(capabilities_obj, list):
+        capabilities.extend(str(item).strip().lower() for item in capabilities_obj if item)
+    elif isinstance(capabilities_obj, dict):
+        capabilities.extend(
+            str(flag).strip().lower() for flag, enabled in capabilities_obj.items() if enabled
+        )
+
+    input_modalities = None
+    modalities_obj = row.get("modalities")
+    if isinstance(modalities_obj, dict):
+        input_modalities = modalities_obj.get("input")
+    if input_modalities is None:
+        input_modalities = row.get("supported_input_modalities")
+    if isinstance(input_modalities, list):
+        normalized_inputs = {str(item or "").strip().lower() for item in input_modalities}
+        if normalized_inputs & {"image", "images", "vision"}:
+            capabilities.append("image_input")
+
+    if "chat" not in capabilities:
+        capabilities.append("chat")
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for capability in capabilities:
+        if not capability or capability in seen:
+            continue
+        seen.add(capability)
+        deduped.append(capability)
+    return deduped
+
+
 def extract_embedding_dimension(payload: dict[str, Any]) -> int | None:
     """Extract embedding vector length from an OpenAI-compatible response."""
     data = payload.get("data")
@@ -224,7 +259,7 @@ async def list_chat_models(base_url: str) -> list[LlamaCppModelInfo]:
                 name=str(row.get("name") or model_id),
                 created=_coerce_positive_int(row.get("created")),
                 context_limit=context_limit,
-                capabilities=["chat"],
+                capabilities=extract_model_capabilities(row),
                 supported_endpoints=list(OPENAI_COMPATIBLE_CHAT_ENDPOINTS),
             )
         )
