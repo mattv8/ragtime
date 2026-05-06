@@ -1258,6 +1258,10 @@ async def oauth2_token(
             content={"error": error, "error_description": description},
         )
 
+    # Some MCP OAuth clients validate token payloads strictly and reject
+    # `scope: null`; normalize to an OAuth-compatible string value.
+    response_scope = (scope or "").strip()
+
     # Handle authorization_code grant (PKCE flow)
     if grant_type == "authorization_code":
         if not code or not code_verifier:
@@ -1321,7 +1325,7 @@ async def oauth2_token(
             access_token=token,
             token_type="Bearer",
             expires_in=settings.jwt_expire_hours * 3600,
-            scope=scope,
+            scope=response_scope,
         )
 
     # Handle password grant
@@ -1371,7 +1375,7 @@ async def oauth2_token(
             access_token=token,
             token_type="Bearer",
             expires_in=settings.jwt_expire_hours * 3600,
-            scope=scope,
+            scope=response_scope,
         )
 
     else:
