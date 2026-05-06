@@ -332,6 +332,9 @@ const USERSPACE_FILE_TREE_IDLE_POLL_INTERVAL_MS = 10000;
 const USERSPACE_FILE_TREE_MAX_IDLE_POLL_INTERVAL_MS = 15000;
 const USERSPACE_FILE_TREE_BACKGROUND_POLL_INTERVAL_MS = 20000;
 const USERSPACE_WORKSPACE_BADGE_BACKGROUND_POLL_INTERVAL_MS = 20000;
+const USERSPACE_WORKSPACE_CREATE_TASK_POLL_INTERVAL_MS = 1000;
+const USERSPACE_WORKSPACE_DELETE_TASK_POLL_INTERVAL_MS = 1000;
+const USERSPACE_WORKSPACE_DUPLICATE_TASK_POLL_INTERVAL_MS = 1000;
 const USERSPACE_RUNTIME_BACKGROUND_POLL_INTERVAL_MS = 30000;
 const USERSPACE_BROWSER_AUTH_REFRESH_LEAD_MS = 60_000;
 const USERSPACE_PREVIEW_LAUNCH_REFRESH_LEAD_MS = 60_000;
@@ -644,8 +647,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'
   );
   const [creatingWorkspaceTasks, setCreatingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceCreateTask>>({});
+  const creatingWorkspaceTasksRef = useRef<Record<string, UserSpaceWorkspaceCreateTask>>({});
   const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDeleteTask>>({});
+  const deletingWorkspaceTasksRef = useRef<Record<string, UserSpaceWorkspaceDeleteTask>>({});
   const [duplicatingWorkspaceTasks, setDuplicatingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDuplicateTask>>({});
+  const duplicatingWorkspaceTasksRef = useRef<Record<string, UserSpaceWorkspaceDuplicateTask>>({});
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [shareLinkType, setShareLinkType] = useState<ShareLinkType>('anonymous');
@@ -1456,6 +1462,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   );
 
   const creatingWorkspace = activeWorkspaceCreateTasks.length > 0;
+  const activeWorkspaceCreateTaskCount = activeWorkspaceCreateTasks.length;
   const creatingWorkspaceStatus = useMemo(
     () => formatWorkspaceCreateTasksStatus(activeWorkspaceCreateTasks),
     [activeWorkspaceCreateTasks],
@@ -1476,11 +1483,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   );
 
   const deletingWorkspaceId = activeWorkspaceDeleteTasks[0]?.workspace_id ?? null;
+  const activeWorkspaceDeleteTaskCount = activeWorkspaceDeleteTasks.length;
   const deletingWorkspaceStatus = useMemo(
     () => formatWorkspaceDeleteTasksStatus(activeWorkspaceDeleteTasks),
     [activeWorkspaceDeleteTasks],
   );
   const duplicatingWorkspaceSourceId = activeWorkspaceDuplicateTasks[0]?.source_workspace_id ?? null;
+  const activeWorkspaceDuplicateTaskCount = activeWorkspaceDuplicateTasks.length;
   const duplicatingWorkspaceStatus = useMemo(
     () => formatWorkspaceDuplicateTasksStatus(activeWorkspaceDuplicateTasks),
     [activeWorkspaceDuplicateTasks],
@@ -2804,8 +2813,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   }, []);
 
   useEffect(() => {
-    const tasks = Object.values(creatingWorkspaceTasks);
-    if (tasks.length === 0) {
+    creatingWorkspaceTasksRef.current = creatingWorkspaceTasks;
+  }, [creatingWorkspaceTasks]);
+
+  useEffect(() => {
+    if (activeWorkspaceCreateTaskCount === 0) {
       return;
     }
 
@@ -2814,6 +2826,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
     const pollCreateTasks = async () => {
       if (pollInFlight) {
+        return;
+      }
+      const tasks = Object.values(creatingWorkspaceTasksRef.current).filter(
+        (task) => !isWorkspaceCreateTaskTerminal(task.phase),
+      );
+      if (tasks.length === 0) {
         return;
       }
       pollInFlight = true;
@@ -2894,7 +2912,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
         completedTasks.sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at));
         const autoSelectTask = completedTasks.find((task) => task.task_id === latestQueuedWorkspaceCreateTaskIdRef.current)
-          ?? (!activeWorkspaceId ? completedTasks[completedTasks.length - 1] : null);
+          ?? (!activeWorkspaceIdRef.current ? completedTasks[completedTasks.length - 1] : null);
 
         if (autoSelectTask?.workspace_id) {
           if (latestQueuedWorkspaceCreateTaskIdRef.current === autoSelectTask.task_id) {
@@ -2912,17 +2930,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     void pollCreateTasks();
     const intervalId = window.setInterval(() => {
       void pollCreateTasks();
-    }, 1000);
+    }, USERSPACE_WORKSPACE_CREATE_TASK_POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeWorkspaceId, creatingWorkspaceTasks, loadWorkspaces]);
+  }, [activeWorkspaceCreateTaskCount, loadWorkspaces]);
 
   useEffect(() => {
-    const tasks = Object.values(duplicatingWorkspaceTasks);
-    if (tasks.length === 0) {
+    duplicatingWorkspaceTasksRef.current = duplicatingWorkspaceTasks;
+  }, [duplicatingWorkspaceTasks]);
+
+  useEffect(() => {
+    if (activeWorkspaceDuplicateTaskCount === 0) {
       return;
     }
 
@@ -2931,6 +2952,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
     const pollDuplicateTasks = async () => {
       if (pollInFlight) {
+        return;
+      }
+      const tasks = Object.values(duplicatingWorkspaceTasksRef.current).filter(
+        (task) => !isWorkspaceDuplicateTaskTerminal(task.phase),
+      );
+      if (tasks.length === 0) {
         return;
       }
       pollInFlight = true;
@@ -3006,13 +3033,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     void pollDuplicateTasks();
     const intervalId = window.setInterval(() => {
       void pollDuplicateTasks();
-    }, 1000);
+    }, USERSPACE_WORKSPACE_DUPLICATE_TASK_POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [duplicatingWorkspaceTasks, loadWorkspaces]);
+  }, [activeWorkspaceDuplicateTaskCount, loadWorkspaces]);
 
   const handleSelectFile = useCallback(async (path: string) => {
     if (!activeWorkspaceId) return;
@@ -4412,8 +4439,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   }, []);
 
   useEffect(() => {
-    const tasks = Object.values(deletingWorkspaceTasks);
-    if (tasks.length === 0) {
+    deletingWorkspaceTasksRef.current = deletingWorkspaceTasks;
+  }, [deletingWorkspaceTasks]);
+
+  useEffect(() => {
+    if (activeWorkspaceDeleteTaskCount === 0) {
       return;
     }
 
@@ -4422,6 +4452,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
     const pollDeleteTasks = async () => {
       if (pollInFlight) {
+        return;
+      }
+      const tasks = Object.values(deletingWorkspaceTasksRef.current).filter(
+        (task) => !isWorkspaceDeleteTaskTerminal(task.phase),
+      );
+      if (tasks.length === 0) {
         return;
       }
       pollInFlight = true;
@@ -4535,13 +4571,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     void pollDeleteTasks();
     const intervalId = window.setInterval(() => {
       void pollDeleteTasks();
-    }, 1000);
+    }, USERSPACE_WORKSPACE_DELETE_TASK_POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [deletingWorkspaceTasks, loadWorkspaces]);
+  }, [activeWorkspaceDeleteTaskCount, loadWorkspaces]);
 
   const handleOpenMembersModal = useCallback(async () => {
     if (!activeWorkspace || !isOwner) return;

@@ -31,7 +31,7 @@ type ArchiveStep = 'choose' | 'configure';
 
 const EMPTY_STATUS = { type: null, message: '' } as const;
 const ARCHIVE_POLL_INTERVAL_MS = 1000;
-const SQLITE_IMPORT_POLL_INTERVAL_MS = 1000;
+const SQLITE_IMPORT_POLL_INTERVAL_MS = ARCHIVE_POLL_INTERVAL_MS;
 
 interface WorkspaceScmWizardProps {
   workspace: UserSpaceWorkspace;
@@ -261,6 +261,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [archiveDragOver, setArchiveDragOver] = useState(false);
   const [archiveExportTask, setArchiveExportTask] = useState<UserSpaceWorkspaceArchiveExportTask | null>(null);
   const [archiveImportTask, setArchiveImportTask] = useState<UserSpaceWorkspaceArchiveImportTask | null>(null);
+  const onWorkspaceChangedRef = useRef(onWorkspaceChanged);
   const [archiveExports, setArchiveExports] = useState<UserSpaceWorkspaceArchiveExportListItem[]>([]);
   const [archiveExportsScanned, setArchiveExportsScanned] = useState(false);
   const [deletingExportTaskId, setDeletingExportTaskId] = useState<string | null>(null);
@@ -841,6 +842,10 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   }, [archiveImportTask, onWorkspaceChanged, toast]);
 
   useEffect(() => {
+    onWorkspaceChangedRef.current = onWorkspaceChanged;
+  }, [onWorkspaceChanged]);
+
+  useEffect(() => {
     if (activeTab !== 'sql-import' || sqlImportResult) {
       return;
     }
@@ -859,36 +864,50 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     return () => { cancelled = true; };
   }, [activeTab, sqlImportResult, workspace.id]);
 
+  const activeSqlImportTaskId = sqlImportResult && !isSqliteImportTaskTerminal(sqlImportResult.phase)
+    ? sqlImportResult.task_id
+    : null;
+
   useEffect(() => {
-    if (!sqlImportResult || isSqliteImportTaskTerminal(sqlImportResult.phase)) {
+    if (!activeSqlImportTaskId) {
       return;
     }
-    const taskId = sqlImportResult.task_id;
+    const taskId = activeSqlImportTaskId;
     let cancelled = false;
+    let pollInFlight = false;
+    let intervalId: number | null = null;
     async function pollTask(): Promise<void> {
+      if (pollInFlight) {
+        return;
+      }
+      pollInFlight = true;
       try {
         const nextTask = await api.getUserSpaceWorkspaceSqliteImportTask(taskId);
         if (cancelled) return;
         setSqlImportResult(nextTask);
         if (nextTask.phase === 'completed') {
+          if (intervalId !== null) window.clearInterval(intervalId);
           setStatus({ type: 'success', message: nextTask.message || 'SQL import completed.' });
-          await onWorkspaceChanged?.();
+          await onWorkspaceChangedRef.current?.();
         } else if (nextTask.phase === 'failed') {
+          if (intervalId !== null) window.clearInterval(intervalId);
           setStatus({ type: 'error', message: nextTask.error || nextTask.message || 'SQL import failed.' });
         }
       } catch (error) {
         if (!cancelled) {
           setStatus({ type: 'error', message: error instanceof Error ? error.message : 'SQL import status unavailable.' });
         }
+      } finally {
+        pollInFlight = false;
       }
     }
     void pollTask();
-    const intervalId = window.setInterval(() => { void pollTask(); }, SQLITE_IMPORT_POLL_INTERVAL_MS);
+    intervalId = window.setInterval(() => { void pollTask(); }, SQLITE_IMPORT_POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
+      if (intervalId !== null) window.clearInterval(intervalId);
     };
-  }, [onWorkspaceChanged, sqlImportResult]);
+  }, [activeSqlImportTaskId]);
 
   const sqliteEnabled = workspace.sqlite_persistence_mode === 'include';
   const SQL_ACCEPT = '.sql,.dump,.pg,.pgsql,.mysql';

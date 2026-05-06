@@ -177,6 +177,8 @@ type ProviderSortKey = 'provider' | 'model' | 'source' | 'requests' | 'input' | 
 type DailySortKey = 'date' | 'requests' | 'input' | 'output' | 'total' | 'completed' | 'failed' | 'mcpRequests' | 'mcpErrors' | 'apiRequests' | 'apiErrors';
 type McpUserSortKey = 'user' | 'auth' | 'route' | 'requests' | 'success' | 'errors';
 
+const WORKSPACE_DELETE_TASK_POLL_INTERVAL_MS = 1000;
+
 interface DailyCombinedRow extends DailyUsageTrend {
   mcp_requests: number;
   mcp_errors: number;
@@ -380,6 +382,8 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
   const [workspaceStateById, setWorkspaceStateById] = useState<Record<string, WorkspaceConversationStateSummaryItem>>({});
   const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDeleteTask>>({});
+  const deletingWorkspaceTasksRef = useRef<Record<string, UserSpaceWorkspaceDeleteTask>>({});
+  const deletingWorkspaceTaskCount = Object.keys(deletingWorkspaceTasks).length;
 
   const [loading, setLoading] = useState(true);
   const [toasts, toast] = useToast();
@@ -683,8 +687,11 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   };
 
   useEffect(() => {
-    const tasks = Object.values(deletingWorkspaceTasks);
-    if (tasks.length === 0) {
+    deletingWorkspaceTasksRef.current = deletingWorkspaceTasks;
+  }, [deletingWorkspaceTasks]);
+
+  useEffect(() => {
+    if (deletingWorkspaceTaskCount === 0) {
       return;
     }
 
@@ -693,6 +700,12 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
 
     const pollDeleteTasks = async () => {
       if (pollInFlight) {
+        return;
+      }
+      const tasks = Object.values(deletingWorkspaceTasksRef.current).filter(
+        (task) => !isWorkspaceDeleteTaskTerminal(task),
+      );
+      if (tasks.length === 0) {
         return;
       }
       pollInFlight = true;
@@ -782,13 +795,13 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     void pollDeleteTasks();
     const intervalId = window.setInterval(() => {
       void pollDeleteTasks();
-    }, 1000);
+    }, WORKSPACE_DELETE_TASK_POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [deletingWorkspaceTasks, toast]);
+  }, [deletingWorkspaceTaskCount, toast]);
 
   const handleTransferWorkspace = async (workspaceId: string, newOwnerId: string) => {
     try {

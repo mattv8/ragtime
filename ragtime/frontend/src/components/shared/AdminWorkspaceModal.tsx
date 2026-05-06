@@ -15,6 +15,8 @@ import {
 } from '@/utils';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 
+const WORKSPACE_DELETE_TASK_POLL_INTERVAL_MS = 1000;
+
 interface AdminWorkspaceModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -87,6 +89,7 @@ export function AdminWorkspaceModal({
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [workspaceChatStates, setWorkspaceChatStates] = useState<Record<string, { hasLive: boolean; hasInterrupted: boolean }>>({});
   const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDeleteTask>>({});
+  const deletingWorkspaceTasksRef = useRef<Record<string, UserSpaceWorkspaceDeleteTask>>({});
   // Track previous raw interrupted state per workspace so we can detect
   // false -> true transitions and clear stale dismiss cookies.
   const prevChatStateRef = useRef<Record<string, InterruptChatStateSnapshot>>({});
@@ -194,6 +197,7 @@ export function AdminWorkspaceModal({
     () => formatWorkspaceDeleteTasksStatus(activeWorkspaceDeleteTasks),
     [activeWorkspaceDeleteTasks],
   );
+  const activeWorkspaceDeleteTaskCount = activeWorkspaceDeleteTasks.length;
 
   const groupedWorkspaces = useMemo<OwnerGroup[]>(() => {
     const groups = workspaces.reduce<Record<string, { label: string; workspaces: UserSpaceWorkspace[] }>>((acc, ws) => {
@@ -245,8 +249,11 @@ export function AdminWorkspaceModal({
   }, []);
 
   useEffect(() => {
-    const tasks = Object.values(deletingWorkspaceTasks);
-    if (tasks.length === 0) {
+    deletingWorkspaceTasksRef.current = deletingWorkspaceTasks;
+  }, [deletingWorkspaceTasks]);
+
+  useEffect(() => {
+    if (activeWorkspaceDeleteTaskCount === 0) {
       return;
     }
 
@@ -255,6 +262,12 @@ export function AdminWorkspaceModal({
 
     const pollDeleteTasks = async () => {
       if (pollInFlight) {
+        return;
+      }
+      const tasks = Object.values(deletingWorkspaceTasksRef.current).filter(
+        (task) => !isWorkspaceDeleteTaskTerminal(task.phase),
+      );
+      if (tasks.length === 0) {
         return;
       }
       pollInFlight = true;
@@ -342,13 +355,13 @@ export function AdminWorkspaceModal({
     void pollDeleteTasks();
     const intervalId = window.setInterval(() => {
       void pollDeleteTasks();
-    }, 1000);
+    }, WORKSPACE_DELETE_TASK_POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [deletingWorkspaceTasks, onWorkspaceDeleted]);
+  }, [activeWorkspaceDeleteTaskCount, onWorkspaceDeleted]);
 
   const handleTransfer = useCallback(async (workspaceId: string, newOwnerId: string) => {
     try {
