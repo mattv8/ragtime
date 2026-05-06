@@ -19,7 +19,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
 
-import fnmatch
 from langchain_community.document_loaders import TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangChainDocument
@@ -32,7 +31,6 @@ from ragtime.core.embedding_models import (
     get_embedding_models,
 )
 from ragtime.core.file_constants import (
-    BINARY_EXTENSIONS,
     MINIFIED_PATTERNS,
     PARSEABLE_DOCUMENT_EXTENSIONS,
     UNPARSEABLE_BINARY_EXTENSIONS,
@@ -50,10 +48,16 @@ from ragtime.indexer.chunking import (
 )
 from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
 from ragtime.indexer.file_utils import (
-    HARDCODED_EXCLUDES,
     build_authenticated_git_url,
+    collect_files_recursive,
     extract_archive,
     find_source_dir,
+    get_directory_size_bytes,
+    get_matching_pattern,
+    get_matching_file_pattern,
+    is_excluded_directory,
+    is_excluded_by_patterns,
+    should_index_file_type,
 )
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
 from ragtime.indexer.memory_utils import (
@@ -561,10 +565,7 @@ class IndexerService:
                     )
 
                 # Calculate size in thread to avoid blocking event loop
-                def _calc_orphan_size(p=path):
-                    return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
-
-                size_bytes = await asyncio.to_thread(_calc_orphan_size)
+                size_bytes = await asyncio.to_thread(get_directory_size_bytes, path)
 
                 # Check for legacy metadata file
                 legacy_meta: dict[str, Any] = {}
@@ -917,11 +918,9 @@ class IndexerService:
                                 docstore = data[0]
                                 if hasattr(docstore, "_dict"):
                                     doc_count = len(getattr(docstore, "_dict", {}))
-                                    # Calculate disk size
-                                    size_bytes = sum(
-                                        f.stat().st_size
-                                        for f in index_path.rglob("*")
-                                        if f.is_file()
+                                    size_bytes = await asyncio.to_thread(
+                                        get_directory_size_bytes,
+                                        index_path,
                                     )
                                     logger.info(
                                         f"Restoring metadata counts for '{name}' from FAISS data: "
@@ -1515,10 +1514,7 @@ class IndexerService:
         )
 
         # Use centralized constants from file_constants module
-        # BINARY_EXTENSIONS and MINIFIED_PATTERNS are imported at module level
-
-        # Combine user patterns with hardcoded excludes
-        all_excludes = list(exclude_patterns) + HARDCODED_EXCLUDES
+        # MINIFIED_PATTERNS is imported at module level
 
         total_files = 0
         total_size = 0
@@ -1529,57 +1525,56 @@ class IndexerService:
         large_files: List[tuple] = []  # (path, size)
         minified_files: List[str] = []
 
-        # Compile exclude patterns
-        def is_excluded(file_path: Path) -> bool:
-            rel_path = str(file_path.relative_to(source_dir))
-            for pattern in all_excludes:
-                if fnmatch.fnmatch(rel_path, pattern):
-                    return True
-                # Also check just the filename
-                if fnmatch.fnmatch(file_path.name, pattern):
-                    return True
-            return False
-
-        # Compile include patterns
-        def matches_include(file_path: Path) -> tuple:
-            """Returns (matches, pattern) if file matches any include pattern."""
-            rel_path = str(file_path.relative_to(source_dir))
-            for pattern in file_patterns:
-                if fnmatch.fnmatch(rel_path, pattern):
-                    return (True, pattern)
-                if fnmatch.fnmatch(file_path.name, pattern):
-                    return (True, pattern)
-            return (False, None)
-
         # Check if file matches minified patterns
         def is_minified(filename: str) -> bool:
-            for pattern in MINIFIED_PATTERNS:
-                if fnmatch.fnmatch(filename, pattern):
-                    return True
-            return False
+            return get_matching_pattern(filename, filename, MINIFIED_PATTERNS) is not None
 
         # Walk the directory in a thread to avoid blocking the event loop.
-        # rglob + stat on large repos (10K+ files) can take seconds.
+        # os.walk lets us prune excluded directories before descending into them.
         _source_dir = source_dir
-        _file_patterns = file_patterns
-        _max_file_size_bytes = max_file_size_bytes
 
         def _collect_file_entries():
             """Collect file metadata in a background thread."""
             entries = []
-            for fp in _source_dir.rglob("*"):
-                if not fp.is_file():
-                    continue
-                if is_excluded(fp):
-                    continue
-                match_result = matches_include(fp)
-                if not match_result[0]:
-                    continue
-                try:
-                    st_size = fp.stat().st_size
-                except OSError:
-                    continue
-                entries.append((fp, st_size, match_result[1]))
+            for dirpath, dirnames, filenames in os.walk(_source_dir):
+                current_dir = Path(dirpath)
+                dirnames[:] = [
+                    dirname
+                    for dirname in dirnames
+                    if not is_excluded_directory(
+                        current_dir / dirname,
+                        source_dir,
+                        exclude_patterns,
+                    )
+                ]
+
+                for filename in filenames:
+                    fp = current_dir / filename
+                    if is_excluded_by_patterns(
+                        fp,
+                        source_dir,
+                        exclude_patterns,
+                        skip_minified=False,
+                    ):
+                        continue
+                    matched_pattern = get_matching_file_pattern(
+                        fp,
+                        source_dir,
+                        file_patterns,
+                    )
+                    if not should_index_file_type(
+                        fp,
+                        matches_include_pattern=matched_pattern is not None,
+                        ocr_enabled=ocr_enabled,
+                    ):
+                        continue
+                    try:
+                        if not fp.is_file():
+                            continue
+                        st_size = fp.stat().st_size
+                    except OSError:
+                        continue
+                    entries.append((fp, st_size, matched_pattern or "(content match)"))
             return entries
 
         file_entries = await asyncio.to_thread(_collect_file_entries)
@@ -1608,11 +1603,6 @@ class IndexerService:
             stats["total_size"] += size
             if len(stats["sample_files"]) < 5:
                 stats["sample_files"].append(rel_path)
-
-            # Check for issues
-            if ext in BINARY_EXTENSIONS:
-                # Should suggest excluding these
-                pass
 
             # Track files approaching the limit (>80% of max)
             if size > max_file_size_bytes * 0.8:
@@ -2720,60 +2710,16 @@ class IndexerService:
 
         def collect_files_sync() -> List[Path]:
             """Synchronous file collection - runs in thread pool."""
-            files = []
-            # Combine user patterns with hardcoded excludes (module-level constant)
-            all_excludes = list(config.exclude_patterns) + HARDCODED_EXCLUDES
-
-            # Separate file-extension patterns from path patterns
-            # File-extension patterns (*.js, *.min.js) are matched against filename only
-            # Path patterns (**/, */) are matched against the full relative path
-            filename_excludes = []
-            path_excludes = []
-            for exc in all_excludes:
-                # Pattern is a filename pattern if it starts with * but has no path separators
-                if exc.startswith("*") and "/" not in exc and "\\" not in exc:
-                    filename_excludes.append(exc)
-                else:
-                    path_excludes.append(exc)
-
-            # Add hardcoded minified patterns to filename excludes
-            filename_excludes.extend(MINIFIED_PATTERNS)
-
-            for pattern in config.file_patterns:
-                # Use removeprefix instead of lstrip to avoid stripping too many characters
-                # lstrip("**/") on "**/*.py" incorrectly gives ".py", removeprefix gives "*.py"
-                glob_pattern = pattern.removeprefix("**/").removeprefix("*/")
-                logger.debug(
-                    f"Globbing with pattern: {glob_pattern} (original: {pattern})"
+            return [
+                file_path
+                for file_path, _size in collect_files_recursive(
+                    source_dir,
+                    config.file_patterns,
+                    config.exclude_patterns,
+                    max_file_size_bytes=config.max_file_size_kb * 1024,
+                    ocr_enabled=ocr_enabled,
                 )
-                for file_path in source_dir.rglob(glob_pattern):
-                    if file_path.is_file():
-                        rel_path = file_path.relative_to(source_dir)
-                        rel_path_str = str(rel_path)
-                        filename = file_path.name
-
-                        skip = False
-
-                        # Check filename-based excludes (extension patterns like *.min.js)
-                        for exc_pattern in filename_excludes:
-                            if fnmatch.fnmatch(filename, exc_pattern):
-                                logger.debug(
-                                    f"Skipping file matching pattern {exc_pattern}: {rel_path_str}"
-                                )
-                                skip = True
-                                break
-
-                        # Check path-based excludes (directory patterns like **/vendor/**)
-                        if not skip:
-                            for exc_pattern in path_excludes:
-                                clean_exc = exc_pattern.removeprefix("**/")
-                                if fnmatch.fnmatch(rel_path_str, clean_exc):
-                                    skip = True
-                                    break
-
-                        if not skip and file_path not in files:
-                            files.append(file_path)
-            return files
+            ]
 
         all_files = await asyncio.to_thread(collect_files_sync)
 
@@ -2782,13 +2728,10 @@ class IndexerService:
         await repository.update_job(job)
         logger.info(f"Found {len(all_files)} files to index")
 
-        # BINARY_EXTENSIONS is imported from ragtime.core.file_constants
-
         # Load documents in parallel
         # Use asyncio.Semaphore to limit concurrent file loads (prevents memory spikes
         # and I/O saturation). Files are loaded concurrently while respecting limits.
         documents = []
-        skipped_binary = 0
         ocr_mode = config.ocr_mode
         ocr_provider = config.ocr_provider
         ocr_vision_model = config.ocr_vision_model
@@ -2857,7 +2800,8 @@ class IndexerService:
                 except Exception as e:
                     return (file_path, [], str(e))
 
-        # Build list of files to load (filtering out unparseable binaries)
+        # Build list of files to load
+        # Binary/unparseable files are already excluded by collect_files_sync.
         files_to_load = []
         for idx, file_path in enumerate(all_files):
             # Check for cancellation periodically
@@ -2869,29 +2813,11 @@ class IndexerService:
                 await asyncio.sleep(0)
 
             ext_lower = file_path.suffix.lower()
-
-            # Skip truly unparseable binary files (executables, etc.)
-            # When OCR is enabled, allow image files to be processed
-            if ext_lower in UNPARSEABLE_BINARY_EXTENSIONS:
-                if ocr_enabled and ext_lower in OCR_EXTENSIONS:
-                    # Process image with OCR
-                    ocr_method = (
-                        f"Vision ({effective_ocr_provider or 'default provider'})"
-                            if ocr_mode == OcrMode.VISION
-                        else "Tesseract"
-                    )
-                    logger.debug(f"Processing image {file_path.name} with {ocr_method}")
-                    files_to_load.append(file_path)
-                else:
-                    skipped_binary += 1
-                    job.processed_files += 1
-            else:
-                # Log document parsing (no longer a warning since we can parse them)
-                if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS:
-                    logger.debug(
-                        f"Parsing document file {file_path.name} with document parser"
-                    )
-                files_to_load.append(file_path)
+            if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS:
+                logger.debug(
+                    f"Parsing document file {file_path.name} with document parser"
+                )
+            files_to_load.append(file_path)
 
         # Load files in parallel batches
         # Process in batches to allow periodic progress updates and cancellation checks
@@ -2951,9 +2877,6 @@ class IndexerService:
 
             # Brief yield to event loop between batches
             await asyncio.sleep(0)
-
-        if skipped_binary > 0:
-            logger.info(f"Skipped {skipped_binary} binary files")
 
         # Index git commit history if depth > 1
         history_depth = getattr(config, "git_history_depth", 1)
@@ -3252,10 +3175,7 @@ class IndexerService:
         await asyncio.to_thread(db.save_local, str(index_path))
 
         # Calculate index size in thread to avoid blocking event loop
-        def calc_size():
-            return sum(f.stat().st_size for f in index_path.rglob("*") if f.is_file())
-
-        size_bytes = await asyncio.to_thread(calc_size)
+        size_bytes = await asyncio.to_thread(get_directory_size_bytes, index_path)
 
         # Auto-generate description if not provided, but preserve existing description if available
         description = getattr(config, "description", "")

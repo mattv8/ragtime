@@ -201,15 +201,6 @@ NEVER_SUGGEST_EXCLUDE_EXTENSIONS: set[str] = {
 }
 
 # =============================================================================
-# LEGACY ALIAS (deprecated - use specific constants above)
-# =============================================================================
-# For backward compatibility, BINARY_EXTENSIONS includes both unparseable and
-# parseable documents. New code should use the specific constants.
-BINARY_EXTENSIONS: set[str] = (
-    UNPARSEABLE_BINARY_EXTENSIONS | PARSEABLE_DOCUMENT_EXTENSIONS
-)
-
-# =============================================================================
 # LOW VALUE EXTENSIONS
 # =============================================================================
 # Files that are technically text but rarely useful for RAG search.

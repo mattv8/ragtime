@@ -6,6 +6,7 @@ IndexerService (upload/git) and FilesystemIndexerService (local/SMB/NFS).
 """
 
 import hashlib
+import os
 import re
 import zipfile
 from pathlib import Path
@@ -14,9 +15,12 @@ from typing import List, Optional, Tuple
 import fnmatch
 import tarfile
 
-from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
-                                         PARSEABLE_DOCUMENT_EXTENSIONS,
-                                         UNPARSEABLE_BINARY_EXTENSIONS)
+from ragtime.core.file_constants import (
+    MINIFIED_PATTERNS,
+    OCR_EXTENSIONS,
+    PARSEABLE_DOCUMENT_EXTENSIONS,
+    UNPARSEABLE_BINARY_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -123,6 +127,29 @@ def compute_file_hash(file_path: Path, hash_algorithm: str = "sha256") -> str:
     return hasher.hexdigest()
 
 
+def get_directory_size_bytes(path: Path) -> int:
+    """Return total size of regular files under a directory using os.scandir."""
+    total = 0
+    stack = [path]
+
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+
+    return total
+
+
 def matches_pattern(path: str, patterns: List[str]) -> bool:
     """
     Check if a path matches any of the given glob patterns.
@@ -136,15 +163,72 @@ def matches_pattern(path: str, patterns: List[str]) -> bool:
     Returns:
         True if path matches any pattern
     """
+    filename = Path(path).name
+    return get_matching_pattern(path, filename, patterns) is not None
+
+
+def get_matching_pattern(
+    rel_path: str,
+    filename: str,
+    patterns: List[str],
+) -> Optional[str]:
+    """Return the first pattern matching either a relative path or filename."""
     for pattern in patterns:
-        # Strip common prefixes for matching
         clean_pattern = pattern.removeprefix("**/").removeprefix("*/")
-        if fnmatch.fnmatch(path, clean_pattern):
-            return True
-        # Also try the original pattern for exact matches
-        if fnmatch.fnmatch(path, pattern):
-            return True
-    return False
+        if fnmatch.fnmatch(rel_path, clean_pattern):
+            return pattern
+        if fnmatch.fnmatch(filename, clean_pattern):
+            return pattern
+        if fnmatch.fnmatch(rel_path, pattern):
+            return pattern
+        if fnmatch.fnmatch(filename, pattern):
+            return pattern
+    return None
+
+
+def get_matching_file_pattern(
+    file_path: Path,
+    base_path: Path,
+    patterns: List[str],
+) -> Optional[str]:
+    """Return the first pattern matching a file relative to a base path."""
+    rel_path = file_path.relative_to(base_path).as_posix()
+    return get_matching_pattern(rel_path, file_path.name, patterns)
+
+
+def is_excluded_by_patterns(
+    file_path: Path,
+    base_path: Path,
+    exclude_patterns: List[str],
+    *,
+    skip_minified: bool = True,
+    include_hardcoded: bool = True,
+) -> bool:
+    """Check user, hardcoded, and optional minified excludes for a file."""
+    patterns = list(exclude_patterns)
+    if include_hardcoded:
+        patterns.extend(HARDCODED_EXCLUDES)
+    if skip_minified:
+        patterns.extend(MINIFIED_PATTERNS)
+    return get_matching_file_pattern(file_path, base_path, patterns) is not None
+
+
+def is_excluded_directory(
+    dir_path: Path,
+    base_path: Path,
+    exclude_patterns: List[str],
+    *,
+    include_hardcoded: bool = True,
+) -> bool:
+    """Check whether a directory should be pruned before descending into it."""
+    patterns = list(exclude_patterns)
+    if include_hardcoded:
+        patterns.extend(HARDCODED_EXCLUDES)
+    rel_path = dir_path.relative_to(base_path).as_posix()
+    return (
+        get_matching_pattern(rel_path, dir_path.name, patterns) is not None
+        or get_matching_pattern(f"{rel_path}/", dir_path.name, patterns) is not None
+    )
 
 
 def separate_patterns(
@@ -211,8 +295,6 @@ def should_include_file(
     except ValueError:
         return False, "path_outside_base"
 
-    filename = file_path.name
-
     # Check file size first (cheap check)
     try:
         size = file_path.stat().st_size
@@ -223,79 +305,83 @@ def should_include_file(
     except OSError:
         return False, "stat_failed"
 
-    # Combine user excludes with hardcoded excludes
-    all_excludes = list(exclude_patterns) + HARDCODED_EXCLUDES
-
-    # Separate filename patterns (*.js) from path patterns (**/dir/**)
-    filename_excludes, path_excludes = separate_patterns(all_excludes)
-
-    # Add hardcoded minified patterns to filename excludes if skip_minified is enabled
-    if skip_minified:
-        filename_excludes = list(filename_excludes) + list(MINIFIED_PATTERNS)
-
-    # Check filename-based excludes (extension patterns like *.min.js)
-    for exc_pattern in filename_excludes:
-        if fnmatch.fnmatch(filename, exc_pattern):
-            return False, "matched_exclude"
-
-    # Check path-based excludes (directory patterns like **/vendor/**)
-    if matches_pattern(rel_path_str, path_excludes):
+    if is_excluded_by_patterns(
+        file_path,
+        base_path,
+        exclude_patterns,
+        skip_minified=skip_minified,
+    ):
         return False, "matched_exclude"
 
     # Check include patterns (must match at least one)
-    if include_patterns:
-        matched = False
-        for pattern in include_patterns:
-            clean_pattern = pattern.removeprefix("**/").removeprefix("*/")
-            if fnmatch.fnmatch(rel_path_str, clean_pattern):
-                matched = True
-                break
-            if fnmatch.fnmatch(filename, clean_pattern):
-                matched = True
-                break
-        if not matched:
-            return False, "no_include_match"
+    if include_patterns and get_matching_pattern(rel_path_str, file_path.name, include_patterns) is None:
+        return False, "no_include_match"
 
     return True, None
 
 
-def is_binary_file(file_path: Path) -> bool:
+def has_binary_content(file_path: Path, sample_size: int = 8192) -> bool:
+    """Check whether file content appears binary using a small byte sample."""
+    try:
+        with file_path.open("rb") as handle:
+            sample = handle.read(sample_size)
+    except OSError:
+        return True
+
+    if not sample:
+        return False
+
+    for bom, encoding in (
+        (b"\xef\xbb\xbf", "utf-8-sig"),
+        (b"\xff\xfe", "utf-16"),
+        (b"\xfe\xff", "utf-16"),
+    ):
+        if sample.startswith(bom):
+            try:
+                sample.decode(encoding)
+                return False
+            except UnicodeDecodeError:
+                break
+
+    if b"\0" in sample:
+        return True
+
+    try:
+        sample.decode("utf-8")
+        return False
+    except UnicodeDecodeError:
+        pass
+
+    text_bytes = set(range(32, 127)) | {8, 9, 10, 12, 13}
+    non_text_bytes = sum(byte not in text_bytes for byte in sample)
+    return (non_text_bytes / len(sample)) > 0.30
+
+
+def should_index_file_type(
+    file_path: Path,
+    *,
+    matches_include_pattern: bool,
+    ocr_enabled: bool,
+) -> bool:
     """
-    Check if a file appears to be binary based on extension.
+    Decide whether a file's type/content is eligible for indexing.
 
-    Args:
-        file_path: Path to check
-
-    Returns:
-        True if the file has a known binary extension
+    The extension taxonomy lives in file_constants.py. This helper combines that
+    taxonomy with a content sniff so explicit extension lists do not hide
+    text-like files such as .plist files or extensionless scripts.
     """
-    return file_path.suffix.lower() in BINARY_EXTENSIONS
+    suffix = file_path.suffix.lower()
 
+    if suffix in OCR_EXTENSIONS:
+        return ocr_enabled
 
-def is_parseable_document(file_path: Path) -> bool:
-    """
-    Check if a file is a parseable document (PDF, Office, etc.).
+    if suffix in UNPARSEABLE_BINARY_EXTENSIONS:
+        return False
 
-    Args:
-        file_path: Path to check
+    if suffix in PARSEABLE_DOCUMENT_EXTENSIONS:
+        return matches_include_pattern
 
-    Returns:
-        True if the file has a parseable document extension
-    """
-    return file_path.suffix.lower() in PARSEABLE_DOCUMENT_EXTENSIONS
-
-
-def is_unparseable_binary(file_path: Path) -> bool:
-    """
-    Check if a file is truly unparseable (executables, archives, etc.).
-
-    Args:
-        file_path: Path to check
-
-    Returns:
-        True if the file should never be parsed
-    """
-    return file_path.suffix.lower() in UNPARSEABLE_BINARY_EXTENSIONS
+    return not has_binary_content(file_path)
 
 
 def extract_archive(
@@ -407,6 +493,7 @@ def collect_files_recursive(
     skip_minified: bool = True,
     max_file_size_bytes: int = 10 * 1024 * 1024,
     follow_symlinks: bool = False,
+    ocr_enabled: bool = False,
 ) -> List[Tuple[Path, int]]:
     """
     Recursively collect files matching the given patterns.
@@ -424,48 +511,46 @@ def collect_files_recursive(
         List of (file_path, size) tuples
     """
     results: List[Tuple[Path, int]] = []
-    all_excludes = list(exclude_patterns) + HARDCODED_EXCLUDES
 
-    # Separate filename patterns (*.js) from path patterns (**/dir/**)
-    filename_excludes, path_excludes = separate_patterns(all_excludes)
+    for dirpath, dirnames, filenames in os.walk(base_path, followlinks=follow_symlinks):
+        current_dir = Path(dirpath)
+        if not follow_symlinks:
+            dirnames[:] = [
+                dirname
+                for dirname in dirnames
+                if not (current_dir / dirname).is_symlink()
+            ]
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if not is_excluded_directory(
+                current_dir / dirname,
+                base_path,
+                exclude_patterns,
+            )
+        ]
 
-    # Add hardcoded minified patterns to filename excludes if skip_minified is enabled
-    if skip_minified:
-        filename_excludes = list(filename_excludes) + list(MINIFIED_PATTERNS)
-
-    for pattern in include_patterns:
-        # Normalize pattern for rglob
-        glob_pattern = pattern.removeprefix("**/").removeprefix("*/")
-
-        for file_path in base_path.rglob(glob_pattern):
+        for filename in filenames:
             if len(results) >= max_files:
                 logger.warning(f"Reached max file limit ({max_files})")
                 return results
 
+            file_path = current_dir / filename
+
             if not file_path.is_file():
                 continue
 
-            # Skip symlinks if not following them
             if not follow_symlinks and file_path.is_symlink():
                 continue
 
-            try:
-                rel_path = file_path.relative_to(base_path)
-                rel_path_str = str(rel_path)
-            except ValueError:
+            if is_excluded_by_patterns(
+                file_path,
+                base_path,
+                exclude_patterns,
+                skip_minified=skip_minified,
+            ):
                 continue
 
-            filename = file_path.name
-
-            # Check filename-based excludes (extension patterns like *.min.js)
-            if any(fnmatch.fnmatch(filename, exc) for exc in filename_excludes):
-                continue
-
-            # Check path-based excludes (directory patterns like **/vendor/**)
-            if matches_pattern(rel_path_str, path_excludes):
-                continue
-
-            # Check size
             try:
                 size = file_path.stat().st_size
                 if size == 0 or size > max_file_size_bytes:
@@ -473,8 +558,17 @@ def collect_files_recursive(
             except OSError:
                 continue
 
-            # Avoid duplicates
-            if file_path not in [r[0] for r in results]:
-                results.append((file_path, size))
+            matches_include = (
+                get_matching_file_pattern(file_path, base_path, include_patterns)
+                is not None
+            )
+            if not should_index_file_type(
+                file_path,
+                matches_include_pattern=matches_include,
+                ocr_enabled=ocr_enabled,
+            ):
+                continue
+
+            results.append((file_path, size))
 
     return results

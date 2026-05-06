@@ -32,10 +32,8 @@ from prisma.errors import TableNotFoundError
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
 from ragtime.core.file_constants import (
-    DOCUMENT_EXTENSIONS,
     OCR_EXTENSIONS,
     PARSEABLE_DOCUMENT_EXTENSIONS,
-    UNPARSEABLE_BINARY_EXTENSIONS,
     get_embedding_safety_margin,
 )
 from ragtime.core.logging import get_logger
@@ -49,13 +47,17 @@ from ragtime.indexer.chunking import (
     rechunk_texts_batch,
 )
 from ragtime.indexer.document_parser import (
-    OCR_EXTENSIONS,
     extract_image_structured_async,
     extract_text_from_file_async,
-    is_ocr_supported,
-    is_supported_document,
 )
-from ragtime.indexer.file_utils import compute_file_hash, matches_pattern
+from ragtime.indexer.file_utils import (
+    compute_file_hash,
+    get_matching_file_pattern,
+    is_excluded_by_patterns,
+    is_excluded_directory,
+    matches_pattern,
+    should_index_file_type,
+)
 from ragtime.indexer.models import (
     FilesystemAnalysisJob,
     FilesystemAnalysisResult,
@@ -566,7 +568,10 @@ class FilesystemIndexerService:
         """
         Collect files matching the configuration patterns.
 
-        Respects file patterns, exclude patterns, extension whitelist, and size limits.
+        Respects exclude patterns and size limits. Include patterns are treated as
+        explicit matches, but non-binary files are also included so text-like files
+        without common extensions (for example .plist or extensionless scripts)
+        are indexed.
         Also intelligently skips cloud placeholder files (OneDrive/iCloud):
         - Symlinks (not followed)
         - Zero-byte files (cloud-only placeholders)
@@ -632,10 +637,6 @@ class FilesystemIndexerService:
                     if not file_path.is_file():
                         continue
 
-                    # Check if file matches patterns (use shared matches_pattern)
-                    if not matches_pattern(filename, config.file_patterns):
-                        continue
-
                     # Check file size and skip zero-byte files
                     # Re-use stat_info from lstat if available
                     file_size = stat_info.st_size
@@ -647,6 +648,16 @@ class FilesystemIndexerService:
                     # Check exclude patterns (use shared matches_pattern)
                     rel_path = str(file_path.relative_to(base_path))
                     if matches_pattern(rel_path, exclude_patterns):
+                        continue
+
+                    matches_include = matches_pattern(
+                        filename, config.file_patterns
+                    ) or matches_pattern(rel_path, config.file_patterns)
+                    if not should_index_file_type(
+                        file_path,
+                        matches_include_pattern=matches_include,
+                        ocr_enabled=config.ocr_mode != OcrMode.DISABLED,
+                    ):
                         continue
 
                     matching_files.append(file_path)
@@ -2292,53 +2303,86 @@ class FilesystemIndexerService:
                     nonlocal total_files, total_size, skipped_size
                     nonlocal skipped_excluded, dirs_processed
 
-                    for pattern in config.file_patterns:
-                        glob_pattern = pattern.removeprefix("**/").removeprefix("*/")
-                        glob_func = (
-                            base_path.rglob if config.recursive else base_path.glob
+                    walker = (
+                        os.walk(base_path, followlinks=False)
+                        if config.recursive
+                        else [(str(base_path), [], os.listdir(base_path))]
+                    )
+
+                    for dirpath, dirnames, filenames in walker:
+                        current_dir = Path(dirpath)
+                        dirnames[:] = [
+                            dirname
+                            for dirname in dirnames
+                            if not (current_dir / dirname).is_symlink()
+                        ]
+                        dirnames[:] = [
+                            dirname
+                            for dirname in dirnames
+                            if not is_excluded_directory(
+                                current_dir / dirname,
+                                base_path,
+                                exclude_patterns,
+                                include_hardcoded=False,
+                            )
+                        ]
+
+                        dirs_processed += 1
+                        job.dirs_scanned = dirs_processed
+                        rel_dir = (
+                            str(current_dir.relative_to(base_path))
+                            if current_dir != base_path
+                            else "/"
+                        )
+                        job.current_directory = (
+                            rel_dir[:50] + "..." if len(rel_dir) > 50 else rel_dir
                         )
 
-                        current_dir = ""
-                        for file_path in glob_func(glob_pattern):
-                            # Track directory changes for progress
-                            file_dir = str(file_path.parent)
-                            if file_dir != current_dir:
-                                current_dir = file_dir
-                                dirs_processed += 1
-                                job.dirs_scanned = dirs_processed
-                                # Truncate for display
-                                rel_dir = file_dir.replace(str(base_path), "")
-                                job.current_directory = (
-                                    rel_dir[:50] + "..."
-                                    if len(rel_dir) > 50
-                                    else rel_dir
-                                )
+                        for filename in filenames:
+                            file_path = current_dir / filename
 
-                            # Skip symlinks
-                            if file_path.is_symlink():
+                            try:
+                                stat_info = file_path.lstat()
+                            except OSError:
                                 continue
 
+                            if stat.S_ISLNK(stat_info.st_mode):
+                                continue
                             if not file_path.is_file():
                                 continue
 
                             ext = file_path.suffix.lower() or "(no extension)"
-                            rel_path = str(file_path.relative_to(base_path))
+                            rel_path = file_path.relative_to(base_path).as_posix()
 
-                            # Check exclude patterns (use shared matches_pattern)
-                            if matches_pattern(rel_path, exclude_patterns):
+                            if is_excluded_by_patterns(
+                                file_path,
+                                base_path,
+                                exclude_patterns,
+                                skip_minified=False,
+                                include_hardcoded=False,
+                            ):
                                 skipped_excluded += 1
                                 continue
 
+                            matched_pattern = get_matching_file_pattern(
+                                file_path,
+                                base_path,
+                                config.file_patterns,
+                            )
+                            if not should_index_file_type(
+                                file_path,
+                                matches_include_pattern=matched_pattern is not None,
+                                ocr_enabled=config.ocr_mode != OcrMode.DISABLED,
+                            ):
+                                continue
+
                             # Get file size
-                            try:
-                                file_size = file_path.stat().st_size
-                                if file_size == 0:
-                                    continue  # Skip zero-byte files
-                                if file_size > max_size_bytes:
-                                    skipped_size += 1
-                                    large_files.append((rel_path, file_size))
-                                    continue
-                            except OSError:
+                            file_size = stat_info.st_size
+                            if file_size == 0:
+                                continue  # Skip zero-byte files
+                            if file_size > max_size_bytes:
+                                skipped_size += 1
+                                large_files.append((rel_path, file_size))
                                 continue
 
                             # Track stats
