@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { X } from 'lucide-react';
-import type { User } from '@/types';
+import type { UserDirectoryEntry } from '@/types';
 
 export type MemberRole = 'owner' | 'editor' | 'viewer';
 
@@ -14,10 +14,10 @@ interface MemberManagementModalProps {
   onClose: () => void;
   members: Member[];
   onSave: (members: Member[]) => Promise<void>;
-  allUsers: User[];
+  allUsers: UserDirectoryEntry[];
   ownerId: string;
   entityType?: 'workspace' | 'conversation';
-  formatUserLabel: (user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => string;
+  formatUserLabel: (user?: Pick<UserDirectoryEntry, 'username' | 'display_name'> | null, fallbackId?: string) => string;
   saving?: boolean;
 }
 

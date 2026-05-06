@@ -27,7 +27,7 @@ import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceCollabPresenceUser, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse, WorkspaceRole } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserDirectoryEntry, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceCollabPresenceUser, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse, WorkspaceRole } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
@@ -704,7 +704,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [showMembersModal, setShowMembersModal] = useState(false);
   const [showAgentAccessModal, setShowAgentAccessModal] = useState(false);
   const [showAdminWorkspacesModal, setShowAdminWorkspacesModal] = useState(false);
-  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [allUsers, setAllUsers] = useState<UserDirectoryEntry[]>([]);
   const [pendingMembers, setPendingMembers] = useState<UserSpaceWorkspaceMember[]>([]);
   const [savingMembers, setSavingMembers] = useState(false);
   const [agentGrants, setAgentGrants] = useState<WorkspaceAgentGrant[]>([]);
@@ -4547,7 +4547,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     if (!activeWorkspace || !isOwner) return;
     setPendingMembers(activeWorkspace.members.filter((m) => m.user_id !== activeWorkspace.owner_user_id));
     try {
-      const users = await api.listUsers();
+      const users = await api.listUsersDirectory();
       setAllUsers(users);
     } catch {
       setAllUsers([]);
@@ -5310,7 +5310,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setSharePasswordDraft('');
     setShareLdapGroupDraft('');
     setAutoCreateShareLinkAttempted(false);
-    void api.listUsers().then(setAllUsers).catch(() => setAllUsers([]));
+    void api.listUsersDirectory().then(setAllUsers).catch(() => setAllUsers([]));
     void (async () => {
       setLoadingLdapGroups(true);
       try {
@@ -5681,7 +5681,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       activeWorkspace.owner_user_id,
       ...activeWorkspace.members.map((member) => member.user_id),
     ]);
-    const fallbackUsers: User[] = [currentUser, ...allUsers].filter((user, index, list) => (
+    const fallbackUsers: UserDirectoryEntry[] = [currentUser, ...allUsers].filter((user, index, list) => (
       workspaceMemberIds.has(user.id) && list.findIndex((candidate) => candidate.id === user.id) === index
     ));
     return fallbackUsers;

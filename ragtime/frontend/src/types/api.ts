@@ -28,6 +28,13 @@ export interface User {
   local_group_ids?: string[];
 }
 
+/** Minimal user info available to all authenticated users for member-picker purposes. */
+export interface UserDirectoryEntry {
+  id: string;
+  username: string;
+  display_name: string | null;
+}
+
 export interface AuthProviderConfig {
   local_users_enabled: boolean;
   ldap_lazy_sync_enabled: boolean;

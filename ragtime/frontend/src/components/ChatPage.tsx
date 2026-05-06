@@ -6,6 +6,7 @@ import type {
   ConversationShareLinkStatus,
   ConversationShareRole,
   User,
+  UserDirectoryEntry,
 } from '@/types';
 import {
   areSameNormalizedStringArrays,
@@ -44,7 +45,7 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
   const [shareSelectedUserIdsDraft, setShareSelectedUserIdsDraft] = useState<string[]>([]);
   const [shareSelectedLdapGroupsDraft, setShareSelectedLdapGroupsDraft] = useState<string[]>([]);
   const [shareLdapGroupDraft, setShareLdapGroupDraft] = useState('');
-  const [shareSelectableUsers, setShareSelectableUsers] = useState<User[]>([]);
+  const [shareSelectableUsers, setShareSelectableUsers] = useState<UserDirectoryEntry[]>([]);
   const [sharingConversation, setSharingConversation] = useState(false);
   const [savingShareAccess, setSavingShareAccess] = useState(false);
   const [savingShareLabel, setSavingShareLabel] = useState(false);
@@ -151,7 +152,7 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
     let cancelled = false;
     void (async () => {
       try {
-        const users = await api.listUsers();
+        const users = await api.listUsersDirectory();
         if (!cancelled) {
           setShareSelectableUsers(users);
         }

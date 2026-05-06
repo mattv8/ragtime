@@ -8,7 +8,7 @@ import 'katex/dist/katex.min.css';
 import { diffLines } from 'diff';
 import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2 } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, AvailableModel } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, AvailableModel } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -4585,7 +4585,7 @@ export function ChatPanel({
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
   const [toolGroups, setToolGroups] = useState<ToolGroupInfo[]>([]);
   const [showMembersModal, setShowMembersModal] = useState(false);
-  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [memberPickerUsers, setMemberPickerUsers] = useState<UserDirectoryEntry[]>([]);
   const [savingMembers, setSavingMembers] = useState(false);
   const [savingTools, setSavingTools] = useState(false);
   const [isConversationListLoading, setIsConversationListLoading] = useState(true);
@@ -5871,10 +5871,10 @@ export function ChatPanel({
   const handleOpenMembersModal = useCallback(async () => {
     if (!activeConversation || !canManageConversationMembers) return;
     try {
-      const users = await api.listUsers();
-      setAllUsers(users);
+      const users = await api.listUsersDirectory();
+      setMemberPickerUsers(users);
     } catch {
-      setAllUsers([]);
+      setMemberPickerUsers([]);
     }
     setShowMembersModal(true);
   }, [activeConversation, canManageConversationMembers]);
@@ -7382,14 +7382,14 @@ export function ChatPanel({
   const archivedConversationDisplayCount = archivedConversationCount ?? (archiveLoaded ? archivedConversations.length : null);
   const shareableConversationUsers = useMemo(() => {
     if (!conversationShareableUserIds || conversationShareableUserIds.length === 0) {
-      return allUsers;
+      return memberPickerUsers;
     }
     const allowedIds = new Set(conversationShareableUserIds);
     if (conversationOwnerId) {
       allowedIds.add(conversationOwnerId);
     }
-    return allUsers.filter((user) => allowedIds.has(user.id));
-  }, [allUsers, conversationOwnerId, conversationShareableUserIds]);
+    return memberPickerUsers.filter((user) => allowedIds.has(user.id));
+  }, [memberPickerUsers, conversationOwnerId, conversationShareableUserIds]);
   const showInlineToolSelector = canUseConversationTools;
 
   const renderConversationItem = (conv: Conversation, options?: { searchQuery?: string; onClickOverride?: () => void }) => {

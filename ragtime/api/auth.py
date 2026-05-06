@@ -352,6 +352,19 @@ class UserListResponse(BaseModel):
     skip: int
     take: int
 
+class UserDirectoryEntryResponse(BaseModel):
+    """Minimal user info returned to all authenticated users for member-picker use."""
+
+    id: str
+    username: str
+    display_name: Optional[str] = None
+
+
+class UserDirectoryResponse(BaseModel):
+    """Response for the user directory endpoint."""
+
+    users: list[UserDirectoryEntryResponse]
+
 
 class UpdateUserRoleRequest(BaseModel):
     """User role update request payload."""
@@ -1970,6 +1983,27 @@ async def set_user_groups(
 # =============================================================================
 # User Management
 # =============================================================================
+
+
+@router.get("/users/directory", response_model=UserDirectoryResponse)
+async def list_users_directory(
+    _user: User = Depends(get_current_user),
+):
+    """List all users with minimal info (available to all authenticated users)."""
+    db = await get_db()
+    users = await db.user.find_many(
+        order={"username": "asc"},
+    )
+    return UserDirectoryResponse(
+        users=[
+            UserDirectoryEntryResponse(
+                id=u.id,
+                username=u.username,
+                display_name=u.displayName,
+            )
+            for u in users
+        ]
+    )
 
 
 @router.get("/users", response_model=UserListResponse)

@@ -5,7 +5,7 @@ import { Check, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type {
   ConversationShareAccessMode,
   ConversationShareLinkStatus,
-  User,
+  UserDirectoryEntry,
   UserSpaceShareAccessMode,
   UserSpaceWorkspaceShareLinkStatus,
 } from '@/types';
@@ -28,7 +28,7 @@ interface ShareLinkModalProps {
   shareSlugAvailable: boolean | null;
   shareAccessMode: ShareAccessMode;
   sharePasswordDraft: string;
-  shareSelectableUsers: User[];
+  shareSelectableUsers: UserDirectoryEntry[];
   shareSelectedUserIdsDraft: string[];
   shareSelectedLdapGroupsDraft: string[];
   shareLdapGroupDraft: string;
@@ -73,7 +73,7 @@ interface ShareLinkModalProps {
   onRevokeShareLink: () => void;
   onShareUrlInlineCopySuccess?: () => void;
   onShareUrlInlineCopyError?: (error: Error) => void;
-  formatUserLabel: (user: User, fallback: string) => string;
+  formatUserLabel: (user: UserDirectoryEntry, fallback: string) => string;
 }
 
 export function ShareLinkModal({
