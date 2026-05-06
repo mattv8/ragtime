@@ -15,6 +15,11 @@ from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
 )
+from ragtime.core.userspace_limits import (
+    USERSPACE_SQLITE_IMPORT_DEFAULT_MAX_BYTES,
+    USERSPACE_SQLITE_IMPORT_MAX_BYTES,
+    USERSPACE_SQLITE_IMPORT_MIN_BYTES,
+)
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
@@ -922,6 +927,12 @@ class AppSettings(BaseModel):
         default=False,
         description="Default User Space duplication behavior for copying workspace mounts.",
     )
+    userspace_sqlite_import_max_bytes: int = Field(
+        default=USERSPACE_SQLITE_IMPORT_DEFAULT_MAX_BYTES,
+        ge=USERSPACE_SQLITE_IMPORT_MIN_BYTES,
+        le=USERSPACE_SQLITE_IMPORT_MAX_BYTES,
+        description="Maximum SQL dump upload size for User Space SQLite imports.",
+    )
 
     updated_at: Optional[datetime] = None
 
@@ -1259,6 +1270,28 @@ class UpdateSettingsRequest(BaseModel):
             "Omit to keep the current setting."
         ),
     )
+    userspace_sqlite_import_max_bytes: Optional[int] = Field(
+        default=None,
+        ge=USERSPACE_SQLITE_IMPORT_MIN_BYTES,
+        le=USERSPACE_SQLITE_IMPORT_MAX_BYTES,
+        description="Maximum SQL dump upload size for User Space SQLite imports.",
+    )
+    userspace_duplicate_copy_files_default: Optional[bool] = Field(
+        default=None,
+        description="Default User Space duplication behavior for copying workspace files.",
+    )
+    userspace_duplicate_copy_metadata_default: Optional[bool] = Field(
+        default=None,
+        description="Default User Space duplication behavior for copying workspace metadata.",
+    )
+    userspace_duplicate_copy_chats_default: Optional[bool] = Field(
+        default=None,
+        description="Default User Space duplication behavior for copying chat history.",
+    )
+    userspace_duplicate_copy_mounts_default: Optional[bool] = Field(
+        default=None,
+        description="Default User Space duplication behavior for copying workspace mounts.",
+    )
 
     @field_validator("userspace_preview_sandbox_flags", mode="before")
     @classmethod
@@ -1297,6 +1330,12 @@ class UserSpacePreviewSettingsResponse(BaseModel):
             for option in USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS
         ],
         description="Canonical UI metadata for supported iframe sandbox flags.",
+    )
+    userspace_sqlite_import_max_bytes: int = Field(
+        default=USERSPACE_SQLITE_IMPORT_DEFAULT_MAX_BYTES,
+        ge=USERSPACE_SQLITE_IMPORT_MIN_BYTES,
+        le=USERSPACE_SQLITE_IMPORT_MAX_BYTES,
+        description="Maximum SQL dump upload size for User Space SQLite imports.",
     )
 
 

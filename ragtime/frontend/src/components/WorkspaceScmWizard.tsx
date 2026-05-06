@@ -2,13 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ArrowDownToLine, ArrowUpToLine, Check, Database, GitBranch, Link2, RefreshCw, RefreshCcw, Upload, X } from 'lucide-react';
 
 import { api } from '@/api';
+import { formatBytes } from '@/utils';
+import { SQLITE_IMPORT_DEFAULT_MAX_BYTES } from '@/utils/sqliteImport';
 import type {
   RepoVisibilityResponse,
-  SqliteImportResponse,
   UserSpaceWorkspaceArchiveExportListItem,
   UserSpaceWorkspaceArchiveExportTask,
   UserSpaceWorkspaceArchiveFormat,
   UserSpaceWorkspaceArchiveImportTask,
+  UserSpaceWorkspaceSqliteImportTask,
   UserSpaceWorkspace,
   UserSpaceWorkspaceScmExportRequest,
   UserSpaceWorkspaceScmImportRequest,
@@ -29,6 +31,7 @@ type ArchiveStep = 'choose' | 'configure';
 
 const EMPTY_STATUS = { type: null, message: '' } as const;
 const ARCHIVE_POLL_INTERVAL_MS = 1000;
+const SQLITE_IMPORT_POLL_INTERVAL_MS = 1000;
 
 interface WorkspaceScmWizardProps {
   workspace: UserSpaceWorkspace;
@@ -108,6 +111,33 @@ function isArchiveExportPhaseInProgress(phase: UserSpaceWorkspaceArchiveExportTa
 
 function isArchiveImportPhaseInProgress(phase: UserSpaceWorkspaceArchiveImportTask['phase'] | null | undefined): boolean {
   return Boolean(phase && !isArchiveImportTaskTerminal(phase));
+}
+
+function isSqliteImportTaskTerminal(phase: UserSpaceWorkspaceSqliteImportTask['phase']): boolean {
+  return phase === 'completed' || phase === 'failed';
+}
+
+function isSqliteImportTaskActive(task: UserSpaceWorkspaceSqliteImportTask | null): boolean {
+  return Boolean(task && !isSqliteImportTaskTerminal(task.phase));
+}
+
+function formatSqliteImportPhase(phase: UserSpaceWorkspaceSqliteImportTask['phase']): string {
+  const labels: Record<UserSpaceWorkspaceSqliteImportTask['phase'], string> = {
+    queued: 'Queued',
+    staging_upload: 'Staging upload',
+    waiting_for_slot: 'Waiting for slot',
+    restoring_dump: 'Restoring PostgreSQL dump',
+    transpiling_sql: 'Transpiling SQL',
+    importing_sql: 'Importing SQL',
+    finalizing_sqlite: 'Finalizing SQLite',
+    completed: 'Completed',
+    failed: 'Failed',
+  };
+  return labels[phase];
+}
+
+function getSqliteImportProgressPercent(task: UserSpaceWorkspaceSqliteImportTask): number {
+  return Math.max(0, Math.min(100, Math.round(task.progress * 100)));
 }
 
 function getArchiveImportProgress(task: UserSpaceWorkspaceArchiveImportTask): { currentStep: number; totalSteps: number; percent: number } | null {
@@ -218,7 +248,9 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [createRepoPrivate, setCreateRepoPrivate] = useState(true);
   const [createRepoDescription, setCreateRepoDescription] = useState(workspace.description || '');
   const [sqlFile, setSqlFile] = useState<File | null>(null);
-  const [sqlImportResult, setSqlImportResult] = useState<SqliteImportResponse | null>(null);
+  const [sqlImportResult, setSqlImportResult] = useState<UserSpaceWorkspaceSqliteImportTask | null>(null);
+  const [sqlImportMaxBytes, setSqlImportMaxBytes] = useState(SQLITE_IMPORT_DEFAULT_MAX_BYTES);
+  const [sqlImportLimitLoaded, setSqlImportLimitLoaded] = useState(false);
   const [sqlDragOver, setSqlDragOver] = useState(false);
   const [archiveMode, setArchiveMode] = useState<ArchiveMode>(defaultArchiveMode);
   const [archiveStep, setArchiveStep] = useState<ArchiveStep>(shouldOpenArchiveByDefault ? 'configure' : 'choose');
@@ -247,6 +279,22 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const activeScm = result?.scm ?? initialScm ?? null;
   const hasConfiguredRemote = Boolean(activeScm?.connected || activeScm?.git_url);
   const clearStatus = useCallback(() => setStatus(EMPTY_STATUS), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getUserSpacePreviewSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setSqlImportMaxBytes(settings.userspace_sqlite_import_max_bytes || SQLITE_IMPORT_DEFAULT_MAX_BYTES);
+        setSqlImportLimitLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) setSqlImportLimitLoaded(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (archiveExportTask) {
@@ -293,10 +341,11 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
 
   const shouldShowStatus = useMemo(() => {
     if (!status.type || !status.message) return false;
+    if (activeTab === 'sql-import' && sqlImportResult && status.type !== 'error') return false;
     if (step === 'review' && preview && status.message === preview.summary) return false;
     if (step === 'result' && result && status.message === result.summary) return false;
     return true;
-  }, [preview, result, status.message, status.type, step]);
+  }, [activeTab, preview, result, sqlImportResult, status.message, status.type, step]);
 
   const syncStatusClassName = useMemo(() => {
     const syncStatus = activeScm?.last_sync_status?.toLowerCase();
@@ -564,16 +613,23 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
       setStatus({ type: 'error', message: 'Please select a SQL dump file.' });
       return;
     }
+    if (sqlImportLimitLoaded && sqlFile.size > sqlImportMaxBytes) {
+      setStatus({
+        type: 'error',
+        message: `SQL dump exceeds the configured ${formatBytes(sqlImportMaxBytes)} size limit.`,
+      });
+      return;
+    }
     setIsLoading(true);
-    setStatus({ type: 'info', message: 'Importing SQL dump...' });
+    clearStatus();
     try {
       const formData = new FormData();
       formData.append('file', sqlFile);
       const importResult = await api.importSqlToWorkspaceSqlite(workspace.id, formData);
       setSqlImportResult(importResult);
       setStatus({
-        type: importResult.success ? 'success' : 'error',
-        message: importResult.message,
+        type: 'info',
+        message: 'SQL import queued.',
       });
       setStep('result');
     } catch (error) {
@@ -783,6 +839,56 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
       window.clearInterval(intervalId);
     };
   }, [archiveImportTask, onWorkspaceChanged, toast]);
+
+  useEffect(() => {
+    if (activeTab !== 'sql-import' || sqlImportResult) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const task = await api.getLatestUserSpaceWorkspaceSqliteImportTask(workspace.id);
+        if (cancelled || !task) return;
+        setSqlImportResult(task);
+        setMode('sql-import');
+        setStep('result');
+      } catch {
+        // Best-effort recovery only.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeTab, sqlImportResult, workspace.id]);
+
+  useEffect(() => {
+    if (!sqlImportResult || isSqliteImportTaskTerminal(sqlImportResult.phase)) {
+      return;
+    }
+    const taskId = sqlImportResult.task_id;
+    let cancelled = false;
+    async function pollTask(): Promise<void> {
+      try {
+        const nextTask = await api.getUserSpaceWorkspaceSqliteImportTask(taskId);
+        if (cancelled) return;
+        setSqlImportResult(nextTask);
+        if (nextTask.phase === 'completed') {
+          setStatus({ type: 'success', message: nextTask.message || 'SQL import completed.' });
+          await onWorkspaceChanged?.();
+        } else if (nextTask.phase === 'failed') {
+          setStatus({ type: 'error', message: nextTask.error || nextTask.message || 'SQL import failed.' });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setStatus({ type: 'error', message: error instanceof Error ? error.message : 'SQL import status unavailable.' });
+        }
+      }
+    }
+    void pollTask();
+    const intervalId = window.setInterval(() => { void pollTask(); }, SQLITE_IMPORT_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [onWorkspaceChanged, sqlImportResult]);
 
   const sqliteEnabled = workspace.sqlite_persistence_mode === 'include';
   const SQL_ACCEPT = '.sql,.dump,.pg,.pgsql,.mysql';
@@ -1450,7 +1556,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                     <Check size={16} style={{ color: 'var(--color-success, #2b7a2b)' }} />
                     <span>{sqlFile.name}</span>
                     <span className="userspace-muted" style={{ fontSize: 12 }}>
-                      ({(sqlFile.size / 1024).toFixed(1)} KB)
+                      ({formatBytes(sqlFile.size)})
                     </span>
                     <button
                       className="btn btn-sm btn-secondary"
@@ -1466,7 +1572,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                     <Upload size={24} style={{ marginBottom: 8, opacity: 0.5 }} />
                     <div>Drop a SQL dump file here or click to browse</div>
                     <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>
-                      Accepts .sql, .dump, .pg, .pgsql, .mysql (text format only, max 100 MB)
+                      Accepts .sql, .dump, .pg, .pgsql, .mysql (plain SQL or PostgreSQL custom dump, max {formatBytes(sqlImportMaxBytes)}{sqlImportLimitLoaded ? '' : ' default'})
                     </div>
                   </div>
                 )}
@@ -1476,27 +1582,52 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
 
           {activeTab === 'sql-import' && step === 'result' && mode === 'sql-import' && sqlImportResult && (
             <div style={{ display: 'grid', gap: 14 }}>
-              <div style={{
-                display: 'flex', gap: 8, alignItems: 'center', padding: 12, borderRadius: 8,
-                border: `1px solid ${sqlImportResult.success ? 'var(--color-success, #2b7a2b)' : 'var(--color-danger, #c53030)'}`,
-                background: sqlImportResult.success ? 'rgba(43, 122, 43, 0.08)' : 'rgba(197, 48, 48, 0.08)',
-              }}>
-                {sqlImportResult.success ? <Check size={16} /> : <AlertCircle size={16} />}
-                <div>
-                  <strong>{sqlImportResult.message}</strong>
+              {isSqliteImportTaskTerminal(sqlImportResult.phase) && (
+                <div style={{
+                  display: 'flex', gap: 8, alignItems: 'center', padding: 12, borderRadius: 8,
+                  border: `1px solid ${sqlImportResult.phase === 'completed' ? 'var(--color-success, #2b7a2b)' : 'var(--color-danger, #c53030)'}`,
+                  background: sqlImportResult.phase === 'completed' ? 'rgba(43, 122, 43, 0.08)' : 'rgba(197, 48, 48, 0.08)',
+                }}>
+                  {sqlImportResult.phase === 'completed' ? <Check size={16} /> : <AlertCircle size={16} />}
+                  <div>
+                    <strong>{sqlImportResult.message || formatSqliteImportPhase(sqlImportResult.phase)}</strong>
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {isSqliteImportTaskActive(sqlImportResult) && (
+                <div style={{ padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <MiniLoadingSpinner size={12} />
+                      {formatSqliteImportPhase(sqlImportResult.phase)}
+                    </span>
+                    <span>{getSqliteImportProgressPercent(sqlImportResult)}%</span>
+                  </div>
+                  <div style={{ height: 8, borderRadius: 999, background: 'var(--color-bg-tertiary)', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${getSqliteImportProgressPercent(sqlImportResult)}%`, background: 'var(--color-accent)', transition: 'width 160ms ease' }} />
+                  </div>
+                </div>
+              )}
 
               <div style={{ padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 16px', fontSize: 13 }}>
                   <span className="userspace-muted">Dialect detected:</span>
                   <span>{sqlImportResult.dialect_detected}</span>
+                  <span className="userspace-muted">File:</span>
+                  <span>{sqlImportResult.filename}</span>
                   <span className="userspace-muted">Tables created:</span>
                   <span>{sqlImportResult.tables_created}</span>
                   <span className="userspace-muted">Rows inserted:</span>
                   <span>{sqlImportResult.rows_inserted}</span>
                   <span className="userspace-muted">Statements executed:</span>
                   <span>{sqlImportResult.statements_executed}</span>
+                  {sqlImportResult.total_statements > 0 && (
+                    <>
+                      <span className="userspace-muted">Total statements:</span>
+                      <span>{sqlImportResult.total_statements}</span>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -1626,7 +1757,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
               </button>
             )}
             {activeTab === 'sql-import' && step === 'result' && mode === 'sql-import' && (
-              <button className="btn btn-secondary" onClick={() => { setStep('input'); setSqlFile(null); setSqlImportResult(null); setStatus({ type: null, message: '' }); }} disabled={isLoading}>
+              <button className="btn btn-secondary" onClick={() => { setStep('input'); setSqlFile(null); setSqlImportResult(null); setStatus({ type: null, message: '' }); }} disabled={isLoading || isSqliteImportTaskActive(sqlImportResult)}>
                 Import Another
               </button>
             )}
@@ -1647,7 +1778,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
               </button>
             )}
             {activeTab === 'sql-import' && step === 'input' && mode === 'sql-import' && (
-              <button className="btn btn-primary" onClick={() => void handleSqlImport()} disabled={isLoading || !sqlFile}>
+              <button className="btn btn-primary" onClick={() => void handleSqlImport()} disabled={isLoading || !sqlFile || isSqliteImportTaskActive(sqlImportResult)}>
                 {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : <Database size={14} />}
                 Import to SQLite
               </button>

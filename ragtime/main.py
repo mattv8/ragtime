@@ -211,6 +211,7 @@ async def lifespan(app: FastAPI):
 
     # Backfill userspace Git ignore policy for existing workspaces in the background.
     userspace_service.schedule_startup_git_drift_reconciliation()
+    userspace_service.schedule_workspace_sqlite_import_recovery()
     userspace_service.schedule_workspace_mount_watch()
     userspace_service.schedule_workspace_scm_watch()
 

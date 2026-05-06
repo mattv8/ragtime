@@ -21,6 +21,12 @@ import {
   getUserSpacePreviewSandboxFlagValues,
   normalizeUserSpacePreviewSandboxFlags,
 } from '@/utils/userspacePreview/sandbox';
+import { formatBytes } from '@/utils';
+import {
+  SQLITE_IMPORT_DEFAULT_MAX_BYTES,
+  sqliteImportBytesToSlider,
+  sliderToSqliteImportBytes,
+} from '@/utils/sqliteImport';
 import { CHAT_MODEL_PROVIDER_LABELS, parseScopedModelIdentifier } from '@/utils/modelDisplay';
 import {
   PROVIDER_CONNECTIONS,
@@ -1325,6 +1331,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         userspace_duplicate_copy_metadata_default: data.userspace_duplicate_copy_metadata_default,
         userspace_duplicate_copy_chats_default: data.userspace_duplicate_copy_chats_default,
         userspace_duplicate_copy_mounts_default: data.userspace_duplicate_copy_mounts_default,
+        userspace_sqlite_import_max_bytes: data.userspace_sqlite_import_max_bytes,
 
         // OpenAPI model settings
         openapi_sync_chat_models: data.openapi_sync_chat_models,
@@ -2143,6 +2150,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         userspace_duplicate_copy_metadata_default: formData.userspace_duplicate_copy_metadata_default,
         userspace_duplicate_copy_chats_default: formData.userspace_duplicate_copy_chats_default,
         userspace_duplicate_copy_mounts_default: formData.userspace_duplicate_copy_mounts_default,
+        userspace_sqlite_import_max_bytes: formData.userspace_sqlite_import_max_bytes,
       });
       setSettings(updated);
       setFormData((prev) => ({
@@ -2152,6 +2160,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
         userspace_duplicate_copy_metadata_default: updated.userspace_duplicate_copy_metadata_default,
         userspace_duplicate_copy_chats_default: updated.userspace_duplicate_copy_chats_default,
         userspace_duplicate_copy_mounts_default: updated.userspace_duplicate_copy_mounts_default,
+        userspace_sqlite_import_max_bytes: updated.userspace_sqlite_import_max_bytes,
       }));
       toast.success('User Space settings saved.', 5000);
     } catch (err) {
@@ -2165,6 +2174,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
     formData.userspace_duplicate_copy_metadata_default,
     formData.userspace_duplicate_copy_chats_default,
     formData.userspace_duplicate_copy_mounts_default,
+    formData.userspace_sqlite_import_max_bytes,
   ]);
 
   const loadGlobalEnvVars = useCallback(async () => {
@@ -5449,53 +5459,95 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
               </p>
             </div>
 
-            <div className="form-group">
-              <label>Stale Branch Threshold</label>
-              <p className="field-help" style={{ marginTop: 0 }}>
-                Branches that fall behind the active head by this many snapshots are hidden from the timeline.
-              </p>
-              {(() => {
-                const sliderMin = 10;
-                const sliderMax = 500;
-                const currentVal = formData.snapshot_stale_branch_threshold ?? 50;
-                const isAll = currentVal === 0;
+            <div className="form-row">
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Stale Branch Threshold</label>
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Branches that fall behind the active head by this many snapshots are hidden from the timeline.
+                </p>
+                {(() => {
+                  const sliderMin = 10;
+                  const sliderMax = 500;
+                  const currentVal = formData.snapshot_stale_branch_threshold ?? 50;
+                  const isAll = currentVal === 0;
 
-                return (
-                  <>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                      <input
-                        type="range"
-                        min="0"
-                        max="100"
-                        step="1"
-                        style={{ flex: 1 }}
-                        value={(() => {
-                          if (isAll) return 100;
-                          const scale = Math.log(sliderMax / sliderMin);
-                          return Math.max(0, Math.min(99, Math.round((Math.log(currentVal / sliderMin) / scale) * 99)));
-                        })()}
-                        onChange={(e) => {
-                          const slider = parseInt(e.target.value, 10);
-                          let val: number;
-                          if (slider >= 100) {
-                            val = 0; // "All" sentinel
-                          } else {
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="1"
+                          style={{ flex: 1 }}
+                          value={(() => {
+                            if (isAll) return 100;
                             const scale = Math.log(sliderMax / sliderMin);
-                            val = Math.max(sliderMin, Math.round(sliderMin * Math.exp((slider / 99) * scale)));
-                          }
-                          setFormData({ ...formData, snapshot_stale_branch_threshold: val });
-                        }}
-                      />
-                      <span style={{ minWidth: '48px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-                        {isAll ? 'All' : currentVal}
-                      </span>
-                    </div>
-                    <p className="field-help">
-                      Default: 50. Set to "All" to show every branch regardless of age.
-                    </p>
-                  </>
-                );
-              })()}
+                            return Math.max(0, Math.min(99, Math.round((Math.log(currentVal / sliderMin) / scale) * 99)));
+                          })()}
+                          onChange={(e) => {
+                            const slider = parseInt(e.target.value, 10);
+                            let val: number;
+                            if (slider >= 100) {
+                              val = 0; // "All" sentinel
+                            } else {
+                              const scale = Math.log(sliderMax / sliderMin);
+                              val = Math.max(sliderMin, Math.round(sliderMin * Math.exp((slider / 99) * scale)));
+                            }
+                            setFormData({ ...formData, snapshot_stale_branch_threshold: val });
+                          }}
+                        />
+                        <span style={{ minWidth: '48px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                          {isAll ? 'All' : currentVal}
+                        </span>
+                      </div>
+                      <p className="field-help">
+                        Default: 50. Set to "All" to show every branch regardless of age.
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>SQLite Import Size Limit</label>
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Maximum SQL dump upload accepted by the User Space SQLite import wizard.
+                </p>
+                {(() => {
+                  const currentVal = formData.userspace_sqlite_import_max_bytes
+                    ?? settings?.userspace_sqlite_import_max_bytes
+                    ?? SQLITE_IMPORT_DEFAULT_MAX_BYTES;
+
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="1"
+                          style={{ flex: 1 }}
+                          value={sqliteImportBytesToSlider(currentVal)}
+                          onChange={(e) => {
+                            const slider = parseInt(e.target.value, 10);
+                            setFormData({
+                              ...formData,
+                              userspace_sqlite_import_max_bytes: sliderToSqliteImportBytes(slider),
+                            });
+                          }}
+                        />
+                        <span style={{ minWidth: '84px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                          {formatBytes(currentVal)}
+                        </span>
+                      </div>
+                      <p className="field-help">
+                        Range: 100 MB to 100 GB. Large imports are memory and disk intensive; use higher caps only for trusted dumps on hosts with enough headroom.
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
             </div>
           </details>
 

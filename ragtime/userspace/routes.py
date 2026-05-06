@@ -31,6 +31,7 @@ from ragtime.core.security import (
     get_current_user_optional,
     require_admin,
 )
+from ragtime.core.userspace_limits import format_userspace_sqlite_import_limit
 from ragtime.indexer.models import (
     CheckRepoVisibilityRequest,
     FetchBranchesRequest,
@@ -61,7 +62,6 @@ from ragtime.userspace.models import (
     PaginatedWorkspacesResponse,
     PromoteBranchToMainRequest,
     RestoreSnapshotResponse,
-    SqliteImportResponse,
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
@@ -108,6 +108,7 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceScmPreviewResponse,
     UserSpaceWorkspaceScmSettingsRequest,
     UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceSqliteImportTask,
     UserSpaceWorkspaceShareLink,
     UserSpaceWorkspaceShareLinkListResponse,
     UserSpaceWorkspaceShareLinkStatus,
@@ -126,6 +127,41 @@ from ragtime.userspace.service import userspace_service
 from ragtime.userspace.share_auth import share_auth_token_from_request
 
 logger = get_logger(__name__)
+
+_SQL_IMPORT_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+
+
+async def _stage_upload_file_with_limit(
+    file: UploadFile,
+    max_bytes: int,
+    suffix: str,
+) -> Path:
+    temp_handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    temp_path = Path(temp_handle.name)
+    temp_handle.close()
+    total_bytes = 0
+    try:
+        with temp_path.open("wb") as output_handle:
+            while True:
+                chunk = await file.read(_SQL_IMPORT_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    limit = format_userspace_sqlite_import_limit(max_bytes)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            f"SQL dump exceeds the configured {limit} size limit. "
+                            "An administrator can raise this under Settings > User Space."
+                        ),
+                    )
+                await asyncio.to_thread(output_handle.write, chunk)
+        return temp_path
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space"])
 
@@ -1973,10 +2009,11 @@ async def delete_snapshot(
 
 
 @router.post(
-    "/workspaces/{workspace_id}/sqlite-import",
-    response_model=SqliteImportResponse,
+    "/workspaces/{workspace_id}/sqlite-import-task",
+    response_model=UserSpaceWorkspaceSqliteImportTask,
+    status_code=202,
 )
-async def import_sql_to_workspace_sqlite(
+async def queue_sqlite_import_task(
     workspace_id: str,
     file: UploadFile = File(
         ...,
@@ -1995,7 +2032,71 @@ async def import_sql_to_workspace_sqlite(
                 f"Accepted: {', '.join(sorted(allowed_extensions))}"
             ),
         )
-    file_bytes = await file.read()
-    return await userspace_service.import_sql_to_workspace_sqlite(
-        workspace_id, user.id, file_bytes, filename
+    settings = await repository.get_settings()
+    max_import_size_bytes = settings.userspace_sqlite_import_max_bytes
+    try:
+        temp_path = await _stage_upload_file_with_limit(
+            file, max_import_size_bytes, ext
+        )
+    finally:
+        await file.close()
+    try:
+        is_admin = user.role == "admin"
+        return await userspace_service.enqueue_workspace_sqlite_import_task(
+            workspace_id,
+            user.id,
+            temp_path,
+            filename,
+            is_admin=is_admin,
+        )
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+@router.post(
+    "/workspaces/{workspace_id}/sqlite-import",
+    response_model=UserSpaceWorkspaceSqliteImportTask,
+    status_code=202,
+)
+async def import_sql_to_workspace_sqlite(
+    workspace_id: str,
+    file: UploadFile = File(
+        ...,
+        description="SQL dump file (.sql, .dump, .pg, .pgsql)",
+    ),
+    user: Any = Depends(get_current_user),
+):
+    return await queue_sqlite_import_task(workspace_id, file, user)
+
+
+@router.get(
+    "/workspace-sqlite-import-tasks/{task_id}",
+    response_model=UserSpaceWorkspaceSqliteImportTask,
+)
+async def get_workspace_sqlite_import_task(
+    task_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.get_workspace_sqlite_import_task(
+        task_id,
+        user.id,
+        is_admin=is_admin,
+    )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/sqlite-import-task",
+    response_model=UserSpaceWorkspaceSqliteImportTask | None,
+)
+async def get_latest_workspace_sqlite_import_task(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.get_latest_workspace_sqlite_import_task(
+        workspace_id,
+        user.id,
+        is_admin=is_admin,
     )

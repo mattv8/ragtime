@@ -34,6 +34,7 @@ from ragtime.core.encryption import (
 )
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
+from ragtime.core.userspace_limits import clamp_userspace_sqlite_import_max_bytes
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     normalize_userspace_preview_sandbox_flags,
@@ -1161,6 +1162,9 @@ class IndexerRepository:
                 "userspaceDuplicateCopyMountsDefault",
                 False,
             ),
+            userspace_sqlite_import_max_bytes=clamp_userspace_sqlite_import_max_bytes(
+                getattr(settings, "userspaceSqliteImportMaxBytes", None)
+            ),
             updated_at=settings.updatedAt,
         )
 
@@ -1284,6 +1288,7 @@ class IndexerRepository:
             "userspace_duplicate_copy_metadata_default": "userspaceDuplicateCopyMetadataDefault",
             "userspace_duplicate_copy_chats_default": "userspaceDuplicateCopyChatsDefault",
             "userspace_duplicate_copy_mounts_default": "userspaceDuplicateCopyMountsDefault",
+            "userspace_sqlite_import_max_bytes": "userspaceSqliteImportMaxBytes",
         }
 
         # Build update data with only provided fields

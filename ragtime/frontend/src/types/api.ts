@@ -580,6 +580,7 @@ export interface UserSpacePreviewSettingsResponse {
   userspace_preview_sandbox_flags: string[];
   userspace_preview_sandbox_default_flags: string[];
   userspace_preview_sandbox_flag_options: UserSpacePreviewSandboxFlagOption[];
+  userspace_sqlite_import_max_bytes: number;
 }
 
 export interface UserSpacePreviewSandboxFlagOption {
@@ -712,6 +713,7 @@ export interface AppSettings {
   userspace_duplicate_copy_metadata_default: boolean;
   userspace_duplicate_copy_chats_default: boolean;
   userspace_duplicate_copy_mounts_default: boolean;
+  userspace_sqlite_import_max_bytes: number;
   updated_at: string | null;
 }
 
@@ -826,6 +828,7 @@ export interface UpdateSettingsRequest {
   userspace_duplicate_copy_metadata_default?: boolean;
   userspace_duplicate_copy_chats_default?: boolean;
   userspace_duplicate_copy_mounts_default?: boolean;
+  userspace_sqlite_import_max_bytes?: number;
 }
 
 // Ollama Connection Testing
@@ -3323,6 +3326,39 @@ export interface SqliteImportResponse {
   errors: string[];
   warnings: string[];
   message: string;
+}
+
+export type UserSpaceWorkspaceSqliteImportTaskPhase =
+  | 'queued'
+  | 'staging_upload'
+  | 'waiting_for_slot'
+  | 'restoring_dump'
+  | 'transpiling_sql'
+  | 'importing_sql'
+  | 'finalizing_sqlite'
+  | 'completed'
+  | 'failed';
+
+export interface UserSpaceWorkspaceSqliteImportTask {
+  task_id: string;
+  workspace_id: string;
+  workspace_name: string;
+  filename: string;
+  phase: UserSpaceWorkspaceSqliteImportTaskPhase;
+  progress: number;
+  dialect_detected: string;
+  total_bytes: number;
+  processed_bytes: number;
+  total_statements: number;
+  statements_executed: number;
+  tables_created: number;
+  rows_inserted: number;
+  warnings: string[];
+  errors: string[];
+  message?: string | null;
+  error?: string | null;
+  queued_at: string;
+  updated_at: string;
 }
 
 // =============================================================================

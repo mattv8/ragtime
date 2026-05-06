@@ -10,6 +10,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time as _time
 import zipfile
@@ -112,7 +113,6 @@ from ragtime.userspace.models import (
     RuntimeRestartBatchTaskPhase,
     RuntimeRestartWorkspacePhase,
     ShareAccessMode,
-    SqliteImportResponse,
     SqlitePersistenceMode,
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
@@ -163,6 +163,7 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceScmSettingsRequest,
     UserSpaceWorkspaceScmStatus,
     UserSpaceWorkspaceScmSyncResponse,
+    UserSpaceWorkspaceSqliteImportTask,
     UserSpaceWorkspaceShareLink,
     UserSpaceWorkspaceShareLinkListResponse,
     UserSpaceWorkspaceShareLinkStatus,
@@ -190,16 +191,11 @@ from ragtime.userspace.models import (
     WorkspaceScmPreviewState,
     WorkspaceScmProvider,
     WorkspaceScmRemoteRole,
+    WorkspaceSqliteImportTaskPhase,
     WorkspaceShareSlugAvailabilityResponse,
 )
 from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
-from ragtime.userspace.sqlite_import import (
-    _MAX_IMPORT_SIZE_BYTES,
-    SqlImportResult,
-    detect_binary_pg_dump,
-    detect_sql_dialect,
-    import_sql_to_sqlite,
-)
+from ragtime.userspace.sqlite_import import SqlImportResult
 
 logger = get_logger(__name__)
 
@@ -213,6 +209,14 @@ _CHANGED_FILE_ACK_MAX_ROWS_PER_WORKSPACE_USER = (
 )
 _SHARE_PASSWORD_ACCESS_TOKEN_KIND = "userspace_share_password_access"
 _SHARE_PASSWORD_ACCESS_TTL_SECONDS = 60 * 30
+_WORKSPACE_SQLITE_IMPORT_TASK_TTL_SECONDS = 24 * 60 * 60
+_SQLITE_IMPORT_SUBPROCESS_PROGRESS_INTERVAL_SECONDS = 0.5
+_SQLITE_IMPORT_SUBPROCESS_TIMEOUT_SECONDS = 60 * 60
+_SQLITE_IMPORT_WAITING_PROGRESS = 0.02
+_SQLITE_IMPORT_STAGING_PROGRESS = 0.05
+_SQLITE_IMPORT_RESTORING_PROGRESS = 0.15
+_SQLITE_IMPORT_TRANSPILING_PROGRESS = 0.3
+_SQLITE_IMPORT_FINALIZING_PROGRESS = 0.97
 
 
 class _ExecutionProofRecord:
@@ -535,6 +539,76 @@ class _WorkspaceArchiveImportTaskRecord:
         self.uploaded_archive_path: Path | None = None
         self.imported_chat_count = 0
         self.imported_snapshot_count = 0
+        self.error: str | None = None
+        self.queued_at = queued_at
+        self.updated_at = updated_at
+
+
+class _WorkspaceSqliteImportTaskRecord:
+    """In-memory status for an asynchronous workspace SQLite import task."""
+
+    __slots__ = (
+        "task_id",
+        "workspace_id",
+        "workspace_name",
+        "requested_by_user_id",
+        "filename",
+        "phase",
+        "progress",
+        "dialect_detected",
+        "uploaded_dump_path",
+        "progress_path",
+        "stdout_path",
+        "stderr_path",
+        "process_id",
+        "total_bytes",
+        "processed_bytes",
+        "total_statements",
+        "statements_executed",
+        "tables_created",
+        "rows_inserted",
+        "warnings",
+        "errors",
+        "message",
+        "error",
+        "queued_at",
+        "updated_at",
+    )
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        workspace_id: str,
+        workspace_name: str,
+        requested_by_user_id: str,
+        filename: str,
+        phase: WorkspaceSqliteImportTaskPhase,
+        queued_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        self.task_id = task_id
+        self.workspace_id = workspace_id
+        self.workspace_name = workspace_name
+        self.requested_by_user_id = requested_by_user_id
+        self.filename = filename
+        self.phase = phase
+        self.progress = 0.0
+        self.dialect_detected = "generic"
+        self.uploaded_dump_path: Path | None = None
+        self.progress_path: Path | None = None
+        self.stdout_path: Path | None = None
+        self.stderr_path: Path | None = None
+        self.process_id: int | None = None
+        self.total_bytes = 0
+        self.processed_bytes = 0
+        self.total_statements = 0
+        self.statements_executed = 0
+        self.tables_created = 0
+        self.rows_inserted = 0
+        self.warnings: list[str] = []
+        self.errors: list[str] = []
+        self.message: str | None = None
         self.error: str | None = None
         self.queued_at = queued_at
         self.updated_at = updated_at
@@ -1040,8 +1114,10 @@ class UserSpaceService:
         self._base_dir = Path(settings.index_data_path) / "_userspace"
         self._workspaces_dir = self._base_dir / "workspaces"
         self._archive_tasks_dir = self._base_dir / "archive_tasks"
+        self._sqlite_import_tasks_dir = self._base_dir / "sqlite_import_tasks"
         self._workspaces_dir.mkdir(parents=True, exist_ok=True)
         self._archive_tasks_dir.mkdir(parents=True, exist_ok=True)
+        self._sqlite_import_tasks_dir.mkdir(parents=True, exist_ok=True)
         self._execution_proofs: dict[str, dict[str, _ExecutionProofRecord]] = {}
         # TTL-cached entrypoint status per workspace: {workspace_id: (EntrypointStatus, timestamp)}
         self._entrypoint_status_cache: dict[str, tuple[EntrypointStatus, float]] = {}
@@ -1090,6 +1166,15 @@ class UserSpaceService:
         ] = {}
         self._workspace_archive_import_active_task_ids_by_workspace: dict[str, str] = {}
         self._workspace_archive_tasks_lock = asyncio.Lock()
+        self._workspace_sqlite_import_semaphore = asyncio.Semaphore(
+            self._positive_int_env("USERSPACE_SQLITE_IMPORT_CONCURRENCY", 1)
+        )
+        self._workspace_sqlite_import_tasks: dict[str, asyncio.Task[None]] = {}
+        self._workspace_sqlite_import_task_statuses: dict[
+            str, _WorkspaceSqliteImportTaskRecord
+        ] = {}
+        self._workspace_sqlite_import_active_task_ids_by_workspace: dict[str, str] = {}
+        self._workspace_sqlite_import_tasks_lock = asyncio.Lock()
         self._runtime_restart_batch_tasks: dict[str, asyncio.Task[None]] = {}
         self._runtime_restart_batch_task_statuses: dict[
             str, _RuntimeRestartBatchTaskRecord
@@ -1146,6 +1231,7 @@ class UserSpaceService:
         self._git_drift_startup_task: asyncio.Task[Any] | None = None
         # Rehydrate persistent archive export history from task sidecars.
         self._rehydrate_workspace_archive_export_task_statuses()
+        self._rehydrate_workspace_sqlite_import_task_statuses()
 
     @staticmethod
     def _positive_int_env(name: str, default_value: int) -> int:
@@ -1536,6 +1622,264 @@ class UserSpaceService:
 
     def _workspace_archive_export_task_sidecar_path(self, task_id: str) -> Path:
         return self._workspace_archive_task_dir(task_id) / "task.json"
+
+    def _workspace_sqlite_import_task_dir(self, task_id: str) -> Path:
+        return self._sqlite_import_tasks_dir / task_id
+
+    def _workspace_sqlite_import_task_sidecar_path(self, task_id: str) -> Path:
+        return self._workspace_sqlite_import_task_dir(task_id) / "task.json"
+
+    def _workspace_sqlite_import_task_progress_path(self, task_id: str) -> Path:
+        return self._workspace_sqlite_import_task_dir(task_id) / "progress.json"
+
+    def _workspace_sqlite_import_task_stdout_path(self, task_id: str) -> Path:
+        return self._workspace_sqlite_import_task_dir(task_id) / "stdout.json"
+
+    def _workspace_sqlite_import_task_stderr_path(self, task_id: str) -> Path:
+        return self._workspace_sqlite_import_task_dir(task_id) / "stderr.log"
+
+    @staticmethod
+    def _is_process_running(process_id: int | None) -> bool:
+        if not process_id:
+            return False
+        try:
+            os.kill(process_id, 0)
+            return True
+        except OSError:
+            return False
+
+    def _write_workspace_sqlite_import_task_sidecar(self, task_id: str) -> None:
+        record = self._workspace_sqlite_import_task_statuses.get(task_id)
+        if record is None:
+            return
+        payload = {
+            "task_id": record.task_id,
+            "workspace_id": record.workspace_id,
+            "workspace_name": record.workspace_name,
+            "requested_by_user_id": record.requested_by_user_id,
+            "filename": record.filename,
+            "phase": record.phase,
+            "progress": record.progress,
+            "dialect_detected": record.dialect_detected,
+            "uploaded_dump_path": (
+                str(record.uploaded_dump_path) if record.uploaded_dump_path else None
+            ),
+            "progress_path": (
+                str(record.progress_path) if record.progress_path else None
+            ),
+            "stdout_path": str(record.stdout_path) if record.stdout_path else None,
+            "stderr_path": str(record.stderr_path) if record.stderr_path else None,
+            "process_id": record.process_id,
+            "total_bytes": record.total_bytes,
+            "processed_bytes": record.processed_bytes,
+            "total_statements": record.total_statements,
+            "statements_executed": record.statements_executed,
+            "tables_created": record.tables_created,
+            "rows_inserted": record.rows_inserted,
+            "warnings": list(record.warnings),
+            "errors": list(record.errors),
+            "message": record.message,
+            "error": record.error,
+            "queued_at": record.queued_at.isoformat(),
+            "updated_at": record.updated_at.isoformat(),
+        }
+        sidecar_path = self._workspace_sqlite_import_task_sidecar_path(task_id)
+        try:
+            sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+            sidecar_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception:
+            logger.exception("Failed to persist SQLite import task sidecar %s", task_id)
+
+    def _rehydrate_workspace_sqlite_import_task_statuses(self) -> None:
+        if not self._sqlite_import_tasks_dir.exists():
+            return
+        for task_dir in self._sqlite_import_tasks_dir.iterdir():
+            if not task_dir.is_dir():
+                continue
+            sidecar_path = task_dir / "task.json"
+            if not sidecar_path.is_file():
+                continue
+            try:
+                payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+                task_id = str(payload["task_id"])
+                phase = cast(
+                    WorkspaceSqliteImportTaskPhase, payload.get("phase") or "failed"
+                )
+                was_in_progress = phase not in {"completed", "failed"}
+                record = _WorkspaceSqliteImportTaskRecord(
+                    task_id=task_id,
+                    workspace_id=str(payload["workspace_id"]),
+                    workspace_name=str(payload.get("workspace_name") or ""),
+                    requested_by_user_id=str(payload.get("requested_by_user_id") or ""),
+                    filename=str(payload.get("filename") or "upload.sql"),
+                    phase=phase if not was_in_progress else "queued",
+                    queued_at=datetime.fromisoformat(payload["queued_at"]),
+                    updated_at=datetime.fromisoformat(payload["updated_at"]),
+                )
+            except Exception:
+                logger.warning(
+                    "Skipping malformed SQLite import sidecar %s", sidecar_path
+                )
+                continue
+            record.progress = float(
+                payload.get("progress") or (1.0 if phase == "completed" else 0.0)
+            )
+            record.dialect_detected = str(payload.get("dialect_detected") or "generic")
+            uploaded_dump_path = payload.get("uploaded_dump_path")
+            progress_path = payload.get("progress_path")
+            stdout_path = payload.get("stdout_path")
+            stderr_path = payload.get("stderr_path")
+            record.uploaded_dump_path = (
+                Path(uploaded_dump_path) if uploaded_dump_path else None
+            )
+            record.progress_path = Path(progress_path) if progress_path else None
+            record.stdout_path = Path(stdout_path) if stdout_path else None
+            record.stderr_path = Path(stderr_path) if stderr_path else None
+            process_id = payload.get("process_id")
+            record.process_id = int(process_id) if process_id else None
+            record.total_bytes = int(payload.get("total_bytes") or 0)
+            record.processed_bytes = int(payload.get("processed_bytes") or 0)
+            record.total_statements = int(payload.get("total_statements") or 0)
+            record.statements_executed = int(payload.get("statements_executed") or 0)
+            record.tables_created = int(payload.get("tables_created") or 0)
+            record.rows_inserted = int(payload.get("rows_inserted") or 0)
+            record.warnings = list(payload.get("warnings") or [])
+            record.errors = list(payload.get("errors") or [])
+            record.message = payload.get("message")
+            record.error = payload.get("error")
+            self._workspace_sqlite_import_task_statuses[task_id] = record
+            if (
+                payload.get("phase") not in {"completed", "failed"}
+                and record.progress_path
+            ):
+                self._apply_workspace_sqlite_import_progress(
+                    task_id, record.progress_path
+                )
+            if (
+                payload.get("phase") not in {"completed", "failed"}
+                and not self._is_process_running(record.process_id)
+                and record.phase not in {"completed", "failed"}
+            ):
+                record.phase = "failed"
+                record.error = "SQLite import was interrupted by server restart."
+                self._write_workspace_sqlite_import_task_sidecar(task_id)
+
+    @staticmethod
+    def _workspace_sqlite_import_task_model(
+        record: _WorkspaceSqliteImportTaskRecord,
+    ) -> UserSpaceWorkspaceSqliteImportTask:
+        return UserSpaceWorkspaceSqliteImportTask(
+            task_id=record.task_id,
+            workspace_id=record.workspace_id,
+            workspace_name=record.workspace_name,
+            filename=record.filename,
+            phase=cast(WorkspaceSqliteImportTaskPhase, record.phase),
+            progress=max(0.0, min(1.0, record.progress)),
+            dialect_detected=record.dialect_detected,
+            total_bytes=record.total_bytes,
+            processed_bytes=record.processed_bytes,
+            total_statements=record.total_statements,
+            statements_executed=record.statements_executed,
+            tables_created=record.tables_created,
+            rows_inserted=record.rows_inserted,
+            warnings=list(record.warnings),
+            errors=list(record.errors),
+            message=record.message,
+            error=record.error,
+            queued_at=record.queued_at,
+            updated_at=record.updated_at,
+        )
+
+    def _prune_workspace_sqlite_import_task(
+        self,
+        task_id: str,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._workspace_sqlite_import_tasks.get(task_id) is task:
+            self._workspace_sqlite_import_tasks.pop(task_id, None)
+        if (
+            self._workspace_sqlite_import_active_task_ids_by_workspace.get(workspace_id)
+            == task_id
+        ):
+            self._workspace_sqlite_import_active_task_ids_by_workspace.pop(
+                workspace_id, None
+            )
+
+    def _attach_workspace_sqlite_import_task_cleanup(
+        self,
+        task_id: str,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        task.add_done_callback(
+            partial(self._prune_workspace_sqlite_import_task, task_id, workspace_id)
+        )
+
+    def _prune_expired_workspace_sqlite_import_task_statuses(self) -> None:
+        cutoff = _utc_now() - timedelta(
+            seconds=_WORKSPACE_SQLITE_IMPORT_TASK_TTL_SECONDS
+        )
+        for task_id, record in list(
+            self._workspace_sqlite_import_task_statuses.items()
+        ):
+            if (
+                record.phase not in {"completed", "failed"}
+                or record.updated_at > cutoff
+            ):
+                continue
+            self._workspace_sqlite_import_task_statuses.pop(task_id, None)
+            self._remove_workspace_archive_dir_sync(
+                self._workspace_sqlite_import_task_dir(task_id)
+            )
+
+    def _set_workspace_sqlite_import_task_phase(
+        self,
+        task_id: str,
+        phase: WorkspaceSqliteImportTaskPhase,
+        *,
+        progress: float | None = None,
+        dialect_detected: str | None = None,
+        total_bytes: int | None = None,
+        processed_bytes: int | None = None,
+        total_statements: int | None = None,
+        statements_executed: int | None = None,
+        tables_created: int | None = None,
+        rows_inserted: int | None = None,
+        warnings: list[str] | None = None,
+        errors: list[str] | None = None,
+        message: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        record = self._workspace_sqlite_import_task_statuses.get(task_id)
+        if record is None:
+            return
+        record.phase = phase
+        record.updated_at = _utc_now()
+        if progress is not None:
+            record.progress = max(0.0, min(1.0, progress))
+        if dialect_detected is not None:
+            record.dialect_detected = dialect_detected
+        if total_bytes is not None:
+            record.total_bytes = total_bytes
+        if processed_bytes is not None:
+            record.processed_bytes = processed_bytes
+        if total_statements is not None:
+            record.total_statements = total_statements
+        if statements_executed is not None:
+            record.statements_executed = statements_executed
+        if tables_created is not None:
+            record.tables_created = tables_created
+        if rows_inserted is not None:
+            record.rows_inserted = rows_inserted
+        if warnings is not None:
+            record.warnings = list(warnings)
+        if errors is not None:
+            record.errors = list(errors)
+        if message is not None:
+            record.message = message
+        record.error = error if phase == "failed" else None
+        self._write_workspace_sqlite_import_task_sidecar(task_id)
 
     def _write_workspace_archive_export_task_sidecar(self, task_id: str) -> None:
         record = self._workspace_archive_export_task_statuses.get(task_id)
@@ -4194,6 +4538,411 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="Archive import task not found")
         return self._workspace_archive_import_task_model(record)
 
+    async def enqueue_workspace_sqlite_import_task(
+        self,
+        workspace_id: str,
+        user_id: str,
+        uploaded_dump_path: Path,
+        uploaded_file_name: str,
+        *,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceSqliteImportTask:
+        workspace = await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+            is_admin=is_admin,
+        )
+        if workspace.sqlite_persistence_mode != "include":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "SQLite persistence mode must be enabled (set to 'include') "
+                    "on this workspace before importing a SQL dump."
+                ),
+            )
+
+        self._prune_expired_workspace_sqlite_import_task_statuses()
+        async with self._workspace_sqlite_import_tasks_lock:
+            existing_record = self._get_active_workspace_background_task_record(
+                workspace_id,
+                self._workspace_sqlite_import_active_task_ids_by_workspace,
+                self._workspace_sqlite_import_task_statuses,
+            )
+            if existing_record is not None:
+                uploaded_dump_path.unlink(missing_ok=True)
+                return self._workspace_sqlite_import_task_model(existing_record)
+
+            task_id = str(uuid4())
+            now = _utc_now()
+            task_dir = self._workspace_sqlite_import_task_dir(task_id)
+            task_dir.mkdir(parents=True, exist_ok=True)
+            suffix = Path(uploaded_file_name).suffix or ".sql"
+            final_dump_path = task_dir / f"upload{suffix}"
+            shutil.move(str(uploaded_dump_path), str(final_dump_path))
+            progress_path = self._workspace_sqlite_import_task_progress_path(task_id)
+            stdout_path = self._workspace_sqlite_import_task_stdout_path(task_id)
+            stderr_path = self._workspace_sqlite_import_task_stderr_path(task_id)
+            record = _WorkspaceSqliteImportTaskRecord(
+                task_id=task_id,
+                workspace_id=workspace_id,
+                workspace_name=workspace.name,
+                requested_by_user_id=user_id,
+                filename=uploaded_file_name,
+                phase="queued",
+                queued_at=now,
+                updated_at=now,
+            )
+            record.uploaded_dump_path = final_dump_path
+            record.progress_path = progress_path
+            record.stdout_path = stdout_path
+            record.stderr_path = stderr_path
+            record.total_bytes = final_dump_path.stat().st_size
+            self._write_workspace_sqlite_import_task_sidecar(task_id)
+            task = asyncio.create_task(
+                self._run_workspace_sqlite_import_task(
+                    task_id,
+                    workspace_id,
+                    user_id,
+                    final_dump_path,
+                    uploaded_file_name,
+                    progress_path,
+                    stdout_path,
+                    stderr_path,
+                ),
+                name=f"userspace-workspace-sqlite-import:{workspace_id}",
+            )
+            self._register_workspace_background_task(
+                workspace_id,
+                task_id,
+                record,
+                task,
+                self._workspace_sqlite_import_task_statuses,
+                self._workspace_sqlite_import_tasks,
+                self._workspace_sqlite_import_active_task_ids_by_workspace,
+                lambda current_task_id, current_task: self._attach_workspace_sqlite_import_task_cleanup(
+                    current_task_id,
+                    workspace_id,
+                    current_task,
+                ),
+            )
+            return self._workspace_sqlite_import_task_model(record)
+
+    async def get_workspace_sqlite_import_task(
+        self,
+        task_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceSqliteImportTask:
+        self._prune_expired_workspace_sqlite_import_task_statuses()
+        record = self._workspace_sqlite_import_task_statuses.get(task_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="SQLite import task not found")
+        if record.requested_by_user_id != user_id and not is_admin:
+            raise HTTPException(status_code=404, detail="SQLite import task not found")
+        return self._workspace_sqlite_import_task_model(record)
+
+    async def get_latest_workspace_sqlite_import_task(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceSqliteImportTask | None:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="viewer",
+            is_admin=is_admin,
+        )
+        self._prune_expired_workspace_sqlite_import_task_statuses()
+        records = [
+            record
+            for record in self._workspace_sqlite_import_task_statuses.values()
+            if record.workspace_id == workspace_id
+            and (record.requested_by_user_id == user_id or is_admin)
+        ]
+        if not records:
+            return None
+        records.sort(key=lambda record: record.updated_at, reverse=True)
+        return self._workspace_sqlite_import_task_model(records[0])
+
+    def _apply_workspace_sqlite_import_progress(
+        self, task_id: str, progress_path: Path
+    ) -> None:
+        if not progress_path.is_file():
+            return
+        try:
+            payload = json.loads(progress_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        phase_raw = str(payload.get("phase") or "queued")
+        phase_map: dict[str, WorkspaceSqliteImportTaskPhase] = {
+            "staging_upload": "staging_upload",
+            "restoring_dump": "restoring_dump",
+            "transpiling_sql": "transpiling_sql",
+            "importing_sql": "importing_sql",
+            "finalizing_sqlite": "finalizing_sqlite",
+            "completed": "completed",
+            "failed": "failed",
+        }
+        phase = phase_map.get(phase_raw, "queued")
+        total_statements = int(payload.get("total_statements") or 0)
+        statements_executed = int(payload.get("statements_executed") or 0)
+        progress_override = payload.get("progress")
+        if isinstance(progress_override, (int, float)):
+            progress = float(progress_override)
+        elif phase == "importing_sql" and total_statements > 0:
+            progress = 0.35 + 0.6 * min(1.0, statements_executed / total_statements)
+        elif phase == "completed":
+            progress = 1.0
+        elif phase == "failed":
+            progress = 1.0
+        elif phase == "restoring_dump":
+            progress = _SQLITE_IMPORT_RESTORING_PROGRESS
+        elif phase == "transpiling_sql":
+            progress = _SQLITE_IMPORT_TRANSPILING_PROGRESS
+        elif phase == "finalizing_sqlite":
+            progress = _SQLITE_IMPORT_FINALIZING_PROGRESS
+        else:
+            progress = _SQLITE_IMPORT_STAGING_PROGRESS
+        self._set_workspace_sqlite_import_task_phase(
+            task_id,
+            phase,
+            progress=progress,
+            dialect_detected=str(payload.get("dialect") or "generic"),
+            total_bytes=int(payload.get("total_bytes") or 0),
+            processed_bytes=int(payload.get("processed_bytes") or 0),
+            total_statements=total_statements,
+            statements_executed=statements_executed,
+            tables_created=int(payload.get("tables_created") or 0),
+            rows_inserted=int(payload.get("rows_inserted") or 0),
+            warnings=list(payload.get("warnings") or []),
+            errors=list(payload.get("errors") or []),
+        )
+
+    @staticmethod
+    def _sqlite_import_message(result: SqlImportResult) -> str:
+        if result.success:
+            return (
+                "; ".join(
+                    [
+                        f"Imported {result.tables_created} table(s)",
+                        f"{result.rows_inserted} row(s)",
+                        f"{result.statements_executed} statement(s) executed",
+                    ]
+                )
+                + f" (dialect: {result.dialect})."
+            )
+        return (
+            f"Import failed with {len(result.errors)} error(s) "
+            f"after {result.statements_executed} statement(s)."
+        )
+
+    def _finish_workspace_sqlite_import_from_stdout(
+        self, task_id: str, stdout_path: Path
+    ) -> None:
+        payload = json.loads(stdout_path.read_text(encoding="utf-8"))
+        result = SqlImportResult(
+            success=bool(payload.get("success")),
+            dialect=cast(Any, payload.get("dialect") or "generic"),
+            tables_created=int(payload.get("tables_created") or 0),
+            rows_inserted=int(payload.get("rows_inserted") or 0),
+            statements_executed=int(payload.get("statements_executed") or 0),
+            errors=list(payload.get("errors") or []),
+            warnings=list(payload.get("warnings") or []),
+        )
+        self._set_workspace_sqlite_import_task_phase(
+            task_id,
+            "completed" if result.success else "failed",
+            progress=1.0,
+            dialect_detected=result.dialect,
+            total_statements=result.statements_executed,
+            statements_executed=result.statements_executed,
+            tables_created=result.tables_created,
+            rows_inserted=result.rows_inserted,
+            warnings=result.warnings,
+            errors=result.errors,
+            message=self._sqlite_import_message(result),
+            error=None if result.success else self._sqlite_import_message(result),
+        )
+
+    async def _monitor_rehydrated_workspace_sqlite_import_task(
+        self, task_id: str
+    ) -> None:
+        record = self._workspace_sqlite_import_task_statuses.get(task_id)
+        if record is None:
+            return
+        try:
+            started_monotonic = _time.monotonic()
+            while record.phase not in {"completed", "failed"}:
+                if record.progress_path:
+                    self._apply_workspace_sqlite_import_progress(
+                        task_id, record.progress_path
+                    )
+                if (
+                    record.stdout_path
+                    and record.stdout_path.is_file()
+                    and record.stdout_path.stat().st_size > 0
+                ):
+                    self._finish_workspace_sqlite_import_from_stdout(
+                        task_id, record.stdout_path
+                    )
+                    break
+                if not self._is_process_running(record.process_id):
+                    break
+                if (
+                    _time.monotonic() - started_monotonic
+                    > _SQLITE_IMPORT_SUBPROCESS_TIMEOUT_SECONDS
+                ):
+                    if record.process_id:
+                        try:
+                            os.kill(record.process_id, 9)
+                        except OSError:
+                            pass
+                    raise RuntimeError("SQL import timed out before it could complete")
+                await asyncio.sleep(_SQLITE_IMPORT_SUBPROCESS_PROGRESS_INTERVAL_SECONDS)
+
+            if record.phase not in {"completed", "failed"}:
+                if record.stderr_path and record.stderr_path.is_file():
+                    detail = record.stderr_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).strip()
+                else:
+                    detail = ""
+                raise RuntimeError(
+                    detail or "SQLite import process exited unexpectedly"
+                )
+        except Exception as exc:
+            logger.exception("Recovered workspace SQLite import task failed")
+            detail = str(exc) or "SQLite import failed"
+            self._set_workspace_sqlite_import_task_phase(
+                task_id,
+                "failed",
+                progress=1.0,
+                errors=[detail],
+                message=detail,
+                error=detail,
+            )
+        finally:
+            if record.uploaded_dump_path and record.phase in {"completed", "failed"}:
+                try:
+                    record.uploaded_dump_path.unlink(missing_ok=True)
+                except Exception:
+                    logger.warning(
+                        "Failed to remove SQLite import upload: %s",
+                        record.uploaded_dump_path,
+                    )
+
+    async def _run_workspace_sqlite_import_task(
+        self,
+        task_id: str,
+        workspace_id: str,
+        user_id: str,
+        dump_path: Path,
+        filename: str,
+        progress_path: Path,
+        stdout_path: Path,
+        stderr_path: Path,
+    ) -> None:
+        del user_id
+        remove_dump = True
+        sqlite_path = (
+            self._workspace_files_dir(workspace_id) / ".ragtime" / "db" / "app.sqlite3"
+        )
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        self._set_workspace_sqlite_import_task_phase(
+            task_id, "waiting_for_slot", progress=_SQLITE_IMPORT_WAITING_PROGRESS
+        )
+        try:
+            async with self._workspace_sqlite_import_semaphore:
+                self._set_workspace_sqlite_import_task_phase(
+                    task_id, "staging_upload", progress=_SQLITE_IMPORT_STAGING_PROGRESS
+                )
+                stdout_path.parent.mkdir(parents=True, exist_ok=True)
+                stdout_path.write_text("", encoding="utf-8")
+                stderr_path.write_text("", encoding="utf-8")
+                with (
+                    stdout_path.open("wb") as stdout_handle,
+                    stderr_path.open("wb") as stderr_handle,
+                ):
+                    process = await asyncio.create_subprocess_exec(
+                        sys.executable,
+                        "-m",
+                        "ragtime.userspace.sqlite_import",
+                        "--sqlite-path",
+                        str(sqlite_path),
+                        "--dump-path",
+                        str(dump_path),
+                        "--filename",
+                        filename,
+                        "--progress-path",
+                        str(progress_path),
+                        stdout=stdout_handle,
+                        stderr=stderr_handle,
+                    )
+                record = self._workspace_sqlite_import_task_statuses.get(task_id)
+                if record is not None:
+                    record.process_id = process.pid
+                    record.stdout_path = stdout_path
+                    record.stderr_path = stderr_path
+                    self._write_workspace_sqlite_import_task_sidecar(task_id)
+                wait_task = asyncio.create_task(process.wait())
+                try:
+                    started_monotonic = _time.monotonic()
+                    while not wait_task.done():
+                        if (
+                            _time.monotonic() - started_monotonic
+                            > _SQLITE_IMPORT_SUBPROCESS_TIMEOUT_SECONDS
+                        ):
+                            process.kill()
+                            await wait_task
+                            raise RuntimeError(
+                                "SQL import timed out before it could complete"
+                            )
+                        self._apply_workspace_sqlite_import_progress(
+                            task_id, progress_path
+                        )
+                        await asyncio.sleep(
+                            _SQLITE_IMPORT_SUBPROCESS_PROGRESS_INTERVAL_SECONDS
+                        )
+                    await wait_task
+                except asyncio.CancelledError:
+                    remove_dump = False
+                    raise
+
+                self._apply_workspace_sqlite_import_progress(task_id, progress_path)
+                if process.returncode != 0:
+                    detail = stderr_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).strip()
+                    raise RuntimeError(
+                        detail
+                        or f"SQL import subprocess failed with exit code {process.returncode}"
+                    )
+
+                self._finish_workspace_sqlite_import_from_stdout(task_id, stdout_path)
+        except Exception as exc:
+            logger.exception("Workspace SQLite import task failed")
+            detail = str(exc) or "SQLite import failed"
+            self._set_workspace_sqlite_import_task_phase(
+                task_id,
+                "failed",
+                progress=1.0,
+                errors=[detail],
+                message=detail,
+                error=detail,
+            )
+        finally:
+            if remove_dump:
+                try:
+                    dump_path.unlink(missing_ok=True)
+                except Exception:
+                    logger.warning(
+                        "Failed to remove SQLite import upload: %s", dump_path
+                    )
+
     async def _run_workspace_create_task(
         self,
         task_id: str,
@@ -6357,6 +7106,29 @@ class UserSpaceService:
             self._workspace_scm_watch_loop(),
             name="userspace-scm-watch-loop",
         )
+
+    def schedule_workspace_sqlite_import_recovery(self) -> None:
+        """Reattach monitors to SQLite import subprocesses that survived reload."""
+        for task_id, record in list(
+            self._workspace_sqlite_import_task_statuses.items()
+        ):
+            if record.phase in {"completed", "failed"}:
+                continue
+            if task_id in self._workspace_sqlite_import_tasks:
+                continue
+            if not self._is_process_running(record.process_id):
+                continue
+            task = asyncio.create_task(
+                self._monitor_rehydrated_workspace_sqlite_import_task(task_id),
+                name=f"userspace-workspace-sqlite-import-recovery:{record.workspace_id}",
+            )
+            self._workspace_sqlite_import_tasks[task_id] = task
+            self._workspace_sqlite_import_active_task_ids_by_workspace[
+                record.workspace_id
+            ] = task_id
+            self._attach_workspace_sqlite_import_task_cleanup(
+                task_id, record.workspace_id, task
+            )
 
     async def _workspace_scm_watch_loop(self) -> None:
         poll_seconds = 30.0
@@ -10747,9 +11519,7 @@ class UserSpaceService:
 
         conversation_ids_by_workspace_id: dict[str, list[str]] = {}
         workspace_ids = [
-            str(getattr(row, "id", ""))
-            for row in rows
-            if getattr(row, "id", None)
+            str(getattr(row, "id", "")) for row in rows if getattr(row, "id", None)
         ]
         if workspace_ids:
             workspace_id_sql = ", ".join(
@@ -18358,88 +19128,6 @@ class UserSpaceService:
             )
 
         return workspace_files
-
-    # ------------------------------------------------------------------
-    # SQL dump → workspace SQLite import
-    # ------------------------------------------------------------------
-
-    async def import_sql_to_workspace_sqlite(
-        self,
-        workspace_id: str,
-        user_id: str,
-        file_bytes: bytes,
-        filename: str,
-    ) -> "SqliteImportResponse":
-        workspace = await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
-
-        if workspace.sqlite_persistence_mode != "include":
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "SQLite persistence mode must be enabled (set to 'include') "
-                    "on this workspace before importing a SQL dump."
-                ),
-            )
-
-        if len(file_bytes) > _MAX_IMPORT_SIZE_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"SQL dump exceeds the {_MAX_IMPORT_SIZE_BYTES // (1024 * 1024)} MB "
-                    "size limit. Consider splitting the dump into smaller files."
-                ),
-            )
-
-        if detect_binary_pg_dump(file_bytes):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Binary PostgreSQL dump format detected. "
-                    "Please re-export using: pg_dump --format=plain"
-                ),
-            )
-
-        # Decode bytes — try UTF-8 first, fall back to Latin-1 (lossless for arbitrary bytes).
-        try:
-            sql_text = file_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            sql_text = file_bytes.decode("latin-1")
-
-        dialect = detect_sql_dialect(sql_text)
-        sqlite_path = (
-            self._workspace_files_dir(workspace_id) / ".ragtime" / "db" / "app.sqlite3"
-        )
-        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-
-        result: SqlImportResult = import_sql_to_sqlite(sqlite_path, sql_text, dialect)
-
-        if result.success:
-            summary_parts = [
-                f"Imported {result.tables_created} table(s)",
-                f"{result.rows_inserted} row(s)",
-                f"{result.statements_executed} statement(s) executed",
-            ]
-            if result.errors:
-                summary_parts.append(f"{len(result.errors)} non-fatal error(s)")
-            message = "; ".join(summary_parts) + f" (dialect: {dialect})."
-        else:
-            message = (
-                f"Import failed with {len(result.errors)} error(s) "
-                f"after {result.statements_executed} statement(s)."
-            )
-
-        return SqliteImportResponse(
-            success=result.success,
-            dialect_detected=dialect,
-            tables_created=result.tables_created,
-            rows_inserted=result.rows_inserted,
-            statements_executed=result.statements_executed,
-            errors=result.errors,
-            warnings=result.warnings,
-            message=message,
-        )
 
 
 userspace_service = UserSpaceService()

@@ -1491,6 +1491,7 @@ async def get_userspace_preview_settings():
         userspace_preview_sandbox_flag_options=[
             dict(option) for option in USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS
         ],
+        userspace_sqlite_import_max_bytes=settings.userspace_sqlite_import_max_bytes,
     )
 
 

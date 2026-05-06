@@ -103,6 +103,17 @@ WorkspaceArchiveImportTaskPhase = Literal[
     "completed",
     "failed",
 ]
+WorkspaceSqliteImportTaskPhase = Literal[
+    "queued",
+    "staging_upload",
+    "waiting_for_slot",
+    "restoring_dump",
+    "transpiling_sql",
+    "importing_sql",
+    "finalizing_sqlite",
+    "completed",
+    "failed",
+]
 RuntimeRestartBatchTaskPhase = Literal[
     "queued",
     "restarting",
@@ -293,6 +304,28 @@ class UserSpaceWorkspaceArchiveImportTask(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     imported_chat_count: int = 0
     imported_snapshot_count: int = 0
+    error: str | None = None
+    queued_at: datetime
+    updated_at: datetime
+
+
+class UserSpaceWorkspaceSqliteImportTask(BaseModel):
+    task_id: str
+    workspace_id: str
+    workspace_name: str
+    filename: str
+    phase: WorkspaceSqliteImportTaskPhase
+    progress: float = Field(default=0.0, ge=0.0, le=1.0)
+    dialect_detected: str = "generic"
+    total_bytes: int = 0
+    processed_bytes: int = 0
+    total_statements: int = 0
+    statements_executed: int = 0
+    tables_created: int = 0
+    rows_inserted: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    message: str | None = None
     error: str | None = None
     queued_at: datetime
     updated_at: datetime
@@ -1271,14 +1304,3 @@ class WorkspaceMountSyncResponse(BaseModel):
     sync_backend: str | None = None
     sync_notice: str | None = None
     last_sync_error: str | None = None
-
-
-class SqliteImportResponse(BaseModel):
-    success: bool
-    dialect_detected: str
-    tables_created: int = 0
-    rows_inserted: int = 0
-    statements_executed: int = 0
-    errors: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    message: str
