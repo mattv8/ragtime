@@ -199,7 +199,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const shouldOpenArchiveByDefault = hasActiveArchiveExportTask || hasActiveArchiveImportTask;
   const defaultArchiveMode: ArchiveMode = hasActiveArchiveImportTask ? 'import' : 'export';
   const [toasts, toast] = useToast();
-  const [activeTab, setActiveTab] = useState<ModalTab>(shouldOpenArchiveByDefault ? 'archive' : 'git-source');
+  const [activeTab, setActiveTab] = useState<ModalTab>('archive');
   const [mode, setMode] = useState<WizardMode>('import');
   const [step, setStep] = useState<WizardStep>('input');
   const [status, setStatus] = useState<{ type: StatusType; message: string }>({ type: null, message: '' });
@@ -786,7 +786,17 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
 
   const sqliteEnabled = workspace.sqlite_persistence_mode === 'include';
   const SQL_ACCEPT = '.sql,.dump,.pg,.pgsql,.mysql';
-  const ARCHIVE_ACCEPT = '.zip,.tar.gz,.tgz';
+  const ARCHIVE_ACCEPT = [
+    '.zip',
+    '.tar.gz',
+    '.tgz',
+    '.tar',
+    '.gz',
+    'application/zip',
+    'application/x-zip-compressed',
+    'application/gzip',
+    'application/x-gzip',
+  ].join(',');
 
   function handleTabSwitch(tab: ModalTab) {
     if (isLoading) return;
@@ -818,24 +828,6 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
               style={{
                 background: 'transparent',
                 border: 'none',
-                borderBottom: activeTab === 'git-source' ? '2px solid var(--color-accent)' : '2px solid transparent',
-                padding: '8px 16px',
-                cursor: isLoading ? 'default' : 'pointer',
-                color: activeTab === 'git-source' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-                fontSize: 14,
-                fontWeight: 600,
-                transition: 'color 0.15s, border-color 0.15s',
-              }}
-              onClick={() => handleTabSwitch('git-source')}
-              disabled={isLoading}
-            >
-              Git Source
-            </button>
-            <button
-              type="button"
-              style={{
-                background: 'transparent',
-                border: 'none',
                 borderBottom: activeTab === 'archive' ? '2px solid var(--color-accent)' : '2px solid transparent',
                 padding: '8px 16px',
                 cursor: isLoading ? 'default' : 'pointer',
@@ -848,6 +840,24 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
               disabled={isLoading}
             >
               Backup/Restore
+            </button>
+            <button
+              type="button"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                borderBottom: activeTab === 'git-source' ? '2px solid var(--color-accent)' : '2px solid transparent',
+                padding: '8px 16px',
+                cursor: isLoading ? 'default' : 'pointer',
+                color: activeTab === 'git-source' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                fontSize: 14,
+                fontWeight: 600,
+                transition: 'color 0.15s, border-color 0.15s',
+              }}
+              onClick={() => handleTabSwitch('git-source')}
+              disabled={isLoading}
+            >
+              Git Source
             </button>
             <button
               type="button"
