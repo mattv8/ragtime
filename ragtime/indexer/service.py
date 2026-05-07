@@ -2700,6 +2700,10 @@ class IndexerService:
     ):
         """Create FAISS index from source directory."""
         config = job.config
+        ocr_mode = config.ocr_mode
+        ocr_provider = config.ocr_provider
+        ocr_vision_model = config.ocr_vision_model
+        ocr_enabled = ocr_mode != OcrMode.DISABLED
 
         # Collect all files to process (run in thread pool as rglob can be slow on large repos)
         logger.info(
@@ -2732,10 +2736,6 @@ class IndexerService:
         # Use asyncio.Semaphore to limit concurrent file loads (prevents memory spikes
         # and I/O saturation). Files are loaded concurrently while respecting limits.
         documents = []
-        ocr_mode = config.ocr_mode
-        ocr_provider = config.ocr_provider
-        ocr_vision_model = config.ocr_vision_model
-        ocr_enabled = ocr_mode != OcrMode.DISABLED
 
         # Concurrency limit: scale with hardware but leave headroom for
         # the chunking process pool and embedding work
