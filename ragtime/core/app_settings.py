@@ -246,6 +246,9 @@ class SettingsCache:
 
             self._settings = {
                 "server_name": prisma_settings.serverName,
+                "authenticated_webgl_background_enabled": getattr(
+                    prisma_settings, "authenticatedWebglBackgroundEnabled", True
+                ),
                 "enabled_tools": prisma_settings.enabledTools,
                 "odoo_container": prisma_settings.odooContainer,
                 "postgres_container": prisma_settings.postgresContainer,
@@ -376,6 +379,7 @@ class SettingsCache:
             )
             return {
                 "server_name": "Ragtime",
+                "authenticated_webgl_background_enabled": True,
                 "enabled_tools": [],
                 "odoo_container": "odoo-server",
                 "postgres_container": "odoo-postgres",

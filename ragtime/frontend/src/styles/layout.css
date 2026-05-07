@@ -28,9 +28,15 @@ html {
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-track-piece,
+::-webkit-scrollbar-button {
   background: transparent;
 }
 
@@ -63,6 +69,26 @@ body {
   padding: var(--space-sm) var(--space-lg) var(--space-lg);
 }
 
+html.authenticated-webgl-background-active,
+body.authenticated-webgl-background-active {
+  background: transparent !important;
+}
+
+html.authenticated-webgl-background-active {
+  height: 100%;
+  overflow: hidden;
+}
+
+body.authenticated-webgl-background-active {
+  height: 100dvh;
+  overflow: hidden;
+  padding: 0;
+}
+
+body.authenticated-webgl-background-active #root {
+  height: 100dvh;
+}
+
 /* =============================================================================
    CONTAINER
    ============================================================================= */
@@ -75,6 +101,47 @@ body {
 
 .app-shell {
   width: 100%;
+  position: relative;
+}
+
+.app-shell-webgl-background {
+  isolation: isolate;
+  width: 100vw;
+  height: 100dvh;
+  min-height: 0;
+  padding: var(--space-sm) var(--space-lg) var(--space-lg);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.app-background-gradient {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: var(--login-gradient-opacity);
+}
+
+.app-shell-webgl-background::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 18% 16%, rgba(100, 116, 139, 0.08), transparent 30%),
+    radial-gradient(circle at 84% 78%, rgba(59, 130, 146, 0.07), transparent 34%),
+    linear-gradient(180deg, transparent 0%, var(--login-gradient-wash) 100%);
+}
+
+.app-shell-webgl-background > :not(.app-background-gradient) {
+  position: relative;
+  z-index: 2;
+}
+
+.app-shell-webgl-background > .topnav {
+  z-index: 2;
 }
 
 .app-shell-locked {
@@ -82,6 +149,10 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.app-shell-webgl-background.app-shell-locked {
+  height: 100dvh;
 }
 
 .app-shell-locked .container {
@@ -109,6 +180,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  position: relative;
+  z-index: 2;
   width: 100%;
   gap: var(--space-md);
   padding: var(--space-sm) var(--space-lg);
@@ -164,6 +237,8 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-md);
+  position: relative;
+  z-index: 1;
 }
 
 /* =============================================================================
@@ -439,6 +514,7 @@ body {
 /* User Menu Dropdown */
 .user-menu {
   position: relative;
+  z-index: 30;
 }
 
 .user-menu-trigger {
@@ -493,11 +569,11 @@ body {
   top: calc(100% + var(--space-xs));
   right: 0;
   min-width: 220px;
-  background: var(--color-surface);
+  background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
-  z-index: 1000;
+  z-index: 40;
   overflow: hidden;
 }
 
@@ -1745,6 +1821,43 @@ body {
   padding: var(--space-lg);
 }
 
+.login-gradient-container {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: var(--login-gradient-base);
+
+  /* Break out of body padding so gradient fills edge-to-edge */
+  margin-top: calc(-1 * var(--space-sm));
+  margin-left: calc(-1 * var(--space-lg));
+  margin-right: calc(-1 * var(--space-lg));
+  margin-bottom: calc(-1 * var(--space-lg));
+  width: calc(100% + 2 * var(--space-lg));
+  min-width: calc(100% + 2 * var(--space-lg));
+}
+
+.login-gradient-container::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 18% 16%, rgba(100, 116, 139, 0.10), transparent 30%),
+    radial-gradient(circle at 84% 78%, rgba(59, 130, 146, 0.09), transparent 34%),
+    linear-gradient(180deg, transparent 0%, var(--login-gradient-wash) 100%);
+}
+
+.login-background-gradient {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: var(--login-gradient-opacity);
+}
+
 .login-card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -1753,6 +1866,15 @@ body {
   width: 100%;
   max-width: 400px;
   box-shadow: var(--shadow-lg);
+}
+
+.login-gradient-container .login-card {
+  position: relative;
+  z-index: 1;
+  background: var(--login-card-bg);
+  border-color: var(--login-card-border);
+  box-shadow: var(--login-card-shadow);
+  backdrop-filter: blur(22px) saturate(1.18) brightness(0.92);
 }
 
 .login-header {

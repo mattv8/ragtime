@@ -615,6 +615,10 @@ class AuthStatusResponse(BaseModel):
         default="Ragtime",
         description="Configured server branding name",
     )
+    authenticated_webgl_background_enabled: bool = Field(
+        default=True,
+        description="If True, show the animated WebGL gradient behind authenticated app pages.",
+    )
 
 
 async def _user_response(user: User) -> UserResponse:
@@ -1010,12 +1014,16 @@ async def get_auth_status(
     cookie_warning = _detect_cookie_mismatch(request)
     auth_methods = await _build_auth_method_statuses(ldap_config)
     server_name = "Ragtime"
+    authenticated_webgl_background_enabled = True
 
     try:
         app_settings = await get_app_settings()
         configured_server_name = str(app_settings.get("server_name") or "").strip()
         if configured_server_name:
             server_name = configured_server_name
+        authenticated_webgl_background_enabled = bool(
+            app_settings.get("authenticated_webgl_background_enabled", True)
+        )
     except Exception as exc:
         logger.debug("Failed to load server branding for auth status: %s", exc)
 
@@ -1039,6 +1047,7 @@ async def get_auth_status(
         ),
         auth_methods=auth_methods,
         server_name=server_name,
+        authenticated_webgl_background_enabled=authenticated_webgl_background_enabled,
     )
 
 

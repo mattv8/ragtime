@@ -669,6 +669,15 @@
   }
 
   /* Login */
+  .login-gradient-container {
+    margin-top: calc(-1 * var(--space-sm));
+    margin-left: calc(-1 * var(--space-sm));
+    margin-right: calc(-1 * var(--space-sm));
+    margin-bottom: calc(-1 * var(--space-sm));
+    width: calc(100% + 2 * var(--space-sm));
+    min-width: calc(100% + 2 * var(--space-sm));
+  }
+
   .login-card {
     padding: var(--space-lg);
   }
@@ -705,6 +714,15 @@
 @media (max-width: 480px) {
   body {
     padding: var(--space-xs);
+  }
+
+  .login-gradient-container {
+    margin-top: calc(-1 * var(--space-xs));
+    margin-left: calc(-1 * var(--space-xs));
+    margin-right: calc(-1 * var(--space-xs));
+    margin-bottom: calc(-1 * var(--space-xs));
+    width: calc(100% + 2 * var(--space-xs));
+    min-width: calc(100% + 2 * var(--space-xs));
   }
 
   .topnav {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Settings, ChevronRight } from 'lucide-react';
 
 interface ToolSelectorTool {
@@ -59,6 +60,7 @@ export function ToolSelectorDropdown({
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number; minWidth: number; maxHeight: number } | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Compute fixed position so the dropdown draws over iframes without layout shift
   const computeDropdownPosition = useCallback(() => {
@@ -88,7 +90,12 @@ export function ToolSelectorDropdown({
   // Close dropdown when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (
+        dropdownRef.current
+        && !dropdownRef.current.contains(target)
+        && !menuRef.current?.contains(target)
+      ) {
         setShowDropdown(false);
         setExpandedGroupId(null);
       }
@@ -228,8 +235,9 @@ export function ToolSelectorDropdown({
         <Settings size={14} />
         <span className="tool-count-badge">{effectiveSelectedCount}</span>
       </button>
-      {showDropdown && dropdownPosition && (
+      {showDropdown && dropdownPosition && createPortal(
         <div
+          ref={menuRef}
           className="userspace-tool-dropdown"
           style={{
             top: openDirection === 'up' ? undefined : dropdownPosition.top,
@@ -318,7 +326,8 @@ export function ToolSelectorDropdown({
               </label>
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronDown, X } from 'lucide-react';
 
 export interface CheckboxDropdownOption {
@@ -138,7 +139,7 @@ export function CheckboxDropdown({
         <ChevronDown size={14} className={`chk-dropdown-chevron${open ? ' rotated' : ''}`} />
       </button>
 
-      {open && panelStyle && (
+      {open && panelStyle && createPortal(
         <div
           ref={panelRef}
           className="chk-dropdown-panel model-selector-dropdown-inner"
@@ -200,7 +201,8 @@ export function CheckboxDropdown({
               })
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

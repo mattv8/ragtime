@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, onAuthExpired } from '@/api';
 import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPage, PublicSharedChatView, UserSpacePanel, LoginPage, OAuthLoginPage, OAuthCallbackError, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner, WarningsBanner, UsersPanel } from '@/components';
+import WebGLGradient from '@/components/WebGLGradient';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ConfigurationWarning, UserSpacePreviewWarning } from '@/types';
 import type { OAuthParams } from '@/components';
@@ -135,6 +136,7 @@ export function App() {
   const [initialConversationId] = useState<string | null>(getInitialConversationId);
   const [highlightToolsSection, setHighlightToolsSection] = useState<string | null>(null);
   const [serverName, setServerName] = useState<string>('Ragtime');
+  const [authenticatedWebglBackgroundEnabled, setAuthenticatedWebglBackgroundEnabled] = useState(true);
   const [jobs, setJobs] = useState<IndexJob[]>([]);
   const [indexes, setIndexes] = useState<IndexInfo[]>([]);
   const [jobsLoading, setJobsLoading] = useState(true);
@@ -199,9 +201,10 @@ export function App() {
         session_cookie_secure: false,
         allowed_origins_open: true,
         server_name: serverName,
+        authenticated_webgl_background_enabled: authenticatedWebglBackgroundEnabled,
       };
     });
-  }, [serverName]);
+  }, [authenticatedWebglBackgroundEnabled, serverName]);
 
   useEffect(() => {
     const unsubscribe = onAuthExpired(() => {
@@ -219,6 +222,7 @@ export function App() {
         const resolvedServerName = configuredServerName || 'Ragtime';
         setServerName(resolvedServerName);
         document.title = resolvedServerName;
+        setAuthenticatedWebglBackgroundEnabled(settings.authenticated_webgl_background_enabled ?? true);
         // Also load aggregate_search setting
         setAggregateSearch(settings.aggregate_search ?? true);
         // Load embedding dimensions for memory calculation
@@ -250,6 +254,7 @@ export function App() {
           setServerName(authServerName);
           document.title = authServerName;
         }
+        setAuthenticatedWebglBackgroundEnabled(status.authenticated_webgl_background_enabled ?? true);
 
         // Only try to get current user if we might be authenticated
         // This avoids unnecessary 401 errors in the console
@@ -272,6 +277,7 @@ export function App() {
           session_cookie_secure: false,
           allowed_origins_open: true,
           server_name: serverName,
+          authenticated_webgl_background_enabled: authenticatedWebglBackgroundEnabled,
         });
       } finally {
         setAuthLoading(false);
@@ -295,6 +301,7 @@ export function App() {
           setServerName(authServerName);
           document.title = authServerName;
         }
+        setAuthenticatedWebglBackgroundEnabled(status.authenticated_webgl_background_enabled ?? true);
       } catch (err) {
         console.error('Failed to refresh auth status after login:', err);
       }
@@ -381,6 +388,18 @@ export function App() {
   const isIndexerView = activeView === 'indexer';
   const lockViewportLayout = isChatView || isUserspaceView;
   const hideChrome = (isUserspaceView && userspaceFullscreen) || (isChatView && chatFullscreen);
+
+  useEffect(() => {
+    const rootClass = 'authenticated-webgl-background-active';
+    const enabled = Boolean(currentUser && authenticatedWebglBackgroundEnabled);
+    document.documentElement.classList.toggle(rootClass, enabled);
+    document.body.classList.toggle(rootClass, enabled);
+
+    return () => {
+      document.documentElement.classList.remove(rootClass);
+      document.body.classList.remove(rootClass);
+    };
+  }, [currentUser, authenticatedWebglBackgroundEnabled]);
 
   // Sync state to URL params (only sync valid views for user's role)
   // Skip URL sync during OAuth flow - we need to preserve those params until redirect
@@ -698,7 +717,14 @@ export function App() {
 
   return (
     <AvailableModelsProvider>
-    <div className={`app-shell${lockViewportLayout ? ' app-shell-locked' : ''}`}>
+    <div className={`app-shell${lockViewportLayout ? ' app-shell-locked' : ''}${authenticatedWebglBackgroundEnabled ? ' app-shell-webgl-background' : ''}`}>
+      {authenticatedWebglBackgroundEnabled ? (
+        <WebGLGradient
+          className="app-background-gradient"
+          fullscreen
+          ignorePointerSelector=".topnav, .container, .modal, .modal-overlay, [role='dialog'], button, input, textarea, select, a"
+        />
+      ) : null}
       <nav className="topnav" style={hideChrome ? { display: 'none' } : undefined}>
         <span className="topnav-brand">{serverName}</span>
         <div className="topnav-links">
@@ -807,6 +833,7 @@ export function App() {
         <SettingsPanel
           currentUser={currentUser}
           onServerNameChange={handleServerNameChange}
+          onAuthenticatedWebglBackgroundChange={setAuthenticatedWebglBackgroundEnabled}
           highlightSetting={highlightSetting}
           onHighlightComplete={() => setHighlightSetting(null)}
           authStatus={authStatus}

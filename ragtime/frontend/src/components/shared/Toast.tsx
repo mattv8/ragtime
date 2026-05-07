@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 
 type ToastType = 'success' | 'error';
 
@@ -71,7 +72,7 @@ interface ToastContainerProps {
 export function ToastContainer({ toasts, onDismiss }: ToastContainerProps) {
   if (toasts.length === 0) return null;
 
-  return (
+  return createPortal(
     <div className="toast-container" aria-live="polite">
       {toasts.map((toast) => (
         <div key={toast.id} className={`toast-item toast-${toast.type}`} role="alert">
@@ -86,6 +87,7 @@ export function ToastContainer({ toasts, onDismiss }: ToastContainerProps) {
           </button>
         </div>
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }

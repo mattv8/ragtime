@@ -364,6 +364,7 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
 interface SettingsPanelProps {
   currentUser?: User | null;
   onServerNameChange?: (name: string) => void;
+  onAuthenticatedWebglBackgroundChange?: (enabled: boolean) => void;
   /** Setting ID to highlight and scroll to (e.g., 'sequential_index_loading') */
   highlightSetting?: string | null;
   /** Called after highlight animation completes to clear the param */
@@ -372,7 +373,7 @@ interface SettingsPanelProps {
   authStatus?: AuthStatus | null;
 }
 
-export function SettingsPanel({ currentUser, onServerNameChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
+export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticatedWebglBackgroundChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
   const { refresh: refreshModels } = useAvailableModels();
   const initialSettingsFilterState = useMemo(() => readSettingsFilterStateFromUrl(), []);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -1271,6 +1272,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
       setFormData({
         // Server branding
         server_name: data.server_name,
+        authenticated_webgl_background_enabled: data.authenticated_webgl_background_enabled ?? true,
         // Embedding settings
         ...getEmbeddingSettingsFormData(data),
         // LLM settings
@@ -1724,10 +1726,15 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
 
       const dataToSave = {
         server_name: normalizedServerName,
+        authenticated_webgl_background_enabled: formData.authenticated_webgl_background_enabled ?? settings?.authenticated_webgl_background_enabled ?? true,
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
-      setFormData((prev) => ({ ...prev, server_name: normalizedServerName }));
+      setFormData((prev) => ({
+        ...prev,
+        server_name: normalizedServerName,
+        authenticated_webgl_background_enabled: updated.authenticated_webgl_background_enabled ?? true,
+      }));
       // Show restart guidance in the dismissable security banner.
       sessionStorage.setItem('ragtime_branding_restart_notice', 'true');
       const dismissedNoticesKey = 'ragtime_security_banner_dismissed_notices';
@@ -1751,6 +1758,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
       if (onServerNameChange && updated.server_name) {
         onServerNameChange(updated.server_name);
       }
+      onAuthenticatedWebglBackgroundChange?.(updated.authenticated_webgl_background_enabled ?? true);
       toast.success('Server branding saved');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save branding settings');
@@ -2677,14 +2685,43 @@ export function SettingsPanel({ currentUser, onServerNameChange, highlightSettin
             Customize the server name displayed in the UI, API model name, and MCP server identity.
           </p>
 
-          <div className="form-group">
-            <label>Server Name</label>
-            <input
-              type="text"
-              value={formData.server_name ?? settings?.server_name ?? 'Ragtime'}
-              onChange={(e) => setFormData({ ...formData, server_name: e.target.value })}
-              placeholder="Ragtime"
-            />
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: '1rem',
+              alignItems: 'start',
+            }}
+          >
+            <div className="form-group">
+              <label>Server Name</label>
+              <input
+                type="text"
+                value={formData.server_name ?? settings?.server_name ?? 'Ragtime'}
+                onChange={(e) => setFormData({ ...formData, server_name: e.target.value })}
+                placeholder="Ragtime"
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="chat-toggle-control" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <label className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    checked={formData.authenticated_webgl_background_enabled ?? settings?.authenticated_webgl_background_enabled ?? true}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      authenticated_webgl_background_enabled: e.target.checked,
+                    })}
+                  />
+                  <span className="toggle-slider"></span>
+                </label>
+                <span>Animated Background After Login</span>
+              </label>
+              <p className="field-help">
+                Show the WebGL gradient behind authenticated app pages. Disable this to use the static theme background after login.
+              </p>
+            </div>
           </div>
 
           <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0, marginTop: 'var(--space-md)' }}>

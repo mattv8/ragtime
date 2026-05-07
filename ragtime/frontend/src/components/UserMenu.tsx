@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { User, ChevronDown, LogOut, Moon, Sun, Monitor } from 'lucide-react';
 import type { User as UserType } from '@/types';
 
@@ -11,8 +12,19 @@ interface UserMenuProps {
 
 export function UserMenu({ user, onLogout }: UserMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; right: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const isAdmin = user.role === 'admin';
+
+  const computeDropdownPosition = useCallback(() => {
+    if (!menuRef.current) return;
+    const rect = menuRef.current.getBoundingClientRect();
+    setDropdownPosition({
+      top: rect.bottom + 4,
+      right: window.innerWidth - rect.right,
+    });
+  }, []);
 
   // Theme state
   const [theme, setTheme] = useState<Theme>(() => {
@@ -35,13 +47,33 @@ export function UserMenu({ user, onLogout }: UserMenuProps) {
   // Close menu when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (
+        menuRef.current
+        && !menuRef.current.contains(target)
+        && !dropdownRef.current?.contains(target)
+      ) {
         setIsOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setDropdownPosition(null);
+      return;
+    }
+
+    computeDropdownPosition();
+    window.addEventListener('scroll', computeDropdownPosition, true);
+    window.addEventListener('resize', computeDropdownPosition);
+    return () => {
+      window.removeEventListener('scroll', computeDropdownPosition, true);
+      window.removeEventListener('resize', computeDropdownPosition);
+    };
+  }, [isOpen, computeDropdownPosition]);
 
   // Close on escape key
   useEffect(() => {
@@ -92,8 +124,12 @@ export function UserMenu({ user, onLogout }: UserMenuProps) {
         <ChevronDown size={14} className={`user-menu-chevron ${isOpen ? 'rotated' : ''}`} />
       </button>
 
-      {isOpen && (
-        <div className="user-menu-dropdown">
+      {isOpen && dropdownPosition && createPortal(
+        <div
+          ref={dropdownRef}
+          className="user-menu-dropdown"
+          style={{ position: 'fixed', top: dropdownPosition.top, right: dropdownPosition.right }}
+        >
           <div className="user-menu-header">
             <div className="user-menu-avatar-large">
               <User size={24} />
@@ -121,7 +157,8 @@ export function UserMenu({ user, onLogout }: UserMenuProps) {
             <LogOut size={16} />
             <span>Logout</span>
           </button>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

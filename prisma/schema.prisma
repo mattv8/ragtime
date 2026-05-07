@@ -137,6 +137,7 @@ model AppSettings {
 
   // Server Identity
   serverName String @default("Ragtime") @map("server_name") // Customizable server/model name
+  authenticatedWebglBackgroundEnabled Boolean @default(true) @map("authenticated_webgl_background_enabled")
 
   // Embedding Configuration (for FAISS indexing)
   embeddingProvider   String @default("ollama") @map("embedding_provider") // "ollama", "openai", "llama_cpp", "lmstudio", or "omlx"

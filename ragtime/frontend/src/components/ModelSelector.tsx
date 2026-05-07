@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import type { ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { normalizeProviderAlias } from '@/utils/modelProviders';
@@ -209,7 +210,12 @@ export function ModelSelector<T extends BaseModel>({
   // Close dropdown when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (
+        containerRef.current
+        && !containerRef.current.contains(target)
+        && !dropdownRef.current?.contains(target)
+      ) {
         setIsOpen(false);
         setExpandedGroup(null);
         setSubmenuPosition(null);
@@ -372,7 +378,7 @@ export function ModelSelector<T extends BaseModel>({
         <span className="model-selector-arrow">▾</span>
       </button>
 
-      {isOpen && (
+      {isOpen && createPortal(
         <div
           className="model-selector-dropdown"
           ref={dropdownRef}
@@ -511,7 +517,8 @@ export function ModelSelector<T extends BaseModel>({
               ))}
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

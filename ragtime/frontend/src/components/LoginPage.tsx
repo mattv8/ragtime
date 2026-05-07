@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { api } from '@/api';
 import type { User, AuthStatus, AuthMethodStatus } from '@/types';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
+import WebGLGradient from './WebGLGradient';
 
 interface LoginPageProps {
   authStatus: AuthStatus;
@@ -67,7 +68,6 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
     <div className="login-card">
       <div className="login-header">
         <h1 className="login-title">{serverName}</h1>
-        <p className="login-subtitle">Sign in to continue</p>
       </div>
 
       {authStatus.cookie_warning && (
@@ -106,7 +106,8 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
 
 export function LoginPage(props: LoginPageProps) {
   return (
-    <div className="login-container">
+    <div className="login-container login-gradient-container">
+      <WebGLGradient className="login-background-gradient" fullscreen />
       <LoginCard {...props} />
     </div>
   );

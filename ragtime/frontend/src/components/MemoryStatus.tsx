@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { HardDrive, Loader, Check, X, Pause, AlertTriangle } from 'lucide-react';
 import { api } from '@/api';
 import { formatSizeMB } from '@/utils';
@@ -23,7 +24,20 @@ export function MemoryStatus({ active = true, pollInterval, onLoadingComplete }:
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [dropdownStyle, setDropdownStyle] = useState<CSSProperties | null>(null);
+  const statusRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
   const wasLoadingRef = useRef(false);
+
+  const computeDropdownPosition = useCallback(() => {
+    if (!statusRef.current) return;
+    const rect = statusRef.current.getBoundingClientRect();
+    setDropdownStyle({
+      position: 'fixed',
+      top: rect.bottom + 8,
+      right: window.innerWidth - rect.right,
+    });
+  }, []);
 
   const fetchHealth = useCallback(async () => {
     try {
@@ -56,6 +70,38 @@ export function MemoryStatus({ active = true, pollInterval, onLoadingComplete }:
     const timer = setInterval(fetchHealth, interval);
     return () => clearInterval(timer);
   }, [active, fetchHealth, health?.indexes_loading, pollInterval]);
+
+  useEffect(() => {
+    if (!expanded) {
+      setDropdownStyle(null);
+      return;
+    }
+
+    computeDropdownPosition();
+    window.addEventListener('scroll', computeDropdownPosition, true);
+    window.addEventListener('resize', computeDropdownPosition);
+    return () => {
+      window.removeEventListener('scroll', computeDropdownPosition, true);
+      window.removeEventListener('resize', computeDropdownPosition);
+    };
+  }, [expanded, computeDropdownPosition]);
+
+  useEffect(() => {
+    if (!expanded) return;
+
+    function handleClickOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      if (
+        !statusRef.current?.contains(target)
+        && !dropdownRef.current?.contains(target)
+      ) {
+        setExpanded(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [expanded]);
 
   if (!health) {
     if (error) {
@@ -93,7 +139,7 @@ export function MemoryStatus({ active = true, pollInterval, onLoadingComplete }:
   });
 
   return (
-    <div className={`memory-status ${isLoading ? 'memory-status-loading' : ''}`}>
+    <div ref={statusRef} className={`memory-status ${isLoading ? 'memory-status-loading' : ''}`}>
       <button
         type="button"
         className="memory-status-toggle"
@@ -121,8 +167,8 @@ export function MemoryStatus({ active = true, pollInterval, onLoadingComplete }:
         )}
       </button>
 
-      {expanded && (
-        <div className="memory-status-dropdown">
+      {expanded && dropdownStyle && createPortal(
+        <div ref={dropdownRef} className="memory-status-dropdown" style={dropdownStyle}>
           <div className="memory-status-section">
             <h4>Process Memory</h4>
             <div className="memory-status-row">
@@ -164,7 +210,8 @@ export function MemoryStatus({ active = true, pollInterval, onLoadingComplete }:
               )}
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

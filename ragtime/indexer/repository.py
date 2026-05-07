@@ -1010,6 +1010,9 @@ class IndexerRepository:
             id=settings.id,
             # Server branding
             server_name=getattr(settings, "serverName", "Ragtime"),
+            authenticated_webgl_background_enabled=getattr(
+                settings, "authenticatedWebglBackgroundEnabled", True
+            ),
             # Embedding settings
             embedding_provider=settings.embeddingProvider,
             embedding_model=settings.embeddingModel,
@@ -1218,6 +1221,7 @@ class IndexerRepository:
         field_mapping = {
             # Server branding
             "server_name": "serverName",
+            "authenticated_webgl_background_enabled": "authenticatedWebglBackgroundEnabled",
             # Embedding settings
             "embedding_provider": "embeddingProvider",
             "embedding_model": "embeddingModel",

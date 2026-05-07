@@ -167,6 +167,7 @@ export interface AuthStatus {
   allowed_origins_open: boolean;  // True if ALLOWED_ORIGINS=*
   auth_methods?: AuthMethodStatus[];
   server_name?: string;
+  authenticated_webgl_background_enabled?: boolean;
 }
 
 // =============================================================================
@@ -603,6 +604,7 @@ export interface AppSettings {
   id: string;
   // Server branding
   server_name: string;
+  authenticated_webgl_background_enabled: boolean;
   // Embedding Configuration (for FAISS indexing)
   embedding_provider: 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio' | 'omlx';
   embedding_model: string;
@@ -726,6 +728,7 @@ export interface AppSettings {
 export interface UpdateSettingsRequest {
   // Server branding
   server_name?: string;
+  authenticated_webgl_background_enabled?: boolean;
   // Embedding settings
   embedding_provider?: 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio' | 'omlx';
   embedding_model?: string;
