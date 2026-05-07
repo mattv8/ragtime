@@ -141,6 +141,24 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Cloud userspace mount OAuth app credentials. Admins register one app per
+    # provider; individual users authorize their own accounts against it.
+    cloud_mount_microsoft_client_id: str = Field(
+        default="", alias="CLOUD_MOUNT_MICROSOFT_CLIENT_ID"
+    )
+    cloud_mount_microsoft_client_secret: str = Field(
+        default="", alias="CLOUD_MOUNT_MICROSOFT_CLIENT_SECRET"
+    )
+    cloud_mount_microsoft_tenant_id: str = Field(
+        default="", alias="CLOUD_MOUNT_MICROSOFT_TENANT_ID"
+    )
+    cloud_mount_google_client_id: str = Field(
+        default="", alias="CLOUD_MOUNT_GOOGLE_CLIENT_ID"
+    )
+    cloud_mount_google_client_secret: str = Field(
+        default="", alias="CLOUD_MOUNT_GOOGLE_CLIENT_SECRET"
+    )
+
     # Server
     host: str = Field(default="0.0.0.0", alias="HOST")
     port: int = Field(default=8000, alias="PORT")

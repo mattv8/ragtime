@@ -338,10 +338,12 @@ class WorkerService:
     ) -> RuntimeWorkspaceFileListResponse:
         _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
         mount_specs = list(workspace_mounts or [])
+        active_workspace_path = await self._active_runtime_workspace_path(workspace_id)
+        tree_root = active_workspace_path or workspace_files_path
 
         base_entries = await asyncio.to_thread(
             list_workspace_tree_entries,
-            workspace_files_path,
+            tree_root,
             include_dirs=include_dirs,
         )
         mount_prefixes = deduplicate_ancestor_paths(
@@ -355,7 +357,7 @@ class WorkerService:
                 )
             ]
         )
-        if mount_prefixes:
+        if mount_prefixes and active_workspace_path is None:
             base_entries = [
                 entry
                 for entry in base_entries
@@ -382,6 +384,23 @@ class WorkerService:
                 )
             ]
         )
+
+    async def _active_runtime_workspace_path(self, workspace_id: str) -> Path | None:
+        async with self._lock:
+            active_sessions = [
+                session
+                for session in self._sessions.values()
+                if session.workspace_id == workspace_id
+                and session.state in {"running", "starting"}
+            ]
+        if not active_sessions:
+            return None
+        session = max(active_sessions, key=lambda item: item.updated_at)
+        workspace_path = (
+            session.sandbox_spec.rootfs_path
+            / session.sandbox_spec.sandbox_workspace.lstrip("/")
+        )
+        return workspace_path if workspace_path.is_dir() else None
 
     async def run_workspace_git_command(
         self,

@@ -370,6 +370,11 @@ class SettingsCache:
                 ),
                 # User Space configuration
                 "userspace_preview_sandbox_flags": userspace_preview_sandbox_flags,
+                "userspace_mount_sync_interval_seconds": getattr(
+                    prisma_settings,
+                    "userspaceMountSyncIntervalSeconds",
+                    30,
+                ),
             }
             return self._settings
 
@@ -456,6 +461,7 @@ class SettingsCache:
                 "userspace_preview_sandbox_flags": list(
                     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS
                 ),
+                "userspace_mount_sync_interval_seconds": 30,
             }
 
     async def get_tool_configs(self) -> List[dict]:

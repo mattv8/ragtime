@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { BrowseResponse, DirectoryEntry } from '@/types';
+import {
+  normalizeMountBrowserPath,
+  resolveBrowserDisplayPath,
+  resolveBrowserDisplaySegment,
+  type BrowserPathDisplayMap,
+  type CloudPathDisplayOptions,
+} from '@/utils/mountPaths';
 
 import { Icon } from './Icon';
 
@@ -19,28 +26,17 @@ interface ConstrainedPathBrowserProps {
   canSelectPath?: (path: string) => boolean;
   cannotSelectPathMessage?: string;
   isPathDisabled?: (path: string) => string | null;
+  pathDisplayMap?: BrowserPathDisplayMap;
+  pathDisplayOptions?: CloudPathDisplayOptions;
 }
 
 interface BrowserDirectoryEntry extends DirectoryEntry {
   isPending?: boolean;
 }
 
-function normalizeBrowserPath(value: string): string {
-  const normalizedParts: string[] = [];
-  for (const part of (value || '/').replace(/\\/g, '/').split('/')) {
-    if (!part || part === '.') continue;
-    if (part === '..') {
-      normalizedParts.pop();
-      continue;
-    }
-    normalizedParts.push(part);
-  }
-  return '/' + normalizedParts.join('/');
-}
-
 function getImmediateChildName(parentPath: string, childPath: string): string | null {
-  const normalizedParent = normalizeBrowserPath(parentPath || '/');
-  const normalizedChild = normalizeBrowserPath(childPath || '/');
+  const normalizedParent = normalizeMountBrowserPath(parentPath || '/');
+  const normalizedChild = normalizeMountBrowserPath(childPath || '/');
   if (normalizedParent === normalizedChild) {
     return null;
   }
@@ -70,10 +66,12 @@ export function ConstrainedPathBrowser({
   canSelectPath,
   cannotSelectPathMessage,
   isPathDisabled,
+  pathDisplayMap,
+  pathDisplayOptions,
 }: ConstrainedPathBrowserProps) {
-  const normalizedRootPath = normalizeBrowserPath(rootPath || '/');
+  const normalizedRootPath = normalizeMountBrowserPath(rootPath || '/');
   const clampToRootPath = useCallback((value: string): string => {
-    const normalized = normalizeBrowserPath(value || normalizedRootPath || '/');
+    const normalized = normalizeMountBrowserPath(value || normalizedRootPath || '/');
     if (normalizedRootPath === '/') {
       return normalized;
     }
@@ -92,7 +90,7 @@ export function ConstrainedPathBrowser({
   const [error, setError] = useState<string | null>(null);
   const [pendingDirectoryError, setPendingDirectoryError] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(
-    defaultExpanded ?? (!currentPath || normalizeBrowserPath(currentPath) === normalizedRootPath)
+    defaultExpanded ?? (!currentPath || normalizeMountBrowserPath(currentPath) === normalizedRootPath)
   );
   const onBrowsePathRef = useRef(onBrowsePath);
   const cacheRef = useRef(new Map<string, BrowseResponse>());
@@ -115,7 +113,7 @@ export function ConstrainedPathBrowser({
     const seen = new Set<string>();
 
     for (const rawPath of stagedDirectories) {
-      const normalizedPath = normalizeBrowserPath(rawPath || '/');
+      const normalizedPath = normalizeMountBrowserPath(rawPath || '/');
       if (clampToRootPath(normalizedPath) !== normalizedPath) {
         continue;
       }
@@ -210,6 +208,13 @@ export function ConstrainedPathBrowser({
   };
 
   const isSelectableBrowsePath = canSelectPath ? canSelectPath(browsePath) : true;
+  const displayPathFor = useCallback((path: string): string => {
+    return resolveBrowserDisplayPath(path || '/', pathDisplayMap, pathDisplayOptions);
+  }, [pathDisplayMap, pathDisplayOptions]);
+
+  const displaySegmentFor = useCallback((path: string, fallback: string): string => {
+    return resolveBrowserDisplaySegment(path, fallback, pathDisplayMap, pathDisplayOptions);
+  }, [pathDisplayMap, pathDisplayOptions]);
 
   const stagedDirectoryEntries = useMemo<BrowserDirectoryEntry[]>(() => {
     if (normalizedStagedDirectories.length === 0) {
@@ -219,7 +224,7 @@ export function ConstrainedPathBrowser({
     const existingPaths = new Set(
       entries
         .filter((entry) => entry.is_dir)
-        .map((entry) => normalizeBrowserPath(entry.path))
+        .map((entry) => normalizeMountBrowserPath(entry.path))
     );
 
     const nextEntries: BrowserDirectoryEntry[] = [];
@@ -319,7 +324,7 @@ export function ConstrainedPathBrowser({
       return;
     }
 
-    const nextPath = normalizeBrowserPath(
+    const nextPath = normalizeMountBrowserPath(
       browsePath === '/' ? `/${normalizedName}` : `${browsePath}/${normalizedName}`
     );
     if (clampToRootPath(nextPath) !== nextPath) {
@@ -327,8 +332,8 @@ export function ConstrainedPathBrowser({
       return;
     }
 
-    const alreadyExists = visibleDirectoryEntries.some((entry) => normalizeBrowserPath(entry.path) === nextPath)
-      || visibleFileEntries.some((entry) => normalizeBrowserPath(entry.path) === nextPath);
+    const alreadyExists = visibleDirectoryEntries.some((entry) => normalizeMountBrowserPath(entry.path) === nextPath)
+      || visibleFileEntries.some((entry) => normalizeMountBrowserPath(entry.path) === nextPath);
     if (alreadyExists) {
       setPendingDirectoryError('That folder already exists');
       return;
@@ -350,7 +355,7 @@ export function ConstrainedPathBrowser({
   const selectedOrBrowsePath = currentPath || browsePath;
   const displayPath = selectedOrBrowsePath === normalizedRootPath && rootLabel
     ? rootLabel
-    : selectedOrBrowsePath;
+    : displayPathFor(selectedOrBrowsePath);
 
   return (
     <div className="filesystem-browser">
@@ -424,7 +429,7 @@ export function ConstrainedPathBrowser({
                             className="breadcrumb-btn"
                             onClick={() => handleNavigate(pathToSegment)}
                           >
-                            {segment}
+                            {displaySegmentFor(pathToSegment, segment)}
                           </button>
                           {!isLast && <span className="breadcrumb-sep">/</span>}
                         </span>

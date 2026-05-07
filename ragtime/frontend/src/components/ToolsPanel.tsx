@@ -10,6 +10,7 @@ import { AnimatedCreateButton } from './AnimatedCreateButton';
 import { IndexingPill } from './IndexingPill';
 import { useToast, ToastContainer } from './shared/Toast';
 import { HardDrive, Trash2, Pencil, X } from 'lucide-react';
+import { resolveSourceDisplayPath } from '@/utils/mountPaths';
 
 // Inline field being edited
 type EditingField = 'name' | 'description' | null;
@@ -38,6 +39,12 @@ function formatMountSourceInterval(seconds: number): string {
   if (seconds < 86400) { const h = Math.floor(seconds / 3600); const m = Math.floor((seconds % 3600) / 60); return m > 0 ? `${h}h ${m}m` : `${h}h`; }
   const d = Math.floor(seconds / 86400); const h = Math.floor((seconds % 86400) / 3600);
   return h > 0 ? `${d}d ${h}h` : `${d}d`;
+}
+
+function isAutoSyncMountSource(source: UserspaceMountSource): boolean {
+  return source.source_type === 'ssh'
+    || source.source_type === 'microsoft_drive'
+    || source.source_type === 'google_drive';
 }
 
 function getSuggestedGroupName(tool: ToolConfig | null | undefined): string {
@@ -1568,7 +1575,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
         ) : (
           <>
         <p className="fieldset-help">
-          Define mount sources backed by existing SSH or filesystem tools. Workspaces attach these sources without duplicating connection credentials.
+          Define mount sources backed by SSH, filesystem, OneDrive, or Google Drive. Workspaces attach these sources without duplicating connection credentials.
         </p>
 
         <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
@@ -1583,7 +1590,18 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
                   <HardDrive size={14} style={{ flexShrink: 0 }} />
                   <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{source.name}</span>
                   <span className="muted" style={{ fontSize: '0.8rem', flexShrink: 0 }}>
-                    {source.source_type === 'ssh' ? 'SSH' : source.mount_backend.replace('_', ' ')}
+                    {(() => {
+                      switch (source.source_type) {
+                        case 'ssh':
+                          return 'SSH';
+                        case 'microsoft_drive':
+                          return 'OneDrive';
+                        case 'google_drive':
+                          return 'Google Drive';
+                        default:
+                          return source.mount_backend.replace('_', ' ');
+                      }
+                    })()}
                   </span>
                   {source.usage_count > 0 && (
                     <span
@@ -1630,23 +1648,31 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
               </div>
               {source.approved_paths.length > 0 && (
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {source.approved_paths.map((p) => (
-                    <code key={p} style={{ fontSize: '0.8rem', padding: '2px 8px', background: 'var(--color-bg-tertiary)', borderRadius: 4, border: '1px solid var(--color-border)' }}>
-                      {p === '.'
-                        ? '/'
-                        : p.split('/').filter(Boolean).map((seg, i) => (
-                          <span key={i}>
-                            <span style={{ opacity: 0.5 }}>/</span>{seg}
-                          </span>
-                        ))
-                      }
-                    </code>
-                  ))}
+                  {source.approved_paths.map((p) => {
+                    const displayPath = resolveSourceDisplayPath(p, undefined, { sourceType: source.source_type });
+                    return (
+                      <code key={p} style={{ fontSize: '0.8rem', padding: '2px 8px', background: 'var(--color-bg-tertiary)', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                        {displayPath === '/'
+                          ? '/'
+                          : displayPath.split('/').filter(Boolean).map((seg, i) => (
+                            <span key={i}>
+                              <span style={{ opacity: 0.5 }}>/</span>{seg}
+                            </span>
+                          ))
+                        }
+                      </code>
+                    );
+                  })}
                 </div>
               )}
-              {source.source_type === 'ssh' && source.sync_interval_seconds != null && (
+              {isAutoSyncMountSource(source) && source.sync_interval_seconds != null && (
                 <span className="muted" style={{ fontSize: '0.75rem' }}>
                   Sync interval: {formatMountSourceInterval(source.sync_interval_seconds)}
+                </span>
+              )}
+              {(source.source_type === 'microsoft_drive' || source.source_type === 'google_drive') && source.account_email && (
+                <span className="muted" style={{ fontSize: '0.75rem' }}>
+                  Account: {source.account_email}
                 </span>
               )}
             </div>

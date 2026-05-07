@@ -1207,6 +1207,11 @@ class IndexerRepository:
                 "userspaceDuplicateCopyMountsDefault",
                 False,
             ),
+            userspace_mount_sync_interval_seconds=getattr(
+                settings,
+                "userspaceMountSyncIntervalSeconds",
+                30,
+            ),
             userspace_sqlite_import_max_bytes=clamp_userspace_sqlite_import_max_bytes(
                 getattr(settings, "userspaceSqliteImportMaxBytes", None)
             ),
@@ -1335,6 +1340,7 @@ class IndexerRepository:
             "userspace_duplicate_copy_metadata_default": "userspaceDuplicateCopyMetadataDefault",
             "userspace_duplicate_copy_chats_default": "userspaceDuplicateCopyChatsDefault",
             "userspace_duplicate_copy_mounts_default": "userspaceDuplicateCopyMountsDefault",
+            "userspace_mount_sync_interval_seconds": "userspaceMountSyncIntervalSeconds",
             "userspace_sqlite_import_max_bytes": "userspaceSqliteImportMaxBytes",
         }
 

@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, VisionModelsRequest, VisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, LmStudioModelLoadRequest, LmStudioModelUnloadRequest, LmStudioModelActionResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ReorderToolsRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, ConversationSummary, ConversationCountResponse, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, DuplicateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, WorkspaceAgentGrant, UpsertWorkspaceAgentGrantRequest, RevokeWorkspaceAgentGrantResponse, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, UpsertUserSpaceGlobalEnvVarRequest, DeleteUserSpaceGlobalEnvVarResponse, UserSpaceObjectStorageConfig, CreateUserSpaceObjectStorageBucketRequest, UpdateUserSpaceObjectStorageBucketRequest, DeleteUserSpaceObjectStorageBucketResponse, UserspaceMountSource, CreateUserspaceMountSourceRequest, UpdateUserspaceMountSourceRequest, BrowseUserspaceMountSourceRequest, DeleteUserspaceMountSourceResponse, WorkspaceMount, MountableSource, BrowseWorkspaceMountSourceRequest, WorkspaceMountBrowseResponse, CreateWorkspaceMountRequest, UpdateWorkspaceMountRequest, DeleteWorkspaceMountResponse, WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest, WorkspaceMountSyncResponse, MountSourceAffectedWorkspacesResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, CreateUserSpaceSnapshotBranchRequest, PromoteUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceArchiveExportRequest, UserSpaceWorkspaceArchiveExportTask, UserSpaceWorkspaceArchiveImportTask, UserSpaceWorkspaceArchiveExportListResponse, DeleteUserSpaceWorkspaceArchiveExportResponse, UserSpaceRuntimeRestartBatchTask, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceShareLinkListResponse, CreateWorkspaceShareLinkRequest, UpdateWorkspaceShareLinkRequest, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, UserSpaceBrowserAuthResponse, UserSpaceBrowserSurface, UserSpacePreviewLaunchRequest, UserSpacePreviewLaunchResponse, UserSpaceWorkspaceTabStateResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState, UserSpacePreviewSettingsResponse, UserSpaceWorkspaceScmConnectionRequest, UserSpaceWorkspaceScmConnectionResponse, UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse, UserSpaceWorkspaceScmImportRequest, UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmSyncResponse, UserSpaceWorkspaceScmSettingsRequest, UserSpaceWorkspaceSqliteImportTask, UserSpaceCollabPresenceResponse, ConversationShareLink, ConversationShareLinkStatus, ConversationShareLinkListResponse, CreateConversationShareLinkRequest, UpdateConversationShareLinkRequest, ConversationShareSlugAvailabilityResponse, UpdateConversationShareAccessRequest, SharedConversationResponse, PublicShareTargetResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, VisionModelsRequest, VisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, LmStudioModelLoadRequest, LmStudioModelUnloadRequest, LmStudioModelActionResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ReorderToolsRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, ConversationSummary, ConversationCountResponse, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, DuplicateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, WorkspaceAgentGrant, UpsertWorkspaceAgentGrantRequest, RevokeWorkspaceAgentGrantResponse, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, UpsertUserSpaceGlobalEnvVarRequest, DeleteUserSpaceGlobalEnvVarResponse, UserSpaceObjectStorageConfig, CreateUserSpaceObjectStorageBucketRequest, UpdateUserSpaceObjectStorageBucketRequest, DeleteUserSpaceObjectStorageBucketResponse, UserspaceMountSource, CreateUserspaceMountSourceRequest, UpdateUserspaceMountSourceRequest, BrowseUserspaceMountSourceRequest, BrowseCloudMountSourceRequest, CreateCloudMountSourceDirectoryRequest, DeleteUserspaceMountSourceResponse, CreateUserUserspaceMountSourceRequest, UpdateUserUserspaceMountSourceRequest, UserCloudOAuthAccount, CloudOAuthProviderStatus, CloudOAuthStartRequest, CloudOAuthStartResponse, CloudOAuthCallbackRequest, WorkspaceMount, MountableSource, BrowseWorkspaceMountSourceRequest, WorkspaceMountBrowseResponse, WorkspaceMountDirectoryEntry, CreateWorkspaceMountRequest, UpdateWorkspaceMountRequest, DeleteWorkspaceMountResponse, WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest, WorkspaceMountSyncResponse, MountSourceAffectedWorkspacesResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, CreateUserSpaceSnapshotBranchRequest, PromoteUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceArchiveExportRequest, UserSpaceWorkspaceArchiveExportTask, UserSpaceWorkspaceArchiveImportTask, UserSpaceWorkspaceArchiveExportListResponse, DeleteUserSpaceWorkspaceArchiveExportResponse, UserSpaceRuntimeRestartBatchTask, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceShareLinkListResponse, CreateWorkspaceShareLinkRequest, UpdateWorkspaceShareLinkRequest, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, UserSpaceBrowserAuthResponse, UserSpaceBrowserSurface, UserSpacePreviewLaunchRequest, UserSpacePreviewLaunchResponse, UserSpaceWorkspaceTabStateResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState, UserSpacePreviewSettingsResponse, UserSpaceWorkspaceScmConnectionRequest, UserSpaceWorkspaceScmConnectionResponse, UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse, UserSpaceWorkspaceScmImportRequest, UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmSyncResponse, UserSpaceWorkspaceScmSettingsRequest, UserSpaceWorkspaceSqliteImportTask, UserSpaceCollabPresenceResponse, ConversationShareLink, ConversationShareLinkStatus, ConversationShareLinkListResponse, CreateConversationShareLinkRequest, UpdateConversationShareLinkRequest, ConversationShareSlugAvailabilityResponse, UpdateConversationShareAccessRequest, SharedConversationResponse, PublicShareTargetResponse } from '@/types';
 
 import type { AuthProviderConfig, UpdateAuthProviderConfigRequest, LocalUserCreateRequest, LocalUserUpdateRequest, AuthGroup, AuthGroupListResponse, AuthGroupUpsertRequest, SetUserGroupsRequest, LdapUserSearchRequest, LdapUserProfile, LdapUserImportResponse, LdapUserTypeaheadRequest, LdapUserTypeaheadResponse, UserDirectoryEntry } from '@/types';
 
@@ -2674,6 +2674,120 @@ export const api = {
     request: BrowseUserspaceMountSourceRequest,
   ): Promise<WorkspaceMountBrowseResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/tool-configs/${encodeURIComponent(toolConfigId)}/browse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<WorkspaceMountBrowseResponse>(response);
+  },
+
+  async createUserspaceMountSourceDirectory(
+    mountSourceId: string,
+    request: BrowseUserspaceMountSourceRequest,
+  ): Promise<WorkspaceMountDirectoryEntry> {
+    const response = await apiFetch(`${API_BASE}/userspace/mount-sources/${encodeURIComponent(mountSourceId)}/directory`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<WorkspaceMountDirectoryEntry>(response);
+  },
+
+  async browseCloudMountSource(
+    request: BrowseCloudMountSourceRequest,
+  ): Promise<WorkspaceMountBrowseResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/cloud-mount-sources/browse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<WorkspaceMountBrowseResponse>(response);
+  },
+
+  async createCloudMountSourceDirectory(
+    request: CreateCloudMountSourceDirectoryRequest,
+  ): Promise<WorkspaceMountDirectoryEntry> {
+    const response = await apiFetch(`${API_BASE}/userspace/cloud-mount-sources/directory`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<WorkspaceMountDirectoryEntry>(response);
+  },
+
+  async listCloudOAuthProviders(): Promise<CloudOAuthProviderStatus[]> {
+    const response = await apiFetch(`${API_BASE}/userspace/cloud-oauth/providers`);
+    return handleResponse<CloudOAuthProviderStatus[]>(response);
+  },
+
+  async listUserCloudOAuthAccounts(): Promise<UserCloudOAuthAccount[]> {
+    const response = await apiFetch(`${API_BASE}/userspace/cloud-oauth/accounts`);
+    return handleResponse<UserCloudOAuthAccount[]>(response);
+  },
+
+  async startUserCloudOAuth(request: CloudOAuthStartRequest): Promise<CloudOAuthStartResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/cloud-oauth/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<CloudOAuthStartResponse>(response);
+  },
+
+  async completeUserCloudOAuth(request: CloudOAuthCallbackRequest): Promise<UserCloudOAuthAccount> {
+    const response = await apiFetch(`${API_BASE}/userspace/cloud-oauth/callback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<UserCloudOAuthAccount>(response);
+  },
+
+  async disconnectUserCloudOAuth(accountId: string): Promise<DeleteUserspaceMountSourceResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/cloud-oauth/accounts/${encodeURIComponent(accountId)}`, {
+      method: 'DELETE',
+    });
+    return handleResponse<DeleteUserspaceMountSourceResponse>(response);
+  },
+
+  async listUserUserspaceMountSources(): Promise<UserspaceMountSource[]> {
+    const response = await apiFetch(`${API_BASE}/userspace/user-mount-sources`);
+    return handleResponse<UserspaceMountSource[]>(response);
+  },
+
+  async createUserUserspaceMountSource(request: CreateUserUserspaceMountSourceRequest): Promise<UserspaceMountSource> {
+    const response = await apiFetch(`${API_BASE}/userspace/user-mount-sources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<UserspaceMountSource>(response);
+  },
+
+  async updateUserUserspaceMountSource(
+    mountSourceId: string,
+    request: UpdateUserUserspaceMountSourceRequest,
+  ): Promise<UserspaceMountSource> {
+    const response = await apiFetch(`${API_BASE}/userspace/user-mount-sources/${encodeURIComponent(mountSourceId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<UserspaceMountSource>(response);
+  },
+
+  async deleteUserUserspaceMountSource(mountSourceId: string): Promise<DeleteUserspaceMountSourceResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/user-mount-sources/${encodeURIComponent(mountSourceId)}`, {
+      method: 'DELETE',
+    });
+    return handleResponse<DeleteUserspaceMountSourceResponse>(response);
+  },
+
+  async browseUserUserspaceMountSource(
+    mountSourceId: string,
+    request: BrowseUserspaceMountSourceRequest,
+  ): Promise<WorkspaceMountBrowseResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/user-mount-sources/${encodeURIComponent(mountSourceId)}/browse`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),

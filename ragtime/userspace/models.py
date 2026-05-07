@@ -46,8 +46,22 @@ RuntimeOperationPhase = Literal[
     "failed",
     "stopped",
 ]
-UserspaceMountSourceType = Literal["ssh", "filesystem"]
-UserspaceMountBackend = Literal["ssh", "docker_volume", "smb", "nfs", "local"]
+UserspaceMountSourceType = Literal[
+    "ssh",
+    "filesystem",
+    "microsoft_drive",
+    "google_drive",
+]
+UserspaceMountSourceScope = Literal["global", "user"]
+UserCloudOAuthProvider = Literal["microsoft_drive", "google_drive"]
+UserspaceMountBackend = Literal[
+    "ssh",
+    "docker_volume",
+    "smb",
+    "nfs",
+    "local",
+    "cloud_virtual",
+]
 WorkspaceMountSyncMode = Literal[
     "merge",
     "source_authoritative",
@@ -1075,10 +1089,14 @@ class UserspaceMountSource(BaseModel):
     name: str
     description: str | None = None
     enabled: bool = True
+    source_scope: UserspaceMountSourceScope = "global"
+    owner_user_id: str | None = None
     source_type: UserspaceMountSourceType
     mount_backend: UserspaceMountBackend
     tool_config_id: str | None = None
     tool_name: str | None = None
+    oauth_account_id: str | None = None
+    account_email: str | None = None
     connection_config: dict[str, Any] = Field(default_factory=dict)
     approved_paths: list[str] = Field(default_factory=list)
     sync_interval_seconds: int | None = Field(
@@ -1109,6 +1127,85 @@ class CreateUserspaceMountSourceRequest(BaseModel):
         le=2592000,
         description="Polling interval in seconds for auto-sync (1s to ~1 month)",
     )
+
+
+class CreateUserUserspaceMountSourceRequest(BaseModel):
+    workspace_id: str | None = Field(
+        default=None,
+        description="Optional workspace context used by the UI when creating personal sources from a workspace modal",
+    )
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+    enabled: bool = True
+    source_type: UserCloudOAuthProvider
+    oauth_account_id: str | None = Field(default=None)
+    connection_config: dict[str, Any] = Field(default_factory=dict)
+    approved_paths: list[str] = Field(default_factory=list)
+
+
+class BrowseCloudMountSourceRequest(BaseModel):
+    source_type: UserCloudOAuthProvider
+    oauth_account_id: str | None = Field(default=None)
+    connection_config: dict[str, Any] = Field(default_factory=dict)
+    path: str = Field(default="/")
+
+
+class CreateCloudMountSourceDirectoryRequest(BaseModel):
+    source_type: UserCloudOAuthProvider
+    oauth_account_id: str | None = Field(default=None)
+    connection_config: dict[str, Any] = Field(default_factory=dict)
+    path: str = Field(min_length=1)
+
+
+class UpdateUserUserspaceMountSourceRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+    enabled: bool | None = None
+    oauth_account_id: str | None = None
+    connection_config: dict[str, Any] | None = None
+    approved_paths: list[str] | None = None
+
+
+class UserCloudOAuthAccount(BaseModel):
+    id: str
+    provider: UserCloudOAuthProvider
+    account_email: str | None = None
+    account_name: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    expires_at: datetime | None = None
+    connected: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+
+class CloudOAuthStartRequest(BaseModel):
+    provider: UserCloudOAuthProvider
+    redirect_uri: str | None = None
+    workspace_id: str | None = None
+
+
+class CloudOAuthStartResponse(BaseModel):
+    provider: UserCloudOAuthProvider
+    auth_url: str
+    state: str
+    expires_at: datetime
+
+
+class CloudOAuthCallbackRequest(BaseModel):
+    provider: UserCloudOAuthProvider
+    code: str | None = None
+    state: str | None = None
+    redirect_uri: str | None = None
+    mock_account_email: str | None = Field(default=None)
+    mock_account_name: str | None = Field(default=None)
+    mock_tree: list[dict[str, Any]] | None = Field(default=None)
+
+
+class CloudOAuthProviderStatus(BaseModel):
+    provider: UserCloudOAuthProvider
+    configured: bool
+    auth_url_available: bool
 
 
 class UpdateUserspaceMountSourceRequest(BaseModel):
@@ -1157,6 +1254,7 @@ class WorkspaceMount(BaseModel):
     mount_source_id: str
     source_path: str
     target_path: str
+    mount_source_scope: UserspaceMountSourceScope = "global"
     description: str | None = None
     enabled: bool = True
     sync_mode: WorkspaceMountSyncMode = "merge"
@@ -1166,6 +1264,10 @@ class WorkspaceMount(BaseModel):
     last_sync_at: datetime | None = None
     last_sync_error: str | None = None
     auto_sync_enabled: bool = False
+    sync_interval_seconds: int | None = Field(
+        default=None,
+        description="Per-workspace mount auto-sync interval override in seconds. Null inherits the source/global default.",
+    )
     source_name: str | None = None
     source_type: UserspaceMountSourceType | None = None
     mount_backend: UserspaceMountBackend | None = None
@@ -1176,6 +1278,7 @@ class WorkspaceMount(BaseModel):
 
 class MountableSource(BaseModel):
     mount_source_id: str
+    source_scope: UserspaceMountSourceScope = "global"
     source_name: str
     source_type: UserspaceMountSourceType
     mount_backend: UserspaceMountBackend
@@ -1184,6 +1287,7 @@ class MountableSource(BaseModel):
 
 class WorkspaceMountBrowseRequest(BaseModel):
     mount_source_id: str = Field(min_length=1)
+    source_scope: UserspaceMountSourceScope = Field(default="global")
     root_source_path: str = Field(
         min_length=1,
         description="Admin-approved source relpath that defines the browse root",
@@ -1209,6 +1313,7 @@ class WorkspaceMountBrowseResponse(BaseModel):
 
 class CreateWorkspaceMountRequest(BaseModel):
     mount_source_id: str = Field(min_length=1)
+    source_scope: UserspaceMountSourceScope = Field(default="global")
     source_path: str = Field(min_length=1, description="Admin-approved source relpath")
     target_path: str = Field(
         min_length=1,
@@ -1230,10 +1335,16 @@ class CreateWorkspaceMountRequest(BaseModel):
         default=False,
         description="Enable background watch mode that periodically auto-syncs this mount",
     )
+    sync_interval_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        le=2592000,
+        description="Optional per-mount auto-sync interval override in seconds. Null inherits the source/global default.",
+    )
     sync_mode: WorkspaceMountSyncMode = Field(
         default="merge",
         description=(
-            "Sync policy for SSH-backed mounts: merge keeps both sides, "
+            "Sync policy for SSH/SFTP and cloud-backed mounts: merge keeps both sides, "
             "source_authoritative makes the remote source authoritative, and "
             "target_authoritative makes the workspace target authoritative."
         ),
@@ -1246,9 +1357,10 @@ class UpdateWorkspaceMountRequest(BaseModel):
     description: str | None = Field(default=None, max_length=1000)
     enabled: bool | None = Field(default=None)
     auto_sync_enabled: bool | None = Field(default=None)
+    sync_interval_seconds: int | None = Field(default=None, ge=1, le=2592000)
     sync_mode: WorkspaceMountSyncMode | None = Field(
         default=None,
-        description="Updated sync policy for SSH-backed mounts.",
+        description="Updated sync policy for SSH/SFTP and cloud-backed mounts.",
     )
     destructive_auto_sync_preview_token: str | None = Field(
         default=None,

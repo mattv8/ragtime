@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import html
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -18,7 +20,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.database import get_db
@@ -39,10 +41,18 @@ from ragtime.indexer.models import (
     RepoVisibilityResponse,
 )
 from ragtime.indexer.repository import repository
+from ragtime.userspace.cloud_mounts import microsoft_tenant_endpoint_error_message
 from ragtime.userspace.models import (
+    BrowseCloudMountSourceRequest,
     BrowseUserspaceMountSourceRequest,
+    CloudOAuthCallbackRequest,
+    CloudOAuthProviderStatus,
+    CloudOAuthStartRequest,
+    CloudOAuthStartResponse,
     CreateSnapshotBranchRequest,
     CreateSnapshotRequest,
+    CreateCloudMountSourceDirectoryRequest,
+    CreateUserUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
     CreateUserSpaceObjectStorageBucketRequest,
     CreateWorkspaceMountRequest,
@@ -65,6 +75,7 @@ from ragtime.userspace.models import (
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
+    UpdateUserUserspaceMountSourceRequest,
     UpdateUserSpaceObjectStorageBucketRequest,
     UpdateWorkspaceMembersRequest,
     UpdateWorkspaceMountRequest,
@@ -76,6 +87,7 @@ from ragtime.userspace.models import (
     UpsertWorkspaceAgentGrantRequest,
     UpsertWorkspaceEnvVarRequest,
     UpsertWorkspaceFileRequest,
+    UserCloudOAuthAccount,
     UserSpaceAcknowledgeChangedFilePathRequest,
     UserSpaceAvailableTool,
     UserSpaceChangedFileStateResponse,
@@ -116,6 +128,7 @@ from ragtime.userspace.models import (
     WorkspaceMount,
     WorkspaceMountBrowseRequest,
     WorkspaceMountBrowseResponse,
+    WorkspaceMountDirectoryEntry,
     WorkspaceMountSyncPreviewRequest,
     WorkspaceMountSyncPreviewResponse,
     WorkspaceMountSyncRequest,
@@ -129,6 +142,42 @@ from ragtime.userspace.share_auth import share_auth_token_from_request
 logger = get_logger(__name__)
 
 _SQL_IMPORT_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+
+
+def _cloud_oauth_popup_response(
+    *,
+    title: str,
+    message: str,
+    event_type: str,
+    status_code: int = 200,
+    close_window: bool = False,
+) -> HTMLResponse:
+    payload = json.dumps({"type": event_type, "message": message})
+    escaped_title = html.escape(title)
+    escaped_message = html.escape(message)
+    close_script = " window.close();" if close_window else ""
+    return HTMLResponse(
+        "<!doctype html><html><head>"
+        f"<title>{escaped_title}</title>"
+        "</head><body style='font-family: system-ui, sans-serif; padding: 24px;'>"
+        f"<h1 style='font-size: 1rem; margin: 0 0 12px;'>{escaped_title}</h1>"
+        f"<p>{escaped_message}</p>"
+        "<script>try{window.opener&&window.opener.postMessage("
+        f"{payload},window.location.origin);"
+        f"}}catch(e){{}}{close_script}</script>"
+        "</body></html>",
+        status_code=status_code,
+    )
+
+
+def _cloud_oauth_provider_error_message(
+    error: str,
+    error_description: str | None,
+) -> str:
+    message = error_description or error
+    if "AADSTS50194" in message:
+        return microsoft_tenant_endpoint_error_message()
+    return f"OAuth provider returned {error}: {message}"
 
 
 async def _stage_upload_file_with_limit(
@@ -1081,20 +1130,21 @@ async def list_userspace_mount_sources(_user: Any = Depends(require_admin)):
 @router.post("/mount-sources", response_model=UserspaceMountSource)
 async def create_userspace_mount_source(
     request: CreateUserspaceMountSourceRequest,
-    _user: Any = Depends(require_admin),
+    user: Any = Depends(require_admin),
 ):
-    return await userspace_service.create_userspace_mount_source(request)
+    return await userspace_service.create_userspace_mount_source(request, user_id=user.id)
 
 
 @router.put("/mount-sources/{mount_source_id}", response_model=UserspaceMountSource)
 async def update_userspace_mount_source(
     mount_source_id: str,
     request: UpdateUserspaceMountSourceRequest,
-    _user: Any = Depends(require_admin),
+    user: Any = Depends(require_admin),
 ):
     return await userspace_service.update_userspace_mount_source(
         mount_source_id,
         request,
+        user_id=user.id,
     )
 
 
@@ -1138,6 +1188,21 @@ async def browse_userspace_mount_source(
 
 
 @router.post(
+    "/mount-sources/{mount_source_id}/directory",
+    response_model=WorkspaceMountDirectoryEntry,
+)
+async def create_userspace_mount_source_directory(
+    mount_source_id: str,
+    request: BrowseUserspaceMountSourceRequest,
+    _user: Any = Depends(require_admin),
+):
+    return await userspace_service.create_userspace_mount_source_directory(
+        mount_source_id,
+        request,
+    )
+
+
+@router.post(
     "/tool-configs/{tool_config_id}/browse",
     response_model=WorkspaceMountBrowseResponse,
 )
@@ -1149,6 +1214,203 @@ async def browse_tool_config(
     """Browse the filesystem of a tool config directly (before a mount source is saved)."""
     return await userspace_service.browse_tool_config(
         tool_config_id,
+        request,
+    )
+
+
+@router.post(
+    "/cloud-mount-sources/browse",
+    response_model=WorkspaceMountBrowseResponse,
+)
+async def browse_cloud_mount_source(
+    request: BrowseCloudMountSourceRequest,
+    user: Any = Depends(require_admin),
+):
+    """Browse a cloud mount source directly before the global source is saved."""
+    return await userspace_service.browse_cloud_mount_source(
+        user.id,
+        request,
+    )
+
+
+@router.post(
+    "/cloud-mount-sources/directory",
+    response_model=WorkspaceMountDirectoryEntry,
+)
+async def create_cloud_mount_source_directory(
+    request: CreateCloudMountSourceDirectoryRequest,
+    user: Any = Depends(require_admin),
+):
+    """Create a cloud mount source directory before the global source is saved."""
+    return await userspace_service.create_cloud_mount_source_directory(
+        user.id,
+        request,
+    )
+
+
+@router.get(
+    "/cloud-oauth/providers",
+    response_model=list[CloudOAuthProviderStatus],
+)
+async def get_cloud_oauth_provider_status(user: Any = Depends(get_current_user)):
+    _ = user
+    return await userspace_service.get_cloud_oauth_provider_status()
+
+
+@router.get(
+    "/cloud-oauth/accounts",
+    response_model=list[UserCloudOAuthAccount],
+)
+async def list_user_cloud_oauth_accounts(user: Any = Depends(get_current_user)):
+    return await userspace_service.list_user_cloud_oauth_accounts(user.id)
+
+
+@router.post(
+    "/cloud-oauth/start",
+    response_model=CloudOAuthStartResponse,
+)
+async def start_user_cloud_oauth(
+    request: CloudOAuthStartRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.start_user_cloud_oauth(user.id, request)
+
+
+@router.post(
+    "/cloud-oauth/callback",
+    response_model=UserCloudOAuthAccount,
+)
+async def complete_user_cloud_oauth(
+    request: CloudOAuthCallbackRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.complete_user_cloud_oauth(user.id, request)
+
+
+@router.get(
+    "/cloud-oauth/callback",
+    response_class=HTMLResponse,
+)
+async def complete_user_cloud_oauth_browser_callback(
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+    error_description: str | None = Query(default=None),
+    user: Any = Depends(get_current_user),
+):
+    if error:
+        return _cloud_oauth_popup_response(
+            title="Cloud Drive Connection Failed",
+            message=_cloud_oauth_provider_error_message(error, error_description),
+            event_type="ragtime-cloud-oauth-error",
+            status_code=400,
+        )
+    if not code or not state:
+        return _cloud_oauth_popup_response(
+            title="Cloud Drive Connection Failed",
+            message=(
+                "The OAuth provider returned to Ragtime without an authorization code. "
+                "Check that the app registration redirect URI exactly matches this callback URL, "
+                "then try connecting again."
+            ),
+            event_type="ragtime-cloud-oauth-error",
+            status_code=400,
+        )
+    try:
+        account = await userspace_service.complete_user_cloud_oauth_browser_callback(
+            user.id,
+            code=code,
+            state=state,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if exc.detail is not None else "Cloud OAuth failed"
+        return _cloud_oauth_popup_response(
+            title="Cloud Drive Connection Failed",
+            message=str(detail),
+            event_type="ragtime-cloud-oauth-error",
+            status_code=exc.status_code,
+        )
+    label = account.account_email or account.account_name or account.provider
+    return _cloud_oauth_popup_response(
+        title="Cloud Drive Connected",
+        message=f"Connected {label}. You can close this window.",
+        event_type="ragtime-cloud-oauth-complete",
+        close_window=True,
+    )
+
+
+@router.delete(
+    "/cloud-oauth/accounts/{account_id}",
+    response_model=DeleteUserspaceMountSourceResponse,
+)
+async def disconnect_user_cloud_oauth(
+    account_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.disconnect_user_cloud_oauth(user.id, account_id)
+
+
+@router.get(
+    "/user-mount-sources",
+    response_model=list[UserspaceMountSource],
+)
+async def list_user_userspace_mount_sources(user: Any = Depends(get_current_user)):
+    return await userspace_service.list_user_userspace_mount_sources(user.id)
+
+
+@router.post(
+    "/user-mount-sources",
+    response_model=UserspaceMountSource,
+)
+async def create_user_userspace_mount_source(
+    request: CreateUserUserspaceMountSourceRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.create_user_userspace_mount_source(user.id, request)
+
+
+@router.put(
+    "/user-mount-sources/{mount_source_id}",
+    response_model=UserspaceMountSource,
+)
+async def update_user_userspace_mount_source(
+    mount_source_id: str,
+    request: UpdateUserUserspaceMountSourceRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.update_user_userspace_mount_source(
+        user.id,
+        mount_source_id,
+        request,
+    )
+
+
+@router.delete(
+    "/user-mount-sources/{mount_source_id}",
+    response_model=DeleteUserspaceMountSourceResponse,
+)
+async def delete_user_userspace_mount_source(
+    mount_source_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.delete_user_userspace_mount_source(
+        user.id,
+        mount_source_id,
+    )
+
+
+@router.post(
+    "/user-mount-sources/{mount_source_id}/browse",
+    response_model=WorkspaceMountBrowseResponse,
+)
+async def browse_user_userspace_mount_source(
+    mount_source_id: str,
+    request: BrowseUserspaceMountSourceRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.browse_user_userspace_mount_source(
+        user.id,
+        mount_source_id,
         request,
     )
 
@@ -1326,6 +1588,10 @@ async def upsert_workspace_file(
         workspace_id, file_path, request, user.id
     )
     userspace_service.invalidate_file_list_cache(workspace_id)
+    await userspace_service.schedule_workspace_mount_sync_for_workspace_path(
+        workspace_id,
+        file_path,
+    )
     await userspace_runtime_service.bump_workspace_generation(
         workspace_id, "file_upsert"
     )
@@ -1352,6 +1618,10 @@ async def delete_workspace_file(
 ):
     await userspace_service.delete_workspace_file(workspace_id, file_path, user.id)
     userspace_service.invalidate_file_list_cache(workspace_id)
+    await userspace_service.schedule_workspace_mount_sync_for_workspace_path(
+        workspace_id,
+        file_path,
+    )
     await userspace_runtime_service.bump_workspace_generation(
         workspace_id, "file_delete"
     )

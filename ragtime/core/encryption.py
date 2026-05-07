@@ -182,6 +182,11 @@ CONNECTION_CONFIG_PASSWORD_FIELDS = [
     "key_passphrase",  # ssh_shell
     "key_content",  # ssh private key (sensitive)
     "smb_password",  # filesystem smb mount
+    "access_token",  # cloud userspace mounts
+    "oauth_token",  # cloud userspace mounts (legacy alias)
+    "refresh_token",  # cloud userspace mounts
+    "oauth_refresh_token",  # cloud userspace mounts (legacy alias)
+    "client_secret",  # cloud OAuth app config when stored in JSON
     # SSH tunnel fields (postgres, mysql, mssql, pdm)
     "ssh_tunnel_password",
     "ssh_tunnel_key_content",

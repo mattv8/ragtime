@@ -28,6 +28,12 @@ import {
   sqliteImportBytesToSlider,
   sliderToSqliteImportBytes,
 } from '@/utils/sqliteImport';
+import {
+  MOUNT_SYNC_DEFAULT_SECONDS,
+  formatMountSyncInterval,
+  mountSyncIntervalToSlider,
+  sliderToMountSyncInterval,
+} from '@/utils/mountSyncIntervals';
 import { CHAT_MODEL_PROVIDER_LABELS, parseScopedModelIdentifier } from '@/utils/modelDisplay';
 import {
   PROVIDER_CONNECTIONS,
@@ -126,6 +132,42 @@ function writeSettingsFilterStateToUrl(input: string, tags: string[]): void {
   const nextSearch = params.toString();
   const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
   window.history.replaceState(null, '', nextUrl);
+}
+
+function getCloudOAuthCallbackUrl(): string {
+  return new URL('/indexes/userspace/cloud-oauth/callback', window.location.origin).toString();
+}
+
+function renderCloudDriveOAuthSetupPopover(callbackUrl: string): JSX.Element {
+  return (
+    <div style={{ display: 'grid', gap: 8, maxWidth: 360 }}>
+      <strong style={{ fontSize: '0.85rem' }}>Cloud drive OAuth setup</strong>
+      <span style={{ fontSize: '0.8rem', lineHeight: 1.4 }}>Register provider OAuth apps with this redirect URI:</span>
+      <div className="cloud-oauth-callback-row">
+        <code className="cloud-oauth-callback-code">{callbackUrl}</code>
+        <InlineCopyButton
+          copyText={callbackUrl}
+          className="cloud-oauth-callback-copy"
+          title="Copy redirect URI"
+          ariaLabel="Copy redirect URI"
+          copiedTitle="Redirect URI copied"
+          copiedAriaLabel="Redirect URI copied"
+          iconSize={12}
+        />
+      </div>
+      <span style={{ fontSize: '0.8rem', lineHeight: 1.4 }}>
+        <strong>Google Drive:</strong> enable the Google Drive API (<code>drive.googleapis.com</code>) for the OAuth client project and add scopes <code>https://www.googleapis.com/auth/drive</code> and <code>https://www.googleapis.com/auth/userinfo.email</code>.
+      </span>
+      <span style={{ fontSize: '0.8rem', lineHeight: 1.4 }}>
+        <strong>OneDrive/SharePoint:</strong> set <code>CLOUD_MOUNT_MICROSOFT_TENANT_ID</code> to your Azure Directory tenant ID or primary tenant domain for single-tenant apps, then add Microsoft Graph delegated permissions <code>offline_access</code>, <code>User.Read</code>, <code>Files.ReadWrite.All</code>, and <code>Sites.ReadWrite.All</code>. Tenant policy may require admin consent.
+      </span>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem' }}>Microsoft apps</a>
+        <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem' }}>Google credentials</a>
+        <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem' }}>Google Drive API</a>
+      </div>
+    </div>
+  );
 }
 
 function settingsTextMatchesQuery(text: string | null | undefined, queries: string[]): boolean {
@@ -1337,6 +1379,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_duplicate_copy_metadata_default: data.userspace_duplicate_copy_metadata_default,
         userspace_duplicate_copy_chats_default: data.userspace_duplicate_copy_chats_default,
         userspace_duplicate_copy_mounts_default: data.userspace_duplicate_copy_mounts_default,
+        userspace_mount_sync_interval_seconds: data.userspace_mount_sync_interval_seconds,
         userspace_sqlite_import_max_bytes: data.userspace_sqlite_import_max_bytes,
 
         // OpenAPI model settings
@@ -2198,6 +2241,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_duplicate_copy_metadata_default: formData.userspace_duplicate_copy_metadata_default,
         userspace_duplicate_copy_chats_default: formData.userspace_duplicate_copy_chats_default,
         userspace_duplicate_copy_mounts_default: formData.userspace_duplicate_copy_mounts_default,
+        userspace_mount_sync_interval_seconds: formData.userspace_mount_sync_interval_seconds,
         userspace_sqlite_import_max_bytes: formData.userspace_sqlite_import_max_bytes,
       });
       setSettings(updated);
@@ -2208,6 +2252,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_duplicate_copy_metadata_default: updated.userspace_duplicate_copy_metadata_default,
         userspace_duplicate_copy_chats_default: updated.userspace_duplicate_copy_chats_default,
         userspace_duplicate_copy_mounts_default: updated.userspace_duplicate_copy_mounts_default,
+        userspace_mount_sync_interval_seconds: updated.userspace_mount_sync_interval_seconds,
         userspace_sqlite_import_max_bytes: updated.userspace_sqlite_import_max_bytes,
       }));
       toast.success('User Space settings saved.', 5000);
@@ -2222,6 +2267,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     formData.userspace_duplicate_copy_metadata_default,
     formData.userspace_duplicate_copy_chats_default,
     formData.userspace_duplicate_copy_mounts_default,
+    formData.userspace_mount_sync_interval_seconds,
     formData.userspace_sqlite_import_max_bytes,
   ]);
 
@@ -2607,6 +2653,30 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
             )}
           </div>
         )}
+      </div>
+
+      <div className="api-info-box" data-settings-filter-card="true">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
+          <strong>Cloud Drive OAuth</strong>
+          <Popover
+            trigger="click"
+            position="bottom"
+            content={renderCloudDriveOAuthSetupPopover(getCloudOAuthCallbackUrl())}
+          >
+            <button
+              type="button"
+              className="btn btn-sm"
+              aria-label="Cloud drive OAuth setup"
+              title="Cloud drive OAuth setup"
+              style={{ padding: '4px 7px' }}
+            >
+              <Info size={14} />
+            </button>
+          </Popover>
+        </div>
+        <p className="field-help" style={{ marginTop: '0.5rem' }}>
+          OneDrive, SharePoint, and Google Drive userspace mounts require provider OAuth apps configured through environment variables.
+        </p>
       </div>
 
       {/* MCP Routes Summary */}
@@ -5558,6 +5628,46 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
             </div>
 
             <div className="form-row">
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Mount Auto-Sync Interval</label>
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Global default used by SSH, OneDrive, and Google Drive workspace mounts when no mount source or workspace mount override is set.
+                </p>
+                {(() => {
+                  const currentVal = formData.userspace_mount_sync_interval_seconds
+                    ?? settings?.userspace_mount_sync_interval_seconds
+                    ?? MOUNT_SYNC_DEFAULT_SECONDS;
+
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="1"
+                          style={{ flex: 1 }}
+                          value={mountSyncIntervalToSlider(currentVal)}
+                          onChange={(e) => {
+                            const slider = parseInt(e.target.value, 10);
+                            setFormData({
+                              ...formData,
+                              userspace_mount_sync_interval_seconds: sliderToMountSyncInterval(slider),
+                            });
+                          }}
+                        />
+                        <span style={{ minWidth: '64px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                          {formatMountSyncInterval(currentVal)}
+                        </span>
+                      </div>
+                      <p className="field-help">
+                        Range: 1 second to 30 days. Local workspace file changes still wake eligible mounts immediately.
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
+
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Stale Branch Threshold</label>
                 <p className="field-help" style={{ marginTop: 0 }}>

@@ -1428,23 +1428,47 @@ textarea:focus {
 }
 
 .tool-group-tab-input {
-  width: 120px;
-  min-height: 1lh;
-  border: none;
-  background: transparent;
+  width: min(180px, 100%);
+  min-height: 34px;
+  border: 1px solid var(--color-input-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-input-bg);
   font-size: var(--text-sm);
   font-weight: 500;
-  color: var(--color-text);
+  color: var(--color-text-primary);
   outline: none;
-  padding: 0;
+  padding: 6px 8px;
   resize: none;
   overflow: hidden;
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.4;
-  font-family: inherit;
+  font-family: var(--font-sans);
   display: block;
   field-sizing: content;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.tool-group-tab-input:focus {
+  border-color: var(--color-input-focus);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+.tools-panel .inline-edit-textarea {
+  background: var(--color-input-bg) !important;
+  border-color: var(--color-input-border) !important;
+  border-radius: var(--radius-md) !important;
+  color: var(--color-text-primary) !important;
+  font-family: var(--font-sans) !important;
+  margin: 0 !important;
+  min-height: 42px !important;
+  padding: 8px 10px !important;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast) !important;
+}
+
+.tools-panel .inline-edit-textarea:focus {
+  border-color: var(--color-input-focus) !important;
+  box-shadow: 0 0 0 3px var(--color-primary-light) !important;
 }
 
 .tool-group-tab.editing {
@@ -3742,6 +3766,14 @@ textarea:focus {
   display: flex;
   gap: var(--space-xs);
   flex-shrink: 0;
+}
+
+.userspace-mount-interval-select {
+  width: 84px;
+  min-width: 84px;
+  max-width: 84px;
+  padding: 6px 24px 6px 8px;
+  font-size: var(--text-xs);
 }
 
 .userspace-mount-toggle-icon {

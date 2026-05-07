@@ -721,6 +721,7 @@ export interface AppSettings {
   userspace_duplicate_copy_metadata_default: boolean;
   userspace_duplicate_copy_chats_default: boolean;
   userspace_duplicate_copy_mounts_default: boolean;
+  userspace_mount_sync_interval_seconds: number;
   userspace_sqlite_import_max_bytes: number;
   updated_at: string | null;
 }
@@ -838,6 +839,7 @@ export interface UpdateSettingsRequest {
   userspace_duplicate_copy_metadata_default?: boolean;
   userspace_duplicate_copy_chats_default?: boolean;
   userspace_duplicate_copy_mounts_default?: boolean;
+  userspace_mount_sync_interval_seconds?: number;
   userspace_sqlite_import_max_bytes?: number;
 }
 
@@ -1212,9 +1214,23 @@ export interface SolidworksPdmConnectionConfig extends SSHTunnelConfig {
   last_indexed_at?: string | null;
 }
 
-export type ConnectionConfig = PostgresConnectionConfig | MysqlConnectionConfig | MssqlConnectionConfig | InfluxdbConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig | SolidworksPdmConnectionConfig;
-export type UserspaceMountSourceType = 'ssh' | 'filesystem';
-export type UserspaceMountBackend = 'ssh' | 'docker_volume' | 'smb' | 'nfs' | 'local';
+export interface CloudMountConnectionConfig {
+  provider?: 'microsoft_drive' | 'google_drive';
+  auth_mode?: 'oauth';
+  access_token?: string;
+  refresh_token?: string;
+  oauth_account_id?: string;
+  account_email?: string;
+  drive_id?: string;
+  site_id?: string;
+  root_id?: string;
+}
+
+export type ConnectionConfig = PostgresConnectionConfig | MysqlConnectionConfig | MssqlConnectionConfig | InfluxdbConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig | SolidworksPdmConnectionConfig | CloudMountConnectionConfig;
+export type UserspaceMountSourceType = 'ssh' | 'filesystem' | 'microsoft_drive' | 'google_drive';
+export type UserspaceMountSourceScope = 'global' | 'user';
+export type UserCloudOAuthProvider = 'microsoft_drive' | 'google_drive';
+export type UserspaceMountBackend = 'ssh' | 'docker_volume' | 'smb' | 'nfs' | 'local' | 'cloud_virtual';
 
 export interface ToolConfig {
   id: string;
@@ -2474,10 +2490,14 @@ export interface UserspaceMountSource {
   name: string;
   description: string | null;
   enabled: boolean;
+  source_scope: UserspaceMountSourceScope;
+  owner_user_id: string | null;
   source_type: UserspaceMountSourceType;
   mount_backend: UserspaceMountBackend;
   tool_config_id: string | null;
   tool_name: string | null;
+  oauth_account_id: string | null;
+  account_email: string | null;
   connection_config: ConnectionConfig;
   approved_paths: string[];
   sync_interval_seconds: number | null;
@@ -2506,6 +2526,79 @@ export interface UpdateUserspaceMountSourceRequest {
   sync_interval_seconds?: number | null;
 }
 
+export interface CreateUserUserspaceMountSourceRequest {
+  workspace_id?: string | null;
+  name: string;
+  description?: string | null;
+  enabled?: boolean;
+  source_type: UserCloudOAuthProvider;
+  oauth_account_id?: string | null;
+  connection_config?: CloudMountConnectionConfig;
+  approved_paths?: string[];
+}
+
+export interface BrowseCloudMountSourceRequest {
+  source_type: UserCloudOAuthProvider;
+  oauth_account_id?: string | null;
+  connection_config?: CloudMountConnectionConfig;
+  path: string;
+}
+
+export interface CreateCloudMountSourceDirectoryRequest {
+  source_type: UserCloudOAuthProvider;
+  oauth_account_id?: string | null;
+  connection_config?: CloudMountConnectionConfig;
+  path: string;
+}
+
+export interface UpdateUserUserspaceMountSourceRequest {
+  name?: string;
+  description?: string | null;
+  enabled?: boolean;
+  oauth_account_id?: string | null;
+  connection_config?: CloudMountConnectionConfig;
+  approved_paths?: string[];
+}
+
+export interface UserCloudOAuthAccount {
+  id: string;
+  provider: UserCloudOAuthProvider;
+  account_email: string | null;
+  account_name: string | null;
+  scopes: string[];
+  metadata: Record<string, unknown>;
+  expires_at: string | null;
+  connected: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CloudOAuthProviderStatus {
+  provider: UserCloudOAuthProvider;
+  configured: boolean;
+  auth_url_available: boolean;
+}
+
+export interface CloudOAuthStartRequest {
+  provider: UserCloudOAuthProvider;
+  redirect_uri?: string | null;
+  workspace_id?: string | null;
+}
+
+export interface CloudOAuthStartResponse {
+  provider: UserCloudOAuthProvider;
+  auth_url: string;
+  state: string;
+  expires_at: string;
+}
+
+export interface CloudOAuthCallbackRequest {
+  provider: UserCloudOAuthProvider;
+  code?: string | null;
+  state?: string | null;
+  redirect_uri?: string | null;
+}
+
 export interface MountSourceAffectedWorkspace {
   workspace_id: string;
   workspace_name: string;
@@ -2527,6 +2620,7 @@ export interface WorkspaceMount {
   mount_source_id: string;
   source_path: string;
   target_path: string;
+  mount_source_scope: UserspaceMountSourceScope;
   description: string | null;
   enabled: boolean;
   sync_mode: WorkspaceMountSyncMode;
@@ -2536,6 +2630,7 @@ export interface WorkspaceMount {
   last_sync_at: string | null;
   last_sync_error: string | null;
   auto_sync_enabled: boolean;
+  sync_interval_seconds: number | null;
   source_name: string | null;
   source_type: UserspaceMountSourceType | null;
   mount_backend: UserspaceMountBackend | null;
@@ -2546,6 +2641,7 @@ export interface WorkspaceMount {
 
 export interface MountableSource {
   mount_source_id: string;
+  source_scope: UserspaceMountSourceScope;
   source_name: string;
   source_type: UserspaceMountSourceType;
   mount_backend: UserspaceMountBackend;
@@ -2558,17 +2654,20 @@ export interface BrowseUserspaceMountSourceRequest {
 
 export interface BrowseWorkspaceMountSourceRequest {
   mount_source_id: string;
+  source_scope?: UserspaceMountSourceScope;
   root_source_path: string;
   path: string;
 }
 
 export interface CreateWorkspaceMountRequest {
   mount_source_id: string;
+  source_scope?: UserspaceMountSourceScope;
   source_path: string;
   target_path: string;
   source_directory_to_create?: string | null;
   target_directory_to_create?: string | null;
   auto_sync_enabled?: boolean;
+  sync_interval_seconds?: number | null;
   sync_mode?: WorkspaceMountSyncMode;
   description?: string | null;
 }
@@ -2578,6 +2677,7 @@ export interface UpdateWorkspaceMountRequest {
   description?: string | null;
   enabled?: boolean;
   auto_sync_enabled?: boolean;
+  sync_interval_seconds?: number | null;
   sync_mode?: WorkspaceMountSyncMode;
   destructive_auto_sync_preview_token?: string;
 }

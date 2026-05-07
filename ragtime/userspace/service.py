@@ -89,9 +89,25 @@ from ragtime.indexer.models import (
 from ragtime.indexer.repository import _resolve_default_conversation_model, repository
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
+from ragtime.userspace.cloud_mounts import (
+    browser_path_for_cloud,
+    build_cloud_oauth_url,
+    cloud_mount_provider,
+    exchange_cloud_oauth_code,
+    get_cloud_account_profile,
+    google_drive_scope_error_message,
+    has_google_drive_scope,
+)
 from ragtime.userspace.models import (
     ArtifactType,
+    BrowseCloudMountSourceRequest,
     BrowseUserspaceMountSourceRequest,
+    CloudOAuthCallbackRequest,
+    CloudOAuthProviderStatus,
+    CloudOAuthStartRequest,
+    CloudOAuthStartResponse,
+    CreateCloudMountSourceDirectoryRequest,
+    CreateUserUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
     CreateUserSpaceObjectStorageBucketRequest,
     CreateWorkspaceMountRequest,
@@ -117,6 +133,7 @@ from ragtime.userspace.models import (
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
+    UpdateUserUserspaceMountSourceRequest,
     UpdateUserSpaceObjectStorageBucketRequest,
     UpdateWorkspaceMembersRequest,
     UpdateWorkspaceMountRequest,
@@ -126,12 +143,15 @@ from ragtime.userspace.models import (
     UpsertWorkspaceAgentGrantRequest,
     UpsertWorkspaceEnvVarRequest,
     UpsertWorkspaceFileRequest,
+    UserCloudOAuthAccount,
+    UserCloudOAuthProvider,
     UserSpaceFileInfo,
     UserSpaceFileResponse,
     UserSpaceLiveDataCheck,
     UserSpaceLiveDataConnection,
     UserspaceMountBackend,
     UserspaceMountSource,
+    UserspaceMountSourceScope,
     UserspaceMountSourceType,
     UserSpaceObjectStorageBucket,
     UserSpaceObjectStorageConfig,
@@ -1109,6 +1129,11 @@ class UserSpaceService:
     _SSH_RSYNC_MISSING_RECHECK_SECONDS = 300.0
     _WORKSPACE_MOUNT_SYNC_PREVIEW_TTL_SECONDS = 120
     _WORKSPACE_MOUNT_SYNC_PREVIEW_SAMPLE_LIMIT = 200
+    _WORKSPACE_MOUNT_SYNC_CAPABLE_SOURCE_TYPES = {
+        "ssh",
+        "microsoft_drive",
+        "google_drive",
+    }
 
     def __init__(self) -> None:
         self._base_dir = Path(settings.index_data_path) / "_userspace"
@@ -1220,6 +1245,9 @@ class UserSpaceService:
         self._workspace_mount_watch_task_lock = asyncio.Lock()
         self._workspace_mount_watch_inflight: set[str] = set()
         self._workspace_mount_watch_next_due_monotonic: dict[str, float] = {}
+        self._workspace_mount_watch_target_signatures: dict[str, tuple[Any, ...]] = {}
+        self._workspace_mount_watch_wakeup = asyncio.Event()
+        self._cloud_oauth_states: dict[str, dict[str, Any]] = {}
         # Per-endpoint rsync capability state.
         # True  => rsync was observed working and can be attempted directly.
         # False => rsync was observed missing; float is the next monotonic time
@@ -1285,10 +1313,10 @@ class UserSpaceService:
         sync_mode: WorkspaceMountSyncMode,
         auto_sync_enabled: bool,
     ) -> None:
-        if source_type != "ssh" and sync_mode != "merge":
+        if source_type not in {"ssh", "microsoft_drive", "google_drive"} and sync_mode != "merge":
             raise HTTPException(
                 status_code=400,
-                detail="Non-SSH mounts only support merge sync mode",
+                detail="This mount source only supports merge sync mode",
             )
         # Auto-sync is allowed for all modes; destructive syncs use
         # the configured mode directly and the user is expected to
@@ -1425,6 +1453,8 @@ class UserSpaceService:
         *,
         mount_id: str,
         workspace_id: str,
+        source_type: str,
+        connection_config: dict[str, Any],
         ssh_config: Any,
         remote_path: str,
         cache_dir: Path,
@@ -1448,14 +1478,24 @@ class UserSpaceService:
                 ),
             )
 
-        current_preview = await asyncio.to_thread(
-            preview_ssh_directory_sync,
-            ssh_config,
-            remote_path,
-            str(cache_dir),
-            sync_mode=sync_mode,
-            sample_limit=self._WORKSPACE_MOUNT_SYNC_PREVIEW_SAMPLE_LIMIT,
-        )
+        current_preview: Any
+        if source_type == "ssh":
+            current_preview = await asyncio.to_thread(
+                preview_ssh_directory_sync,
+                ssh_config,
+                remote_path,
+                str(cache_dir),
+                sync_mode=sync_mode,
+                sample_limit=self._WORKSPACE_MOUNT_SYNC_PREVIEW_SAMPLE_LIMIT,
+            )
+        else:
+            provider = cloud_mount_provider(cast(Any, source_type), connection_config)
+            current_preview = await provider.preview_sync_tree(
+                remote_path,
+                cache_dir,
+                sync_mode=sync_mode,
+                sample_limit=self._WORKSPACE_MOUNT_SYNC_PREVIEW_SAMPLE_LIMIT,
+            )
         if not current_preview.success:
             raise HTTPException(
                 status_code=400,
@@ -2637,10 +2677,12 @@ class UserSpaceService:
                 user_id,
                 CreateWorkspaceMountRequest(
                     mount_source_id=mount.mount_source_id,
+                    source_scope=mount.mount_source_scope,
                     source_path=mount.source_path,
                     target_path=mount.target_path,
                     description=mount.description,
                     auto_sync_enabled=False,
+                    sync_interval_seconds=mount.sync_interval_seconds,
                     sync_mode=mount.sync_mode,
                 ),
             )
@@ -3292,6 +3334,7 @@ class UserSpaceService:
             "target_path": mount.target_path,
             "description": mount.description,
             "sync_mode": mount.sync_mode,
+            "sync_interval_seconds": mount.sync_interval_seconds,
             "enabled": mount.enabled,
             "auto_sync_enabled": mount.auto_sync_enabled,
         }
@@ -3402,6 +3445,7 @@ class UserSpaceService:
                         target_path=target_path,
                         description=str(placeholder.get("description") or "") or None,
                         auto_sync_enabled=False,
+                        sync_interval_seconds=placeholder.get("sync_interval_seconds"),
                         sync_mode=self._normalize_workspace_mount_sync_configuration_value(
                             str(placeholder.get("sync_mode") or "merge")
                         ),
@@ -7339,7 +7383,14 @@ class UserSpaceService:
             1.0, min(5.0, self._workspace_mount_watch_interval_seconds / 3.0)
         )
         while True:
-            await asyncio.sleep(poll_seconds)
+            try:
+                await asyncio.wait_for(
+                    self._workspace_mount_watch_wakeup.wait(),
+                    timeout=poll_seconds,
+                )
+                self._workspace_mount_watch_wakeup.clear()
+            except asyncio.TimeoutError:
+                pass
             try:
                 await self._workspace_mount_watch_tick()
             except asyncio.CancelledError:
@@ -7356,15 +7407,63 @@ class UserSpaceService:
         jitter_fraction = (abs(hash(mount_id)) % 1000) / 1000.0
         return jitter_fraction * self._workspace_mount_watch_jitter_seconds
 
+    @staticmethod
+    def _clamp_workspace_mount_sync_interval_seconds(
+        value: Any,
+        default_value: int | float = 30,
+    ) -> int:
+        try:
+            parsed = int(value)
+        except Exception:
+            try:
+                parsed = int(default_value)
+            except Exception:
+                parsed = 30
+        return max(1, min(2_592_000, parsed))
+
+    async def _global_workspace_mount_sync_interval_seconds(self) -> int:
+        try:
+            cached_settings = await SettingsCache.get_instance().get_settings()
+            return self._clamp_workspace_mount_sync_interval_seconds(
+                cached_settings.get("userspace_mount_sync_interval_seconds"),
+                30,
+            )
+        except Exception:
+            return 30
+
+    async def _workspace_mount_target_signature(
+        self,
+        workspace_id: str,
+        target_path: str,
+    ) -> tuple[Any, ...]:
+        return await asyncio.to_thread(
+            self._runtime_mount_content_signature_sync,
+            workspace_id,
+            [target_path],
+        )
+
+    def _workspace_mount_has_local_target_change(
+        self,
+        mount_id: str,
+        signature: tuple[Any, ...],
+    ) -> bool:
+        previous_signature = self._workspace_mount_watch_target_signatures.get(mount_id)
+        self._workspace_mount_watch_target_signatures[mount_id] = signature
+        return previous_signature is not None and previous_signature != signature
+
     async def _workspace_mount_watch_tick(self) -> None:
         db = await get_db()
         mounts = await db.workspacemount.find_many(
             where={"autoSyncEnabled": True, "enabled": True},
-            include={"mountSource": True},
+            include={
+                "mountSource": True,
+                "userMountSource": {"include": {"oauthAccount": True}},
+            },
         )
 
         active_mount_ids: set[str] = set()
         now_monotonic = _time.monotonic()
+        global_interval_seconds = await self._global_workspace_mount_sync_interval_seconds()
 
         for mount in mounts:
             mount_id = str(getattr(mount, "id", "") or "")
@@ -7373,10 +7472,15 @@ class UserSpaceService:
                 continue
             active_mount_ids.add(mount_id)
 
-            mount_source = getattr(mount, "mountSource", None)
+            mount_source = getattr(mount, "mountSource", None) or getattr(
+                mount,
+                "userMountSource",
+                None,
+            )
             if not mount_source:
                 continue
-            if str(getattr(mount_source, "sourceType", "") or "") != "ssh":
+            source_type = str(getattr(mount_source, "sourceType", "") or "")
+            if source_type not in self._WORKSPACE_MOUNT_SYNC_CAPABLE_SOURCE_TYPES:
                 continue
             if not bool(getattr(mount_source, "enabled", False)):
                 continue
@@ -7384,13 +7488,35 @@ class UserSpaceService:
                 continue
 
             due_at = self._workspace_mount_watch_next_due_monotonic.get(mount_id, 0.0)
-            if now_monotonic < due_at:
+            target_path = str(getattr(mount, "targetPath", "") or "")
+            has_local_change = False
+            if target_path:
+                try:
+                    signature = await self._workspace_mount_target_signature(
+                        workspace_id,
+                        target_path,
+                    )
+                    has_local_change = self._workspace_mount_has_local_target_change(
+                        mount_id,
+                        signature,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to check local target changes for mount %s/%s",
+                        workspace_id,
+                        mount_id,
+                        exc_info=True,
+                    )
+            if now_monotonic < due_at and not has_local_change:
                 continue
 
-            # Per-source interval from DB, falling back to the global default.
-            source_interval = float(
-                getattr(mount_source, "syncIntervalSeconds", None)
-                or self._workspace_mount_watch_interval_seconds
+            source_interval = self._clamp_workspace_mount_sync_interval_seconds(
+                getattr(mount_source, "syncIntervalSeconds", None),
+                global_interval_seconds,
+            )
+            interval_seconds = self._clamp_workspace_mount_sync_interval_seconds(
+                getattr(mount, "syncIntervalSeconds", None),
+                source_interval,
             )
 
             self._workspace_mount_watch_inflight.add(mount_id)
@@ -7400,7 +7526,7 @@ class UserSpaceService:
                 self._run_watched_workspace_mount_sync(
                     workspace_id,
                     mount_id,
-                    source_interval,
+                    float(interval_seconds),
                 ),
                 name=f"userspace-mount-watch-sync:{workspace_id}:{mount_id}",
             )
@@ -7411,6 +7537,7 @@ class UserSpaceService:
         for mount_id in stale_mount_ids:
             self._workspace_mount_watch_next_due_monotonic.pop(mount_id, None)
             self._workspace_mount_watch_inflight.discard(mount_id)
+            self._workspace_mount_watch_target_signatures.pop(mount_id, None)
 
     async def _run_watched_workspace_mount_sync(
         self,
@@ -7423,15 +7550,28 @@ class UserSpaceService:
             db = await get_db()
             mount = await db.workspacemount.find_first(
                 where={"id": mount_id, "workspaceId": workspace_id},
-                include={"mountSource": True},
+                include={
+                    "mountSource": True,
+                    "userMountSource": {"include": {"oauthAccount": True}},
+                },
             )
-            if not mount or not bool(getattr(mount, "autoSyncEnabled", False)):
+            if (
+                not mount
+                or not bool(getattr(mount, "enabled", True))
+                or not bool(getattr(mount, "autoSyncEnabled", False))
+            ):
                 return
 
-            mount_source = getattr(mount, "mountSource", None)
+            mount_source = getattr(mount, "mountSource", None) or getattr(
+                mount,
+                "userMountSource",
+                None,
+            )
+            source_type = str(getattr(mount_source, "sourceType", "") or "") if mount_source else ""
             if (
                 not mount_source
-                or str(getattr(mount_source, "sourceType", "") or "") != "ssh"
+                or not bool(getattr(mount_source, "enabled", False))
+                or source_type not in self._WORKSPACE_MOUNT_SYNC_CAPABLE_SOURCE_TYPES
             ):
                 return
 
@@ -7483,6 +7623,22 @@ class UserSpaceService:
                 mount,
                 allow_destructive_auto_sync_approval=True,
             )
+            target_path = str(getattr(mount, "targetPath", "") or "")
+            if target_path:
+                try:
+                    self._workspace_mount_watch_target_signatures[mount_id] = (
+                        await self._workspace_mount_target_signature(
+                            workspace_id,
+                            target_path,
+                        )
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to refresh target signature after auto-sync for %s/%s",
+                        workspace_id,
+                        mount_id,
+                        exc_info=True,
+                    )
             try:
                 from ragtime.userspace.runtime_service import userspace_runtime_service
 
@@ -7578,6 +7734,7 @@ class UserSpaceService:
         self._workspace_mount_watch_task = None
         self._workspace_mount_watch_inflight.clear()
         self._workspace_mount_watch_next_due_monotonic.clear()
+        self._workspace_mount_watch_target_signatures.clear()
 
     async def shutdown_workspace_scm_watch(self) -> None:
         """Cancel interval-driven workspace SCM auto-sync watch loop."""
@@ -7647,6 +7804,17 @@ class UserSpaceService:
             return self._resolve_workspace_file_path(workspace_id, normalized_path)
 
         suffix = normalized_path[len(best_prefix) :].lstrip("/")
+        runtime_workspace_dir = self._workspaces_dir / workspace_id / "rootfs" / "workspace"
+        runtime_target = runtime_workspace_dir / normalized_path
+        if runtime_workspace_dir.is_dir() and runtime_target.exists():
+            resolved_runtime_workspace = runtime_workspace_dir.resolve()
+            resolved_runtime_target = runtime_target.resolve()
+            if (
+                resolved_runtime_target == resolved_runtime_workspace
+                or resolved_runtime_workspace in resolved_runtime_target.parents
+            ):
+                return resolved_runtime_target
+
         target = best_source_dir if not suffix else best_source_dir / suffix
         resolved_source_dir = best_source_dir.resolve()
         resolved_target = target.resolve()
@@ -14162,6 +14330,34 @@ class UserSpaceService:
         return decrypt_json_passwords(raw_config, CONNECTION_CONFIG_PASSWORD_FIELDS)
 
     @classmethod
+    def _load_cloud_oauth_account_tokens(cls, record: Any) -> dict[str, Any]:
+        if record is None:
+            return {}
+        access_token = decrypt_secret(str(getattr(record, "accessToken", "") or ""))
+        refresh_token = decrypt_secret(str(getattr(record, "refreshToken", "") or ""))
+        metadata = cls._load_connection_config(getattr(record, "metadata", None))
+        config: dict[str, Any] = dict(metadata)
+        if access_token:
+            config["access_token"] = access_token
+        if refresh_token:
+            config["refresh_token"] = refresh_token
+        expires_at = getattr(record, "expiresAt", None)
+        if expires_at is not None:
+            config["expires_at"] = expires_at.isoformat()
+        account_email = str(getattr(record, "accountEmail", "") or "").strip()
+        if account_email:
+            config["account_email"] = account_email
+        scopes = getattr(record, "scopes", None)
+        if isinstance(scopes, str):
+            try:
+                scopes = json.loads(scopes)
+            except json.JSONDecodeError:
+                scopes = []
+        if isinstance(scopes, list):
+            config["scopes"] = [str(scope) for scope in scopes]
+        return config
+
+    @classmethod
     def _load_tool_connection_config(cls, tool_record: Any) -> dict[str, Any]:
         """Load and decrypt connection config from a related ToolConfig record."""
         raw_config = cls._load_connection_config(
@@ -14186,6 +14382,8 @@ class UserSpaceService:
     ) -> UserspaceMountBackend:
         if source_type == "ssh":
             return "ssh"
+        if source_type in {"microsoft_drive", "google_drive"}:
+            return "cloud_virtual"
         mount_type = str(connection_config.get("mount_type") or "docker_volume").strip()
         if mount_type not in {"docker_volume", "smb", "nfs", "local"}:
             raise HTTPException(
@@ -14231,6 +14429,24 @@ class UserSpaceService:
                         status_code=400, detail="SSH port must be an integer"
                     ) from exc
             backend: UserspaceMountBackend = "ssh"
+        elif source_type in {"microsoft_drive", "google_drive"}:
+            backend = "cloud_virtual"
+            normalized_config["provider"] = source_type
+            auth_mode = str(normalized_config.get("auth_mode") or "oauth").strip().lower()
+            normalized_config["auth_mode"] = auth_mode
+            if auth_mode not in {"oauth", "mock"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cloud mount sources support auth_mode values 'oauth' or 'mock'",
+                )
+            if auth_mode == "oauth" and not (
+                str(normalized_config.get("access_token") or "").strip()
+                or str(normalized_config.get("oauth_account_id") or "").strip()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="OAuth cloud mount sources require an access token or linked account",
+                )
         else:
             backend = cls._mount_backend_from_source(source_type, normalized_config)
             normalized_config["mount_type"] = backend
@@ -14269,8 +14485,51 @@ class UserSpaceService:
         return normalized_config, normalized_paths, backend
 
     @classmethod
+    def _cloud_connection_with_account(
+        cls,
+        connection_config: dict[str, Any],
+        oauth_account: Any | None,
+    ) -> dict[str, Any]:
+        merged = dict(connection_config)
+        account_tokens = cls._load_cloud_oauth_account_tokens(oauth_account)
+        for key, value in account_tokens.items():
+            if value not in (None, ""):
+                merged.setdefault(key, value)
+        return merged
+
+    async def _cloud_connection_config_with_user_account(
+        self,
+        *,
+        user_id: str | None,
+        source_type: UserspaceMountSourceType,
+        connection_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        oauth_account_id = str(connection_config.get("oauth_account_id") or "").strip()
+        if not oauth_account_id:
+            return connection_config
+        if source_type not in {"microsoft_drive", "google_drive"}:
+            return connection_config
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Linked cloud account context is required")
+
+        db = await get_db()
+        account = await db.usercloudoauthaccount.find_first(
+            where={"id": oauth_account_id, "userId": user_id},
+        )
+        if account is None:
+            raise HTTPException(status_code=400, detail="Linked cloud account not found")
+        provider = str(getattr(account, "provider", "") or "")
+        if provider != source_type:
+            raise HTTPException(status_code=400, detail="Linked cloud account provider does not match mount source")
+        return self._cloud_connection_with_account(connection_config, account)
+
+    @classmethod
     def _userspace_mount_source_from_record(
-        cls, record: Any, usage_count: int = 0
+        cls,
+        record: Any,
+        usage_count: int = 0,
+        *,
+        source_scope: UserspaceMountSourceScope = "global",
     ) -> UserspaceMountSource:
         connection_config = cls._load_mount_source_connection_config(record)
         source_type = cast(
@@ -14280,6 +14539,13 @@ class UserSpaceService:
         tool_config_id = getattr(record, "toolConfigId", None)
         tool_record = getattr(record, "toolConfig", None) if tool_config_id else None
         tool_name = str(getattr(tool_record, "name", "")) if tool_record else None
+        oauth_account_id = getattr(record, "oauthAccountId", None) or connection_config.get("oauth_account_id")
+        oauth_account = getattr(record, "oauthAccount", None) if oauth_account_id else None
+        if oauth_account is not None:
+            connection_config = cls._cloud_connection_with_account(
+                connection_config,
+                oauth_account,
+            )
         # When backed by a tool, prefer the tool's connection config so credential
         # changes propagate automatically.
         if tool_record is not None:
@@ -14293,16 +14559,44 @@ class UserSpaceService:
                 getattr(record, "description", None)
             ),
             enabled=bool(getattr(record, "enabled", True)),
+            source_scope=source_scope,
+            owner_user_id=str(getattr(record, "userId", "") or "") or None,
             source_type=source_type,
             mount_backend=cls._mount_backend_from_source(
                 source_type, connection_config
             ),
             tool_config_id=str(tool_config_id) if tool_config_id else None,
             tool_name=tool_name or None,
+            oauth_account_id=str(oauth_account_id) if oauth_account_id else None,
+            account_email=str(connection_config.get("account_email") or "") or None,
             connection_config=connection_config,
             approved_paths=cls._load_mount_source_approved_paths(record),
             sync_interval_seconds=getattr(record, "syncIntervalSeconds", 30) or 30,
             usage_count=usage_count,
+            created_at=getattr(record, "createdAt"),
+            updated_at=getattr(record, "updatedAt"),
+        )
+
+    @classmethod
+    def _user_cloud_oauth_account_from_record(cls, record: Any) -> UserCloudOAuthAccount:
+        scopes = getattr(record, "scopes", None)
+        if isinstance(scopes, str):
+            try:
+                scopes = json.loads(scopes)
+            except json.JSONDecodeError:
+                scopes = []
+        if not isinstance(scopes, list):
+            scopes = []
+        metadata = cls._load_connection_config(getattr(record, "metadata", None))
+        return UserCloudOAuthAccount(
+            id=str(getattr(record, "id", "") or ""),
+            provider=cast(UserCloudOAuthProvider, str(getattr(record, "provider", "") or "microsoft_drive")),
+            account_email=str(getattr(record, "accountEmail", "") or "") or None,
+            account_name=str(getattr(record, "accountName", "") or "") or None,
+            scopes=[str(scope) for scope in scopes],
+            metadata=metadata,
+            expires_at=getattr(record, "expiresAt", None),
+            connected=bool(str(getattr(record, "accessToken", "") or "") or str(getattr(record, "refreshToken", "") or "")),
             created_at=getattr(record, "createdAt"),
             updated_at=getattr(record, "updatedAt"),
         )
@@ -14323,9 +14617,10 @@ class UserSpaceService:
         return WorkspaceMount(
             id=str(getattr(record, "id", "") or ""),
             workspace_id=str(getattr(record, "workspaceId", "") or ""),
-            mount_source_id=str(getattr(record, "mountSourceId", "") or ""),
+            mount_source_id=mount_source.id if mount_source else str(getattr(record, "mountSourceId", "") or getattr(record, "userMountSourceId", "") or ""),
             source_path=str(getattr(record, "sourcePath", "") or ""),
             target_path=str(getattr(record, "targetPath", "") or ""),
+            mount_source_scope=mount_source.source_scope if mount_source else "global",
             description=str(getattr(record, "description", "") or "").strip() or None,
             enabled=bool(getattr(record, "enabled", True)),
             sync_mode=sync_mode,
@@ -14335,6 +14630,7 @@ class UserSpaceService:
             last_sync_at=getattr(record, "lastSyncAt", None),
             last_sync_error=getattr(record, "lastSyncError", None),
             auto_sync_enabled=bool(getattr(record, "autoSyncEnabled", False)),
+            sync_interval_seconds=getattr(record, "syncIntervalSeconds", None),
             source_name=mount_source.name if mount_source else None,
             source_type=source_type,
             mount_backend=mount_source.mount_backend if mount_source else None,
@@ -14370,6 +14666,17 @@ class UserSpaceService:
                     source_path=source_path,
                 )
                 return Path(resolved).is_dir()
+            except Exception:
+                return False
+
+        if mount_source.source_type in {"microsoft_drive", "google_drive"}:
+            try:
+                provider = cloud_mount_provider(
+                    mount_source.source_type,
+                    mount_source.connection_config,
+                )
+                await provider.list_dir(source_path or ".")
+                return True
             except Exception:
                 return False
 
@@ -14444,6 +14751,8 @@ class UserSpaceService:
         )
         mount_id = context["mount_id"]
         workspace_id = context["workspace_id"]
+        source_type = context["source_type"]
+        connection_config = context["connection_config"]
         ssh_config = context["ssh_config"]
         remote_path = context["remote_path"]
         target_path = context["target_path"]
@@ -14467,6 +14776,8 @@ class UserSpaceService:
                             await self._consume_workspace_mount_sync_preview(
                                 mount_id=mount_id,
                                 workspace_id=workspace_id,
+                                source_type=source_type,
+                                connection_config=connection_config,
                                 ssh_config=ssh_config,
                                 remote_path=remote_path,
                                 cache_dir=cache_dir,
@@ -14487,7 +14798,16 @@ class UserSpaceService:
                                 ),
                             )
 
-                    if preferred_backend == "paramiko":
+                    result: Any
+                    if source_type != "ssh":
+                        provider = cloud_mount_provider(cast(Any, source_type), connection_config)
+                        result = await provider.sync_tree(
+                            remote_path,
+                            cache_dir,
+                            sync_mode=sync_mode,
+                        )
+                        result.backend_used = preferred_backend
+                    elif preferred_backend == "paramiko":
                         result = await asyncio.to_thread(
                             sync_ssh_directory,
                             ssh_config,
@@ -14588,39 +14908,68 @@ class UserSpaceService:
         force_backend_recheck: bool = False,
         sync_mode_override: WorkspaceMountSyncMode | None = None,
     ) -> dict[str, Any]:
-        mount_source_record = getattr(mount, "mountSource", None)
-        source_type = str(getattr(mount_source_record, "sourceType", "") or "")
+        mount_source_record = getattr(mount, "mountSource", None) or getattr(
+            mount,
+            "userMountSource",
+            None,
+        )
+        source_scope: UserspaceMountSourceScope = "user" if getattr(
+            mount,
+            "userMountSourceId",
+            None,
+        ) or getattr(mount, "userMountSource", None) is not None else "global"
+        mount_source = self._userspace_mount_source_from_record(
+            mount_source_record,
+            source_scope=source_scope,
+        ) if mount_source_record is not None else None
+        source_type = str(
+            getattr(mount_source, "source_type", "")
+            or getattr(mount_source_record, "sourceType", "")
+            or ""
+        )
         mount_id = str(getattr(mount, "id", "") or "")
         workspace_id = str(getattr(mount, "workspaceId", "") or "")
-        if source_type != "ssh":
+        if source_type not in {"ssh", "microsoft_drive", "google_drive"}:
             raise HTTPException(
                 status_code=400,
-                detail="Sync is only supported for SSH-backed mounts",
+                detail="Sync is only supported for SSH/SFTP or cloud-backed mounts",
             )
 
-        connection_config = self._load_mount_source_connection_config(
-            mount_source_record
-        )
-
-        ssh_config = ssh_config_from_dict(connection_config)
-        remote_path = self._resolve_ssh_mount_remote_path(
-            connection_config,
-            str(getattr(mount, "sourcePath", "") or ""),
+        connection_config = (
+            dict(getattr(mount_source, "connection_config", {}) or {})
+            if mount_source is not None
+            else self._load_mount_source_connection_config(mount_source_record)
         )
         target_path = str(getattr(mount, "targetPath", "") or "")
-        cache_dir = self._base_dir / "mount_cache" / workspace_id / mount_id
         sync_mode = sync_mode_override or self._normalize_workspace_mount_sync_mode(
             getattr(mount, "syncMode", None),
             legacy_sync_deletes=bool(getattr(mount, "syncDeletes", False)),
         )
-        preferred_backend, preferred_notice = await self._resolve_ssh_sync_backend(
-            ssh_config,
-            force_recheck_missing=force_backend_recheck,
-        )
+        if source_type == "ssh":
+            ssh_config = ssh_config_from_dict(connection_config)
+            remote_path = self._resolve_ssh_mount_remote_path(
+                connection_config,
+                str(getattr(mount, "sourcePath", "") or ""),
+            )
+            cache_dir = self._base_dir / "mount_cache" / workspace_id / mount_id
+            preferred_backend, preferred_notice = await self._resolve_ssh_sync_backend(
+                ssh_config,
+                force_recheck_missing=force_backend_recheck,
+            )
+        else:
+            ssh_config = None
+            remote_path = self._normalize_mount_source_path(
+                str(getattr(mount, "sourcePath", "") or "")
+            )
+            cache_dir = self._base_dir / "cloud_mount_cache" / workspace_id / mount_id
+            preferred_backend = source_type
+            preferred_notice = None
 
         return {
             "mount_id": mount_id,
             "workspace_id": workspace_id,
+            "source_type": source_type,
+            "connection_config": connection_config,
             "ssh_config": ssh_config,
             "remote_path": remote_path,
             "target_path": target_path,
@@ -14645,6 +14994,8 @@ class UserSpaceService:
         )
         mount_id = context["mount_id"]
         workspace_id = context["workspace_id"]
+        source_type = context["source_type"]
+        connection_config = context["connection_config"]
         ssh_config = context["ssh_config"]
         remote_path = context["remote_path"]
         target_path = context["target_path"]
@@ -14663,14 +15014,24 @@ class UserSpaceService:
                         target_path,
                         cache_dir,
                     )
-                    preview = await asyncio.to_thread(
-                        preview_ssh_directory_sync,
-                        ssh_config,
-                        remote_path,
-                        str(cache_dir),
-                        sync_mode=sync_mode,
-                        sample_limit=self._WORKSPACE_MOUNT_SYNC_PREVIEW_SAMPLE_LIMIT,
-                    )
+                    preview: Any
+                    if source_type == "ssh":
+                        preview = await asyncio.to_thread(
+                            preview_ssh_directory_sync,
+                            ssh_config,
+                            remote_path,
+                            str(cache_dir),
+                            sync_mode=sync_mode,
+                            sample_limit=self._WORKSPACE_MOUNT_SYNC_PREVIEW_SAMPLE_LIMIT,
+                        )
+                    else:
+                        provider = cloud_mount_provider(cast(Any, source_type), connection_config)
+                        preview = await provider.preview_sync_tree(
+                            remote_path,
+                            cache_dir,
+                            sync_mode=sync_mode,
+                            sample_limit=self._WORKSPACE_MOUNT_SYNC_PREVIEW_SAMPLE_LIMIT,
+                        )
 
             if not preview.success:
                 raise HTTPException(
@@ -14983,6 +15344,39 @@ class UserSpaceService:
         )
 
     @classmethod
+    def _cloud_mount_approved_root_entries(
+        cls,
+        *,
+        source_path: str,
+        approved_paths: list[str],
+    ) -> list[WorkspaceMountDirectoryEntry] | None:
+        normalized_source = cls._normalize_mount_source_path(source_path)
+        normalized_approved_paths = [
+            cls._normalize_mount_source_path(path) for path in approved_paths
+        ]
+        if any(path == "." for path in normalized_approved_paths):
+            return None
+        if any(
+            cls._is_mount_source_within_root(normalized_source, approved_path)
+            for approved_path in normalized_approved_paths
+        ):
+            return None
+
+        entries_by_path: dict[str, WorkspaceMountDirectoryEntry] = {}
+        for approved_path in normalized_approved_paths:
+            if not cls._is_mount_source_within_root(approved_path, normalized_source):
+                continue
+            name = approved_path.rsplit("/", 1)[-1] if approved_path != "." else "/"
+            browser_path = "/" if approved_path == "." else f"/{approved_path}"
+            entries_by_path[browser_path] = WorkspaceMountDirectoryEntry(
+                name=name,
+                path=browser_path,
+                is_dir=True,
+                size=None,
+            )
+        return sorted(entries_by_path.values(), key=lambda item: item.path.lower())
+
+    @classmethod
     def _resolve_filesystem_mount_source_path(
         cls,
         connection_config: dict[str, Any],
@@ -15042,6 +15436,67 @@ class UserSpaceService:
             resolved = base if normalized == "." else base / normalized
             return str(resolved)
 
+    async def _resolve_cloud_mount_source_local_path(
+        self,
+        *,
+        mount_source_id: str,
+        source_type: UserspaceMountSourceType,
+        connection_config: dict[str, Any],
+        source_path: str,
+        workspace_id: str,
+        mount_id: str,
+    ) -> str:
+        cache_dir = self._base_dir / "cloud_mount_cache" / workspace_id / mount_id
+        staging_dir = cache_dir.with_name(f"{cache_dir.name}.staging.{uuid4().hex}")
+        mount_lock = await self._get_workspace_mount_operation_lock(mount_id)
+
+        def _reset_staging() -> None:
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir)
+            staging_dir.mkdir(parents=True, exist_ok=True)
+
+        def _cleanup_staging() -> None:
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir)
+
+        def _replace_cache() -> None:
+            cache_dir.parent.mkdir(parents=True, exist_ok=True)
+            backup_dir = cache_dir.with_name(f"{cache_dir.name}.previous.{uuid4().hex}")
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+            if cache_dir.exists():
+                cache_dir.rename(backup_dir)
+            try:
+                staging_dir.rename(cache_dir)
+            except Exception:
+                if backup_dir.exists() and not cache_dir.exists():
+                    backup_dir.rename(cache_dir)
+                raise
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+
+        async with mount_lock:
+            await asyncio.to_thread(_reset_staging)
+            provider = cloud_mount_provider(source_type, connection_config)
+            try:
+                await provider.download_tree(source_path, staging_dir)
+            except Exception as exc:
+                await asyncio.to_thread(_cleanup_staging)
+                if cache_dir.exists():
+                    logger.warning(
+                        "Cloud mount refresh failed for %s/%s; using existing cache: %s",
+                        workspace_id,
+                        mount_id,
+                        exc,
+                    )
+                    return str(cache_dir)
+                raise
+            try:
+                await asyncio.to_thread(_replace_cache)
+            finally:
+                await asyncio.to_thread(_cleanup_staging)
+        return str(cache_dir)
+
     async def _create_workspace_mount_source_directory(
         self,
         *,
@@ -15081,6 +15536,14 @@ class UserSpaceService:
                     or "Failed to create source directory"
                 )
                 raise HTTPException(status_code=400, detail=error_msg)
+            return
+
+        if source_type in {"microsoft_drive", "google_drive"}:
+            try:
+                provider = cloud_mount_provider(source_type, connection_config)
+                await provider.create_dir(source_path)
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             return
 
         raise HTTPException(
@@ -15132,6 +15595,363 @@ class UserSpaceService:
             raise HTTPException(status_code=400, detail="Mount source is disabled")
         return record
 
+    async def _get_user_mount_source_record(
+        self,
+        db: Any,
+        mount_source_id: str,
+        user_id: str,
+        *,
+        require_enabled: bool = False,
+    ) -> Any:
+        record = await db.useruserspacemountsource.find_first(
+            where={"id": mount_source_id, "userId": user_id},
+            include={"oauthAccount": True},
+        )
+        if not record:
+            raise HTTPException(status_code=404, detail="Personal mount source not found")
+        if require_enabled and not bool(getattr(record, "enabled", False)):
+            raise HTTPException(status_code=400, detail="Mount source is disabled")
+        return record
+
+    async def _get_scoped_mount_source(
+        self,
+        db: Any,
+        mount_source_id: str,
+        *,
+        source_scope: UserspaceMountSourceScope,
+        user_id: str | None = None,
+        require_enabled: bool = False,
+    ) -> UserspaceMountSource:
+        if source_scope == "user":
+            if not user_id:
+                raise HTTPException(status_code=401, detail="User is required")
+            record = await self._get_user_mount_source_record(
+                db,
+                mount_source_id,
+                user_id,
+                require_enabled=require_enabled,
+            )
+            return self._userspace_mount_source_from_record(
+                record,
+                source_scope="user",
+            )
+        record = await self._get_mount_source_record(
+            db,
+            mount_source_id,
+            require_enabled=require_enabled,
+        )
+        return self._userspace_mount_source_from_record(record)
+
+    async def list_user_cloud_oauth_accounts(
+        self,
+        user_id: str,
+    ) -> list[UserCloudOAuthAccount]:
+        db = await get_db()
+        rows = await db.usercloudoauthaccount.find_many(
+            where={"userId": user_id},
+            order={"createdAt": "asc"},
+        )
+        return [self._user_cloud_oauth_account_from_record(row) for row in rows]
+
+    async def get_cloud_oauth_provider_status(
+        self,
+    ) -> list[CloudOAuthProviderStatus]:
+        return [
+            CloudOAuthProviderStatus(
+                provider="microsoft_drive",
+                configured=bool(
+                    settings.cloud_mount_microsoft_client_id
+                    and settings.cloud_mount_microsoft_client_secret
+                    and settings.cloud_mount_microsoft_tenant_id
+                ),
+                auth_url_available=bool(
+                    settings.cloud_mount_microsoft_client_id
+                    and settings.cloud_mount_microsoft_tenant_id
+                ),
+            ),
+            CloudOAuthProviderStatus(
+                provider="google_drive",
+                configured=bool(settings.cloud_mount_google_client_id and settings.cloud_mount_google_client_secret),
+                auth_url_available=bool(settings.cloud_mount_google_client_id),
+            ),
+        ]
+
+    async def start_user_cloud_oauth(
+        self,
+        user_id: str,
+        request: CloudOAuthStartRequest,
+    ) -> CloudOAuthStartResponse:
+        provider_statuses = await self.get_cloud_oauth_provider_status()
+        provider_status = next(
+            (status for status in provider_statuses if status.provider == request.provider),
+            None,
+        )
+        if provider_status is None or not provider_status.configured:
+            raise HTTPException(
+                status_code=400,
+                detail=f"OAuth client credentials for {request.provider} are not configured",
+            )
+
+        state = secrets.token_urlsafe(24)
+        expires_at = _utc_now() + timedelta(minutes=10)
+        redirect_uri = request.redirect_uri or "urn:ietf:wg:oauth:2.0:oob"
+        self._cloud_oauth_states[state] = {
+            "user_id": user_id,
+            "provider": request.provider,
+            "redirect_uri": redirect_uri,
+            "workspace_id": request.workspace_id,
+            "expires_at": expires_at,
+        }
+        auth_url = build_cloud_oauth_url(
+            request.provider,
+            state=state,
+            redirect_uri=redirect_uri,
+        )
+        return CloudOAuthStartResponse(
+            provider=request.provider,
+            auth_url=auth_url,
+            state=state,
+            expires_at=expires_at,
+        )
+
+    async def complete_user_cloud_oauth(
+        self,
+        user_id: str,
+        request: CloudOAuthCallbackRequest,
+    ) -> UserCloudOAuthAccount:
+        if request.mock_account_email:
+            token_payload = {
+                "access_token": f"mock-{request.provider}-{secrets.token_urlsafe(8)}",
+                "refresh_token": f"mock-refresh-{secrets.token_urlsafe(8)}",
+                "expires_at": _utc_now() + timedelta(days=365),
+                "scope": "mock",
+            }
+            profile = {
+                "mail": request.mock_account_email,
+                "userPrincipalName": request.mock_account_email,
+                "email": request.mock_account_email,
+                "name": request.mock_account_name or request.mock_account_email,
+            }
+        else:
+            if not request.code or not request.state:
+                raise HTTPException(status_code=400, detail="OAuth code and state are required")
+            state = self._cloud_oauth_states.pop(request.state, None)
+            if not state or state.get("user_id") != user_id or state.get("provider") != request.provider:
+                raise HTTPException(status_code=400, detail="OAuth state is invalid or expired")
+            if state.get("expires_at") and state["expires_at"] < _utc_now():
+                raise HTTPException(status_code=400, detail="OAuth state is expired")
+            redirect_uri = request.redirect_uri or str(state.get("redirect_uri") or "")
+            try:
+                token_payload = await exchange_cloud_oauth_code(
+                    request.provider,
+                    code=request.code,
+                    redirect_uri=redirect_uri,
+                )
+                profile = await get_cloud_account_profile(
+                    request.provider,
+                    str(token_payload.get("access_token") or ""),
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        email = (
+            str(profile.get("mail") or "").strip()
+            or str(profile.get("userPrincipalName") or "").strip()
+            or str(profile.get("email") or "").strip()
+        )
+        account_name = str(profile.get("displayName") or profile.get("name") or email or request.provider).strip()
+        access_token = str(token_payload.get("access_token") or "")
+        refresh_token = str(token_payload.get("refresh_token") or "")
+        expires_at = token_payload.get("expires_at")
+        scopes = str(token_payload.get("scope") or "").split()
+        if request.provider == "google_drive" and scopes and not has_google_drive_scope(scopes):
+            raise HTTPException(status_code=400, detail=google_drive_scope_error_message())
+        metadata: dict[str, Any] = {}
+        if request.mock_tree:
+            metadata["auth_mode"] = "mock"
+            metadata["mock_tree"] = request.mock_tree
+
+        db = await get_db()
+        now = _utc_now()
+        created = await db.usercloudoauthaccount.create(
+            data={
+                "id": str(uuid4()),
+                "userId": user_id,
+                "provider": request.provider,
+                "accountEmail": email or None,
+                "accountName": account_name or None,
+                "accessToken": encrypt_secret(access_token),
+                "refreshToken": encrypt_secret(refresh_token),
+                "expiresAt": expires_at if isinstance(expires_at, datetime) else None,
+                "scopes": Json(scopes),
+                "metadata": Json(metadata),
+                "createdAt": now,
+                "updatedAt": now,
+            }
+        )
+        return self._user_cloud_oauth_account_from_record(created)
+
+    async def complete_user_cloud_oauth_browser_callback(
+        self,
+        user_id: str,
+        *,
+        code: str,
+        state: str,
+    ) -> UserCloudOAuthAccount:
+        state_record = self._cloud_oauth_states.get(state)
+        if not state_record:
+            raise HTTPException(status_code=400, detail="OAuth state is invalid or expired")
+        provider = str(state_record.get("provider") or "")
+        if provider not in {"microsoft_drive", "google_drive"}:
+            raise HTTPException(status_code=400, detail="Unsupported OAuth provider")
+        return await self.complete_user_cloud_oauth(
+            user_id,
+            CloudOAuthCallbackRequest(
+                provider=provider,  # type: ignore[arg-type]
+                code=code,
+                state=state,
+            ),
+        )
+
+    async def disconnect_user_cloud_oauth(
+        self,
+        user_id: str,
+        account_id: str,
+    ) -> DeleteUserspaceMountSourceResponse:
+        db = await get_db()
+        existing = await db.usercloudoauthaccount.find_first(
+            where={"id": account_id, "userId": user_id}
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Cloud account not found")
+        linked_sources = await db.useruserspacemountsource.count(
+            where={"userId": user_id, "oauthAccountId": account_id}
+        )
+        if linked_sources > 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Remove personal cloud sources that use this account before disconnecting it",
+            )
+        await db.usercloudoauthaccount.delete(where={"id": account_id})
+        return DeleteUserspaceMountSourceResponse(success=True, mount_source_id=account_id)
+
+    async def list_user_userspace_mount_sources(
+        self,
+        user_id: str,
+    ) -> list[UserspaceMountSource]:
+        db = await get_db()
+        rows = await db.useruserspacemountsource.find_many(
+            where={"userId": user_id},
+            order={"name": "asc"},
+            include={"oauthAccount": True},
+        )
+        count_rows: list[dict[str, Any]] = await db.query_raw(
+            "SELECT user_mount_source_id, COUNT(*)::int AS cnt FROM workspace_mounts "
+            "WHERE user_mount_source_id IS NOT NULL GROUP BY user_mount_source_id"
+        )
+        counts = {str(r.get("user_mount_source_id", "")): int(r.get("cnt", 0)) for r in count_rows}
+        return [
+            self._userspace_mount_source_from_record(
+                row,
+                usage_count=counts.get(str(getattr(row, "id", "")), 0),
+                source_scope="user",
+            )
+            for row in rows
+        ]
+
+    async def create_user_userspace_mount_source(
+        self,
+        user_id: str,
+        request: CreateUserUserspaceMountSourceRequest,
+    ) -> UserspaceMountSource:
+        if request.workspace_id:
+            await self._enforce_workspace_access(request.workspace_id, user_id, required_role="editor")
+        db = await get_db()
+        oauth_account = None
+        connection_config = dict(request.connection_config or {})
+        if request.oauth_account_id:
+            oauth_account = await db.usercloudoauthaccount.find_first(
+                where={"id": request.oauth_account_id, "userId": user_id}
+            )
+            if not oauth_account:
+                raise HTTPException(status_code=400, detail="Cloud account not found")
+            connection_config["oauth_account_id"] = request.oauth_account_id
+
+        normalized_config, approved_paths, _backend = self._normalize_mount_source_payload(
+            source_type=request.source_type,
+            connection_config=connection_config,
+            approved_paths=request.approved_paths,
+        )
+        now = _utc_now()
+        created = await db.useruserspacemountsource.create(
+            data={
+                "id": str(uuid4()),
+                "userId": user_id,
+                "name": self._normalize_mount_source_name(request.name),
+                "description": self._normalize_mount_source_description(request.description),
+                "enabled": bool(request.enabled),
+                "sourceType": request.source_type,
+                "oauthAccountId": request.oauth_account_id,
+                "connectionConfig": Json(encrypt_json_passwords(normalized_config, CONNECTION_CONFIG_PASSWORD_FIELDS)),
+                "approvedPaths": Json(approved_paths),
+                "syncIntervalSeconds": 30,
+                "createdAt": now,
+                "updatedAt": now,
+            },
+            include={"oauthAccount": True},
+        )
+        return self._userspace_mount_source_from_record(created, source_scope="user")
+
+    async def update_user_userspace_mount_source(
+        self,
+        user_id: str,
+        mount_source_id: str,
+        request: UpdateUserUserspaceMountSourceRequest,
+    ) -> UserspaceMountSource:
+        db = await get_db()
+        existing_record = await self._get_user_mount_source_record(db, mount_source_id, user_id)
+        existing = self._userspace_mount_source_from_record(existing_record, source_scope="user")
+        fields_set = request.model_fields_set
+        next_config = existing.connection_config if "connection_config" not in fields_set else dict(request.connection_config or {})
+        next_oauth_account_id = existing.oauth_account_id if "oauth_account_id" not in fields_set else request.oauth_account_id
+        if next_oauth_account_id:
+            oauth_account = await db.usercloudoauthaccount.find_first(where={"id": next_oauth_account_id, "userId": user_id})
+            if not oauth_account:
+                raise HTTPException(status_code=400, detail="Cloud account not found")
+            next_config["oauth_account_id"] = next_oauth_account_id
+        normalized_config, approved_paths, _backend = self._normalize_mount_source_payload(
+            source_type=existing.source_type,
+            connection_config=next_config,
+            approved_paths=existing.approved_paths if "approved_paths" not in fields_set else list(request.approved_paths or []),
+        )
+        updated = await db.useruserspacemountsource.update(
+            where={"id": mount_source_id},
+            data={
+                "name": existing.name if "name" not in fields_set else self._normalize_mount_source_name(request.name or ""),
+                "description": existing.description if "description" not in fields_set else self._normalize_mount_source_description(request.description),
+                "enabled": existing.enabled if "enabled" not in fields_set else bool(request.enabled),
+                "oauthAccountId": next_oauth_account_id,
+                "connectionConfig": Json(encrypt_json_passwords(normalized_config, CONNECTION_CONFIG_PASSWORD_FIELDS)),
+                "approvedPaths": Json(approved_paths),
+                "updatedAt": _utc_now(),
+            },
+            include={"oauthAccount": True},
+        )
+        return self._userspace_mount_source_from_record(updated, source_scope="user")
+
+    async def delete_user_userspace_mount_source(
+        self,
+        user_id: str,
+        mount_source_id: str,
+    ) -> DeleteUserspaceMountSourceResponse:
+        db = await get_db()
+        await self._get_user_mount_source_record(db, mount_source_id, user_id)
+        mount_count = await db.workspacemount.count(where={"userMountSourceId": mount_source_id})
+        if mount_count > 0:
+            raise HTTPException(status_code=400, detail="Mount source is still attached to one or more workspaces")
+        await db.useruserspacemountsource.delete(where={"id": mount_source_id})
+        return DeleteUserspaceMountSourceResponse(success=True, mount_source_id=mount_source_id)
+
     async def list_userspace_mount_sources(self) -> list[UserspaceMountSource]:
         db = await get_db()
         rows = await db.userspacemountsource.find_many(
@@ -15140,7 +15960,8 @@ class UserSpaceService:
         )
         # Count workspace mounts per source in a single query
         count_rows: list[dict[str, Any]] = await db.query_raw(
-            "SELECT mount_source_id, COUNT(*)::int AS cnt FROM workspace_mounts GROUP BY mount_source_id"
+            "SELECT mount_source_id, COUNT(*)::int AS cnt FROM workspace_mounts "
+            "WHERE mount_source_id IS NOT NULL GROUP BY mount_source_id"
         )
         counts: dict[str, int] = {
             str(r.get("mount_source_id", "")): int(r.get("cnt", 0)) for r in count_rows
@@ -15155,6 +15976,8 @@ class UserSpaceService:
     async def create_userspace_mount_source(
         self,
         request: CreateUserspaceMountSourceRequest,
+        *,
+        user_id: str | None = None,
     ) -> UserspaceMountSource:
         db = await get_db()
         tool_config_id: str | None = None
@@ -15185,6 +16008,12 @@ class UserSpaceService:
                 )
             source_type = request.source_type
             tool_connection = request.connection_config
+
+        tool_connection = await self._cloud_connection_config_with_user_account(
+            user_id=user_id,
+            source_type=source_type,
+            connection_config=tool_connection,
+        )
 
         connection_config, approved_paths, _mount_backend = (
             self._normalize_mount_source_payload(
@@ -15263,6 +16092,8 @@ class UserSpaceService:
         self,
         mount_source_id: str,
         request: UpdateUserspaceMountSourceRequest,
+        *,
+        user_id: str | None = None,
     ) -> UserspaceMountSource:
         db = await get_db()
         existing_record = await self._get_mount_source_record(db, mount_source_id)
@@ -15296,6 +16127,12 @@ class UserSpaceService:
             existing.sync_interval_seconds
             if "sync_interval_seconds" not in fields_set
             else request.sync_interval_seconds
+        )
+
+        next_connection_config = await self._cloud_connection_config_with_user_account(
+            user_id=user_id,
+            source_type=existing.source_type,
+            connection_config=next_connection_config,
         )
 
         normalized_connection_config, normalized_approved_paths, _mount_backend = (
@@ -15380,8 +16217,27 @@ class UserSpaceService:
         browser_path = self._normalize_mount_browser_path(request.path)
         source_path = self._browser_path_to_mount_source_path(browser_path)
 
+        if mount_source.source_type in {"microsoft_drive", "google_drive"}:
+            approved_root_entries = self._cloud_mount_approved_root_entries(
+                source_path=source_path,
+                approved_paths=mount_source.approved_paths,
+            )
+            if approved_root_entries is not None:
+                return WorkspaceMountBrowseResponse(
+                    path=browser_path,
+                    entries=approved_root_entries,
+                )
+
         if mount_source.source_type == "ssh":
             return await self._browse_ssh_workspace_mount_source(
+                connection_config=mount_source.connection_config,
+                browser_path=browser_path,
+                source_path=source_path,
+            )
+
+        if mount_source.source_type in {"microsoft_drive", "google_drive"}:
+            return await self._browse_cloud_workspace_mount_source(
+                source_type=mount_source.source_type,
                 connection_config=mount_source.connection_config,
                 browser_path=browser_path,
                 source_path=source_path,
@@ -15392,6 +16248,141 @@ class UserSpaceService:
             connection_config=mount_source.connection_config,
             browser_path=browser_path,
             source_path=source_path,
+        )
+
+    async def browse_user_userspace_mount_source(
+        self,
+        user_id: str,
+        mount_source_id: str,
+        request: BrowseUserspaceMountSourceRequest,
+    ) -> WorkspaceMountBrowseResponse:
+        db = await get_db()
+        mount_source = await self._get_scoped_mount_source(
+            db,
+            mount_source_id,
+            source_scope="user",
+            user_id=user_id,
+            require_enabled=True,
+        )
+        browser_path = self._normalize_mount_browser_path(request.path)
+        source_path = self._browser_path_to_mount_source_path(browser_path)
+        if mount_source.source_type in {"microsoft_drive", "google_drive"}:
+            approved_root_entries = self._cloud_mount_approved_root_entries(
+                source_path=source_path,
+                approved_paths=mount_source.approved_paths,
+            )
+            if approved_root_entries is not None:
+                return WorkspaceMountBrowseResponse(
+                    path=browser_path,
+                    entries=approved_root_entries,
+                )
+            return await self._browse_cloud_workspace_mount_source(
+                source_type=mount_source.source_type,
+                connection_config=mount_source.connection_config,
+                browser_path=browser_path,
+                source_path=source_path,
+            )
+        raise HTTPException(
+            status_code=400,
+            detail="Personal mount source browsing is supported for cloud sources only",
+        )
+
+    async def create_userspace_mount_source_directory(
+        self,
+        mount_source_id: str,
+        request: BrowseUserspaceMountSourceRequest,
+    ) -> WorkspaceMountDirectoryEntry:
+        db = await get_db()
+        mount_source_record = await self._get_mount_source_record(
+            db,
+            mount_source_id,
+            require_enabled=True,
+        )
+        mount_source = self._userspace_mount_source_from_record(mount_source_record)
+        browser_path = self._normalize_mount_browser_path(request.path)
+        source_path = self._browser_path_to_mount_source_path(browser_path)
+        self._ensure_mount_source_within_approved_paths(
+            source_path,
+            mount_source.approved_paths,
+        )
+        await self._create_workspace_mount_source_directory(
+            mount_source_id=mount_source.id,
+            source_type=mount_source.source_type,
+            mount_backend=mount_source.mount_backend,
+            connection_config=mount_source.connection_config,
+            source_path=source_path,
+        )
+        return WorkspaceMountDirectoryEntry(
+            name=source_path.rsplit("/", 1)[-1],
+            path=browser_path,
+            is_dir=True,
+            size=None,
+        )
+
+    async def browse_cloud_mount_source(
+        self,
+        user_id: str,
+        request: BrowseCloudMountSourceRequest,
+    ) -> WorkspaceMountBrowseResponse:
+        connection_config = dict(request.connection_config or {})
+        if request.oauth_account_id:
+            connection_config["oauth_account_id"] = request.oauth_account_id
+        connection_config = await self._cloud_connection_config_with_user_account(
+            user_id=user_id,
+            source_type=request.source_type,
+            connection_config=connection_config,
+        )
+        normalized_config, _approved_paths, _backend = self._normalize_mount_source_payload(
+            source_type=request.source_type,
+            connection_config=connection_config,
+            approved_paths=["."],
+        )
+        browser_path = self._normalize_mount_browser_path(request.path)
+        source_path = self._browser_path_to_mount_source_path(browser_path)
+        return await self._browse_cloud_workspace_mount_source(
+            source_type=request.source_type,
+            connection_config=normalized_config,
+            browser_path=browser_path,
+            source_path=source_path,
+        )
+
+    async def create_cloud_mount_source_directory(
+        self,
+        user_id: str,
+        request: CreateCloudMountSourceDirectoryRequest,
+    ) -> WorkspaceMountDirectoryEntry:
+        connection_config = dict(request.connection_config or {})
+        if request.oauth_account_id:
+            connection_config["oauth_account_id"] = request.oauth_account_id
+        connection_config = await self._cloud_connection_config_with_user_account(
+            user_id=user_id,
+            source_type=request.source_type,
+            connection_config=connection_config,
+        )
+        normalized_config, _approved_paths, backend = self._normalize_mount_source_payload(
+            source_type=request.source_type,
+            connection_config=connection_config,
+            approved_paths=["."],
+        )
+        browser_path = self._normalize_mount_browser_path(request.path)
+        source_path = self._browser_path_to_mount_source_path(browser_path)
+        if source_path == ".":
+            raise HTTPException(
+                status_code=400,
+                detail="Select a drive or folder before creating a cloud directory",
+            )
+        await self._create_workspace_mount_source_directory(
+            mount_source_id="cloud-draft",
+            source_type=request.source_type,
+            mount_backend=backend,
+            connection_config=normalized_config,
+            source_path=source_path,
+        )
+        return WorkspaceMountDirectoryEntry(
+            name=source_path.rsplit("/", 1)[-1],
+            path=browser_path,
+            is_dir=True,
+            size=None,
         )
 
     async def browse_tool_config(
@@ -15444,13 +16435,23 @@ class UserSpaceService:
         rows = await db.workspacemount.find_many(
             where={"workspaceId": workspace_id},
             order={"createdAt": "asc"},
-            include={"mountSource": True},
+            include={
+                "mountSource": True,
+                "userMountSource": {"include": {"oauthAccount": True}},
+            },
         )
         results: list[WorkspaceMount] = []
         for row in rows:
             mount_source_record = getattr(row, "mountSource", None)
+            source_scope: UserspaceMountSourceScope = "global"
+            if mount_source_record is None:
+                mount_source_record = getattr(row, "userMountSource", None)
+                source_scope = "user"
             mount_source = (
-                self._userspace_mount_source_from_record(mount_source_record)
+                self._userspace_mount_source_from_record(
+                    mount_source_record,
+                    source_scope=source_scope,
+                )
                 if mount_source_record is not None
                 else None
             )
@@ -15479,6 +16480,28 @@ class UserSpaceService:
                 sources.append(
                     MountableSource(
                         mount_source_id=mount_source.id,
+                        source_scope="global",
+                        source_name=mount_source.name,
+                        source_type=mount_source.source_type,
+                        mount_backend=mount_source.mount_backend,
+                        source_path=path,
+                    )
+                )
+        user_rows = await db.useruserspacemountsource.find_many(
+            where={"enabled": True, "userId": user_id},
+            order={"name": "asc"},
+            include={"oauthAccount": True},
+        )
+        for row in user_rows:
+            mount_source = self._userspace_mount_source_from_record(
+                row,
+                source_scope="user",
+            )
+            for path in mount_source.approved_paths:
+                sources.append(
+                    MountableSource(
+                        mount_source_id=mount_source.id,
+                        source_scope="user",
                         source_name=mount_source.name,
                         source_type=mount_source.source_type,
                         mount_backend=mount_source.mount_backend,
@@ -15499,12 +16522,13 @@ class UserSpaceService:
             required_role="editor",
         )
         db = await get_db()
-        mount_source_record = await self._get_mount_source_record(
+        mount_source = await self._get_scoped_mount_source(
             db,
             request.mount_source_id,
+            source_scope=request.source_scope,
+            user_id=user_id,
             require_enabled=True,
         )
-        mount_source = self._userspace_mount_source_from_record(mount_source_record)
         normalized_source_path = self._normalize_mount_source_path(request.source_path)
         self._ensure_mount_source_within_approved_paths(
             normalized_source_path,
@@ -15578,7 +16602,9 @@ class UserSpaceService:
 
         now = _utc_now()
         initial_sync_status = (
-            "synced" if mount_source.source_type == "filesystem" else "pending"
+            "synced"
+            if mount_source.source_type in {"filesystem", "microsoft_drive", "google_drive"}
+            else "pending"
         )
         initial_sync_backend: str | None = None
         initial_sync_notice: str | None = None
@@ -15590,14 +16616,13 @@ class UserSpaceService:
                     probe_if_unknown=True,
                 )
             )
-        created = await db.workspacemount.create(
-            data={
+        create_data: dict[str, Any] = {
                 "id": str(uuid4()),
                 "workspaceId": workspace_id,
-                "mountSourceId": mount_source.id,
                 "sourcePath": normalized_source_path,
                 "targetPath": target_path,
                 "autoSyncEnabled": bool(request.auto_sync_enabled),
+                "syncIntervalSeconds": request.sync_interval_seconds,
                 "syncMode": request.sync_mode,
                 "description": self._normalize_mount_description(request.description),
                 "syncStatus": initial_sync_status,
@@ -15605,8 +16630,12 @@ class UserSpaceService:
                 "syncNotice": initial_sync_notice,
                 "createdAt": now,
                 "updatedAt": now,
-            }
-        )
+        }
+        if request.source_scope == "user":
+            create_data["userMountSourceId"] = mount_source.id
+        else:
+            create_data["mountSourceId"] = mount_source.id
+        created = await db.workspacemount.create(data=create_data)
         await db.workspace.update(where={"id": workspace_id}, data={"updatedAt": now})
         return self._workspace_mount_from_record(created, mount_source)
 
@@ -15625,17 +16654,21 @@ class UserSpaceService:
         db = await get_db()
         existing = await db.workspacemount.find_first(
             where={"id": mount_id, "workspaceId": workspace_id},
-            include={"mountSource": True},
+            include={
+                "mountSource": True,
+                "userMountSource": {"include": {"oauthAccount": True}},
+            },
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Mount not found")
 
-        mount_source_record = getattr(existing, "mountSource", None)
+        mount_source_record = getattr(existing, "mountSource", None) or getattr(existing, "userMountSource", None)
         source_type = (
             str(getattr(mount_source_record, "sourceType", "") or "")
             if mount_source_record
             else ""
         )
+        source_enabled = bool(getattr(mount_source_record, "enabled", False))
         current_sync_mode = self._normalize_workspace_mount_sync_mode(
             getattr(existing, "syncMode", None),
             legacy_sync_deletes=bool(getattr(existing, "syncDeletes", False)),
@@ -15685,6 +16718,8 @@ class UserSpaceService:
             update_data["autoSyncEnabled"] = next_auto_sync_enabled
         if request.sync_mode is not None:
             update_data["syncMode"] = request.sync_mode
+        if "sync_interval_seconds" in request.model_fields_set:
+            update_data["syncIntervalSeconds"] = request.sync_interval_seconds
         if request.enabled is not None:
             update_data["enabled"] = bool(request.enabled)
             if not request.enabled:
@@ -15725,6 +16760,8 @@ class UserSpaceService:
                     await self._consume_workspace_mount_sync_preview(
                         mount_id=context["mount_id"],
                         workspace_id=context["workspace_id"],
+                        source_type=context["source_type"],
+                        connection_config=context["connection_config"],
                         ssh_config=context["ssh_config"],
                         remote_path=context["remote_path"],
                         cache_dir=context["cache_dir"],
@@ -15748,6 +16785,21 @@ class UserSpaceService:
             where={"id": workspace_id},
             data={"updatedAt": update_data["updatedAt"]},
         )
+
+        if any(
+            field in request.model_fields_set
+            for field in ("auto_sync_enabled", "sync_interval_seconds", "sync_mode", "enabled", "target_path")
+        ):
+            if (
+                next_auto_sync_enabled
+                and bool(update_data.get("enabled", getattr(existing, "enabled", True)))
+                and source_enabled
+            ):
+                self._workspace_mount_watch_next_due_monotonic[mount_id] = 0.0
+                self._workspace_mount_watch_wakeup.set()
+            else:
+                self._workspace_mount_watch_next_due_monotonic.pop(mount_id, None)
+            self._workspace_mount_watch_target_signatures.pop(mount_id, None)
 
         target_path = str(getattr(existing, "targetPath", "") or "")
 
@@ -15787,10 +16839,10 @@ class UserSpaceService:
                 self.invalidate_file_list_cache(workspace_id)
 
             else:
-                # Re-enabling: for SSH mounts, trigger a fresh sync so the
+                # Re-enabling: for sync mounts, trigger a fresh sync so the
                 # content reappears. Filesystem mounts will re-materialize on
                 # next runtime launch automatically.
-                if source_type == "ssh" and next_sync_mode == "merge":
+                if source_type in self._WORKSPACE_MOUNT_SYNC_CAPABLE_SOURCE_TYPES and next_sync_mode == "merge":
                     try:
                         await self._sync_workspace_mount_record(db, existing)
                     except Exception as exc:
@@ -15803,15 +16855,22 @@ class UserSpaceService:
 
         refreshed = await db.workspacemount.find_first(
             where={"id": mount_id, "workspaceId": workspace_id},
-            include={"mountSource": True},
+            include={
+                "mountSource": True,
+                "userMountSource": {"include": {"oauthAccount": True}},
+            },
         )
         mount_source_record = (
-            getattr(refreshed, "mountSource", None)
+            getattr(refreshed, "mountSource", None) or getattr(refreshed, "userMountSource", None)
             if refreshed
-            else getattr(existing, "mountSource", None)
+            else getattr(existing, "mountSource", None) or getattr(existing, "userMountSource", None)
         )
+        source_scope: UserspaceMountSourceScope = "user" if getattr(refreshed or existing, "userMountSourceId", None) else "global"
         mount_source = (
-            self._userspace_mount_source_from_record(mount_source_record)
+            self._userspace_mount_source_from_record(
+                mount_source_record,
+                source_scope=source_scope,
+            )
             if mount_source_record is not None
             else None
         )
@@ -15865,7 +16924,20 @@ class UserSpaceService:
                     mount_id,
                     exc,
                 )
+        cloud_cache_dir = self._base_dir / "cloud_mount_cache" / workspace_id / mount_id
+        if cloud_cache_dir.exists():
+            try:
+                shutil.rmtree(cloud_cache_dir)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to clear cloud mount cache on delete %s: %s",
+                    mount_id,
+                    exc,
+                )
         await self._invalidate_workspace_mount_sync_preview(mount_id)
+        self._workspace_mount_watch_next_due_monotonic.pop(mount_id, None)
+        self._workspace_mount_watch_target_signatures.pop(mount_id, None)
+        self._workspace_mount_watch_inflight.discard(mount_id)
         self.invalidate_file_list_cache(workspace_id)
 
         return DeleteWorkspaceMountResponse(success=True, mount_id=mount_id)
@@ -15885,7 +16957,7 @@ class UserSpaceService:
         db = await get_db()
         mount = await db.workspacemount.find_first(
             where={"id": mount_id, "workspaceId": workspace_id},
-            include={"mountSource": True},
+            include={"mountSource": True, "userMountSource": {"include": {"oauthAccount": True}}},
         )
         if not mount:
             raise HTTPException(status_code=404, detail="Mount not found")
@@ -15911,7 +16983,7 @@ class UserSpaceService:
         db = await get_db()
         mount = await db.workspacemount.find_first(
             where={"id": mount_id, "workspaceId": workspace_id},
-            include={"mountSource": True},
+            include={"mountSource": True, "userMountSource": {"include": {"oauthAccount": True}}},
         )
         if not mount:
             raise HTTPException(status_code=404, detail="Mount not found")
@@ -15936,12 +17008,13 @@ class UserSpaceService:
             required_role="editor",
         )
         db = await get_db()
-        mount_source_record = await self._get_mount_source_record(
+        mount_source = await self._get_scoped_mount_source(
             db,
             request.mount_source_id,
+            source_scope=request.source_scope,
+            user_id=user_id,
             require_enabled=True,
         )
-        mount_source = self._userspace_mount_source_from_record(mount_source_record)
 
         root_source_path = self._normalize_mount_source_path(request.root_source_path)
         if root_source_path not in mount_source.approved_paths:
@@ -15960,6 +17033,14 @@ class UserSpaceService:
 
         if mount_source.source_type == "ssh":
             return await self._browse_ssh_workspace_mount_source(
+                connection_config=mount_source.connection_config,
+                browser_path=browser_path,
+                source_path=source_path,
+            )
+
+        if mount_source.source_type in {"microsoft_drive", "google_drive"}:
+            return await self._browse_cloud_workspace_mount_source(
+                source_type=mount_source.source_type,
                 connection_config=mount_source.connection_config,
                 browser_path=browser_path,
                 source_path=source_path,
@@ -16023,6 +17104,39 @@ class UserSpaceService:
             )
 
         entries.sort(key=lambda entry: entry.name.lower())
+        return WorkspaceMountBrowseResponse(path=browser_path, entries=entries)
+
+    async def _browse_cloud_workspace_mount_source(
+        self,
+        *,
+        source_type: UserspaceMountSourceType,
+        connection_config: dict[str, Any],
+        browser_path: str,
+        source_path: str,
+    ) -> WorkspaceMountBrowseResponse:
+        try:
+            provider = cloud_mount_provider(source_type, connection_config)
+            cloud_entries = await provider.list_dir(source_path)
+        except Exception as exc:
+            return WorkspaceMountBrowseResponse(
+                path=browser_path,
+                entries=[],
+                error=str(exc),
+            )
+
+        entries: list[WorkspaceMountDirectoryEntry] = []
+        for entry in cloud_entries:
+            if not entry.is_dir:
+                continue
+            entries.append(
+                WorkspaceMountDirectoryEntry(
+                    name=entry.name,
+                    path=browser_path_for_cloud(entry.path),
+                    is_dir=True,
+                    size=entry.size,
+                )
+            )
+        entries.sort(key=lambda item: item.name.lower())
         return WorkspaceMountBrowseResponse(path=browser_path, entries=entries)
 
     async def _browse_filesystem_workspace_mount_source(
@@ -16115,7 +17229,10 @@ class UserSpaceService:
         db = await get_db()
         rows = await db.workspacemount.find_many(
             where={"workspaceId": workspace_id},
-            include={"mountSource": True},
+            include={
+                "mountSource": True,
+                "userMountSource": {"include": {"oauthAccount": True}},
+            },
         )
         if not rows:
             return []
@@ -16131,9 +17248,16 @@ class UserSpaceService:
             if mount_id_filter is not None and mount_id not in mount_id_filter:
                 continue
             mount_source_record = getattr(row, "mountSource", None)
+            source_scope: UserspaceMountSourceScope = "global"
+            if not mount_source_record:
+                mount_source_record = getattr(row, "userMountSource", None)
+                source_scope = "user"
             if not mount_source_record:
                 continue
-            mount_source = self._userspace_mount_source_from_record(mount_source_record)
+            mount_source = self._userspace_mount_source_from_record(
+                mount_source_record,
+                source_scope=source_scope,
+            )
             if not mount_source.enabled:
                 continue
             if not bool(getattr(row, "enabled", True)):
@@ -16166,6 +17290,33 @@ class UserSpaceService:
                         "Skipping invalid filesystem userspace mount %s for mount source %s",
                         mount_id,
                         mount_source.id,
+                    )
+                    continue
+                specs.append(
+                    {
+                        "source_local_path": resolved,
+                        "target_path": target_path,
+                        "source_type": mount_source.source_type,
+                        "mount_backend": mount_source.mount_backend,
+                        "read_only": True,
+                    }
+                )
+            elif mount_source.source_type in {"microsoft_drive", "google_drive"}:
+                try:
+                    resolved = await self._resolve_cloud_mount_source_local_path(
+                        mount_source_id=mount_source.id,
+                        source_type=mount_source.source_type,
+                        connection_config=mount_source.connection_config,
+                        source_path=source_path,
+                        workspace_id=workspace_id,
+                        mount_id=mount_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Skipping invalid cloud userspace mount %s for source %s: %s",
+                        mount_id,
+                        mount_source.id,
+                        exc,
                     )
                     continue
                 specs.append(
@@ -16238,6 +17389,47 @@ class UserSpaceService:
 
     def invalidate_file_list_cache(self, workspace_id: str) -> None:
         self._file_list_cache.pop(workspace_id, None)
+
+    async def schedule_workspace_mount_sync_for_workspace_path(
+        self,
+        workspace_id: str,
+        relative_path: str,
+    ) -> None:
+        normalized_path = self._normalize_workspace_relative_path(relative_path)
+        db = await get_db()
+        mounts = await db.workspacemount.find_many(
+            where={"workspaceId": workspace_id, "autoSyncEnabled": True, "enabled": True},
+            include={
+                "mountSource": True,
+                "userMountSource": {"include": {"oauthAccount": True}},
+            },
+        )
+        for mount in mounts:
+            mount_id = str(getattr(mount, "id", "") or "")
+            if not mount_id:
+                continue
+            mount_source = getattr(mount, "mountSource", None) or getattr(
+                mount,
+                "userMountSource",
+                None,
+            )
+            source_type = str(getattr(mount_source, "sourceType", "") or "") if mount_source else ""
+            if (
+                source_type not in self._WORKSPACE_MOUNT_SYNC_CAPABLE_SOURCE_TYPES
+                or not bool(getattr(mount_source, "enabled", False))
+            ):
+                continue
+            target_prefix = workspace_mount_target_repo_relative_path(
+                str(getattr(mount, "targetPath", "") or "")
+            )
+            if not target_prefix or not workspace_path_matches_mount_prefix(
+                normalized_path,
+                target_prefix,
+            ):
+                continue
+            self._workspace_mount_watch_next_due_monotonic[mount_id] = 0.0
+            self._workspace_mount_watch_target_signatures.pop(mount_id, None)
+            self._workspace_mount_watch_wakeup.set()
 
     def _resolve_workspace_mount_runtime_target_dir(
         self,

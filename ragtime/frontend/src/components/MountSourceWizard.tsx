@@ -2,16 +2,31 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Icon } from './Icon';
 import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
 import { ToolWizard } from './ToolWizard';
-import { X } from 'lucide-react';
+import { Popover } from './Popover';
+import { InlineCopyButton } from './shared/InlineCopyButton';
+import { ExternalLink, Info, Trash2, X } from 'lucide-react';
 import { api } from '@/api';
+import {
+  browserPathToSourcePath,
+  createBrowserPathDisplayMap,
+  mergeBrowserPathDisplayMapFromBrowseResponse,
+  normalizeMountBrowserPath,
+  resolveSourceDisplayPath,
+  sourcePathToBrowserPath,
+  type BrowserPathDisplayMap,
+} from '@/utils/mountPaths';
 import type {
   UserSpaceObjectStorageConfig,
   UserSpaceObjectStorageBucket,
+  CloudOAuthProviderStatus,
   UserspaceMountSource,
   ToolConfig,
   ToolType,
   FilesystemConnectionConfig,
   SSHShellConnectionConfig,
+  UserCloudOAuthAccount,
+  UserCloudOAuthProvider,
+  UserspaceMountSourceType,
 } from '@/types';
 
 // ---------------------------------------------------------------------------
@@ -24,6 +39,11 @@ export type MountSourceDraft = {
   description: string;
   enabled: boolean;
   tool_config_id: string | null;
+  source_type: UserspaceMountSourceType | null;
+  cloud_oauth_account_id: string | null;
+  cloud_access_token: string;
+  cloud_refresh_token: string;
+  cloud_account_email: string;
   approved_paths: string[];
   sync_interval_seconds: number;
 };
@@ -35,6 +55,11 @@ export function createEmptyMountSourceDraft(): MountSourceDraft {
     description: '',
     enabled: true,
     tool_config_id: null,
+    source_type: null,
+    cloud_oauth_account_id: null,
+    cloud_access_token: '',
+    cloud_refresh_token: '',
+    cloud_account_email: '',
     approved_paths: ['.'],
     sync_interval_seconds: 30,
   };
@@ -47,6 +72,11 @@ export function mountSourceToDraft(source: UserspaceMountSource): MountSourceDra
     description: source.description || '',
     enabled: source.enabled,
     tool_config_id: source.tool_config_id,
+    source_type: source.source_type,
+    cloud_oauth_account_id: source.oauth_account_id || (source.connection_config && 'oauth_account_id' in source.connection_config ? String(source.connection_config.oauth_account_id || '') : '') || null,
+    cloud_access_token: source.connection_config && 'access_token' in source.connection_config ? String(source.connection_config.access_token || '') : '',
+    cloud_refresh_token: source.connection_config && 'refresh_token' in source.connection_config ? String(source.connection_config.refresh_token || '') : '',
+    cloud_account_email: source.account_email || (source.connection_config && 'account_email' in source.connection_config ? String(source.connection_config.account_email || '') : ''),
     approved_paths: source.approved_paths.length > 0 ? [...source.approved_paths] : ['.'],
     sync_interval_seconds: source.sync_interval_seconds ?? 30,
   };
@@ -57,6 +87,7 @@ export function mountSourceToDraft(source: UserspaceMountSource): MountSourceDra
 // ---------------------------------------------------------------------------
 
 const MOUNT_TOOL_TYPES: ToolType[] = ['ssh_shell', 'filesystem_indexer'];
+const CLOUD_MOUNT_SOURCE_TYPES = ['microsoft_drive', 'google_drive'] as const;
 
 // Sync interval slider: exponential scale from 1 second to ~1 month
 const SYNC_INTERVAL_MIN = 1;
@@ -101,6 +132,68 @@ function isMountTool(tool: ToolConfig): boolean {
   return MOUNT_TOOL_TYPES.includes(tool.tool_type);
 }
 
+function isCloudSourceType(sourceType: UserspaceMountSourceType | null | undefined): sourceType is 'microsoft_drive' | 'google_drive' {
+  return sourceType === 'microsoft_drive' || sourceType === 'google_drive';
+}
+
+function cloudSourceLabel(sourceType: UserspaceMountSourceType | null | undefined): string {
+  if (sourceType === 'microsoft_drive') return 'OneDrive';
+  if (sourceType === 'google_drive') return 'Google Drive';
+  return 'Cloud Drive';
+}
+
+function getCloudOAuthCallbackUrl(): string {
+  return new URL('/indexes/userspace/cloud-oauth/callback', window.location.origin).toString();
+}
+
+function getCloudSetupInstructions(sourceType: 'microsoft_drive' | 'google_drive', callbackUrl: string): JSX.Element {
+  const isMicrosoft = sourceType === 'microsoft_drive';
+  const consoleUrl = isMicrosoft
+    ? 'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade'
+    : 'https://console.cloud.google.com/apis/credentials';
+
+  return (
+    <div style={{ display: 'grid', gap: 8, maxWidth: 300 }}>
+      <strong style={{ fontSize: '0.85rem' }}>{isMicrosoft ? 'Set up OneDrive/SharePoint OAuth' : 'Set up Google Drive OAuth'}</strong>
+      <span style={{ fontSize: '0.8rem', lineHeight: 1.4 }}>
+        Register an OAuth app and configure this redirect URI:
+      </span>
+      <div className="cloud-oauth-callback-row">
+        <code className="cloud-oauth-callback-code">{callbackUrl}</code>
+        <InlineCopyButton
+          copyText={callbackUrl}
+          className="cloud-oauth-callback-copy"
+          title="Copy redirect URI"
+          ariaLabel="Copy redirect URI"
+          copiedTitle="Redirect URI copied"
+          copiedAriaLabel="Redirect URI copied"
+          iconSize={12}
+        />
+      </div>
+      <a href={consoleUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem' }}>
+        Open {isMicrosoft ? 'Microsoft App Registrations' : 'Google API Credentials'}
+      </a>
+      {isMicrosoft ? (
+        <>
+          <span style={{ fontSize: '0.8rem', lineHeight: 1.4 }}>
+            Set <code>CLOUD_MOUNT_MICROSOFT_TENANT_ID</code> to your Azure Directory tenant ID or primary tenant domain for single-tenant app registrations. Use <code>common</code> or <code>organizations</code> only for multi-tenant apps.
+          </span>
+          <span style={{ fontSize: '0.8rem', lineHeight: 1.4 }}>
+            Add Microsoft Graph delegated permissions: <code>offline_access</code>, <code>User.Read</code>, <code>Files.ReadWrite.All</code>, and <code>Sites.ReadWrite.All</code>. Some tenants require admin consent.
+          </span>
+        </>
+      ) : (
+        <span style={{ fontSize: '0.8rem', lineHeight: 1.4 }}>
+          Enable the Google Drive API (<code>drive.googleapis.com</code>) in the same Google Cloud project, then add OAuth consent scopes <code>https://www.googleapis.com/auth/drive</code> and <code>https://www.googleapis.com/auth/userinfo.email</code>.
+        </span>
+      )}
+      <span style={{ fontSize: '0.8rem', lineHeight: 1.4 }}>
+        Then set the corresponding `CLOUD_MOUNT_*` client id and client secret env vars.
+      </span>
+    </div>
+  );
+}
+
 function toolTypeLabel(tool: ToolConfig): string {
   if (tool.tool_type === 'ssh_shell') return 'SSH';
   const config = tool.connection_config as FilesystemConnectionConfig | undefined;
@@ -131,27 +224,6 @@ function toolSummary(tool: ToolConfig): string {
   }
   const cfg = tool.connection_config as FilesystemConnectionConfig | undefined;
   return cfg?.base_path || 'Filesystem';
-}
-
-function normalizeMountBrowserPath(value: string): string {
-  const normalizedParts: string[] = [];
-  for (const part of (value || '/').replace(/\\/g, '/').split('/')) {
-    if (!part || part === '.') continue;
-    if (part === '..') { normalizedParts.pop(); continue; }
-    normalizedParts.push(part);
-  }
-  return `/${normalizedParts.join('/')}`;
-}
-
-function browserPathToSourcePath(browserPath: string): string {
-  const normalized = normalizeMountBrowserPath(browserPath);
-  return normalized === '/' ? '.' : normalized.slice(1);
-}
-
-function sourcePathToBrowserPath(sourcePath: string): string {
-  const normalized = (sourcePath || '').trim();
-  if (!normalized || normalized === '.') return '/';
-  return normalizeMountBrowserPath(`/${normalized}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +274,7 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [browserPath, setBrowserPath] = useState('');
+  const [browserPathDisplayMap, setBrowserPathDisplayMap] = useState<BrowserPathDisplayMap>(createBrowserPathDisplayMap());
   const [stagedDirectories, setStagedDirectories] = useState<string[]>([]);
   const [editingName, setEditingName] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -211,6 +284,10 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
   const [loadingTools, setLoadingTools] = useState(true);
   const [showToolWizard, setShowToolWizard] = useState(false);
   const [newToolType, setNewToolType] = useState<ToolType | undefined>(undefined);
+  const [cloudProviderStatuses, setCloudProviderStatuses] = useState<CloudOAuthProviderStatus[]>([]);
+  const [cloudOAuthAccounts, setCloudOAuthAccounts] = useState<UserCloudOAuthAccount[]>([]);
+  const [savingCloudProvider, setSavingCloudProvider] = useState<UserCloudOAuthProvider | null>(null);
+  const [deletingCloudAccountId, setDeletingCloudAccountId] = useState<string | null>(null);
 
   const wizardSteps = isEditing ? EDIT_WIZARD_STEPS : WIZARD_STEPS;
   const [currentStep, setCurrentStep] = useState<MountSourceWizardStep>(
@@ -232,6 +309,41 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
 
   useEffect(() => { void loadTools(); }, [loadTools]);
 
+  const loadCloudProviderStatuses = useCallback(async () => {
+    try {
+      const statuses = await api.listCloudOAuthProviders();
+      setCloudProviderStatuses(statuses);
+    } catch {
+      setCloudProviderStatuses([]);
+    }
+  }, []);
+
+  useEffect(() => { void loadCloudProviderStatuses(); }, [loadCloudProviderStatuses]);
+
+  const loadCloudOAuthAccounts = useCallback(async () => {
+    try {
+      const accounts = await api.listUserCloudOAuthAccounts();
+      setCloudOAuthAccounts(accounts);
+    } catch {
+      setCloudOAuthAccounts([]);
+    }
+  }, []);
+
+  useEffect(() => { void loadCloudOAuthAccounts(); }, [loadCloudOAuthAccounts]);
+
+  useEffect(() => {
+    const listener = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === 'ragtime-cloud-oauth-complete') {
+        void loadCloudOAuthAccounts();
+      } else if (event.data?.type === 'ragtime-cloud-oauth-error') {
+        setError(typeof event.data.message === 'string' ? event.data.message : 'Cloud OAuth failed');
+      }
+    };
+    window.addEventListener('message', listener);
+    return () => window.removeEventListener('message', listener);
+  }, [loadCloudOAuthAccounts]);
+
   // Auto-scroll active step into view
   useEffect(() => {
     const activeStep = progressRef.current?.querySelector('.wizard-step.active');
@@ -241,7 +353,73 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
   }, [currentStep]);
 
   const selectedTool = tools.find((t) => t.id === draft.tool_config_id) ?? null;
+  const selectedCloudSource = isCloudSourceType(draft.source_type) ? draft.source_type : null;
+  const cloudProviderConfigured = useMemo(() => {
+    const entries = cloudProviderStatuses.map((status) => [status.provider, status.configured] as const);
+    return new Map<UserCloudOAuthProvider, boolean>(entries);
+  }, [cloudProviderStatuses]);
+  const selectedCloudAccount = cloudOAuthAccounts.find((account) => account.id === draft.cloud_oauth_account_id) ?? null;
+  const selectedProviderAccounts = selectedCloudSource
+    ? cloudOAuthAccounts.filter((account) => account.provider === selectedCloudSource)
+    : [];
   const isSSHSource = selectedTool?.tool_type === 'ssh_shell' || existingSource?.source_type === 'ssh';
+  const isSyncIntervalSource = isSSHSource
+    || selectedCloudSource != null
+    || existingSource?.source_type === 'microsoft_drive'
+    || existingSource?.source_type === 'google_drive';
+  const cloudOAuthCallbackUrl = getCloudOAuthCallbackUrl();
+
+  useEffect(() => {
+    setBrowserPathDisplayMap(createBrowserPathDisplayMap());
+  }, [selectedCloudSource, draft.cloud_oauth_account_id, draft.tool_config_id, draft.id]);
+
+  useEffect(() => {
+    if (!selectedCloudSource || draft.cloud_oauth_account_id || selectedProviderAccounts.length !== 1) {
+      return;
+    }
+    const [account] = selectedProviderAccounts;
+    setDraft((current) => ({
+      ...current,
+      cloud_oauth_account_id: account.id,
+      cloud_account_email: account.account_email || account.account_name || '',
+    }));
+  }, [selectedCloudSource, draft.cloud_oauth_account_id, selectedProviderAccounts]);
+
+  const handleConnectCloudProvider = useCallback(async (provider: UserCloudOAuthProvider) => {
+    if (!cloudProviderConfigured.get(provider)) {
+      setError(`${cloudSourceLabel(provider)} OAuth is not configured.`);
+      return;
+    }
+    setSavingCloudProvider(provider);
+    setError(null);
+    try {
+      const redirectUri = getCloudOAuthCallbackUrl();
+      const response = await api.startUserCloudOAuth({ provider, redirect_uri: redirectUri });
+      window.open(response.auth_url, 'ragtime-cloud-oauth', 'popup,width=720,height=820');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start cloud OAuth');
+    } finally {
+      setSavingCloudProvider(null);
+    }
+  }, [cloudProviderConfigured]);
+
+  const handleDisconnectCloudAccount = useCallback(async (account: UserCloudOAuthAccount) => {
+    setDeletingCloudAccountId(account.id);
+    setError(null);
+    try {
+      await api.disconnectUserCloudOAuth(account.id);
+      setCloudOAuthAccounts((current) => current.filter((item) => item.id !== account.id));
+      setDraft((current) => current.cloud_oauth_account_id === account.id
+        ? { ...current, cloud_oauth_account_id: null, cloud_account_email: '', cloud_access_token: '', cloud_refresh_token: '' }
+        : current
+      );
+      await loadCloudOAuthAccounts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove cloud OAuth account');
+    } finally {
+      setDeletingCloudAccountId(null);
+    }
+  }, [loadCloudOAuthAccounts]);
 
   // Auto-fill name from tool when tool is selected and name is empty/default
   const namesForDedup = useMemo(() => existingNames, [existingNames]);
@@ -269,9 +447,11 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
   const canProceed = (): boolean => {
     switch (currentStep) {
       case 'select_tool':
-        return draft.tool_config_id !== null;
+        return draft.tool_config_id !== null || selectedCloudSource !== null;
       case 'mount_details':
-        return draft.name.trim().length > 0 && draft.approved_paths.length > 0;
+        return draft.name.trim().length > 0 && draft.approved_paths.length > 0 && (
+          !selectedCloudSource || Boolean(draft.cloud_oauth_account_id || draft.cloud_access_token.trim())
+        );
       case 'review':
         return true;
     }
@@ -311,35 +491,119 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
   // Approved paths helpers
   // ---------------------------------------------------------------------------
 
-  const handleAddApprovedPath = useCallback(() => {
-    const nextPath = browserPathToSourcePath(browserPath);
-    setDraft((current) =>
-      current.approved_paths.includes(nextPath)
-        ? current
-        : { ...current, approved_paths: [...current.approved_paths, nextPath].sort((a, b) => a.localeCompare(b)) }
-    );
-  }, [browserPath]);
+  const buildCloudMountSourceRequest = useCallback((path: string) => {
+    if (!selectedCloudSource) {
+      return null;
+    }
+    return {
+      source_type: selectedCloudSource,
+      oauth_account_id: draft.cloud_oauth_account_id,
+      connection_config: {
+        provider: selectedCloudSource,
+        auth_mode: 'oauth' as const,
+        oauth_account_id: draft.cloud_oauth_account_id || undefined,
+        access_token: draft.cloud_access_token.trim() || undefined,
+        refresh_token: draft.cloud_refresh_token.trim() || undefined,
+        account_email: draft.cloud_account_email.trim() || undefined,
+      },
+      path,
+    };
+  }, [draft.cloud_access_token, draft.cloud_account_email, draft.cloud_oauth_account_id, draft.cloud_refresh_token, selectedCloudSource]);
+
+  const updateCloudPathDisplayMap = useCallback((result: { path: string; entries: Array<{ name: string; path: string; is_dir: boolean }> }) => {
+    if (!selectedCloudSource) {
+      return;
+    }
+    setBrowserPathDisplayMap((current) => {
+      return mergeBrowserPathDisplayMapFromBrowseResponse(current, result, {
+        sourceType: selectedCloudSource,
+        fallbackDriveName: cloudSourceLabel(selectedCloudSource),
+      });
+    });
+  }, [selectedCloudSource]);
+
+  const displayApprovedPath = useCallback((sourcePath: string): string => {
+    return resolveSourceDisplayPath(sourcePath, browserPathDisplayMap, {
+      sourceType: selectedCloudSource,
+      fallbackDriveName: selectedCloudSource ? cloudSourceLabel(selectedCloudSource) : null,
+    });
+  }, [browserPathDisplayMap, selectedCloudSource]);
+
+  const addApprovedPathFromBrowserPath = useCallback((selectedPath: string) => {
+    const normalizedBrowserPath = normalizeMountBrowserPath(selectedPath);
+    if (selectedCloudSource && normalizedBrowserPath === '/') {
+      return;
+    }
+    const nextPath = browserPathToSourcePath(normalizedBrowserPath);
+    setDraft((current) => {
+      const existing = current.approved_paths.filter((item) => !(item === '.' && nextPath !== '.'));
+      if (existing.includes(nextPath)) {
+        return existing.length === current.approved_paths.length ? current : { ...current, approved_paths: existing };
+      }
+      return { ...current, approved_paths: [...existing, nextPath].sort((a, b) => a.localeCompare(b)) };
+    });
+  }, [selectedCloudSource]);
 
   const handleRemoveApprovedPath = useCallback((path: string) => {
     setDraft((current) => {
       const remaining = current.approved_paths.filter((item) => item !== path);
-      return { ...current, approved_paths: remaining.length > 0 ? remaining : ['.'] };
+      return { ...current, approved_paths: remaining.length > 0 ? remaining : selectedCloudSource ? [] : ['.'] };
     });
-  }, []);
+  }, [selectedCloudSource]);
 
   const browseMountSourcePath = useCallback(async (path: string) => {
     if (draft.id) {
-      return api.browseUserspaceMountSource(draft.id, { path });
+      const result = await api.browseUserspaceMountSource(draft.id, { path });
+      updateCloudPathDisplayMap(result);
+      return result;
+    }
+    if (selectedCloudSource) {
+      if (!draft.cloud_oauth_account_id && !draft.cloud_access_token.trim()) {
+        return { path, entries: [], error: 'Connect or select an OAuth account before browsing remote folders.' };
+      }
+      const request = buildCloudMountSourceRequest(path);
+      if (!request) {
+        return { path, entries: [], error: 'Select a cloud source first.' };
+      }
+      const result = await api.browseCloudMountSource(request);
+      updateCloudPathDisplayMap(result);
+      return result;
     }
     if (draft.tool_config_id) {
       return api.browseToolConfig(draft.tool_config_id, { path });
     }
     return { path, entries: [], error: 'Select a backing tool first.' };
-  }, [draft.id, draft.tool_config_id]);
+  }, [buildCloudMountSourceRequest, draft.cloud_access_token, draft.cloud_oauth_account_id, draft.id, draft.tool_config_id, selectedCloudSource, updateCloudPathDisplayMap]);
 
   const handleStageDirectory = useCallback((path: string) => {
-    setStagedDirectories((prev) => prev.includes(path) ? prev : [...prev, path]);
-  }, []);
+    const normalizedPath = normalizeMountBrowserPath(path);
+    setStagedDirectories((prev) => prev.includes(normalizedPath) ? prev : [...prev, normalizedPath]);
+    if (!selectedCloudSource) {
+      return;
+    }
+    const request = buildCloudMountSourceRequest(normalizedPath);
+    if (!request) {
+      setError('Select a cloud source before creating a remote folder.');
+      return;
+    }
+    void (async () => {
+      try {
+        if (draft.id) {
+          await api.createUserspaceMountSourceDirectory(draft.id, { path: normalizedPath });
+        } else {
+          await api.createCloudMountSourceDirectory(request);
+        }
+      } catch (err) {
+        const sourcePath = browserPathToSourcePath(normalizedPath);
+        setError(err instanceof Error ? err.message : 'Failed to create remote folder');
+        setStagedDirectories((current) => current.filter((item) => item !== normalizedPath));
+        setDraft((current) => ({
+          ...current,
+          approved_paths: current.approved_paths.filter((item) => item !== sourcePath),
+        }));
+      }
+    })();
+  }, [buildCloudMountSourceRequest, draft.id, selectedCloudSource]);
 
   // ---------------------------------------------------------------------------
   // Tool wizard callback — after creating a new tool, select it
@@ -376,14 +640,45 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
       const approvedPaths = Array.from(
         new Set(draft.approved_paths.map((v) => v.trim()).filter(Boolean))
       );
+      if (selectedCloudSource && approvedPaths.length === 0) {
+        throw new Error('Select at least one drive or folder for this cloud mount source.');
+      }
 
       if (draft.id) {
+        const accountEmail = selectedCloudAccount?.account_email || selectedCloudAccount?.account_name || draft.cloud_account_email.trim() || undefined;
         // Update existing
         const saved = await api.updateUserspaceMountSource(draft.id, {
           name: draft.name.trim(),
           description: null,
           enabled: true,
-          approved_paths: approvedPaths.length > 0 ? approvedPaths : ['.'],
+          connection_config: selectedCloudSource ? {
+            provider: selectedCloudSource,
+            auth_mode: 'oauth',
+            oauth_account_id: draft.cloud_oauth_account_id || undefined,
+            access_token: draft.cloud_access_token.trim() || undefined,
+            refresh_token: draft.cloud_refresh_token.trim() || undefined,
+            account_email: accountEmail,
+          } : undefined,
+          approved_paths: selectedCloudSource ? approvedPaths : approvedPaths.length > 0 ? approvedPaths : ['.'],
+          sync_interval_seconds: draft.sync_interval_seconds,
+        });
+        onSaved(saved);
+      } else if (selectedCloudSource) {
+        const accountEmail = selectedCloudAccount?.account_email || selectedCloudAccount?.account_name || draft.cloud_account_email.trim() || undefined;
+        const saved = await api.createUserspaceMountSource({
+          name: draft.name.trim(),
+          description: null,
+          enabled: true,
+          source_type: selectedCloudSource,
+          connection_config: {
+            provider: selectedCloudSource,
+            auth_mode: 'oauth',
+            oauth_account_id: draft.cloud_oauth_account_id || undefined,
+            access_token: draft.cloud_access_token.trim() || undefined,
+            refresh_token: draft.cloud_refresh_token.trim() || undefined,
+            account_email: accountEmail,
+          },
+          approved_paths: approvedPaths,
           sync_interval_seconds: draft.sync_interval_seconds,
         });
         onSaved(saved);
@@ -429,8 +724,74 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
     return (
       <div className="wizard-step-content" style={{ display: 'grid', gap: 16 }}>
         <p className="field-help" style={{ margin: 0 }}>
-          Choose an existing SSH or filesystem tool to back this mount source. The tool provides the connection credentials.
+          Choose an existing SSH/filesystem tool or create a cloud drive source.
         </p>
+
+        <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
+          {CLOUD_MOUNT_SOURCE_TYPES.map((sourceType) => {
+            const isConfigured = cloudProviderConfigured.get(sourceType) === true;
+            const handleCloudSourceSelect = () => {
+              if (!isConfigured) {
+                return;
+              }
+              setDraft((d) => ({
+                ...d,
+                source_type: sourceType,
+                tool_config_id: null,
+                cloud_oauth_account_id: d.source_type === sourceType ? d.cloud_oauth_account_id : null,
+                cloud_account_email: d.source_type === sourceType ? d.cloud_account_email : '',
+                approved_paths: d.source_type === sourceType ? d.approved_paths : [],
+                name: d.name || deduplicateName(cloudSourceLabel(sourceType), namesForDedup),
+              }));
+            };
+
+            return (
+              <div
+                key={sourceType}
+                className={`tool-type-option ${draft.source_type === sourceType ? 'selected' : ''}${!isConfigured ? ' disabled' : ''}`}
+                role="button"
+                tabIndex={isConfigured ? 0 : -1}
+                aria-disabled={!isConfigured}
+                onClick={handleCloudSourceSelect}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    handleCloudSourceSelect();
+                  }
+                }}
+                title={isConfigured ? undefined : `Configure ${cloudSourceLabel(sourceType)} OAuth client ID and secret to enable this source`}
+              >
+                <div className="tool-type-option-icon">
+                  <Icon name={sourceType === 'microsoft_drive' ? 'folder' : 'harddrive'} size={24} />
+                </div>
+                <div>
+                  <span className="tool-type-option-name">{cloudSourceLabel(sourceType)}</span>
+                  {isConfigured ? (
+                    <span className="tool-type-option-desc">Global cloud source</span>
+                  ) : (
+                    <span className="tool-type-option-desc" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      OAuth app not configured
+                      <Popover
+                        trigger="click"
+                        position="bottom"
+                        content={getCloudSetupInstructions(sourceType, cloudOAuthCallbackUrl)}
+                      >
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`How to configure ${cloudSourceLabel(sourceType)} OAuth`}
+                          style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}
+                        >
+                          <Info size={12} />
+                        </span>
+                      </Popover>
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
 
         {loadingTools ? (
           <p className="muted">Loading tools...</p>
@@ -447,7 +808,7 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
                 type="button"
                 className={`tool-type-option ${draft.tool_config_id === tool.id ? 'selected' : ''}`}
                 style={!tool.enabled ? { opacity: 0.6 } : undefined}
-                onClick={() => setDraft((d) => ({ ...d, tool_config_id: tool.id }))}
+                onClick={() => setDraft((d) => ({ ...d, tool_config_id: tool.id, source_type: null, approved_paths: d.approved_paths.length > 0 ? d.approved_paths : ['.'] }))}
               >
                 <div className="tool-type-option-icon">
                   <Icon name={toolTypeIcon(tool)} size={24} />
@@ -520,6 +881,109 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
         </div>
       )}
 
+      {selectedCloudSource && (
+        <div style={{ display: 'grid', gap: 12, padding: '12px 14px', background: 'var(--color-bg-tertiary)', borderRadius: 6, border: '1px solid var(--color-border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Icon name={selectedCloudSource === 'microsoft_drive' ? 'folder' : 'harddrive'} size={16} />
+            <span className="muted" style={{ fontSize: '0.8rem' }}>{cloudSourceLabel(selectedCloudSource)}</span>
+            <span style={{ marginLeft: 'auto' }} />
+            {editingName ? (
+              <input
+                ref={nameInputRef}
+                type="text"
+                value={draft.name}
+                onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+                onBlur={() => setEditingName(false)}
+                onKeyDown={(e) => { if (e.key === 'Enter') setEditingName(false); }}
+                style={{ fontWeight: 500, fontSize: '0.9rem', padding: '2px 6px', border: '1px solid var(--color-border)', borderRadius: 4, background: 'var(--color-bg-primary)', color: 'inherit', width: 200 }}
+                autoFocus
+              />
+            ) : (
+              <span
+                className="mount-source-name-display"
+                style={{ fontWeight: 500, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                onClick={() => { setEditingName(true); setTimeout(() => nameInputRef.current?.select(), 0); }}
+                title="Click to rename"
+              >
+                {draft.name || '(unnamed)'}
+                <Icon name="pencil" size={12} />
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <strong>OAuth Account</strong>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => void handleConnectCloudProvider(selectedCloudSource)}
+                disabled={savingCloudProvider === selectedCloudSource || !cloudProviderConfigured.get(selectedCloudSource)}
+                title={cloudProviderConfigured.get(selectedCloudSource) ? undefined : `Configure ${cloudSourceLabel(selectedCloudSource)} OAuth client ID and secret to enable account connection`}
+              >
+                <ExternalLink size={12} />
+                {savingCloudProvider === selectedCloudSource
+                  ? 'Connecting...'
+                  : selectedCloudSource === 'microsoft_drive' ? 'Connect OneDrive' : 'Connect Google'}
+              </button>
+            </div>
+
+            {selectedProviderAccounts.length > 0 ? (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {selectedProviderAccounts.map((account) => (
+                  <div
+                    key={account.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '8px 10px',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: 6,
+                      background: draft.cloud_oauth_account_id === account.id ? 'var(--color-bg-secondary)' : 'var(--color-bg-primary)',
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      checked={draft.cloud_oauth_account_id === account.id}
+                      onChange={() => setDraft((d) => ({
+                        ...d,
+                        cloud_oauth_account_id: account.id,
+                        cloud_account_email: account.account_email || account.account_name || '',
+                        cloud_access_token: '',
+                        cloud_refresh_token: '',
+                      }))}
+                    />
+                    <span>{account.account_email || account.account_name || 'Connected account'}</span>
+                    <span style={{ marginLeft: 'auto' }} />
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => void handleDisconnectCloudAccount(account)}
+                      disabled={deletingCloudAccountId === account.id}
+                      title="Remove OAuth account"
+                      aria-label={`Remove ${account.account_email || account.account_name || 'OAuth account'}`}
+                      style={{ padding: '5px 7px' }}
+                    >
+                      {deletingCloudAccountId === account.id ? 'Removing...' : <Trash2 size={12} />}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="field-help" style={{ margin: 0 }}>
+                Connect an account to create this global mount source.
+              </p>
+            )}
+
+            {!draft.cloud_oauth_account_id && draft.cloud_account_email && (
+              <p className="field-help" style={{ margin: 0 }}>
+                Current saved account: {draft.cloud_account_email}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <strong>Allowed Mount Roots</strong>
@@ -534,20 +998,28 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
             rootPath="/"
             rootLabel="/"
             defaultExpanded={false}
-            cacheKey={`mount-source-wizard:${draft.id ?? draft.tool_config_id ?? 'draft'}`}
+            cacheKey={`mount-source-wizard:${draft.id ?? draft.tool_config_id ?? selectedCloudSource ?? 'draft'}:${draft.cloud_oauth_account_id ?? 'no-account'}`}
             stagedDirectories={stagedDirectories}
             onStageDirectory={handleStageDirectory}
             emptyMessage="No directories found"
-            onSelectPath={(selectedPath) => setBrowserPath(normalizeMountBrowserPath(selectedPath))}
+            onSelectPath={(selectedPath) => {
+              const normalizedPath = normalizeMountBrowserPath(selectedPath);
+              setBrowserPath(normalizedPath);
+              addApprovedPathFromBrowserPath(normalizedPath);
+            }}
             onBrowsePath={browseMountSourcePath}
+            pathDisplayMap={selectedCloudSource ? browserPathDisplayMap : undefined}
+            pathDisplayOptions={selectedCloudSource ? { sourceType: selectedCloudSource, fallbackDriveName: cloudSourceLabel(selectedCloudSource) } : undefined}
+            canSelectPath={(path) => !selectedCloudSource || normalizeMountBrowserPath(path) !== '/'}
+            cannotSelectPathMessage={selectedCloudSource ? 'Select a drive or folder first' : undefined}
           />
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button type="button" className="btn btn-secondary" onClick={handleAddApprovedPath} disabled={!browserPath} style={{ padding: '6px 12px' }}>
-              Add Selected Path
-            </button>
+            <span className="field-help" style={{ margin: 0 }}>
+              Selecting a folder adds it to the allowed roots.
+            </span>
             {draft.approved_paths.map((path) => (
               <div key={path} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 10px', border: '1px solid var(--color-border)', borderRadius: 6, fontSize: '0.85rem' }}>
-                <code>{sourcePathToBrowserPath(path)}</code>
+                <code>{selectedCloudSource ? displayApprovedPath(path) : sourcePathToBrowserPath(path)}</code>
                 <button type="button" className="btn btn-secondary" onClick={() => handleRemoveApprovedPath(path)} style={{ padding: '4px' }}>
                   <X size={12} />
                 </button>
@@ -557,8 +1029,8 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
         </div>
       </div>
 
-      {/* Sync interval slider — SSH sources only */}
-      {isSSHSource && (
+      {/* Sync interval slider for mount sources with background sync */}
+      {isSyncIntervalSource && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <strong>Auto-Sync Polling Interval</strong>
@@ -584,7 +1056,7 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
           </div>
           <p className="field-help" style={{ marginTop: 4 }}>
             How often workspaces using this source check for changes when auto-sync is enabled.
-            Lower values increase responsiveness but use more resources. Uses rsync for efficient delta transfers.
+            Lower values increase responsiveness but use more resources.
           </p>
         </div>
       )}
@@ -602,7 +1074,15 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
           <tr>
             <td className="review-label">Backing Tool</td>
             <td>
-              {selectedTool ? (
+              {selectedCloudSource ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <Icon name={selectedCloudSource === 'microsoft_drive' ? 'folder' : 'harddrive'} size={14} />
+                  {cloudSourceLabel(selectedCloudSource)}
+                  <span className="muted" style={{ fontSize: '0.8rem' }}>
+                    ({selectedCloudAccount?.account_email || selectedCloudAccount?.account_name || draft.cloud_account_email || 'connected account'})
+                  </span>
+                </span>
+              ) : selectedTool ? (
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                   <Icon name={toolTypeIcon(selectedTool)} size={14} />
                   {selectedTool.name}
@@ -620,12 +1100,12 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
             <td>
               {draft.approved_paths.map((path) => (
                 <code key={path} style={{ display: 'inline-block', marginRight: 8, marginBottom: 4 }}>
-                  {sourcePathToBrowserPath(path)}
+                  {selectedCloudSource ? displayApprovedPath(path) : sourcePathToBrowserPath(path)}
                 </code>
               ))}
             </td>
           </tr>
-          {isSSHSource && (
+          {isSyncIntervalSource && (
             <tr>
               <td className="review-label">Sync Interval</td>
               <td style={{ fontFamily: 'var(--font-mono)' }}>{formatSyncInterval(draft.sync_interval_seconds)}</td>

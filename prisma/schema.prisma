@@ -275,6 +275,7 @@ model AppSettings {
   userspaceDuplicateCopyMetadataDefault Boolean  @default(true) @map("userspace_duplicate_copy_metadata_default")
   userspaceDuplicateCopyChatsDefault    Boolean  @default(false) @map("userspace_duplicate_copy_chats_default")
   userspaceDuplicateCopyMountsDefault   Boolean  @default(false) @map("userspace_duplicate_copy_mounts_default")
+  userspaceMountSyncIntervalSeconds     Int      @default(30) @map("userspace_mount_sync_interval_seconds")
   userspaceSqliteImportMaxBytes         BigInt   @default(104857600) @map("userspace_sqlite_import_max_bytes")
 
   // Timestamps
@@ -331,6 +332,18 @@ enum FilesystemMountType {
 enum UserspaceMountSourceType {
   ssh
   filesystem
+  microsoft_drive
+  google_drive
+}
+
+enum UserspaceMountSourceScope {
+  global_scope @map("global")
+  user
+}
+
+enum UserCloudOAuthProvider {
+  microsoft_drive
+  google_drive
 }
 
 enum WorkspaceMountSyncMode {
@@ -824,6 +837,8 @@ model User {
   conversationSharesOwned              ConversationShare[]                   @relation("ConversationShareOwner")
   authGroupMemberships                 AuthGroupMembership[]
   authSyncEvents                       AuthSyncEvent[]
+  cloudOauthAccounts                   UserCloudOAuthAccount[]
+  userspaceMountSources                UserUserspaceMountSource[]
 
   @@index([authProvider])
   @@index([sourceProvider, sourceId])
@@ -1275,17 +1290,69 @@ model UserspaceMountSource {
   @@map("userspace_mount_sources")
 }
 
+/// User-owned reusable userspace mount source definitions. These are scoped to
+/// the owning user and can be attached only to workspaces that user can edit.
+model UserUserspaceMountSource {
+  id                  String                   @id @default(uuid())
+  userId              String                   @map("user_id")
+  name                String
+  description         String?                  @default("")
+  enabled             Boolean                  @default(true)
+  sourceType          UserspaceMountSourceType @map("source_type")
+  oauthAccountId      String?                  @map("oauth_account_id")
+  connectionConfig    Json                     @map("connection_config")
+  approvedPaths       Json                     @default("[]") @map("approved_paths")
+  syncIntervalSeconds Int?                     @default(30) @map("sync_interval_seconds")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  oauthAccount    UserCloudOAuthAccount? @relation(fields: [oauthAccountId], references: [id], onDelete: SetNull)
+  workspaceMounts WorkspaceMount[]
+
+  @@index([userId, enabled, sourceType])
+  @@index([oauthAccountId])
+  @@map("user_userspace_mount_sources")
+}
+
+/// Per-user OAuth account links for cloud-backed userspace mounts. Tokens are
+/// encrypted before storage using the shared secret encryption pipeline.
+model UserCloudOAuthAccount {
+  id           String                 @id @default(uuid())
+  userId       String                 @map("user_id")
+  provider     UserCloudOAuthProvider
+  accountEmail String?                @map("account_email")
+  accountName  String?                @map("account_name")
+  accessToken  String                 @default("") @map("access_token")
+  refreshToken String                 @default("") @map("refresh_token")
+  expiresAt    DateTime?              @map("expires_at")
+  scopes       Json                   @default("[]")
+  metadata     Json                   @default("{}")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user         User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mountSources UserUserspaceMountSource[]
+
+  @@index([userId, provider])
+  @@map("user_cloud_oauth_accounts")
+}
+
 /// Workspace-scoped mount attachment linking an admin-managed approved source path
 /// to a user-chosen target path inside the runtime sandbox.
 model WorkspaceMount {
   id                               String                  @id @default(uuid())
   workspaceId                      String                  @map("workspace_id")
-  mountSourceId                    String                  @map("mount_source_id")
+  mountSourceId                    String?                 @map("mount_source_id")
+  userMountSourceId                String?                 @map("user_mount_source_id")
   sourcePath                       String                  @map("source_path") // Admin-approved relative source path
   targetPath                       String                  @map("target_path") // User-chosen sandbox target path
   description                      String?                 @map("description")
   enabled                          Boolean                 @default(true) @map("enabled")
   autoSyncEnabled                  Boolean                 @default(false) @map("auto_sync_enabled")
+  syncIntervalSeconds              Int?                    @map("sync_interval_seconds")
   syncMode                         WorkspaceMountSyncMode  @default(merge) @map("sync_mode")
   destructiveAutoSyncConfirmedAt   DateTime?               @map("destructive_auto_sync_confirmed_at")
   destructiveAutoSyncConfirmedMode WorkspaceMountSyncMode? @map("destructive_auto_sync_confirmed_mode")
@@ -1299,11 +1366,13 @@ model WorkspaceMount {
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  mountSource UserspaceMountSource @relation(fields: [mountSourceId], references: [id])
+  mountSource     UserspaceMountSource?     @relation(fields: [mountSourceId], references: [id])
+  userMountSource UserUserspaceMountSource? @relation(fields: [userMountSourceId], references: [id], onDelete: Cascade)
 
   @@unique([workspaceId, targetPath])
   @@index([workspaceId])
   @@index([mountSourceId])
+  @@index([userMountSourceId])
   @@map("workspace_mounts")
 }
 

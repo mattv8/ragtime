@@ -952,6 +952,12 @@ class AppSettings(BaseModel):
         default=False,
         description="Default User Space duplication behavior for copying workspace mounts.",
     )
+    userspace_mount_sync_interval_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=2592000,
+        description="Global default auto-sync interval in seconds for SSH and cloud workspace mounts.",
+    )
     userspace_sqlite_import_max_bytes: int = Field(
         default=USERSPACE_SQLITE_IMPORT_DEFAULT_MAX_BYTES,
         ge=USERSPACE_SQLITE_IMPORT_MIN_BYTES,
@@ -1321,6 +1327,12 @@ class UpdateSettingsRequest(BaseModel):
     userspace_duplicate_copy_mounts_default: Optional[bool] = Field(
         default=None,
         description="Default User Space duplication behavior for copying workspace mounts.",
+    )
+    userspace_mount_sync_interval_seconds: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=2592000,
+        description="Global default auto-sync interval in seconds for SSH and cloud workspace mounts.",
     )
 
     @field_validator("userspace_preview_sandbox_flags", mode="before")

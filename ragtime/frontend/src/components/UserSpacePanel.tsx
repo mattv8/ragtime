@@ -27,8 +27,20 @@ import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserDirectoryEntry, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceCollabPresenceUser, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse, WorkspaceRole } from '@/types';
+import type { BrowseResponse, CloudOAuthProviderStatus, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserCloudOAuthAccount, UserCloudOAuthProvider, UserDirectoryEntry, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceCollabPresenceUser, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, UserspaceMountSource, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse, WorkspaceRole } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
+import {
+  createBrowserPathDisplayMap,
+  mergeBrowserPathDisplayMapFromBrowseResponse,
+  normalizeMountBrowserPath,
+  resolveSourceDisplayPath,
+  sourcePathToBrowserPath,
+  browserPathToSourcePath,
+  type BrowserPathDisplayMap,
+} from '@/utils/mountPaths';
+import {
+  formatMountSyncInterval,
+} from '@/utils/mountSyncIntervals';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
 import { ChatPanel } from './ChatPanel';
@@ -193,30 +205,6 @@ function normalizeWorkspacePath(value: string): string {
   return value.trim().replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
 }
 
-function normalizeMountBrowserPath(value: string): string {
-  const normalizedParts: string[] = [];
-  for (const part of (value || '/').replace(/\\/g, '/').split('/')) {
-    if (!part || part === '.') continue;
-    if (part === '..') {
-      normalizedParts.pop();
-      continue;
-    }
-    normalizedParts.push(part);
-  }
-  return '/' + normalizedParts.join('/');
-}
-
-function sourcePathToBrowserPath(sourcePath: string): string {
-  const normalized = sourcePath.trim();
-  if (!normalized || normalized === '.') return '/';
-  return normalizeMountBrowserPath(`/${normalized}`);
-}
-
-function browserPathToSourcePath(browserPath: string): string {
-  const normalized = normalizeMountBrowserPath(browserPath);
-  return normalized === '/' ? '.' : normalized.slice(1);
-}
-
 function browserPathToWorkspaceMountTargetPath(browserPath: string): string {
   const normalized = normalizeMountBrowserPath(browserPath);
   return normalized === '/' ? '/workspace' : `/workspace${normalized}`;
@@ -256,6 +244,10 @@ function isDestructiveMountSyncMode(syncMode: WorkspaceMountSyncMode): boolean {
   return syncMode !== 'merge';
 }
 
+function isWorkspaceMountSyncCapableSourceType(sourceType?: string | null): boolean {
+  return sourceType === 'ssh' || sourceType === 'microsoft_drive' || sourceType === 'google_drive';
+}
+
 function getMountSyncModeLabel(syncMode: WorkspaceMountSyncMode): string {
   return WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.find((option) => option.value === syncMode)?.label ?? 'Merge';
 }
@@ -267,6 +259,14 @@ function getMountSyncModeIcon(syncMode: WorkspaceMountSyncMode): typeof ArrowRig
 function getMountSyncModeDescription(syncMode: WorkspaceMountSyncMode): string {
   return WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.find((option) => option.value === syncMode)?.description
     ?? WORKSPACE_MOUNT_SYNC_MODE_OPTIONS[0].description;
+}
+
+const WORKSPACE_MOUNT_INTERVAL_OPTIONS = [5, 15, 30, 60, 300, 900, 3600, 86400];
+
+function mountIntervalSelectValue(seconds: number | null | undefined): string {
+  if (seconds == null) return 'inherit';
+  if (WORKSPACE_MOUNT_INTERVAL_OPTIONS.includes(seconds)) return String(seconds);
+  return 'custom';
 }
 
 function formatMountSyncPreviewPath(path: string): string {
@@ -295,8 +295,8 @@ function resolveMountDirectoryToCreate(
   return requiresCreation ? toRequestPath(normalizedSelectedPath) : null;
 }
 
-function getMountSourceBrowserStageKey(mountSourceId: string, rootSourcePath: string): string {
-  return `${mountSourceId}::${rootSourcePath}`;
+function getMountSourceBrowserStageKey(sourceScope: 'global' | 'user', mountSourceId: string, rootSourcePath: string): string {
+  return `${sourceScope}::${mountSourceId}::${rootSourcePath}`;
 }
 
 function getExpandedFoldersStorageKey(workspaceId: string): string {
@@ -733,7 +733,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [mounts, setMounts] = useState<WorkspaceMount[]>([]);
   const [mountsLoading, setMountsLoading] = useState(false);
   const [mountableSources, setMountableSources] = useState<MountableSource[]>([]);
+  const [cloudProviderStatuses, setCloudProviderStatuses] = useState<CloudOAuthProviderStatus[]>([]);
+  const [cloudOAuthAccounts, setCloudOAuthAccounts] = useState<UserCloudOAuthAccount[]>([]);
+  const [personalMountSources, setPersonalMountSources] = useState<UserspaceMountSource[]>([]);
+  const [globalCloudMountSources, setGlobalCloudMountSources] = useState<UserspaceMountSource[]>([]);
+  const [savingCloudProvider, setSavingCloudProvider] = useState<UserCloudOAuthProvider | null>(null);
+  const [deletingCloudAccountId, setDeletingCloudAccountId] = useState<string | null>(null);
   const [createMountSourceId, setCreateMountSourceId] = useState('');
+  const [createMountSourceScope, setCreateMountSourceScope] = useState<'global' | 'user'>('global');
   const [createMountSourcePath, setCreateMountSourcePath] = useState('');
   const [createMountRootSourcePath, setCreateMountRootSourcePath] = useState('');
   const [createMountBrowserPath, setCreateMountBrowserPath] = useState('');
@@ -743,7 +750,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [createMountStagedTargetDirectories, setCreateMountStagedTargetDirectories] = useState<string[]>([]);
   const [createMountDescription, setCreateMountDescription] = useState('');
   const [createMountSyncMode, setCreateMountSyncMode] = useState<WorkspaceMountSyncMode>('merge');
+  const [createMountSyncIntervalSeconds, setCreateMountSyncIntervalSeconds] = useState<number | null>(null);
   const [createMountActiveSourceTab, setCreateMountActiveSourceTab] = useState('');
+  const [createMountBrowserPathDisplayMap, setCreateMountBrowserPathDisplayMap] = useState<BrowserPathDisplayMap>(createBrowserPathDisplayMap());
   const [savingMount, setSavingMount] = useState(false);
   const [deletingMountId, setDeletingMountId] = useState<string | null>(null);
 
@@ -755,6 +764,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [mountSyncPreviewNextSyncMode, setMountSyncPreviewNextSyncMode] = useState<WorkspaceMountSyncMode | null>(null);
   const [expandedSyncModeInfo, setExpandedSyncModeInfo] = useState<false | 'hover' | 'pinned'>(false);
   const [savingMountWatchId, setSavingMountWatchId] = useState<string | null>(null);
+  const [savingMountIntervalId, setSavingMountIntervalId] = useState<string | null>(null);
   const [editingMountDescriptionId, setEditingMountDescriptionId] = useState<string | null>(null);
   const [editingMountDescriptionDraft, setEditingMountDescriptionDraft] = useState('');
   const [savingMountDescriptionId, setSavingMountDescriptionId] = useState<string | null>(null);
@@ -1223,6 +1233,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
   const canEditWorkspace = activeWorkspaceRole === 'owner' || activeWorkspaceRole === 'editor';
   const isOwner = activeWorkspaceRole === 'owner';
+  const showPersonalCloudDrives = currentUser.role === 'admin';
   const isAdminImpersonating = currentUser.role === 'admin' && activeWorkspace != null && activeWorkspace.owner_user_id !== currentUser.id;
   const archiveExportInProgress = Boolean(
     activeWorkspace?.archive_export_task_id
@@ -4776,6 +4787,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setMountsModalTab('mounts');
     setMountsLoading(true);
     setCreateMountSourceId('');
+    setCreateMountSourceScope('global');
     setCreateMountSourcePath('');
     setCreateMountRootSourcePath('');
     setCreateMountBrowserPath('');
@@ -4794,20 +4806,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setEditingObjectStorageBucket(null);
     setObjectStorageLoading(true);
     try {
-      const [mountList, sources] = await Promise.all([
+      const [mountList, sources, cloudProviders, cloudAccounts, userMountSources, globalMountSources] = await Promise.all([
         api.listWorkspaceMounts(activeWorkspaceId),
         api.listMountableSources(activeWorkspaceId),
+        showPersonalCloudDrives ? api.listCloudOAuthProviders().catch(() => []) : Promise.resolve([]),
+        showPersonalCloudDrives ? api.listUserCloudOAuthAccounts().catch(() => []) : Promise.resolve([]),
+        showPersonalCloudDrives ? api.listUserUserspaceMountSources().catch(() => []) : Promise.resolve([]),
+        showPersonalCloudDrives ? api.listUserspaceMountSources().catch(() => []) : Promise.resolve([]),
         loadObjectStorageConfig(activeWorkspaceId).catch(() => null),
       ]);
       setMounts(mountList);
       setMountableSources(sources);
+      setCloudProviderStatuses(cloudProviders);
+      setCloudOAuthAccounts(cloudAccounts);
+      setPersonalMountSources(userMountSources);
+      setGlobalCloudMountSources(globalMountSources.filter((source) => source.source_type === 'microsoft_drive' || source.source_type === 'google_drive'));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load mounts');
     } finally {
       setMountsLoading(false);
       setObjectStorageLoading(false);
     }
-  }, [activeWorkspaceId, isOwner, loadObjectStorageConfig]);
+  }, [activeWorkspaceId, isOwner, loadObjectStorageConfig, showPersonalCloudDrives]);
 
   const handleCloseMountsModal = useCallback(() => {
     setShowMountsModal(false);
@@ -4819,6 +4839,107 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setShowObjectStorageWizard(false);
     setEditingObjectStorageBucket(null);
   }, []);
+
+  const refreshPersonalCloudMountState = useCallback(async () => {
+    if (!activeWorkspaceId || !showPersonalCloudDrives) return;
+    const [sources, cloudProviders, accounts, userSources, globalMountSources] = await Promise.all([
+      api.listMountableSources(activeWorkspaceId),
+      api.listCloudOAuthProviders().catch(() => []),
+      api.listUserCloudOAuthAccounts().catch(() => []),
+      api.listUserUserspaceMountSources().catch(() => []),
+      api.listUserspaceMountSources().catch(() => []),
+    ]);
+    setMountableSources(sources);
+    setCloudProviderStatuses(cloudProviders);
+    setCloudOAuthAccounts(accounts);
+    setPersonalMountSources(userSources);
+    setGlobalCloudMountSources(globalMountSources.filter((source) => source.source_type === 'microsoft_drive' || source.source_type === 'google_drive'));
+  }, [activeWorkspaceId, showPersonalCloudDrives]);
+
+  useEffect(() => {
+    const listener = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === 'ragtime-cloud-oauth-complete') {
+        void refreshPersonalCloudMountState();
+      } else if (event.data?.type === 'ragtime-cloud-oauth-error') {
+        setError(typeof event.data.message === 'string' ? event.data.message : 'Cloud OAuth failed');
+      }
+    };
+    window.addEventListener('message', listener);
+    return () => window.removeEventListener('message', listener);
+  }, [refreshPersonalCloudMountState]);
+
+  const globalCloudOAuthAccountIds = useMemo(() => new Set(
+    globalCloudMountSources
+      .map((source) => source.oauth_account_id)
+      .filter((accountId): accountId is string => Boolean(accountId))
+  ), [globalCloudMountSources]);
+
+  const visiblePersonalCloudOAuthAccounts = useMemo(() => cloudOAuthAccounts.filter((account) => {
+    const hasPersonalSource = personalMountSources.some((source) => source.oauth_account_id === account.id);
+    return hasPersonalSource || !globalCloudOAuthAccountIds.has(account.id);
+  }), [cloudOAuthAccounts, globalCloudOAuthAccountIds, personalMountSources]);
+
+  const handleConnectCloudProvider = useCallback(async (provider: UserCloudOAuthProvider) => {
+    if (!activeWorkspaceId) return;
+    const configured = cloudProviderStatuses.some((status) => status.provider === provider && status.configured);
+    if (!configured) {
+      setError(`${provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'} OAuth is not configured.`);
+      return;
+    }
+    setSavingCloudProvider(provider);
+    try {
+      const redirectUri = `${window.location.origin}/indexes/userspace/cloud-oauth/callback`;
+      const response = await api.startUserCloudOAuth({ provider, redirect_uri: redirectUri, workspace_id: activeWorkspaceId });
+      window.open(response.auth_url, 'ragtime-cloud-oauth', 'popup,width=720,height=820');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start cloud OAuth');
+    } finally {
+      setSavingCloudProvider(null);
+    }
+  }, [activeWorkspaceId, cloudProviderStatuses]);
+
+  const handleCreatePersonalCloudSource = useCallback(async (account: UserCloudOAuthAccount) => {
+    if (!activeWorkspaceId) return;
+    setSavingCloudProvider(account.provider);
+    try {
+      await api.createUserUserspaceMountSource({
+        workspace_id: activeWorkspaceId,
+        name: account.provider === 'microsoft_drive' ? 'My OneDrive' : 'My Google Drive',
+        source_type: account.provider,
+        oauth_account_id: account.id,
+        approved_paths: account.provider === 'google_drive' ? ['my-drive'] : ['.'],
+      });
+      await refreshPersonalCloudMountState();
+      toast.success('Personal cloud source added.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add personal cloud source');
+    } finally {
+      setSavingCloudProvider(null);
+    }
+  }, [activeWorkspaceId, refreshPersonalCloudMountState, toast]);
+
+  const handleDisconnectCloudAccount = useCallback(async (account: UserCloudOAuthAccount) => {
+    setDeletingCloudAccountId(account.id);
+    try {
+      await api.disconnectUserCloudOAuth(account.id);
+      await refreshPersonalCloudMountState();
+      toast.success('Cloud OAuth account removed.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove cloud OAuth account');
+    } finally {
+      setDeletingCloudAccountId(null);
+    }
+  }, [refreshPersonalCloudMountState, toast]);
+
+  const handleDeletePersonalCloudSource = useCallback(async (sourceId: string) => {
+    try {
+      await api.deleteUserUserspaceMountSource(sourceId);
+      await refreshPersonalCloudMountState();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete personal cloud source');
+    }
+  }, [refreshPersonalCloudMountState]);
 
   const createMountEffectiveSourcePath = useMemo(() => {
     if (createMountSourcePath) {
@@ -4843,9 +4964,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
   const createMountSelectedSource = useMemo(() => (
     mountableSources.find((source) => (
-      source.mount_source_id === createMountSourceId && source.source_path === createMountRootSourcePath
+      source.mount_source_id === createMountSourceId && source.source_scope === createMountSourceScope && source.source_path === createMountRootSourcePath
     )) ?? null
-  ), [createMountRootSourcePath, createMountSourceId, mountableSources]);
+  ), [createMountRootSourcePath, createMountSourceId, createMountSourceScope, mountableSources]);
 
   const isCreateMountDisabled = useMemo(() => (
     savingMount
@@ -4866,7 +4987,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       return;
     }
     setSavingMount(true);
-    const sourceStageKey = getMountSourceBrowserStageKey(createMountSourceId, createMountRootSourcePath);
+    const sourceStageKey = getMountSourceBrowserStageKey(createMountSourceScope, createMountSourceId, createMountRootSourcePath);
     const sourceDirectoryToCreate = resolveMountDirectoryToCreate(
       createMountBrowserPath,
       createMountStagedSourceDirectories[sourceStageKey] ?? [],
@@ -4880,16 +5001,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     try {
       const created = await api.createWorkspaceMount(activeWorkspaceId, {
         mount_source_id: createMountSourceId,
+        source_scope: createMountSourceScope,
         source_path: createMountEffectiveSourcePath,
         target_path: createMountEffectiveTargetPath,
         source_directory_to_create: sourceDirectoryToCreate,
         target_directory_to_create: targetDirectoryToCreate,
         auto_sync_enabled: false,
-        sync_mode: createMountSelectedSource?.source_type === 'ssh' ? createMountSyncMode : 'merge',
+        sync_interval_seconds: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) ? createMountSyncIntervalSeconds : null,
+        sync_mode: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) ? createMountSyncMode : 'merge',
         description: createMountDescription.trim() || null,
       });
       setMounts((prev) => [...prev, created]);
       setCreateMountSourceId('');
+      setCreateMountSourceScope('global');
       setCreateMountSourcePath('');
       setCreateMountRootSourcePath('');
       setCreateMountBrowserPath('');
@@ -4899,6 +5023,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setCreateMountStagedTargetDirectories([]);
       setCreateMountDescription('');
       setCreateMountSyncMode('merge');
+      setCreateMountSyncIntervalSeconds(null);
       setError(created.sync_notice || null);
       if (targetDirectoryToCreate) {
         await loadWorkspaceData(activeWorkspaceId);
@@ -4908,7 +5033,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     } finally {
       setSavingMount(false);
     }
-  }, [activeWorkspaceId, createMountBrowserPath, createMountDescription, createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountRootSourcePath, createMountSelectedSource?.source_type, createMountSourceId, createMountStagedSourceDirectories, createMountStagedTargetDirectories, createMountSyncMode, createMountTargetBrowserPath, isOwner, loadWorkspaceData]);
+  }, [activeWorkspaceId, createMountBrowserPath, createMountDescription, createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountRootSourcePath, createMountSelectedSource?.source_type, createMountSourceId, createMountSourceScope, createMountStagedSourceDirectories, createMountStagedTargetDirectories, createMountSyncIntervalSeconds, createMountSyncMode, createMountTargetBrowserPath, isOwner, loadWorkspaceData]);
 
   const handleSaveMountDescription = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner || !editingMountDescriptionId) return;
@@ -5133,6 +5258,22 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setSavingMountWatchId(null);
     }
   }, [activeWorkspaceId, applyMountSyncFailure, isOwner]);
+
+  const handleUpdateMountSyncInterval = useCallback(async (mount: WorkspaceMount, intervalSeconds: number | null) => {
+    if (!activeWorkspaceId || !isOwner) return;
+    setSavingMountIntervalId(mount.id);
+    try {
+      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
+        sync_interval_seconds: intervalSeconds,
+      });
+      setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update mount sync interval');
+    } finally {
+      setSavingMountIntervalId(null);
+    }
+  }, [activeWorkspaceId, isOwner]);
 
   const handleUpdateMountSyncMode = useCallback(async (mount: WorkspaceMount, syncMode: WorkspaceMountSyncMode) => {
     if (!activeWorkspaceId || !isOwner) return;
@@ -7429,9 +7570,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       {mounts.map((mount) => {
                         const isEjected = !mount.enabled;
                         const SyncModeIcon = getMountSyncModeIcon(mount.sync_mode);
-                        const displaySourcePath = mount.source_path === '.'
-                          ? '/'
-                          : (mount.source_path.startsWith('/') ? mount.source_path : `/${mount.source_path}`);
+                        const displaySourcePath = resolveSourceDisplayPath(mount.source_path, undefined, { sourceType: mount.source_type });
                         return (
                         <div key={mount.id} className="userspace-mount-row" style={isEjected ? { opacity: 0.45, filter: 'grayscale(0.6)' } : undefined}>
                           <div className="userspace-mount-primary-row">
@@ -7445,16 +7584,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             <div className="userspace-mount-controls">
                               <span className="userspace-mount-sync-status">
                                 {!mount.source_available && <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title="Mount source is no longer available">Disconnected</span>}
-                                {mount.source_available && mount.source_type === 'ssh' && (syncingMountId === mount.id || previewingMountId === mount.id) && <span className="userspace-status-pill userspace-status-pill-warning" style={{ fontSize: 11 }}>In Progress</span>}
-                                {mount.source_available && mount.source_type === 'ssh' && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
-                                {mount.source_available && mount.source_type === 'ssh' && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
-                                {mount.source_available && mount.source_type === 'ssh' && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'error' && (
+                                {mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && (syncingMountId === mount.id || previewingMountId === mount.id) && <span className="userspace-status-pill userspace-status-pill-warning" style={{ fontSize: 11 }}>In Progress</span>}
+                                {mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
+                                {mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
+                                {mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'error' && (
                                   <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title={mount.last_sync_error ?? undefined}>Error</span>
                                 )}
-                                {mount.source_available && mount.source_type !== 'ssh' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
+                                {mount.source_available && !isWorkspaceMountSyncCapableSourceType(mount.source_type) && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
                               </span>
                               <div className="userspace-mount-actions">
-                                {mount.source_type === 'ssh' && (
+                                {isWorkspaceMountSyncCapableSourceType(mount.source_type) && (
                                   <>
                                     <button
                                       className="btn btn-sm btn-secondary"
@@ -7539,6 +7678,31 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                         </span>
                                       )}
                                     </button>
+                                    {mount.auto_sync_enabled && (
+                                      <select
+                                        className="form-input userspace-type-select userspace-mount-interval-select"
+                                        value={mountIntervalSelectValue(mount.sync_interval_seconds)}
+                                        onChange={(e) => {
+                                          const value = e.target.value;
+                                          if (value === 'custom') return;
+                                          void handleUpdateMountSyncInterval(mount, value === 'inherit' ? null : parseInt(value, 10));
+                                        }}
+                                        disabled={savingMountIntervalId === mount.id || isEjected}
+                                        title={mount.sync_interval_seconds == null ? 'Inherit default interval' : 'Per-mount interval override'}
+                                      >
+                                        <option value="inherit">Inherit</option>
+                                        {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map((seconds) => (
+                                          <option key={seconds} value={seconds}>
+                                            {formatMountSyncInterval(seconds)}
+                                          </option>
+                                        ))}
+                                        {mount.sync_interval_seconds != null && !WORKSPACE_MOUNT_INTERVAL_OPTIONS.includes(mount.sync_interval_seconds) && (
+                                          <option value="custom">
+                                            {formatMountSyncInterval(mount.sync_interval_seconds)}
+                                          </option>
+                                        )}
+                                      </select>
+                                    )}
                                     {!mount.auto_sync_enabled && (
                                       <button
                                         className="btn btn-secondary btn-sm"
@@ -7666,6 +7830,75 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                     </div>
                   )}
 
+                  {showPersonalCloudDrives && (
+                  <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, display: 'grid', gap: 10, marginBottom: 16 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <strong style={{ fontSize: 13 }}>Personal cloud drives</strong>
+                      <span style={{ marginLeft: 'auto' }} />
+                      {(['microsoft_drive', 'google_drive'] as const).map((provider) => {
+                        const isConfigured = cloudProviderStatuses.some((status) => status.provider === provider && status.configured);
+                        const label = provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive';
+                        return (
+                          <button
+                            key={provider}
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => void handleConnectCloudProvider(provider)}
+                            disabled={savingCloudProvider === provider || !isConfigured}
+                            title={isConfigured ? `Connect ${label}` : `Configure ${label} OAuth client ID and secret to enable this source`}
+                          >
+                            {savingCloudProvider === provider ? <MiniLoadingSpinner variant="icon" size={12} /> : <ExternalLink size={12} />}
+                            {provider === 'microsoft_drive' ? 'Connect OneDrive' : 'Connect Google'}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {(visiblePersonalCloudOAuthAccounts.length > 0 || personalMountSources.length > 0) && (
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        {visiblePersonalCloudOAuthAccounts.map((account) => {
+                          const hasSource = personalMountSources.some((source) => source.oauth_account_id === account.id);
+                          return (
+                            <div key={account.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                              <HardDrive size={12} />
+                              <span>{account.provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'}</span>
+                              <span className="userspace-muted">{account.account_email || account.account_name || 'Connected account'}</span>
+                              <span style={{ marginLeft: 'auto' }} />
+                              {!hasSource && (
+                                <button className="btn btn-secondary btn-sm" onClick={() => void handleCreatePersonalCloudSource(account)}>
+                                  <Plus size={12} />
+                                  Add Source
+                                </button>
+                              )}
+                              <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => void handleDisconnectCloudAccount(account)}
+                                disabled={deletingCloudAccountId === account.id || hasSource}
+                                title={hasSource ? 'Remove this personal source before disconnecting the account' : 'Remove OAuth account'}
+                                aria-label={`Remove ${account.account_email || account.account_name || 'OAuth account'}`}
+                              >
+                                {deletingCloudAccountId === account.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                              </button>
+                            </div>
+                          );
+                        })}
+                        {personalMountSources.map((source) => (
+                          <div key={source.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                            <Check size={12} />
+                            <span>{source.name}</span>
+                            <span className="userspace-muted">{source.source_type === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'}</span>
+                            <span style={{ marginLeft: 'auto' }} />
+                            {source.usage_count === 0 && (
+                              <button className="btn btn-secondary btn-sm" onClick={() => void handleDeletePersonalCloudSource(source.id)} title="Delete personal source">
+                                <Trash2 size={12} />
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  )}
+
                   {mountableSources.length > 0 ? (
                     <div className="userspace-env-var-form" style={{ marginTop: 12 }}>
                       <strong className="userspace-env-var-form-title">Add mount</strong>
@@ -7677,9 +7910,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                               <strong>Source</strong>
                             </div>
                             {mountableSources.map((src) => {
-                              const tabKey = `${src.mount_source_id}::${src.source_path}`;
+                              const tabKey = `${src.source_scope}::${src.mount_source_id}::${src.source_path}`;
                               const isActive = createMountActiveSourceTab === tabKey
-                                || (!createMountActiveSourceTab && mountableSources[0] && tabKey === `${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
+                                || (!createMountActiveSourceTab && mountableSources[0] && tabKey === `${mountableSources[0].source_scope}::${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
                               return (
                                 <button
                                   key={tabKey}
@@ -7705,13 +7938,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             })}
                           </div>
                           {mountableSources.map((src) => {
-                            const tabKey = `${src.mount_source_id}::${src.source_path}`;
+                            const tabKey = `${src.source_scope}::${src.mount_source_id}::${src.source_path}`;
                             const isActiveTab = createMountActiveSourceTab === tabKey
-                              || (!createMountActiveSourceTab && mountableSources[0] && tabKey === `${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
+                              || (!createMountActiveSourceTab && mountableSources[0] && tabKey === `${mountableSources[0].source_scope}::${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
                             if (!isActiveTab) return null;
                             const browserRootPath = sourcePathToBrowserPath(src.source_path);
                             const isSelectedSource = (
                               src.mount_source_id === createMountSourceId
+                              && src.source_scope === createMountSourceScope
                               && src.source_path === createMountRootSourcePath
                               && !!createMountSourcePath
                             );
@@ -7720,14 +7954,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 <ConstrainedPathBrowser
                                   currentPath={isSelectedSource ? createMountBrowserPath : ''}
                                   rootPath={browserRootPath}
-                                  rootLabel={src.source_path === '.' ? '/' : `/${src.source_path}`}
+                                  rootLabel={resolveSourceDisplayPath(src.source_path, createMountBrowserPathDisplayMap, { sourceType: src.source_type })}
                                   defaultExpanded={isSelectedSource}
                                   cacheKey={`${src.mount_source_id}:${src.source_path}`}
+                                  pathDisplayMap={createMountBrowserPathDisplayMap}
+                                  pathDisplayOptions={{ sourceType: src.source_type }}
                                   stagedDirectories={createMountStagedSourceDirectories[
-                                    getMountSourceBrowserStageKey(src.mount_source_id, src.source_path)
+                                    getMountSourceBrowserStageKey(src.source_scope, src.mount_source_id, src.source_path)
                                   ] ?? []}
                                   onStageDirectory={(path) => {
-                                    const stageKey = getMountSourceBrowserStageKey(src.mount_source_id, src.source_path);
+                                    const stageKey = getMountSourceBrowserStageKey(src.source_scope, src.mount_source_id, src.source_path);
                                     const normalizedPath = normalizeMountBrowserPath(path);
                                     setCreateMountStagedSourceDirectories((current) => {
                                       const existingPaths = current[stageKey] ?? [];
@@ -7742,15 +7978,23 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                   }}
                                   onSelectPath={(selectedPath) => {
                                     setCreateMountSourceId(src.mount_source_id);
+                                    setCreateMountSourceScope(src.source_scope);
                                     setCreateMountRootSourcePath(src.source_path);
                                     setCreateMountBrowserPath(normalizeMountBrowserPath(selectedPath));
                                     setCreateMountSourcePath(browserPathToSourcePath(selectedPath));
                                   }}
-                                  onBrowsePath={(path) => api.browseWorkspaceMountSource(activeWorkspaceId, {
-                                    mount_source_id: src.mount_source_id,
-                                    root_source_path: src.source_path,
-                                    path,
-                                  })}
+                                  onBrowsePath={async (path) => {
+                                    const result = await api.browseWorkspaceMountSource(activeWorkspaceId, {
+                                      mount_source_id: src.mount_source_id,
+                                      source_scope: src.source_scope,
+                                      root_source_path: src.source_path,
+                                      path,
+                                    });
+                                    setCreateMountBrowserPathDisplayMap((current) =>
+                                      mergeBrowserPathDisplayMapFromBrowseResponse(current, result, { sourceType: src.source_type }),
+                                    );
+                                    return result;
+                                  }}
                                 />
                               </div>
                             );
@@ -7803,7 +8047,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                         value={createMountDescription}
                         onChange={(e) => setCreateMountDescription(e.target.value)}
                       />
-                      {createMountSelectedSource?.source_type === 'ssh' && (() => {
+                      {isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) && (() => {
                         const CreateSyncModeIcon = getMountSyncModeIcon(createMountSyncMode);
                         return (
                         <div style={{ display: 'grid', gap: 6 }}>
@@ -7878,6 +8122,35 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                               )}
                             </span>
                           </button>
+                          <label className="userspace-muted" style={{ fontSize: 12, display: 'grid', gap: 6 }}>
+                            <strong>Interval</strong>
+                            <select
+                              className="form-input"
+                              value={mountIntervalSelectValue(createMountSyncIntervalSeconds)}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                if (value === 'custom') return;
+                                setCreateMountSyncIntervalSeconds(value === 'inherit' ? null : parseInt(value, 10));
+                              }}
+                              title="Inherit source-level interval, or global default when source interval is unset"
+                              style={{
+                                width: '100%',
+                                maxWidth: 168,
+                                height: 30,
+                                minHeight: 30,
+                                padding: '4px 8px',
+                                fontSize: 12,
+                                lineHeight: '16px',
+                              }}
+                            >
+                              <option value="inherit">Inherit default</option>
+                              {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map((seconds) => (
+                                <option key={seconds} value={seconds}>
+                                  {formatMountSyncInterval(seconds)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
                         </div>
                         );
                       })()}

@@ -1,4 +1,5 @@
 export { formatSizeMB, formatBytes, formatElapsedTime, formatChatTimestamp } from './format';
+export * from './mountPaths';
 export {
   areSameNormalizedStringArrays,
   getDefaultShareSlug,
