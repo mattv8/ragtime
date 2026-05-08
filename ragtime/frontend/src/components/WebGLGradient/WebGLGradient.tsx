@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import createFragmentShader from './fragmentShader';
 import { FluidSimulation } from './fluidSimulation';
+import { bindFullscreenQuad, createFullscreenQuadBuffer, createProgram } from './glUtils';
 
 const TEXTURE_WIDTH = 1024;
 const DEFAULT_COLOR_VARIABLES = [
@@ -89,22 +90,6 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     return texture;
   }, [resolveGradientColors]);
 
-  const createShader = useCallback((gl: WebGLRenderingContext, type: number, source: string) => {
-    const shader = gl.createShader(type);
-    if (!shader) return null;
-
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      console.error('Shader compilation error:', gl.getShaderInfoLog(shader));
-      gl.deleteShader(shader);
-      return null;
-    }
-
-    return shader;
-  }, []);
-
   const updateGradientTexture = useCallback(() => {
     const gl = glRef.current;
     if (!gl) return false;
@@ -169,41 +154,15 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
       finalFragmentShaderSource = fragmentShaderSource.replace('precision highp float;', 'precision mediump float;');
     }
 
-    const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
-    const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, finalFragmentShaderSource);
-
-    if (!vertexShader || !fragmentShader) return false;
-
-    const program = gl.createProgram();
+    const program = createProgram(gl, vertexShaderSource, finalFragmentShaderSource);
     if (!program) return false;
-
-    gl.attachShader(program, vertexShader);
-    gl.attachShader(program, fragmentShader);
-    gl.linkProgram(program);
-
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      console.error('Program linking error:', gl.getProgramInfoLog(program));
-      return false;
-    }
 
     programRef.current = program;
     gl.useProgram(program);
 
-    // Create quad vertices
-    const vertices = new Float32Array([
-      -1, -1,
-       1, -1,
-      -1,  1,
-       1,  1,
-    ]);
-
-    const buffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-
-    const positionLocation = gl.getAttribLocation(program, 'a_position');
-    gl.enableVertexAttribArray(positionLocation);
-    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+    const buffer = createFullscreenQuadBuffer(gl);
+    if (!buffer) return false;
+    bindFullscreenQuad(gl, program, buffer);
 
     // Get uniform locations
     uniformsRef.current = {
@@ -240,15 +199,13 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     // The fluid sim runs its own programs/buffers; restore the main
     // program/buffer state so subsequent rendering is unaffected.
     gl.useProgram(program);
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.enableVertexAttribArray(positionLocation);
-    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+    bindFullscreenQuad(gl, program, buffer);
 
     gl.uniform1i(uniformsRef.current.u_velocity, 1);
     gl.uniform1f(uniformsRef.current.u_fluidStrength, 0);
 
     return true;
-  }, [createShader, updateGradientTexture]);
+  }, [updateGradientTexture]);
 
   const resize = useCallback(() => {
     const canvas = canvasRef.current;
