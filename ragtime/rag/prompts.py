@@ -172,7 +172,7 @@ _USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
     (do NOT re-send the full file content).
 - Never use hardcoded/mock/sample/static data in entrypoint files (dashboard/main.ts, app.py, etc.)
     when the workspace has selected tools; wire live data instead.
-{sqlite_reminder_line}{env_var_reminder_line}- Prefer incremental edits: use patch_userspace_file or targeted upsert_userspace_file calls to extend existing code rather than regenerating entire files.
+{sqlite_reminder_line}{env_var_reminder_line}{runtime_status_reminder_line}- Prefer incremental edits: use patch_userspace_file or targeted upsert_userspace_file calls to extend existing code rather than regenerating entire files.
 - If validation reports TypeScript/runtime/live-data failures, fix those exact failures before adding more feature work.
 - If preview appears blank/white but probe status is 200, first re-check runtime startup state and retry screenshot/content probe after a short settle window before changing app code.
 - After validation passes with no errors, call create_userspace_snapshot with a concise completion message.
@@ -189,13 +189,27 @@ _SQLITE_TURN_REMINDER_LINE = (
 )
 
 
-def build_userspace_turn_reminder(*, include_sqlite_persistence: bool) -> str:
+def _normalize_optional_turn_line(line: str) -> str:
+    normalized = (line or "").strip()
+    if not normalized:
+        return ""
+    return normalized + "\n"
+
+
+def build_userspace_turn_reminder(
+    *,
+    include_sqlite_persistence: bool,
+    runtime_status_reminder_line: str = "",
+) -> str:
     """Build the per-turn userspace checklist with optional SQLite lane reminder."""
     return _USERSPACE_TURN_REMINDER_BASE.format(
         sqlite_reminder_line=(
             _SQLITE_TURN_REMINDER_LINE if include_sqlite_persistence else ""
         ),
         env_var_reminder_line="",
+        runtime_status_reminder_line=_normalize_optional_turn_line(
+            runtime_status_reminder_line
+        ),
     )
 
 
@@ -203,6 +217,7 @@ def build_userspace_turn_reminder_with_env_vars(
     *,
     include_sqlite_persistence: bool,
     env_var_reminder_line: str,
+    runtime_status_reminder_line: str = "",
 ) -> str:
     """Build turn reminder with optional workspace env-var inventory hint."""
 
@@ -211,6 +226,9 @@ def build_userspace_turn_reminder_with_env_vars(
             _SQLITE_TURN_REMINDER_LINE if include_sqlite_persistence else ""
         ),
         env_var_reminder_line=env_var_reminder_line,
+        runtime_status_reminder_line=_normalize_optional_turn_line(
+            runtime_status_reminder_line
+        ),
     )
 
 

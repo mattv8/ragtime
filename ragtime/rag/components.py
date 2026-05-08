@@ -263,6 +263,8 @@ USERSPACE_RECENT_FAILURE_LIMIT = 6
 USERSPACE_RECENT_FAILURE_PROMPT_LIMIT = 3
 USERSPACE_TOOL_REPEAT_THRESHOLD = 2
 USERSPACE_TOOL_ROUND_SUMMARY_LIMIT = 10
+USERSPACE_RUNTIME_STATUS_PROMPT_TIMEOUT_SECONDS = 3.0
+USERSPACE_RUNTIME_ERROR_TURN_HINT_MAX_CHARS = 700
 
 
 def escape_prompt_template_braces(text: str) -> str:
@@ -5571,6 +5573,7 @@ except Exception as e:
         *,
         include_sqlite_persistence: bool = False,
         userspace_env_var_turn_hint: str = "",
+        userspace_runtime_status_turn_hint: str = "",
     ) -> str:
         """Build per-turn reminder text prepended to user input."""
         reminder_text = TOOL_USAGE_REMINDER
@@ -5579,10 +5582,12 @@ except Exception as e:
                 reminder_text += build_userspace_turn_reminder_with_env_vars(
                     include_sqlite_persistence=include_sqlite_persistence,
                     env_var_reminder_line=userspace_env_var_turn_hint,
+                    runtime_status_reminder_line=userspace_runtime_status_turn_hint,
                 )
             else:
                 reminder_text += build_userspace_turn_reminder(
                     include_sqlite_persistence=include_sqlite_persistence,
+                    runtime_status_reminder_line=userspace_runtime_status_turn_hint,
                 )
         return reminder_text
 
@@ -5640,6 +5645,54 @@ except Exception as e:
             "" if len(env_vars) <= max_items else f", +{len(env_vars) - max_items} more"
         )
         return "- Workspace env vars (keys only): " + ", ".join(parts) + suffix + ".\n"
+
+    @staticmethod
+    def _sanitize_userspace_runtime_error_for_turn_hint(error_text: str) -> str:
+        """Compact runtime errors for prompt injection without control characters."""
+        compact = re.sub(r"\s+", " ", error_text.replace("\x00", " ")).strip()
+        compact = "".join(
+            char for char in compact if char.isprintable() or char in {"\t", "\n"}
+        )
+        if len(compact) > USERSPACE_RUNTIME_ERROR_TURN_HINT_MAX_CHARS:
+            return "..." + compact[-USERSPACE_RUNTIME_ERROR_TURN_HINT_MAX_CHARS:]
+        return compact
+
+    @classmethod
+    def _build_userspace_runtime_status_turn_hint(cls, status: Any) -> str:
+        """Build a high-signal turn reminder line for active runtime blockers."""
+        session_state = str(getattr(status, "session_state", "") or "").strip()
+        runtime_phase = str(
+            getattr(status, "runtime_operation_phase", "") or ""
+        ).strip()
+        devserver_running = bool(getattr(status, "devserver_running", False))
+        last_error = cls._sanitize_userspace_runtime_error_for_turn_hint(
+            str(getattr(status, "last_error", "") or "")
+        )
+
+        failed_runtime = session_state == "error" or runtime_phase == "failed"
+        has_runtime_blocker = bool(last_error) or failed_runtime
+        if not has_runtime_blocker:
+            return ""
+
+        status_bits = []
+        if session_state:
+            status_bits.append(f"session_state={session_state}")
+        if runtime_phase:
+            status_bits.append(f"phase={runtime_phase}")
+        status_bits.append(f"devserver_running={str(devserver_running).lower()}")
+        status_text = ", ".join(status_bits)
+
+        if last_error:
+            return (
+                "- Current runtime blocker: "
+                f"{status_text}. Last runtime error: {last_error}. "
+                "Fix this before unrelated feature work; validate the relevant source/entrypoint and re-check the preview.\n"
+            )
+
+        return (
+            "- Current runtime blocker: "
+            f"{status_text}. Inspect runtime startup state before unrelated feature work.\n"
+        )
 
     @staticmethod
     def _build_userspace_mount_prompt_fragment(
@@ -12006,6 +12059,7 @@ except Exception as e:
         prompt_additions = ""
         include_sqlite_persistence = False
         userspace_env_var_turn_hint = ""
+        userspace_runtime_status_turn_hint = ""
         request_tool_state: dict[str, Any] = {
             "tool_calls": [],
             "signature_counts": {},
@@ -12148,6 +12202,24 @@ except Exception as e:
             userspace_env_var_turn_hint = self._build_userspace_env_var_turn_hint(
                 env_var_summaries
             )
+
+            try:
+                runtime_status = await asyncio.wait_for(
+                    userspace_runtime_service.get_devserver_status(
+                        workspace_id,
+                        request_user_id,
+                    ),
+                    timeout=USERSPACE_RUNTIME_STATUS_PROMPT_TIMEOUT_SECONDS,
+                )
+                userspace_runtime_status_turn_hint = (
+                    self._build_userspace_runtime_status_turn_hint(runtime_status)
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Skipping userspace runtime status prompt hint for workspace %s: %s",
+                    workspace_id,
+                    _format_exception_message(exc),
+                )
 
             userspace_tools = await self._create_userspace_file_tools(
                 workspace_id,
@@ -12314,6 +12386,7 @@ except Exception as e:
             "prompt_additions": prompt_additions,
             "include_sqlite_persistence": include_sqlite_persistence,
             "userspace_env_var_turn_hint": userspace_env_var_turn_hint,
+            "userspace_runtime_status_turn_hint": userspace_runtime_status_turn_hint,
             "user_identity_turn_line": user_identity_turn_line,
             "request_tool_state": request_tool_state,
             "workspace_id": workspace_id or None,
@@ -12952,6 +13025,9 @@ except Exception as e:
                 userspace_env_var_turn_hint=request_context[
                     "userspace_env_var_turn_hint"
                 ],
+                userspace_runtime_status_turn_hint=request_context[
+                    "userspace_runtime_status_turn_hint"
+                ],
             )
             turn_system_content += await self._build_context_headroom_prompt(
                 chat_history=chat_history,
@@ -13214,6 +13290,9 @@ except Exception as e:
             request_context["mode"],
             include_sqlite_persistence=request_context["include_sqlite_persistence"],
             userspace_env_var_turn_hint=request_context["userspace_env_var_turn_hint"],
+            userspace_runtime_status_turn_hint=request_context[
+                "userspace_runtime_status_turn_hint"
+            ],
         )
         turn_system_content += await self._build_context_headroom_prompt(
             chat_history=chat_history,
