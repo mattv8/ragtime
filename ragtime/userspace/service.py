@@ -1245,6 +1245,7 @@ class UserSpaceService:
         self._workspace_mount_watch_task_lock = asyncio.Lock()
         self._workspace_mount_watch_inflight: set[str] = set()
         self._workspace_mount_watch_next_due_monotonic: dict[str, float] = {}
+        self._workspace_mount_watch_next_signature_monotonic: dict[str, float] = {}
         self._workspace_mount_watch_target_signatures: dict[str, tuple[Any, ...]] = {}
         self._workspace_mount_watch_wakeup = asyncio.Event()
         self._cloud_oauth_states: dict[str, dict[str, Any]] = {}
@@ -7408,6 +7409,10 @@ class UserSpaceService:
         return jitter_fraction * self._workspace_mount_watch_jitter_seconds
 
     @staticmethod
+    def _workspace_mount_signature_poll_seconds(interval_seconds: float) -> float:
+        return max(1.0, min(30.0, float(interval_seconds)))
+
+    @staticmethod
     def _clamp_workspace_mount_sync_interval_seconds(
         value: Any,
         default_value: int | float = 30,
@@ -7487,29 +7492,6 @@ class UserSpaceService:
             if mount_id in self._workspace_mount_watch_inflight:
                 continue
 
-            due_at = self._workspace_mount_watch_next_due_monotonic.get(mount_id, 0.0)
-            target_path = str(getattr(mount, "targetPath", "") or "")
-            has_local_change = False
-            if target_path:
-                try:
-                    signature = await self._workspace_mount_target_signature(
-                        workspace_id,
-                        target_path,
-                    )
-                    has_local_change = self._workspace_mount_has_local_target_change(
-                        mount_id,
-                        signature,
-                    )
-                except Exception:
-                    logger.debug(
-                        "Failed to check local target changes for mount %s/%s",
-                        workspace_id,
-                        mount_id,
-                        exc_info=True,
-                    )
-            if now_monotonic < due_at and not has_local_change:
-                continue
-
             source_interval = self._clamp_workspace_mount_sync_interval_seconds(
                 getattr(mount_source, "syncIntervalSeconds", None),
                 global_interval_seconds,
@@ -7518,6 +7500,40 @@ class UserSpaceService:
                 getattr(mount, "syncIntervalSeconds", None),
                 source_interval,
             )
+
+            due_at = self._workspace_mount_watch_next_due_monotonic.get(mount_id, 0.0)
+            target_path = str(getattr(mount, "targetPath", "") or "")
+            has_local_change = False
+            if now_monotonic < due_at:
+                signature_due_at = self._workspace_mount_watch_next_signature_monotonic.get(
+                    mount_id,
+                    0.0,
+                )
+                if target_path and now_monotonic >= signature_due_at:
+                    self._workspace_mount_watch_next_signature_monotonic[mount_id] = (
+                        now_monotonic
+                        + self._workspace_mount_signature_poll_seconds(
+                            float(interval_seconds)
+                        )
+                    )
+                    try:
+                        signature = await self._workspace_mount_target_signature(
+                            workspace_id,
+                            target_path,
+                        )
+                        has_local_change = self._workspace_mount_has_local_target_change(
+                            mount_id,
+                            signature,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to check local target changes for mount %s/%s",
+                            workspace_id,
+                            mount_id,
+                            exc_info=True,
+                        )
+                if not has_local_change:
+                    continue
 
             self._workspace_mount_watch_inflight.add(mount_id)
             # Compute the next due time when the run completes so each mount
@@ -7536,6 +7552,7 @@ class UserSpaceService:
         )
         for mount_id in stale_mount_ids:
             self._workspace_mount_watch_next_due_monotonic.pop(mount_id, None)
+            self._workspace_mount_watch_next_signature_monotonic.pop(mount_id, None)
             self._workspace_mount_watch_inflight.discard(mount_id)
             self._workspace_mount_watch_target_signatures.pop(mount_id, None)
 
@@ -7630,6 +7647,12 @@ class UserSpaceService:
                         await self._workspace_mount_target_signature(
                             workspace_id,
                             target_path,
+                        )
+                    )
+                    self._workspace_mount_watch_next_signature_monotonic[mount_id] = (
+                        _time.monotonic()
+                        + self._workspace_mount_signature_poll_seconds(
+                            float(source_interval_seconds)
                         )
                     )
                 except Exception:
@@ -7734,6 +7757,7 @@ class UserSpaceService:
         self._workspace_mount_watch_task = None
         self._workspace_mount_watch_inflight.clear()
         self._workspace_mount_watch_next_due_monotonic.clear()
+        self._workspace_mount_watch_next_signature_monotonic.clear()
         self._workspace_mount_watch_target_signatures.clear()
 
     async def shutdown_workspace_scm_watch(self) -> None:
@@ -16182,6 +16206,7 @@ class UserSpaceService:
             for row in affected_ids:
                 mid = str(row.get("id", ""))
                 self._workspace_mount_watch_next_due_monotonic.pop(mid, None)
+                self._workspace_mount_watch_next_signature_monotonic.pop(mid, None)
                 self._workspace_mount_watch_inflight.discard(mid)
 
         return self._userspace_mount_source_from_record(updated)
@@ -16799,6 +16824,7 @@ class UserSpaceService:
                 self._workspace_mount_watch_wakeup.set()
             else:
                 self._workspace_mount_watch_next_due_monotonic.pop(mount_id, None)
+                self._workspace_mount_watch_next_signature_monotonic.pop(mount_id, None)
             self._workspace_mount_watch_target_signatures.pop(mount_id, None)
 
         target_path = str(getattr(existing, "targetPath", "") or "")
@@ -16936,6 +16962,7 @@ class UserSpaceService:
                 )
         await self._invalidate_workspace_mount_sync_preview(mount_id)
         self._workspace_mount_watch_next_due_monotonic.pop(mount_id, None)
+        self._workspace_mount_watch_next_signature_monotonic.pop(mount_id, None)
         self._workspace_mount_watch_target_signatures.pop(mount_id, None)
         self._workspace_mount_watch_inflight.discard(mount_id)
         self.invalidate_file_list_cache(workspace_id)
@@ -17428,6 +17455,7 @@ class UserSpaceService:
             ):
                 continue
             self._workspace_mount_watch_next_due_monotonic[mount_id] = 0.0
+            self._workspace_mount_watch_next_signature_monotonic.pop(mount_id, None)
             self._workspace_mount_watch_target_signatures.pop(mount_id, None)
             self._workspace_mount_watch_wakeup.set()
 

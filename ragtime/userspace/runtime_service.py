@@ -574,6 +574,10 @@ class UserSpaceRuntimeService:
         normalized = str(raw_value).strip()
         return normalized or None
 
+    @staticmethod
+    def _is_runtime_manager_not_found(exc: HTTPException) -> bool:
+        return "(404)" in str(exc.detail)
+
     def _runtime_session_model(self, db: Any) -> Any:
         return getattr(db, "userspaceruntimesession")
 
@@ -847,6 +851,27 @@ class UserSpaceRuntimeService:
             return
         async with self._runtime_cache_lock:
             self._provider_status_cache.pop(provider_session_id, None)
+
+    async def _mark_provider_session_missing(
+        self,
+        session: UserSpaceRuntimeSession,
+        detail: str,
+    ) -> None:
+        db = await get_db()
+        model = self._runtime_session_model(db)
+        await self._runtime_session_update_row(
+            model,
+            session.id,
+            {
+                "state": "stopped",
+                "lastHeartbeatAt": self._utc_now(),
+                "lastError": detail[:500],
+            },
+        )
+        await self._invalidate_workspace_runtime_caches(
+            session.workspace_id,
+            invalidate_preview_host=True,
+        )
 
     async def invalidate_preview_session_cache(self, workspace_id: str) -> None:
         async with self._runtime_cache_lock:
@@ -1211,7 +1236,7 @@ class UserSpaceRuntimeService:
             await self._cache_provider_status(provider_session_id, response)
             return response
         except HTTPException as exc:
-            if "(404)" in str(exc.detail):
+            if self._is_runtime_manager_not_found(exc):
                 await self._drop_provider_status_cache(provider_session_id)
                 return None
             if allow_stale_on_error:
@@ -2480,6 +2505,17 @@ class UserSpaceRuntimeService:
             return None
         except HTTPException as exc:
             detail = str(exc.detail).strip() or "runtime mount refresh failed"
+            if self._is_runtime_manager_not_found(exc):
+                await self._mark_provider_session_missing(active_session, detail)
+                logger.info(
+                    "Active runtime provider session disappeared for %s during automatic mount refresh; marked session %s stopped",
+                    workspace_id,
+                    active_session.id,
+                )
+                return (
+                    "Sync completed, but the previous runtime session is no longer active. "
+                    "Start the runtime again to use the refreshed mount."
+                )
         except Exception as exc:
             detail = str(exc).strip() or "runtime mount refresh failed"
 
