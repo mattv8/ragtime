@@ -151,6 +151,13 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
       if ((err as Error).name !== 'AbortError') {
         const errorMessage = err instanceof Error ? err.message : 'Failed to load available models';
         setError(errorMessage);
+        setReadiness(prev => prev
+          ? {
+              ...prev,
+              models_loading: false,
+              copilot_refresh_in_progress: false,
+            }
+          : prev);
         console.error('Failed to load available models:', err);
       }
     } finally {

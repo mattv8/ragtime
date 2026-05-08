@@ -4597,6 +4597,7 @@ export function ChatPanel({
     models: availableModels,
     loading: modelsLoading,
     meta: modelsMeta,
+    readiness: modelsReadiness,
     refresh: refreshModels,
     awaitReady: awaitModelsReady,
   } = useAvailableModels();
@@ -6743,6 +6744,9 @@ export function ChatPanel({
     sendMessageDirect('continue');
   };
 
+  const isModelsLoading = Boolean(
+    modelsLoading || modelsReadiness?.models_loading || modelsReadiness?.copilot_refresh_in_progress,
+  );
   const getBranchSendBlockReason = useCallback(async (
     branchKind: ConversationBranchKind,
     conversation: Conversation | null,
@@ -6751,7 +6755,7 @@ export function ChatPanel({
       return null;
     }
 
-    const modelState = modelsLoading
+    const modelState = isModelsLoading
       ? await awaitModelsReady()
       : { models: availableModels, meta: modelsMeta };
     const allowedModels = modelState.meta?.allowed_models ?? [];
@@ -6782,7 +6786,7 @@ export function ChatPanel({
     }
 
     return null;
-  }, [availableModels, awaitModelsReady, modelsLoading, modelsMeta]);
+  }, [availableModels, awaitModelsReady, isModelsLoading, modelsMeta]);
 
   // Direct message send - bypasses inputValue state for programmatic sending
   const sendMessageDirect = async (message: string) => {
@@ -8078,7 +8082,7 @@ export function ChatPanel({
                   currentTokens={contextUsage.currentTokens}
                   totalTokens={contextUsage.totalTokens}
                   contextLimit={contextUsage.contextLimit}
-                  loading={modelsLoading}
+                  loading={isModelsLoading}
                 />
                 {canShareConversation && !embedded && activeConversation && (
                   <button
@@ -8131,8 +8135,8 @@ export function ChatPanel({
                   })()}
                   onModelChange={changeModel}
                   getModelSelectionKey={(model) => toProviderScopedModelKey(model.provider, model.id)}
-                  disabled={isStreaming || modelsLoading}
-                  loading={modelsLoading}
+                  disabled={isStreaming || isModelsLoading}
+                  loading={isModelsLoading}
                   triggerIcon={showWorkspaceConversationSelect ? <Bot size={14} /> : undefined}
                   triggerClassName={showWorkspaceConversationSelect ? 'chat-workspace-model-trigger' : undefined}
                 />
