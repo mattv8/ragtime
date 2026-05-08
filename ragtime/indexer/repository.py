@@ -1412,7 +1412,9 @@ class IndexerRepository:
                 raw = raw.model_dump()
             elif not isinstance(raw, dict):
                 raw = {}
-            update_data["modelProviderPrecedence"] = _coerce_model_provider_precedence(raw).model_dump()
+            # Encode as JSON string because Prisma expects a string for Json fields by default when manually inserting dicts unless using prisma.Json
+            import json
+            update_data["modelProviderPrecedence"] = json.dumps(_coerce_model_provider_precedence(raw).model_dump())
 
         if "openapi_model_provider_precedence" in updates and updates["openapi_model_provider_precedence"] is not None:
             from ragtime.indexer.models import ModelProviderPrecedence
@@ -1422,7 +1424,8 @@ class IndexerRepository:
                 raw = raw.model_dump()
             elif not isinstance(raw, dict):
                 raw = {}
-            update_data["openapiModelProviderPrecedence"] = _coerce_model_provider_precedence(raw).model_dump()
+            import json
+            update_data["openapiModelProviderPrecedence"] = json.dumps(_coerce_model_provider_precedence(raw).model_dump())
 
         # Special handling for mcp_default_route_password:
         # - Empty string clears the password (set to None)
