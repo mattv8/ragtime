@@ -10,10 +10,10 @@
 -- Two columns are added: one governs in-app chat resolution, the other governs
 -- the same logic for OpenAI-compatible /v1/models clients.
 
-ALTER TABLE "AppSettings"
+ALTER TABLE "app_settings"
 ADD COLUMN "model_provider_precedence" JSONB NOT NULL
 DEFAULT '{"providers": [], "model_overrides": {}, "family_overrides": {}}'::jsonb;
 
-ALTER TABLE "AppSettings"
+ALTER TABLE "app_settings"
 ADD COLUMN "openapi_model_provider_precedence" JSONB NOT NULL
 DEFAULT '{"providers": [], "model_overrides": {}, "family_overrides": {}}'::jsonb;
