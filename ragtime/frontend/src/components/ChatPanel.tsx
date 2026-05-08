@@ -5510,6 +5510,9 @@ export function ChatPanel({
 
     const activeT = nextWorkspaceState.active_task;
     const interruptedT = nextWorkspaceState.interrupted_task;
+
+    setIsConversationListLoading(false);
+
     if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
       setActiveTask(activeT);
       setInterruptedTask(null);
@@ -5520,7 +5523,6 @@ export function ChatPanel({
     setActiveTask(null);
     setInterruptedTask(interruptedT ?? null);
     syncConversationActiveTaskId(selectedConversationId, null);
-    setIsConversationListLoading(false);
   }, [archiveAgeDays, syncConversationActiveTaskId]);
 
   const loadConversations = async () => {
