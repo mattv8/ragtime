@@ -5,7 +5,7 @@ This module provides async access to AppSettings stored in the database,
 replacing environment-based configuration for tool settings.
 """
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
@@ -146,6 +146,28 @@ def _provider_connection_settings(prisma_settings) -> dict:
             }
         )
     return values
+
+
+def _coerce_model_provider_precedence_dict(value: Any) -> dict:
+    """Coerce JSON value from Prisma into a plain precedence dict for the cache."""
+    if not isinstance(value, dict):
+        return {"providers": [], "model_overrides": {}, "family_overrides": {}}
+    providers = value.get("providers") or []
+    model_overrides = value.get("model_overrides") or {}
+    family_overrides = value.get("family_overrides") or {}
+    return {
+        "providers": [str(p).strip() for p in providers if str(p).strip()],
+        "model_overrides": {
+            str(k).strip(): str(v).strip()
+            for k, v in model_overrides.items()
+            if str(k).strip() and str(v).strip()
+        },
+        "family_overrides": {
+            str(k).strip(): str(v).strip()
+            for k, v in family_overrides.items()
+            if str(k).strip() and str(v).strip()
+        },
+    }
 
 
 def _provider_connection_defaults() -> dict:
@@ -324,12 +346,18 @@ class SettingsCache:
                 "default_chat_model": getattr(
                     prisma_settings, "defaultChatModel", None
                 ),
+                "model_provider_precedence": _coerce_model_provider_precedence_dict(
+                    getattr(prisma_settings, "modelProviderPrecedence", None)
+                ),
                 "allowed_openapi_models": getattr(
                     prisma_settings, "allowedOpenapiModels", None
                 )
                 or [],
                 "openapi_sync_chat_models": getattr(
                     prisma_settings, "openapiSyncChatModels", True
+                ),
+                "openapi_model_provider_precedence": _coerce_model_provider_precedence_dict(
+                    getattr(prisma_settings, "openapiModelProviderPrecedence", None)
                 ),
                 "max_iterations": prisma_settings.maxIterations,
                 # Embedding settings
@@ -434,8 +462,18 @@ class SettingsCache:
                 "include_copilot_third_party_models": False,
                 "allowed_chat_models": [],
                 "default_chat_model": None,
+                "model_provider_precedence": {
+                    "providers": [],
+                    "model_overrides": {},
+                    "family_overrides": {},
+                },
                 "allowed_openapi_models": [],
                 "openapi_sync_chat_models": True,
+                "openapi_model_provider_precedence": {
+                    "providers": [],
+                    "model_overrides": {},
+                    "family_overrides": {},
+                },
                 "max_iterations": 15,
                 # Embedding settings
                 "embedding_provider": "ollama",

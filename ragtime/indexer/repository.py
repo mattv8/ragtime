@@ -136,6 +136,32 @@ def _sql_quote_literal(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _coerce_model_provider_precedence(value: Any) -> "ModelProviderPrecedence":
+    """Coerce raw JSON/dict from Prisma into a ModelProviderPrecedence model."""
+    from ragtime.indexer.models import ModelProviderPrecedence
+
+    if isinstance(value, ModelProviderPrecedence):
+        return value
+    if not isinstance(value, dict):
+        return ModelProviderPrecedence()
+    providers = value.get("providers") or []
+    model_overrides = value.get("model_overrides") or {}
+    family_overrides = value.get("family_overrides") or {}
+    return ModelProviderPrecedence(
+        providers=[str(p).strip() for p in providers if str(p).strip()],
+        model_overrides={
+            str(k).strip(): str(v).strip()
+            for k, v in model_overrides.items()
+            if str(k).strip() and str(v).strip()
+        },
+        family_overrides={
+            str(k).strip(): str(v).strip()
+            for k, v in family_overrides.items()
+            if str(k).strip() and str(v).strip()
+        },
+    )
+
+
 def _identifier_in_allowed_models(
     identifier: str,
     allowed_models: list[str],
@@ -1116,10 +1142,16 @@ class IndexerRepository:
             has_github_copilot_auth=bool(github_copilot_access_token),
             allowed_chat_models=settings.allowedChatModels or [],
             default_chat_model=getattr(settings, "defaultChatModel", None),
+            model_provider_precedence=_coerce_model_provider_precedence(
+                getattr(settings, "modelProviderPrecedence", None)
+            ),
             # OpenAPI model configuration
             allowed_openapi_models=getattr(settings, "allowedOpenapiModels", None)
             or [],
             openapi_sync_chat_models=getattr(settings, "openapiSyncChatModels", True),
+            openapi_model_provider_precedence=_coerce_model_provider_precedence(
+                getattr(settings, "openapiModelProviderPrecedence", None)
+            ),
             max_iterations=settings.maxIterations,
             # Tool settings
             enabled_tools=settings.enabledTools,
@@ -1285,8 +1317,10 @@ class IndexerRepository:
             "include_copilot_third_party_models": "includeCopilotThirdPartyModels",
             "allowed_chat_models": "allowedChatModels",
             "default_chat_model": "defaultChatModel",
+            "model_provider_precedence": "modelProviderPrecedence",
             "allowed_openapi_models": "allowedOpenapiModels",
             "openapi_sync_chat_models": "openapiSyncChatModels",
+            "openapi_model_provider_precedence": "openapiModelProviderPrecedence",
             "max_iterations": "maxIterations",
             # Token optimization settings
             "max_tool_output_chars": "maxToolOutputChars",
@@ -1367,6 +1401,28 @@ class IndexerRepository:
             if field in updates and updates[field]:
                 camel_key = field_mapping[field]
                 update_data[camel_key] = encrypt_secret(updates[field])
+
+        # Special handling for model_provider_precedence:
+        # Coerce ModelProviderPrecedence pydantic model to plain dict for JSON storage.
+        if "model_provider_precedence" in updates and updates["model_provider_precedence"] is not None:
+            from ragtime.indexer.models import ModelProviderPrecedence
+
+            raw = updates["model_provider_precedence"]
+            if isinstance(raw, ModelProviderPrecedence):
+                raw = raw.model_dump()
+            elif not isinstance(raw, dict):
+                raw = {}
+            update_data["modelProviderPrecedence"] = _coerce_model_provider_precedence(raw).model_dump()
+
+        if "openapi_model_provider_precedence" in updates and updates["openapi_model_provider_precedence"] is not None:
+            from ragtime.indexer.models import ModelProviderPrecedence
+
+            raw = updates["openapi_model_provider_precedence"]
+            if isinstance(raw, ModelProviderPrecedence):
+                raw = raw.model_dump()
+            elif not isinstance(raw, dict):
+                raw = {}
+            update_data["openapiModelProviderPrecedence"] = _coerce_model_provider_precedence(raw).model_dump()
 
         # Special handling for mcp_default_route_password:
         # - Empty string clears the password (set to None)

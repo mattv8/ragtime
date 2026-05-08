@@ -665,9 +665,11 @@ export interface AppSettings {
   has_github_copilot_auth: boolean;
   allowed_chat_models: string[];
   default_chat_model?: string | null;
+  model_provider_precedence?: ModelProviderPrecedence;
   // OpenAPI-compatible endpoint model configuration
   allowed_openapi_models: string[];
   openapi_sync_chat_models: boolean;
+  openapi_model_provider_precedence?: ModelProviderPrecedence;
   max_iterations: number;
   // Token optimization settings
   max_tool_output_chars: number;
@@ -788,8 +790,10 @@ export interface UpdateSettingsRequest {
   include_copilot_third_party_models?: boolean;
   allowed_chat_models?: string[];
   default_chat_model?: string | null;
+  model_provider_precedence?: ModelProviderPrecedence;
   allowed_openapi_models?: string[];
   openapi_sync_chat_models?: boolean;
+  openapi_model_provider_precedence?: ModelProviderPrecedence;
   max_iterations?: number;
   // Token optimization settings
   max_tool_output_chars?: number;
@@ -3349,6 +3353,17 @@ export interface AvailableModelsResponse {
   models_loading?: boolean;
   copilot_refresh_in_progress?: boolean;
   provider_states?: ProviderModelState[];
+  model_provider_precedence?: ModelProviderPrecedence | null;
+  openapi_model_provider_precedence?: ModelProviderPrecedence | null;
+}
+
+export interface ModelProviderPrecedence {
+  /** Provider names ordered from highest to lowest precedence. */
+  providers: string[];
+  /** Map of model_id -> preferred provider name (overrides provider order). */
+  model_overrides: Record<string, string>;
+  /** Map of family/group label -> preferred provider name. */
+  family_overrides: Record<string, string>;
 }
 
 // =============================================================================

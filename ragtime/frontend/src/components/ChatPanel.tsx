@@ -19,7 +19,9 @@ import {
   modelIdentifierInList,
   normalizeProviderAlias,
   providersEquivalent,
+  resolveProviderForModel,
   toProviderScopedModelKey,
+  type ModelPrecedenceLike,
 } from '@/utils/modelProviders';
 import {
   formatChatTimestamp,
@@ -356,17 +358,21 @@ function branchStartsGeneration(branchKind: ConversationBranchKind): boolean {
 type ResolvedConversationModelSelection = {
   modelId: string;
   matchedModel?: AvailableModel;
+  /** True when the matched model came from a different provider than the saved one (precedence fallback). */
+  fallbackFromProvider?: string | null;
 };
 
 function resolveConversationModelSelection(
   storedModel: string | null | undefined,
   availableModels: AvailableModel[],
+  precedence?: ModelPrecedenceLike | null,
 ): ResolvedConversationModelSelection {
   const parsed = parseStoredModelIdentifier(storedModel || '');
   const modelId = parsed.modelId.trim();
   const explicitProvider = normalizeProviderAlias(parsed.provider) || null;
 
   let matchedModel: AvailableModel | undefined;
+  let fallbackFromProvider: string | null = null;
   if (modelId) {
     if (explicitProvider) {
       matchedModel = availableModels.find(
@@ -374,7 +380,26 @@ function resolveConversationModelSelection(
       );
     }
     if (!matchedModel) {
-      matchedModel = availableModels.find((model) => model.id === modelId);
+      // Precedence-aware fallback: among providers that offer this model_id,
+      // pick the one chosen by admin precedence/overrides.
+      const candidates = availableModels.filter((m) => m.id === modelId);
+      if (candidates.length) {
+        const preferredProvider = resolveProviderForModel(
+          precedence,
+          modelId,
+          candidates[0]?.group ?? null,
+          candidates.map((m) => m.provider),
+        );
+        if (preferredProvider) {
+          matchedModel = candidates.find((m) => normalizeProviderAlias(m.provider) === preferredProvider);
+        }
+        if (!matchedModel) {
+          matchedModel = candidates[0];
+        }
+        if (matchedModel && explicitProvider && !providersEquivalent(matchedModel.provider, explicitProvider)) {
+          fallbackFromProvider = explicitProvider;
+        }
+      }
     }
     if (!matchedModel && modelId.includes('/')) {
       const slashIndex = modelId.indexOf('/');
@@ -390,6 +415,7 @@ function resolveConversationModelSelection(
   return {
     modelId,
     matchedModel,
+    fallbackFromProvider,
   };
 }
 
@@ -6042,7 +6068,11 @@ export function ChatPanel({
   // Resolve context limit from stored conversation model value.
   // Handles provider-scoped and legacy model id formats to avoid 8k fallback mismatches.
   const getContextLimit = useCallback((storedModel: string): number => {
-    const selection = resolveConversationModelSelection(storedModel, availableModels);
+    const selection = resolveConversationModelSelection(
+      storedModel,
+      availableModels,
+      modelsMeta?.model_provider_precedence ?? null,
+    );
     if (!selection.modelId) {
       return defaultContextLimit;
     }
@@ -6052,7 +6082,7 @@ export function ChatPanel({
     }
 
     return defaultContextLimit;
-  }, [availableModels, defaultContextLimit]);
+  }, [availableModels, defaultContextLimit, modelsMeta]);
 
   const applyCreatedConversation = useCallback((conversation: Conversation) => {
     setConversations(prev => [conversation, ...prev]);
@@ -6727,7 +6757,11 @@ export function ChatPanel({
       return null;
     }
 
-    const selection = resolveConversationModelSelection(conversation.model || '', modelState.models);
+    const selection = resolveConversationModelSelection(
+      conversation.model || '',
+      modelState.models,
+      modelState.meta?.model_provider_precedence ?? null,
+    );
     if (!selection.modelId) {
       return null;
     }
@@ -8084,7 +8118,11 @@ export function ChatPanel({
                 <ModelSelector
                   models={availableModels}
                   selectedModelId={(() => {
-                    const selection = resolveConversationModelSelection(activeConversation.model || '', availableModels);
+                    const selection = resolveConversationModelSelection(
+                      activeConversation.model || '',
+                      availableModels,
+                      modelsMeta?.model_provider_precedence ?? null,
+                    );
                     return selection.matchedModel
                       ? toProviderScopedModelKey(selection.matchedModel.provider, selection.matchedModel.id)
                       : selection.modelId;

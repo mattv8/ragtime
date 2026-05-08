@@ -12632,6 +12632,28 @@ except Exception as e:
         )
         return agent
 
+    def _configured_llm_providers(self) -> list[str]:
+        """Return the set of LLM providers that appear to have working credentials/endpoints."""
+        s = self._app_settings or {}
+        configured: list[str] = []
+        if str(s.get("openai_api_key", "") or "").strip():
+            configured.append("openai")
+        if str(s.get("anthropic_api_key", "") or "").strip():
+            configured.append("anthropic")
+        if str(s.get("github_copilot_access_token", "") or "").strip():
+            configured.append("github_copilot")
+        # Local providers are considered configured whenever a base URL is set
+        # (callers will get a clear error if the local server is offline).
+        for provider_key, base_url_field in (
+            ("ollama", "llm_ollama_base_url"),
+            ("llama_cpp", "llm_llama_cpp_base_url"),
+            ("lmstudio", "llm_lmstudio_base_url"),
+            ("omlx", "llm_omlx_base_url"),
+        ):
+            if str(s.get(base_url_field, "") or "").strip():
+                configured.append(provider_key)
+        return configured
+
     def _parse_provider_scoped_model(
         self,
         conversation_model: Optional[str],
@@ -12755,6 +12777,26 @@ except Exception as e:
         # should still route through the configured Copilot provider.
         if provider_override == "openai" and configured_provider == "github_copilot":
             provider = configured_provider
+
+        # Apply admin-configured provider precedence: if the requested provider
+        # is offline / not configured but another configured provider offers the
+        # same model id, transparently fall back per the precedence rules.
+        try:
+            from ragtime.core.model_providers import resolve_provider_for_model
+
+            precedence = self._app_settings.get("model_provider_precedence") if self._app_settings else None
+            configured_providers = self._configured_llm_providers()  # see helper below
+            if configured_providers and provider not in configured_providers:
+                resolved = resolve_provider_for_model(
+                    precedence,
+                    model_id=model_id,
+                    family=None,
+                    candidate_providers=configured_providers,
+                )
+                if resolved:
+                    provider = resolved
+        except Exception:  # pragma: no cover - defensive: never block chat on resolver
+            logger.exception("model_provider_precedence resolution failed; using fallback")
 
         max_tokens = await self._resolve_chat_request_max_tokens(provider, model_id)
         return await self._build_llm(provider, model_id, max_tokens)

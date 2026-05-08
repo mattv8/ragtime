@@ -203,3 +203,51 @@ export function buildProviderBaseUrl(
 ): string {
   return `${protocol || connection.defaultProtocol}://${host || connection.defaultHost}:${port || connection.defaultPort}`;
 }
+
+export interface ModelPrecedenceLike {
+  providers?: string[] | null;
+  model_overrides?: Record<string, string> | null;
+  family_overrides?: Record<string, string> | null;
+}
+
+/**
+ * Pick the preferred provider for a model from a candidate set, using:
+ *   1. Exact model_id override
+ *   2. Family override
+ *   3. providers[] ordering
+ *   4. null (caller decides default)
+ */
+export function resolveProviderForModel(
+  precedence: ModelPrecedenceLike | null | undefined,
+  modelId: string,
+  family: string | null | undefined,
+  candidateProviders: Iterable<string>,
+): string | null {
+  const candidates = new Set<string>();
+  for (const p of candidateProviders) {
+    const norm = normalizeProviderAlias(p);
+    if (norm) candidates.add(norm);
+  }
+  if (!candidates.size) return null;
+  if (!precedence) return null;
+
+  const id = (modelId || '').trim();
+  const fam = (family || '').trim();
+  const overrides = precedence.model_overrides || {};
+  const familyOverrides = precedence.family_overrides || {};
+  const order = precedence.providers || [];
+
+  if (id && overrides[id]) {
+    const c = normalizeProviderAlias(overrides[id]);
+    if (c && candidates.has(c)) return c;
+  }
+  if (fam && familyOverrides[fam]) {
+    const c = normalizeProviderAlias(familyOverrides[fam]);
+    if (c && candidates.has(c)) return c;
+  }
+  for (const p of order) {
+    const c = normalizeProviderAlias(p);
+    if (c && candidates.has(c)) return c;
+  }
+  return null;
+}

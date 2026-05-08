@@ -5759,6 +5759,19 @@ fieldset legend.legend-with-status .legend-divider {
   background: var(--bg-primary, #1e1e1e);
 }
 
+.family-group-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 10px;
+  margin-bottom: var(--space-sm);
+  font-weight: 700;
+  font-size: 0.9em;
+  color: var(--color-accent, #60a5fa);
+  border-bottom: 2px solid var(--color-accent, #60a5fa);
+  background: var(--color-bg-secondary);
+}
+
 .auth-group-provider-section {
   display: flex;
   flex-direction: column;

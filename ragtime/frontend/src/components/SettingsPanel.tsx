@@ -11,6 +11,7 @@ import { InlineCopyButton } from './shared/InlineCopyButton';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
+import { ModelFilterModal } from './ModelFilterModal';
 import { CheckboxDropdown } from './shared/CheckboxDropdown';
 import { OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
 import { renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
@@ -42,6 +43,7 @@ import {
   providersEquivalent,
   type ProviderConnectionDescriptor,
 } from '@/utils/modelProviders';
+import type { ModelProviderPrecedence } from '@/types';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -517,12 +519,17 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
   const [embeddingModelsLoaded, setEmbeddingModelsLoaded] = useState(false);
   const [lmstudioModelActionLoading, setLmstudioModelActionLoading] = useState(false);
 
-  // Model filter modal state
+  // Model filter modal state (chat)
   const [showModelFilterModal, setShowModelFilterModal] = useState(false);
+  const [modelProviderPrecedence, setModelProviderPrecedence] = useState<ModelProviderPrecedence>({
+    providers: [],
+    model_overrides: {},
+    family_overrides: {},
+  });
+  const [savingPrecedence, setSavingPrecedence] = useState(false);
   const [allAvailableModels, setAllAvailableModels] = useState<AvailableModel[]>([]);
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelFilterText, setModelFilterText] = useState('');
   const [filteredChatModels, setFilteredChatModels] = useState<AvailableModel[]>([]);
   const [automaticDefaultChatModel, setAutomaticDefaultChatModel] = useState<string | null>(null);
   const [chatModelsLoading, setChatModelsLoading] = useState(false);
@@ -531,8 +538,13 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
   const [showOpenapiModelModal, setShowOpenapiModelModal] = useState(false);
   const [selectedOpenapiModels, setSelectedOpenapiModels] = useState<Set<string>>(new Set());
   const [openapiModelsLoading, setOpenapiModelsLoading] = useState(false);
-  const [openapiModelFilterText, setOpenapiModelFilterText] = useState('');
   const [openapiAvailableModels, setOpenapiAvailableModels] = useState<AvailableModel[]>([]);
+  const [openapiModelProviderPrecedence, setOpenapiModelProviderPrecedence] = useState<ModelProviderPrecedence>({
+    providers: [],
+    model_overrides: {},
+    family_overrides: {},
+  });
+  const [savingOpenapiPrecedence, setSavingOpenapiPrecedence] = useState(false);
 
   // MCP Routes panel state
   const [showMcpRoutesPanel, setShowMcpRoutesPanel] = useState(false);
@@ -1198,13 +1210,38 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
   const openModelFilterModal = useCallback(async () => {
     setModelsLoading(true);
     setShowModelFilterModal(true);
-    setModelFilterText('');
 
     try {
       const { models, response } = await fetchModelsForModal();
       setAllAvailableModels(models);
       const allowedModels = response.allowed_models || [];
       setSelectedModels(initSelectedFromAllowed(models, allowedModels));
+      // Hydrate precedence from response (falling back to discovered providers).
+      const fromResponse = response.model_provider_precedence;
+      const discoveredProviders: string[] = [];
+      const seen = new Set<string>();
+      for (const m of models) {
+        const norm = normalizeProviderAlias(m.provider);
+        if (norm && !seen.has(norm)) {
+          seen.add(norm);
+          discoveredProviders.push(norm);
+        }
+      }
+      const savedOrder = (fromResponse?.providers || []).filter((p) => !!normalizeProviderAlias(p));
+      const merged: string[] = [];
+      const mergedSet = new Set<string>();
+      for (const p of savedOrder) {
+        const n = normalizeProviderAlias(p);
+        if (n && !mergedSet.has(n)) { mergedSet.add(n); merged.push(n); }
+      }
+      for (const p of discoveredProviders) {
+        if (!mergedSet.has(p)) { mergedSet.add(p); merged.push(p); }
+      }
+      setModelProviderPrecedence({
+        providers: merged,
+        model_overrides: { ...(fromResponse?.model_overrides || {}) },
+        family_overrides: { ...(fromResponse?.family_overrides || {}) },
+      });
     } catch (err) {
       console.error('Failed to load models:', err);
     } finally {
@@ -1240,16 +1277,54 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     }
   };
 
+  const saveProviderPrecedence = async () => {
+    setSavingPrecedence(true);
+    try {
+      await api.updateSettings({ model_provider_precedence: modelProviderPrecedence });
+      toast.success('Provider precedence saved');
+      refreshModels();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save provider precedence');
+    } finally {
+      setSavingPrecedence(false);
+    }
+  };
+
   const openOpenapiModelModal = useCallback(async () => {
     setOpenapiModelsLoading(true);
     setShowOpenapiModelModal(true);
-    setOpenapiModelFilterText('');
 
     try {
       const { models, response } = await fetchModelsForModal();
       setOpenapiAvailableModels(models);
       const allowedOpenapiModels = response.allowed_openapi_models || [];
       setSelectedOpenapiModels(initSelectedFromAllowed(models, allowedOpenapiModels));
+      // Hydrate openapi precedence (mirrors chat-side logic).
+      const fromResponse = response.openapi_model_provider_precedence;
+      const discoveredProviders: string[] = [];
+      const seen = new Set<string>();
+      for (const m of models) {
+        const norm = normalizeProviderAlias(m.provider);
+        if (norm && !seen.has(norm)) {
+          seen.add(norm);
+          discoveredProviders.push(norm);
+        }
+      }
+      const savedOrder = (fromResponse?.providers || []).filter((p) => !!normalizeProviderAlias(p));
+      const merged: string[] = [];
+      const mergedSet = new Set<string>();
+      for (const p of savedOrder) {
+        const n = normalizeProviderAlias(p);
+        if (n && !mergedSet.has(n)) { mergedSet.add(n); merged.push(n); }
+      }
+      for (const p of discoveredProviders) {
+        if (!mergedSet.has(p)) { mergedSet.add(p); merged.push(p); }
+      }
+      setOpenapiModelProviderPrecedence({
+        providers: merged,
+        model_overrides: { ...(fromResponse?.model_overrides || {}) },
+        family_overrides: { ...(fromResponse?.family_overrides || {}) },
+      });
     } catch (err) {
       console.error('Failed to load models:', err);
     } finally {
@@ -1279,6 +1354,18 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       toast.success('OpenAPI model filter saved');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save OpenAPI model filter');
+    }
+  };
+
+  const saveOpenapiProviderPrecedence = async () => {
+    setSavingOpenapiPrecedence(true);
+    try {
+      await api.updateSettings({ openapi_model_provider_precedence: openapiModelProviderPrecedence });
+      toast.success('OpenAPI provider precedence saved');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save OpenAPI provider precedence');
+    } finally {
+      setSavingOpenapiPrecedence(false);
     }
   };
 
@@ -5791,312 +5878,43 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       )}
 
 
-      {/* Model Filter Modal */}
-      {showModelFilterModal && (
-        <div className="modal-overlay" onClick={() => setShowModelFilterModal(false)}>
-          <div className="modal-content modal-medium" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Configure Allowed Chat Models</h3>
-              <button
-                className="modal-close"
-                onClick={() => setShowModelFilterModal(false)}
-              >
-                &times;
-              </button>
-            </div>
-            <div className="modal-body">
-              {modelsLoading ? (
-                <p className="muted">Loading available models...</p>
-              ) : allAvailableModels.length === 0 ? (
-                <p className="muted">
-                  No models available. Please configure API keys or Ollama connection and save settings first.
-                </p>
-              ) : (
-                <>
-                  <div className="model-filter-search">
-                    <input
-                      type="text"
-                      placeholder="Filter models..."
-                      value={modelFilterText}
-                      onChange={(e) => setModelFilterText(e.target.value)}
-                      autoFocus
-                    />
-                  </div>
-                  <div className="model-filter-actions">
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={selectAllModels}
-                    >
-                      Select All
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-secondary"
-                      onClick={deselectAllModels}
-                    >
-                      Deselect All
-                    </button>
-                    <span className="muted" style={{ marginLeft: 'auto' }}>
-                      {selectedModels.size} of {allAvailableModels.length} selected
-                    </span>
-                  </div>
-                  <p className="field-help" style={{ margin: '0 0 0.5rem 0' }}>
-                    If the same model exists from multiple providers, selecting a row sets the provider to use for that model.
-                  </p>
-                  <div className="model-filter-list">
-                    {(() => {
-                      // Filter models by name, id, and provider
-                      const filterLower = modelFilterText.toLowerCase();
-                      const filtered = allAvailableModels.filter((model) =>
-                        modelFilterText === '' ||
-                        model.name.toLowerCase().includes(filterLower) ||
-                        model.id.toLowerCase().includes(filterLower) ||
-                        model.provider.toLowerCase().includes(filterLower)
-                      );
+      {/* Chat Models Filter + Provider Precedence Modal */}
+      <ModelFilterModal
+        isOpen={showModelFilterModal}
+        title="Allowed Chat Models"
+        onClose={() => setShowModelFilterModal(false)}
+        allModels={allAvailableModels}
+        modelsLoading={modelsLoading}
+        selectedModels={selectedModels}
+        precedence={modelProviderPrecedence}
+        setPrecedence={setModelProviderPrecedence}
+        allowedHelpText="If the same model exists from multiple providers, selecting a row sets the provider to use for that model."
+        toggleModel={toggleModel}
+        selectAll={selectAllModels}
+        deselectAll={deselectAllModels}
+        onSaveAllowed={saveModelFilter}
+        onSavePrecedence={saveProviderPrecedence}
+        savingPrecedence={savingPrecedence}
+      />
 
-                      // Group by provider first, then by model group within provider
-                      // Collect unique providers in order of appearance
-                      const providerOrder: string[] = [];
-                      const providerGroups: Record<string, Record<string, typeof filtered>> = {};
-                      filtered.forEach(m => {
-                        if (!providerGroups[m.provider]) {
-                          providerGroups[m.provider] = {};
-                          providerOrder.push(m.provider);
-                        }
-                        const g = m.group || 'Other';
-                        if (!providerGroups[m.provider][g]) providerGroups[m.provider][g] = [];
-                        providerGroups[m.provider][g].push(m);
-                      });
-
-                      const providerLabels: Record<string, string> = {
-                        openai: 'OpenAI',
-                        anthropic: 'Anthropic',
-                        ollama: 'Ollama',
-                        github_copilot: 'GitHub Copilot',
-                        github_models: 'GitHub Copilot',
-                      };
-
-                      return providerOrder.map(provider => (
-                        <div key={provider}>
-                          <div className="model-group-header" style={{
-                            position: 'sticky',
-                            top: 0,
-                            zIndex: 1,
-                            padding: '6px 8px',
-                            fontWeight: 600,
-                            fontSize: '0.85em',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.05em',
-                            borderBottom: '1px solid var(--border-color, #3c3c3c)',
-                            background: 'var(--bg-primary, #1e1e1e)',
-                          }}>
-                            {providerLabels[provider] || provider}
-                          </div>
-                          {Object.keys(providerGroups[provider]).map(groupName => (
-                            <div key={groupName} className="model-group">
-                              <div className="model-group-header" style={{ paddingLeft: '0.5rem', fontSize: '0.8em' }}>{groupName}</div>
-                              {providerGroups[provider][groupName].map((model) => (
-                                <label key={`${model.provider}:${model.id}`} className="model-filter-item" style={{
-                                  paddingLeft: '1rem',
-                                  backgroundColor: model.is_latest ? 'rgba(0,0,0,0.03)' : undefined,
-                                  fontWeight: model.is_latest ? 500 : undefined
-                                }}>
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedModels.has(`${model.provider}::${model.id}`)}
-                                    onChange={() => toggleModel(model)}
-                                  />
-                                  <span className="model-filter-name">
-                                    {model.id !== model.name ? model.id : model.name}
-                                    <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: 'var(--bg-secondary, #2d2d2d)', color: 'var(--text-muted, #888)' }}>
-                                      via {providerLabels[model.provider] || model.provider}
-                                    </span>
-                                    {model.is_latest && <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: '#e0e0e0', color: '#555' }}>LATEST</span>}
-                                  </span>
-                                </label>
-                              ))}
-                            </div>
-                          ))}
-                        </div>
-                      ));
-                    })()}
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="modal-footer">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setShowModelFilterModal(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={saveModelFilter}
-                disabled={modelsLoading || allAvailableModels.length === 0}
-              >
-                Save Filter
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MCP Routes Panel Modal */}
-      {showOpenapiModelModal && (
-        <div className="modal-overlay" onClick={() => setShowOpenapiModelModal(false)}>
-          <div className="modal-content modal-medium" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Configure OpenAPI Models</h3>
-              <button
-                className="modal-close"
-                onClick={() => setShowOpenapiModelModal(false)}
-              >
-                &times;
-              </button>
-            </div>
-            <div className="modal-body">
-              {openapiModelsLoading ? (
-                <p className="muted">Loading available models...</p>
-              ) : openapiAvailableModels.length === 0 ? (
-                <p className="muted">
-                  No models available. Please configure API keys or Ollama connection and save settings first.
-                </p>
-              ) : (
-                <>
-                  <div className="model-filter-search">
-                    <input
-                      type="text"
-                      placeholder="Filter models..."
-                      value={openapiModelFilterText}
-                      onChange={(e) => setOpenapiModelFilterText(e.target.value)}
-                      autoFocus
-                    />
-                  </div>
-                  <div className="model-filter-actions">
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={selectAllOpenapiModels}
-                    >
-                      Select All
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-secondary"
-                      onClick={deselectAllOpenapiModels}
-                    >
-                      Deselect All
-                    </button>
-                    <span className="muted" style={{ marginLeft: 'auto' }}>
-                      {selectedOpenapiModels.size} of {openapiAvailableModels.length} selected
-                    </span>
-                  </div>
-                  <p className="field-help" style={{ margin: '0 0 0.5rem 0' }}>
-                    Select models to expose via the <code>/v1/models</code> endpoint for external clients (e.g., Open WebUI).
-                  </p>
-                  <div className="model-filter-list">
-                    {(() => {
-                      const filterLower = openapiModelFilterText.toLowerCase();
-                      const filtered = openapiAvailableModels.filter((model) =>
-                        openapiModelFilterText === '' ||
-                        model.name.toLowerCase().includes(filterLower) ||
-                        model.id.toLowerCase().includes(filterLower) ||
-                        model.provider.toLowerCase().includes(filterLower)
-                      );
-
-                      const providerOrder: string[] = [];
-                      const providerGroups: Record<string, Record<string, typeof filtered>> = {};
-                      filtered.forEach(m => {
-                        if (!providerGroups[m.provider]) {
-                          providerGroups[m.provider] = {};
-                          providerOrder.push(m.provider);
-                        }
-                        const g = m.group || 'Other';
-                        if (!providerGroups[m.provider][g]) providerGroups[m.provider][g] = [];
-                        providerGroups[m.provider][g].push(m);
-                      });
-
-                      const providerLabels: Record<string, string> = {
-                        openai: 'OpenAI',
-                        anthropic: 'Anthropic',
-                        ollama: 'Ollama',
-                        github_copilot: 'GitHub Copilot',
-                        github_models: 'GitHub Copilot',
-                      };
-
-                      return providerOrder.map(provider => (
-                        <div key={provider}>
-                          <div className="model-group-header" style={{
-                            position: 'sticky',
-                            top: 0,
-                            zIndex: 1,
-                            padding: '6px 8px',
-                            fontWeight: 600,
-                            fontSize: '0.85em',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.05em',
-                            borderBottom: '1px solid var(--border-color, #3c3c3c)',
-                            background: 'var(--bg-primary, #1e1e1e)',
-                          }}>
-                            {providerLabels[provider] || provider}
-                          </div>
-                          {Object.keys(providerGroups[provider]).map(groupName => (
-                            <div key={groupName} className="model-group">
-                              <div className="model-group-header" style={{ paddingLeft: '0.5rem', fontSize: '0.8em' }}>{groupName}</div>
-                              {providerGroups[provider][groupName].map((model) => (
-                                <label key={`${model.provider}:${model.id}`} className="model-filter-item" style={{
-                                  paddingLeft: '1rem',
-                                  backgroundColor: model.is_latest ? 'rgba(0,0,0,0.03)' : undefined,
-                                  fontWeight: model.is_latest ? 500 : undefined
-                                }}>
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedOpenapiModels.has(`${model.provider}::${model.id}`)}
-                                    onChange={() => toggleOpenapiModel(model)}
-                                  />
-                                  <span className="model-filter-name">
-                                    {model.id !== model.name ? model.id : model.name}
-                                    <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: 'var(--bg-secondary, #2d2d2d)', color: 'var(--text-muted, #888)' }}>
-                                      via {providerLabels[model.provider] || model.provider}
-                                    </span>
-                                    {model.is_latest && <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: '#e0e0e0', color: '#555' }}>LATEST</span>}
-                                  </span>
-                                </label>
-                              ))}
-                            </div>
-                          ))}
-                        </div>
-                      ));
-                    })()}
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="modal-footer">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setShowOpenapiModelModal(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={saveOpenapiModelFilter}
-                disabled={openapiModelsLoading || openapiAvailableModels.length === 0}
-              >
-                Save Filter
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* OpenAPI Models Filter + Provider Precedence Modal */}
+      <ModelFilterModal
+        isOpen={showOpenapiModelModal}
+        title="Allowed OpenAPI Models"
+        onClose={() => setShowOpenapiModelModal(false)}
+        allModels={openapiAvailableModels}
+        modelsLoading={openapiModelsLoading}
+        selectedModels={selectedOpenapiModels}
+        precedence={openapiModelProviderPrecedence}
+        setPrecedence={setOpenapiModelProviderPrecedence}
+        allowedHelpText="Select models to expose via the /v1/models endpoint for external clients (e.g., Open WebUI). When the same model exists from multiple providers, selecting a row sets the provider used for it."
+        toggleModel={toggleOpenapiModel}
+        selectAll={selectAllOpenapiModels}
+        deselectAll={deselectAllOpenapiModels}
+        onSaveAllowed={saveOpenapiModelFilter}
+        onSavePrecedence={saveOpenapiProviderPrecedence}
+        savingPrecedence={savingOpenapiPrecedence}
+      />
 
       {/* User Space Preview Sandbox Modal */}
       {showSandboxModal && (

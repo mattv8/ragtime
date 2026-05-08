@@ -199,10 +199,12 @@ model AppSettings {
   includeCopilotThirdPartyModels Boolean   @default(false) @map("include_copilot_third_party_models")
   allowedChatModels              String[]  @default([]) @map("allowed_chat_models") // Empty = all models allowed
   defaultChatModel               String?   @map("default_chat_model") // Optional manual override for chat default model selection
+  modelProviderPrecedence        Json      @default("{\"providers\": [], \"model_overrides\": {}, \"family_overrides\": {}}") @map("model_provider_precedence") // Admin-defined provider ordering + per-model/family overrides
 
   // OpenAPI-compatible endpoint model configuration
   allowedOpenapiModels  String[] @default([]) @map("allowed_openapi_models") // Models exposed via /v1/models; empty = use chat models
   openapiSyncChatModels Boolean  @default(true) @map("openapi_sync_chat_models") // true = mirror chat models list
+  openapiModelProviderPrecedence Json @default("{\"providers\": [], \"model_overrides\": {}, \"family_overrides\": {}}") @map("openapi_model_provider_precedence") // Provider ordering + per-model/family overrides for /v1/models clients
 
   // Legacy tool configuration (deprecated - use ToolConfig table)
   enabledTools      String[] @default([]) @map("enabled_tools")

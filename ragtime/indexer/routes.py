@@ -21,7 +21,7 @@ import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, cast
 
 import httpx
 import posixpath
@@ -6916,6 +6916,8 @@ class AvailableModelsResponse(BaseModel):
     models_loading: bool = False
     copilot_refresh_in_progress: bool = False
     provider_states: List[ProviderModelState] = []
+    model_provider_precedence: Optional[Dict[str, Any]] = None
+    openapi_model_provider_precedence: Optional[Dict[str, Any]] = None
 
 
 # Sensible default models for each provider
@@ -6936,6 +6938,30 @@ def _providers_equivalent(selected: str, actual: str) -> bool:
 
 def _normalize_provider_alias(provider: Optional[str]) -> str:
     return normalize_provider_name(provider)
+
+
+def _serialize_precedence(app_settings: Any) -> Optional[Dict[str, Any]]:
+    """Serialize the model_provider_precedence field for API responses."""
+    raw = getattr(app_settings, "model_provider_precedence", None)
+    if raw is None:
+        return None
+    if hasattr(raw, "model_dump"):
+        return raw.model_dump()
+    if isinstance(raw, dict):
+        return raw
+    return None
+
+
+def _serialize_openapi_precedence(app_settings: Any) -> Optional[Dict[str, Any]]:
+    """Serialize the openapi_model_provider_precedence field for API responses."""
+    raw = getattr(app_settings, "openapi_model_provider_precedence", None)
+    if raw is None:
+        return None
+    if hasattr(raw, "model_dump"):
+        return raw.model_dump()
+    if isinstance(raw, dict):
+        return raw
+    return None
 
 
 async def _is_model_discovery_loading() -> bool:
@@ -9585,6 +9611,8 @@ async def get_available_chat_models():
         models_loading=models_loading,
         copilot_refresh_in_progress=copilot_refresh_in_progress,
         provider_states=list(provider_states.values()),
+        model_provider_precedence=_serialize_precedence(app_settings),
+        openapi_model_provider_precedence=_serialize_openapi_precedence(app_settings),
     )
 
 
@@ -9794,6 +9822,8 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
         discovered_model_identifiers=_build_discovered_model_identifiers(all_models),
         allowed_models=allowed_models,
         allowed_openapi_models=app_settings.allowed_openapi_models or [],
+        model_provider_precedence=_serialize_precedence(app_settings),
+        openapi_model_provider_precedence=_serialize_openapi_precedence(app_settings),
     )
 
 
