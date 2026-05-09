@@ -767,7 +767,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [mountSyncPreviewMount, setMountSyncPreviewMount] = useState<WorkspaceMount | null>(null);
   const [mountSyncPreviewIntent, setMountSyncPreviewIntent] = useState<MountSyncPreviewIntent | null>(null);
   const [mountSyncPreviewNextSyncMode, setMountSyncPreviewNextSyncMode] = useState<WorkspaceMountSyncMode | null>(null);
-  const [expandedSyncModeInfo, setExpandedSyncModeInfo] = useState<false | 'hover' | 'pinned'>(false);
+  const [expandedSyncModeInfo, setExpandedSyncModeInfo] = useState<{ id: string | null; mode: 'hover' | 'pinned' } | null>(null);
   const [savingMountWatchId, setSavingMountWatchId] = useState<string | null>(null);
   const [savingMountIntervalId, setSavingMountIntervalId] = useState<string | null>(null);
   const [editingMountDescriptionId, setEditingMountDescriptionId] = useState<string | null>(null);
@@ -7647,21 +7647,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                         : <><SyncModeIcon size={12} /> {getMountSyncModeLabel(mount.sync_mode)}</>}
                                       <span
                                         role="button"
-                                        onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo((v) => v === 'pinned' ? false : 'pinned'); }}
-                                        onMouseEnter={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : 'hover')}
-                                        onMouseLeave={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : false)}
+                                        onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo((v) => v?.id === `sync-mode-${mount.id}` && v.mode === 'pinned' ? null : { id: `sync-mode-${mount.id}`, mode: 'pinned' }); }}
+                                        onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === `sync-mode-${mount.id}` ? v : { id: `sync-mode-${mount.id}`, mode: 'hover' })}
+                                        onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
                                         title="About sync modes"
                                         style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 2, cursor: 'pointer', position: 'relative' }}
                                       >
                                         <Info size={11} />
-                                        {expandedSyncModeInfo && (
+                                        {expandedSyncModeInfo?.id === `sync-mode-${mount.id}` && (
                                           <>
-                                            {expandedSyncModeInfo === 'pinned' && (
-                                              <div onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo(false); }} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
+                                            {expandedSyncModeInfo?.mode === 'pinned' && (
+                                              <div onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo(null); }} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
                                             )}
                                             <div
-                                              onMouseEnter={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : 'hover')}
-                                              onMouseLeave={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : false)}
+                                              onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === `sync-mode-${mount.id}` ? { ...v, mode: 'hover' } : v)}
+                                              onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
                                               style={{
                                               position: 'absolute',
                                               top: '100%',
@@ -8102,21 +8102,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             <CreateSyncModeIcon size={13} /> {getMountSyncModeLabel(createMountSyncMode)}
                             <span
                               role="button"
-                              onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo((v) => v === 'pinned' ? false : 'pinned'); }}
-                              onMouseEnter={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : 'hover')}
-                              onMouseLeave={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : false)}
+                              onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo((v) => v?.id === 'sync-mode-add-mount' && v.mode === 'pinned' ? null : { id: 'sync-mode-add-mount', mode: 'pinned' }); }}
+                              onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === 'sync-mode-add-mount' ? v : { id: 'sync-mode-add-mount', mode: 'hover' })}
+                              onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
                               title="About sync modes"
                               style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 2, cursor: 'pointer', position: 'relative' }}
                             >
                               <Info size={11} />
-                              {expandedSyncModeInfo && (
+                              {expandedSyncModeInfo?.id === 'sync-mode-add-mount' && (
                                 <>
-                                  {expandedSyncModeInfo === 'pinned' && (
-                                    <div onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo(false); }} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
+                                  {expandedSyncModeInfo?.mode === 'pinned' && (
+                                    <div onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo(null); }} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
                                   )}
                                   <div
-                                    onMouseEnter={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : 'hover')}
-                                    onMouseLeave={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : false)}
+                                    onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === 'sync-mode-add-mount' ? { ...v, mode: 'hover' } : v)}
+                                    onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
                                     style={{
                                     position: 'absolute',
                                     top: '100%',
