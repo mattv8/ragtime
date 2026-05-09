@@ -314,6 +314,11 @@ function fileEntriesFingerprint(entries: UserSpaceFileInfo[]): string {
  */
 const LAST_WORKSPACE_COOKIE_PREFIX = 'userspace_last_workspace_id_';
 const LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
+const CLOUD_MOUNT_PROVIDERS: readonly UserCloudOAuthProvider[] = ['microsoft_drive', 'google_drive'];
+
+function isCloudMountProvider(value: string | null | undefined): value is UserCloudOAuthProvider {
+  return value === 'microsoft_drive' || value === 'google_drive';
+}
 const USERSPACE_LAYOUT_COOKIE_PREFIX = 'userspace_layout_';
 const USERSPACE_FULLSCREEN_COOKIE_PREFIX = 'userspace_fullscreen_';
 const USERSPACE_CODEMIRROR_BASIC_SETUP = {
@@ -4875,10 +4880,33 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       .filter((accountId): accountId is string => Boolean(accountId))
   ), [globalCloudMountSources]);
 
+  const configuredCloudProviders = useMemo(() => (
+    cloudProviderStatuses
+      .filter((status) => CLOUD_MOUNT_PROVIDERS.includes(status.provider) && status.configured)
+      .map((status) => status.provider)
+  ), [cloudProviderStatuses]);
+
+  const configuredCloudProviderSet = useMemo(
+    () => new Set(configuredCloudProviders),
+    [configuredCloudProviders],
+  );
+
+  const showConfiguredCloudMountPanel = showPersonalCloudDrives && configuredCloudProviders.length > 0;
+
   const visiblePersonalCloudOAuthAccounts = useMemo(() => cloudOAuthAccounts.filter((account) => {
+    if (!configuredCloudProviderSet.has(account.provider)) {
+      return false;
+    }
     const hasPersonalSource = personalMountSources.some((source) => source.oauth_account_id === account.id);
     return hasPersonalSource || !globalCloudOAuthAccountIds.has(account.id);
-  }), [cloudOAuthAccounts, globalCloudOAuthAccountIds, personalMountSources]);
+  }), [cloudOAuthAccounts, configuredCloudProviderSet, globalCloudOAuthAccountIds, personalMountSources]);
+
+  const visiblePersonalMountSources = useMemo(
+    () => personalMountSources.filter((source) => (
+      isCloudMountProvider(source.source_type) && configuredCloudProviderSet.has(source.source_type)
+    )),
+    [configuredCloudProviderSet, personalMountSources],
+  );
 
   const handleConnectCloudProvider = useCallback(async (provider: UserCloudOAuthProvider) => {
     if (!activeWorkspaceId) return;
@@ -7830,13 +7858,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                     </div>
                   )}
 
-                  {showPersonalCloudDrives && (
+                  {showConfiguredCloudMountPanel && (
                   <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, display: 'grid', gap: 10, marginBottom: 16 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <strong style={{ fontSize: 13 }}>Personal cloud drives</strong>
                       <span style={{ marginLeft: 'auto' }} />
-                      {(['microsoft_drive', 'google_drive'] as const).map((provider) => {
-                        const isConfigured = cloudProviderStatuses.some((status) => status.provider === provider && status.configured);
+                      {configuredCloudProviders.map((provider) => {
                         const label = provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive';
                         return (
                           <button
@@ -7844,8 +7871,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             type="button"
                             className="btn btn-secondary btn-sm"
                             onClick={() => void handleConnectCloudProvider(provider)}
-                            disabled={savingCloudProvider === provider || !isConfigured}
-                            title={isConfigured ? `Connect ${label}` : `Configure ${label} OAuth client ID and secret to enable this source`}
+                            disabled={savingCloudProvider === provider}
+                            title={`Connect ${label}`}
                           >
                             {savingCloudProvider === provider ? <MiniLoadingSpinner variant="icon" size={12} /> : <ExternalLink size={12} />}
                             {provider === 'microsoft_drive' ? 'Connect OneDrive' : 'Connect Google'}
@@ -7853,7 +7880,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                         );
                       })}
                     </div>
-                    {(visiblePersonalCloudOAuthAccounts.length > 0 || personalMountSources.length > 0) && (
+                    {(visiblePersonalCloudOAuthAccounts.length > 0 || visiblePersonalMountSources.length > 0) && (
                       <div style={{ display: 'grid', gap: 8 }}>
                         {visiblePersonalCloudOAuthAccounts.map((account) => {
                           const hasSource = personalMountSources.some((source) => source.oauth_account_id === account.id);
@@ -7881,7 +7908,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             </div>
                           );
                         })}
-                        {personalMountSources.map((source) => (
+                        {visiblePersonalMountSources.map((source) => (
                           <div key={source.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
                             <Check size={12} />
                             <span>{source.name}</span>
