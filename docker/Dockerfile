@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 # =============================================================================
 # Ragtime - Production Dockerfile
 # =============================================================================
@@ -14,7 +16,8 @@ WORKDIR /frontend
 COPY ragtime/frontend/package*.json ./
 
 # Install dependencies with lockfile
-RUN npm ci --loglevel=error
+RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
+    npm ci --loglevel=error
 
 # Copy the rest of the frontend
 COPY ragtime/frontend/ ./
@@ -47,16 +50,17 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Install all app deps first, then force-reinstall legacy overrides.
 COPY pyproject.toml /tmp/pyproject.toml
 COPY docker/scripts/install_deps_from_pyproject.py /tmp/install_deps_from_pyproject.py
-RUN pip install --no-cache-dir --upgrade pip && \
+RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=locked \
+    pip install --upgrade pip && \
     python /tmp/install_deps_from_pyproject.py /tmp/pyproject.toml app /tmp/requirements.app.txt && \
     if [ "$LEGACY_CPU" = "1" ]; then \
         echo "Installing all dependencies..." && \
-        pip install --no-cache-dir -r /tmp/requirements.app.txt && \
+        pip install -r /tmp/requirements.app.txt && \
         python /tmp/install_deps_from_pyproject.py /tmp/pyproject.toml legacy /tmp/requirements.legacy.txt && \
         echo "Force-reinstalling legacy CPU packages (NumPy 1.x, rawpy <0.22)..." && \
-        pip install --no-cache-dir --force-reinstall --no-deps -r /tmp/requirements.legacy.txt; \
+        pip install --force-reinstall --no-deps -r /tmp/requirements.legacy.txt; \
     else \
-        pip install --no-cache-dir -r /tmp/requirements.app.txt; \
+        pip install -r /tmp/requirements.app.txt; \
     fi && \
     python -c "import chonkie, pandas"
 
@@ -122,7 +126,8 @@ RUN cd /ragtime && python -m prisma generate
 
 # Install frontend node modules for runtime tooling (Playwright screenshots)
 COPY ragtime/frontend/package.json ragtime/frontend/package-lock.json* /ragtime/ragtime/frontend/
-RUN cd /ragtime/ragtime/frontend \
+RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
+    cd /ragtime/ragtime/frontend \
     && npm ci --loglevel=error \
     && npx playwright install --with-deps chromium
 
