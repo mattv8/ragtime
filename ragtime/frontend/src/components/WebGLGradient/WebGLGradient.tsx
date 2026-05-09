@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import createFragmentShader from './fragmentShader';
 import { FluidSimulation } from './fluidSimulation';
 import { bindFullscreenQuad, createFullscreenQuadBuffer, createProgram } from './glUtils';
@@ -19,6 +20,14 @@ interface WebGLGradientProps {
   ignorePointerSelector?: string;
 }
 
+interface BatteryManagerLike extends EventTarget {
+  charging: boolean;
+}
+
+interface NavigatorWithBattery extends Navigator {
+  getBattery?: () => Promise<BatteryManagerLike>;
+}
+
 const isMobileDevice = () => /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
 const WebGLGradient: React.FC<WebGLGradientProps> = ({
@@ -32,11 +41,14 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
   const animationFrameRef = useRef<number | null>(null);
   const glRef = useRef<WebGLRenderingContext | null>(null);
   const programRef = useRef<WebGLProgram | null>(null);
+  const quadBufferRef = useRef<WebGLBuffer | null>(null);
   const textureRef = useRef<WebGLTexture | null>(null);
+  const zeroVelocityTextureRef = useRef<WebGLTexture | null>(null);
   const uniformsRef = useRef<{ [key: string]: WebGLUniformLocation | null }>({});
   const startTimeRef = useRef<number>(Date.now());
   const lastFrameTimeRef = useRef<number>(performance.now());
   const fluidRef = useRef<FluidSimulation | null>(null);
+  const fluidDisabledForBatteryRef = useRef(false);
   const fluidStrengthRef = useRef<number>(0);
   const pointerStateRef = useRef<{
     active: boolean;
@@ -45,6 +57,48 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     lastT: number;
   }>({ active: false, lastX: 0, lastY: 0, lastT: 0 });
   const [themeRevision, setThemeRevision] = useState(0);
+  const [fluidDisabledForBattery, setFluidDisabledForBattery] = useState(false);
+
+  const bindZeroVelocityTexture = useCallback((gl: WebGLRenderingContext) => {
+    let zeroTexture = zeroVelocityTextureRef.current;
+
+    if (!zeroTexture) {
+      zeroTexture = gl.createTexture();
+      if (!zeroTexture) return false;
+
+      zeroVelocityTextureRef.current = zeroTexture;
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, zeroTexture);
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+        new Uint8Array([0, 0, 0, 0]),
+      );
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, zeroTexture);
+    gl.uniform1i(uniformsRef.current.u_velocity, 1);
+    gl.uniform1f(uniformsRef.current.u_fluidStrength, 0);
+    return true;
+  }, []);
+
+  const updateBatteryFluidState = useCallback((disabled: boolean) => {
+    fluidDisabledForBatteryRef.current = disabled;
+    setFluidDisabledForBattery((current) => current === disabled ? current : disabled);
+
+    if (disabled) {
+      pointerStateRef.current.active = false;
+      fluidStrengthRef.current = 0;
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+    }
+  }, []);
 
   const resolveGradientColors = useCallback(() => {
     if (colors && colors.length >= 2) {
@@ -162,6 +216,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
 
     const buffer = createFullscreenQuadBuffer(gl);
     if (!buffer) return false;
+    quadBufferRef.current = buffer;
     bindFullscreenQuad(gl, program, buffer);
 
     // Get uniform locations
@@ -176,25 +231,15 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
 
     if (!updateGradientTexture()) return false;
 
-    // Try to spin up the fluid simulation. If the platform lacks float
-    // render targets we silently fall back to the original quiescent
-    // animation by leaving u_velocity bound to a 1x1 zero texture and
-    // u_fluidStrength at 0.
-    fluidRef.current = FluidSimulation.create(gl);
-    if (!fluidRef.current) {
-      // Bind a tiny zero-velocity texture to TEXTURE1 so the sampler in
-      // the main shader is always valid.
-      const zeroTex = gl.createTexture();
-      if (zeroTex) {
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, zeroTex);
-        gl.texImage2D(
-          gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
-          new Uint8Array([0, 0, 0, 0]),
-        );
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      }
+    // Bind a tiny zero-velocity texture to TEXTURE1 so the sampler in the
+    // main shader is always valid when the fluid pass is unavailable.
+    bindZeroVelocityTexture(gl);
+
+    // Try to spin up the fluid simulation. If the platform lacks float render
+    // targets, or if battery power has already disabled it, we silently fall
+    // back to the original quiescent animation.
+    if (!fluidDisabledForBatteryRef.current) {
+      fluidRef.current = FluidSimulation.create(gl);
     }
     // The fluid sim runs its own programs/buffers; restore the main
     // program/buffer state so subsequent rendering is unaffected.
@@ -205,7 +250,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     gl.uniform1f(uniformsRef.current.u_fluidStrength, 0);
 
     return true;
-  }, [updateGradientTexture]);
+  }, [bindZeroVelocityTexture, updateGradientTexture]);
 
   const resize = useCallback(() => {
     const canvas = canvasRef.current;
@@ -262,7 +307,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     const gl = glRef.current;
     const program = programRef.current;
     const canvas = canvasRef.current;
-    if (!gl || !program || !canvas) return;
+    if (!gl || !program || !canvas || fluidDisabledForBatteryRef.current) return;
 
     const now = performance.now();
     const dt = Math.min((now - lastFrameTimeRef.current) / 1000, 1 / 30);
@@ -270,8 +315,17 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
 
     // Step the fluid simulation, then rebind the main program and the
     // viewport that was clobbered by the off-screen passes.
-    const fluid = fluidRef.current;
-    if (fluid) {
+    let fluid = fluidRef.current;
+    if (!fluid && !fluidDisabledForBatteryRef.current) {
+      fluid = FluidSimulation.create(gl);
+      fluidRef.current = fluid;
+      gl.useProgram(program);
+      if (quadBufferRef.current) {
+        bindFullscreenQuad(gl, program, quadBufferRef.current);
+      }
+    }
+
+    if (fluid && !fluidDisabledForBatteryRef.current) {
       fluid.step(dt);
       gl.useProgram(program);
       gl.viewport(0, 0, canvas.width, canvas.height);
@@ -289,6 +343,9 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
         0.045,
       );
       gl.uniform1f(uniformsRef.current.u_fluidStrength, fluidStrengthRef.current);
+    } else if (fluidDisabledForBatteryRef.current && fluidStrengthRef.current !== 0) {
+      fluidStrengthRef.current = 0;
+      gl.uniform1f(uniformsRef.current.u_fluidStrength, 0);
     }
 
     const currentTime = (Date.now() - startTimeRef.current) / 1000;
@@ -313,6 +370,14 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
   }, [themeRevision, updateGradientTexture]);
 
   useEffect(() => {
+    if (fluidDisabledForBattery || animationFrameRef.current) return;
+    if (!glRef.current || !programRef.current || !canvasRef.current) return;
+
+    lastFrameTimeRef.current = performance.now();
+    animationFrameRef.current = requestAnimationFrame(render);
+  }, [fluidDisabledForBattery, render]);
+
+  useEffect(() => {
     const handleThemeChange = () => setThemeRevision((revision) => revision + 1);
     const rootElement = document.documentElement;
     const observer = new MutationObserver(handleThemeChange);
@@ -326,6 +391,36 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
       colorSchemeQuery.removeEventListener('change', handleThemeChange);
     };
   }, []);
+
+  useEffect(() => {
+    const getBattery = (navigator as NavigatorWithBattery).getBattery;
+    if (!getBattery) return;
+
+    let battery: BatteryManagerLike | null = null;
+    let disposed = false;
+
+    const handleBatteryChange = () => {
+      if (!battery) return;
+      updateBatteryFluidState(!battery.charging);
+    };
+
+    getBattery.call(navigator)
+      .then((batteryManager) => {
+        if (disposed) return;
+        battery = batteryManager;
+        handleBatteryChange();
+        battery.addEventListener('chargingchange', handleBatteryChange);
+      })
+      .catch(() => {
+        if (disposed) return;
+        updateBatteryFluidState(false);
+      });
+
+    return () => {
+      disposed = true;
+      battery?.removeEventListener('chargingchange', handleBatteryChange);
+    };
+  }, [updateBatteryFluidState]);
 
   useEffect(() => {
     if (initWebGL()) {
@@ -386,6 +481,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     };
 
     const handlePointerDown = (event: PointerEvent) => {
+      if (fluidDisabledForBatteryRef.current) return;
       const pos = pointerPos(event);
       if (!pos) return;
       pointerStateRef.current = {
@@ -397,6 +493,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     };
 
     const handlePointerMove = (event: PointerEvent) => {
+      if (fluidDisabledForBatteryRef.current) return;
       const fluid = fluidRef.current;
       if (!fluid) return;
       const pos = pointerPos(event);
@@ -479,16 +576,28 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
         glRef.current?.deleteTexture(textureRef.current);
         textureRef.current = null;
       }
+      if (zeroVelocityTextureRef.current) {
+        glRef.current?.deleteTexture(zeroVelocityTextureRef.current);
+        zeroVelocityTextureRef.current = null;
+      }
     };
   }, [ignorePointerSelector, initWebGL, resize, render]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      aria-hidden="true"
-      className={className}
-      style={{ display: 'block' }}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        aria-hidden="true"
+        className={className}
+        style={{ display: fluidDisabledForBattery ? 'none' : 'block' }}
+      />
+      {fluidDisabledForBattery ? (
+        <div className="webgl-battery-notice" role="status" aria-live="polite">
+          <AlertTriangle size={14} aria-hidden="true" />
+          <span>Background paused on battery</span>
+        </div>
+      ) : null}
+    </>
   );
 };
 
