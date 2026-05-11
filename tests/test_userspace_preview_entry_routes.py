@@ -1,158 +1,19 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
-import types
 import unittest
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 from unittest import mock
 
-from pydantic import BaseModel, Field
 from starlette.requests import Request
 
+import ragtime.userspace.runtime_routes as _RUNTIME_ROUTES
+from ragtime.userspace.models import UserSpacePreviewWarning
 
-def _install_runtime_route_test_stubs() -> None:
-    ragtime_pkg: Any = sys.modules.setdefault("ragtime", types.ModuleType("ragtime"))
-    ragtime_pkg.__path__ = getattr(ragtime_pkg, "__path__", [])
-
-    config_pkg: Any = sys.modules.setdefault(
-        "ragtime.config", types.ModuleType("ragtime.config")
-    )
-    config_pkg.__path__ = getattr(config_pkg, "__path__", [])
-    config_settings: Any = types.ModuleType("ragtime.config.settings")
-    config_settings.settings = SimpleNamespace()
-    sys.modules["ragtime.config.settings"] = config_settings
-
-    core_pkg: Any = sys.modules.setdefault("ragtime.core", types.ModuleType("ragtime.core"))
-    core_pkg.__path__ = getattr(core_pkg, "__path__", [])
-
-    core_app_settings: Any = types.ModuleType("ragtime.core.app_settings")
-    core_app_settings.get_app_settings = lambda: None
-    sys.modules["ragtime.core.app_settings"] = core_app_settings
-
-    core_auth: Any = types.ModuleType("ragtime.core.auth")
-    core_auth.decode_access_token = lambda *args, **kwargs: None
-    core_auth.get_browser_matched_origin = (
-        lambda request, browser_origin=None: "https://ragtime.dev.visnovsky.us"
-    )
-    sys.modules["ragtime.core.auth"] = core_auth
-
-    class _NoopLimiter:
-        def limit(self, *_args, **_kwargs):
-            def decorator(func):
-                return func
-
-            return decorator
-
-    core_rate_limit: Any = types.ModuleType("ragtime.core.rate_limit")
-    core_rate_limit.SHARE_AUTH_RATE_LIMIT = "60/minute"
-    core_rate_limit.limiter = _NoopLimiter()
-    sys.modules["ragtime.core.rate_limit"] = core_rate_limit
-
-    core_security: Any = types.ModuleType("ragtime.core.security")
-
-    async def _unused_current_user(*_args, **_kwargs):
-        raise AssertionError("dependency injection should not run in this test")
-
-    async def _unused_current_user_optional(*_args, **_kwargs):
-        return None
-
-    core_security.get_current_user = _unused_current_user
-    core_security.get_current_user_optional = _unused_current_user_optional
-    core_security.get_session_token = lambda *args, **kwargs: None
-    sys.modules["ragtime.core.security"] = core_security
-
-    userspace_pkg: Any = sys.modules.setdefault(
-        "ragtime.userspace", types.ModuleType("ragtime.userspace")
-    )
-    userspace_pkg.__path__ = getattr(userspace_pkg, "__path__", [])
-
-    userspace_models: Any = types.ModuleType("ragtime.userspace.models")
-
-    class _TestPreviewLaunchRequest(BaseModel):
-        path: str = "/"
-        parent_origin: str | None = None
-        prefer_root_proxy: bool = False
-
-    class _TestPreviewWarning(BaseModel):
-        issue_code: str
-        title: str
-        warnings: list[str] = Field(default_factory=list)
-        dismiss_key: str
-        preview_routing_mode: str = "subdomain"
-        resolved_base_domain: str | None = None
-        preview_host: str | None = None
-        source: str = "derived"
-
-    class _TestPreviewLaunchResponse(BaseModel):
-        workspace_id: str
-        preview_url: str
-        preview_origin: str
-        expires_at: datetime
-        preview_warning: _TestPreviewWarning | None = None
-
-    class _PlaceholderModel(BaseModel):
-        pass
-
-    userspace_models.UserSpaceBrowserAuthorization = _PlaceholderModel
-    userspace_models.UserSpaceBrowserAuthRequest = _PlaceholderModel
-    userspace_models.UserSpaceBrowserAuthResponse = _PlaceholderModel
-    userspace_models.UserSpaceBrowserSurface = str
-    userspace_models.UserSpaceCapabilityTokenResponse = _PlaceholderModel
-    userspace_models.UserSpaceFileResponse = _PlaceholderModel
-    userspace_models.UserSpacePreviewLaunchRequest = _TestPreviewLaunchRequest
-    userspace_models.UserSpacePreviewLaunchResponse = _TestPreviewLaunchResponse
-    userspace_models.UserSpacePreviewWarning = _TestPreviewWarning
-    userspace_models.UserSpaceRuntimeActionResponse = _PlaceholderModel
-    userspace_models.UserSpaceRuntimeSessionResponse = _PlaceholderModel
-    userspace_models.UserSpaceRuntimeStatusResponse = _PlaceholderModel
-    userspace_models.UserSpaceWorkspaceTabStateResponse = _PlaceholderModel
-    sys.modules["ragtime.userspace.models"] = userspace_models
-
-    runtime_errors: Any = types.ModuleType("ragtime.userspace.runtime_errors")
-
-    class RuntimeVersionConflictError(Exception):
-        pass
-
-    runtime_errors.RuntimeVersionConflictError = RuntimeVersionConflictError
-    sys.modules["ragtime.userspace.runtime_errors"] = runtime_errors
-
-    share_auth: Any = types.ModuleType("ragtime.userspace.share_auth")
-    share_auth.set_share_auth_cookie = lambda *args, **kwargs: None
-    share_auth.share_auth_token_from_request = lambda *args, **kwargs: None
-    sys.modules["ragtime.userspace.share_auth"] = share_auth
-
-
-def _load_runtime_routes_module():
-    _install_runtime_route_test_stubs()
-    module_path = (
-        Path(__file__).resolve().parents[1]
-        / "ragtime"
-        / "userspace"
-        / "runtime_routes.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        "ragtime_userspace_runtime_routes_under_test",
-        module_path,
-    )
-    assert spec and spec.loader, f"failed to build spec for {module_path}"
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-_RUNTIME_ROUTES = _load_runtime_routes_module()
 _workspace_preview_entry_url = getattr(_RUNTIME_ROUTES, "_workspace_preview_entry_url")
 issue_workspace_preview_launch = _RUNTIME_ROUTES.issue_workspace_preview_launch
 workspace_preview_entry = _RUNTIME_ROUTES.workspace_preview_entry
 UserSpacePreviewLaunchResponse = _RUNTIME_ROUTES.UserSpacePreviewLaunchResponse
-UserSpacePreviewWarning = sys.modules[
-    "ragtime.userspace.models"
-].UserSpacePreviewWarning
 
 
 def _build_request(path: str) -> Request:

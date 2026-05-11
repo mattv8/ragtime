@@ -1,41 +1,8 @@
-import sys
 import unittest
-from enum import Enum
-from types import ModuleType, SimpleNamespace
-
-prisma_module = ModuleType("prisma")
-prisma_enums_module = ModuleType("prisma.enums")
-
-
-class AuthProvider(str, Enum):
-    ldap = "ldap"
-    local = "local"
-    local_managed = "local_managed"
-
-
-class UserRole(str, Enum):
-    user = "user"
-    admin = "admin"
-
-
-setattr(prisma_enums_module, "AuthProvider", AuthProvider)
-setattr(prisma_enums_module, "UserRole", UserRole)
-setattr(prisma_module, "enums", prisma_enums_module)
-setattr(prisma_module, "Json", list)
-sys.modules.setdefault("prisma", prisma_module)
-sys.modules["prisma.enums"] = prisma_enums_module
-
-database_module = ModuleType("ragtime.core.database")
-
-
-async def get_db() -> None:
-    raise RuntimeError("Database access is not needed for this test")
-
-
-setattr(database_module, "get_db", get_db)
-sys.modules["ragtime.core.database"] = database_module
+from types import SimpleNamespace
 
 from ragtime.core.auth import (
+    UserRole,
     _build_default_user_search_filters,
     _determine_ldap_role_for_entry,
     _get_first_entry_attribute_value,

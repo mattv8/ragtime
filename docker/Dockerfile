@@ -65,7 +65,34 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
     python -c "import chonkie, pandas"
 
 # =============================================================================
-# Stage 3: Production image
+# Stage 3: Python tests
+# =============================================================================
+FROM python-builder AS python-test
+
+ENV PYTHONPATH=/ragtime \
+    PYTHONPYCACHEPREFIX=/tmp/pycache \
+    PATH="/opt/venv/bin:$PATH"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=locked \
+    python /tmp/install_deps_from_pyproject.py /tmp/pyproject.toml test /tmp/requirements.test.txt && \
+    pip install -r /tmp/requirements.test.txt
+
+WORKDIR /ragtime
+COPY prisma/ /ragtime/prisma/
+RUN python -m prisma generate >/dev/null
+COPY ragtime/ /ragtime/ragtime/
+COPY runtime/ /ragtime/runtime/
+COPY tests/ /ragtime/tests/
+RUN python -m compileall ragtime/userspace/runtime_service.py runtime/manager runtime/main.py && \
+    python -m pytest tests
+
+# =============================================================================
+# Stage 4: Production image
 # =============================================================================
 FROM python:3.12-slim AS production
 

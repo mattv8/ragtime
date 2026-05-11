@@ -61,10 +61,17 @@ runtime = [
     "pydantic>=2.5.0,<3.0.0",
     "httpx>=0.26.0,<1.0.0",
 ]
+test = [
+    "pytest>=8.3.0,<9.0.0",
+]
 legacy = [
     "numpy>=1.24.0,<2.0.0",
     "rawpy>=0.19.0,<0.22.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
 
 [tool.pylint.main]
 py-version = "3.12"

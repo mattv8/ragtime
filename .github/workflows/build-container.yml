@@ -12,6 +12,7 @@ on:
       # Application code
       - 'ragtime/**'
       - 'runtime/**'
+      - 'tests/**'
       # Dependencies and build config
       - 'pyproject.toml'
       # Database schema (requires container rebuild for migrations)
@@ -27,9 +28,61 @@ env:
   IMAGE_RUNTIME_NAME: library/runtime
 
 jobs:
+  test:
+    name: Run Tests
+    runs-on: self-hosted
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate docker compose manifests
+        run: |
+          cp -n .env.example .env
+          docker compose -f docker-compose.yml config >/dev/null
+          docker compose -f docker/docker-compose.dev.yml config >/dev/null
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract branch name
+        id: extract_branch
+        run: |
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          SAFE_BRANCH=$(echo "$BRANCH_NAME" | sed 's/\//-/g')
+          echo "branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Log in to Harbor Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Run pytest in Docker test stage
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          target: python-test
+          push: false
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ steps.extract_branch.outputs.branch }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-main
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+            type=gha,scope=ragtime-${{ steps.extract_branch.outputs.branch }}
+            type=gha,scope=ragtime-main
+            type=gha
+          cache-to: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ steps.extract_branch.outputs.branch }},mode=max,oci-mediatypes=true,image-manifest=true,compression=zstd
+            type=gha,mode=max,scope=ragtime-${{ steps.extract_branch.outputs.branch }}
+
   build-main:
     name: Build Main Image
     runs-on: self-hosted
+    needs: [test]
     permissions:
       contents: read
       packages: write
@@ -44,23 +97,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Validate docker compose manifests
-        run: |
-          cp -n .env.example .env
-          docker compose -f docker-compose.yml config >/dev/null
-          docker compose -f docker/docker-compose.dev.yml config >/dev/null
-
-      - name: Validate userspace runtime modules
-        run: |
-          PYTHON_BIN="$(command -v python3 || command -v python || true)"
-          if [ -z "$PYTHON_BIN" ]; then
-            echo "Python interpreter not found (expected python3 or python in PATH)"
-            exit 127
-          fi
-          "$PYTHON_BIN" -m compileall \
-            ragtime/userspace/runtime_service.py \
-            runtime/manager \
-            runtime/main.py
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -132,6 +168,7 @@ jobs:
   build-runtime:
     name: Build Runtime Image
     runs-on: self-hosted
+    needs: [test]
     permissions:
       contents: read
       packages: write
@@ -207,6 +244,7 @@ jobs:
   build-legacy:
     name: Build Legacy Image
     runs-on: self-hosted
+    needs: [test]
     # Only build legacy on main branch
     if: github.ref == 'refs/heads/main'
     permissions:

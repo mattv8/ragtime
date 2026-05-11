@@ -78,6 +78,8 @@ services:
     volumes:
       # Mount source code for hot reload
       - ../ragtime:/ragtime/ragtime
+      # Mount tests for containerized pytest runs
+      - ../tests:/ragtime/tests:ro
       # Mount scripts folder
       - ../scripts:/ragtime/scripts:ro
       # Mount node_modules as named volume (prevents overwrite by source mount)

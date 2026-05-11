@@ -1,46 +1,11 @@
-import sys
 import unittest
-from enum import Enum
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import patch
 
-prisma_module = ModuleType("prisma")
-prisma_enums_module = ModuleType("prisma.enums")
-
-
-class AuthProvider(str, Enum):
-    ldap = "ldap"
-    local = "local"
-    local_managed = "local_managed"
-
-
-class UserRole(str, Enum):
-    user = "user"
-    admin = "admin"
-
-
-class Json(list):
-    pass
-
-
-setattr(prisma_enums_module, "AuthProvider", AuthProvider)
-setattr(prisma_enums_module, "UserRole", UserRole)
-setattr(prisma_module, "enums", prisma_enums_module)
-setattr(prisma_module, "Json", Json)
-sys.modules.setdefault("prisma", prisma_module)
-sys.modules["prisma.enums"] = prisma_enums_module
-
-database_module = ModuleType("ragtime.core.database")
-
-
-async def get_db() -> None:
-    raise RuntimeError("Database access is not needed for this test")
-
-
-setattr(database_module, "get_db", get_db)
-sys.modules["ragtime.core.database"] = database_module
-
 from ragtime.core.auth import (  # noqa: E402
+    AuthProvider,
+    AuthProviderConfigData,
+    UserRole,
     _group_entry_rid,
     _ldap_entry_has_group_dn,
     _ldap_profile_from_entry,
@@ -203,7 +168,7 @@ class InternalRoleResolutionTests(unittest.IsolatedAsyncioTestCase):
             role=UserRole.admin,
             roleManuallySet=False,
         )
-        config = SimpleNamespace(manual_role_override_wins=True)
+        config = AuthProviderConfigData(manual_role_override_wins=True)
 
         with patch("ragtime.core.auth.get_db", new=fake_get_db):
             self.assertEqual(
@@ -219,7 +184,7 @@ class InternalRoleResolutionTests(unittest.IsolatedAsyncioTestCase):
             role=UserRole.admin,
             roleManuallySet=True,
         )
-        config = SimpleNamespace(manual_role_override_wins=True)
+        config = AuthProviderConfigData(manual_role_override_wins=True)
 
         self.assertEqual(
             await resolve_user_effective_role(user, auth_config=config),
@@ -255,7 +220,7 @@ class InternalRoleResolutionTests(unittest.IsolatedAsyncioTestCase):
             role=UserRole.user,
             roleManuallySet=False,
         )
-        config = SimpleNamespace(manual_role_override_wins=True)
+        config = AuthProviderConfigData(manual_role_override_wins=True)
 
         with patch("ragtime.core.auth.get_db", new=fake_get_db):
             self.assertEqual(
