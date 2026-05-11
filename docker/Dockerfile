@@ -70,6 +70,7 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
 FROM python-builder AS python-test
 
 ENV PYTHONPATH=/ragtime \
+    INDEX_DATA_PATH=/tmp/ragtime-data \
     PYTHONPYCACHEPREFIX=/tmp/pycache \
     PATH="/opt/venv/bin:$PATH"
 
@@ -88,7 +89,8 @@ RUN python -m prisma generate >/dev/null
 COPY ragtime/ /ragtime/ragtime/
 COPY runtime/ /ragtime/runtime/
 COPY tests/ /ragtime/tests/
-RUN python -m compileall ragtime/userspace/runtime_service.py runtime/manager runtime/main.py && \
+RUN mkdir -p "$INDEX_DATA_PATH" && \
+    python -m compileall ragtime/userspace/runtime_service.py runtime/manager runtime/main.py && \
     python -m pytest tests
 
 # =============================================================================
