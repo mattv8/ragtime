@@ -21,6 +21,7 @@ from ragtime.api.routes import (
     _normalize_runtime_model,
     _owned_by_from_openapi_model_id,
 )
+from ragtime.rag.components import RAGComponents
 
 
 class ModelResolutionTests(unittest.TestCase):
@@ -368,6 +369,156 @@ class ModelSendEligibilityTests(unittest.IsolatedAsyncioTestCase):
             )
 
         validate_live_model.assert_awaited_once()
+
+
+class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unscoped_allowed_copilot_model_uses_copilot_despite_openai_first(
+        self,
+    ) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {
+            "llm_provider": "openai",
+            "llm_model": "gpt-4.1",
+            "openai_api_key": "openai-key",
+            "github_copilot_access_token": "copilot-token",
+            "allowed_chat_models": ["github_copilot::claude-haiku-4.5"],
+            "model_provider_precedence": {
+                "providers": ["openai", "github_copilot"],
+                "model_overrides": {},
+                "family_overrides": {},
+            },
+        }
+        copilot_llm = object()
+
+        async def build_llm(provider: str, model: str, max_tokens: int):
+            self.assertEqual(provider, "github_copilot")
+            self.assertEqual(model, "claude-haiku-4.5")
+            return copilot_llm
+
+        with (
+            mock.patch.object(rag, "_build_llm", side_effect=build_llm),
+            mock.patch.object(
+                rag,
+                "_resolve_chat_request_max_tokens",
+                new=mock.AsyncMock(return_value=4096),
+            ),
+        ):
+            resolution = await rag._get_request_scoped_llm("claude-haiku-4.5")
+
+        self.assertIs(resolution.llm, copilot_llm)
+        self.assertEqual(resolution.provider, "github_copilot")
+        self.assertEqual(resolution.attempted_providers, ("github_copilot",))
+
+    async def test_provider_precedence_falls_back_when_first_provider_unavailable(
+        self,
+    ) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {
+            "llm_provider": "openai",
+            "llm_model": "gpt-5.1-codex-mini",
+            "openai_api_key": "openai-key",
+            "github_copilot_access_token": "copilot-token",
+            "allowed_chat_models": [],
+            "model_provider_precedence": {
+                "providers": ["openai", "github_copilot"],
+                "model_overrides": {},
+                "family_overrides": {},
+            },
+        }
+        copilot_llm = object()
+        attempted: list[str] = []
+
+        async def build_llm(provider: str, model: str, max_tokens: int):
+            attempted.append(provider)
+            return copilot_llm if provider == "github_copilot" else None
+
+        with (
+            mock.patch.object(rag, "_build_llm", side_effect=build_llm),
+            mock.patch.object(
+                rag,
+                "_resolve_chat_request_max_tokens",
+                new=mock.AsyncMock(return_value=4096),
+            ),
+        ):
+            resolution = await rag._get_request_scoped_llm("gpt-5.1-codex-mini")
+
+        self.assertEqual(attempted, ["openai", "github_copilot"])
+        self.assertIs(resolution.llm, copilot_llm)
+        self.assertEqual(resolution.provider, "github_copilot")
+        self.assertEqual(resolution.attempted_providers, ("openai", "github_copilot"))
+
+    async def test_no_llm_error_names_attempted_providers(self) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {
+            "llm_provider": "openai",
+            "llm_model": "gpt-4.1",
+            "openai_api_key": "",
+            "allowed_chat_models": [],
+            "model_provider_precedence": {
+                "providers": ["openai", "github_copilot"],
+                "model_overrides": {},
+                "family_overrides": {},
+            },
+        }
+
+        with (
+            mock.patch.object(rag, "_build_llm", new=mock.AsyncMock(return_value=None)),
+            mock.patch.object(
+                rag,
+                "_resolve_chat_request_max_tokens",
+                new=mock.AsyncMock(return_value=4096),
+            ),
+        ):
+            resolution = await rag._get_request_scoped_llm("gpt-4.1")
+
+        message = rag._no_llm_configured_message(resolution)
+        self.assertIn("Tried providers for model 'gpt-4.1'", message)
+        self.assertIn("OpenAI", message)
+        self.assertIn("API key is missing", message)
+
+    async def test_missing_cached_llm_refreshes_settings_before_resolution(self) -> None:
+        rag = RAGComponents()
+        rag._core_ready = True
+        rag._app_settings = {
+            "llm_provider": "openai",
+            "llm_model": "gpt-4.1",
+            "openai_api_key": "",
+        }
+        fresh_settings = {
+            "llm_provider": "github_copilot",
+            "llm_model": "claude-haiku-4.5",
+            "github_copilot_access_token": "copilot-token",
+            "allowed_chat_models": ["github_copilot::claude-haiku-4.5"],
+            "model_provider_precedence": {
+                "providers": ["openai", "github_copilot"],
+                "model_overrides": {},
+                "family_overrides": {},
+            },
+        }
+        copilot_llm = object()
+
+        async def build_llm(provider: str, model: str, max_tokens: int):
+            self.assertEqual(provider, "github_copilot")
+            self.assertEqual(model, "claude-haiku-4.5")
+            return copilot_llm
+
+        with (
+            mock.patch(
+                "ragtime.rag.components.get_app_settings",
+                new=mock.AsyncMock(return_value=fresh_settings),
+            ),
+            mock.patch.object(rag, "_build_llm", side_effect=build_llm),
+            mock.patch.object(
+                rag,
+                "_resolve_chat_request_max_tokens",
+                new=mock.AsyncMock(return_value=4096),
+            ),
+        ):
+            resolution = await rag._get_request_scoped_llm(None)
+
+        self.assertIs(resolution.llm, copilot_llm)
+        self.assertEqual(resolution.provider, "github_copilot")
+        self.assertEqual(rag._app_settings, fresh_settings)
 
 
 if __name__ == "__main__":

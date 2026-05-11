@@ -63,6 +63,7 @@ from ragtime.indexer.models import (
     ToolType,
     VectorStoreType,
 )
+from ragtime.indexer.models import ModelProviderPrecedence
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.utils import safe_tool_name
@@ -138,8 +139,6 @@ def _sql_quote_literal(value: Any) -> str:
 
 def _coerce_model_provider_precedence(value: Any) -> "ModelProviderPrecedence":
     """Coerce raw JSON/dict from Prisma into a ModelProviderPrecedence model."""
-    from ragtime.indexer.models import ModelProviderPrecedence
-
     if isinstance(value, ModelProviderPrecedence):
         return value
     if not isinstance(value, dict):

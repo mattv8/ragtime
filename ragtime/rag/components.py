@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, List, Literal, Optional, Union, cast
 from urllib.parse import quote
@@ -87,6 +88,7 @@ from ragtime.core.model_providers import (
     normalize_provider_name,
     providers_equivalent,
     resolve_provider_base_url,
+    resolve_provider_for_model,
 )
 from ragtime.core.ollama import (
     DEFAULT_WARMUP_TIMEOUT_SECONDS,
@@ -182,6 +184,17 @@ from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class RequestLLMResolution:
+    """Resolved request LLM plus provider-selection diagnostics."""
+
+    llm: Optional[Any]
+    provider: Optional[str]
+    model: str
+    attempted_providers: tuple[str, ...] = ()
+    error_message: str = ""
 
 
 def _format_exception_message(exc: BaseException) -> str:
@@ -12751,6 +12764,159 @@ except Exception as e:
 
         return None, model
 
+    def _model_id_variants_for_provider_resolution(self, model_id: str) -> set[str]:
+        """Return comparable model ID variants for bare and publisher-prefixed IDs."""
+        raw = str(model_id or "").strip().lstrip("/")
+        if not raw:
+            return set()
+        variants = {raw.lower()}
+        if "/" in raw:
+            variants.add(raw.split("/", 1)[1].lower())
+        return variants
+
+    def _allowed_llm_providers_for_model(self, model_id: str) -> list[str]:
+        """Return providers explicitly allowed for a model slug in chat settings."""
+        requested_variants = self._model_id_variants_for_provider_resolution(model_id)
+        if not requested_variants:
+            return []
+
+        providers: list[str] = []
+        for identifier in (self._app_settings or {}).get("allowed_chat_models") or []:
+            provider, allowed_model = self._parse_provider_scoped_model(
+                str(identifier or "")
+            )
+            if not provider or not allowed_model:
+                continue
+            allowed_variants = self._model_id_variants_for_provider_resolution(
+                allowed_model
+            )
+            if requested_variants.isdisjoint(allowed_variants):
+                continue
+            normalized_provider = normalize_provider_name(provider)
+            if normalized_provider not in providers:
+                providers.append(normalized_provider)
+        return providers
+
+    def _provider_precedence_order(
+        self,
+        providers: list[str],
+        model_id: str,
+    ) -> list[str]:
+        """Order candidate providers with configured precedence, preserving leftovers."""
+        candidates = list(dict.fromkeys(normalize_provider_name(p) for p in providers if p))
+        if not candidates:
+            return []
+
+        precedence = (self._app_settings or {}).get("model_provider_precedence")
+        ordered: list[str] = []
+
+        def append(provider: str | None) -> None:
+            normalized = normalize_provider_name(provider)
+            if normalized in candidates and normalized not in ordered:
+                ordered.append(normalized)
+
+        resolved = resolve_provider_for_model(
+            precedence,
+            model_id=model_id,
+            family=None,
+            candidate_providers=candidates,
+        )
+        append(resolved)
+
+        if hasattr(precedence, "model_dump"):
+            precedence_data = precedence.model_dump()
+        elif isinstance(precedence, dict):
+            precedence_data = precedence
+        else:
+            precedence_data = {}
+
+        for provider in precedence_data.get("providers") or []:
+            append(str(provider))
+
+        for provider in candidates:
+            append(provider)
+
+        return ordered
+
+    def _ordered_llm_candidate_providers(
+        self,
+        *,
+        requested_provider: str,
+        model_id: str,
+        provider_override: Optional[str],
+    ) -> list[str]:
+        """Build the provider chain to try for a request-scoped model."""
+        configured_providers = self._configured_llm_providers()
+        allowed_providers = self._allowed_llm_providers_for_model(model_id)
+
+        if allowed_providers:
+            provider_pool = [
+                provider
+                for provider in allowed_providers
+                if not configured_providers or provider in configured_providers
+            ]
+            if not provider_pool:
+                provider_pool = allowed_providers
+        else:
+            provider_pool = configured_providers or [requested_provider]
+            if requested_provider in provider_pool:
+                provider_pool = [requested_provider] + [
+                    provider for provider in provider_pool if provider != requested_provider
+                ]
+
+        ordered = self._provider_precedence_order(provider_pool, model_id)
+        if provider_override:
+            return list(
+                dict.fromkeys([normalize_provider_name(provider_override), *ordered])
+            )
+        return ordered
+
+    def _llm_provider_unavailable_reason(self, provider: str) -> str:
+        """Return a concise reason a provider could not produce an LLM."""
+        settings = self._app_settings or {}
+        normalized = normalize_provider_name(provider)
+        if normalized == "openai" and not str(
+            settings.get("openai_api_key", "") or ""
+        ).strip():
+            return "OpenAI API key is missing"
+        if normalized == "anthropic" and not str(
+            settings.get("anthropic_api_key", "") or ""
+        ).strip():
+            return "Anthropic API key is missing"
+        if normalized == "github_copilot" and not (
+            str(settings.get("github_copilot_access_token", "") or "").strip()
+            or str(settings.get("github_copilot_refresh_token", "") or "").strip()
+        ):
+            return "GitHub Copilot is not connected"
+        if normalized == "github_models" and not str(
+            settings.get("github_models_api_token", "") or ""
+        ).strip():
+            return "GitHub Models PAT is missing"
+        return "provider client could not be initialized"
+
+    def _no_llm_configured_message(self, resolution: RequestLLMResolution) -> str:
+        base = "Error: No LLM configured. Please configure an LLM in Settings."
+        if not resolution.error_message:
+            return base
+        return f"{base} {resolution.error_message}"
+
+    def _llm_error_context(self, resolution: object) -> str:
+        """Return provider/model context for LLM runtime errors."""
+        if not isinstance(resolution, RequestLLMResolution):
+            return ""
+        if not resolution.provider or not resolution.model:
+            return ""
+        attempted = ""
+        if resolution.attempted_providers:
+            attempted = ", attempted providers: " + ", ".join(
+                self._provider_label(provider)
+                for provider in resolution.attempted_providers
+            )
+        return (
+            f" while using {self._provider_label(resolution.provider)} "
+            f"for model '{resolution.model}'{attempted}"
+        )
+
     async def _resolve_chat_request_max_tokens(self, provider: str, model: str) -> int:
         """Resolve chat-specific max_tokens, capped to selected model limits when known."""
         assert self._app_settings is not None
@@ -12812,23 +12978,50 @@ except Exception as e:
 
     async def _get_request_scoped_llm(
         self, conversation_model: Optional[str]
-    ) -> Optional[Any]:
-        """Resolve a request-scoped LLM honoring the conversation model override."""
+    ) -> RequestLLMResolution:
+        """Resolve a request-scoped LLM honoring provider precedence."""
+        if self.llm is None and self._core_ready:
+            try:
+                fresh_settings = await get_app_settings()
+                if fresh_settings and fresh_settings != self._app_settings:
+                    self._app_settings = fresh_settings
+                    self._request_prompt_cache.clear()
+            except Exception:
+                logger.exception("Failed to refresh app settings before LLM resolution")
+
         provider_override, model_id = self._parse_provider_scoped_model(
             conversation_model
         )
 
-        if not model_id:
-            await self._ensure_copilot_llm_fresh()
-            return self.llm
-
         if not self._app_settings:
-            return self.llm
+            return RequestLLMResolution(
+                llm=self.llm,
+                provider=provider_override,
+                model=model_id or "",
+            )
 
         configured_model = str(self._app_settings.get("llm_model", "")).strip()
         configured_provider = normalize_provider_name(
             self._app_settings.get("llm_provider", "openai")
         )
+
+        if not model_id:
+            model_id = configured_model
+            if self.llm is not None:
+                await self._ensure_copilot_llm_fresh()
+                return RequestLLMResolution(
+                    llm=self.llm,
+                    provider=configured_provider,
+                    model=model_id,
+                )
+
+        if not model_id:
+            return RequestLLMResolution(
+                llm=None,
+                provider=None,
+                model="",
+                error_message="No model is selected in LLM settings.",
+            )
 
         if (
             configured_model
@@ -12840,7 +13033,11 @@ except Exception as e:
             )
         ):
             await self._ensure_copilot_llm_fresh()
-            return self.llm
+            return RequestLLMResolution(
+                llm=self.llm,
+                provider=configured_provider,
+                model=model_id,
+            )
 
         provider = provider_override or configured_provider
 
@@ -12851,28 +13048,68 @@ except Exception as e:
         if provider_override == "openai" and configured_provider == "github_copilot":
             provider = configured_provider
 
-        # Apply admin-configured provider precedence: if the requested provider
-        # is offline / not configured but another configured provider offers the
-        # same model id, transparently fall back per the precedence rules.
         try:
-            from ragtime.core.model_providers import resolve_provider_for_model
-
-            precedence = self._app_settings.get("model_provider_precedence") if self._app_settings else None
-            configured_providers = self._configured_llm_providers()  # see helper below
-            if configured_providers and provider not in configured_providers:
-                resolved = resolve_provider_for_model(
-                    precedence,
-                    model_id=model_id,
-                    family=None,
-                    candidate_providers=configured_providers,
-                )
-                if resolved:
-                    provider = resolved
+            candidate_providers = self._ordered_llm_candidate_providers(
+                requested_provider=provider,
+                model_id=model_id,
+                provider_override=provider_override,
+            )
         except Exception:  # pragma: no cover - defensive: never block chat on resolver
-            logger.exception("model_provider_precedence resolution failed; using fallback")
+            logger.exception(
+                "model_provider_precedence resolution failed; using configured provider"
+            )
+            candidate_providers = [provider]
 
-        max_tokens = await self._resolve_chat_request_max_tokens(provider, model_id)
-        return await self._build_llm(provider, model_id, max_tokens)
+        attempted: list[str] = []
+        unavailable_reasons: list[str] = []
+        for candidate_provider in candidate_providers:
+            attempted.append(candidate_provider)
+            max_tokens = await self._resolve_chat_request_max_tokens(
+                candidate_provider, model_id
+            )
+            request_llm = await self._build_llm(candidate_provider, model_id, max_tokens)
+            if request_llm is None:
+                unavailable_reasons.append(
+                    f"{self._provider_label(candidate_provider)}: "
+                    f"{self._llm_provider_unavailable_reason(candidate_provider)}"
+                )
+                continue
+
+            if candidate_provider != provider:
+                logger.info(
+                    "Resolved chat model %s via %s after considering provider precedence (requested %s)",
+                    model_id,
+                    self._provider_label(candidate_provider),
+                    self._provider_label(provider),
+                )
+
+            if candidate_provider == configured_provider and model_id == configured_model:
+                self.llm = request_llm
+
+            return RequestLLMResolution(
+                llm=request_llm,
+                provider=candidate_provider,
+                model=model_id,
+                attempted_providers=tuple(attempted),
+            )
+
+        provider_list = ", ".join(
+            self._provider_label(provider) for provider in attempted
+        )
+        details = "; ".join(unavailable_reasons)
+        error_message = (
+            f"Tried providers for model '{model_id}' in precedence order: "
+            f"{provider_list or 'none'}."
+        )
+        if details:
+            error_message = f"{error_message} {details}."
+        return RequestLLMResolution(
+            llm=None,
+            provider=None,
+            model=model_id,
+            attempted_providers=tuple(attempted),
+            error_message=error_message,
+        )
 
     def _content_to_text_for_token_estimate(self, content: Any) -> str:
         """Convert message/tool content into plain text for token estimate math."""
@@ -12990,8 +13227,9 @@ except Exception as e:
 
         try:
             executor = self.agent_executor
-            request_llm = await self._get_request_scoped_llm(conversation_model)
-            _, request_model_id = self._parse_provider_scoped_model(conversation_model)
+            llm_resolution = await self._get_request_scoped_llm(conversation_model)
+            request_llm = llm_resolution.llm
+            request_model_id = llm_resolution.model
             t_ctx = time.monotonic()
             request_context = await self._build_request_runtime_context(
                 is_ui=False,
@@ -13034,6 +13272,9 @@ except Exception as e:
                 user_content=langchain_content,
                 model_id=request_model_id,
             )
+
+            if request_llm is None:
+                executor = None
 
             if runtime_tools:
                 tool_scope_prompt = self._build_request_tool_scope_prompt(
@@ -13090,15 +13331,10 @@ except Exception as e:
                         "content": self._serialize_prompt_content(langchain_content),
                     }
                 )
-                provider_name = (
-                    request_model_id
-                    and self._parse_provider_scoped_model(conversation_model)[0]
-                ) or str(
+                provider_name = llm_resolution.provider or str(
                     (self._app_settings or {}).get("llm_provider", "openai")
                 ).lower()
-                effective_model = request_model_id or str(
-                    (self._app_settings or {}).get("llm_model", "")
-                )
+                effective_model = request_model_id
                 # Use agent with tools
                 result = await executor.ainvoke(
                     {
@@ -13155,9 +13391,7 @@ except Exception as e:
             else:
                 # Direct LLM call without tools - use multimodal content
                 if request_llm is None:
-                    return (
-                        "Error: No LLM configured. Please configure an LLM in Settings."
-                    )
+                    return self._no_llm_configured_message(llm_resolution)
 
                 direct_system_prompt = system_prompt
                 include_ai_turn_reminder = True
@@ -13172,15 +13406,10 @@ except Exception as e:
                 if include_ai_turn_reminder:
                     messages.append(AIMessage(content=turn_system_content))
                 messages.append(HumanMessage(content=langchain_content))
-                provider_name = (
-                    self._parse_provider_scoped_model(conversation_model)[0]
-                    or str(
-                        (self._app_settings or {}).get("llm_provider", "openai")
-                    ).lower()
-                )
-                effective_model = request_model_id or str(
-                    (self._app_settings or {}).get("llm_model", "")
-                )
+                provider_name = llm_resolution.provider or str(
+                    (self._app_settings or {}).get("llm_provider", "openai")
+                ).lower()
+                effective_model = request_model_id
                 response = await request_llm.ainvoke(messages)
                 content = response.content
                 debug_metadata = self._build_request_debug_metadata(
@@ -13212,8 +13441,11 @@ except Exception as e:
 
         except Exception as e:
             logger.exception("Error processing query")
+            resolution_context = self._llm_error_context(
+                locals().get("llm_resolution")
+            )
             return (
-                "I encountered an error processing your request: "
+                f"I encountered an error processing your request{resolution_context}: "
                 f"{_format_exception_message(e)}"
             )
 
@@ -13259,8 +13491,9 @@ except Exception as e:
 
         # Select the appropriate agent executor
         executor = self.agent_executor_ui if is_ui else self.agent_executor
-        request_llm = await self._get_request_scoped_llm(conversation_model)
-        _, request_model_id = self._parse_provider_scoped_model(conversation_model)
+        llm_resolution = await self._get_request_scoped_llm(conversation_model)
+        request_llm = llm_resolution.llm
+        request_model_id = llm_resolution.model
         t_ctx = time.monotonic()
         request_context = await self._build_request_runtime_context(
             is_ui=is_ui,
@@ -13299,6 +13532,9 @@ except Exception as e:
             user_content=langchain_content,
             model_id=request_model_id,
         )
+
+        if request_llm is None:
+            executor = None
 
         if runtime_tools:
             tool_scope_prompt = self._build_request_tool_scope_prompt(
@@ -13345,15 +13581,10 @@ except Exception as e:
                     agent_input = langchain_content
                 else:
                     agent_input = self._strip_images_from_content(langchain_content)
-                provider_name = (
-                    self._parse_provider_scoped_model(conversation_model)[0]
-                    or str(
-                        (self._app_settings or {}).get("llm_provider", "openai")
-                    ).lower()
-                )
-                effective_model = request_model_id or str(
-                    (self._app_settings or {}).get("llm_model", "")
-                )
+                provider_name = llm_resolution.provider or str(
+                    (self._app_settings or {}).get("llm_provider", "openai")
+                ).lower()
+                effective_model = request_model_id
                 stream_provider_messages: list[dict[str, Any]] = [
                     {
                         "role": "system",
@@ -14170,7 +14401,7 @@ except Exception as e:
             else:
                 # Direct LLM streaming without tools - use multimodal content
                 if request_llm is None:
-                    yield "Error: No LLM configured. Please configure an LLM in Settings."
+                    yield self._no_llm_configured_message(llm_resolution)
                     return
 
                 direct_system_prompt = system_prompt
@@ -14187,15 +14418,10 @@ except Exception as e:
                     messages.append(AIMessage(content=turn_system_content))
                 messages.append(HumanMessage(content=langchain_content))
 
-                provider_name = (
-                    self._parse_provider_scoped_model(conversation_model)[0]
-                    or str(
-                        (self._app_settings or {}).get("llm_provider", "openai")
-                    ).lower()
-                )
-                effective_model = request_model_id or str(
-                    (self._app_settings or {}).get("llm_model", "")
-                )
+                provider_name = llm_resolution.provider or str(
+                    (self._app_settings or {}).get("llm_provider", "openai")
+                ).lower()
+                effective_model = request_model_id
                 try:
                     direct_channel_header_buffer = ""
                     async for chunk in request_llm.astream(messages):
@@ -14257,8 +14483,11 @@ except Exception as e:
 
         except Exception as e:
             logger.exception("Error in streaming query")
+            resolution_context = self._llm_error_context(
+                locals().get("llm_resolution")
+            )
             yield (
-                "I encountered an error processing your request: "
+                f"I encountered an error processing your request{resolution_context}: "
                 f"{_format_exception_message(e)}"
             )
 
