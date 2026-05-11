@@ -31,7 +31,7 @@ from prisma import fields as prisma_fields
 
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
-from ragtime.core.auth import _get_ldap_connection, get_ldap_config
+from ragtime.core.auth import _get_ldap_connection, get_ldap_config, user_matches_group_identifier
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -7150,6 +7150,22 @@ class UserSpaceService:
         self._workspace_scm_watch_task = asyncio.create_task(
             self._workspace_scm_watch_loop(),
             name="userspace-scm-watch-loop",
+        )
+
+    async def cleanup_interrupted_workspace_mount_syncs(self) -> None:
+        """Mark persisted in-progress mount syncs from a previous process as interrupted."""
+        db = await get_db()
+        await db.workspacemount.update_many(
+            where={"syncStatus": "syncing"},
+            data={
+                "syncStatus": "error",
+                "lastSyncError": "Sync was interrupted by a server restart.",
+                "syncProgressFilesDone": 0,
+                "syncProgressFilesTotal": None,
+                "syncProgressMessage": None,
+                "syncStartedAt": None,
+                "updatedAt": _utc_now(),
+            },
         )
 
     def schedule_workspace_sqlite_import_recovery(self) -> None:
@@ -14398,6 +14414,97 @@ class UserSpaceService:
             raw_paths = []
         return cls._normalize_mount_source_paths([str(path) for path in raw_paths])
 
+    @staticmethod
+    def _load_mount_source_access_list(record: Any, field_name: str) -> list[str]:
+        raw_values = getattr(record, field_name, None)
+        if isinstance(raw_values, str):
+            try:
+                raw_values = json.loads(raw_values)
+            except json.JSONDecodeError:
+                raw_values = []
+        return _normalize_string_list(raw_values)
+
+    @classmethod
+    def _load_mount_source_access_user_ids(cls, record: Any) -> list[str]:
+        return cls._load_mount_source_access_list(record, "accessUserIds")
+
+    @classmethod
+    def _load_mount_source_access_group_identifiers(cls, record: Any) -> list[str]:
+        return cls._load_mount_source_access_list(record, "accessGroupIdentifiers")
+
+    async def _normalize_mount_source_access_user_ids(self, user_ids: Any) -> list[str]:
+        normalized = _normalize_string_list(user_ids)
+        if not normalized:
+            return []
+        db = await get_db()
+        existing = await db.user.find_many(where={"id": {"in": normalized}})
+        existing_ids = {str(getattr(user, "id", "") or "") for user in existing}
+        return [user_id for user_id in normalized if user_id in existing_ids]
+
+    @staticmethod
+    def _normalize_mount_source_access_group_identifiers(group_identifiers: Any) -> list[str]:
+        return _normalize_string_list(group_identifiers)
+
+    async def _user_can_access_global_mount_source_record(
+        self,
+        record: Any,
+        user_id: str | None,
+    ) -> bool:
+        if not user_id:
+            return False
+        db = await get_db()
+        user = await db.user.find_unique(where={"id": user_id})
+        if not user:
+            return False
+        role = getattr(user, "role", None)
+        role_value = role if isinstance(role, str) else str(getattr(role, "value", role))
+        if role_value == "admin":
+            return True
+
+        access_user_ids = set(self._load_mount_source_access_user_ids(record))
+        if user_id in access_user_ids:
+            return True
+
+        for group_identifier in self._load_mount_source_access_group_identifiers(record):
+            if await user_matches_group_identifier(user, group_identifier):
+                return True
+        return False
+
+    async def _enforce_global_mount_source_access(
+        self,
+        record: Any,
+        user_id: str | None,
+    ) -> None:
+        if await self._user_can_access_global_mount_source_record(record, user_id):
+            return
+        raise HTTPException(status_code=403, detail="Mount source access denied")
+
+    async def _workspace_mount_editable_by_user(
+        self,
+        record: Any,
+        user_id: str,
+    ) -> bool:
+        mount_source_record = getattr(record, "mountSource", None)
+        if mount_source_record is not None:
+            return await self._user_can_access_global_mount_source_record(
+                mount_source_record,
+                user_id,
+            )
+        # Personal mount sources are already scoped to users; keep current behavior.
+        return True
+
+    async def _enforce_workspace_mount_edit_access(
+        self,
+        record: Any,
+        user_id: str,
+    ) -> None:
+        if await self._workspace_mount_editable_by_user(record, user_id):
+            return
+        raise HTTPException(
+            status_code=403,
+            detail="Mount is read-only because access to its source was revoked",
+        )
+
     @classmethod
     def _mount_backend_from_source(
         cls,
@@ -14595,6 +14702,8 @@ class UserSpaceService:
             account_email=str(connection_config.get("account_email") or "") or None,
             connection_config=connection_config,
             approved_paths=cls._load_mount_source_approved_paths(record),
+            access_user_ids=cls._load_mount_source_access_user_ids(record),
+            access_group_identifiers=cls._load_mount_source_access_group_identifiers(record),
             sync_interval_seconds=getattr(record, "syncIntervalSeconds", 30) or 30,
             usage_count=usage_count,
             created_at=getattr(record, "createdAt"),
@@ -14651,6 +14760,10 @@ class UserSpaceService:
             sync_status=str(getattr(record, "syncStatus", "pending") or "pending"),  # type: ignore[arg-type]
             sync_backend=str(sync_backend) if sync_backend else None,
             sync_notice=str(getattr(record, "syncNotice", "") or "").strip() or None,
+            sync_progress_files_done=int(getattr(record, "syncProgressFilesDone", 0) or 0),
+            sync_progress_files_total=getattr(record, "syncProgressFilesTotal", None),
+            sync_progress_message=str(getattr(record, "syncProgressMessage", "") or "").strip() or None,
+            sync_started_at=getattr(record, "syncStartedAt", None),
             last_sync_at=getattr(record, "lastSyncAt", None),
             last_sync_error=getattr(record, "lastSyncError", None),
             auto_sync_enabled=bool(getattr(record, "autoSyncEnabled", False)),
@@ -14785,10 +14898,25 @@ class UserSpaceService:
         preferred_backend = context["preferred_backend"]
         preferred_notice = context["preferred_notice"]
         mount_lock = await self._get_workspace_mount_operation_lock(mount_id)
+        await self._mark_workspace_mount_sync_started(
+            db,
+            mount_id=mount_id,
+            workspace_id=workspace_id,
+            sync_backend=preferred_backend,
+            sync_notice=preferred_notice,
+            message="Queued for sync",
+        )
 
         try:
             async with mount_lock:
                 async with self._workspace_mount_sync_semaphore:
+                    await self._write_workspace_mount_sync_progress(
+                        mount_id=mount_id,
+                        workspace_id=workspace_id,
+                        files_done=0,
+                        files_total=None,
+                        message="Staging workspace files",
+                    )
                     await asyncio.to_thread(
                         self._stage_runtime_mount_into_sync_cache,
                         workspace_id,
@@ -14825,28 +14953,43 @@ class UserSpaceService:
                     result: Any
                     if source_type != "ssh":
                         provider = cloud_mount_provider(cast(Any, source_type), connection_config)
+                        cloud_progress = self._workspace_mount_sync_async_progress_callback(
+                            mount_id=mount_id,
+                            workspace_id=workspace_id,
+                        )
                         result = await provider.sync_tree(
                             remote_path,
                             cache_dir,
                             sync_mode=sync_mode,
+                            progress_callback=cloud_progress,
                         )
                         result.backend_used = preferred_backend
                     elif preferred_backend == "paramiko":
+                        thread_progress = self._workspace_mount_sync_progress_callback(
+                            mount_id=mount_id,
+                            workspace_id=workspace_id,
+                        )
                         result = await asyncio.to_thread(
                             sync_ssh_directory,
                             ssh_config,
                             remote_path,
                             str(cache_dir),
                             sync_mode=sync_mode,
+                            progress_callback=thread_progress,
                         )
                         result.notice = preferred_notice
                     else:
+                        thread_progress = self._workspace_mount_sync_progress_callback(
+                            mount_id=mount_id,
+                            workspace_id=workspace_id,
+                        )
                         result = await asyncio.to_thread(
                             rsync_ssh_directory,
                             ssh_config,
                             remote_path,
                             str(cache_dir),
                             sync_mode=sync_mode,
+                            progress_callback=thread_progress,
                         )
                         if result.success:
                             self._remember_remote_rsync_available(ssh_config)
@@ -14858,6 +15001,7 @@ class UserSpaceService:
                                 remote_path,
                                 str(cache_dir),
                                 sync_mode=sync_mode,
+                                progress_callback=thread_progress,
                             )
                             result.notice = self._ssh_rsync_fallback_notice()
             sync_status = "synced" if result.success else "error"
@@ -15191,6 +15335,134 @@ class UserSpaceService:
             return text
         return "Workspace mount sync failed"
 
+    async def _mark_workspace_mount_sync_started(
+        self,
+        db: Any,
+        *,
+        mount_id: str,
+        workspace_id: str,
+        sync_backend: str | None,
+        sync_notice: str | None,
+        message: str = "Preparing sync",
+    ) -> None:
+        now = _utc_now()
+        await db.workspacemount.update(
+            where={"id": mount_id},
+            data={
+                "syncStatus": "syncing",
+                "syncBackend": sync_backend,
+                "syncNotice": sync_notice,
+                "syncProgressFilesDone": 0,
+                "syncProgressFilesTotal": None,
+                "syncProgressMessage": message,
+                "syncStartedAt": now,
+                "lastSyncError": None,
+                "updatedAt": now,
+            },
+        )
+        self.invalidate_file_list_cache(workspace_id)
+
+    async def _write_workspace_mount_sync_progress(
+        self,
+        *,
+        mount_id: str,
+        workspace_id: str,
+        files_done: int,
+        files_total: int | None,
+        message: str | None,
+    ) -> None:
+        db = await get_db()
+        data: dict[str, Any] = {
+            "syncProgressFilesDone": max(0, int(files_done)),
+            "syncProgressMessage": (message or None),
+            "updatedAt": _utc_now(),
+        }
+        if files_total is not None:
+            data["syncProgressFilesTotal"] = max(0, int(files_total))
+        await db.workspacemount.update(where={"id": mount_id}, data=data)
+        self.invalidate_file_list_cache(workspace_id)
+
+    def _workspace_mount_sync_progress_callback(
+        self,
+        *,
+        mount_id: str,
+        workspace_id: str,
+        min_interval_seconds: float = 0.5,
+    ) -> Callable[[int, int | None, str | None], None]:
+        loop = asyncio.get_running_loop()
+        last_emit = 0.0
+        last_done = -1
+
+        def _emit(files_done: int, files_total: int | None = None, message: str | None = None) -> None:
+            nonlocal last_emit, last_done
+            now = _time.monotonic()
+            is_complete = files_total is not None and files_done >= files_total
+            if (
+                not is_complete
+                and files_done == last_done
+                and now - last_emit < min_interval_seconds
+            ):
+                return
+            if not is_complete and now - last_emit < min_interval_seconds:
+                return
+            last_emit = now
+            last_done = files_done
+            future = asyncio.run_coroutine_threadsafe(
+                self._write_workspace_mount_sync_progress(
+                    mount_id=mount_id,
+                    workspace_id=workspace_id,
+                    files_done=files_done,
+                    files_total=files_total,
+                    message=message,
+                ),
+                loop,
+            )
+            try:
+                future.result(timeout=5)
+            except Exception:
+                logger.debug(
+                    "Failed to persist mount sync progress for %s/%s",
+                    workspace_id,
+                    mount_id,
+                    exc_info=True,
+                )
+
+        return _emit
+
+    def _workspace_mount_sync_async_progress_callback(
+        self,
+        *,
+        mount_id: str,
+        workspace_id: str,
+        min_interval_seconds: float = 0.5,
+    ) -> Callable[[int, int | None, str | None], Any]:
+        last_emit = 0.0
+        last_done = -1
+
+        async def _emit(files_done: int, files_total: int | None = None, message: str | None = None) -> None:
+            nonlocal last_emit, last_done
+            now = _time.monotonic()
+            is_complete = files_total is not None and files_done >= files_total
+            if (
+                not is_complete
+                and files_done == last_done
+                and now - last_emit < min_interval_seconds
+            ):
+                return
+            if not is_complete and now - last_emit < min_interval_seconds:
+                return
+            last_emit = now
+            last_done = files_done
+            await self._write_workspace_mount_sync_progress(
+                mount_id=mount_id,
+                workspace_id=workspace_id,
+                files_done=files_done,
+                files_total=files_total,
+                message=message,
+            )
+
+        return _emit
+
     async def _write_workspace_mount_sync_state(
         self,
         db: Any,
@@ -15213,6 +15485,7 @@ class UserSpaceService:
         }
         if update_last_sync_at:
             data["lastSyncAt"] = now
+            data["syncStartedAt"] = None
 
         await db.workspacemount.update(
             where={"id": mount_id},
@@ -15243,6 +15516,18 @@ class UserSpaceService:
             last_sync_error=last_sync_error,
             update_last_sync_at=True,
         )
+        final_progress_total = files_synced if sync_status == "synced" else None
+        final_progress_message = None if sync_status == "synced" else last_sync_error
+        await db.workspacemount.update(
+            where={"id": mount_id},
+            data={
+                "syncProgressFilesDone": max(0, int(files_synced)),
+                "syncProgressFilesTotal": final_progress_total,
+                "syncProgressMessage": final_progress_message,
+                "syncStartedAt": None,
+                "updatedAt": _utc_now(),
+            },
+        )
         return WorkspaceMountSyncResponse(
             mount_id=mount_id,
             sync_mode=sync_mode,
@@ -15250,6 +15535,10 @@ class UserSpaceService:
             files_synced=files_synced,
             sync_backend=sync_backend,
             sync_notice=sync_notice,
+            sync_progress_files_done=max(0, int(files_synced)),
+            sync_progress_files_total=final_progress_total,
+            sync_progress_message=final_progress_message,
+            sync_started_at=None,
             last_sync_error=last_sync_error,
         )
 
@@ -15664,6 +15953,8 @@ class UserSpaceService:
             mount_source_id,
             require_enabled=require_enabled,
         )
+        if user_id is not None:
+            await self._enforce_global_mount_source_access(record, user_id)
         return self._userspace_mount_source_from_record(record)
 
     async def list_user_cloud_oauth_accounts(
@@ -16046,6 +16337,12 @@ class UserSpaceService:
                 approved_paths=request.approved_paths,
             )
         )
+        access_user_ids = await self._normalize_mount_source_access_user_ids(
+            request.access_user_ids
+        )
+        access_group_identifiers = self._normalize_mount_source_access_group_identifiers(
+            request.access_group_identifiers
+        )
         now = _utc_now()
         data: dict[str, Any] = {
             "id": str(uuid4()),
@@ -16062,6 +16359,8 @@ class UserSpaceService:
                 )
             ),
             "approvedPaths": Json(approved_paths),
+            "accessUserIds": Json(access_user_ids),
+            "accessGroupIdentifiers": Json(access_group_identifiers),
             "syncIntervalSeconds": (
                 request.sync_interval_seconds
                 if request.sync_interval_seconds is not None
@@ -16152,6 +16451,20 @@ class UserSpaceService:
             if "sync_interval_seconds" not in fields_set
             else request.sync_interval_seconds
         )
+        next_access_user_ids = (
+            existing.access_user_ids
+            if "access_user_ids" not in fields_set
+            else await self._normalize_mount_source_access_user_ids(
+                request.access_user_ids
+            )
+        )
+        next_access_group_identifiers = (
+            existing.access_group_identifiers
+            if "access_group_identifiers" not in fields_set
+            else self._normalize_mount_source_access_group_identifiers(
+                request.access_group_identifiers
+            )
+        )
 
         next_connection_config = await self._cloud_connection_config_with_user_account(
             user_id=user_id,
@@ -16177,6 +16490,8 @@ class UserSpaceService:
                 )
             ),
             "approvedPaths": Json(normalized_approved_paths),
+            "accessUserIds": Json(next_access_user_ids),
+            "accessGroupIdentifiers": Json(next_access_group_identifiers),
             "updatedAt": _utc_now(),
         }
         if next_sync_interval is not None:
@@ -16481,8 +16796,15 @@ class UserSpaceService:
                 else None
             )
             mount = self._workspace_mount_from_record(row, mount_source)
-            mount.source_available = await self._check_mount_source_available(
-                row, mount_source
+            if mount.sync_status == "syncing":
+                mount.source_available = True
+            else:
+                mount.source_available = await self._check_mount_source_available(
+                    row, mount_source
+                )
+            mount.editable = await self._workspace_mount_editable_by_user(
+                row,
+                user_id,
             )
             results.append(mount)
         return results
@@ -16497,9 +16819,12 @@ class UserSpaceService:
         rows = await db.userspacemountsource.find_many(
             where={"enabled": True},
             order={"name": "asc"},
+            include={"toolConfig": True},
         )
         sources: list[MountableSource] = []
         for row in rows:
+            if not await self._user_can_access_global_mount_source_record(row, user_id):
+                continue
             mount_source = self._userspace_mount_source_from_record(row)
             for path in mount_source.approved_paths:
                 sources.append(
@@ -16686,6 +17011,8 @@ class UserSpaceService:
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Mount not found")
+
+        await self._enforce_workspace_mount_edit_access(existing, user_id)
 
         mount_source_record = getattr(existing, "mountSource", None) or getattr(existing, "userMountSource", None)
         source_type = (
@@ -16920,6 +17247,8 @@ class UserSpaceService:
         if not existing:
             raise HTTPException(status_code=404, detail="Mount not found")
 
+        await self._enforce_workspace_mount_edit_access(existing, user_id)
+
         now = _utc_now()
         target_path = str(getattr(existing, "targetPath", "") or "")
         await db.workspacemount.delete(where={"id": mount_id})
@@ -16988,6 +17317,7 @@ class UserSpaceService:
         )
         if not mount:
             raise HTTPException(status_code=404, detail="Mount not found")
+        await self._enforce_workspace_mount_edit_access(mount, user_id)
         return await self._preview_workspace_mount_record(
             db,
             mount,
@@ -17014,13 +17344,56 @@ class UserSpaceService:
         )
         if not mount:
             raise HTTPException(status_code=404, detail="Mount not found")
+        await self._enforce_workspace_mount_edit_access(mount, user_id)
         # Manual sync requests should re-check previously-missing rsync endpoints
         # immediately so UI state can recover without waiting for cooldown expiry.
-        return await self._sync_workspace_mount_record(
-            db,
+        context = await self._build_workspace_mount_sync_context(
             mount,
             force_backend_recheck=True,
-            preview_token=request.preview_token,
+        )
+        mount_id = context["mount_id"]
+        sync_mode = context["sync_mode"]
+        sync_backend = context["preferred_backend"]
+        sync_notice = context["preferred_notice"]
+
+        await self._mark_workspace_mount_sync_started(
+            db,
+            mount_id=mount_id,
+            workspace_id=workspace_id,
+            sync_backend=sync_backend,
+            sync_notice=sync_notice,
+            message="Queued for sync",
+        )
+        async with self._workspace_mount_sync_tasks_lock:
+            existing_task = self._workspace_mount_sync_tasks.get(mount_id)
+            if existing_task is None or existing_task.done():
+                existing_task = asyncio.create_task(
+                    self._sync_workspace_mount_record_once(
+                        db,
+                        mount,
+                        force_backend_recheck=True,
+                        preview_token=request.preview_token,
+                    ),
+                    name=f"userspace-mount-sync:{mount_id}",
+                )
+                self._attach_workspace_mount_sync_task_cleanup(
+                    mount_id,
+                    existing_task,
+                )
+                self._workspace_mount_sync_tasks[mount_id] = existing_task
+
+        return WorkspaceMountSyncResponse(
+            mount_id=mount_id,
+            sync_mode=sync_mode,
+            sync_status="syncing",
+            files_synced=0,
+            sync_backend=sync_backend,
+            sync_notice=sync_notice,
+            sync_progress_files_done=0,
+            sync_progress_files_total=None,
+            sync_progress_message="Queued for sync",
+            sync_started_at=_utc_now(),
+            last_sync_error=None,
         )
 
     async def browse_workspace_mount_source(

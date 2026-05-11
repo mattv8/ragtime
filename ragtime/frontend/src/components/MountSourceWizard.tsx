@@ -16,6 +16,7 @@ import {
   type BrowserPathDisplayMap,
 } from '@/utils/mountPaths';
 import type {
+  AuthGroup,
   UserSpaceObjectStorageConfig,
   UserSpaceObjectStorageBucket,
   CloudOAuthProviderStatus,
@@ -26,6 +27,7 @@ import type {
   SSHShellConnectionConfig,
   UserCloudOAuthAccount,
   UserCloudOAuthProvider,
+  UserDirectoryEntry,
   UserspaceMountSourceType,
 } from '@/types';
 
@@ -45,6 +47,8 @@ export type MountSourceDraft = {
   cloud_refresh_token: string;
   cloud_account_email: string;
   approved_paths: string[];
+  access_user_ids: string[];
+  access_group_identifiers: string[];
   sync_interval_seconds: number;
 };
 
@@ -61,6 +65,8 @@ export function createEmptyMountSourceDraft(): MountSourceDraft {
     cloud_refresh_token: '',
     cloud_account_email: '',
     approved_paths: ['.'],
+    access_user_ids: [],
+    access_group_identifiers: [],
     sync_interval_seconds: 30,
   };
 }
@@ -78,6 +84,8 @@ export function mountSourceToDraft(source: UserspaceMountSource): MountSourceDra
     cloud_refresh_token: source.connection_config && 'refresh_token' in source.connection_config ? String(source.connection_config.refresh_token || '') : '',
     cloud_account_email: source.account_email || (source.connection_config && 'account_email' in source.connection_config ? String(source.connection_config.account_email || '') : ''),
     approved_paths: source.approved_paths.length > 0 ? [...source.approved_paths] : ['.'],
+    access_user_ids: [...(source.access_user_ids || [])],
+    access_group_identifiers: [...(source.access_group_identifiers || [])],
     sync_interval_seconds: source.sync_interval_seconds ?? 30,
   };
 }
@@ -226,19 +234,35 @@ function toolSummary(tool: ToolConfig): string {
   return cfg?.base_path || 'Filesystem';
 }
 
+function formatUserDirectoryLabel(user: UserDirectoryEntry | undefined, fallback: string): string {
+  if (!user) return fallback;
+  return user.display_name ? `${user.display_name} (${user.username})` : user.username;
+}
+
+function groupAccessIdentifier(group: AuthGroup): string {
+  return group.source_dn || group.key || group.id;
+}
+
+function formatAuthGroupLabel(group: AuthGroup | undefined, fallback: string): string {
+  if (!group) return fallback;
+  const provider = group.provider === 'ldap' ? 'LDAP' : 'Local';
+  return `${group.display_name || group.key} (${provider})`;
+}
+
 // ---------------------------------------------------------------------------
 // Wizard steps
 // ---------------------------------------------------------------------------
 
-type MountSourceWizardStep = 'select_tool' | 'mount_details' | 'review';
+type MountSourceWizardStep = 'select_tool' | 'mount_details' | 'access_control' | 'review';
 
-const WIZARD_STEPS: MountSourceWizardStep[] = ['select_tool', 'mount_details', 'review'];
-const EDIT_WIZARD_STEPS: MountSourceWizardStep[] = ['mount_details', 'review'];
+const WIZARD_STEPS: MountSourceWizardStep[] = ['select_tool', 'mount_details', 'access_control', 'review'];
+const EDIT_WIZARD_STEPS: MountSourceWizardStep[] = ['mount_details', 'access_control', 'review'];
 
 function getStepTitle(step: MountSourceWizardStep): string {
   switch (step) {
     case 'select_tool': return 'Select Backing Tool';
     case 'mount_details': return 'Mount Configuration';
+    case 'access_control': return 'Access Control';
     case 'review': return 'Review & Save';
   }
 }
@@ -288,6 +312,8 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
   const [cloudOAuthAccounts, setCloudOAuthAccounts] = useState<UserCloudOAuthAccount[]>([]);
   const [savingCloudProvider, setSavingCloudProvider] = useState<UserCloudOAuthProvider | null>(null);
   const [deletingCloudAccountId, setDeletingCloudAccountId] = useState<string | null>(null);
+  const [availableUsers, setAvailableUsers] = useState<UserDirectoryEntry[]>([]);
+  const [authGroups, setAuthGroups] = useState<AuthGroup[]>([]);
 
   const wizardSteps = isEditing ? EDIT_WIZARD_STEPS : WIZARD_STEPS;
   const [currentStep, setCurrentStep] = useState<MountSourceWizardStep>(
@@ -331,6 +357,22 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
 
   useEffect(() => { void loadCloudOAuthAccounts(); }, [loadCloudOAuthAccounts]);
 
+  const loadAccessOptions = useCallback(async () => {
+    try {
+      const [users, groups] = await Promise.all([
+        api.listUsersDirectory(),
+        api.listAuthGroups(),
+      ]);
+      setAvailableUsers(users);
+      setAuthGroups(groups);
+    } catch {
+      setAvailableUsers([]);
+      setAuthGroups([]);
+    }
+  }, []);
+
+  useEffect(() => { void loadAccessOptions(); }, [loadAccessOptions]);
+
   useEffect(() => {
     const listener = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
@@ -362,6 +404,10 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
   const selectedProviderAccounts = selectedCloudSource
     ? cloudOAuthAccounts.filter((account) => account.provider === selectedCloudSource)
     : [];
+  const usersById = useMemo(() => new Map(availableUsers.map((user) => [user.id, user])), [availableUsers]);
+  const authGroupsByIdentifier = useMemo(() => new Map(authGroups.map((group) => [groupAccessIdentifier(group), group])), [authGroups]);
+  const addableUsers = availableUsers.filter((user) => !draft.access_user_ids.includes(user.id));
+  const addableGroups = authGroups.filter((group) => !draft.access_group_identifiers.includes(groupAccessIdentifier(group)));
   const isSSHSource = selectedTool?.tool_type === 'ssh_shell' || existingSource?.source_type === 'ssh';
   const isSyncIntervalSource = isSSHSource
     || selectedCloudSource != null
@@ -452,6 +498,8 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
         return draft.name.trim().length > 0 && draft.approved_paths.length > 0 && (
           !selectedCloudSource || Boolean(draft.cloud_oauth_account_id || draft.cloud_access_token.trim())
         );
+      case 'access_control':
+        return true;
       case 'review':
         return true;
     }
@@ -640,6 +688,8 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
       const approvedPaths = Array.from(
         new Set(draft.approved_paths.map((v) => v.trim()).filter(Boolean))
       );
+      const accessUserIds = Array.from(new Set(draft.access_user_ids.map((value) => value.trim()).filter(Boolean)));
+      const accessGroupIdentifiers = Array.from(new Set(draft.access_group_identifiers.map((value) => value.trim()).filter(Boolean)));
       if (selectedCloudSource && approvedPaths.length === 0) {
         throw new Error('Select at least one drive or folder for this cloud mount source.');
       }
@@ -660,6 +710,8 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
             account_email: accountEmail,
           } : undefined,
           approved_paths: selectedCloudSource ? approvedPaths : approvedPaths.length > 0 ? approvedPaths : ['.'],
+          access_user_ids: accessUserIds,
+          access_group_identifiers: accessGroupIdentifiers,
           sync_interval_seconds: draft.sync_interval_seconds,
         });
         onSaved(saved);
@@ -679,6 +731,8 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
             account_email: accountEmail,
           },
           approved_paths: approvedPaths,
+          access_user_ids: accessUserIds,
+          access_group_identifiers: accessGroupIdentifiers,
           sync_interval_seconds: draft.sync_interval_seconds,
         });
         onSaved(saved);
@@ -690,6 +744,8 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
           enabled: true,
           tool_config_id: draft.tool_config_id ?? undefined,
           approved_paths: approvedPaths.length > 0 ? approvedPaths : ['.'],
+          access_user_ids: accessUserIds,
+          access_group_identifiers: accessGroupIdentifiers,
           sync_interval_seconds: draft.sync_interval_seconds,
         });
         onSaved(saved);
@@ -1063,6 +1119,125 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
     </div>
   );
 
+  const renderAccessControl = () => (
+    <div className="wizard-step-content" style={{ display: 'grid', gap: 16 }}>
+      <p className="field-help" style={{ margin: 0 }}>
+        Choose which users and auth groups can attach this source to workspaces. Admins can always manage and mount sources. With no ACL entries, only admins can mount this source.
+      </p>
+
+      <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(2, 1fr)' }}>
+        <div style={{ display: 'grid', gap: 10, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <strong>Users</strong>
+            <span style={{ marginLeft: 'auto' }} />
+            <select
+              className="form-input"
+              value=""
+              onChange={(event) => {
+                const userId = event.target.value;
+                if (!userId) return;
+                setDraft((current) => ({
+                  ...current,
+                  access_user_ids: current.access_user_ids.includes(userId)
+                    ? current.access_user_ids
+                    : [...current.access_user_ids, userId].sort((left, right) => (
+                      formatUserDirectoryLabel(usersById.get(left), left).localeCompare(formatUserDirectoryLabel(usersById.get(right), right))
+                    )),
+                }));
+              }}
+              style={{ width: 'auto', minWidth: 240 }}
+            >
+              <option value="">Add user...</option>
+              {addableUsers.map((user) => (
+                <option key={user.id} value={user.id}>{formatUserDirectoryLabel(user, user.id)}</option>
+              ))}
+            </select>
+          </div>
+
+          {draft.access_user_ids.length > 0 ? (
+            <div style={{ display: 'grid', gap: 8 }}>
+              {draft.access_user_ids.map((userId) => (
+                <div key={userId} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--color-border)', borderRadius: 6 }}>
+                  <span>{formatUserDirectoryLabel(usersById.get(userId), userId)}</span>
+                  <span className="muted" style={{ fontSize: '0.8rem' }}>Can mount</span>
+                  <span style={{ marginLeft: 'auto' }} />
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setDraft((current) => ({
+                      ...current,
+                      access_user_ids: current.access_user_ids.filter((id) => id !== userId),
+                    }))}
+                    title="Remove user access"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="field-help" style={{ margin: 0 }}>No explicit users selected.</p>
+          )}
+        </div>
+
+        <div style={{ display: 'grid', gap: 10, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <strong>Auth Groups</strong>
+            <span style={{ marginLeft: 'auto' }} />
+            <select
+              className="form-input"
+              value=""
+              onChange={(event) => {
+                const groupIdentifier = event.target.value;
+                if (!groupIdentifier) return;
+                setDraft((current) => ({
+                  ...current,
+                  access_group_identifiers: current.access_group_identifiers.includes(groupIdentifier)
+                    ? current.access_group_identifiers
+                    : [...current.access_group_identifiers, groupIdentifier].sort((left, right) => (
+                      formatAuthGroupLabel(authGroupsByIdentifier.get(left), left).localeCompare(formatAuthGroupLabel(authGroupsByIdentifier.get(right), right))
+                    )),
+                }));
+              }}
+              style={{ width: 'auto', minWidth: 240 }}
+            >
+              <option value="">Add auth group...</option>
+              {addableGroups.map((group) => {
+                const identifier = groupAccessIdentifier(group);
+                return <option key={identifier} value={identifier}>{formatAuthGroupLabel(group, identifier)}</option>;
+              })}
+            </select>
+          </div>
+
+          {draft.access_group_identifiers.length > 0 ? (
+            <div style={{ display: 'grid', gap: 8 }}>
+              {draft.access_group_identifiers.map((groupIdentifier) => (
+                <div key={groupIdentifier} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', border: '1px solid var(--color-border)', borderRadius: 6 }}>
+                  <span>{formatAuthGroupLabel(authGroupsByIdentifier.get(groupIdentifier), groupIdentifier)}</span>
+                  <span className="muted" style={{ fontSize: '0.8rem' }}>Can mount</span>
+                  <span style={{ marginLeft: 'auto' }} />
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setDraft((current) => ({
+                      ...current,
+                      access_group_identifiers: current.access_group_identifiers.filter((id) => id !== groupIdentifier),
+                    }))}
+                    title="Remove group access"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="field-help" style={{ margin: 0 }}>No auth groups selected.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
   const renderReview = () => (
     <div className="wizard-step-content" style={{ display: 'grid', gap: 16 }}>
       <table className="review-table">
@@ -1105,6 +1280,29 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
               ))}
             </td>
           </tr>
+          <tr>
+            <td className="review-label">Access</td>
+            <td>
+              {draft.access_user_ids.length === 0 && draft.access_group_identifiers.length === 0 ? (
+                <span className="muted">Admins only</span>
+              ) : (
+                <div style={{ display: 'grid', gap: 4 }}>
+                  {draft.access_user_ids.length > 0 && (
+                    <span>
+                      Users:{' '}
+                      {draft.access_user_ids.map((userId) => formatUserDirectoryLabel(usersById.get(userId), userId)).join(', ')}
+                    </span>
+                  )}
+                  {draft.access_group_identifiers.length > 0 && (
+                    <span>
+                      Groups:{' '}
+                      {draft.access_group_identifiers.map((groupIdentifier) => formatAuthGroupLabel(authGroupsByIdentifier.get(groupIdentifier), groupIdentifier)).join(', ')}
+                    </span>
+                  )}
+                </div>
+              )}
+            </td>
+          </tr>
           {isSyncIntervalSource && (
             <tr>
               <td className="review-label">Sync Interval</td>
@@ -1120,6 +1318,7 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
     switch (currentStep) {
       case 'select_tool': return renderSelectTool();
       case 'mount_details': return renderMountDetails();
+      case 'access_control': return renderAccessControl();
       case 'review': return renderReview();
     }
   };

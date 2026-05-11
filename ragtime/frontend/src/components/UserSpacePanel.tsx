@@ -40,6 +40,7 @@ import {
 } from '@/utils/mountPaths';
 import {
   formatMountSyncInterval,
+  MOUNT_SYNC_DEFAULT_SECONDS,
 } from '@/utils/mountSyncIntervals';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
@@ -269,6 +270,21 @@ function mountIntervalSelectValue(seconds: number | null | undefined): string {
   return 'custom';
 }
 
+function getMountIntervalLabel(seconds: number | null | undefined): string {
+  return seconds == null ? `Default (${formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})` : `Every ${formatMountSyncInterval(seconds)}`;
+}
+
+function formatMountSyncProgress(mount: Pick<WorkspaceMount, 'sync_progress_files_done' | 'sync_progress_files_total' | 'sync_progress_message'>): string {
+  const done = Math.max(0, mount.sync_progress_files_done ?? 0);
+  const total = mount.sync_progress_files_total;
+  const countText = typeof total === 'number' && total > 0 ? `${done}/${total}` : done > 0 ? `${done}` : '';
+  const message = mount.sync_progress_message?.trim();
+  if (message && countText) return `${message} (${countText})`;
+  if (message) return message;
+  if (countText) return `${countText} files`;
+  return 'Syncing';
+}
+
 function formatMountSyncPreviewPath(path: string): string {
   return path.startsWith('/') ? path : `/${path}`;
 }
@@ -340,6 +356,7 @@ const USERSPACE_WORKSPACE_BADGE_BACKGROUND_POLL_INTERVAL_MS = 20000;
 const USERSPACE_WORKSPACE_CREATE_TASK_POLL_INTERVAL_MS = 1000;
 const USERSPACE_WORKSPACE_DELETE_TASK_POLL_INTERVAL_MS = 1000;
 const USERSPACE_WORKSPACE_DUPLICATE_TASK_POLL_INTERVAL_MS = 1000;
+const USERSPACE_MOUNT_SYNC_POLL_INTERVAL_MS = 1200;
 const USERSPACE_RUNTIME_BACKGROUND_POLL_INTERVAL_MS = 30000;
 const USERSPACE_BROWSER_AUTH_REFRESH_LEAD_MS = 60_000;
 const USERSPACE_PREVIEW_LAUNCH_REFRESH_LEAD_MS = 60_000;
@@ -768,6 +785,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [mountSyncPreviewIntent, setMountSyncPreviewIntent] = useState<MountSyncPreviewIntent | null>(null);
   const [mountSyncPreviewNextSyncMode, setMountSyncPreviewNextSyncMode] = useState<WorkspaceMountSyncMode | null>(null);
   const [expandedSyncModeInfo, setExpandedSyncModeInfo] = useState<{ id: string | null; mode: 'hover' | 'pinned' } | null>(null);
+  const [expandedMountIntervalMenuId, setExpandedMountIntervalMenuId] = useState<string | null>(null);
+  const [mountIntervalMenuRect, setMountIntervalMenuRect] = useState<{ top: number; left: number } | null>(null);
   const [savingMountWatchId, setSavingMountWatchId] = useState<string | null>(null);
   const [savingMountIntervalId, setSavingMountIntervalId] = useState<string | null>(null);
   const [editingMountDescriptionId, setEditingMountDescriptionId] = useState<string | null>(null);
@@ -841,6 +860,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
   const userSpaceLayoutCookieName = useMemo(() => getUserSpaceLayoutCookieName(currentUser.id), [currentUser.id]);
   const userSpaceFullscreenCookieName = useMemo(() => getUserSpaceFullscreenCookieName(currentUser.id), [currentUser.id]);
+
+  useEffect(() => {
+    if (!expandedMountIntervalMenuId) {
+      return;
+    }
+    const expandedMount = mounts.find((mount) => mount.id === expandedMountIntervalMenuId);
+    if (!expandedMount || !expandedMount.auto_sync_enabled) {
+      setExpandedMountIntervalMenuId(null);
+    }
+  }, [expandedMountIntervalMenuId, mounts]);
 
   const authorizeBrowserSurfaces = useCallback(async (
     workspaceId: string,
@@ -1198,7 +1227,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const mountTargetPaths = useMemo(() => {
     const paths = new Map<
       string,
-      { id: string; enabled: boolean; sourceType: WorkspaceMount['source_type']; syncStatus: WorkspaceMount['sync_status']; lastSyncError: string | null; sourceAvailable: boolean }
+      { id: string; enabled: boolean; sourceType: WorkspaceMount['source_type']; syncStatus: WorkspaceMount['sync_status']; lastSyncError: string | null; sourceAvailable: boolean; progressText: string }
     >();
     for (const mount of mounts) {
       const target = mount.target_path?.replace(/^\/workspace\//, '')?.replace(/^\/+|\/+$/g, '');
@@ -1210,6 +1239,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           syncStatus: mount.sync_status,
           lastSyncError: mount.last_sync_error,
           sourceAvailable: mount.source_available,
+          progressText: formatMountSyncProgress(mount),
         });
       }
     }
@@ -1218,6 +1248,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const workspaceMountTargetBrowserCacheKey = useMemo(
     () => `${activeWorkspaceId ?? 'no-workspace'}:${fileEntriesFingerprint(fileBrowserEntries)}`,
     [activeWorkspaceId, fileBrowserEntries]
+  );
+  const hasActiveMountSync = useMemo(
+    () => mounts.some((mount) => mount.sync_status === 'syncing' || syncingMountId === mount.id || previewingMountId === mount.id),
+    [mounts, previewingMountId, syncingMountId]
   );
 
   // Files that are changed but not yet acknowledged via per-file Save.
@@ -2451,6 +2485,45 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       }
     };
   }, [activeWorkspaceId, isPageVisible, refreshWorkspaceFileTree]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId || !hasActiveMountSync) return;
+
+    let cancelled = false;
+    let inFlight = false;
+    let hadActiveSync = true;
+    let timer: number | null = null;
+
+    const pollMounts = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const nextMounts = await api.listWorkspaceMounts(activeWorkspaceId);
+        if (cancelled) return;
+        const stillSyncing = nextMounts.some((mount) => mount.sync_status === 'syncing');
+        setMounts(nextMounts);
+        if (hadActiveSync && !stillSyncing) {
+          void loadWorkspaceData(activeWorkspaceId);
+        }
+        hadActiveSync = stillSyncing;
+      } catch {
+        // Keep polling active sync state; transient API errors are harmless here.
+      } finally {
+        inFlight = false;
+        if (!cancelled) {
+          timer = window.setTimeout(pollMounts, USERSPACE_MOUNT_SYNC_POLL_INTERVAL_MS);
+        }
+      }
+    };
+
+    timer = window.setTimeout(pollMounts, 0);
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [activeWorkspaceId, hasActiveMountSync, loadWorkspaceData]);
 
   useEffect(() => {
     fileContentCacheRef.current = fileContentCache;
@@ -5983,8 +6056,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           const isMount = !!mountInfo;
           const isMountDisabled = isMount && !mountInfo.enabled;
           const isMountDisconnected = isMount && !mountInfo.sourceAvailable;
-          const isSshMount = isMount && mountInfo.sourceType === 'ssh';
-          const isMountSyncInProgress = isSshMount && !!mountInfo && (syncingMountId === mountInfo.id || previewingMountId === mountInfo.id);
+          const isSyncCapableMount = isMount && isWorkspaceMountSyncCapableSourceType(mountInfo.sourceType);
+          const isMountSyncInProgress = isSyncCapableMount && !!mountInfo && (mountInfo.syncStatus === 'syncing' || syncingMountId === mountInfo.id || previewingMountId === mountInfo.id);
           const mountStatusClass = isMountSyncInProgress
             ? 'userspace-status-pill-warning'
             : mountInfo?.syncStatus === 'synced'
@@ -5996,9 +6069,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             ? 'disconnected'
             : isMountDisabled
               ? 'unmounted'
-              : isSshMount
+              : isSyncCapableMount
                 ? isMountSyncInProgress
-                  ? 'in progress'
+                  ? 'syncing'
                   : mountInfo?.syncStatus === 'synced'
                     ? 'synced'
                     : mountInfo?.syncStatus === 'pending'
@@ -6016,12 +6089,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 {hasChangedFileDescendant && <span className="userspace-tree-folder-changed-file-dot" title="Contains changed files" />}
                 {isMount && (
                   <span
-                    className={`userspace-tree-mount-badge${isMountDisconnected ? ' userspace-tree-mount-badge-disconnected' : isMountDisabled ? ' userspace-tree-mount-badge-disabled' : isSshMount && (isMountSyncInProgress || mountInfo?.syncStatus !== 'synced') ? ` userspace-tree-mount-badge-sync ${mountStatusClass}` : ''}`}
+                    className={`userspace-tree-mount-badge${isMountDisconnected ? ' userspace-tree-mount-badge-disconnected' : isMountDisabled ? ' userspace-tree-mount-badge-disabled' : isSyncCapableMount && (isMountSyncInProgress || mountInfo?.syncStatus !== 'synced') ? ` userspace-tree-mount-badge-sync ${mountStatusClass}` : ''}`}
                     role="button"
                     tabIndex={0}
-                    title={isMountDisconnected ? 'Mount source is no longer available' : isMountSyncInProgress ? 'Mount sync in progress' : isSshMount && mountInfo?.syncStatus === 'error' && mountInfo?.lastSyncError ? mountInfo.lastSyncError : 'Manage mounts'}
+                    title={isMountDisconnected ? 'Mount source is no longer available' : isMountSyncInProgress ? mountInfo.progressText : isSyncCapableMount && mountInfo?.syncStatus === 'error' && mountInfo?.lastSyncError ? mountInfo.lastSyncError : 'Manage mounts'}
                     onClick={(e) => { e.stopPropagation(); void handleOpenMountsModal(); }}
                   >
+                    {isMountSyncInProgress && <MiniLoadingSpinner variant="icon" size={11} ariaHidden />}
                     {mountBadgeLabel}
                   </span>
                 )}
@@ -7599,6 +7673,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                         const isEjected = !mount.enabled;
                         const SyncModeIcon = getMountSyncModeIcon(mount.sync_mode);
                         const displaySourcePath = resolveSourceDisplayPath(mount.source_path, undefined, { sourceType: mount.source_type });
+                        const isMountEditable = mount.editable !== false;
+                        const mountReadOnlyReason = 'Read-only: access to this source was revoked by an admin.';
                         return (
                         <div key={mount.id} className="userspace-mount-row" style={isEjected ? { opacity: 0.45, filter: 'grayscale(0.6)' } : undefined}>
                           <div className="userspace-mount-primary-row">
@@ -7631,12 +7707,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                         const nextMode = modes[(currentIndex + 1) % modes.length];
                                         void handleUpdateMountSyncMode(mount, nextMode);
                                       }}
-                                      disabled={savingMountWatchId === mount.id || isEjected}
-                                      title={getMountSyncModeDescription(mount.sync_mode)}
+                                      disabled={savingMountWatchId === mount.id || isEjected || !isMountEditable}
+                                      title={isMountEditable ? getMountSyncModeDescription(mount.sync_mode) : mountReadOnlyReason}
                                       style={{
                                         minWidth: 100,
-                                        padding: '4px 8px',
-                                        fontSize: 12,
                                         display: 'inline-flex',
                                         alignItems: 'center',
                                         gap: 5,
@@ -7697,79 +7771,142 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                     <button
                                       className={`btn btn-sm ${mount.auto_sync_enabled ? 'btn-primary' : 'btn-secondary userspace-mount-toggle-btn-inactive'}`}
                                       onClick={() => handleToggleMountAutoSync(mount, !mount.auto_sync_enabled)}
-                                      disabled={savingMountWatchId === mount.id || isEjected}
-                                      title={mount.auto_sync_enabled ? 'Disable auto-sync watch mode' : 'Enable auto-sync watch mode'}
+                                      disabled={savingMountWatchId === mount.id || isEjected || !isMountEditable}
+                                      title={isMountEditable
+                                        ? (mount.auto_sync_enabled ? 'Disable Auto Sync and switch to on-demand syncing' : 'Enable Auto Sync to keep this mount in sync on a schedule')
+                                        : mountReadOnlyReason}
                                     >
                                       {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : (
                                         <span className="userspace-mount-toggle-icon">
-                                          Auto
+                                          Auto Sync
                                         </span>
                                       )}
                                     </button>
                                     {mount.auto_sync_enabled && (
-                                      <select
-                                        className="form-input userspace-type-select userspace-mount-interval-select"
-                                        value={mountIntervalSelectValue(mount.sync_interval_seconds)}
-                                        onChange={(e) => {
-                                          const value = e.target.value;
-                                          if (value === 'custom') return;
-                                          void handleUpdateMountSyncInterval(mount, value === 'inherit' ? null : parseInt(value, 10));
-                                        }}
-                                        disabled={savingMountIntervalId === mount.id || isEjected}
-                                        title={mount.sync_interval_seconds == null ? 'Inherit default interval' : 'Per-mount interval override'}
-                                      >
-                                        <option value="inherit">Inherit</option>
-                                        {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map((seconds) => (
-                                          <option key={seconds} value={seconds}>
-                                            {formatMountSyncInterval(seconds)}
-                                          </option>
-                                        ))}
-                                        {mount.sync_interval_seconds != null && !WORKSPACE_MOUNT_INTERVAL_OPTIONS.includes(mount.sync_interval_seconds) && (
-                                          <option value="custom">
-                                            {formatMountSyncInterval(mount.sync_interval_seconds)}
-                                          </option>
+                                      <div className="userspace-mount-interval-menu-anchor">
+                                        <button
+                                          className="btn btn-sm btn-secondary userspace-mount-interval-trigger"
+                                          onClick={(e) => {
+                                            const rect = e.currentTarget.getBoundingClientRect();
+                                            if (expandedMountIntervalMenuId === mount.id) {
+                                              setExpandedMountIntervalMenuId(null);
+                                              setMountIntervalMenuRect(null);
+                                            } else {
+                                              setMountIntervalMenuRect({ top: rect.bottom + 8, left: rect.right });
+                                              setExpandedMountIntervalMenuId(mount.id);
+                                            }
+                                          }}
+                                          disabled={savingMountIntervalId === mount.id || isEjected || !isMountEditable}
+                                          title={isMountEditable
+                                            ? (mount.sync_interval_seconds == null
+                                              ? `Using default sync cadence (${formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})`
+                                              : `Auto Sync checks every ${formatMountSyncInterval(mount.sync_interval_seconds)}`)
+                                            : mountReadOnlyReason}
+                                        >
+                                          {savingMountIntervalId === mount.id
+                                            ? <MiniLoadingSpinner variant="icon" size={12} />
+                                            : <>
+                                              <span>{getMountIntervalLabel(mount.sync_interval_seconds)}</span>
+                                              <ChevronDown size={11} />
+                                            </>}
+                                        </button>
+                                        {expandedMountIntervalMenuId === mount.id && mountIntervalMenuRect && (
+                                          <>
+                                            <div
+                                              onClick={() => { setExpandedMountIntervalMenuId(null); setMountIntervalMenuRect(null); }}
+                                              style={{ position: 'fixed', inset: 0, zIndex: 10000 }}
+                                            />
+                                            <div className="userspace-mount-interval-menu" role="menu" aria-label="Auto sync interval" style={{ position: 'fixed', top: mountIntervalMenuRect.top, right: `calc(100vw - ${mountIntervalMenuRect.left}px)`, left: 'auto', bottom: 'auto', zIndex: 10001 }}>
+                                              <div className="userspace-mount-interval-menu-copy">
+                                                Choose how often Auto Sync checks this mount.
+                                              </div>
+                                              <button
+                                                type="button"
+                                                className={`userspace-mount-interval-menu-item ${mount.sync_interval_seconds == null ? 'active' : ''}`}
+                                                onClick={() => {
+                                                  setExpandedMountIntervalMenuId(null);
+                                                  setMountIntervalMenuRect(null);
+                                                  void handleUpdateMountSyncInterval(mount, null);
+                                                }}
+                                              >
+                                                <span>Use default ({formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})</span>
+                                                {mount.sync_interval_seconds == null && <Check size={11} />}
+                                              </button>
+                                              {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map((seconds) => (
+                                                <button
+                                                  key={seconds}
+                                                  type="button"
+                                                  className={`userspace-mount-interval-menu-item ${mount.sync_interval_seconds === seconds ? 'active' : ''}`}
+                                                  onClick={() => {
+                                                    setExpandedMountIntervalMenuId(null);
+                                                    setMountIntervalMenuRect(null);
+                                                    void handleUpdateMountSyncInterval(mount, seconds);
+                                                  }}
+                                                >
+                                                  <span>Every {formatMountSyncInterval(seconds)}</span>
+                                                  {mount.sync_interval_seconds === seconds && <Check size={11} />}
+                                                </button>
+                                              ))}
+                                              {mount.sync_interval_seconds != null && !WORKSPACE_MOUNT_INTERVAL_OPTIONS.includes(mount.sync_interval_seconds) && (
+                                                <button
+                                                  type="button"
+                                                  className="userspace-mount-interval-menu-item active"
+                                                  onClick={() => {
+                                                    setExpandedMountIntervalMenuId(null);
+                                                    setMountIntervalMenuRect(null);
+                                                    void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds);
+                                                  }}
+                                                >
+                                                  <span>Every {formatMountSyncInterval(mount.sync_interval_seconds)}</span>
+                                                  <Check size={11} />
+                                                </button>
+                                              )}
+                                            </div>
+                                          </>
                                         )}
-                                      </select>
+                                      </div>
                                     )}
-                                    {!mount.auto_sync_enabled && (
-                                      <button
-                                        className="btn btn-secondary btn-sm"
-                                        onClick={() => handleSyncMount(mount)}
-                                        disabled={syncingMountId === mount.id || previewingMountId === mount.id || isEjected}
-                                        title="Sync mount now"
-                                      >
-                                        {syncingMountId === mount.id || previewingMountId === mount.id
-                                          ? <MiniLoadingSpinner variant="icon" size={12} />
-                                          : <RefreshCw size={12} />}
-                                      </button>
-                                    )}
+                                    <button
+                                      className="btn btn-secondary btn-sm userspace-mount-sync-now-btn userspace-mount-icon-btn"
+                                      onClick={() => handleSyncMount(mount)}
+                                      disabled={syncingMountId === mount.id || previewingMountId === mount.id || isEjected || !isMountEditable}
+                                      title={isMountEditable
+                                        ? (mount.auto_sync_enabled
+                                          ? 'Run an immediate sync now (Auto Sync remains enabled)'
+                                          : 'Run a one-time on-demand sync now')
+                                        : mountReadOnlyReason}
+                                    >
+                                      {syncingMountId === mount.id || previewingMountId === mount.id
+                                        ? <MiniLoadingSpinner variant="icon" size={12} />
+                                        : <RefreshCw size={12} />}
+                                    </button>
                                   </>
                                 )}
                                 {isEjected ? (
                                   <>
                                     <button
-                                      className="btn btn-secondary btn-sm"
+                                      className="btn btn-secondary btn-sm userspace-mount-icon-btn"
                                       onClick={() => void handleRemount(mount)}
-                                      disabled={deletingMountId === mount.id || savingMountWatchId === mount.id}
-                                      title="Remount"
+                                      disabled={deletingMountId === mount.id || savingMountWatchId === mount.id || !isMountEditable}
+                                      title={isMountEditable ? 'Remount' : mountReadOnlyReason}
                                     >
                                       {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <HardDriveDownload size={12} />}
                                     </button>
                                     <button
-                                      className="btn btn-secondary btn-sm"
+                                      className="btn btn-secondary btn-sm userspace-mount-icon-btn"
                                       onClick={() => void handleDeleteMount(mount.id)}
-                                      disabled={deletingMountId === mount.id}
-                                      title="Delete mount permanently"
+                                      disabled={deletingMountId === mount.id || !isMountEditable}
+                                      title={isMountEditable ? 'Delete mount permanently' : mountReadOnlyReason}
                                     >
                                       {deletingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
                                     </button>
                                   </>
                                 ) : (
                                   <button
-                                    className="btn btn-secondary btn-sm"
+                                    className="btn btn-secondary btn-sm userspace-mount-icon-btn"
                                     onClick={() => void handleEjectMount(mount)}
-                                    disabled={deletingMountId === mount.id || savingMountWatchId === mount.id}
-                                    title="Unmount"
+                                    disabled={deletingMountId === mount.id || savingMountWatchId === mount.id || !isMountEditable}
+                                    title={isMountEditable ? 'Unmount' : mountReadOnlyReason}
                                   >
                                     {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <HardDriveUpload size={12} />}
                                   </button>
@@ -7798,8 +7935,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 <button
                                   className="btn btn-primary btn-sm"
                                   onClick={() => void handleSaveMountDescription()}
-                                  disabled={savingMountDescriptionId === mount.id}
-                                  title="Save description"
+                                  disabled={savingMountDescriptionId === mount.id || !isMountEditable}
+                                  title={isMountEditable ? 'Save description' : mountReadOnlyReason}
                                 >
                                   {savingMountDescriptionId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
                                 </button>
@@ -7818,6 +7955,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                               <div
                                 className="userspace-mount-desc-display"
                                 onClick={() => {
+                                  if (!isMountEditable) return;
                                   setEditingMountDescriptionId(mount.id);
                                   setEditingMountDescriptionDraft(mount.description ?? '');
                                 }}
@@ -7827,9 +7965,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 </span>
                                 <button
                                   className="inline-edit-btn userspace-mount-desc-edit-btn"
-                                  title="Edit description"
+                                  title={isMountEditable ? 'Edit description' : mountReadOnlyReason}
+                                  disabled={!isMountEditable}
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    if (!isMountEditable) return;
                                     setEditingMountDescriptionId(mount.id);
                                     setEditingMountDescriptionDraft(mount.description ?? '');
                                   }}
@@ -7851,6 +7991,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                               <span>{mount.sync_notice}</span>
                             </div>
                           )}
+                          {!isMountEditable && (
+                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
+                              <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                              <span>{mountReadOnlyReason}</span>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -7858,7 +8004,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                     </div>
                   )}
 
-                  {showConfiguredCloudMountPanel && (
+                  {showConfiguredCloudMountPanel && configuredCloudProviders.length > 0 && (
                   <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, display: 'grid', gap: 10, marginBottom: 16 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <strong style={{ fontSize: 13 }}>Personal cloud drives</strong>
@@ -8150,7 +8296,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             </span>
                           </button>
                           <label className="userspace-muted" style={{ fontSize: 12, display: 'grid', gap: 6 }}>
-                            <strong>Interval</strong>
+                            <strong>Auto Sync cadence</strong>
                             <select
                               className="form-input"
                               value={mountIntervalSelectValue(createMountSyncIntervalSeconds)}
@@ -8159,7 +8305,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 if (value === 'custom') return;
                                 setCreateMountSyncIntervalSeconds(value === 'inherit' ? null : parseInt(value, 10));
                               }}
-                              title="Inherit source-level interval, or global default when source interval is unset"
+                              title="How often Auto Sync checks this mount"
                               style={{
                                 width: '100%',
                                 maxWidth: 168,
@@ -8170,10 +8316,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 lineHeight: '16px',
                               }}
                             >
-                              <option value="inherit">Inherit default</option>
+                              <option value="inherit">Use default ({formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})</option>
                               {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map((seconds) => (
                                 <option key={seconds} value={seconds}>
-                                  {formatMountSyncInterval(seconds)}
+                                  Every {formatMountSyncInterval(seconds)}
                                 </option>
                               ))}
                             </select>

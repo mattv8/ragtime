@@ -73,9 +73,18 @@ class _RuntimeRefreshService(UserSpaceRuntimeService):
 class _FakeWorkspaceMountTable:
     def __init__(self, rows: list[SimpleNamespace]) -> None:
         self.rows = rows
+        self.update_many_calls: list[dict[str, Any]] = []
 
     async def find_many(self, **_: Any) -> list[SimpleNamespace]:
         return self.rows
+
+    async def update_many(
+        self,
+        *,
+        where: dict[str, Any],
+        data: dict[str, Any],
+    ) -> None:
+        self.update_many_calls.append({"where": where, "data": data})
 
 
 class _FakeMountWatchDb:
@@ -98,6 +107,22 @@ class _MountWatchService(UserSpaceService):
     ) -> tuple[Any, ...]:
         self.signature_checks += 1
         return ((target_path, True, 1, 1, 1, "digest"),)
+
+
+class _MountListService(UserSpaceService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.availability_checks: list[str] = []
+
+    async def _enforce_workspace_access(self, workspace_id: str, user_id: str) -> None:
+        return None
+
+    async def _workspace_mount_editable_by_user(self, row: Any, user_id: str) -> bool:
+        return True
+
+    async def _check_mount_source_available(self, row: Any, mount_source: Any) -> bool:
+        self.availability_checks.append(str(getattr(row, "id", "")))
+        return False
 
 
 class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
@@ -183,6 +208,92 @@ class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(service.signature_checks, 0)
         self.assertNotIn(mount_id, service._workspace_mount_watch_inflight)
+
+    async def test_mount_list_skips_source_probe_for_syncing_mounts(self) -> None:
+        syncing_mount = SimpleNamespace(
+            id="mount-syncing",
+            workspaceId="workspace-1",
+            mountSourceId=None,
+            userMountSourceId=None,
+            mountSource=None,
+            userMountSource=None,
+            sourcePath=".",
+            targetPath="/cloud",
+            description=None,
+            enabled=True,
+            syncMode="merge",
+            syncDeletes=False,
+            syncStatus="syncing",
+            syncBackend="google_drive",
+            syncNotice=None,
+            syncProgressFilesDone=2,
+            syncProgressFilesTotal=5,
+            syncProgressMessage="Uploading files",
+            syncStartedAt=_NOW,
+            lastSyncAt=None,
+            lastSyncError=None,
+            autoSyncEnabled=False,
+            syncIntervalSeconds=None,
+            createdAt=_NOW,
+            updatedAt=_NOW,
+        )
+        pending_mount = SimpleNamespace(
+            id="mount-pending",
+            workspaceId="workspace-1",
+            mountSourceId=None,
+            userMountSourceId=None,
+            mountSource=None,
+            userMountSource=None,
+            sourcePath=".",
+            targetPath="/pending",
+            description=None,
+            enabled=True,
+            syncMode="merge",
+            syncDeletes=False,
+            syncStatus="pending",
+            syncBackend=None,
+            syncNotice=None,
+            syncProgressFilesDone=0,
+            syncProgressFilesTotal=None,
+            syncProgressMessage=None,
+            syncStartedAt=None,
+            lastSyncAt=None,
+            lastSyncError=None,
+            autoSyncEnabled=False,
+            syncIntervalSeconds=None,
+            createdAt=_NOW,
+            updatedAt=_NOW,
+        )
+        service = _MountListService()
+
+        with patch(
+            "ragtime.userspace.service.get_db",
+            AsyncMock(
+                return_value=_FakeMountWatchDb([syncing_mount, pending_mount])
+            ),
+        ):
+            mounts = await service.list_workspace_mounts("workspace-1", "user-1")
+
+        self.assertTrue(mounts[0].source_available)
+        self.assertFalse(mounts[1].source_available)
+        self.assertEqual(service.availability_checks, ["mount-pending"])
+
+    async def test_cleanup_interrupted_workspace_mount_syncs_marks_syncing_rows_error(self) -> None:
+        table = _FakeWorkspaceMountTable([])
+        service = UserSpaceService()
+
+        with patch(
+            "ragtime.userspace.service.get_db",
+            AsyncMock(return_value=_FakeMountWatchDb([])),
+        ) as patched_get_db:
+            patched_get_db.return_value.workspacemount = table
+            await service.cleanup_interrupted_workspace_mount_syncs()
+
+        self.assertEqual(table.update_many_calls[0]["where"], {"syncStatus": "syncing"})
+        data = table.update_many_calls[0]["data"]
+        self.assertEqual(data["syncStatus"], "error")
+        self.assertIn("server restart", data["lastSyncError"])
+        self.assertIsNone(data["syncStartedAt"])
 
 
 if __name__ == "__main__":

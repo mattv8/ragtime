@@ -1081,7 +1081,7 @@ class PaginatedWorkspacesResponse(BaseModel):
 # Workspace Mount Models
 # -------------------------------------------------------------------------
 
-MountSyncStatus = Literal["pending", "synced", "error"]
+MountSyncStatus = Literal["pending", "syncing", "synced", "error"]
 
 
 class UserspaceMountSource(BaseModel):
@@ -1099,6 +1099,8 @@ class UserspaceMountSource(BaseModel):
     account_email: str | None = None
     connection_config: dict[str, Any] = Field(default_factory=dict)
     approved_paths: list[str] = Field(default_factory=list)
+    access_user_ids: list[str] = Field(default_factory=list)
+    access_group_identifiers: list[str] = Field(default_factory=list)
     sync_interval_seconds: int | None = Field(
         default=30,
         description="Polling interval in seconds for auto-sync (1 to 2592000)",
@@ -1121,6 +1123,8 @@ class CreateUserspaceMountSourceRequest(BaseModel):
     )
     connection_config: dict[str, Any] = Field(default_factory=dict)
     approved_paths: list[str] = Field(default_factory=list)
+    access_user_ids: list[str] = Field(default_factory=list)
+    access_group_identifiers: list[str] = Field(default_factory=list)
     sync_interval_seconds: int | None = Field(
         default=30,
         ge=1,
@@ -1214,6 +1218,8 @@ class UpdateUserspaceMountSourceRequest(BaseModel):
     enabled: bool | None = None
     connection_config: dict[str, Any] | None = None
     approved_paths: list[str] | None = None
+    access_user_ids: list[str] | None = None
+    access_group_identifiers: list[str] | None = None
     sync_interval_seconds: int | None = Field(
         default=None,
         ge=1,
@@ -1261,6 +1267,10 @@ class WorkspaceMount(BaseModel):
     sync_status: MountSyncStatus = "pending"
     sync_backend: str | None = None
     sync_notice: str | None = None
+    sync_progress_files_done: int = 0
+    sync_progress_files_total: int | None = None
+    sync_progress_message: str | None = None
+    sync_started_at: datetime | None = None
     last_sync_at: datetime | None = None
     last_sync_error: str | None = None
     auto_sync_enabled: bool = False
@@ -1272,6 +1282,7 @@ class WorkspaceMount(BaseModel):
     source_type: UserspaceMountSourceType | None = None
     mount_backend: UserspaceMountBackend | None = None
     source_available: bool = True
+    editable: bool = True
     created_at: datetime
     updated_at: datetime
 
@@ -1415,4 +1426,8 @@ class WorkspaceMountSyncResponse(BaseModel):
     files_synced: int = 0
     sync_backend: str | None = None
     sync_notice: str | None = None
+    sync_progress_files_done: int = 0
+    sync_progress_files_total: int | None = None
+    sync_progress_message: str | None = None
+    sync_started_at: datetime | None = None
     last_sync_error: str | None = None

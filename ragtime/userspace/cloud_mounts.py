@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import mimetypes
 import os
@@ -8,7 +9,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Awaitable, Callable, Literal
 from urllib.parse import urlencode
 
 import httpx
@@ -40,6 +41,7 @@ class CloudMountEntry:
 
 
 CloudSyncMode = Literal["merge", "source_authoritative", "target_authoritative"]
+CloudSyncProgressCallback = Callable[[int, int | None, str | None], Awaitable[None]]
 
 
 @dataclass
@@ -349,8 +351,16 @@ class CloudMountProvider:
             return await self._list_microsoft_dir(source_path)
         return await self._list_google_dir(source_path)
 
-    async def download_tree(self, source_path: str, destination: Path) -> int:
-        destination.mkdir(parents=True, exist_ok=True)
+    async def download_tree(
+        self,
+        source_path: str,
+        destination: Path,
+        *,
+        progress_callback: CloudSyncProgressCallback | None = None,
+        progress_total: int | None = None,
+        progress_done_offset: int = 0,
+    ) -> int:
+        await asyncio.to_thread(destination.mkdir, parents=True, exist_ok=True)
         if self.is_mock:
             return self._download_mock_tree(source_path, destination)
 
@@ -363,13 +373,26 @@ class CloudMountProvider:
                 relative = relative[len(root) + 1 :]
             target = destination / ("." if relative == "." else relative)
             if entry.is_dir:
-                target.mkdir(parents=True, exist_ok=True)
-                written += await self.download_tree(entry.path, target)
+                await asyncio.to_thread(target.mkdir, parents=True, exist_ok=True)
+                written += await self.download_tree(
+                    entry.path,
+                    target,
+                    progress_callback=progress_callback,
+                    progress_total=progress_total,
+                    progress_done_offset=progress_done_offset + written,
+                )
             else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(await self.read_file(entry.path))
+                await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+                content = await self.read_file(entry.path)
+                await asyncio.to_thread(target.write_bytes, content)
                 _set_file_mtime(target, entry.modified_at)
                 written += 1
+                if progress_callback is not None:
+                    await progress_callback(
+                        progress_done_offset + written,
+                        progress_total,
+                        f"Downloaded {relative}",
+                    )
         return written
 
     async def read_file(self, source_path: str) -> bytes:
@@ -399,7 +422,10 @@ class CloudMountProvider:
 
     async def upload_file(self, source_path: str, local_path: Path) -> None:
         if self.is_mock:
-            self._write_mock_file(source_path, local_path.read_bytes(), int(local_path.stat().st_mtime))
+            content, mtime = await asyncio.to_thread(
+                lambda: (local_path.read_bytes(), int(local_path.stat().st_mtime))
+            )
+            self._write_mock_file(source_path, content, mtime)
             return
         if self.provider == "microsoft_drive":
             await self._upload_microsoft_file(source_path, local_path)
@@ -451,7 +477,10 @@ class CloudMountProvider:
         normalized_mode = _normalize_sync_mode(sync_mode)
         try:
             remote_files, remote_dirs, remote_errors = await self.scan_tree(source_path)
-            local_files, local_dirs, local_errors = _scan_local_tree(local_path)
+            local_files, local_dirs, local_errors = await asyncio.to_thread(
+                _scan_local_tree,
+                local_path,
+            )
             return _preview_cloud_sync_from_metadata(
                 remote_files,
                 remote_dirs,
@@ -480,47 +509,98 @@ class CloudMountProvider:
         local_path: Path,
         *,
         sync_mode: str | None = "merge",
+        progress_callback: CloudSyncProgressCallback | None = None,
     ) -> CloudSyncResult:
         normalized_mode = _normalize_sync_mode(sync_mode)
         if normalized_mode == "source_authoritative":
-            return await self._sync_tree_source_authoritative(source_path, local_path)
+            return await self._sync_tree_source_authoritative(
+                source_path,
+                local_path,
+                progress_callback=progress_callback,
+            )
         if normalized_mode == "target_authoritative":
-            return await self._sync_tree_target_authoritative(source_path, local_path)
-        return await self._sync_tree_merge(source_path, local_path)
+            return await self._sync_tree_target_authoritative(
+                source_path,
+                local_path,
+                progress_callback=progress_callback,
+            )
+        return await self._sync_tree_merge(
+            source_path,
+            local_path,
+            progress_callback=progress_callback,
+        )
 
-    async def _sync_tree_source_authoritative(self, source_path: str, local_path: Path) -> CloudSyncResult:
+    async def _sync_tree_source_authoritative(
+        self,
+        source_path: str,
+        local_path: Path,
+        *,
+        progress_callback: CloudSyncProgressCallback | None = None,
+    ) -> CloudSyncResult:
         temp_path = local_path.parent / f".{local_path.name}.cloud-sync"
         errors: list[str] = []
         files_synced = 0
         try:
+            remote_files, _remote_dirs, remote_errors = await self.scan_tree(source_path)
+            errors.extend(remote_errors)
+            files_total = len(remote_files)
+            if progress_callback is not None:
+                await progress_callback(0, files_total, "Downloading cloud files")
             if temp_path.exists():
-                shutil.rmtree(temp_path)
-            temp_path.mkdir(parents=True, exist_ok=True)
-            files_synced = await self.download_tree(source_path, temp_path)
+                await asyncio.to_thread(shutil.rmtree, temp_path)
+            await asyncio.to_thread(temp_path.mkdir, parents=True, exist_ok=True)
+            files_synced = await self.download_tree(
+                source_path,
+                temp_path,
+                progress_callback=progress_callback,
+                progress_total=files_total,
+            )
             if local_path.is_symlink() or local_path.is_file():
-                local_path.unlink(missing_ok=True)
+                await asyncio.to_thread(local_path.unlink, missing_ok=True)
             elif local_path.exists():
-                shutil.rmtree(local_path)
-            temp_path.replace(local_path)
+                await asyncio.to_thread(shutil.rmtree, local_path)
+            await asyncio.to_thread(temp_path.replace, local_path)
         except Exception as exc:
             errors.append(f"cloud pull sync error: {exc}")
         finally:
             if temp_path.exists():
-                shutil.rmtree(temp_path, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, temp_path, ignore_errors=True)
         return CloudSyncResult(files_synced=files_synced, errors=errors, success=len(errors) == 0)
 
-    async def _sync_tree_merge(self, source_path: str, local_path: Path) -> CloudSyncResult:
+    async def _sync_tree_merge(
+        self,
+        source_path: str,
+        local_path: Path,
+        *,
+        progress_callback: CloudSyncProgressCallback | None = None,
+    ) -> CloudSyncResult:
         errors: list[str] = []
         files_synced = 0
         remote_files, remote_dirs, remote_errors = await self.scan_tree(source_path)
-        local_files, local_dirs, local_errors = _scan_local_tree(local_path)
+        local_files, local_dirs, local_errors = await asyncio.to_thread(
+            _scan_local_tree,
+            local_path,
+        )
         errors.extend(remote_errors)
         errors.extend(local_errors)
-        local_path.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(local_path.mkdir, parents=True, exist_ok=True)
+        files_total = 0
+        for relative_path in sorted(set(remote_files) | set(local_files)):
+            remote_meta = remote_files.get(relative_path)
+            local_meta = local_files.get(relative_path)
+            if remote_meta is None or local_meta is None:
+                files_total += 1
+                continue
+            remote_size, remote_mtime = remote_meta
+            local_size, local_mtime = local_meta
+            if remote_mtime != local_mtime or remote_size != local_size:
+                files_total += 1
+        if progress_callback is not None:
+            await progress_callback(0, files_total, "Syncing cloud files")
 
         for relative_dir in sorted(remote_dirs - local_dirs):
             if relative_dir:
-                (local_path / relative_dir).mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread((local_path / relative_dir).mkdir, parents=True, exist_ok=True)
         for relative_dir in sorted(local_dirs - remote_dirs):
             if not relative_dir:
                 continue
@@ -536,14 +616,19 @@ class CloudMountProvider:
                 if remote_meta is None and local_meta is not None:
                     await self.upload_file(join_cloud_path(source_path, relative_path), local_path / relative_path)
                     files_synced += 1
+                    if progress_callback is not None:
+                        await progress_callback(files_synced, files_total, f"Uploaded {relative_path}")
                     continue
                 if local_meta is None and remote_meta is not None:
                     target = local_path / relative_path
-                    target.parent.mkdir(parents=True, exist_ok=True)
+                    await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
                     remote_entry_path = join_cloud_path(source_path, relative_path)
-                    target.write_bytes(await self.read_file(remote_entry_path))
+                    content = await self.read_file(remote_entry_path)
+                    await asyncio.to_thread(target.write_bytes, content)
                     os.utime(target, (remote_meta[1], remote_meta[1]))
                     files_synced += 1
+                    if progress_callback is not None:
+                        await progress_callback(files_synced, files_total, f"Downloaded {relative_path}")
                     continue
                 if remote_meta is None or local_meta is None:
                     continue
@@ -551,8 +636,9 @@ class CloudMountProvider:
                 local_size, local_mtime = local_meta
                 if remote_mtime > local_mtime:
                     target = local_path / relative_path
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(await self.read_file(join_cloud_path(source_path, relative_path)))
+                    await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+                    content = await self.read_file(join_cloud_path(source_path, relative_path))
+                    await asyncio.to_thread(target.write_bytes, content)
                     os.utime(target, (remote_mtime, remote_mtime))
                     files_synced += 1
                 elif local_mtime > remote_mtime:
@@ -560,22 +646,41 @@ class CloudMountProvider:
                     files_synced += 1
                 elif remote_size != local_size:
                     target = local_path / relative_path
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(await self.read_file(join_cloud_path(source_path, relative_path)))
+                    await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+                    content = await self.read_file(join_cloud_path(source_path, relative_path))
+                    await asyncio.to_thread(target.write_bytes, content)
                     os.utime(target, (remote_mtime, remote_mtime))
                     files_synced += 1
+                if progress_callback is not None:
+                    await progress_callback(files_synced, files_total, f"Synced {relative_path}")
             except Exception as exc:
                 errors.append(f"sync {relative_path}: {exc}")
         return CloudSyncResult(files_synced=files_synced, errors=errors, success=len(errors) == 0)
 
-    async def _sync_tree_target_authoritative(self, source_path: str, local_path: Path) -> CloudSyncResult:
+    async def _sync_tree_target_authoritative(
+        self,
+        source_path: str,
+        local_path: Path,
+        *,
+        progress_callback: CloudSyncProgressCallback | None = None,
+    ) -> CloudSyncResult:
         errors: list[str] = []
         files_synced = 0
         remote_files, remote_dirs, remote_errors = await self.scan_tree(source_path)
-        local_files, local_dirs, local_errors = _scan_local_tree(local_path)
+        local_files, local_dirs, local_errors = await asyncio.to_thread(
+            _scan_local_tree,
+            local_path,
+        )
         errors.extend(remote_errors)
         errors.extend(local_errors)
-        local_path.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(local_path.mkdir, parents=True, exist_ok=True)
+        files_total = sum(
+            1
+            for relative_path in local_files
+            if remote_files.get(relative_path) != local_files[relative_path]
+        ) + len(set(remote_files) - set(local_files)) + len([path for path in remote_dirs - local_dirs if path])
+        if progress_callback is not None:
+            await progress_callback(0, files_total, "Uploading cloud files")
 
         for relative_dir in sorted(local_dirs - remote_dirs):
             if not relative_dir:
@@ -589,17 +694,24 @@ class CloudMountProvider:
                 if remote_files.get(relative_path) != local_files[relative_path]:
                     await self.upload_file(join_cloud_path(source_path, relative_path), local_path / relative_path)
                     files_synced += 1
+                    if progress_callback is not None:
+                        await progress_callback(files_synced, files_total, f"Uploaded {relative_path}")
             except Exception as exc:
                 errors.append(f"sync {relative_path}: {exc}")
         for relative_path in sorted(set(remote_files) - set(local_files)):
             try:
                 await self.delete_path(join_cloud_path(source_path, relative_path))
                 files_synced += 1
+                if progress_callback is not None:
+                    await progress_callback(files_synced, files_total, f"Deleted {relative_path}")
             except Exception as exc:
                 errors.append(f"delete {relative_path}: {exc}")
         for relative_dir in sorted((path for path in remote_dirs - local_dirs if path), key=lambda path: (path.count("/"), path), reverse=True):
             try:
                 await self.delete_path(join_cloud_path(source_path, relative_dir))
+                files_synced += 1
+                if progress_callback is not None:
+                    await progress_callback(files_synced, files_total, f"Deleted {relative_dir}")
             except Exception as exc:
                 errors.append(f"rmdir {relative_dir}: {exc}")
         return CloudSyncResult(files_synced=files_synced, errors=errors, success=len(errors) == 0)

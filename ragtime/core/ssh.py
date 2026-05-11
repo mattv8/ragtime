@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path as _Path
 from pathlib import PurePosixPath
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 import paramiko
 
@@ -32,6 +32,7 @@ from ragtime.core.logging import get_logger
 logger = get_logger(__name__)
 
 SSHSyncMode = Literal["merge", "source_authoritative", "target_authoritative"]
+SSHSyncProgressCallback = Callable[[int, Optional[int], Optional[str]], None]
 SSH_SYNC_PREVIEW_SAMPLE_LIMIT = 200
 
 # Default scheduler values for userspace SSH mount auto-sync watch mode.
@@ -955,6 +956,7 @@ def _sync_ssh_directory_merge(
     *,
     max_files: int,
     max_file_size_bytes: int,
+    progress_callback: SSHSyncProgressCallback | None = None,
 ) -> SSHSyncResult:
     """Bidirectional merge where newest mtime wins and nothing is deleted."""
     errors: list[str] = []
@@ -972,6 +974,19 @@ def _sync_ssh_directory_merge(
     )
     errors.extend(remote_errors)
     errors.extend(local_errors)
+    files_total = 0
+    for relative_path in sorted(set(remote_files) | set(local_files)):
+        remote_meta = remote_files.get(relative_path)
+        local_meta = local_files.get(relative_path)
+        if remote_meta is None or local_meta is None:
+            files_total += 1
+            continue
+        remote_size, remote_mtime = remote_meta
+        local_size, local_mtime = local_meta
+        if remote_mtime != local_mtime or remote_size != local_size:
+            files_total += 1
+    if progress_callback:
+        progress_callback(0, files_total, "Syncing SSH files")
 
     local_root.mkdir(parents=True, exist_ok=True)
     created_remote_dirs = set(remote_dirs)
@@ -998,6 +1013,8 @@ def _sync_ssh_directory_merge(
                     created_remote_dirs,
                 )
                 files_synced += 1
+                if progress_callback:
+                    progress_callback(files_synced, files_total, f"Uploaded {relative_path}")
                 continue
 
             if local_meta is None and remote_meta is not None:
@@ -1009,6 +1026,8 @@ def _sync_ssh_directory_merge(
                     remote_meta[1],
                 )
                 files_synced += 1
+                if progress_callback:
+                    progress_callback(files_synced, files_total, f"Downloaded {relative_path}")
                 continue
 
             if remote_meta is None or local_meta is None:
@@ -1043,6 +1062,8 @@ def _sync_ssh_directory_merge(
                     remote_mtime,
                 )
                 files_synced += 1
+            if progress_callback:
+                progress_callback(files_synced, files_total, f"Synced {relative_path}")
         except Exception as exc:
             errors.append(f"sync {relative_path}: {exc}")
 
@@ -1061,6 +1082,7 @@ def _sync_ssh_directory_delete(
     *,
     max_files: int,
     max_file_size_bytes: int,
+    progress_callback: SSHSyncProgressCallback | None = None,
 ) -> SSHSyncResult:
     """Remote-wins sync that deletes local files absent on the remote."""
     local_root.parent.mkdir(parents=True, exist_ok=True)
@@ -1081,6 +1103,9 @@ def _sync_ssh_directory_delete(
             max_file_size_bytes=max_file_size_bytes,
         )
         errors.extend(remote_errors)
+        files_total = len(remote_files)
+        if progress_callback:
+            progress_callback(0, files_total, "Downloading SSH files")
 
         for relative_dir in sorted(remote_dirs):
             if relative_dir:
@@ -1096,6 +1121,8 @@ def _sync_ssh_directory_delete(
                     remote_mtime,
                 )
                 files_synced += 1
+                if progress_callback:
+                    progress_callback(files_synced, files_total, f"Downloaded {relative_path}")
             except Exception as exc:
                 errors.append(f"get {_remote_join(remote_root, relative_path)}: {exc}")
 
@@ -1125,6 +1152,7 @@ def _sync_ssh_directory_target_authoritative(
     *,
     max_files: int,
     max_file_size_bytes: int,
+    progress_callback: SSHSyncProgressCallback | None = None,
 ) -> SSHSyncResult:
     """Target-wins sync that deletes remote files absent on the local target."""
     errors: list[str] = []
@@ -1142,6 +1170,13 @@ def _sync_ssh_directory_target_authoritative(
     )
     errors.extend(remote_errors)
     errors.extend(local_errors)
+    files_total = sum(
+        1
+        for relative_path in local_files
+        if remote_files.get(relative_path) != local_files[relative_path]
+    ) + len(set(remote_files) - set(local_files)) + len([path for path in remote_dirs - local_dirs if path])
+    if progress_callback:
+        progress_callback(0, files_total, "Uploading SSH files")
 
     local_root.mkdir(parents=True, exist_ok=True)
     created_remote_dirs = set(remote_dirs)
@@ -1174,6 +1209,8 @@ def _sync_ssh_directory_target_authoritative(
                     created_remote_dirs,
                 )
                 files_synced += 1
+                if progress_callback:
+                    progress_callback(files_synced, files_total, f"Uploaded {relative_path}")
         except Exception as exc:
             errors.append(f"sync {relative_path}: {exc}")
 
@@ -1181,6 +1218,8 @@ def _sync_ssh_directory_target_authoritative(
         try:
             _delete_remote_file(sftp, remote_root, relative_path)
             files_synced += 1
+            if progress_callback:
+                progress_callback(files_synced, files_total, f"Deleted {relative_path}")
         except Exception as exc:
             errors.append(f"delete {relative_path}: {exc}")
 
@@ -1192,6 +1231,9 @@ def _sync_ssh_directory_target_authoritative(
     for relative_dir in remote_only_dirs:
         try:
             _delete_remote_directory(sftp, remote_root, relative_dir)
+            files_synced += 1
+            if progress_callback:
+                progress_callback(files_synced, files_total, f"Deleted {relative_dir}")
         except Exception as exc:
             errors.append(f"rmdir {relative_dir}: {exc}")
 
@@ -1373,6 +1415,7 @@ def sync_ssh_directory(
     max_files: int = 5000,
     max_file_size_bytes: int = 50 * 1024 * 1024,
     sync_mode: SSHSyncMode = "merge",
+    progress_callback: SSHSyncProgressCallback | None = None,
 ) -> SSHSyncResult:
     """Sync a remote directory to a local path via Paramiko/SFTP.
 
@@ -1398,6 +1441,7 @@ def sync_ssh_directory(
                 local_root,
                 max_files=max_files,
                 max_file_size_bytes=max_file_size_bytes,
+                progress_callback=progress_callback,
             )
         elif normalized_mode == "target_authoritative":
             result = _sync_ssh_directory_target_authoritative(
@@ -1406,6 +1450,7 @@ def sync_ssh_directory(
                 local_root,
                 max_files=max_files,
                 max_file_size_bytes=max_file_size_bytes,
+                progress_callback=progress_callback,
             )
         else:
             result = _sync_ssh_directory_merge(
@@ -1414,6 +1459,7 @@ def sync_ssh_directory(
                 local_root,
                 max_files=max_files,
                 max_file_size_bytes=max_file_size_bytes,
+                progress_callback=progress_callback,
             )
         return result
     except paramiko.AuthenticationException as exc:
@@ -1580,6 +1626,7 @@ def rsync_ssh_directory(
     *,
     sync_mode: SSHSyncMode = "merge",
     timeout_seconds: int = 300,
+    progress_callback: SSHSyncProgressCallback | None = None,
 ) -> SSHSyncResult:
     """Sync a remote directory to a local path using the ``rsync`` binary over SSH.
 
@@ -1601,6 +1648,8 @@ def rsync_ssh_directory(
 
     errors: list[str] = []
     files_synced = 0
+    if progress_callback:
+        progress_callback(0, None, "Starting rsync")
     temp_key_file: str | None = None
     temp_dir: str | None = None
     askpass_path: str | None = None
@@ -1672,6 +1721,8 @@ def rsync_ssh_directory(
             pull_args.extend([remote_spec, str(local_root) + "/"])
             rc, stdout, stderr = _run_rsync(pull_args)
             files_synced += _count_transferred(stdout)
+            if progress_callback:
+                progress_callback(files_synced, None, "Downloaded SSH changes")
             if rc != 0:
                 if rc in (23, 24):
                     errors.append(f"rsync pull partial error (exit {rc}): {stderr.strip()[:300]}")
@@ -1683,6 +1734,8 @@ def rsync_ssh_directory(
             push_args.extend([str(local_root) + "/", remote_spec])
             rc, stdout, stderr = _run_rsync(push_args)
             files_synced += _count_transferred(stdout)
+            if progress_callback:
+                progress_callback(files_synced, None, "Uploaded SSH changes")
             if rc != 0:
                 if rc in (23, 24):
                     errors.append(f"rsync push partial error (exit {rc}): {stderr.strip()[:300]}")
@@ -1696,6 +1749,8 @@ def rsync_ssh_directory(
 
             rc, stdout, stderr = _run_rsync(pull_args)
             files_synced += _count_transferred(stdout)
+            if progress_callback:
+                progress_callback(files_synced, None, "Downloaded SSH changes")
             if rc != 0:
                 # rsync exit code 23 = partial transfer (some files couldn't be read)
                 # rsync exit code 24 = partial transfer (source files vanished)
@@ -1710,6 +1765,8 @@ def rsync_ssh_directory(
             push_args.extend([str(local_root) + "/", remote_spec])
             rc2, stdout2, stderr2 = _run_rsync(push_args)
             files_synced += _count_transferred(stdout2)
+            if progress_callback:
+                progress_callback(files_synced, None, "Uploaded SSH changes")
             if rc2 != 0 and rc2 not in (23, 24):
                 errors.append(f"rsync push failed (exit {rc2}): {stderr2.strip()[:300]}")
 

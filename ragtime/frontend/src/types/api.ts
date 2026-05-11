@@ -2486,7 +2486,7 @@ export interface DeleteUserSpaceObjectStorageBucketResponse {
 
 // ── Workspace Mounts ──────────────────────────────────────────────────
 
-export type MountSyncStatus = 'pending' | 'synced' | 'error';
+export type MountSyncStatus = 'pending' | 'syncing' | 'synced' | 'error';
 export type WorkspaceMountSyncMode = 'merge' | 'source_authoritative' | 'target_authoritative';
 
 export interface UserspaceMountSource {
@@ -2504,6 +2504,8 @@ export interface UserspaceMountSource {
   account_email: string | null;
   connection_config: ConnectionConfig;
   approved_paths: string[];
+  access_user_ids: string[];
+  access_group_identifiers: string[];
   sync_interval_seconds: number | null;
   usage_count: number;
   created_at: string;
@@ -2518,6 +2520,8 @@ export interface CreateUserspaceMountSourceRequest {
   source_type?: UserspaceMountSourceType;
   connection_config?: ConnectionConfig;
   approved_paths?: string[];
+  access_user_ids?: string[];
+  access_group_identifiers?: string[];
   sync_interval_seconds?: number | null;
 }
 
@@ -2527,6 +2531,8 @@ export interface UpdateUserspaceMountSourceRequest {
   enabled?: boolean;
   connection_config?: ConnectionConfig;
   approved_paths?: string[];
+  access_user_ids?: string[] | null;
+  access_group_identifiers?: string[] | null;
   sync_interval_seconds?: number | null;
 }
 
@@ -2631,6 +2637,10 @@ export interface WorkspaceMount {
   sync_status: MountSyncStatus;
   sync_backend: string | null;
   sync_notice: string | null;
+  sync_progress_files_done: number;
+  sync_progress_files_total: number | null;
+  sync_progress_message: string | null;
+  sync_started_at: string | null;
   last_sync_at: string | null;
   last_sync_error: string | null;
   auto_sync_enabled: boolean;
@@ -2639,6 +2649,7 @@ export interface WorkspaceMount {
   source_type: UserspaceMountSourceType | null;
   mount_backend: UserspaceMountBackend | null;
   source_available: boolean;
+  editable: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -2711,6 +2722,10 @@ export interface WorkspaceMountSyncResponse {
   files_synced: number;
   sync_backend: string | null;
   sync_notice: string | null;
+  sync_progress_files_done: number;
+  sync_progress_files_total: number | null;
+  sync_progress_message: string | null;
+  sync_started_at: string | null;
   last_sync_error: string | null;
 }
 

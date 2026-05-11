@@ -1550,10 +1550,6 @@ async def sync_workspace_mount(
         mount_id,
         request,
     )
-    await userspace_runtime_service.bump_workspace_generation(
-        workspace_id,
-        "mount_sync",
-    )
     return result
 
 

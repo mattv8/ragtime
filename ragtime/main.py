@@ -210,6 +210,7 @@ async def lifespan(app: FastAPI):
     await background_task_service.start()
 
     # Backfill userspace Git ignore policy for existing workspaces in the background.
+    await userspace_service.cleanup_interrupted_workspace_mount_syncs()
     userspace_service.schedule_startup_git_drift_reconciliation()
     userspace_service.schedule_workspace_sqlite_import_recovery()
     userspace_service.schedule_workspace_mount_watch()

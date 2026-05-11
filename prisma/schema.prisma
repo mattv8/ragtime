@@ -1271,16 +1271,18 @@ model GlobalEnvironmentVariable {
 
 /// Admin-managed reusable userspace mount source definitions.
 model UserspaceMountSource {
-  id                  String                   @id @default(uuid())
-  name                String
-  description         String?                  @default("")
-  enabled             Boolean                  @default(true)
-  sourceType          UserspaceMountSourceType @map("source_type")
-  toolConfigId        String?                  @map("tool_config_id")
-  toolConfig          ToolConfig?              @relation(fields: [toolConfigId], references: [id], onDelete: Restrict)
-  connectionConfig    Json                     @map("connection_config")
-  approvedPaths       Json                     @default("[]") @map("approved_paths")
-  syncIntervalSeconds Int?                     @default(30) @map("sync_interval_seconds")
+  id                     String                   @id @default(uuid())
+  name                   String
+  description            String?                  @default("")
+  enabled                Boolean                  @default(true)
+  sourceType             UserspaceMountSourceType @map("source_type")
+  toolConfigId           String?                  @map("tool_config_id")
+  toolConfig             ToolConfig?              @relation(fields: [toolConfigId], references: [id], onDelete: Restrict)
+  connectionConfig       Json                     @map("connection_config")
+  approvedPaths          Json                     @default("[]") @map("approved_paths")
+  accessUserIds          Json                     @default("[]") @map("access_user_ids")
+  accessGroupIdentifiers Json                     @default("[]") @map("access_group_identifiers")
+  syncIntervalSeconds    Int?                     @default(30) @map("sync_interval_seconds")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
@@ -1358,9 +1360,13 @@ model WorkspaceMount {
   syncMode                         WorkspaceMountSyncMode  @default(merge) @map("sync_mode")
   destructiveAutoSyncConfirmedAt   DateTime?               @map("destructive_auto_sync_confirmed_at")
   destructiveAutoSyncConfirmedMode WorkspaceMountSyncMode? @map("destructive_auto_sync_confirmed_mode")
-  syncStatus                       String                  @default("pending") @map("sync_status") // pending | synced | error
+  syncStatus                       String                  @default("pending") @map("sync_status") // pending | syncing | synced | error
   syncBackend                      String?                 @map("sync_backend") // rsync | paramiko
   syncNotice                       String?                 @map("sync_notice")
+  syncProgressFilesDone            Int                     @default(0) @map("sync_progress_files_done")
+  syncProgressFilesTotal           Int?                    @map("sync_progress_files_total")
+  syncProgressMessage              String?                 @map("sync_progress_message")
+  syncStartedAt                    DateTime?               @map("sync_started_at")
   lastSyncAt                       DateTime?               @map("last_sync_at")
   lastSyncError                    String?                 @map("last_sync_error")
 
