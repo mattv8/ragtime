@@ -22,6 +22,14 @@ ENABLE_HTTPS=${ENABLE_HTTPS:-false}
 INDEX_DATA_PATH=${INDEX_DATA_PATH:-/data}
 UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN=${UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN:-5}
 
+if [ -z "$PYTHON_BIN" ]; then
+    if [ -x "/opt/venv/bin/python" ]; then
+        PYTHON_BIN="/opt/venv/bin/python"
+    else
+        PYTHON_BIN="$(command -v python3 || command -v python)"
+    fi
+fi
+
 if [ "$DEBUG_MODE" = "true" ]; then
     log "WARNING" "Running in DEBUG mode"
 fi
@@ -75,18 +83,19 @@ fi
 # Generate Prisma client and run migrations
 cd /ragtime
 if [ "$DEBUG_MODE" = "true" ]; then
-    python -m prisma generate >/dev/null 2>&1
+    "$PYTHON_BIN" -m prisma generate >/dev/null 2>&1
     # Dev mode: use migrations (same as production) to preserve pgvector columns
     # Note: We can't use "db push" because it drops vector columns not in Prisma schema
     if [ -n "$DATABASE_URL" ]; then
-        python -m prisma migrate deploy >/dev/null 2>&1 || true
+        "$PYTHON_BIN" -m prisma migrate deploy >/dev/null 2>&1 || true
     fi
 else
     # Production mode: apply migrations safely
     if [ -n "$DATABASE_URL" ]; then
         log "INFO" "Applying database migrations..."
-        python -m prisma migrate deploy 2>&1 || {
-            log "WARNING" "Migration failed, database may need manual intervention"
+        "$PYTHON_BIN" -m prisma migrate deploy 2>&1 || {
+            log "ERROR" "Migration failed; refusing to start with a potentially incompatible database schema"
+            exit 1
         }
     fi
 fi
