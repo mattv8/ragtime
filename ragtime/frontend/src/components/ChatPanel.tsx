@@ -291,6 +291,25 @@ type StreamingRenderEvent =
   | { type: 'tool'; toolCall: ActiveToolCall }
   | { type: 'reasoning'; content: string; durationSeconds?: number };
 
+function normalizeStreamingToolEvent(event: any): StreamingRenderEvent {
+  const nestedToolCall = event?.toolCall && typeof event.toolCall === 'object' ? event.toolCall : undefined;
+  const hasTopLevelOutput = event && typeof event === 'object' && Object.prototype.hasOwnProperty.call(event, 'output');
+  const hasNestedOutput = nestedToolCall && Object.prototype.hasOwnProperty.call(nestedToolCall, 'output');
+
+  return {
+    type: 'tool' as const,
+    toolCall: {
+      tool: event?.tool ?? nestedToolCall?.tool ?? '',
+      input: event?.input ?? nestedToolCall?.input,
+      output: event?.output ?? nestedToolCall?.output,
+      presentation: event?.presentation ?? nestedToolCall?.presentation,
+      connection: event?.connection ?? nestedToolCall?.connection,
+      status: hasTopLevelOutput || hasNestedOutput ? 'complete' : 'running',
+      generating_lines: event?.generating_lines ?? nestedToolCall?.generating_lines,
+    },
+  };
+}
+
 // Parse table metadata from SQL tool output
 // Format: <!--TABLEDATA:{"columns":[...],"rows":[...]}-->
 interface TableData {
@@ -1921,6 +1940,79 @@ function getTerminalRerunKind(toolCall: ActiveToolCall): string | null {
   return toolCall.tool === 'run_terminal_command' ? USERSPACE_EXEC_RERUN_KIND : null;
 }
 
+function decodeJsonStringFragment(fragment: string): string {
+  let safeFragment = fragment.replace(/\.\.\. \(truncated\)\s*$/, '');
+  safeFragment = safeFragment.replace(/\\(?:u[0-9a-fA-F]{0,3})?$/, '');
+  try {
+    return JSON.parse(`"${safeFragment}"`);
+  } catch {
+    return safeFragment
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\r')
+      .replace(/\\t/g, '\t')
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, '\\');
+  }
+}
+
+function extractJsonStringPropertyFragment(source: string, property: string): string | undefined {
+  const marker = new RegExp(`"${property}"\\s*:\\s*"`);
+  const match = marker.exec(source);
+  if (!match) return undefined;
+
+  const start = match.index + match[0].length;
+  let escaped = false;
+  let fragment = '';
+
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (escaped) {
+      fragment += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      fragment += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      return decodeJsonStringFragment(fragment);
+    }
+    fragment += char;
+  }
+
+  return decodeJsonStringFragment(fragment);
+}
+
+function parseTruncatedTerminalOutput(output: string): ParsedTerminalOutput | null {
+  if (!output.includes('... (truncated)')) return null;
+  if (!/"exit_code"\s*:/.test(output)) return null;
+  if (!/"(?:stdout|stderr|error)"\s*:/.test(output)) return null;
+
+  const exitCodeMatch = /"exit_code"\s*:\s*(-?\d+)/.exec(output);
+  if (!exitCodeMatch) return null;
+
+  const status = extractJsonStringPropertyFragment(output, 'status') ?? 'unknown';
+  const command = extractJsonStringPropertyFragment(output, 'command');
+  const cwd = extractJsonStringPropertyFragment(output, 'cwd') ?? '.';
+  const stdout = extractJsonStringPropertyFragment(output, 'stdout') ?? '';
+  const stderr = extractJsonStringPropertyFragment(output, 'stderr') ?? '';
+  const error = extractJsonStringPropertyFragment(output, 'error');
+
+  return {
+    status,
+    command,
+    cwd,
+    exit_code: Number(exitCodeMatch[1]),
+    stdout,
+    stderr,
+    error,
+    timed_out: /"timed_out"\s*:\s*true/.test(output),
+    truncated: true,
+  };
+}
+
 function parseTerminalOutput(output: string | undefined | null): ParsedTerminalOutput | null {
   if (!output) return null;
   try {
@@ -1948,7 +2040,7 @@ function parseTerminalOutput(output: string | undefined | null): ParsedTerminalO
       truncated: Boolean(parsed.truncated),
     };
   } catch {
-    return null;
+    return parseTruncatedTerminalOutput(output);
   }
 }
 
@@ -6310,19 +6402,7 @@ export function ChatPanel({
                         durationSeconds: typeof ev.duration_seconds === 'number' ? ev.duration_seconds : undefined,
                       };
                     }
-                  const hasOutput = ev && typeof ev === 'object' && Object.prototype.hasOwnProperty.call(ev, 'output');
-                    return {
-                        type: 'tool' as const,
-                        toolCall: {
-                            tool: ev.tool || '',
-                            input: ev.input,
-                            output: ev.output,
-                            presentation: ev.presentation,
-                          connection: ev.connection,
-                      status: hasOutput ? 'complete' : 'running',
-                      generating_lines: ev.generating_lines,
-                        }
-                    };
+                    return normalizeStreamingToolEvent(ev);
                 });
              });
            }

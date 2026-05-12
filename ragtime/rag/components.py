@@ -13774,6 +13774,10 @@ except Exception as e:
                                 has_table_metadata = isinstance(
                                     display_output, str
                                 ) and display_output.startswith(TABLE_METADATA_START)
+                                is_terminal_display_output = bool(
+                                    isinstance(presentation_meta, dict)
+                                    and presentation_meta.get("kind") == "terminal"
+                                )
                                 # Structured JSON tool payloads must remain
                                 # parseable client-side. Truncating to 2000 chars
                                 # cuts off closing braces and forces the frontend
@@ -13790,6 +13794,7 @@ except Exception as e:
                                     and tool_name not in json_display_integrity_tools
                                     and tool_name != "read_userspace_file"
                                     and tool_name != "list_userspace_files"
+                                    and not is_terminal_display_output
                                     and not has_table_metadata
                                 ):
                                     display_output = (
