@@ -12853,19 +12853,30 @@ except Exception as e:
             provider_pool = [
                 provider
                 for provider in allowed_providers
-                if not configured_providers or provider in configured_providers
+                if provider in configured_providers
             ]
+            if not provider_pool:
+                provider_pool = [
+                    provider
+                    for provider in configured_providers
+                    if any(
+                        providers_equivalent(allowed_provider, provider)
+                        for allowed_provider in allowed_providers
+                    )
+                ]
             if not provider_pool:
                 provider_pool = allowed_providers
         else:
-            provider_pool = configured_providers or [requested_provider]
-            if requested_provider in provider_pool:
-                provider_pool = [requested_provider] + [
-                    provider for provider in provider_pool if provider != requested_provider
-                ]
+            provider_pool = [requested_provider]
+            provider_pool.extend(
+                provider
+                for provider in configured_providers
+                if provider != requested_provider
+            )
+            provider_pool = list(dict.fromkeys(provider_pool))
 
         ordered = self._provider_precedence_order(provider_pool, model_id)
-        if provider_override:
+        if provider_override and not allowed_providers:
             return list(
                 dict.fromkeys([normalize_provider_name(provider_override), *ordered])
             )
@@ -13040,13 +13051,6 @@ except Exception as e:
             )
 
         provider = provider_override or configured_provider
-
-        # Backward-compatible provider alias handling for provider-scoped
-        # conversation/default models. GitHub Copilot serves OpenAI-family
-        # model IDs, so legacy values like "openai::gpt-5.1-codex-mini"
-        # should still route through the configured Copilot provider.
-        if provider_override == "openai" and configured_provider == "github_copilot":
-            provider = configured_provider
 
         try:
             candidate_providers = self._ordered_llm_candidate_providers(

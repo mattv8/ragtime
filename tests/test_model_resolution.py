@@ -447,6 +447,84 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolution.provider, "github_copilot")
         self.assertEqual(resolution.attempted_providers, ("openai", "github_copilot"))
 
+    async def test_openai_scoped_copilot_model_routes_through_copilot(self) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {
+            "llm_provider": "github_copilot",
+            "llm_model": "claude-haiku-4.5",
+            "openai_api_key": "openai-key",
+            "github_copilot_access_token": "copilot-token",
+            "allowed_chat_models": ["github_copilot::gpt-5.4"],
+            "model_provider_precedence": {
+                "providers": ["github_copilot", "openai", "anthropic"],
+                "model_overrides": {},
+                "family_overrides": {},
+            },
+        }
+        copilot_llm = object()
+        attempted: list[str] = []
+
+        async def build_llm(provider: str, model: str, max_tokens: int):
+            attempted.append(provider)
+            return copilot_llm
+
+        with (
+            mock.patch.object(rag, "_build_llm", side_effect=build_llm),
+            mock.patch.object(
+                rag,
+                "_resolve_chat_request_max_tokens",
+                new=mock.AsyncMock(return_value=4096),
+            ),
+        ):
+            resolution = await rag._get_request_scoped_llm("openai::gpt-5.4")
+
+        self.assertEqual(attempted, ["github_copilot"])
+        self.assertIs(resolution.llm, copilot_llm)
+        self.assertEqual(resolution.provider, "github_copilot")
+        self.assertEqual(resolution.model, "gpt-5.4")
+        self.assertEqual(resolution.attempted_providers, ("github_copilot",))
+
+    async def test_allowed_openai_alias_uses_configured_copilot_equivalent(
+        self,
+    ) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {
+            "llm_provider": "github_copilot",
+            "llm_model": "claude-haiku-4.5",
+            "openai_api_key": "",
+            "github_copilot_access_token": "copilot-token",
+            "allowed_chat_models": ["openai::gpt-5.4"],
+            "model_provider_precedence": {
+                "providers": ["github_copilot", "openai", "anthropic"],
+                "model_overrides": {},
+                "family_overrides": {},
+            },
+        }
+        copilot_llm = object()
+        attempted: list[str] = []
+
+        async def build_llm(provider: str, model: str, max_tokens: int):
+            attempted.append(provider)
+            return copilot_llm
+
+        with (
+            mock.patch.object(rag, "_build_llm", side_effect=build_llm),
+            mock.patch.object(
+                rag,
+                "_resolve_chat_request_max_tokens",
+                new=mock.AsyncMock(return_value=4096),
+            ),
+        ):
+            resolution = await rag._get_request_scoped_llm(
+                "github_copilot::openai/gpt-5.4"
+            )
+
+        self.assertEqual(attempted, ["github_copilot"])
+        self.assertIs(resolution.llm, copilot_llm)
+        self.assertEqual(resolution.provider, "github_copilot")
+        self.assertEqual(resolution.model, "openai/gpt-5.4")
+        self.assertEqual(resolution.attempted_providers, ("github_copilot",))
+
     async def test_no_llm_error_names_attempted_providers(self) -> None:
         rag = RAGComponents()
         rag._app_settings = {
