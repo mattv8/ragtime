@@ -3047,6 +3047,10 @@ textarea:focus {
   color: var(--color-text-muted);
 }
 
+.userspace-snapshot-diff-editor-wrap .cm-editor .cm-gutter-background {
+  background-color: var(--color-bg-primary) !important;
+}
+
 .tool-call-userspace-diff-card .userspace-snapshot-diff-editor-wrap .cm-editor .cm-activeLineGutter,
 .tool-call-userspace-diff-card .userspace-snapshot-diff-editor-wrap .cm-editor .cm-activeLine {
   background-color: var(--color-surface-hover) !important;
@@ -3087,6 +3091,17 @@ textarea:focus {
   background-color: rgba(128, 128, 128, 0.06) !important;
 }
 
+.cm-diff-line-gap {
+  background-color: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent) !important;
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0,
+    transparent 4px,
+    color-mix(in srgb, var(--color-border) 48%, transparent) 4px,
+    color-mix(in srgb, var(--color-border) 48%, transparent) 5px
+  ) !important;
+}
+
 /* Hide gutter numbers on padding lines */
 .cm-diff-line-padding .cm-lineNumbers .cm-gutterElement {
   visibility: hidden;
@@ -3104,6 +3119,17 @@ textarea:focus {
   background-color: rgba(0, 0, 0, 0.03) !important;
 }
 
+[data-theme="light"] .cm-diff-line-gap {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0,
+    transparent 4px,
+    rgba(0, 0, 0, 0.12) 4px,
+    rgba(0, 0, 0, 0.12) 5px
+  ) !important;
+}
+
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) .cm-diff-line-deleted {
     background-color: rgba(220, 38, 38, 0.10) !important;
@@ -3113,6 +3139,9 @@ textarea:focus {
   }
   :root:not([data-theme="dark"]) .cm-diff-line-padding {
     background-color: rgba(0, 0, 0, 0.03) !important;
+  }
+  :root:not([data-theme="dark"]) .cm-diff-line-gap {
+    background-color: rgba(0, 0, 0, 0.04) !important;
   }
 }
 

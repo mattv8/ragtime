@@ -2936,6 +2936,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 is_binary: false,
                 is_deleted_in_current: false,
                 is_untracked_in_current: false,
+                starting_before_line: undefined,
+                starting_after_line: entry.startLine ?? undefined,
               }
             : null;
           const range = (entry.startLine != null && entry.endLine != null)
@@ -3012,7 +3014,6 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                     afterLabel="Read Snippet"
                     compact
                     highlightSingleColumnChanges={false}
-                    maxLines={batched ? 12 : undefined}
                   />
                 </div>
               )}

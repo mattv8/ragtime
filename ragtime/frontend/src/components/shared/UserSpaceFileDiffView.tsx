@@ -1,29 +1,44 @@
 import { useEffect, useMemo, useRef, memo } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
-import { Decoration, type DecorationSet, EditorView } from '@codemirror/view';
+import { Decoration, type DecorationSet, EditorView, lineNumbers as codeMirrorLineNumbers } from '@codemirror/view';
 import { StateField, type Extension } from '@codemirror/state';
 import { diffLines } from 'diff';
 import type { UserSpaceSnapshotFileDiff } from '@/types';
 import { useCodeMirrorLanguageExtension } from '@/utils/codemirrorLanguage';
 
+type DiffSourceLineNumber = number | null;
+
 interface AlignedDiffResult {
   beforeText: string;
   afterText: string;
+  beforeLineNumbers: DiffSourceLineNumber[];
+  afterLineNumbers: DiffSourceLineNumber[];
   beforeDeletedLines: Set<number>;
   afterAddedLines: Set<number>;
   beforePaddingLines: Set<number>;
   afterPaddingLines: Set<number>;
+  beforeGapLines?: Set<number>;
+  afterGapLines?: Set<number>;
 }
 
-function computeAlignedDiff(before: string, after: string): AlignedDiffResult {
+interface DiffLineWindow {
+  start: number;
+  end: number;
+}
+
+function computeAlignedDiff(before: string, after: string, startingBeforeLine: number = 1, startingAfterLine: number = 1): AlignedDiffResult {
   const changes = diffLines(before, after);
 
   const beforeArr: string[] = [];
   const afterArr: string[] = [];
+  const beforeLineNumbers: DiffSourceLineNumber[] = [];
+  const afterLineNumbers: DiffSourceLineNumber[] = [];
   const beforeDeletedLines = new Set<number>();
   const afterAddedLines = new Set<number>();
   const beforePaddingLines = new Set<number>();
   const afterPaddingLines = new Set<number>();
+  let beforeSourceLineNumber = startingBeforeLine;
+  let afterSourceLineNumber = startingAfterLine;
 
   for (const change of changes) {
     const raw = change.value;
@@ -33,6 +48,9 @@ function computeAlignedDiff(before: string, after: string): AlignedDiffResult {
       for (const line of lines) {
         beforeArr.push(line);
         afterArr.push('');
+        beforeLineNumbers.push(beforeSourceLineNumber);
+        afterLineNumbers.push(null);
+        beforeSourceLineNumber += 1;
         beforeDeletedLines.add(beforeArr.length);
         afterPaddingLines.add(afterArr.length);
       }
@@ -40,6 +58,9 @@ function computeAlignedDiff(before: string, after: string): AlignedDiffResult {
       for (const line of lines) {
         beforeArr.push('');
         afterArr.push(line);
+        beforeLineNumbers.push(null);
+        afterLineNumbers.push(afterSourceLineNumber);
+        afterSourceLineNumber += 1;
         afterAddedLines.add(afterArr.length);
         beforePaddingLines.add(beforeArr.length);
       }
@@ -47,6 +68,10 @@ function computeAlignedDiff(before: string, after: string): AlignedDiffResult {
       for (const line of lines) {
         beforeArr.push(line);
         afterArr.push(line);
+        beforeLineNumbers.push(beforeSourceLineNumber);
+        afterLineNumbers.push(afterSourceLineNumber);
+        beforeSourceLineNumber += 1;
+        afterSourceLineNumber += 1;
       }
     }
   }
@@ -54,6 +79,8 @@ function computeAlignedDiff(before: string, after: string): AlignedDiffResult {
   return {
     beforeText: beforeArr.join('\n'),
     afterText: afterArr.join('\n'),
+    beforeLineNumbers,
+    afterLineNumbers,
     beforeDeletedLines,
     afterAddedLines,
     beforePaddingLines,
@@ -64,6 +91,130 @@ function computeAlignedDiff(before: string, after: string): AlignedDiffResult {
 const diffLineDeletedMark = Decoration.line({ class: 'cm-diff-line-deleted' });
 const diffLineAddedMark = Decoration.line({ class: 'cm-diff-line-added' });
 const diffLinePaddingMark = Decoration.line({ class: 'cm-diff-line-padding' });
+const diffLineGapMark = Decoration.line({ class: 'cm-diff-line-gap' });
+
+const DIFF_CONTEXT_LINE_COUNT = 10;
+
+function splitDiffText(text: string): string[] {
+  return text.length === 0 ? [''] : text.split('\n');
+}
+
+function remapLineSet(lineNumbers: Set<number>, lineMap: Map<number, number>): Set<number> {
+  const remapped = new Set<number>();
+  for (const lineNumber of lineNumbers) {
+    const mapped = lineMap.get(lineNumber);
+    if (mapped != null) {
+      remapped.add(mapped);
+    }
+  }
+  return remapped;
+}
+
+function buildDiffLineWindows(changedLines: Set<number>, lineCount: number): DiffLineWindow[] {
+  if (changedLines.size === 0 || lineCount <= 0) return [];
+
+  const windows: DiffLineWindow[] = Array.from(changedLines)
+    .sort((a, b) => a - b)
+    .map((lineNumber) => ({
+      start: Math.max(1, lineNumber - DIFF_CONTEXT_LINE_COUNT),
+      end: Math.min(lineCount, lineNumber + DIFF_CONTEXT_LINE_COUNT),
+    }));
+
+  const merged: DiffLineWindow[] = [];
+  for (const window of windows) {
+    const previous = merged[merged.length - 1];
+    if (previous && window.start <= previous.end + 1) {
+      previous.end = Math.max(previous.end, window.end);
+    } else {
+      merged.push({ ...window });
+    }
+  }
+
+  return merged;
+}
+
+function windowAlignedDiff(alignedDiff: AlignedDiffResult): AlignedDiffResult {
+  const beforeLines = splitDiffText(alignedDiff.beforeText);
+  const afterLines = splitDiffText(alignedDiff.afterText);
+  const lineCount = Math.max(beforeLines.length, afterLines.length);
+  const changedLines = new Set<number>([
+    ...alignedDiff.beforeDeletedLines,
+    ...alignedDiff.afterAddedLines,
+  ]);
+  const windows = buildDiffLineWindows(changedLines, lineCount);
+
+  if (windows.length === 0 || (windows.length === 1 && windows[0].start === 1 && windows[0].end === lineCount)) {
+    return alignedDiff;
+  }
+
+  const lineMap = new Map<number, number>();
+  const beforeWindowedLines: string[] = [];
+  const afterWindowedLines: string[] = [];
+  const beforeWindowedLineNumbers: DiffSourceLineNumber[] = [];
+  const afterWindowedLineNumbers: DiffSourceLineNumber[] = [];
+  const beforeGapLines = new Set<number>();
+  const afterGapLines = new Set<number>();
+
+  if (windows[0].start > 1) {
+    beforeWindowedLines.push('');
+    afterWindowedLines.push('');
+    beforeWindowedLineNumbers.push(null);
+    afterWindowedLineNumbers.push(null);
+    beforeGapLines.add(beforeWindowedLines.length);
+    afterGapLines.add(afterWindowedLines.length);
+  }
+
+  windows.forEach((window, index) => {
+    if (index > 0) {
+      beforeWindowedLines.push('');
+      afterWindowedLines.push('');
+      beforeWindowedLineNumbers.push(null);
+      afterWindowedLineNumbers.push(null);
+      beforeGapLines.add(beforeWindowedLines.length);
+      afterGapLines.add(afterWindowedLines.length);
+    }
+
+    for (let lineNumber = window.start; lineNumber <= window.end; lineNumber += 1) {
+      beforeWindowedLines.push(beforeLines[lineNumber - 1] ?? '');
+      afterWindowedLines.push(afterLines[lineNumber - 1] ?? '');
+      beforeWindowedLineNumbers.push(alignedDiff.beforeLineNumbers[lineNumber - 1] ?? null);
+      afterWindowedLineNumbers.push(alignedDiff.afterLineNumbers[lineNumber - 1] ?? null);
+      lineMap.set(lineNumber, beforeWindowedLines.length);
+    }
+  });
+
+  const lastWindow = windows[windows.length - 1];
+  if (lastWindow.end < lineCount) {
+    beforeWindowedLines.push('');
+    afterWindowedLines.push('');
+    beforeWindowedLineNumbers.push(null);
+    afterWindowedLineNumbers.push(null);
+    beforeGapLines.add(beforeWindowedLines.length);
+    afterGapLines.add(afterWindowedLines.length);
+  }
+
+  return {
+    beforeText: beforeWindowedLines.join('\n'),
+    afterText: afterWindowedLines.join('\n'),
+    beforeLineNumbers: beforeWindowedLineNumbers,
+    afterLineNumbers: afterWindowedLineNumbers,
+    beforeDeletedLines: remapLineSet(alignedDiff.beforeDeletedLines, lineMap),
+    afterAddedLines: remapLineSet(alignedDiff.afterAddedLines, lineMap),
+    beforePaddingLines: remapLineSet(alignedDiff.beforePaddingLines, lineMap),
+    afterPaddingLines: remapLineSet(alignedDiff.afterPaddingLines, lineMap),
+    beforeGapLines,
+    afterGapLines,
+  };
+}
+
+function buildDiffLineNumberExtension(lineNumberMap: DiffSourceLineNumber[]): Extension {
+  return codeMirrorLineNumbers({
+    formatNumber(lineNumber) {
+      const sourceLineNumber = lineNumberMap[lineNumber - 1];
+      return sourceLineNumber == null ? '' : String(sourceLineNumber);
+    },
+  });
+}
 
 function buildDiffHighlightExtension(lineNumbers: Set<number>, decoration: Decoration) {
   return StateField.define<DecorationSet>({
@@ -116,7 +267,7 @@ export function calculateDiffLineCounts(before: string, after: string): { additi
 }
 
 export const DIFF_CODEMIRROR_SETUP = {
-  lineNumbers: true,
+  lineNumbers: false,
   bracketMatching: true,
   indentOnInput: true,
   tabSize: 2,
@@ -186,11 +337,15 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
 
   const alignedDiff = useMemo(() => {
     if (diff.is_binary || diff.is_truncated) return null;
-    return computeAlignedDiff(diff.before_content, diff.after_content);
+    const startingBeforeLine = diff.starting_before_line ?? 1;
+    const startingAfterLine = diff.starting_after_line ?? 1;
+    return windowAlignedDiff(computeAlignedDiff(diff.before_content, diff.after_content, startingBeforeLine, startingAfterLine));
   }, [diff]);
 
   const beforeExtensions = useMemo(() => {
-    const exts: Extension[] = [...languageExtensions];
+    const exts: Extension[] = alignedDiff
+      ? [buildDiffLineNumberExtension(alignedDiff.beforeLineNumbers), ...languageExtensions]
+      : [...languageExtensions];
     if (alignedDiff) {
       if (alignedDiff.beforeDeletedLines.size > 0) {
         exts.push(buildDiffHighlightExtension(alignedDiff.beforeDeletedLines, diffLineDeletedMark));
@@ -198,18 +353,26 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
       if (alignedDiff.beforePaddingLines.size > 0) {
         exts.push(buildDiffHighlightExtension(alignedDiff.beforePaddingLines, diffLinePaddingMark));
       }
+      if (alignedDiff.beforeGapLines && alignedDiff.beforeGapLines.size > 0) {
+        exts.push(buildDiffHighlightExtension(alignedDiff.beforeGapLines, diffLineGapMark));
+      }
     }
     return exts;
   }, [languageExtensions, alignedDiff]);
 
   const afterExtensions = useMemo(() => {
-    const exts: Extension[] = [...languageExtensions];
+    const exts: Extension[] = alignedDiff
+      ? [buildDiffLineNumberExtension(alignedDiff.afterLineNumbers), ...languageExtensions]
+      : [...languageExtensions];
     if (alignedDiff) {
       if (alignedDiff.afterAddedLines.size > 0) {
         exts.push(buildDiffHighlightExtension(alignedDiff.afterAddedLines, diffLineAddedMark));
       }
       if (alignedDiff.afterPaddingLines.size > 0) {
         exts.push(buildDiffHighlightExtension(alignedDiff.afterPaddingLines, diffLinePaddingMark));
+      }
+      if (alignedDiff.afterGapLines && alignedDiff.afterGapLines.size > 0) {
+        exts.push(buildDiffHighlightExtension(alignedDiff.afterGapLines, diffLineGapMark));
       }
     }
     return exts;
@@ -289,9 +452,10 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
     const singleContent = isPureAdd ? alignedDiff.afterText : alignedDiff.beforeText;
     const singleLabel = isPureAdd ? afterLabel : beforeLabel;
     const singlePath = isPureAdd ? (diff.after_path ?? diff.path) : (diff.before_path ?? diff.path);
+    const singleLineNumbers = isPureAdd ? alignedDiff.afterLineNumbers : alignedDiff.beforeLineNumbers;
     const singleExtensions = highlightSingleColumnChanges
       ? (isPureAdd ? afterExtensions : beforeExtensions)
-      : languageExtensions;
+      : [buildDiffLineNumberExtension(singleLineNumbers), ...languageExtensions];
 
     const autoFitHeight = maxLines ? computeAutoFitHeight(singleContent, maxLines) : '100%';
     const wrapStyle = maxLines ? { minHeight: 0, height: autoFitHeight } : undefined;

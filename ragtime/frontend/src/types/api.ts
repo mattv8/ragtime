@@ -2859,6 +2859,8 @@ export interface UserSpaceSnapshotFileDiff {
   is_snapshot_own_diff?: boolean;
   is_truncated?: boolean;
   message?: string | null;
+  starting_before_line?: number | null;
+  starting_after_line?: number | null;
 }
 
 export interface UserSpaceSnapshotBranch {
