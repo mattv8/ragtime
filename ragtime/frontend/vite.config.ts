@@ -39,6 +39,12 @@ export default defineConfig({
     port: apiPort,
     strictPort: true,
     https: httpsConfig,
+    // Bind-mounted source on Docker/macOS does not deliver native FS events
+    // reliably; enable polling so HMR detects edits made from the host.
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
     proxy: {
       // Proxy all API calls to Python backend
       '^/(indexes|auth|authorize|token|health|docs|redoc|openapi.json|v1|mcp-routes|mcp-debug|mcp)': {
