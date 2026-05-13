@@ -10,7 +10,7 @@ import Chart from 'chart.js/auto';
 import type { Chart as ChartInstance, ChartConfiguration } from 'chart.js';
 import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2 } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, AvailableModel } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, AvailableModel, RetryVisualizationRequest, ToolConnectionRef } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -336,7 +336,37 @@ function normalizeStreamingToolEvent(event: any): StreamingRenderEvent {
 // Format: <!--TABLEDATA:{"columns":[...],"rows":[...]}-->
 interface TableData {
   columns: string[];
-  rows: (string | number | null)[][];
+  rows: unknown[][];
+}
+
+const RETRY_CONTEXT_EVENT_LIMIT = 12;
+const RETRY_CONTEXT_OUTPUT_LIMIT = 12000;
+
+type VisualizationRetrySiblingEvent = {
+  type: string;
+  tool?: string;
+  input?: Record<string, unknown>;
+  output?: string;
+  connection?: ToolConnectionRef;
+};
+
+function truncateRetryContextOutput(output: string | undefined): string | undefined {
+  if (!output || output.length <= RETRY_CONTEXT_OUTPUT_LIMIT) return output;
+  return `${output.slice(0, RETRY_CONTEXT_OUTPUT_LIMIT)}\n...[truncated ${output.length - RETRY_CONTEXT_OUTPUT_LIMIT} chars]`;
+}
+
+function buildVisualizationRetryContextEvents(siblingEvents?: VisualizationRetrySiblingEvent[]): RetryVisualizationRequest['context_events'] {
+  if (!siblingEvents) return [];
+  return siblingEvents
+    .filter((event) => event.type === 'tool')
+    .slice(-RETRY_CONTEXT_EVENT_LIMIT)
+    .map((event) => ({
+      type: event.type,
+      tool: event.tool,
+      input: event.input,
+      output: truncateRetryContextOutput(event.output),
+      connection: event.connection,
+    }));
 }
 
 function parseTableMetadata(output: string): { tableData: TableData | null; displayText: string } {
@@ -1854,7 +1884,7 @@ interface ToolCallDisplayProps {
   conversationId?: string;
   workspaceId?: string;
   allowRerun?: boolean;
-  siblingEvents?: Array<{ type: string; tool?: string; output?: string }>;
+  siblingEvents?: VisualizationRetrySiblingEvent[];
   onRetrySuccess?: (newOutput: string) => void;
   onOpenWorkspaceFile?: (path: string) => void;
 }
@@ -2215,6 +2245,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryOutput, setRetryOutput] = useState<string | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [retryProgressText, setRetryProgressText] = useState<string | null>(null);
+  const retryProgressTimers = useRef<number[]>([]);
   const [isRerunning, setIsRerunning] = useState(false);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   // Per-entry diff state keyed by snapshot+path+writeSignature so a batched
@@ -2635,6 +2667,13 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     }
   }, []);
 
+  const clearRetryProgressTimers = useCallback(() => {
+    retryProgressTimers.current.forEach((timerId) => window.clearTimeout(timerId));
+    retryProgressTimers.current = [];
+  }, []);
+
+  useEffect(() => () => clearRetryProgressTimers(), [clearRetryProgressTimers]);
+
   // Handle retry for visualization tools
   const handleRetry = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -2645,13 +2684,12 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       return;
     }
 
-    // Find source data from sibling events (previous tool calls with TABLEDATA)
+    // Find deterministic source data from nearby tool calls when available.
     let sourceData: { columns: string[]; rows: unknown[][] } | null = null;
 
     if (siblingEvents) {
-      for (const event of siblingEvents) {
+      for (const event of [...siblingEvents].reverse()) {
         if (event.type === 'tool' && event.output) {
-          // Check for TABLEDATA metadata in the output
           const metadata = parseTableMetadata(event.output);
           if (metadata.tableData) {
             sourceData = {
@@ -2664,32 +2702,30 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       }
     }
 
-    if (!sourceData) {
-      setRetryError('Cannot retry: no table data found from previous queries');
-      setExpanded(true);
-      return;
-    }
     setIsRetrying(true);
     setRetryError(null);
+    setRetryProgressText('Checking source data...');
+    clearRetryProgressTimers();
+    retryProgressTimers.current = [
+      window.setTimeout(() => setRetryProgressText('Re-running source query if needed...'), 1000),
+      window.setTimeout(() => setRetryProgressText('Repairing visualization data...'), 2500),
+      window.setTimeout(() => setRetryProgressText('Validating repaired output...'), 5000),
+    ];
 
     try {
       const toolType = toolCall.tool === 'create_chart' ? 'chart' : 'datatable';
-      const response = await fetch(`/indexes/conversations/${conversationId}/retry-visualization`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          tool_type: toolType,
-          source_data: sourceData,
-          title: 'Data'  // Default title
-        })
-      });
+      const request: RetryVisualizationRequest = {
+        tool_type: toolType,
+        ...(sourceData ? { source_data: sourceData } : {}),
+        title: toolType === 'chart' ? 'Chart' : 'Data',
+        allow_ai_repair: true,
+        allow_source_rerun: true,
+        failed_tool_input: toolCall.input,
+        failed_tool_output: toolCall.output,
+        context_events: buildVisualizationRetryContextEvents(siblingEvents),
+      };
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const result = await response.json();
+      const result = await api.retryVisualization(conversationId, request, workspaceId);
 
       if (result.success && result.output) {
         setRetryOutput(result.output);
@@ -2702,9 +2738,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       setRetryError(err instanceof Error ? err.message : 'Request failed');
       setExpanded(true);
     } finally {
+      clearRetryProgressTimers();
+      setRetryProgressText(null);
       setIsRetrying(false);
     }
-  }, [conversationId, siblingEvents, toolCall.tool, onRetrySuccess]);
+  }, [clearRetryProgressTimers, conversationId, siblingEvents, toolCall.input, toolCall.output, toolCall.tool, onRetrySuccess, workspaceId]);
 
   // Handle re-run for terminal commands
   const handleRerunCommand = useCallback(async (e: React.MouseEvent) => {
@@ -3601,9 +3639,12 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           </button>
         )}
         {isRetrying && (
-          <span className="tool-call-retrying">
+          <span
+            className="tool-call-retrying"
+            title="Retry checks existing source data first, then may rerun the source query and use AI to repair malformed visualization data."
+          >
             <MiniLoadingSpinner variant="icon" size={12} />
-            <span>Retrying...</span>
+            <span>{retryProgressText || 'Retrying...'}</span>
           </span>
         )}
       </div>

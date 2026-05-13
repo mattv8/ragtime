@@ -2067,10 +2067,16 @@ textarea.chat-header-title-input {
   margin: var(--space-xs);
   color: var(--color-text-muted);
   font-size: var(--tool-call-font-xs);
-  white-space: nowrap;
+  min-width: 0;
+  max-width: min(280px, 40vw);
 }
 .tool-call-retrying svg {
   flex-shrink: 0;
+}
+.tool-call-retrying span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .tool-call-error {
   background: rgba(239, 68, 68, 0.1);

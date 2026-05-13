@@ -235,11 +235,13 @@ from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 from ragtime.indexer.vector_utils import ensure_pgvector_extension
+from ragtime.indexer.visualization_retry import (
+    VisualizationRetryContext,
+    retry_visualization_with_repair,
+)
 from ragtime.indexer.workspace_state import build_workspace_chat_state
 from ragtime.mcp.server import notify_tools_changed
 from ragtime.rag import rag
-from ragtime.tools.chart import create_chart
-from ragtime.tools.datatable import create_datatable
 from ragtime.tools.influxdb import test_influxdb_connection
 from ragtime.tools.mssql import test_mssql_connection
 from ragtime.tools.mysql import test_mysql_connection
@@ -12570,13 +12572,11 @@ async def retry_visualization(
     user: User = Depends(get_current_user),
 ):
     """
-    Retry a failed visualization tool call.
+    Retry a failed visualization tool call, repairing source data if needed.
 
-    Directly invokes the create_datatable or create_chart tool with the provided
-    source data. No LLM call is needed since we have structured data.
-
-    For datatables, source_data should be: {"columns": [...], "rows": [...]}
-    For charts, source_data should be: {"labels": [...], "datasets": [...], "chart_type": "..."}
+    Deterministic structured-data retry is attempted first. If that fails, the
+    retry service can rerun a captured read/query source tool and then use the
+    configured LLM to repair malformed table/chart data before rendering.
     """
     await _assert_workspace_access(
         workspace_id, user, _workspace_chat_required_role(workspace_id)
@@ -12591,58 +12591,26 @@ async def retry_visualization(
     if not has_access:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    conversation = await repository.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    _, selected_tool_ids, _ = await _resolve_selected_tool_ids_for_request(
+        conversation,
+        user,
+        workspace_id,
+        _workspace_chat_required_role(workspace_id),
+    )
+
     try:
-        if request.tool_type == "datatable":
-            # Extract data from source_data
-            columns = request.source_data.get("columns", [])
-            rows = request.source_data.get("rows", [])
-
-            if not columns or not rows:
-                return RetryVisualizationResponse(
-                    success=False,
-                    error="Invalid source_data: must contain 'columns' and 'rows'",
-                )
-
-            title = request.title or "Data"
-
-            # Directly call the datatable tool
-            output = await create_datatable(
-                title=title,
-                columns=columns,
-                data=rows,
-                description=f"Table with {len(rows)} rows",
-            )
-
-            return RetryVisualizationResponse(success=True, output=output)
-
-        elif request.tool_type == "chart":
-            # Extract chart data
-            labels = request.source_data.get("labels", [])
-            datasets = request.source_data.get("datasets", [])
-            chart_type = request.source_data.get("chart_type", "bar")
-
-            if not labels or not datasets:
-                return RetryVisualizationResponse(
-                    success=False,
-                    error="Invalid source_data: must contain 'labels' and 'datasets'",
-                )
-
-            title = request.title or "Chart"
-
-            # Directly call the chart tool
-            output = await create_chart(
-                chart_type=chart_type,
-                title=title,
-                labels=labels,
-                datasets=datasets,
-                description=f"Chart with {len(labels)} data points",
-            )
-
-            return RetryVisualizationResponse(success=True, output=output)
-        else:
-            return RetryVisualizationResponse(
-                success=False, error=f"Unknown tool type: {request.tool_type}"
-            )
+        return await retry_visualization_with_repair(
+            request,
+            VisualizationRetryContext(
+                conversation=conversation,
+                user_id=user.id,
+                selected_tool_ids=set(selected_tool_ids),
+            ),
+        )
 
     except Exception as e:
         logger.exception(f"Error retrying visualization: {e}")

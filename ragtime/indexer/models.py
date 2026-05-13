@@ -2756,11 +2756,32 @@ class RetryVisualizationRequest(BaseModel):
     tool_type: Literal["datatable", "chart"] = Field(
         description="Type of visualization to create: 'datatable' or 'chart'"
     )
-    source_data: dict = Field(
-        description="Source data for the visualization. For datatable: {columns: [], rows: []}. For chart: raw data."
+    source_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional structured source data. For datatable: {columns: [], rows: []}. For chart: raw data.",
     )
     title: str | None = Field(
         default=None, description="Optional title override for the visualization"
+    )
+    allow_ai_repair: bool = Field(
+        default=True,
+        description="Whether to use the configured LLM to repair source data when deterministic retry fails.",
+    )
+    allow_source_rerun: bool = Field(
+        default=True,
+        description="Whether to rerun a captured read/query source tool when prior output is insufficient.",
+    )
+    failed_tool_input: dict[str, Any] | None = Field(
+        default=None,
+        description="Original failed visualization tool input, used as repair context.",
+    )
+    failed_tool_output: str | None = Field(
+        default=None,
+        description="Original failed visualization tool output, used as repair context.",
+    )
+    context_events: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Recent relevant tool events that may contain source data or rerunnable query context.",
     )
 
 
@@ -2772,6 +2793,15 @@ class RetryVisualizationResponse(BaseModel):
         default=None, description="The visualization output JSON on success"
     )
     error: str | None = Field(default=None, description="Error message on failure")
+    repair_used: bool = Field(
+        default=False, description="Whether AI repair was used to recover source data"
+    )
+    repair_strategy: str | None = Field(
+        default=None, description="Strategy that produced the retry payload"
+    )
+    source_rerun_used: bool = Field(
+        default=False, description="Whether a captured source query was rerun"
+    )
 
 
 # =============================================================================

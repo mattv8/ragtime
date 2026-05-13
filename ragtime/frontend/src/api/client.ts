@@ -3066,6 +3066,20 @@ export const api = {
     return handleResponse<import('@/types').RetryTerminalToolResponse>(response);
   },
 
+  async retryVisualization(
+    conversationId: string,
+    request: import('@/types').RetryVisualizationRequest,
+    workspaceId?: string,
+  ): Promise<import('@/types').RetryVisualizationResponse> {
+    const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/retry-visualization${suffix}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<import('@/types').RetryVisualizationResponse>(response);
+  },
+
   async listUserSpaceWorkspaceShareLinks(workspaceId: string): Promise<UserSpaceWorkspaceShareLinkListResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links`);
     return handleResponse<UserSpaceWorkspaceShareLinkListResponse>(response);

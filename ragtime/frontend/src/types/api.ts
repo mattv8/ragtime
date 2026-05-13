@@ -3312,7 +3312,7 @@ export interface UserSpaceCollabPresenceResponse {
 // Retry visualization request/response
 export interface RetryVisualizationRequest {
   tool_type: 'datatable' | 'chart';
-  source_data: {
+  source_data?: {
     columns?: string[];
     rows?: unknown[][];
     labels?: string[];
@@ -3320,12 +3320,26 @@ export interface RetryVisualizationRequest {
     chart_type?: string;
   };
   title?: string;
+  allow_ai_repair?: boolean;
+  allow_source_rerun?: boolean;
+  failed_tool_input?: Record<string, unknown>;
+  failed_tool_output?: string;
+  context_events?: Array<{
+    type?: string;
+    tool?: string;
+    input?: Record<string, unknown>;
+    output?: string;
+    connection?: ToolConnectionRef;
+  }>;
 }
 
 export interface RetryVisualizationResponse {
   success: boolean;
   output?: string;
   error?: string;
+  repair_used?: boolean;
+  repair_strategy?: string | null;
+  source_rerun_used?: boolean;
 }
 
 export interface RetryTerminalToolRequest {
