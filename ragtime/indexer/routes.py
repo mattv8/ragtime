@@ -67,9 +67,15 @@ from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
     MODEL_FAMILY_PATTERNS,
-    register_openrouter_model_limits,
+    clean_model_display_name,
+    clean_model_variant_label,
+    ensure_model_metadata_loaded,
     get_context_limit,
+    get_model_freshness_rank,
     get_output_limit,
+    register_openrouter_model_limits,
+    resolve_model_family_label,
+    resolve_model_provider_label,
     register_model_reasoning_capabilities,
     register_model_image_input_capability,
     register_model_supported_endpoints,
@@ -6843,6 +6849,12 @@ class LLMModel(BaseModel):
     name: str
     created: Optional[int] = None
     group: Optional[str] = None
+    model_provider: Optional[str] = None
+    model_provider_label: Optional[str] = None
+    model_family: Optional[str] = None
+    display_name: Optional[str] = None
+    model_variant: Optional[str] = None
+    freshness_rank: Optional[int] = None
     is_latest: bool = False
     max_output_tokens: Optional[int] = None
     context_limit: Optional[int] = None
@@ -6877,6 +6889,12 @@ class AvailableModel(BaseModel):
     context_limit: int = 8192  # Max context window tokens
     max_output_tokens: Optional[int] = None  # Max output tokens for this model
     group: Optional[str] = None  # Model group for UI organization
+    model_provider: Optional[str] = None  # Model publisher/provider key
+    model_provider_label: Optional[str] = None  # Human label for model publisher/provider
+    model_family: Optional[str] = None  # Model family for hierarchical UI organization
+    display_name: Optional[str] = None  # Provider/family-stripped display label
+    model_variant: Optional[str] = None  # Compact variant label for selector grouping
+    freshness_rank: Optional[int] = None  # Comparable release/freshness rank
     is_latest: bool = False  # Whether this is the latest version in its group
     created: Optional[int] = None
     capabilities: Optional[List[str]] = None
@@ -6964,6 +6982,69 @@ def _serialize_openapi_precedence(app_settings: Any) -> Optional[Dict[str, Any]]
     if isinstance(raw, dict):
         return raw
     return None
+
+
+def _model_publisher_key(model_id: str) -> Optional[str]:
+    raw = str(model_id or "").strip().lstrip("~")
+    if "/" not in raw:
+        return None
+    publisher, _, _short_id = raw.partition("/")
+    normalized = publisher.strip().lower().replace("-", "_")
+    return normalized or None
+
+
+def _enrich_model_metadata(
+    model: LLMModel | AvailableModel,
+    provider: str,
+    metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    """Attach provider/family/display metadata used by selectors."""
+    provider_label = resolve_model_provider_label(
+        model.id,
+        model.name,
+        provider=provider,
+        metadata=metadata,
+    )
+    family_label = resolve_model_family_label(
+        model.id,
+        model.name,
+        provider=provider,
+        metadata=metadata,
+    )
+
+    if not provider_label and provider in LOCAL_LLM_PROVIDER_NAMES and family_label:
+        provider_label = family_label
+
+    if provider_label:
+        model.model_provider_label = provider_label
+    if not model.model_provider:
+        model.model_provider = _model_publisher_key(model.id) or (
+            provider_label.lower().replace(" ", "_") if provider_label else None
+        )
+    if family_label:
+        model.model_family = family_label
+        model.group = family_label
+    elif model.group:
+        model.model_family = model.group
+
+    model.freshness_rank = get_model_freshness_rank(
+        model.id,
+        model.created,
+        name=model.name,
+        metadata=metadata,
+    )
+    model.display_name = clean_model_display_name(
+        model.name,
+        model_id=model.id,
+        provider_label=model.model_provider_label,
+        family_label=model.model_family or model.group,
+    )
+    model.model_variant = clean_model_variant_label(
+        model.name,
+        model_id=model.id,
+        provider_label=model.model_provider_label,
+        family_label=model.model_family or model.group,
+    )
 
 
 async def _is_model_discovery_loading() -> bool:
@@ -7117,6 +7198,7 @@ def _openrouter_is_chat_model(row: dict[str, Any]) -> bool:
 async def _fetch_openrouter_models(api_key: str) -> LLMModelsResponse:
     """Fetch chat-capable models from OpenRouter."""
     try:
+        await ensure_model_metadata_loaded()
         async with httpx.AsyncClient(timeout=20.0) as client:
             response = await client.get(
                 "https://openrouter.ai/api/v1/models",
@@ -7160,7 +7242,12 @@ async def _fetch_openrouter_models(api_key: str) -> LLMModelsResponse:
                     capabilities.append("thinking_budget")
 
             context_limit, max_output_tokens = register_openrouter_model_limits(row)
-            family_group = resolve_model_family_from_metadata("openrouter", row)
+            family_group = resolve_model_family_label(
+                model_id,
+                str(row.get("name") or model_id),
+                provider="openrouter",
+                metadata=row,
+            ) or resolve_model_family_from_metadata("openrouter", row)
             architecture = row.get("architecture")
             tokenizer = (
                 str(architecture.get("tokenizer"))
@@ -7176,22 +7263,22 @@ async def _fetch_openrouter_models(api_key: str) -> LLMModelsResponse:
                     thinking_budget_supported=bool(thinking_budget_supported),
                 )
 
-            models.append(
-                LLMModel(
-                    id=model_id,
-                    name=str(row.get("name") or model_id),
-                    created=_openrouter_int(row.get("created")),
-                    group=family_group,
-                    max_output_tokens=max_output_tokens,
-                    context_limit=context_limit,
-                    capabilities=capabilities or None,
-                    supported_endpoints=["/chat/completions"],
-                    reasoning_supported=reasoning_supported,
-                    thinking_budget_supported=thinking_budget_supported,
-                    effort_levels=effort_levels or None,
-                    architecture=tokenizer,
-                )
+            model = LLMModel(
+                id=model_id,
+                name=str(row.get("name") or model_id),
+                created=_openrouter_int(row.get("created")),
+                group=family_group,
+                max_output_tokens=max_output_tokens,
+                context_limit=context_limit,
+                capabilities=capabilities or None,
+                supported_endpoints=["/chat/completions"],
+                reasoning_supported=reasoning_supported,
+                thinking_budget_supported=thinking_budget_supported,
+                effort_levels=effort_levels or None,
+                architecture=tokenizer,
             )
+            _enrich_model_metadata(model, "openrouter", row)
+            models.append(model)
 
         models = _group_models(models, "openrouter")
         models.sort(
@@ -8014,6 +8101,7 @@ def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
     # Use the same logic as _assign_model_groups but for LLMModel
     for model in models:
         model.is_latest = False
+        _enrich_model_metadata(model, provider)
         if model.group:
             continue
         mid = model.id.lower()
@@ -8040,19 +8128,7 @@ def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
         if not found_group:
             model.group = f"Other {provider.title()}"
 
-    # Identify 'is_latest' within each group
-    grouped = defaultdict(list)
-    for model in models:
-        grouped[model.group].append(model)
-
-    for _, group_models in grouped.items():
-        if not group_models:
-            continue
-
-        group_models.sort(key=_model_group_sort_key, reverse=True)
-
-        # Mark first as latest
-        group_models[0].is_latest = True
+    _mark_latest_models(models, provider)
 
     return models
 
@@ -8078,67 +8154,45 @@ def _derive_group_label(provider: str, model_id: str, match: re.Match[str]) -> s
     return capture
 
 
-def _extract_version(name: str) -> float:
-    """Extract a float-like version for legacy callers.
+def _latest_group_key(
+    model: LLMModel | AvailableModel,
+    fallback_provider: str,
+) -> tuple[str, str, str]:
+    model_provider = model.model_provider or (
+        model.model_provider_label.lower().replace(" ", "_")
+        if model.model_provider_label
+        else ""
+    )
+    host_provider = str(getattr(model, "provider", None) or fallback_provider)
+    return (
+        host_provider,
+        model_provider,
+        model.model_family or model.group or "",
+    )
 
-    This preserves the previous return type while delegating to the richer
-    tuple-based parser used for latest-model selection.
-    """
-    parts = _extract_version_parts(name)
-    if not parts:
-        return 0.0
-    if len(parts) == 1:
-        return float(parts[0])
-    return float(f"{parts[0]}.{parts[1]}")
 
+def _mark_latest_models(
+    models: List[LLMModel] | List[AvailableModel],
+    fallback_provider: str,
+) -> None:
+    grouped = defaultdict(list)
+    for model in models:
+        grouped[_latest_group_key(model, fallback_provider)].append(model)
 
-def _extract_version_parts(*values: str) -> tuple[int, ...]:
-    """Extract version components from model identifiers or display names."""
-    best: tuple[int, ...] = ()
-
-    patterns = [
-        re.compile(r"\bgpt-(\d+)(?:\.(\d+))?"),
-        re.compile(r"\bo(\d+)(?:\b|[-_])"),
-        re.compile(r"\bclaude(?:[-\s][a-z0-9]+)*[-\s](\d+)(?:[.-](\d+))?"),
-        re.compile(r"\bgemini(?:[-\s][a-z0-9]+)*[-\s](\d+)(?:\.(\d+))?"),
-        re.compile(r"(\d+)(?:\.(\d+))?\s*$"),
-    ]
-
-    for raw_value in values:
-        candidate = str(raw_value or "").strip().lower()
-        if not candidate:
+    for group_models in grouped.values():
+        candidates = [
+            model for model in group_models if isinstance(model.freshness_rank, int)
+        ]
+        if not candidates:
             continue
 
-        for pattern in patterns:
-            match = pattern.search(candidate)
-            if not match:
-                continue
-
-            parts_list: list[int] = []
-            for index in range(1, (match.lastindex or 0) + 1):
-                group = match.group(index)
-                if group:
-                    parts_list.append(int(group))
-
-            parts = tuple(parts_list)
-            if parts and parts > best:
-                best = parts
-            if parts:
-                break
-
-    return best
-
-
-def _model_group_sort_key(
-    model: LLMModel | AvailableModel,
-) -> tuple[tuple[int, ...], int, int, str]:
-    """Sort models so newest family versions win without changing default selection semantics."""
-    return (
-        _extract_version_parts(model.id, model.name),
-        model.created or 0,
-        -len(model.id),
-        model.id.lower(),
-    )
+        candidates.sort(
+            key=lambda model: (model.freshness_rank or 0, model.id.lower()),
+            reverse=True,
+        )
+        if len(candidates) > 1 and candidates[0].freshness_rank == candidates[1].freshness_rank:
+            continue
+        candidates[0].is_latest = True
 
 
 def _merge_model_metadata(primary: LLMModel, extra: LLMModel) -> LLMModel:
@@ -8153,6 +8207,18 @@ def _merge_model_metadata(primary: LLMModel, extra: LLMModel) -> LLMModel:
         merged.context_limit = extra.context_limit
     if not merged.group:
         merged.group = extra.group
+    if not merged.model_provider:
+        merged.model_provider = extra.model_provider
+    if not merged.model_provider_label:
+        merged.model_provider_label = extra.model_provider_label
+    if not merged.model_family:
+        merged.model_family = extra.model_family
+    if not merged.display_name:
+        merged.display_name = extra.display_name
+    if not merged.model_variant:
+        merged.model_variant = extra.model_variant
+    if merged.freshness_rank is None:
+        merged.freshness_rank = extra.freshness_rank
     if not merged.name:
         merged.name = extra.name
     if not merged.capabilities:
@@ -8173,6 +8239,7 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
     """Assign UI group labels to models for better organization."""
     for model in models:
         model.is_latest = False
+        _enrich_model_metadata(model, model.provider)
         if model.group:
             continue
         mid = model.id.lower()
@@ -8199,24 +8266,7 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
         if not found_group:
             model.group = f"Other {model.provider.title()}"
 
-    # Grouping and is_latest logic
-    grouped = defaultdict(list)
-    for model in models:
-        grouped[(model.provider, model.group)].append(model)
-
-    for (provider, _group), group_models in grouped.items():
-        if not group_models:
-            continue
-
-        if provider == "ollama":
-            # For Ollama, use the ':latest' tag as the authoritative marker
-            for m in group_models:
-                if m.id.endswith(":latest"):
-                    m.is_latest = True
-        else:
-            group_models.sort(key=_model_group_sort_key, reverse=True)
-            # Mark the first one as latest
-            group_models[0].is_latest = True
+    _mark_latest_models(models, "")
 
     return models
 
@@ -8242,6 +8292,12 @@ async def fetch_llm_models(
         include_google_models=request.include_google_models,
     )
     if result is not None:
+        if result.success:
+            await ensure_model_metadata_loaded()
+            result.models = _group_models(
+                result.models,
+                normalize_provider_name(request.provider),
+            )
         return result
     return LLMModelsResponse(
         success=False,
@@ -8353,13 +8409,13 @@ async def _fetch_copilot_directory_models(
                     if isinstance(limit_out, int):
                         output_limit = limit_out
 
-                models.append(
-                    LLMModel(
-                        id=model_id,
-                        name=str(row.get("name") or model_id),
-                        max_output_tokens=output_limit,
-                    )
+                model = LLMModel(
+                    id=model_id,
+                    name=str(row.get("name") or model_id),
+                    max_output_tokens=output_limit,
                 )
+                _enrich_model_metadata(model, "github_copilot", row)
+                models.append(model)
 
             if not models:
                 return LLMModelsResponse(
@@ -9695,6 +9751,12 @@ async def get_available_chat_models():
                     ),
                     max_output_tokens=m.max_output_tokens,
                     group=m.group,
+                    model_provider=m.model_provider,
+                    model_provider_label=m.model_provider_label,
+                    model_family=m.model_family,
+                    display_name=m.display_name,
+                    model_variant=m.model_variant,
+                    freshness_rank=m.freshness_rank,
                     created=m.created,
                     capabilities=m.capabilities,
                     supported_endpoints=resolved_supported_endpoints,
@@ -9739,6 +9801,7 @@ async def get_available_chat_models():
         ]
 
     # Assign groups to models for UI organization
+    await ensure_model_metadata_loaded()
     all_models = _assign_model_groups(all_models)
 
     automatic_default_match = _find_available_model_for_identifier(
@@ -9988,6 +10051,12 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                     ),
                     max_output_tokens=m.max_output_tokens,
                     group=m.group,
+                    model_provider=m.model_provider,
+                    model_provider_label=m.model_provider_label,
+                    model_family=m.model_family,
+                    display_name=m.display_name,
+                    model_variant=m.model_variant,
+                    freshness_rank=m.freshness_rank,
                     created=m.created,
                     capabilities=m.capabilities,
                     supported_endpoints=resolved_supported_endpoints,
@@ -10007,6 +10076,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
     allowed_models = app_settings.allowed_chat_models or []
 
     # Assign groups to models for UI organization
+    await ensure_model_metadata_loaded()
     all_models = _assign_model_groups(all_models)
 
     return AvailableModelsResponse(

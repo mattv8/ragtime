@@ -71,21 +71,25 @@ export function ModelFilterModal({
         filterText === '' ||
         m.name.toLowerCase().includes(lc) ||
         m.id.toLowerCase().includes(lc) ||
-        m.provider.toLowerCase().includes(lc),
+        m.provider.toLowerCase().includes(lc) ||
+        (m.model_provider_label || '').toLowerCase().includes(lc) ||
+        (m.model_family || m.group || '').toLowerCase().includes(lc),
     );
   }, [allModels, filterText]);
 
   const groupedAllowed = useMemo(() => {
     const providerOrder: string[] = [];
-    const providerGroups: Record<string, Record<string, AvailableModel[]>> = {};
+    const providerGroups: Record<string, Record<string, Record<string, AvailableModel[]>>> = {};
     filteredAllowed.forEach((m) => {
       if (!providerGroups[m.provider]) {
         providerGroups[m.provider] = {};
         providerOrder.push(m.provider);
       }
-      const g = m.group || 'Other';
-      if (!providerGroups[m.provider][g]) providerGroups[m.provider][g] = [];
-      providerGroups[m.provider][g].push(m);
+      const modelProvider = m.model_provider_label || 'Other';
+      const family = m.model_family || m.group || 'Other';
+      if (!providerGroups[m.provider][modelProvider]) providerGroups[m.provider][modelProvider] = {};
+      if (!providerGroups[m.provider][modelProvider][family]) providerGroups[m.provider][modelProvider][family] = [];
+      providerGroups[m.provider][modelProvider][family].push(m);
     });
     return { providerOrder, providerGroups };
   }, [filteredAllowed]);
@@ -185,56 +189,61 @@ export function ModelFilterModal({
                       <div className="family-group-header">
                         {PROVIDER_LABELS[provider] || provider}
                       </div>
-                      {Object.keys(groupedAllowed.providerGroups[provider]).map((groupName) => (
-                        <div key={groupName} className="model-group">
-                          <div className="model-group-header">
-                            {groupName}
-                          </div>
-                          {groupedAllowed.providerGroups[provider][groupName].map((model) => (
-                            <label
-                              key={`${model.provider}:${model.id}`}
-                              className="model-filter-item"
-                              style={{
-                                paddingLeft: '1rem',
-                                backgroundColor: model.is_latest ? 'rgba(0,0,0,0.03)' : undefined,
-                                fontWeight: model.is_latest ? 500 : undefined,
-                              }}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={selectedModels.has(`${model.provider}::${model.id}`)}
-                                onChange={() => toggleModel(model)}
-                              />
-                              <span className="model-filter-name">
-                                {model.id !== model.name ? model.id : model.name}
-                                <span
+                      {Object.keys(groupedAllowed.providerGroups[provider]).sort().map((modelProvider) => (
+                        <div key={modelProvider} className="model-group">
+                          <div className="model-group-header">{modelProvider}</div>
+                          {Object.keys(groupedAllowed.providerGroups[provider][modelProvider]).sort().map((groupName) => (
+                            <div key={groupName}>
+                              <div className="model-group-header" style={{ paddingLeft: '1rem', fontSize: '0.78rem' }}>
+                                {groupName}
+                              </div>
+                              {groupedAllowed.providerGroups[provider][modelProvider][groupName].map((model) => (
+                                <label
+                                  key={`${model.provider}:${model.id}`}
+                                  className="model-filter-item"
                                   style={{
-                                    marginLeft: '6px',
-                                    fontSize: '0.7em',
-                                    padding: '1px 4px',
-                                    borderRadius: '4px',
-                                    background: 'var(--bg-secondary, #2d2d2d)',
-                                    color: 'var(--text-muted, #888)',
+                                    paddingLeft: '1.5rem',
+                                    backgroundColor: model.is_latest ? 'rgba(0,0,0,0.03)' : undefined,
+                                    fontWeight: model.is_latest ? 500 : undefined,
                                   }}
                                 >
-                                  via {PROVIDER_LABELS[model.provider] || model.provider}
-                                </span>
-                                {model.is_latest && (
-                                  <span
-                                    style={{
-                                      marginLeft: '6px',
-                                      fontSize: '0.7em',
-                                      padding: '1px 4px',
-                                      borderRadius: '4px',
-                                      background: '#e0e0e0',
-                                      color: '#555',
-                                    }}
-                                  >
-                                    LATEST
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedModels.has(`${model.provider}::${model.id}`)}
+                                    onChange={() => toggleModel(model)}
+                                  />
+                                  <span className="model-filter-name">
+                                    {model.display_name || (model.id !== model.name ? model.id : model.name)}
+                                    <span
+                                      style={{
+                                        marginLeft: '6px',
+                                        fontSize: '0.7em',
+                                        padding: '1px 4px',
+                                        borderRadius: '4px',
+                                        background: 'var(--bg-secondary, #2d2d2d)',
+                                        color: 'var(--text-muted, #888)',
+                                      }}
+                                    >
+                                      via {PROVIDER_LABELS[model.provider] || model.provider}
+                                    </span>
+                                    {model.is_latest && (
+                                      <span
+                                        style={{
+                                          marginLeft: '6px',
+                                          fontSize: '0.7em',
+                                          padding: '1px 4px',
+                                          borderRadius: '4px',
+                                          background: '#e0e0e0',
+                                          color: '#555',
+                                        }}
+                                      >
+                                        LATEST
+                                      </span>
+                                    )}
                                   </span>
-                                )}
-                              </span>
-                            </label>
+                                </label>
+                              ))}
+                            </div>
                           ))}
                         </div>
                       ))}

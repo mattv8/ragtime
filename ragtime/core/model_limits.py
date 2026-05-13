@@ -6,11 +6,12 @@ Source: https://models.dev/api.json
 
 import asyncio
 import re
+from datetime import datetime, timezone
 
 import httpx
 
 from ragtime.core.logging import get_logger
-from ragtime.core.model_providers import normalize_provider_name
+from ragtime.core.model_providers import get_provider, normalize_provider_name
 
 logger = get_logger(__name__)
 
@@ -21,6 +22,11 @@ MODELS_DEV_API_URL = "https://models.dev/api.json"
 _model_limits_cache: dict[str, int] = {}
 # Cache for model output limits
 _model_output_limits_cache: dict[str, int] = {}
+# Cache for model family/provider/display metadata
+_model_family_labels_cache: dict[str, str] = {}
+_model_provider_labels_cache: dict[str, str] = {}
+_model_display_names_cache: dict[str, str] = {}
+_model_freshness_cache: dict[str, int] = {}
 # Cache for function calling support
 _model_supports_function_calling: dict[str, bool] = {}
 # Cache for reasoning/thinking support
@@ -42,6 +48,140 @@ _cache_loaded = False
 
 # Default when model not found
 DEFAULT_CONTEXT_LIMIT = 8192
+
+
+PROVIDER_LABEL_OVERRIDES: dict[str, str] = {
+    "ai21": "AI21",
+    "anthropic": "Anthropic",
+    "arcee-ai": "Arcee AI",
+    "baidu": "Baidu",
+    "bytedance": "ByteDance",
+    "bytedance-seed": "ByteDance Seed",
+    "cohere": "Cohere",
+    "deepseek": "DeepSeek",
+    "essentialai": "Essential AI",
+    "google": "Google",
+    "ibm-granite": "IBM",
+    "inclusionai": "Inclusion AI",
+    "liquid": "LiquidAI",
+    "meta-llama": "Meta",
+    "minimax": "MiniMax",
+    "mistralai": "Mistral",
+    "moonshotai": "Moonshot AI",
+    "nousresearch": "Nous Research",
+    "nvidia": "NVIDIA",
+    "openai": "OpenAI",
+    "openrouter": "OpenRouter",
+    "perplexity": "Perplexity",
+    "qwen": "Qwen",
+    "rekaai": "Reka AI",
+    "sao10k": "Sao10K",
+    "thedrummer": "TheDrummer",
+    "x-ai": "xAI",
+    "xai": "xAI",
+    "z-ai": "Z AI",
+}
+
+FAMILY_LABEL_OVERRIDES: dict[str, str] = {
+    "ai21": "AI21",
+    "arcee-ai": "Arcee AI",
+    "claude": "Claude",
+    "claude-haiku": "Claude Haiku",
+    "claude-opus": "Claude Opus",
+    "claude-sonnet": "Claude Sonnet",
+    "cohere": "Cohere",
+    "command": "Command",
+    "codex": "Codex",
+    "deepseek": "DeepSeek",
+    "gemma": "Gemma",
+    "glm": "GLM",
+    "gpt": "GPT",
+    "gpt-codex": "Codex",
+    "gpt-mini": "GPT",
+    "gpt-nano": "GPT",
+    "gpt-oss": "GPT OSS",
+    "gpt-pro": "GPT",
+    "grok": "Grok",
+    "granite": "Granite",
+    "inflection": "Inflection",
+    "kimi": "Moonshot",
+    "laguna": "Laguna",
+    "llama": "Llama",
+    "lfm": "LFM",
+    "mimo": "MiMo",
+    "minimax": "MiniMax",
+    "mistral": "Mistral",
+    "mistral-large": "Mistral Large",
+    "mistral-medium": "Mistral Medium",
+    "mistral-nemo": "Mistral Nemo",
+    "mistral-small": "Mistral Small",
+    "moonshot": "Moonshot",
+    "nemotron": "Nemotron",
+    "nova": "Nova",
+    "o": "O-Series",
+    "o-mini": "O-Series",
+    "o-pro": "O-Series",
+    "o-series": "O-Series",
+    "phi": "Phi",
+    "qianfan": "Qianfan",
+    "qwen": "Qwen",
+    "reka": "Reka",
+    "relace": "Relace",
+    "router": "Router",
+    "seed": "Seed",
+}
+
+
+HIGH_CONFIDENCE_TEXT_TAXONOMY_RULES: tuple[
+    tuple[re.Pattern[str], str | None, str | None], ...
+] = (
+    (re.compile(r"\bcodex\b"), "OpenAI", "Codex"),
+    (re.compile(r"\bqianfan\b"), "Baidu", "Qianfan"),
+    (
+        re.compile(r"\bbytedance[-\s]?seed[:/]\s*seed\b|\bbytedance-seed/seed\b"),
+        "ByteDance Seed",
+        "Seed",
+    ),
+    (re.compile(r"\bgranite\b"), "IBM", "Granite"),
+    (re.compile(r"\blfm[-\s]?\d|\blfm2(?:\b|[-_.])"), "LiquidAI", "LFM"),
+    (re.compile(r"\blaguna\b"), "Poolside", "Laguna"),
+    (re.compile(r"\breka(?:[-\s]|$)"), "Reka AI", "Reka"),
+    (re.compile(r"\brelace\b"), "Relace", "Relace"),
+    (re.compile(r"\baion(?:[-\s]|labs|$)"), "Aion Labs", "Aion"),
+    (re.compile(r"\bmimo\b"), "Xiaomi", "MiMo"),
+    (re.compile(r"\binflection(?:[-\s]|/|$)"), "Inflection", "Inflection"),
+    (re.compile(r"\bmorph(?:[-\s]|/|$)"), "Morph", "Morph"),
+    (re.compile(r"\bmicrosoft/phi\b|\bphi[-\s]?\d"), "Microsoft", "Phi"),
+)
+
+
+TEXT_TAXONOMY_RULES: tuple[tuple[re.Pattern[str], str | None, str | None], ...] = (
+    (re.compile(r"\bclaude\b.*\bhaiku\b|\bhaiku\b.*\bclaude\b"), "Anthropic", "Claude Haiku"),
+    (re.compile(r"\bclaude\b.*\bopus\b|\bopus\b.*\bclaude\b"), "Anthropic", "Claude Opus"),
+    (re.compile(r"\bclaude\b.*\bsonnet\b|\bsonnet\b.*\bclaude\b"), "Anthropic", "Claude Sonnet"),
+    (re.compile(r"\bclaude\b"), "Anthropic", "Claude"),
+    (re.compile(r"\b(?:gpt-\d|chatgpt-|openai/gpt)"), "OpenAI", "GPT"),
+    (re.compile(r"\bo\d+(?:\b|[-_])"), "OpenAI", "O-Series"),
+    (re.compile(r"\bgemini\b"), "Google", "Gemini"),
+    (re.compile(r"\bgemma\b"), "Google", "Gemma"),
+    (re.compile(r"\bmistral[-\s]small\b"), "Mistral", "Mistral Small"),
+    (re.compile(r"\bmistral[-\s]medium\b"), "Mistral", "Mistral Medium"),
+    (re.compile(r"\bmistral[-\s]large\b"), "Mistral", "Mistral Large"),
+    (re.compile(r"\bmistral[-\s]nemo\b"), "Mistral", "Mistral Nemo"),
+    (re.compile(r"\bmistral\b"), "Mistral", "Mistral"),
+    (re.compile(r"\bmoonshot\b|\bkimi\b"), "Moonshot AI", "Moonshot"),
+    (re.compile(r"\bqwen\b"), "Qwen", "Qwen"),
+    (re.compile(r"\bdeepseek\b"), "DeepSeek", "DeepSeek"),
+    (re.compile(r"\bllama\b"), "Meta", "Llama"),
+    (re.compile(r"\bgrok\b|\bx-ai/|\bxai/"), "xAI", "Grok"),
+    (re.compile(r"\bminimax\b|\bmini-max\b"), None, "MiniMax"),
+    (re.compile(r"\bnemotron\b"), "NVIDIA", "Nemotron"),
+    (re.compile(r"\bglm\b"), None, "GLM"),
+    (re.compile(r"\bnova\b"), None, "Nova"),
+    (re.compile(r"\bcohere\b|\bcommand-r\b"), "Cohere", "Cohere"),
+    (re.compile(r"\barcee\b"), "Arcee AI", "Arcee AI"),
+    (re.compile(r"\brouter\b|\bopenrouter/"), "OpenRouter", "Router"),
+)
 
 
 # Model family grouping patterns for UI organization
@@ -145,6 +285,230 @@ def _coerce_int(value: object) -> int | None:
     if isinstance(value, str) and value.isdigit():
         return int(value)
     return None
+
+
+def _cache_key(value: str) -> str:
+    return str(value or "").strip().lstrip("~").lower()
+
+
+def _provider_label_from_slug(value: str | None) -> str | None:
+    slug = str(value or "").strip().lstrip("~").lower()
+    if not slug:
+        return None
+    if slug in PROVIDER_LABEL_OVERRIDES:
+        return PROVIDER_LABEL_OVERRIDES[slug]
+    return " ".join(part.capitalize() for part in re.split(r"[-_\s]+", slug) if part)
+
+
+def _family_slug_to_label(value: str | None) -> str | None:
+    slug = str(value or "").strip().lower().replace("_", "-")
+    if not slug:
+        return None
+    if slug.startswith("gemini"):
+        return "Gemini"
+    if slug in FAMILY_LABEL_OVERRIDES:
+        return FAMILY_LABEL_OVERRIDES[slug]
+    return " ".join(
+        part.upper() if part in {"gpt", "glm"} else part.capitalize()
+        for part in slug.split("-")
+    )
+
+
+def _parse_date_rank(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and value > 0:
+        return int(value)
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y-%m"):
+        try:
+            parsed = datetime.strptime(raw, fmt)
+            return int(parsed.replace(tzinfo=timezone.utc).timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+def _metadata_lookup_candidates(
+    model_id: str,
+    name: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> list[str]:
+    candidates: list[str] = []
+
+    def add(value: object) -> None:
+        raw = str(value or "").strip()
+        if not raw:
+            return
+        raw = raw.lstrip("~")
+        variants = [raw]
+        if raw.endswith(":free"):
+            variants.append(raw.removesuffix(":free"))
+        if "/" in raw:
+            variants.append(raw.split("/", 1)[1])
+        for variant in variants:
+            for key in _candidate_lookup_keys(variant):
+                normalized = _cache_key(key)
+                if normalized and normalized not in candidates:
+                    candidates.append(normalized)
+
+    add(model_id)
+    if metadata:
+        add(metadata.get("id"))
+        add(metadata.get("canonical_slug"))
+    add(name)
+    return candidates
+
+
+def _lookup_metadata_value(
+    cache: dict[str, str] | dict[str, int],
+    model_id: str,
+    name: str | None = None,
+    metadata: dict[str, object] | None = None,
+    *,
+    allow_fuzzy: bool = True,
+) -> str | int | None:
+    if not cache:
+        return None
+
+    candidates = _metadata_lookup_candidates(model_id, name, metadata)
+    for candidate in candidates:
+        if candidate in cache:
+            return cache[candidate]
+
+    if not allow_fuzzy:
+        return None
+
+    best: tuple[int, int] | None = None
+    best_value: str | int | None = None
+    for candidate in candidates:
+        if len(candidate) < 4:
+            continue
+        for key, value in cache.items():
+            if len(key) < 4:
+                continue
+            score = 0
+            if candidate.startswith(key):
+                score = 900
+            elif key.startswith(candidate):
+                score = 800
+            elif key in candidate or candidate in key:
+                score = 500
+            if score == 0:
+                continue
+            rank = (score, min(len(key), len(candidate)))
+            if best is None or rank > best:
+                best = rank
+                best_value = value
+
+    return best_value
+
+
+def _format_family_label(
+    family_slug: str,
+    model_id: str,
+    name: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> str | None:
+    label = _family_slug_to_label(family_slug)
+    if not label:
+        return None
+    high_confidence = _infer_high_confidence_taxonomy_from_text(model_id, name, metadata)[1]
+    if high_confidence and label in {"GPT", "Other", "Liquid"}:
+        return high_confidence
+    if label == "Gemini":
+        major = _extract_major_version("gemini", model_id, name, metadata)
+        if major:
+            return f"Gemini {major}"
+    return label
+
+
+def _infer_high_confidence_taxonomy_from_text(
+    model_id: str,
+    name: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> tuple[str | None, str | None]:
+    text = " ".join(_metadata_text_values(model_id, name, metadata)).lower()
+    if not text:
+        return None, None
+
+    for pattern, provider_label, family_label in HIGH_CONFIDENCE_TEXT_TAXONOMY_RULES:
+        if pattern.search(text):
+            return provider_label, family_label
+
+    return None, None
+
+
+def _metadata_text_values(
+    model_id: str,
+    name: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> list[str]:
+    values = [model_id, name or ""]
+    if metadata:
+        values.extend(
+            str(metadata.get(key) or "") for key in ("id", "name", "canonical_slug")
+        )
+    return [value.strip() for value in values if value and str(value).strip()]
+
+
+def _extract_major_version(
+    family: str,
+    model_id: str,
+    name: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> str | None:
+    family_pattern = re.escape(family.lower())
+    pattern = re.compile(rf"\b{family_pattern}[-\s]?(\d+)(?:\.\d+)?")
+    for value in _metadata_text_values(model_id, name, metadata):
+        match = pattern.search(value.lower())
+        if match:
+            return match.group(1)
+    return None
+
+
+def _infer_taxonomy_from_text(
+    model_id: str,
+    name: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> tuple[str | None, str | None]:
+    high_confidence = _infer_high_confidence_taxonomy_from_text(model_id, name, metadata)
+    if high_confidence != (None, None):
+        return high_confidence
+
+    text = " ".join(_metadata_text_values(model_id, name, metadata)).lower()
+    if not text:
+        return None, None
+
+    for pattern, provider_label, family_label in TEXT_TAXONOMY_RULES:
+        if not pattern.search(text):
+            continue
+        if family_label == "Gemini":
+            major = _extract_major_version("gemini", model_id, name, metadata)
+            family_label = f"Gemini {major}" if major else "Gemini"
+        return provider_label, family_label
+
+    return None, None
+
+
+def _infer_family_label_from_text(
+    model_id: str,
+    name: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> str | None:
+    _provider_label, family_label = _infer_taxonomy_from_text(model_id, name, metadata)
+    return family_label
+
+
+def _infer_provider_label_from_text(
+    model_id: str,
+    name: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> str | None:
+    provider_label, _family_label = _infer_taxonomy_from_text(model_id, name, metadata)
+    return provider_label
 
 
 def _expand_model_keys(model_id: str, provider: str) -> set[str]:
@@ -360,8 +724,13 @@ def _lookup_capability_flag(cache: dict[str, bool], model_id: str) -> bool | Non
 async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
     """Fetch model limits and capabilities from models.dev."""
     global _model_supports_function_calling, _model_supports_reasoning, _model_supports_thinking_budget
+    global _model_family_labels_cache, _model_provider_labels_cache, _model_display_names_cache, _model_freshness_cache
     limits: dict[str, int] = {}
     output_limits: dict[str, int] = {}
+    family_labels: dict[str, str] = {}
+    provider_labels: dict[str, str] = {}
+    display_names: dict[str, str] = {}
+    freshness: dict[str, int] = {}
     function_calling: dict[str, bool] = {}
     reasoning_support: dict[str, bool] = {}
     thinking_budget_support: dict[str, bool] = {}
@@ -403,14 +772,34 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
                     supports_thinking_budget_flag = _infer_thinking_budget_support(
                         model_info
                     )
+                    family_slug = str(model_info.get("family") or "").strip()
+                    model_name = str(model_info.get("name") or "").strip()
+                    provider_label = _provider_label_from_slug(str(provider))
+                    freshness_rank = _parse_date_rank(
+                        model_info.get("release_date")
+                    ) or _parse_date_rank(model_info.get("last_updated"))
 
                     key_variants = _expand_model_keys(model_id, str(provider).lower())
+                    key_variants.add(str(fallback_id or ""))
+                    if model_name:
+                        key_variants.add(model_name)
 
                     for key in key_variants:
+                        normalized_key = _cache_key(key)
+                        if not normalized_key:
+                            continue
                         if context_limit is not None:
                             limits[key] = context_limit
                         if output_limit is not None:
                             output_limits[key] = output_limit
+                        if family_slug:
+                            family_labels[normalized_key] = family_slug
+                        if provider_label:
+                            provider_labels[normalized_key] = provider_label
+                        if model_name:
+                            display_names[normalized_key] = model_name
+                        if freshness_rank is not None:
+                            freshness[normalized_key] = freshness_rank
                         if isinstance(supports_fc, bool):
                             function_calling[key] = supports_fc
                         if isinstance(supports_reasoning_flag, bool):
@@ -421,11 +810,17 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
             _model_supports_function_calling = function_calling
             _model_supports_reasoning = reasoning_support
             _model_supports_thinking_budget = thinking_budget_support
+            _model_family_labels_cache = family_labels
+            _model_provider_labels_cache = provider_labels
+            _model_display_names_cache = display_names
+            _model_freshness_cache = freshness
 
             logger.info(
-                "Loaded %s context limits, %s output limits, %s function-calling flags, %s reasoning flags, %s thinking-budget flags from models.dev",
+                "Loaded %s context limits, %s output limits, %s family labels, %s freshness entries, %s function-calling flags, %s reasoning flags, %s thinking-budget flags from models.dev",
                 len(limits),
                 len(output_limits),
+                len(_model_family_labels_cache),
+                len(_model_freshness_cache),
                 len(_model_supports_function_calling),
                 len(_model_supports_reasoning),
                 len(_model_supports_thinking_budget),
@@ -459,6 +854,207 @@ async def _ensure_cache_loaded() -> None:
             logger.info("Using empty cache as fetch failed")
 
         _cache_loaded = True
+
+
+async def ensure_model_metadata_loaded() -> None:
+    """Load models.dev metadata used for grouping, display labels, and freshness."""
+    await _ensure_cache_loaded()
+
+
+def resolve_model_provider_label(
+    model_id: str,
+    name: str | None = None,
+    *,
+    provider: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> str | None:
+    """Resolve the model publisher/provider label from catalog metadata."""
+    if metadata:
+        raw_name = str(metadata.get("name") or name or "").strip()
+        if ":" in raw_name:
+            prefix, _, _rest = raw_name.partition(":")
+            prefix = prefix.strip()
+            if prefix and len(prefix) <= 40:
+                return prefix
+
+    raw_id = str(model_id or "").strip().lstrip("~")
+    if "/" in raw_id:
+        publisher, _, _short_id = raw_id.partition("/")
+        label = _provider_label_from_slug(publisher)
+        if label:
+            return label
+
+    descriptor = get_provider(provider)
+    if descriptor and provider in {"openai", "anthropic"}:
+        return descriptor.label
+
+    inferred = _infer_provider_label_from_text(model_id, name, metadata)
+    if inferred:
+        return inferred
+
+    cached = _lookup_metadata_value(
+        _model_provider_labels_cache,
+        model_id,
+        name,
+        metadata,
+        allow_fuzzy=False,
+    )
+    if isinstance(cached, str) and cached:
+        return cached
+
+    return None
+
+
+def resolve_model_family_label(
+    model_id: str,
+    name: str | None = None,
+    *,
+    provider: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> str | None:
+    """Resolve a stable model-family label for UI grouping."""
+    high_confidence = _infer_high_confidence_taxonomy_from_text(model_id, name, metadata)[1]
+    if high_confidence:
+        return high_confidence
+
+    cached = _lookup_metadata_value(_model_family_labels_cache, model_id, name, metadata)
+    if isinstance(cached, str) and cached:
+        formatted = _format_family_label(cached, model_id, name, metadata)
+        if formatted:
+            return formatted
+
+    inferred = _infer_family_label_from_text(model_id, name, metadata)
+    if inferred:
+        return inferred
+
+    descriptor = get_provider(provider)
+    if descriptor and descriptor.model_family_tokenizer_labels and metadata:
+        architecture = metadata.get("architecture")
+        tokenizer = architecture.get("tokenizer") if isinstance(architecture, dict) else None
+        normalized_tokenizer = str(tokenizer or "").strip().lower()
+        for token_value, label in descriptor.model_family_tokenizer_labels:
+            if normalized_tokenizer == token_value.lower():
+                return label
+
+    return None
+
+
+def get_model_freshness_rank(
+    model_id: str,
+    created: int | None = None,
+    *,
+    name: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> int | None:
+    """Return a comparable freshness rank from models.dev or provider metadata."""
+    cached = _lookup_metadata_value(_model_freshness_cache, model_id, name, metadata)
+    if isinstance(cached, int):
+        return cached
+    if metadata:
+        for key in ("created", "release_date", "last_updated"):
+            parsed = _parse_date_rank(metadata.get(key))
+            if parsed is not None:
+                return parsed
+    if isinstance(created, int) and created > 0:
+        return created
+    return None
+
+
+def clean_model_display_name(
+    name: str,
+    *,
+    model_id: str | None = None,
+    provider_label: str | None = None,
+    family_label: str | None = None,
+) -> str:
+    """Strip redundant provider/family prefixes from a model display name."""
+    cleaned = str(name or model_id or "").strip()
+    if not cleaned:
+        return str(model_id or "").strip()
+
+    labels = [provider_label or ""]
+    for label in labels:
+        label = label.strip()
+        if not label:
+            continue
+        next_cleaned = re.sub(
+            rf"^{re.escape(label)}\s*:\s*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+        if next_cleaned != cleaned:
+            cleaned = next_cleaned
+            continue
+        cleaned = re.sub(
+            rf"^{re.escape(label)}\s+",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+
+    family = str(family_label or "").strip()
+    if family:
+        remainder = re.sub(
+            rf"^{re.escape(family)}(?:\s*[:-]\s*|[-_\s]+|(?=\d))",
+            "",
+            cleaned,
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip()
+        if remainder and not remainder.startswith("."):
+            cleaned = remainder
+
+    return cleaned or str(model_id or name or "").strip()
+
+
+def clean_model_variant_label(
+    name: str,
+    *,
+    model_id: str | None = None,
+    provider_label: str | None = None,
+    family_label: str | None = None,
+) -> str:
+    """Return a compact variant label for grouping model versions in selectors."""
+    variant = clean_model_display_name(
+        name,
+        model_id=model_id,
+        provider_label=provider_label,
+        family_label=family_label,
+    )
+    variant = re.sub(r"^(?:gpt|claude)[-_\s]+", "", variant, flags=re.IGNORECASE)
+    variant = re.sub(
+        r"[-_\s]*(?:20\d{2}-\d{2}-\d{2}|20\d{6})$",
+        "",
+        variant,
+        flags=re.IGNORECASE,
+    )
+    variant = re.sub(r"[-_\s]+latest$", "", variant, flags=re.IGNORECASE)
+
+    if str(family_label or "").strip().lower() == "codex":
+        variant = re.sub(
+            r"(^|[-_\s])codex(?=$|[-_\s])",
+            r"\1",
+            variant,
+            flags=re.IGNORECASE,
+        )
+
+    variant = re.sub(r"^[-_\s]+|[-_\s]+$", "", variant).strip()
+    if not variant:
+        variant = str(model_id or name or "").strip()
+
+    return " ".join(
+        _format_model_variant_part(part) for part in re.split(r"[-_\s]+", variant) if part
+    )
+
+
+def _format_model_variant_part(value: str) -> str:
+    lower = value.lower()
+    if lower in {"api", "gpt", "oss", "mlx"}:
+        return lower.upper()
+    if re.match(r"^(?:\d|o\d)", value, flags=re.IGNORECASE):
+        return value
+    return lower[:1].upper() + lower[1:]
 
 
 async def get_context_limit(model_id: str) -> int:
@@ -553,6 +1149,10 @@ def invalidate_cache() -> None:
     _cache_loaded = False
     _model_limits_cache.clear()
     _model_output_limits_cache.clear()
+    _model_family_labels_cache.clear()
+    _model_provider_labels_cache.clear()
+    _model_display_names_cache.clear()
+    _model_freshness_cache.clear()
     _model_supports_function_calling.clear()
     _model_supports_reasoning.clear()
     _model_supports_thinking_budget.clear()

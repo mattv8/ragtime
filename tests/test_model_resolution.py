@@ -2,16 +2,23 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+import ragtime.core.model_limits as model_limits
 import ragtime.indexer.routes as indexer_routes
 
-from ragtime.core.model_limits import extract_openrouter_model_limits
+from ragtime.core.model_limits import (
+    clean_model_display_name,
+    clean_model_variant_label,
+    extract_openrouter_model_limits,
+    get_model_freshness_rank,
+    resolve_model_family_label,
+    resolve_model_provider_label,
+)
 from ragtime.core.model_providers import resolve_model_family_from_metadata
 from ragtime.indexer.routes import (
     AvailableModel,
     LLMModel,
     LLMModelsResponse,
     _assign_model_groups,
-    _extract_version_parts,
     _group_models,
     _identifier_in_allowed_models,
     _merge_llm_model_results,
@@ -148,12 +155,6 @@ class ModelResolutionTests(unittest.TestCase):
             )
         )
 
-    def test_extract_version_parts_prefers_model_id_detail(self) -> None:
-        self.assertEqual(
-            _extract_version_parts("claude-opus-4.7", "Claude Opus 4"),
-            (4, 7),
-        )
-
     def test_group_models_marks_opus_47_as_latest(self) -> None:
         models = [
             LLMModel(id="claude-opus-4", name="Claude Opus 4", created=100),
@@ -165,7 +166,7 @@ class ModelResolutionTests(unittest.TestCase):
 
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0].id, "claude-opus-4.7")
-        self.assertTrue(all(model.group == "Claude Opus 4" for model in grouped))
+        self.assertTrue(all(model.group == "Claude Opus" for model in grouped))
 
     def test_group_models_marks_sonnet_46_as_latest(self) -> None:
         models = [
@@ -186,7 +187,7 @@ class ModelResolutionTests(unittest.TestCase):
 
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0].id, "anthropic/claude-sonnet-4.6")
-        self.assertTrue(all(model.group == "Claude Sonnet 4" for model in grouped))
+        self.assertTrue(all(model.group == "Claude Sonnet" for model in grouped))
 
     def test_group_models_dynamic_claude_family_is_grouped_by_major(self) -> None:
         models = [
@@ -199,7 +200,7 @@ class ModelResolutionTests(unittest.TestCase):
 
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0].id, "claude-mythos-5.1")
-        self.assertTrue(all(model.group == "Claude Mythos 5" for model in grouped))
+        self.assertTrue(all(model.group == "Claude" for model in grouped))
 
     def test_group_models_keeps_legacy_claude_groups(self) -> None:
         models = [
@@ -210,8 +211,8 @@ class ModelResolutionTests(unittest.TestCase):
         grouped = _group_models(models, "anthropic")
         grouped_by_id = {model.id: model.group for model in grouped}
 
-        self.assertEqual(grouped_by_id["claude-3-opus"], "Claude 3 Opus")
-        self.assertEqual(grouped_by_id["claude-3.5-sonnet"], "Claude 3.5 Sonnet")
+        self.assertEqual(grouped_by_id["claude-3-opus"], "Claude Opus")
+        self.assertEqual(grouped_by_id["claude-3.5-sonnet"], "Claude Sonnet")
 
     def test_assign_model_groups_marks_newest_available_model(self) -> None:
         models = [
@@ -258,7 +259,7 @@ class ModelResolutionTests(unittest.TestCase):
 
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0].id, "anthropic/claude-mythos-5.1")
-        self.assertTrue(all(model.group == "Claude Mythos 5" for model in grouped))
+        self.assertTrue(all(model.group == "Claude" for model in grouped))
 
     def test_group_models_dynamic_gpt_minor_family(self) -> None:
         models = [
@@ -271,9 +272,9 @@ class ModelResolutionTests(unittest.TestCase):
 
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0].id, "gpt-5.5-mini")
-        self.assertTrue(all(model.group == "GPT-5.5" for model in grouped))
+        self.assertTrue(all(model.group == "GPT" for model in grouped))
 
-    def test_group_models_openrouter_without_metadata_uses_default_group(self) -> None:
+    def test_group_models_openrouter_without_metadata_uses_general_family(self) -> None:
         models = [
             LLMModel(id="openai/gpt-5.5", name="GPT-5.5", created=100),
             LLMModel(id="openai/gpt-5.5-mini", name="GPT-5.5 Mini", created=200),
@@ -284,7 +285,352 @@ class ModelResolutionTests(unittest.TestCase):
 
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0].id, "openai/gpt-5.5-mini")
-        self.assertTrue(all(model.group == "Other Openrouter" for model in grouped))
+        self.assertTrue(all(model.group == "GPT" for model in grouped))
+
+    def test_openrouter_hierarchy_uses_live_api_metadata_shape(self) -> None:
+        metadata: dict[str, object] = {
+            "id": "google/gemini-3.1-flash-lite",
+            "name": "Google: Gemini 3.1 Flash Lite",
+            "canonical_slug": "google/gemini-3.1-flash-lite-20260507",
+            "created": 1778168828,
+            "architecture": {"tokenizer": "Gemini"},
+        }
+
+        self.assertEqual(
+            resolve_model_provider_label(
+                "google/gemini-3.1-flash-lite",
+                "Google: Gemini 3.1 Flash Lite",
+                provider="openrouter",
+                metadata=metadata,
+            ),
+            "Google",
+        )
+        self.assertEqual(
+            resolve_model_family_label(
+                "google/gemini-3.1-flash-lite",
+                "Google: Gemini 3.1 Flash Lite",
+                provider="openrouter",
+                metadata=metadata,
+            ),
+            "Gemini 3",
+        )
+        self.assertEqual(
+            clean_model_display_name(
+                "Google: Gemini 3.1 Flash Lite",
+                provider_label="Google",
+                family_label="Gemini 3",
+            ),
+            "Gemini 3.1 Flash Lite",
+        )
+
+    def test_openrouter_openai_o_models_use_single_o_series_family(self) -> None:
+        metadata: dict[str, object] = {
+            "id": "openai/o3-pro",
+            "name": "OpenAI: o3 Pro",
+            "canonical_slug": "openai/o3-pro-2025-06-10",
+            "architecture": {"tokenizer": "GPT"},
+        }
+
+        with mock.patch.dict(
+            model_limits._model_family_labels_cache,
+            {"openai/o3-pro": "o-pro"},
+            clear=True,
+        ):
+            self.assertEqual(
+                resolve_model_family_label(
+                    "openai/o3-pro",
+                    "OpenAI: o3 Pro",
+                    provider="openrouter",
+                    metadata=metadata,
+                ),
+                "O-Series",
+            )
+
+    def test_openrouter_openai_gpt_oss_family_is_all_caps(self) -> None:
+        metadata: dict[str, object] = {
+            "id": "openai/gpt-oss-20b",
+            "name": "OpenAI: gpt-oss-20b",
+            "canonical_slug": "openai/gpt-oss-20b",
+            "architecture": {"tokenizer": "GPT"},
+        }
+
+        with mock.patch.dict(
+            model_limits._model_family_labels_cache,
+            {"openai/gpt-oss-20b": "gpt-oss"},
+            clear=True,
+        ):
+            self.assertEqual(
+                resolve_model_family_label(
+                    "openai/gpt-oss-20b",
+                    "OpenAI: gpt-oss-20b",
+                    provider="openrouter",
+                    metadata=metadata,
+                ),
+                "GPT OSS",
+            )
+
+    def test_openrouter_openai_codex_overrides_cached_gpt_family(self) -> None:
+        metadata: dict[str, object] = {
+            "id": "openai/gpt-5.3-codex",
+            "name": "OpenAI: GPT-5.3-Codex",
+            "canonical_slug": "openai/gpt-5.3-codex-20260224",
+            "architecture": {"tokenizer": "GPT"},
+        }
+
+        with mock.patch.dict(
+            model_limits._model_family_labels_cache,
+            {"openai/gpt-5.3-codex": "gpt"},
+            clear=True,
+        ):
+            self.assertEqual(
+                resolve_model_family_label(
+                    "openai/gpt-5.3-codex",
+                    "OpenAI: GPT-5.3-Codex",
+                    provider="openrouter",
+                    metadata=metadata,
+                ),
+                "Codex",
+            )
+
+    def test_model_variant_label_groups_gpt_date_aliases(self) -> None:
+        self.assertEqual(
+            clean_model_variant_label(
+                "gpt-5.4-mini-2026-03-17",
+                model_id="gpt-5.4-mini-2026-03-17",
+                provider_label="OpenAI",
+                family_label="GPT",
+            ),
+            "5.4 Mini",
+        )
+
+    def test_model_variant_label_groups_codex_versions(self) -> None:
+        self.assertEqual(
+            clean_model_variant_label(
+                "gpt-5.1-codex-mini",
+                model_id="gpt-5.1-codex-mini",
+                provider_label="OpenAI",
+                family_label="Codex",
+            ),
+            "5.1 Mini",
+        )
+
+    def test_model_variant_label_groups_openrouter_codex_versions(self) -> None:
+        self.assertEqual(
+            clean_model_variant_label(
+                "OpenAI: GPT-5.3-Codex",
+                model_id="openai/gpt-5.3-codex",
+                provider_label="OpenAI",
+                family_label="Codex",
+            ),
+            "5.3",
+        )
+
+    def test_repeated_openrouter_patterns_get_specific_families(self) -> None:
+        cases = [
+            (
+                "bytedance-seed/seed-2.0-lite",
+                "ByteDance Seed: Seed-2.0-Lite",
+                "Seed",
+            ),
+            (
+                "baidu/qianfan-ocr-fast:free",
+                "Baidu: Qianfan-OCR-Fast (free)",
+                "Qianfan",
+            ),
+            (
+                "liquid/lfm-2.5-1.2b-thinking:free",
+                "LiquidAI: LFM2.5-1.2B-Thinking (free)",
+                "LFM",
+            ),
+            (
+                "poolside/laguna-xs.2:free",
+                "Poolside: Laguna XS.2 (free)",
+                "Laguna",
+            ),
+            (
+                "rekaai/reka-flash-3",
+                "Reka Flash 3",
+                "Reka",
+            ),
+            (
+                "relace/relace-search",
+                "Relace: Relace Search",
+                "Relace",
+            ),
+            (
+                "ibm-granite/granite-4.1-8b",
+                "IBM: Granite 4.1 8B",
+                "Granite",
+            ),
+            (
+                "xiaomi/mimo-v2.5-pro",
+                "Xiaomi: MiMo-V2.5-Pro",
+                "MiMo",
+            ),
+        ]
+
+        for model_id, name, expected_family in cases:
+            with self.subTest(model_id=model_id):
+                self.assertEqual(
+                    resolve_model_family_label(model_id, name, provider="openrouter"),
+                    expected_family,
+                )
+
+    def test_high_confidence_patterns_override_generic_cached_family(self) -> None:
+        with mock.patch.dict(
+            model_limits._model_family_labels_cache,
+            {
+                "inflection/inflection-3-pi": "gpt",
+                "liquid/lfm-2-24b-a2b": "liquid",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                resolve_model_family_label(
+                    "inflection/inflection-3-pi",
+                    "Inflection: Inflection 3 Pi",
+                    provider="openrouter",
+                ),
+                "Inflection",
+            )
+            self.assertEqual(
+                resolve_model_family_label(
+                    "liquid/lfm-2-24b-a2b",
+                    "LiquidAI: LFM2-24B-A2B",
+                    provider="openrouter",
+                ),
+                "LFM",
+            )
+
+    def test_lfm_family_prefix_strips_when_followed_by_version_digit(self) -> None:
+        self.assertEqual(
+            resolve_model_provider_label(
+                "liquid/lfm-2-24b-a2b",
+                "LiquidAI: LFM2-24B-A2B",
+                provider="openrouter",
+            ),
+            "LiquidAI",
+        )
+        self.assertEqual(
+            clean_model_display_name(
+                "LiquidAI: LFM2-24B-A2B",
+                provider_label="LiquidAI",
+                family_label="LFM",
+            ),
+            "2-24B-A2B",
+        )
+
+    def test_provider_label_does_not_fuzzy_match_host_catalogs(self) -> None:
+        with mock.patch.dict(
+            model_limits._model_provider_labels_cache,
+            {"claude-haiku-4.5": "Vercel"},
+            clear=True,
+        ):
+            self.assertEqual(
+                resolve_model_provider_label(
+                    "claude-haiku-4.5",
+                    "Claude Haiku 4.5",
+                    provider="anthropic",
+                ),
+                "Anthropic",
+            )
+            self.assertEqual(
+                resolve_model_provider_label(
+                    "anthropic/claude-haiku-4.5",
+                    "Anthropic: Claude Haiku 4.5",
+                    provider="openrouter",
+                ),
+                "Anthropic",
+            )
+
+    def test_mistral_small_latest_uses_provider_freshness(self) -> None:
+        models = [
+            AvailableModel(
+                id="mistralai/mistral-small-3.2-24b-instruct",
+                name="Mistral: Mistral Small 3.2 24B",
+                provider="openrouter",
+                created=1750443016,
+            ),
+            AvailableModel(
+                id="mistralai/mistral-small-2603",
+                name="Mistral: Mistral Small 4",
+                provider="openrouter",
+                created=1773695685,
+            ),
+        ]
+
+        grouped = _assign_model_groups(models)
+        latest = [model for model in grouped if model.is_latest]
+
+        self.assertEqual(len(latest), 1)
+        self.assertEqual(latest[0].id, "mistralai/mistral-small-2603")
+        self.assertTrue(all(model.group == "Mistral Small" for model in grouped))
+        self.assertEqual(latest[0].display_name, "4")
+        latest_rank = get_model_freshness_rank(latest[0].id, latest[0].created)
+        comparison_model = next(model for model in grouped if model.id != latest[0].id)
+        comparison_rank = get_model_freshness_rank(
+            comparison_model.id,
+            comparison_model.created,
+        )
+        assert latest_rank is not None
+        assert comparison_rank is not None
+        self.assertGreater(latest_rank, comparison_rank)
+
+    def test_latest_is_not_inferred_without_freshness(self) -> None:
+        models = [
+            LLMModel(id="openai/gpt-6", name="GPT-6"),
+            LLMModel(id="openai/gpt-6.1", name="GPT-6.1"),
+        ]
+
+        with mock.patch.dict(model_limits._model_freshness_cache, {}, clear=True):
+            grouped = _group_models(models, "openrouter")
+
+        self.assertEqual([model for model in grouped if model.is_latest], [])
+        self.assertTrue(all(model.group == "GPT" for model in grouped))
+
+    def test_latest_is_not_marked_for_ambiguous_freshness(self) -> None:
+        models = [
+            AvailableModel(
+                id="anthropic/claude-haiku-4.5",
+                name="Anthropic: Claude Haiku 4.5",
+                provider="openrouter",
+                created=200,
+            ),
+            AvailableModel(
+                id="anthropic/claude-haiku-4.5-fast",
+                name="Anthropic: Claude Haiku 4.5 Fast",
+                provider="openrouter",
+                created=200,
+            ),
+        ]
+
+        grouped = _assign_model_groups(models)
+
+        self.assertEqual([model for model in grouped if model.is_latest], [])
+
+    def test_latest_is_scoped_by_model_provider(self) -> None:
+        models = [
+            AvailableModel(
+                id="anthropic/claude-haiku-4.5",
+                name="Anthropic: Claude Haiku 4.5",
+                provider="openrouter",
+                created=100,
+            ),
+            AvailableModel(
+                id="vercel/claude-haiku-4.5",
+                name="Vercel: Claude Haiku 4.5",
+                provider="openrouter",
+                created=200,
+            ),
+        ]
+
+        grouped = _assign_model_groups(models)
+        latest_ids = {model.id for model in grouped if model.is_latest}
+
+        self.assertEqual(
+            latest_ids,
+            {"anthropic/claude-haiku-4.5", "vercel/claude-haiku-4.5"},
+        )
 
     def test_openrouter_family_uses_structured_tokenizer_metadata(self) -> None:
         self.assertEqual(
@@ -314,7 +660,7 @@ class ModelResolutionTests(unittest.TestCase):
 
         grouped = _group_models(models, "openrouter")
 
-        self.assertEqual(grouped[0].group, "Mistral")
+        self.assertEqual(grouped[0].group, "Mistral Medium")
         self.assertTrue(grouped[0].is_latest)
 
     def test_openrouter_limits_use_structured_api_fields(self) -> None:
@@ -353,8 +699,8 @@ class ModelResolutionTests(unittest.TestCase):
         grouped = _group_models(models, "openai")
         groups = {model.id: model.group for model in grouped}
 
-        self.assertEqual(groups["gpt-6"], "GPT-6")
-        self.assertEqual(groups["gpt-6.0-mini"], "GPT-6.0")
+        self.assertEqual(groups["gpt-6"], "GPT")
+        self.assertEqual(groups["gpt-6.0-mini"], "GPT")
 
     def test_group_models_dynamic_gemini_family(self) -> None:
         models = [

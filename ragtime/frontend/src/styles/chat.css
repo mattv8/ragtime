@@ -905,7 +905,7 @@ textarea.chat-header-title-input {
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  padding: 8px 12px;
+  padding: 8px 6px 8px 8px;
   background: transparent;
   border: none;
   color: var(--color-text-primary);
@@ -937,23 +937,59 @@ textarea.chat-header-title-input {
   opacity: 0.6;
   flex-shrink: 0;
   margin-left: var(--space-sm);
+  margin-right: 0;
 }
-/* No rotation - chevron always points right for breadcrumb-style navigation */
+.model-selector-item.has-left-submenu {
+  flex-direction: row-reverse;
+}
+.model-selector-item.has-left-submenu .model-selector-item-name {
+  text-align: right;
+}
+.model-selector-item.has-left-submenu .model-selector-expand-indicator {
+  margin-left: 0;
+  margin-right: var(--space-sm);
+}
+.model-selector-item.has-right-submenu .model-selector-expand-indicator {
+  margin-left: var(--space-sm);
+  margin-right: 0;
+}
 .model-selector-submenu {
   position: fixed;
   /* top/left set dynamically via inline style */
   width: max-content;
-  max-height: 350px;
-  overflow-y: auto;
+  overflow: visible; /* allow ::before bridge to extend outside bounds */
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   z-index: 10000;
 }
+/* Transparent bridge that covers the gap between the parent menu and this
+   submenu. Keeps the mouse "inside" a menu element while crossing the gap,
+   preventing spurious mouseleave events from collapsing the submenu. */
+.model-selector-submenu::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -6px; /* wider than SUBMENU_GAP (2px) to be safe */
+  width: 6px;
+  height: 100%;
+  pointer-events: auto;
+}
+.model-selector-submenu.opens-left::before {
+  left: auto;
+  right: -6px;
+}
+/* Inner wrapper handles the actual scrolling so overflow:visible on the outer
+   element doesn't suppress scroll. */
+.model-selector-submenu-inner {
+  max-height: 350px;
+  overflow-y: auto;
+  border-radius: inherit;
+}
 .model-selector-subitem {
   font-size: var(--text-xs);
-  padding: 6px 12px;
+  padding: 6px 6px 6px 8px;
 }
 /* When the submenu opens to the left (because it would clip the viewport),
    reverse the row so the model name (right-aligned) sits adjacent to the
@@ -964,6 +1000,10 @@ textarea.chat-header-title-input {
 .model-selector-submenu.opens-left .model-selector-item-name {
   text-align: right;
 }
+.model-selector-submenu.opens-left .model-selector-expand-indicator {
+  margin-left: 0;
+  margin-right: var(--space-sm);
+}
 .model-selector-submenu.opens-left .model-selector-latest-badge {
   margin-left: 0;
   margin-right: var(--space-sm);
@@ -973,6 +1013,21 @@ textarea.chat-header-title-input {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+.model-selector-item-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.model-selector-item-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 400;
 }
 .model-selector-latest-badge {
   font-size: 10px;

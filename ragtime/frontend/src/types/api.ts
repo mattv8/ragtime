@@ -938,6 +938,12 @@ export interface LLMModel {
   name: string;
   created?: number;
   group?: string;
+  model_provider?: string;
+  model_provider_label?: string;
+  model_family?: string;
+  display_name?: string;
+  model_variant?: string;
+  freshness_rank?: number;
   is_latest?: boolean;
   max_output_tokens?: number;
   context_limit?: number;
@@ -3337,6 +3343,12 @@ export interface AvailableModel {
   context_limit: number;  // Max context window tokens
   max_output_tokens?: number;  // Max output tokens for this model
   group?: string;  // Optional group for UI organization
+  model_provider?: string;
+  model_provider_label?: string;
+  model_family?: string;
+  display_name?: string;
+  model_variant?: string;
+  freshness_rank?: number;
   is_latest?: boolean; // Whether this model is considered the latest in its group
   capabilities?: string[];
   supported_endpoints?: string[];
