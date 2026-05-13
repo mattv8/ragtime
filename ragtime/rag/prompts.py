@@ -790,6 +790,10 @@ _CHAT_DIAGNOSTICS_WEB_SEARCH_PROMPT_ADDITION = """- web_search: Search the web v
 """
 
 
+_CHAT_DIAGNOSTICS_WEB_READ_PDF_PROMPT_ADDITION = """- web_read_pdf: Fetch a single PDF URL and extract targeted text. Use after web_search identifies a PDF. Provide query for matching snippets, or start_char/max_chars to page through the extracted text without flooding context.
+"""
+
+
 _CHAT_DIAGNOSTICS_WEB_BROWSE_PROMPT_ADDITION = """- web_browse: Browse a single absolute http/https URL through a headless Playwright browser. Returns the page title, visible text (truncated), and a small set of top links.
 """
 
@@ -804,6 +808,7 @@ def build_chat_diagnostics_prompt_addition(
     include_terminal: bool = True,
     include_web_search: bool = True,
     include_web_browse: bool = True,
+    include_web_read_pdf: bool = True,
 ) -> str:
     """Prompt addition describing enabled chat-only diagnostic tools."""
     fragments: list[str] = []
@@ -811,6 +816,8 @@ def build_chat_diagnostics_prompt_addition(
         fragments.append(_CHAT_DIAGNOSTICS_TERMINAL_PROMPT_ADDITION)
     if include_web_search:
         fragments.append(_CHAT_DIAGNOSTICS_WEB_SEARCH_PROMPT_ADDITION)
+    if include_web_read_pdf:
+        fragments.append(_CHAT_DIAGNOSTICS_WEB_READ_PDF_PROMPT_ADDITION)
     if include_web_browse:
         fragments.append(_CHAT_DIAGNOSTICS_WEB_BROWSE_PROMPT_ADDITION)
     if not fragments:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import html
+import io
 import json
 import os
 import re
@@ -29,6 +31,9 @@ from runtime.manager.models import (
     RuntimeExternalBrowseRequest,
     RuntimeExternalBrowseResponse,
     RuntimeFileReadResponse,
+    RuntimePdfReadMatch,
+    RuntimePdfReadRequest,
+    RuntimePdfReadResponse,
     RuntimeScreenshotRequest,
     RuntimeScreenshotResponse,
     RuntimeWorkspaceFileInfo,
@@ -107,6 +112,14 @@ _WORKSPACE_BOOTSTRAP_GUIDANCE = (
 _NPM_DEBUG_LOG_PATH_RE = re.compile(
     r"A complete log of this run can be found in:\s*(?P<path>/[^\s]+)"
 )
+_PDF_CONTENT_TYPES = {
+    "application/pdf",
+    "application/x-pdf",
+    "application/acrobat",
+    "applications/vnd.pdf",
+    "text/pdf",
+    "text/x-pdf",
+}
 
 # Maps runtime-entrypoint framework names to pip packages that should be
 # auto-installed before the devserver starts.  pip is invoked with
@@ -2813,6 +2826,337 @@ class WorkerService:
             timeout_ms=int(payload.timeout_ms),
         )
         return self._build_external_browse_response(probe, payload)
+
+    @staticmethod
+    def _is_pdf_content_type(value: str) -> bool:
+        content_type = (value or "").split(";", 1)[0].strip().lower()
+        return content_type in _PDF_CONTENT_TYPES or content_type.endswith("+pdf")
+
+    @staticmethod
+    def _compact_pdf_text(value: str) -> str:
+        lines = [line.rstrip() for line in str(value or "").splitlines()]
+        compacted: list[str] = []
+        blank_pending = False
+        for line in lines:
+            if line.strip():
+                if blank_pending and compacted:
+                    compacted.append("")
+                compacted.append(line)
+                blank_pending = False
+            else:
+                blank_pending = True
+        return "\n".join(compacted).strip()
+
+    @staticmethod
+    def _compact_response_preview(value: str) -> str:
+        text = html.unescape(str(value or ""))
+        text = re.sub(r"(?is)<(script|style).*?</\1>", " ", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        return " ".join(text.split())[:500]
+
+    @classmethod
+    async def _response_text_preview(
+        cls,
+        response: httpx.Response,
+        *,
+        max_bytes: int = 4096,
+    ) -> str:
+        content = bytearray()
+        async for chunk in response.aiter_bytes():
+            if not chunk:
+                continue
+            remaining = max_bytes - len(content)
+            if remaining <= 0:
+                break
+            content.extend(chunk[:remaining])
+            if len(content) >= max_bytes:
+                break
+        if not content:
+            return ""
+        encoding = response.encoding or "utf-8"
+        try:
+            decoded = bytes(content).decode(encoding, errors="replace")
+        except LookupError:
+            decoded = bytes(content).decode("utf-8", errors="replace")
+        return cls._compact_response_preview(decoded)
+
+    @staticmethod
+    def _pdf_http_error_message(status_code: int, body_preview: str) -> str:
+        if status_code in {401, 403}:
+            base = f"Upstream server denied PDF request with HTTP {status_code}"
+        elif status_code == 404:
+            base = "Upstream PDF URL was not found (HTTP 404)"
+        else:
+            base = f"Upstream PDF request failed with HTTP {status_code}"
+        if body_preview:
+            return f"{base}: {body_preview[:220]}"
+        return base
+
+    @staticmethod
+    def _slice_pdf_text(text: str, *, start_char: int, max_chars: int) -> dict[str, Any]:
+        text_length = len(text)
+        bounded_start = max(0, min(int(start_char), text_length))
+        end_char = min(text_length, bounded_start + max_chars)
+        return {
+            "text": text[bounded_start:end_char],
+            "text_start_char": bounded_start,
+            "text_end_char": end_char,
+            "text_length": text_length,
+            "truncated": end_char < text_length,
+        }
+
+    @staticmethod
+    def _build_pdf_query_matches(
+        text: str,
+        *,
+        query: str,
+        max_matches: int,
+        max_chars: int,
+    ) -> list[RuntimePdfReadMatch]:
+        cleaned_query = " ".join(str(query or "").split())
+        if not cleaned_query:
+            return []
+        patterns = [re.compile(re.escape(cleaned_query), re.IGNORECASE)]
+        terms = [term for term in re.split(r"\W+", cleaned_query) if len(term) >= 3]
+        if len(terms) > 1:
+            patterns.append(
+                re.compile("|".join(re.escape(term) for term in terms), re.IGNORECASE)
+            )
+
+        found: list[re.Match[str]] = []
+        seen_starts: set[int] = set()
+        for pattern in patterns:
+            for match in pattern.finditer(text):
+                if match.start() in seen_starts:
+                    continue
+                seen_starts.add(match.start())
+                found.append(match)
+                if len(found) >= max_matches:
+                    break
+            if found:
+                break
+        if not found:
+            return []
+
+        per_match_budget = max(200, max_chars // max(1, len(found)))
+        context_chars = max(80, min(1200, per_match_budget // 2))
+        matches: list[RuntimePdfReadMatch] = []
+        for match in found[:max_matches]:
+            snippet_start = max(0, match.start() - context_chars)
+            snippet_end = min(len(text), match.end() + context_chars)
+            matches.append(
+                RuntimePdfReadMatch(
+                    match_start_char=match.start(),
+                    match_end_char=match.end(),
+                    snippet_start_char=snippet_start,
+                    snippet_end_char=snippet_end,
+                    text=text[snippet_start:snippet_end],
+                )
+            )
+        return matches
+
+    @staticmethod
+    def _extract_pdf_text(content: bytes) -> str:
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            raise RuntimeError("Runtime PDF extraction dependency pypdf is not installed")
+
+        reader = PdfReader(io.BytesIO(content))
+        text_parts: list[str] = []
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text_parts.append(page_text)
+        return "\n\n".join(text_parts)
+
+    async def read_pdf(
+        self,
+        payload: RuntimePdfReadRequest,
+        worker_session_id: str | None = None,
+    ) -> RuntimePdfReadResponse:
+        if worker_session_id:
+            async with self._lock:
+                session = self._sessions.get(worker_session_id)
+                if not session:
+                    raise HTTPException(
+                        status_code=404, detail="Worker session not found"
+                    )
+                if session.state not in {"running", "starting"}:
+                    raise HTTPException(
+                        status_code=409, detail="Worker session not active"
+                    )
+                session.updated_at = self._utc_now()
+
+        headers = {
+            "Accept": "application/pdf,application/octet-stream;q=0.8,*/*;q=0.2",
+            "User-Agent": str(payload.user_agent or "Ragtime web_read_pdf"),
+        }
+        timeout = httpx.Timeout(max(10.0, min(60.0, int(payload.max_bytes) / 512_000)))
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                async with client.stream("GET", payload.url, headers=headers) as response:
+                    content_type = response.headers.get("content-type") or ""
+                    content_length = response.headers.get("content-length") or ""
+                    final_url = str(response.url)
+                    if response.status_code >= 400:
+                        body_preview = await self._response_text_preview(response)
+                        return RuntimePdfReadResponse(
+                            status="error",
+                            ok=False,
+                            requested_url=payload.url,
+                            url=final_url,
+                            status_code=response.status_code,
+                            content_type=content_type,
+                            byte_limit=int(payload.max_bytes),
+                            failure_mode="upstream_http_error",
+                            body_preview=body_preview,
+                            error=self._pdf_http_error_message(
+                                response.status_code,
+                                body_preview,
+                            ),
+                        )
+
+                    try:
+                        declared_length = int(content_length)
+                    except (TypeError, ValueError):
+                        declared_length = 0
+                    if declared_length > int(payload.max_bytes):
+                        return RuntimePdfReadResponse(
+                            status="too_large",
+                            ok=False,
+                            requested_url=payload.url,
+                            url=final_url,
+                            status_code=response.status_code,
+                            content_type=content_type,
+                            byte_limit=int(payload.max_bytes),
+                            declared_bytes=declared_length,
+                            failure_mode="pdf_too_large",
+                            error="PDF exceeds web_read_pdf byte limit",
+                        )
+
+                    content = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if not chunk:
+                            continue
+                        content.extend(chunk)
+                        if len(content) > int(payload.max_bytes):
+                            return RuntimePdfReadResponse(
+                                status="too_large",
+                                ok=False,
+                                requested_url=payload.url,
+                                url=final_url,
+                                status_code=response.status_code,
+                                content_type=content_type,
+                                byte_limit=int(payload.max_bytes),
+                                downloaded_bytes=len(content),
+                                failure_mode="pdf_too_large",
+                                error="PDF exceeds web_read_pdf byte limit",
+                            )
+        except Exception as exc:
+            return RuntimePdfReadResponse(
+                status="error",
+                ok=False,
+                requested_url=payload.url,
+                url=payload.url,
+                byte_limit=int(payload.max_bytes),
+                failure_mode="request_error",
+                error=f"PDF request failed ({exc.__class__.__name__}): {str(exc)[:200]}",
+            )
+
+        content_bytes = bytes(content)
+        has_pdf_magic = content_bytes.lstrip()[:5] == b"%PDF-"
+        if not has_pdf_magic and not self._is_pdf_content_type(content_type):
+            return RuntimePdfReadResponse(
+                status="not_pdf",
+                ok=False,
+                requested_url=payload.url,
+                url=final_url,
+                status_code=response.status_code,
+                content_type=content_type,
+                byte_count=len(content_bytes),
+                byte_limit=int(payload.max_bytes),
+                failure_mode="not_pdf",
+                error="URL did not return PDF content",
+            )
+
+        try:
+            text = self._compact_pdf_text(
+                await asyncio.to_thread(self._extract_pdf_text, content_bytes)
+            )
+        except Exception as exc:
+            return RuntimePdfReadResponse(
+                status="error",
+                ok=False,
+                requested_url=payload.url,
+                url=final_url,
+                status_code=response.status_code,
+                content_type=content_type,
+                byte_count=len(content_bytes),
+                byte_limit=int(payload.max_bytes),
+                failure_mode="pdf_extract_error",
+                error=f"PDF extraction failed ({exc.__class__.__name__}): {str(exc)[:200]}",
+            )
+
+        if not text:
+            return RuntimePdfReadResponse(
+                status="empty",
+                ok=False,
+                requested_url=payload.url,
+                url=final_url,
+                status_code=response.status_code,
+                content_type=content_type,
+                byte_count=len(content_bytes),
+                byte_limit=int(payload.max_bytes),
+                failure_mode="empty_pdf_text",
+                error="No text could be extracted from PDF",
+            )
+
+        query = " ".join(str(payload.query or "").split())
+        if query:
+            matches = self._build_pdf_query_matches(
+                text,
+                query=query,
+                max_matches=int(payload.max_matches),
+                max_chars=int(payload.max_chars),
+            )
+            joined = "\n\n---\n\n".join(match.text for match in matches)
+            returned_text = joined[: int(payload.max_chars)]
+            return RuntimePdfReadResponse(
+                status="ok",
+                ok=True,
+                requested_url=payload.url,
+                url=final_url,
+                status_code=response.status_code,
+                content_type=content_type,
+                byte_count=len(content_bytes),
+                byte_limit=int(payload.max_bytes),
+                text=returned_text,
+                text_length=len(text),
+                truncated=len(joined) > int(payload.max_chars),
+                query=query,
+                max_chars=int(payload.max_chars),
+                matches=matches,
+                match_count=len(matches),
+            )
+
+        sliced = self._slice_pdf_text(
+            text,
+            start_char=int(payload.start_char),
+            max_chars=int(payload.max_chars),
+        )
+        return RuntimePdfReadResponse(
+            status="ok",
+            ok=True,
+            requested_url=payload.url,
+            url=final_url,
+            status_code=response.status_code,
+            content_type=content_type,
+            byte_count=len(content_bytes),
+            byte_limit=int(payload.max_bytes),
+            max_chars=int(payload.max_chars),
+            **sliced,
+        )
 
     async def build_preview_upstream_url(
         self,

@@ -217,10 +217,7 @@ export function ToolSelectorDropdown({
         onChange={() => onToggleBuiltInTool?.(tool.id)}
         disabled={saving || readOnly || disabled || !onToggleBuiltInTool}
       />
-      <span>
-        <strong>{tool.name}</strong>
-        <small className="userspace-muted">Built-in</small>
-      </span>
+      <span>{tool.name}</span>
     </label>
   );
 

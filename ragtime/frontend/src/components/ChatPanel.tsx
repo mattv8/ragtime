@@ -60,6 +60,12 @@ const CHAT_BUILT_IN_TOOLS: UserSpaceAvailableTool[] = [
     description: 'Search the web from a chat sandbox.',
   },
   {
+    id: 'web_read_pdf',
+    name: 'Read PDF',
+    tool_type: 'built-in',
+    description: 'Extract targeted text from a web PDF.',
+  },
+  {
     id: 'web_browse',
     name: 'Web browse',
     tool_type: 'built-in',
@@ -69,7 +75,7 @@ const CHAT_BUILT_IN_TOOLS: UserSpaceAvailableTool[] = [
 
 const CHAT_BUILT_IN_TOOL_IDS = CHAT_BUILT_IN_TOOLS.map((tool) => tool.id);
 const CHAT_BUILT_IN_TOOL_ID_SET = new Set(CHAT_BUILT_IN_TOOL_IDS);
-const WORKSPACE_BUILT_IN_TOOL_ID_SET = new Set(['web_search', 'web_browse']);
+const WORKSPACE_BUILT_IN_TOOL_ID_SET = new Set(['web_search', 'web_read_pdf', 'web_browse']);
 const WORKSPACE_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter((tool) => WORKSPACE_BUILT_IN_TOOL_ID_SET.has(tool.id));
 
 interface CodeBlockProps {

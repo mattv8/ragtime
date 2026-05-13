@@ -39,6 +39,7 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     normalize_userspace_preview_sandbox_flags,
 )
+from ragtime.indexer.chat_events import with_event_channel
 from ragtime.indexer.models import (
     SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
     AppSettings,
@@ -64,7 +65,6 @@ from ragtime.indexer.models import (
     VectorStoreType,
 )
 from ragtime.indexer.models import ModelProviderPrecedence
-from ragtime.indexer.chat_events import with_event_channel
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.utils import safe_tool_name

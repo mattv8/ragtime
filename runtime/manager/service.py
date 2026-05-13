@@ -19,6 +19,8 @@ from runtime.manager.models import (
     RuntimeExternalBrowseRequest,
     RuntimeExternalBrowseResponse,
     RuntimeFileReadResponse,
+    RuntimePdfReadRequest,
+    RuntimePdfReadResponse,
     RuntimePtyUrlResponse,
     RuntimeScreenshotRequest,
     RuntimeScreenshotResponse,
@@ -627,6 +629,35 @@ class SessionManager:
                 worker_session_id=session.worker_session_id,
             ),
             timeout=max(self._worker_call_timeout, int(payload.timeout_ms / 1000) + 5),
+        )
+
+    async def read_pdf(
+        self,
+        payload: RuntimePdfReadRequest,
+    ) -> RuntimePdfReadResponse:
+        method = getattr(self._worker_service, "read_pdf", None)
+        if method is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Runtime PDF read capability not available",
+            )
+        return await asyncio.wait_for(
+            method(payload),
+            timeout=max(self._worker_call_timeout, 30),
+        )
+
+    async def read_pdf_for_session(
+        self,
+        provider_session_id: str,
+        payload: RuntimePdfReadRequest,
+    ) -> RuntimePdfReadResponse:
+        session = self._get_session_or_raise(provider_session_id)
+        return await asyncio.wait_for(
+            self._worker_service.read_pdf(
+                payload,
+                worker_session_id=session.worker_session_id,
+            ),
+            timeout=max(self._worker_call_timeout, 30),
         )
 
     async def list_workspace_files(

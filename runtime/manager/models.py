@@ -359,6 +359,77 @@ class RuntimeExternalBrowseResponse(BaseModel):
     )
 
 
+class RuntimePdfReadRequest(BaseModel):
+    url: str = Field(description="Absolute http/https URL of the PDF to fetch")
+    start_char: int = Field(
+        default=0,
+        ge=0,
+        description="Character offset into extracted text for range reads",
+    )
+    max_chars: int = Field(
+        default=8000,
+        ge=1,
+        le=50000,
+        description="Maximum extracted text characters to return",
+    )
+    query: str = Field(
+        default="",
+        description="Optional phrase or terms to locate inside the extracted PDF text",
+    )
+    max_matches: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum query-centered snippets to return when query is set",
+    )
+    max_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=256 * 1024,
+        le=50 * 1024 * 1024,
+        description="Maximum PDF bytes to download before aborting",
+    )
+    user_agent: str = Field(
+        default="",
+        description="Optional User-Agent override; empty uses runtime default",
+    )
+
+
+class RuntimePdfReadMatch(BaseModel):
+    match_start_char: int = Field(description="Match start character offset")
+    match_end_char: int = Field(description="Match end character offset")
+    snippet_start_char: int = Field(description="Snippet start character offset")
+    snippet_end_char: int = Field(description="Snippet end character offset")
+    text: str = Field(description="Snippet text")
+
+
+class RuntimePdfReadResponse(BaseModel):
+    status: str = Field(description="ok, error, too_large, not_pdf, empty, or skipped")
+    ok: bool = Field(default=False, description="Whether PDF text was extracted")
+    url: str = Field(description="Final URL after redirects")
+    requested_url: str = Field(description="Originally requested URL")
+    status_code: int | None = Field(default=None, description="Upstream HTTP status")
+    content_type: str = Field(default="", description="Upstream content type")
+    byte_count: int = Field(default=0, description="Downloaded PDF byte count")
+    byte_limit: int = Field(default=0, description="Configured byte limit")
+    declared_bytes: int | None = Field(default=None, description="Content-Length when provided")
+    downloaded_bytes: int | None = Field(default=None, description="Bytes downloaded before aborting")
+    failure_mode: str = Field(default="", description="Machine-readable failure class")
+    error: str = Field(default="", description="Human-readable failure explanation")
+    body_preview: str = Field(default="", description="Sanitized upstream response preview")
+    text: str = Field(default="", description="Returned PDF text range or query snippets")
+    text_start_char: int | None = Field(default=None, description="Returned range start")
+    text_end_char: int | None = Field(default=None, description="Returned range end")
+    text_length: int = Field(default=0, description="Full extracted text length")
+    truncated: bool = Field(default=False, description="Whether more text remains")
+    query: str = Field(default="", description="Normalized query used for snippets")
+    max_chars: int = Field(default=0, description="Effective text character cap")
+    matches: list[RuntimePdfReadMatch] = Field(
+        default_factory=list,
+        description="Query-centered matches when query is set",
+    )
+    match_count: int = Field(default=0, description="Number of returned matches")
+
+
 class RuntimeWorkspaceFileInfo(BaseModel):
     path: str = Field(description="Workspace-relative path")
     size_bytes: int = Field(description="Entry size in bytes")

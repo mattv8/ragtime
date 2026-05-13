@@ -26,20 +26,28 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import HTTPException
 
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_BLOCK_PRIVATE_NETWORKS
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_BROWSE_TIMEOUT_MAX_SECONDS
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_ENABLED
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_PDF_READ_DEFAULT_TEXT_CHARS
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_PDF_READ_MAX_TEXT_CHARS
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SEARCH_MAX_RESULTS
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SEARCH_PDF_MAX_BYTES
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SEARCH_PDF_MAX_RESULTS
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SEARXNG_BASE_URL
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SESSION_IDLE_TTL_SECONDS
+from ragtime.chat_runtime.presets import CHAT_WEB_READ_PDF_TOOL_ID
 from ragtime.config import settings
 from ragtime.core.logging import get_logger
 from ragtime.core.runtime_manager_client import runtime_manager_enabled
 from ragtime.core.runtime_manager_client import runtime_manager_request
+from ragtime.core.security import validate_external_url
 
 logger = get_logger(__name__)
 
@@ -108,6 +116,32 @@ class ChatRuntimeService:
             ),
         )
 
+    def _max_search_pdf_results(self) -> int:
+        return max(
+            0,
+            min(
+                self._max_search_results(),
+                int(CHAT_DIAGNOSTICS_SEARCH_PDF_MAX_RESULTS),
+            ),
+        )
+
+    def _max_search_pdf_bytes(self) -> int:
+        return max(256 * 1024, int(CHAT_DIAGNOSTICS_SEARCH_PDF_MAX_BYTES))
+
+    def _default_pdf_read_text_chars(self) -> int:
+        return max(500, int(CHAT_DIAGNOSTICS_PDF_READ_DEFAULT_TEXT_CHARS))
+
+    def _max_pdf_read_text_chars(self) -> int:
+        return max(
+            self._default_pdf_read_text_chars(),
+            int(CHAT_DIAGNOSTICS_PDF_READ_MAX_TEXT_CHARS),
+        )
+
+    def _bound_pdf_read_text_chars(self, max_chars: int | None) -> int:
+        if max_chars is None:
+            return self._default_pdf_read_text_chars()
+        return max(1, min(self._max_pdf_read_text_chars(), int(max_chars)))
+
     @staticmethod
     def _tavily_api_key() -> str:
         return str(getattr(settings, "tavily_api_key", "")).strip()
@@ -115,6 +149,60 @@ class ChatRuntimeService:
     @staticmethod
     def _compact_snippet(value: Any) -> str:
         return " ".join(str(value or "").split())[:280]
+
+    @staticmethod
+    def _is_runtime_session_not_found_error(exc: Exception) -> bool:
+        if not isinstance(exc, HTTPException):
+            return False
+        detail = str(getattr(exc, "detail", "") or "")
+        return "Runtime session not found" in detail and "(404)" in detail
+
+    @staticmethod
+    def _is_pdf_url(value: str) -> bool:
+        try:
+            parsed = urlsplit(value or "")
+        except ValueError:
+            return False
+        path = parsed.path.lower()
+        return path.endswith(".pdf") or "/pdf/" in path or path.endswith("/pdf")
+
+    @classmethod
+    def _is_likely_pdf_result(cls, result: dict[str, Any]) -> bool:
+        url = str(result.get("url") or "")
+        if cls._is_pdf_url(url):
+            return True
+        title = str(result.get("title") or "").lower()
+        snippet = str(result.get("snippet") or result.get("content") or "").lower()
+        return "[pdf]" in title or " pdf " in f" {title} " or "[pdf]" in snippet
+
+    async def _attach_pdf_metadata(
+        self,
+        results: list[dict[str, Any]],
+        *,
+        include_pdf_metadata: bool,
+    ) -> int:
+        if not include_pdf_metadata:
+            return 0
+        max_pdf_results = self._max_search_pdf_results()
+        if max_pdf_results <= 0:
+            return 0
+
+        candidates: list[tuple[int, dict[str, Any]]] = []
+        for idx, result in enumerate(results):
+            if len(candidates) >= max_pdf_results:
+                break
+            if self._is_likely_pdf_result(result):
+                candidates.append((idx, result))
+        if not candidates:
+            return 0
+
+        for idx, _ in candidates:
+            results[idx]["pdf"] = {
+                "status": "available",
+                "read_tool": CHAT_WEB_READ_PDF_TOOL_ID,
+                "max_bytes": self._max_search_pdf_bytes(),
+            }
+        return len(candidates)
 
     @classmethod
     def _normalize_search_result(
@@ -160,6 +248,7 @@ class ChatRuntimeService:
         *,
         query: str,
         max_results: int,
+        include_pdf_metadata: bool,
     ) -> dict[str, Any]:
         base_url = str(CHAT_DIAGNOSTICS_SEARXNG_BASE_URL or "").strip().rstrip("/")
         if not base_url:
@@ -220,6 +309,11 @@ class ChatRuntimeService:
             if normalized is not None:
                 results.append(normalized)
 
+        pdf_result_count = await self._attach_pdf_metadata(
+            results,
+            include_pdf_metadata=include_pdf_metadata,
+        )
+
         answers = data.get("answers") or []
         answer = ""
         if isinstance(answers, list) and answers:
@@ -232,6 +326,7 @@ class ChatRuntimeService:
             "provider": "searxng",
             "results": results,
             "result_count": len(results),
+            "pdf_result_count": pdf_result_count,
             "engine_url": str(response.url),
             "answer": answer,
             "response_time": data.get("search_time"),
@@ -245,6 +340,7 @@ class ChatRuntimeService:
         *,
         query: str,
         max_results: int,
+        include_pdf_metadata: bool,
     ) -> dict[str, Any]:
         api_key = self._tavily_api_key()
         if not api_key:
@@ -312,6 +408,11 @@ class ChatRuntimeService:
             if normalized is not None:
                 results.append(normalized)
 
+        pdf_result_count = await self._attach_pdf_metadata(
+            results,
+            include_pdf_metadata=include_pdf_metadata,
+        )
+
         return {
             "ok": True,
             "blocked": False,
@@ -319,6 +420,7 @@ class ChatRuntimeService:
             "provider": "tavily",
             "results": results,
             "result_count": len(results),
+            "pdf_result_count": pdf_result_count,
             "engine_url": _TAVILY_SEARCH_ENDPOINT,
             "answer": str(data.get("answer") or "").strip(),
             "response_time": data.get("response_time"),
@@ -462,6 +564,57 @@ class ChatRuntimeService:
             self._sessions[conversation_id] = session
             return session
 
+    async def _forget_session_if_current(
+        self,
+        conversation_id: str,
+        provider_session_id: str,
+    ) -> None:
+        async with self._lock:
+            existing = self._sessions.get(conversation_id)
+            if existing and existing.provider_session_id == provider_session_id:
+                self._sessions.pop(conversation_id, None)
+
+    async def _request_with_session_retry(
+        self,
+        *,
+        conversation_id: str,
+        operation_name: str,
+        path_template: str,
+        json_payload: dict[str, Any],
+        timeout_override_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        for attempt in range(2):
+            session = await self._ensure_session(conversation_id)
+            async with session.lock:
+                session.last_used_at = time.monotonic()
+                try:
+                    return await self._request(
+                        "POST",
+                        path_template.format(
+                            provider_session_id=session.provider_session_id
+                        ),
+                        json_payload=json_payload,
+                        timeout_override_seconds=timeout_override_seconds,
+                    )
+                except Exception as exc:
+                    if attempt == 0 and self._is_runtime_session_not_found_error(exc):
+                        await self._forget_session_if_current(
+                            conversation_id,
+                            session.provider_session_id,
+                        )
+                        logger.info(
+                            "chat_runtime evicted stale %s session conv=%s provider=%s",
+                            operation_name,
+                            conversation_id,
+                            session.provider_session_id,
+                        )
+                        continue
+                    raise
+        raise HTTPException(
+            status_code=502,
+            detail=f"Chat diagnostics {operation_name} retry failed",
+        )
+
     async def release_conversation(self, conversation_id: str) -> None:
         """Best-effort release of the diagnostic session for a conversation."""
         async with self._lock:
@@ -491,19 +644,16 @@ class ChatRuntimeService:
     ) -> dict[str, Any]:
         """Execute a (caller-validated) read-only command in the chat sandbox."""
         bounded_timeout = max(1, min(self._command_timeout_max(), int(timeout_seconds)))
-        session = await self._ensure_session(conversation_id)
-        async with session.lock:
-            session.last_used_at = time.monotonic()
-            response = await self._request(
-                "POST",
-                f"/sessions/{session.provider_session_id}/exec",
-                json_payload={
-                    "command": command,
-                    "timeout_seconds": bounded_timeout,
-                },
-                timeout_override_seconds=bounded_timeout + 15.0,
-            )
-        return response
+        return await self._request_with_session_retry(
+            conversation_id=conversation_id,
+            operation_name="exec",
+            path_template="/sessions/{provider_session_id}/exec",
+            json_payload={
+                "command": command,
+                "timeout_seconds": bounded_timeout,
+            },
+            timeout_override_seconds=bounded_timeout + 15.0,
+        )
 
     async def browse_url(
         self,
@@ -535,15 +685,13 @@ class ChatRuntimeService:
             "max_links": max(0, min(100, int(max_links))),
             "user_agent": str(user_agent or ""),
         }
-        session = await self._ensure_session(conversation_id)
-        async with session.lock:
-            session.last_used_at = time.monotonic()
-            return await self._request(
-                "POST",
-                f"/sessions/{session.provider_session_id}/external-browse",
-                json_payload=payload,
-                timeout_override_seconds=bounded_timeout_s + 15.0,
-            )
+        return await self._request_with_session_retry(
+            conversation_id=conversation_id,
+            operation_name="browse",
+            path_template="/sessions/{provider_session_id}/external-browse",
+            json_payload=payload,
+            timeout_override_seconds=bounded_timeout_s + 15.0,
+        )
 
     async def search_web(
         self,
@@ -551,6 +699,7 @@ class ChatRuntimeService:
         conversation_id: str,
         query: str,
         max_results: int | None = None,
+        include_pdf_metadata: bool = True,
     ) -> dict[str, Any]:
         """Run a web search via the configured chat diagnostics provider.
 
@@ -575,10 +724,51 @@ class ChatRuntimeService:
             return await self._search_web_tavily(
                 query=cleaned_query,
                 max_results=cap,
+                include_pdf_metadata=include_pdf_metadata,
             )
         return await self._search_web_searxng(
             query=cleaned_query,
             max_results=cap,
+            include_pdf_metadata=include_pdf_metadata,
+        )
+
+    async def read_pdf_url(
+        self,
+        *,
+        conversation_id: str,
+        url: str,
+        start_char: int = 0,
+        max_chars: int | None = None,
+        query: str = "",
+        max_matches: int = 5,
+    ) -> dict[str, Any]:
+        """Fetch a PDF URL and return a targeted text range or query snippets."""
+        cleaned_url = (url or "").strip()
+        if not cleaned_url:
+            raise HTTPException(status_code=400, detail="PDF URL is empty")
+        ok, error_message = validate_external_url(
+            cleaned_url,
+            allow_private_networks=not CHAT_DIAGNOSTICS_BLOCK_PRIVATE_NETWORKS,
+        )
+        if not ok:
+            return {"status": "skipped", "ok": False, "error": error_message}
+
+        bounded_max_chars = self._bound_pdf_read_text_chars(max_chars)
+        payload = {
+            "url": cleaned_url,
+            "start_char": max(0, int(start_char)),
+            "max_chars": bounded_max_chars,
+            "query": " ".join(str(query or "").split()),
+            "max_matches": max(1, min(20, int(max_matches))),
+            "max_bytes": self._max_search_pdf_bytes(),
+            "user_agent": "Ragtime web_read_pdf",
+        }
+        return await self._request_with_session_retry(
+            conversation_id=conversation_id,
+            operation_name="pdf-read",
+            path_template="/sessions/{provider_session_id}/pdf-read",
+            json_payload=payload,
+            timeout_override_seconds=max(30.0, float(self._browse_timeout_max()) + 20.0),
         )
 
 

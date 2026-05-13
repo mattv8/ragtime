@@ -33,6 +33,8 @@ from runtime.manager.models import (
     RuntimeExternalBrowseRequest,
     RuntimeExternalBrowseResponse,
     RuntimeFileReadResponse,
+    RuntimePdfReadRequest,
+    RuntimePdfReadResponse,
     RuntimeScreenshotRequest,
     RuntimeScreenshotResponse,
     WorkerHealthResponse,
@@ -372,6 +374,30 @@ async def external_browse(
             status_code=503, detail="Runtime external browse not available"
         )
     return await method(payload)
+
+
+@router.post(
+    "/worker/sessions/{worker_session_id}/pdf-read",
+    response_model=RuntimePdfReadResponse,
+)
+async def read_pdf_for_session(
+    worker_session_id: str,
+    payload: RuntimePdfReadRequest,
+    _auth: None = WorkerAuth,
+) -> RuntimePdfReadResponse:
+    return await get_worker_service().read_pdf(
+        payload,
+        worker_session_id=worker_session_id,
+    )
+
+
+@router.post("/worker/pdf-read", response_model=RuntimePdfReadResponse)
+async def read_pdf(
+    payload: RuntimePdfReadRequest,
+    _auth: None = WorkerAuth,
+) -> RuntimePdfReadResponse:
+    """Fetch and extract bounded text from an arbitrary PDF URL."""
+    return await get_worker_service().read_pdf(payload)
 
 
 @router.api_route(

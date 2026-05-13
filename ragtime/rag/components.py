@@ -56,6 +56,7 @@ from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SEARCH_MAX_RESULTS
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID
 from ragtime.chat_runtime.presets import CHAT_WEB_BROWSE_TOOL_ID
+from ragtime.chat_runtime.presets import CHAT_WEB_READ_PDF_TOOL_ID
 from ragtime.chat_runtime.presets import CHAT_WEB_SEARCH_TOOL_ID
 from ragtime.config import settings
 from ragtime.core import llama_cpp, lmstudio, omlx
@@ -11805,6 +11806,13 @@ except Exception as e:
                 le=25,
                 description="Maximum number of search hits to return.",
             )
+            identify_pdf_results: bool = Field(
+                default=True,
+                description=(
+                    "When true, likely PDF search results are marked with pdf.read_tool='web_read_pdf' "
+                    "so the PDF text can be retrieved in a targeted follow-up call."
+                ),
+            )
             reason: str = Field(
                 default="",
                 description=(
@@ -11819,6 +11827,51 @@ except Exception as e:
                 default="",
                 description=(
                     "Short human-readable reason for the lookup "
+                    "(captured in audit logs)."
+                ),
+            )
+
+        class _ChatWebReadPdfInput(BaseModel):
+            url: str = Field(
+                description=(
+                    "Absolute http/https URL of a PDF to fetch and extract text from. "
+                    "Use a URL returned by web_search when possible."
+                )
+            )
+            start_char: int = Field(
+                default=0,
+                ge=0,
+                description=(
+                    "Character offset into the extracted PDF text for range reads. "
+                    "Ignored when query is provided."
+                ),
+            )
+            max_chars: int = Field(
+                default=8000,
+                ge=1,
+                le=50000,
+                description=(
+                    "Maximum extracted text characters to return. Use repeated calls with "
+                    "start_char to page through long PDFs."
+                ),
+            )
+            query: str = Field(
+                default="",
+                description=(
+                    "Optional phrase or terms to find inside the PDF. When set, the tool "
+                    "returns query-centered snippets instead of a raw character range."
+                ),
+            )
+            max_matches: int = Field(
+                default=5,
+                ge=1,
+                le=20,
+                description="Maximum query matches/snippets to return when query is set.",
+            )
+            reason: str = Field(
+                default="",
+                description=(
+                    "Short human-readable reason for the PDF lookup "
                     "(captured in audit logs)."
                 ),
             )
@@ -11898,6 +11951,7 @@ except Exception as e:
         async def _web_search(
             query: str,
             max_results: int = int(CHAT_DIAGNOSTICS_SEARCH_MAX_RESULTS),
+            identify_pdf_results: bool = True,
             reason: str = "",
         ) -> str:
             cleaned_query = (query or "").strip()
@@ -11918,6 +11972,7 @@ except Exception as e:
                     conversation_id=effective_conversation_id,
                     query=cleaned_query,
                     max_results=int(max_results),
+                    include_pdf_metadata=bool(identify_pdf_results),
                 )
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 logger.info(
@@ -11943,6 +11998,9 @@ except Exception as e:
                         "answer": search_payload.get("answer") or "",
                         "results": search_payload.get("results") or [],
                         "result_count": int(search_payload.get("result_count") or 0),
+                        "pdf_result_count": int(
+                            search_payload.get("pdf_result_count") or 0
+                        ),
                         "engine_url": search_payload.get("engine_url") or "",
                         "response_time": search_payload.get("response_time"),
                         "request_id": search_payload.get("request_id") or "",
@@ -11961,6 +12019,75 @@ except Exception as e:
                     json.dumps(
                         {
                             "tool": CHAT_WEB_SEARCH_TOOL_ID,
+                            "status": "runtime_error",
+                            "error": _format_exception_message(exc),
+                        }
+                    )
+                )
+
+        async def _web_read_pdf(
+            url: str,
+            start_char: int = 0,
+            max_chars: int = 8000,
+            query: str = "",
+            max_matches: int = 5,
+            reason: str = "",
+        ) -> str:
+            cleaned_url = (url or "").strip()
+            if not cleaned_url:
+                raise ToolException(
+                    json.dumps(
+                        {
+                            "tool": CHAT_WEB_READ_PDF_TOOL_ID,
+                            "status": "rejected_not_persisted",
+                            "error": "Provide a PDF url.",
+                        }
+                    )
+                )
+
+            t0 = time.monotonic()
+            try:
+                pdf_payload = await chat_runtime_service.read_pdf_url(
+                    conversation_id=effective_conversation_id,
+                    url=cleaned_url,
+                    start_char=int(start_char),
+                    max_chars=int(max_chars),
+                    query=query,
+                    max_matches=int(max_matches),
+                )
+                duration_ms = int((time.monotonic() - t0) * 1000)
+                logger.info(
+                    "chat_web_read_pdf conv=%s user=%s url=%s chars=%d duration_ms=%d reason=%s",
+                    effective_conversation_id,
+                    request_user_id or "anonymous",
+                    cleaned_url[:120],
+                    len(str(pdf_payload.get("text") or "")),
+                    duration_ms,
+                    (reason or "")[:120],
+                )
+                return json.dumps(
+                    {
+                        "tool": CHAT_WEB_READ_PDF_TOOL_ID,
+                        "status": "ok" if pdf_payload.get("status") == "ok" else "error",
+                        "mode": "pdf_read",
+                        "ok": pdf_payload.get("status") == "ok",
+                        "url": cleaned_url,
+                        **pdf_payload,
+                        "duration_ms": duration_ms,
+                    }
+                )
+            except ToolException:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "chat_web_read_pdf runtime error conv=%s err=%s",
+                    effective_conversation_id,
+                    _format_exception_message(exc),
+                )
+                raise ToolException(
+                    json.dumps(
+                        {
+                            "tool": CHAT_WEB_READ_PDF_TOOL_ID,
                             "status": "runtime_error",
                             "error": _format_exception_message(exc),
                         }
@@ -12083,9 +12210,26 @@ except Exception as e:
                         "Search the web from a sandboxed chat-only runtime. Uses "
                         "Tavily when TAVILY_API_KEY is configured, otherwise the "
                         "bundled SearXNG service. Use for current web research and "
-                        "source discovery."
+                        "source discovery. Likely PDF results are marked with the "
+                        "web_read_pdf follow-up tool instead of embedding PDF text."
                     ),
                     args_schema=_ChatWebSearchInput,
+                    handle_tool_error=True,
+                    handle_validation_error=True,
+                )
+            )
+        if CHAT_WEB_READ_PDF_TOOL_ID in enabled_tool_ids:
+            tools.append(
+                StructuredTool.from_function(
+                    coroutine=_web_read_pdf,
+                    name=CHAT_WEB_READ_PDF_TOOL_ID,
+                    description=(
+                        "Fetch a single PDF URL and extract only the needed text. "
+                        "Use after web_search identifies a PDF. Provide query for "
+                        "query-centered snippets, or start_char/max_chars to page "
+                        "through the extracted text without flooding context."
+                    ),
+                    args_schema=_ChatWebReadPdfInput,
                     handle_tool_error=True,
                     handle_validation_error=True,
                 )
@@ -12232,6 +12376,7 @@ except Exception as e:
             workspace_builtin_tool_ids = {
                 CHAT_WEB_SEARCH_TOOL_ID,
                 CHAT_WEB_BROWSE_TOOL_ID,
+                CHAT_WEB_READ_PDF_TOOL_ID,
             }
             if disabled_builtin_tool_ids:
                 workspace_builtin_tool_ids.difference_update(disabled_builtin_tool_ids)
@@ -12368,6 +12513,9 @@ except Exception as e:
                     include_web_browse=(
                         CHAT_WEB_BROWSE_TOOL_ID in workspace_builtin_tool_ids
                     ),
+                    include_web_read_pdf=(
+                        CHAT_WEB_READ_PDF_TOOL_ID in workspace_builtin_tool_ids
+                    ),
                 )
 
             # Cache nudge fragment by entrypoint state signature.
@@ -12439,6 +12587,9 @@ except Exception as e:
                         ),
                         include_web_browse=(
                             CHAT_WEB_BROWSE_TOOL_ID in enabled_builtin_tool_ids
+                        ),
+                        include_web_read_pdf=(
+                            CHAT_WEB_READ_PDF_TOOL_ID in enabled_builtin_tool_ids
                         ),
                     )
 

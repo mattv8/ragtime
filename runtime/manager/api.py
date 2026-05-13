@@ -13,6 +13,8 @@ from runtime.manager.models import (
     RuntimeExecResponse,
     RuntimeExternalBrowseRequest,
     RuntimeExternalBrowseResponse,
+    RuntimePdfReadRequest,
+    RuntimePdfReadResponse,
     RuntimeFileReadResponse,
     RuntimeFileWriteRequest,
     RuntimeManagerHealthResponse,
@@ -242,6 +244,24 @@ def create_app() -> FastAPI:
         _auth: None = ManagerAuth,
     ) -> RuntimeExternalBrowseResponse:
         return await manager.external_browse(payload)
+
+    @application.post(
+        "/sessions/{provider_session_id}/pdf-read",
+        response_model=RuntimePdfReadResponse,
+    )
+    async def read_pdf_for_session(
+        provider_session_id: str,
+        payload: RuntimePdfReadRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimePdfReadResponse:
+        return await manager.read_pdf_for_session(provider_session_id, payload)
+
+    @application.post("/pdf-read", response_model=RuntimePdfReadResponse)
+    async def read_pdf(
+        payload: RuntimePdfReadRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimePdfReadResponse:
+        return await manager.read_pdf(payload)
 
     @application.post(
         "/workspaces/{workspace_id}/files",
