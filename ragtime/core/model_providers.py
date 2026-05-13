@@ -41,6 +41,7 @@ class ModelProvider:
     openai_compatible_embeddings: bool = False
     supports_vision_ocr: bool = False
     local: bool = False
+    model_family_tokenizer_labels: tuple[tuple[str, str], ...] = ()
 
 
 OLLAMA_EMBEDDING_CONNECTION = ProviderConnection(
@@ -151,6 +152,31 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
         label="Anthropic",
         llm_api_key_field="anthropic_api_key",
         supports_llm=True,
+    ),
+    "openrouter": ModelProvider(
+        name="openrouter",
+        label="OpenRouter",
+        aliases=("or",),
+        llm_api_key_field="openrouter_api_key",
+        supports_llm=True,
+        openai_compatible_chat=True,
+        model_family_tokenizer_labels=(
+            ("Claude", "Claude"),
+            ("GPT", "GPT"),
+            ("Gemini", "Gemini"),
+            ("Gemma", "Gemma"),
+            ("Grok", "Grok"),
+            ("Qwen", "Qwen"),
+            ("Qwen3", "Qwen"),
+            ("Mistral", "Mistral"),
+            ("DeepSeek", "DeepSeek"),
+            ("Llama2", "Llama"),
+            ("Llama3", "Llama"),
+            ("Llama4", "Llama"),
+            ("Nova", "Nova"),
+            ("Cohere", "Cohere"),
+            ("Router", "Router"),
+        ),
     ),
     "ollama": ModelProvider(
         name="ollama",
@@ -319,6 +345,31 @@ def resolve_provider_for_model(
 def get_provider(provider: str | None) -> ModelProvider | None:
     """Return provider metadata for a canonical or aliased provider name."""
     return MODEL_PROVIDERS.get(normalize_provider_name(provider))
+
+
+def resolve_model_family_from_metadata(
+    provider: str | None,
+    metadata: dict[str, Any],
+) -> str | None:
+    """Resolve a provider-specific family label from structured model metadata."""
+    descriptor = get_provider(provider)
+    if descriptor is None or not descriptor.model_family_tokenizer_labels:
+        return None
+
+    architecture = metadata.get("architecture")
+    tokenizer = None
+    if isinstance(architecture, dict):
+        tokenizer = architecture.get("tokenizer")
+
+    normalized_tokenizer = str(tokenizer or "").strip().lower()
+    if not normalized_tokenizer:
+        return None
+
+    for token_value, label in descriptor.model_family_tokenizer_labels:
+        if normalized_tokenizer == token_value.lower():
+            return label
+
+    return None
 
 
 def get_provider_connection(

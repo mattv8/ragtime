@@ -596,7 +596,7 @@ export interface UserSpacePreviewSandboxFlagOption {
 }
 
 // Canonical providers used by current UI flows.
-export type LlmProvider = 'openai' | 'anthropic' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot';
+export type LlmProvider = 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot';
 // Legacy wire compatibility for older persisted/provider values.
 export type LlmProviderWire = LlmProvider | 'github_models';
 
@@ -655,6 +655,7 @@ export interface AppSettings {
   llm_omlx_base_url: string;
   openai_api_key: string;
   anthropic_api_key: string;
+  openrouter_api_key: string;
   github_models_api_token: string;
   github_copilot_access_token: string;
   github_copilot_refresh_token: string;
@@ -781,6 +782,7 @@ export interface UpdateSettingsRequest {
   llm_omlx_base_url?: string;
   openai_api_key?: string;
   anthropic_api_key?: string;
+  openrouter_api_key?: string;
   github_models_api_token?: string;
   github_copilot_access_token?: string;
   github_copilot_refresh_token?: string;
@@ -922,7 +924,7 @@ export interface VisionModelsResponse {
 
 // LLM Provider Model Fetching
 export interface LLMModelsRequest {
-  provider: Extract<LlmProvider, 'openai' | 'anthropic' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot'>;
+  provider: Extract<LlmProvider, 'openai' | 'anthropic' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot'>;
   api_key?: string;
   base_url?: string;
   auth_mode?: 'oauth' | 'pat';

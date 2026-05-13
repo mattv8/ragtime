@@ -511,6 +511,37 @@ def update_model_output_limit(model_id: str, limit: int) -> None:
     _model_output_limits_cache[model_id] = limit
 
 
+def extract_openrouter_model_limits(
+    row: dict[str, object]
+) -> tuple[int | None, int | None]:
+    """Extract OpenRouter context/output limits from structured API fields."""
+    top_provider = row.get("top_provider")
+    top_provider = top_provider if isinstance(top_provider, dict) else {}
+
+    context_limit = _coerce_int(row.get("context_length")) or _coerce_int(
+        top_provider.get("context_length")
+    )
+    output_limit = _coerce_int(top_provider.get("max_completion_tokens")) or _coerce_int(
+        row.get("max_completion_tokens")
+    )
+    return context_limit, output_limit
+
+
+def register_openrouter_model_limits(
+    row: dict[str, object]
+) -> tuple[int | None, int | None]:
+    """Register OpenRouter model limits from the provider catalog response."""
+    model_id = str(row.get("id") or "").strip()
+    context_limit, output_limit = extract_openrouter_model_limits(row)
+
+    if model_id and context_limit is not None:
+        update_model_limit(model_id, context_limit)
+    if model_id and output_limit is not None:
+        update_model_output_limit(model_id, output_limit)
+
+    return context_limit, output_limit
+
+
 def update_model_function_calling(model_id: str, supports: bool) -> None:
     """Update function calling support for a model in the runtime cache."""
     _model_supports_function_calling[model_id] = supports

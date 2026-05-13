@@ -219,6 +219,7 @@ class SettingsCache:
             # Decrypt secrets that may be encrypted
             openai_key = prisma_settings.openaiApiKey or ""
             anthropic_key = prisma_settings.anthropicApiKey or ""
+            openrouter_key = getattr(prisma_settings, "openrouterApiKey", "") or ""
             github_models_api_token = (
                 getattr(prisma_settings, "githubModelsApiToken", "") or ""
             )
@@ -238,6 +239,7 @@ class SettingsCache:
 
             openai_key = decrypt_secret(openai_key)
             anthropic_key = decrypt_secret(anthropic_key)
+            openrouter_key = decrypt_secret(openrouter_key)
             github_models_api_token = decrypt_secret(github_models_api_token)
             github_copilot_access_token = decrypt_secret(github_copilot_access_token)
             github_copilot_refresh_token = decrypt_secret(github_copilot_refresh_token)
@@ -322,6 +324,7 @@ class SettingsCache:
                 ),
                 "openai_api_key": openai_key,
                 "anthropic_api_key": anthropic_key,
+                "openrouter_api_key": openrouter_key,
                 "lmstudio_api_key": lmstudio_api_key,
                 "omlx_api_key": omlx_api_key,
                 "github_models_api_token": github_models_api_token,
@@ -450,6 +453,7 @@ class SettingsCache:
                 "image_payload_max_bytes": 350000,
                 "openai_api_key": "",
                 "anthropic_api_key": "",
+                "openrouter_api_key": "",
                 "lmstudio_api_key": "",
                 "omlx_api_key": "",
                 "github_models_api_token": "",

@@ -12,6 +12,7 @@ export type ProviderConnectionDescriptor = {
 export const LLM_PROVIDER_KEYS = [
   'openai',
   'anthropic',
+  'openrouter',
   'ollama',
   'llama_cpp',
   'lmstudio',
@@ -31,6 +32,7 @@ export const KNOWN_PROVIDER_KEYS = new Set<string>([
   ...LLM_PROVIDER_KEYS,
   ...EMBEDDING_PROVIDER_KEYS,
   'github_models',
+  'or',
 ]);
 
 export const PROVIDER_CONNECTIONS = {
@@ -118,7 +120,7 @@ export const PROVIDER_CONNECTIONS = {
 
 export function normalizeProviderAlias<T extends string | null | undefined>(provider: T): T extends string ? string : T {
   const value = typeof provider === 'string' ? provider.trim().toLowerCase().replace(/-/g, '_') : provider;
-  return (value === 'github_models' ? 'github_copilot' : value) as T extends string ? string : T;
+  return (value === 'github_models' ? 'github_copilot' : value === 'or' ? 'openrouter' : value) as T extends string ? string : T;
 }
 
 export function providersEquivalent(selected?: string | null, actual?: string | null): boolean {

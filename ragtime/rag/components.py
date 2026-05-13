@@ -2779,6 +2779,35 @@ class RAGComponents:
                 logger.warning("langchain-anthropic not installed")
                 return None
 
+        if provider_normalized == "openrouter":
+            api_key = self._app_settings.get("openrouter_api_key", "")
+            if not api_key:
+                logger.warning("OpenRouter selected but no API key configured")
+                return None
+
+            await _hydrate_openai_compatible_capabilities(
+                metadata_urls=["https://openrouter.ai/api/v1/models"],
+                headers={"Authorization": f"Bearer {api_key}"},
+                requested_model=model,
+            )
+
+            openrouter_kwargs: dict[str, Any] = {
+                "model": model,
+                "temperature": 0,
+                "streaming": True,
+                "api_key": api_key,
+                "base_url": "https://openrouter.ai/api/v1",
+                "max_tokens": max_tokens,
+                "request_timeout": LLM_REQUEST_TIMEOUT_SECONDS,
+            }
+
+            if await supports_reasoning(model):
+                openrouter_kwargs["reasoning_effort"] = "high"
+            if await supports_thinking_budget(model):
+                openrouter_kwargs["extra_body"] = {"thinking_budget": 16384}
+
+            return _CopilotChatOpenAI(**openrouter_kwargs)
+
         if provider_normalized == "github_copilot":
             # GitHub Copilot uses OAuth flow. Proactively refresh the
             # short-lived HMAC token if near expiry.

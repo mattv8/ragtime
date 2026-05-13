@@ -164,7 +164,7 @@ model AppSettings {
   omlxApiKey          String? @map("omlx_api_key")
 
   // LLM Configuration (for chat/RAG responses)
-  llmProvider                    String    @default("openai") @map("llm_provider") // "openai", "anthropic", "ollama", "llama_cpp", "lmstudio", "omlx", "github_copilot", or "github_models"
+  llmProvider                    String    @default("openai") @map("llm_provider") // "openai", "anthropic", "openrouter", "ollama", "llama_cpp", "lmstudio", "omlx", "github_copilot", or "github_models"
   llmModel                       String    @default("gpt-4-turbo") @map("llm_model")
   llmMaxTokens                   Int       @default(4096) @map("llm_max_tokens") // Max output tokens
   imagePayloadMaxWidth           Int       @default(1024) @map("image_payload_max_width") // Max width (px) for image attachments
@@ -189,6 +189,7 @@ model AppSettings {
   llmOmlxBaseUrl                 String    @default("http://host.docker.internal:8000") @map("llm_omlx_base_url")
   openaiApiKey                   String    @default("") @map("openai_api_key")
   anthropicApiKey                String    @default("") @map("anthropic_api_key")
+  openrouterApiKey               String    @default("") @map("openrouter_api_key")
   githubModelsApiToken           String    @default("") @map("github_models_api_token")
   githubCopilotAccessToken       String    @default("") @map("github_copilot_access_token")
   githubCopilotRefreshToken      String    @default("") @map("github_copilot_refresh_token")

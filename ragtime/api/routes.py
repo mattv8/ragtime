@@ -49,6 +49,7 @@ _PROVIDER_ALIASES: dict[str, str] = {
     **{provider: provider for provider in LLM_PROVIDER_NAMES},
     "oa": "openai",
     "an": "anthropic",
+    "or": "openrouter",
     "ol": "ollama",
     "llama.cpp": "llama_cpp",
     "llamacpp": "llama_cpp",
@@ -66,6 +67,7 @@ _PROVIDER_ALIASES: dict[str, str] = {
 _OPENAPI_PROVIDER_TOKENS: dict[str, str] = {
     "openai": "oa",
     "anthropic": "an",
+    "openrouter": "or",
     "ollama": "ol",
     "llama_cpp": "lc",
     "lmstudio": "ls",

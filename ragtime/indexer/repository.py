@@ -986,6 +986,7 @@ class IndexerRepository:
         # Decrypt secrets for API response
         openai_key = settings.openaiApiKey or ""
         anthropic_key = settings.anthropicApiKey or ""
+        openrouter_key = getattr(settings, "openrouterApiKey", "") or ""
         github_models_api_token = getattr(settings, "githubModelsApiToken", "") or ""
         github_copilot_access_token = (
             getattr(settings, "githubCopilotAccessToken", "") or ""
@@ -1003,6 +1004,8 @@ class IndexerRepository:
             openai_key = decrypt_secret(openai_key)
         if anthropic_key:
             anthropic_key = decrypt_secret(anthropic_key)
+        if openrouter_key:
+            openrouter_key = decrypt_secret(openrouter_key)
         if github_models_api_token:
             github_models_api_token = decrypt_secret(github_models_api_token)
         if github_copilot_access_token:
@@ -1120,6 +1123,7 @@ class IndexerRepository:
             ),
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
+            openrouter_api_key=openrouter_key,
             github_models_api_token=github_models_api_token,
             github_copilot_access_token=github_copilot_access_token,
             github_copilot_refresh_token=github_copilot_refresh_token,
@@ -1306,6 +1310,7 @@ class IndexerRepository:
             "llm_omlx_base_url": "llmOmlxBaseUrl",
             "openai_api_key": "openaiApiKey",
             "anthropic_api_key": "anthropicApiKey",
+            "openrouter_api_key": "openrouterApiKey",
             "github_models_api_token": "githubModelsApiToken",
             "github_copilot_access_token": "githubCopilotAccessToken",
             "github_copilot_refresh_token": "githubCopilotRefreshToken",
@@ -1388,6 +1393,7 @@ class IndexerRepository:
         secret_fields = [
             "openai_api_key",
             "anthropic_api_key",
+            "openrouter_api_key",
             "github_models_api_token",
             "github_copilot_access_token",
             "github_copilot_refresh_token",

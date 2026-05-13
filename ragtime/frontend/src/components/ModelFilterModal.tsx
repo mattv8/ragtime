@@ -5,6 +5,7 @@ import { ProviderPrecedenceTabBody } from './ProviderPrecedenceTabBody';
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
+  openrouter: 'OpenRouter',
   ollama: 'Ollama',
   github_copilot: 'GitHub Copilot',
   github_models: 'GitHub Copilot',

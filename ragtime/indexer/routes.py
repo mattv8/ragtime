@@ -67,6 +67,7 @@ from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
     MODEL_FAMILY_PATTERNS,
+    register_openrouter_model_limits,
     get_context_limit,
     get_output_limit,
     register_model_reasoning_capabilities,
@@ -86,6 +87,7 @@ from ragtime.core.model_providers import (
     get_provider,
     normalize_provider_name,
     providers_equivalent,
+    resolve_model_family_from_metadata,
     resolve_provider_base_url,
 )
 from ragtime.core.ollama import (
@@ -6812,7 +6814,7 @@ class LLMModelsRequest(BaseModel):
 
     provider: str = Field(
         ...,
-        description="LLM provider: 'openai', 'anthropic', 'llama_cpp', 'lmstudio', 'omlx', or 'github_copilot'",
+        description="LLM provider: 'openai', 'anthropic', 'openrouter', 'llama_cpp', 'lmstudio', 'omlx', or 'github_copilot'",
     )
     api_key: str = Field(default="", description="API key/token for the provider")
     auth_mode: Optional[str] = Field(
@@ -7074,6 +7076,155 @@ def _resolve_omlx_chat_base_url(settings: AppSettings) -> str:
     return resolve_provider_base_url(settings, "omlx", "llm")
 
 
+def _openrouter_int(value: Any) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _openrouter_is_chat_model(row: dict[str, Any]) -> bool:
+    model_id = str(row.get("id") or "").strip().lower()
+    if not model_id:
+        return False
+    excluded_terms = (
+        "embed",
+        "embedding",
+        "rerank",
+        "moderation",
+        "whisper",
+        "tts",
+    )
+    if any(term in model_id for term in excluded_terms):
+        return False
+
+    architecture = row.get("architecture")
+    input_modalities = None
+    if isinstance(architecture, dict):
+        input_modalities = architecture.get("input_modalities")
+    if input_modalities is None:
+        modalities = row.get("modalities")
+        if isinstance(modalities, dict):
+            input_modalities = modalities.get("input")
+    if isinstance(input_modalities, list):
+        normalized_inputs = {str(item).strip().lower() for item in input_modalities}
+        return not normalized_inputs or bool(normalized_inputs & {"text", "image"})
+
+    return True
+
+
+async def _fetch_openrouter_models(api_key: str) -> LLMModelsResponse:
+    """Fetch chat-capable models from OpenRouter."""
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(
+                "https://openrouter.ai/api/v1/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            response.raise_for_status()
+
+        data = response.json()
+        models: list[LLMModel] = []
+        for row in data.get("data", []):
+            if not isinstance(row, dict) or not _openrouter_is_chat_model(row):
+                continue
+
+            model_id = str(row.get("id") or "").strip()
+            if not model_id:
+                continue
+
+            supported_parameters = row.get("supported_parameters")
+            supported_parameters = (
+                [str(item).lower() for item in supported_parameters if item]
+                if isinstance(supported_parameters, list)
+                else []
+            )
+            (
+                capabilities,
+                _supported_endpoints,
+                reasoning_supported,
+                thinking_budget_supported,
+                effort_levels,
+            ) = _extract_provider_capability_metadata(row)
+            if any(
+                parameter in supported_parameters
+                for parameter in ("reasoning", "reasoning_effort", "include_reasoning")
+            ):
+                reasoning_supported = True
+                if "reasoning" not in capabilities:
+                    capabilities.append("reasoning")
+            if "thinking_budget" in supported_parameters:
+                thinking_budget_supported = True
+                if "thinking_budget" not in capabilities:
+                    capabilities.append("thinking_budget")
+
+            context_limit, max_output_tokens = register_openrouter_model_limits(row)
+            family_group = resolve_model_family_from_metadata("openrouter", row)
+            architecture = row.get("architecture")
+            tokenizer = (
+                str(architecture.get("tokenizer"))
+                if isinstance(architecture, dict) and architecture.get("tokenizer")
+                else None
+            )
+
+            register_model_supported_endpoints(model_id, ["/chat/completions"])
+            if reasoning_supported or thinking_budget_supported:
+                register_model_reasoning_capabilities(
+                    model_id,
+                    reasoning_supported=bool(reasoning_supported),
+                    thinking_budget_supported=bool(thinking_budget_supported),
+                )
+
+            models.append(
+                LLMModel(
+                    id=model_id,
+                    name=str(row.get("name") or model_id),
+                    created=_openrouter_int(row.get("created")),
+                    group=family_group,
+                    max_output_tokens=max_output_tokens,
+                    context_limit=context_limit,
+                    capabilities=capabilities or None,
+                    supported_endpoints=["/chat/completions"],
+                    reasoning_supported=reasoning_supported,
+                    thinking_budget_supported=thinking_budget_supported,
+                    effort_levels=effort_levels or None,
+                    architecture=tokenizer,
+                )
+            )
+
+        models = _group_models(models, "openrouter")
+        models.sort(
+            key=lambda m: (m.group or "", m.is_latest, m.context_limit or 0, m.id),
+            reverse=True,
+        )
+
+        return LLMModelsResponse(
+            success=True,
+            message=f"Found {len(models)} OpenRouter chat model(s).",
+            models=models,
+            default_model=models[0].id if models else None,
+        )
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            return LLMModelsResponse(
+                success=False,
+                message="Invalid API key. Please check your OpenRouter API key.",
+            )
+        return LLMModelsResponse(
+            success=False, message=f"OpenRouter API error: {e.response.status_code}"
+        )
+    except httpx.TimeoutException:
+        return LLMModelsResponse(
+            success=False, message="Request to OpenRouter timed out."
+        )
+    except Exception as e:
+        return LLMModelsResponse(
+            success=False, message=f"Failed to fetch OpenRouter models: {str(e)}"
+        )
+
+
 async def _fetch_github_provider_models(
     *,
     provider: str,
@@ -7203,6 +7354,18 @@ async def _fetch_llm_models_for_provider(
                 success=False, message="Anthropic is not configured"
             )
         return await _fetch_anthropic_models(token)
+
+    if normalized_provider == "openrouter":
+        token = str(api_key or settings.openrouter_api_key or "").strip()
+        if not token:
+            if raise_on_unconfigured:
+                raise HTTPException(
+                    status_code=400, detail="OpenRouter is not configured"
+                )
+            return LLMModelsResponse(
+                success=False, message="OpenRouter is not configured"
+            )
+        return await _fetch_openrouter_models(token)
 
     if normalized_provider == "ollama":
         resolved_base_url = resolve_provider_base_url(
@@ -7851,6 +8014,8 @@ def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
     # Use the same logic as _assign_model_groups but for LLMModel
     for model in models:
         model.is_latest = False
+        if model.group:
+            continue
         mid = model.id.lower()
         provider_patterns = cast(
             list[tuple[str, Optional[str]]],
@@ -7896,7 +8061,7 @@ def _derive_group_label(provider: str, model_id: str, match: re.Match[str]) -> s
     """Build a group label from regex captures for dynamic family patterns."""
     capture = match.group(1)
 
-    if provider in {"openai", "github_copilot", "github_models"} and "gpt-" in model_id:
+    if provider in {"openai", "github_copilot", "github_models", "openrouter"} and "gpt-" in model_id:
         return f"GPT-{capture}"
 
     if "claude-" in model_id and (match.lastindex or 0) >= 2:
@@ -8008,6 +8173,8 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
     """Assign UI group labels to models for better organization."""
     for model in models:
         model.is_latest = False
+        if model.group:
+            continue
         mid = model.id.lower()
         provider_patterns = cast(
             list[tuple[str, Optional[str]]],
@@ -9295,7 +9462,7 @@ async def get_available_chat_models():
     """
     Get all available models from configured LLM providers.
 
-    Returns models from configured providers (OpenAI, Anthropic, Ollama, GitHub Copilot).
+    Returns models from configured providers (OpenAI, Anthropic, OpenRouter, Ollama, GitHub Copilot).
     Provider fetches run in parallel to avoid blocking the event loop when one provider is slow.
     """
     # Kick off Copilot refresh in the background to avoid blocking model
@@ -9314,6 +9481,7 @@ async def get_available_chat_models():
     provider_states: dict[str, ProviderModelState] = {
         "openai": ProviderModelState(provider="openai"),
         "anthropic": ProviderModelState(provider="anthropic"),
+        "openrouter": ProviderModelState(provider="openrouter"),
         "ollama": ProviderModelState(provider="ollama"),
         "llama_cpp": ProviderModelState(provider="llama_cpp"),
         "lmstudio": ProviderModelState(provider="lmstudio"),
@@ -9342,6 +9510,18 @@ async def get_available_chat_models():
             asyncio.create_task(
                 _safe_fetch_llm_models_task(
                     "anthropic", _fetch_anthropic_models(app_settings.anthropic_api_key)
+                )
+            )
+        )
+
+    openrouter_api_key = str(getattr(app_settings, "openrouter_api_key", "") or "")
+    if openrouter_api_key and len(openrouter_api_key) > 10:
+        provider_states["openrouter"].configured = True
+        provider_states["openrouter"].connected = True
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "openrouter", _fetch_openrouter_models(openrouter_api_key)
                 )
             )
         )
@@ -9514,6 +9694,7 @@ async def get_available_chat_models():
                         )
                     ),
                     max_output_tokens=m.max_output_tokens,
+                    group=m.group,
                     created=m.created,
                     capabilities=m.capabilities,
                     supported_endpoints=resolved_supported_endpoints,
@@ -9659,6 +9840,18 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
             )
         )
 
+    openrouter_api_key = str(getattr(app_settings, "openrouter_api_key", "") or "")
+    if openrouter_api_key and len(openrouter_api_key) > 10:
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "openrouter",
+                    _fetch_openrouter_models(openrouter_api_key),
+                    none_on_error=True,
+                )
+            )
+        )
+
     ollama_url = getattr(app_settings, "llm_ollama_base_url", "") or ""
     if not ollama_url or ollama_url == "http://localhost:11434":
         ollama_url = getattr(app_settings, "ollama_base_url", "") or ""
@@ -9794,6 +9987,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                         )
                     ),
                     max_output_tokens=m.max_output_tokens,
+                    group=m.group,
                     created=m.created,
                     capabilities=m.capabilities,
                     supported_endpoints=resolved_supported_endpoints,

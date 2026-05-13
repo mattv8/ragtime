@@ -107,7 +107,7 @@ async def generate_index_description(
     Samples file paths and content to create a concise description
     that helps the AI understand what knowledge is available.
 
-    Uses the LLM provider configured in app settings (OpenAI, Anthropic, Ollama, or GitHub Copilot).
+    Uses the LLM provider configured in app settings.
     """
     try:
         app_settings = await get_app_settings()
@@ -192,6 +192,22 @@ async def generate_index_description(
                 logger.debug("Using OpenAI for description generation: gpt-4o-mini")
             else:
                 logger.debug("OpenAI selected but no API key configured")
+
+        elif provider == "openrouter":
+            api_key = app_settings.get("openrouter_api_key", "")
+            if api_key:
+                from langchain_openai import ChatOpenAI  # type: ignore[import-untyped]
+
+                model = app_settings.get("llm_model", "openai/gpt-4o-mini")
+                llm = ChatOpenAI(
+                    model=model,
+                    temperature=0.3,
+                    api_key=api_key,
+                    base_url="https://openrouter.ai/api/v1",
+                )
+                logger.debug(f"Using OpenRouter for description generation: {model}")
+            else:
+                logger.debug("OpenRouter selected but no API key configured")
 
         elif provider == "github_copilot":
             # GitHub Copilot uses OAuth flow. Refresh the short-lived HMAC token

@@ -589,7 +589,7 @@ class AppSettings(BaseModel):
     # LLM Configuration (for chat/RAG responses)
     llm_provider: str = Field(
         default="openai",
-        description="LLM provider: 'openai', 'anthropic', 'ollama', 'llama_cpp', 'lmstudio', 'omlx', 'github_copilot', or 'github_models'",
+        description="LLM provider: 'openai', 'anthropic', 'openrouter', 'ollama', 'llama_cpp', 'lmstudio', 'omlx', 'github_copilot', or 'github_models'",
     )
     llm_model: str = Field(
         default="gpt-4-turbo",
@@ -688,6 +688,10 @@ class AppSettings(BaseModel):
     anthropic_api_key: str = Field(
         default="",
         description="Anthropic API key (used when llm_provider is 'anthropic')",
+    )
+    openrouter_api_key: str = Field(
+        default="",
+        description="OpenRouter API key (used when llm_provider is 'openrouter')",
     )
     github_models_api_token: str = Field(
         default="",
@@ -1205,6 +1209,7 @@ class UpdateSettingsRequest(BaseModel):
     llm_omlx_base_url: Optional[str] = None
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
     github_models_api_token: Optional[str] = None
     github_copilot_access_token: Optional[str] = None
     github_copilot_refresh_token: Optional[str] = None

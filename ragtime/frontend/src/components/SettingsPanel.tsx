@@ -688,7 +688,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
   // Fetch LLM models from provider API
   const fetchLlmModels = useCallback(async (
-    provider: 'openai' | 'anthropic' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot',
+    provider: 'openai' | 'anthropic' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot',
     apiKey?: string,
     options?: {
       authMode?: 'oauth' | 'pat';
@@ -698,7 +698,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       baseUrl?: string;
     }
   ) => {
-    if ((provider === 'openai' || provider === 'anthropic') && (!apiKey || apiKey.length < 10)) {
+    if ((provider === 'openai' || provider === 'anthropic' || provider === 'openrouter') && (!apiKey || apiKey.length < 10)) {
       setLlmModelsError('Please enter a valid API key first');
       return;
     }
@@ -1430,6 +1430,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         llm_omlx_base_url: data.llm_omlx_base_url,
         openai_api_key: data.openai_api_key,
         anthropic_api_key: data.anthropic_api_key,
+        openrouter_api_key: data.openrouter_api_key,
         github_models_api_token: data.github_models_api_token,
         github_copilot_base_url: data.github_copilot_base_url,
         github_copilot_enterprise_url: data.github_copilot_enterprise_url,
@@ -1980,6 +1981,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         image_payload_max_bytes: formData.image_payload_max_bytes,
         openai_api_key: formData.openai_api_key,
         anthropic_api_key: formData.anthropic_api_key,
+        openrouter_api_key: formData.openrouter_api_key,
         github_models_api_token: formData.github_models_api_token,
         github_copilot_base_url: formData.github_copilot_base_url,
         github_copilot_enterprise_url: formData.github_copilot_enterprise_url,
@@ -2565,6 +2567,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
   const openAiConfigured = Boolean((formData.openai_api_key ?? settings?.openai_api_key)?.trim());
   const claudeConfigured = Boolean((formData.anthropic_api_key ?? settings?.anthropic_api_key)?.trim());
+  const openRouterConfigured = Boolean((formData.openrouter_api_key ?? settings?.openrouter_api_key)?.trim());
   const copilotConfigured = Boolean(copilotAuthStatus?.connected ?? settings?.has_github_copilot_auth);
   const copilotPatToken = (formData.github_models_api_token ?? settings?.github_models_api_token ?? '').trim();
   const hasCopilotPatToken = Boolean(copilotPatToken);
@@ -2913,6 +2916,13 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 />
                 <span className="llm-provider-status-label">Claude</span>
               </span>
+              <span className="llm-provider-status-item" title={openRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${openRouterConfigured ? 'configured' : ''}`}
+                  aria-label={openRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'}
+                />
+                <span className="llm-provider-status-label">OpenRouter</span>
+              </span>
               <span className="llm-provider-status-item" title={ollamaConfigured ? 'Ollama configured' : 'Ollama not configured'}>
                 <span
                   className={`llm-provider-status-dot ${ollamaConfigured ? 'configured' : ''}`}
@@ -2960,7 +2970,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
             <select
               value={formData.llm_provider || 'openai'}
               onChange={(e) => {
-                const newProvider = e.target.value as 'openai' | 'anthropic' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot';
+                const newProvider = e.target.value as 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot';
                 setFormData({
                   ...formData,
                   llm_provider: newProvider,
@@ -2984,6 +2994,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
             >
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic (Claude)</option>
+              <option value="openrouter">OpenRouter</option>
               <option value="ollama">Ollama</option>
               <option value="llama_cpp">llama.cpp</option>
               <option value="lmstudio">LM Studio</option>
@@ -3316,6 +3327,37 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 </p>
               )}
             </div>
+          ) : formData.llm_provider === 'openrouter' ? (
+            <div className="form-group">
+              <label>OpenRouter API Key</label>
+              <div className="input-with-button">
+                <input
+                  type="password"
+                  value={formData.openrouter_api_key || ''}
+                  onChange={(e) => {
+                    setFormData({ ...formData, openrouter_api_key: e.target.value });
+                    resetLlmModelsState();
+                  }}
+                  placeholder="sk-or-..."
+                />
+                <button
+                  type="button"
+                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'openrouter' ? 'btn-connected' : ''}`}
+                  onClick={() => fetchLlmModels('openrouter', formData.openrouter_api_key || '')}
+                  disabled={llmModelsFetching || !formData.openrouter_api_key}
+                >
+                  {llmModelsFetching ? 'Fetching...' : llmModelsLoaded && formData.llm_provider === 'openrouter' ? 'Loaded' : 'Fetch Models'}
+                </button>
+              </div>
+              {llmModelsError && formData.llm_provider === 'openrouter' && (
+                <p className="field-error">{llmModelsError}</p>
+              )}
+              {window.location.protocol === 'http:' && (
+                <p className="field-help" style={{ color: '#b8860b' }}>
+                  Warning: API keys are transmitted in plaintext over HTTP.
+                </p>
+              )}
+            </div>
           ) : formData.llm_provider === 'github_copilot' ? (
             <div className="form-group">
               <label>GitHub Copilot Connection</label>
@@ -3517,7 +3559,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 Configure Chat Models
               </button>
               <p className="field-help">
-                Limit which models appear in the Chat view dropdown. Includes all configured providers (OpenAI, Anthropic, Ollama, llama.cpp, GitHub Copilot).
+                Limit which models appear in the Chat view dropdown. Includes all configured providers (OpenAI, Anthropic, OpenRouter, Ollama, llama.cpp, GitHub Copilot).
               </p>
             </div>
 
@@ -3592,8 +3634,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
             </div>
           </div>
 
-          {/* Show OpenAI key field for embeddings if using Anthropic or Ollama for LLM */}
-          {(formData.llm_provider === 'anthropic' || formData.llm_provider === 'ollama' || formData.llm_provider === 'llama_cpp' || formData.llm_provider === 'lmstudio' || formData.llm_provider === 'github_copilot') && formData.embedding_provider === 'openai' && (
+          {/* Show OpenAI key field for embeddings when the LLM uses another provider */}
+          {(formData.llm_provider === 'anthropic' || formData.llm_provider === 'openrouter' || formData.llm_provider === 'ollama' || formData.llm_provider === 'llama_cpp' || formData.llm_provider === 'lmstudio' || formData.llm_provider === 'github_copilot') && formData.embedding_provider === 'openai' && (
             <div className="form-group">
               <label>OpenAI API Key (for embeddings)</label>
               <input
@@ -3609,7 +3651,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 placeholder="sk-..."
               />
               <p className="field-help">
-                Required for OpenAI embeddings when using Anthropic for LLM.
+                Required for OpenAI embeddings when using a different LLM provider.
               </p>
             </div>
           )}

@@ -4,6 +4,8 @@ from unittest import mock
 
 import ragtime.indexer.routes as indexer_routes
 
+from ragtime.core.model_limits import extract_openrouter_model_limits
+from ragtime.core.model_providers import resolve_model_family_from_metadata
 from ragtime.indexer.routes import (
     AvailableModel,
     LLMModel,
@@ -43,8 +45,25 @@ class ModelResolutionTests(unittest.TestCase):
             ("omlx", "qwen3-coder-next-8bit"),
         )
 
+    def test_parse_model_identifier_accepts_openrouter_from_registry(self) -> None:
+        self.assertEqual(
+            _parse_model_identifier("openrouter::anthropic/claude-sonnet-4.5"),
+            ("openrouter", "anthropic/claude-sonnet-4.5"),
+        )
+
+    def test_parse_model_identifier_accepts_openrouter_short_alias(self) -> None:
+        self.assertEqual(
+            _parse_model_identifier("or::openai/gpt-4o"),
+            ("openrouter", "openai/gpt-4o"),
+        )
+
     def test_conversation_model_provider_accepts_registered_omlx(self) -> None:
         self.assertEqual(_normalize_conversation_model_provider("omlx"), "omlx")
+
+    def test_conversation_model_provider_accepts_registered_openrouter(self) -> None:
+        self.assertEqual(
+            _normalize_conversation_model_provider("openrouter"), "openrouter"
+        )
 
     def test_conversation_model_provider_rejects_unknown_provider(self) -> None:
         with self.assertRaises(indexer_routes.HTTPException) as raised:
@@ -93,6 +112,22 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(
             _owned_by_from_openapi_model_id("openai", "om::qwen3-coder-next-8bit"),
             "omlx",
+        )
+
+    def test_openapi_normalization_accepts_openrouter_token(self) -> None:
+        self.assertEqual(
+            _normalize_openapi_model_id(
+                "openrouter", "openrouter::anthropic/claude-sonnet-4.5"
+            ),
+            "or::anthropic/claude-sonnet-4.5",
+        )
+        self.assertEqual(
+            _normalize_runtime_model("openai", "or::openai/gpt-4o"),
+            "openrouter::openai/gpt-4o",
+        )
+        self.assertEqual(
+            _owned_by_from_openapi_model_id("openai", "or::openai/gpt-4o"),
+            "openrouter",
         )
 
     def test_allowed_model_matching_accepts_provider_alias_and_publisher_prefix(
@@ -237,6 +272,77 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0].id, "gpt-5.5-mini")
         self.assertTrue(all(model.group == "GPT-5.5" for model in grouped))
+
+    def test_group_models_openrouter_without_metadata_uses_default_group(self) -> None:
+        models = [
+            LLMModel(id="openai/gpt-5.5", name="GPT-5.5", created=100),
+            LLMModel(id="openai/gpt-5.5-mini", name="GPT-5.5 Mini", created=200),
+        ]
+
+        grouped = _group_models(models, "openrouter")
+        latest = [model for model in grouped if model.is_latest]
+
+        self.assertEqual(len(latest), 1)
+        self.assertEqual(latest[0].id, "openai/gpt-5.5-mini")
+        self.assertTrue(all(model.group == "Other Openrouter" for model in grouped))
+
+    def test_openrouter_family_uses_structured_tokenizer_metadata(self) -> None:
+        self.assertEqual(
+            resolve_model_family_from_metadata(
+                "openrouter",
+                {"architecture": {"tokenizer": "Mistral"}},
+            ),
+            "Mistral",
+        )
+        self.assertEqual(
+            resolve_model_family_from_metadata(
+                "openrouter",
+                {"architecture": {"tokenizer": "Qwen3"}},
+            ),
+            "Qwen",
+        )
+
+    def test_openrouter_group_models_preserves_structured_family(self) -> None:
+        models = [
+            LLMModel(
+                id="mistralai/mistral-medium-3-5",
+                name="Mistral Medium 3.5",
+                group="Mistral",
+                created=100,
+            )
+        ]
+
+        grouped = _group_models(models, "openrouter")
+
+        self.assertEqual(grouped[0].group, "Mistral")
+        self.assertTrue(grouped[0].is_latest)
+
+    def test_openrouter_limits_use_structured_api_fields(self) -> None:
+        context_limit, output_limit = extract_openrouter_model_limits(
+            {
+                "context_length": 1_000_000,
+                "top_provider": {
+                    "context_length": 999_000,
+                    "max_completion_tokens": 128_000,
+                },
+            }
+        )
+
+        self.assertEqual(context_limit, 1_000_000)
+        self.assertEqual(output_limit, 128_000)
+
+    def test_openrouter_limits_fall_back_to_top_provider_context(self) -> None:
+        context_limit, output_limit = extract_openrouter_model_limits(
+            {
+                "top_provider": {
+                    "context_length": 262_144,
+                    "max_completion_tokens": 65_536,
+                },
+            }
+        )
+
+        self.assertEqual(context_limit, 262_144)
+        self.assertEqual(output_limit, 65_536)
 
     def test_group_models_dynamic_gpt_major_family(self) -> None:
         models = [

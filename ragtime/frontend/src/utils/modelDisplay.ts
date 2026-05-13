@@ -4,6 +4,7 @@ export { parseScopedModelIdentifier } from './modelProviders';
 export const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
+  openrouter: 'OpenRouter',
   ollama: 'Ollama',
   llama_cpp: 'llama.cpp',
   lmstudio: 'LM Studio',
