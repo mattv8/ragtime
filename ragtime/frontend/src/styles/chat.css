@@ -955,6 +955,19 @@ textarea.chat-header-title-input {
   font-size: var(--text-xs);
   padding: 6px 12px;
 }
+/* When the submenu opens to the left (because it would clip the viewport),
+   reverse the row so the model name (right-aligned) sits adjacent to the
+   main dropdown, with the "Latest" badge pushed to the outer edge. */
+.model-selector-submenu.opens-left .model-selector-item {
+  flex-direction: row-reverse;
+}
+.model-selector-submenu.opens-left .model-selector-item-name {
+  text-align: right;
+}
+.model-selector-submenu.opens-left .model-selector-latest-badge {
+  margin-left: 0;
+  margin-right: var(--space-sm);
+}
 .model-selector-item-name {
   overflow: hidden;
   text-overflow: ellipsis;

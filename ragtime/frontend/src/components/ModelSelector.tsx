@@ -91,7 +91,11 @@ export function ModelSelector<T extends BaseModel>({
 }: ModelSelectorProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
-  const [submenuPosition, setSubmenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const [submenuPosition, setSubmenuPosition] = useState<
+    | { top: number; side: 'right'; left: number }
+    | { top: number; side: 'left'; right: number }
+    | null
+  >(null);
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -270,11 +274,32 @@ export function ModelSelector<T extends BaseModel>({
       if (groupEl && dropdownEl) {
         const groupRect = groupEl.getBoundingClientRect();
         const dropdownRect = dropdownEl.getBoundingClientRect();
-        // Position fixed: top aligns with group, left is right edge of dropdown
-        setSubmenuPosition({
-          top: groupRect.top,
-          left: dropdownRect.right + 2
-        });
+        // Decide which side has more room. Use an estimated submenu width
+        // since we don't know the actual width until after render. The CSS
+        // uses `width: max-content`, so this is a conservative guess that
+        // accommodates most model names.
+        const ESTIMATED_SUBMENU_WIDTH = 280;
+        const GAP = 2;
+        const spaceOnRight = window.innerWidth - dropdownRect.right;
+        const spaceOnLeft = dropdownRect.left;
+        const openLeft =
+          spaceOnRight < ESTIMATED_SUBMENU_WIDTH + GAP
+          && spaceOnLeft > spaceOnRight;
+        if (openLeft) {
+          // Anchor by right edge so the submenu's right side sits adjacent
+          // to the main dropdown's left edge.
+          setSubmenuPosition({
+            top: groupRect.top,
+            side: 'left',
+            right: window.innerWidth - dropdownRect.left + GAP,
+          });
+        } else {
+          setSubmenuPosition({
+            top: groupRect.top,
+            side: 'right',
+            left: dropdownRect.right + GAP,
+          });
+        }
       }
       setExpandedGroup(group);
     }, 150);
@@ -485,8 +510,10 @@ export function ModelSelector<T extends BaseModel>({
           {/* Submenu rendered with position:fixed to escape overflow:hidden */}
           {!isSearching && expandedGroupData && expandedGroupData.otherModels.length > 0 && submenuPosition && (
             <div
-              className="model-selector-submenu"
-              style={{ top: submenuPosition.top, left: submenuPosition.left }}
+              className={`model-selector-submenu${submenuPosition.side === 'left' ? ' opens-left' : ''}`}
+              style={submenuPosition.side === 'left'
+                ? { top: submenuPosition.top, right: submenuPosition.right }
+                : { top: submenuPosition.top, left: submenuPosition.left }}
               onMouseEnter={handleSubmenuMouseEnter}
               onMouseLeave={handleSubmenuMouseLeave}
             >
