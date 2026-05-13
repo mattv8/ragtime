@@ -4,6 +4,25 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+CHAT_EVENT_CHANNELS_BY_TYPE = {
+    "reasoning": "analysis",
+    "tool": "commentary",
+    "content": "final",
+    "error": "final",
+}
+
+
+def channel_for_event_type(event_type: str | None) -> str:
+    """Return the display channel for a persisted chat event type."""
+    return CHAT_EVENT_CHANNELS_BY_TYPE.get(str(event_type or ""), "final")
+
+
+def with_event_channel(event: dict[str, Any]) -> dict[str, Any]:
+    """Attach a first-class channel to a chat event while preserving compatibility."""
+    normalized = dict(event)
+    normalized.setdefault("channel", channel_for_event_type(normalized.get("type")))
+    return normalized
+
 def append_reasoning_event(
     events: list[dict[str, Any]],
     content: str,
@@ -15,9 +34,10 @@ def append_reasoning_event(
         block_started_at = now
 
     if events and events[-1].get("type") == "reasoning":
+        events[-1].setdefault("channel", "analysis")
         events[-1]["content"] = f"{events[-1].get('content', '')}{content}"
     else:
-        events.append({"type": "reasoning", "content": content})
+        events.append({"type": "reasoning", "channel": "analysis", "content": content})
 
     return block_started_at
 

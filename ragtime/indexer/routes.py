@@ -7260,6 +7260,9 @@ async def _fetch_openrouter_models(api_key: str) -> LLMModelsResponse:
                 register_model_reasoning_capabilities(
                     model_id,
                     reasoning_supported=bool(reasoning_supported),
+                    reasoning_effort_supported=bool(
+                        effort_levels or "reasoning_effort" in capabilities
+                    ),
                     thinking_budget_supported=bool(thinking_budget_supported),
                 )
 
@@ -8562,6 +8565,9 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
                     register_model_reasoning_capabilities(
                         model_id,
                         reasoning_supported=bool(reasoning_supported),
+                        reasoning_effort_supported=bool(
+                            effort_levels or "reasoning_effort" in capabilities
+                        ),
                         thinking_budget_supported=bool(thinking_budget_supported),
                     )
                 # All Claude models support function calling (chat capable)
@@ -9337,6 +9343,9 @@ async def _fetch_github_copilot_models(
                             register_model_reasoning_capabilities(
                                 model_id,
                                 reasoning_supported=bool(reasoning_supported),
+                                reasoning_effort_supported=bool(
+                                    effort_levels or "reasoning_effort" in capabilities
+                                ),
                                 thinking_budget_supported=bool(
                                     thinking_budget_supported
                                 ),
@@ -9440,6 +9449,9 @@ async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
                 register_model_reasoning_capabilities(
                     model_id,
                     reasoning_supported=bool(reasoning_supported),
+                    reasoning_effort_supported=bool(
+                        effort_levels or "reasoning_effort" in capabilities
+                    ),
                     thinking_budget_supported=bool(thinking_budget_supported),
                 )
 
@@ -12294,6 +12306,7 @@ async def send_message_stream(
                         # Start tracking a new tool call
                         current_tool_call = {
                             "type": "tool",
+                            "channel": "commentary",
                             "tool": event.get("tool"),
                             "input": event.get("input"),
                         }
@@ -12386,7 +12399,7 @@ async def send_message_stream(
                     else:
                         # Start new content event
                         chronological_events.append(
-                            {"type": "content", "content": token}
+                            {"type": "content", "channel": "final", "content": token}
                         )
 
                     chunk = {

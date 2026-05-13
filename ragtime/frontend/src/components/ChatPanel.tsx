@@ -6,6 +6,8 @@ import rehypeKatex from 'rehype-katex';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { diffLines } from 'diff';
+import Chart from 'chart.js/auto';
+import type { Chart as ChartInstance, ChartConfiguration } from 'chart.js';
 import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2 } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, AvailableModel } from '@/types';
@@ -287,9 +289,28 @@ export interface ActiveToolCall {
 
 // Local render event to keep streaming items in arrival order
 type StreamingRenderEvent =
-  | { type: 'content'; content: string }
-  | { type: 'tool'; toolCall: ActiveToolCall }
-  | { type: 'reasoning'; content: string; durationSeconds?: number };
+  | { type: 'content'; channel?: 'final'; content: string }
+  | { type: 'tool'; channel?: 'commentary'; toolCall: ActiveToolCall }
+  | { type: 'reasoning'; channel?: 'analysis'; content: string; durationSeconds?: number };
+
+type ChatEventChannel = 'analysis' | 'commentary' | 'final';
+
+function getChatEventChannel(event: { type?: string; channel?: unknown }): ChatEventChannel {
+  if (event.channel === 'analysis' || event.channel === 'commentary' || event.channel === 'final') {
+    return event.channel;
+  }
+  if (event.type === 'reasoning') return 'analysis';
+  if (event.type === 'tool') return 'commentary';
+  return 'final';
+}
+
+function isVisualizationToolName(toolName?: string): boolean {
+  return toolName === 'create_chart' || toolName === 'create_datatable';
+}
+
+function isVisualizationToolCall(toolCall?: Pick<ActiveToolCall, 'tool'>): boolean {
+  return isVisualizationToolName(toolCall?.tool);
+}
 
 function normalizeStreamingToolEvent(event: any): StreamingRenderEvent {
   const nestedToolCall = event?.toolCall && typeof event.toolCall === 'object' ? event.toolCall : undefined;
@@ -298,6 +319,7 @@ function normalizeStreamingToolEvent(event: any): StreamingRenderEvent {
 
   return {
     type: 'tool' as const,
+    channel: 'commentary' as const,
     toolCall: {
       tool: event?.tool ?? nestedToolCall?.tool ?? '',
       input: event?.input ?? nestedToolCall?.input,
@@ -641,7 +663,7 @@ const DataTable = memo(function DataTable({ data }: { data: TableData }) {
 const ChartDisplay = memo(function ChartDisplay({ chartData }: { chartData: ChartData }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const chartInstanceRef = useRef<unknown>(null);
+  const chartInstanceRef = useRef<ChartInstance | null>(null);
   const [resizeKey, setResizeKey] = useState(0);
 
   // Get theme colors from CSS variables
@@ -657,17 +679,10 @@ const ChartDisplay = memo(function ChartDisplay({ chartData }: { chartData: Char
 
   const createChart = useCallback(() => {
     try {
-      // @ts-expect-error Chart.js is loaded from CDN
-      const Chart = window.Chart;
-      if (!Chart) {
-        console.error('Chart.js not loaded');
-        return;
-      }
-
       if (canvasRef.current && containerRef.current) {
         // Destroy previous chart if exists
         if (chartInstanceRef.current) {
-          (chartInstanceRef.current as { destroy: () => void }).destroy();
+          chartInstanceRef.current.destroy();
         }
 
         const colors = getThemeColors();
@@ -731,7 +746,7 @@ const ChartDisplay = memo(function ChartDisplay({ chartData }: { chartData: Char
           },
         };
 
-        chartInstanceRef.current = new Chart(canvasRef.current, config);
+        chartInstanceRef.current = new Chart(canvasRef.current, config as ChartConfiguration);
       }
     } catch (err) {
       console.error('Failed to create chart:', err);
@@ -745,7 +760,8 @@ const ChartDisplay = memo(function ChartDisplay({ chartData }: { chartData: Char
     return () => {
       clearTimeout(timeoutId);
       if (chartInstanceRef.current) {
-        (chartInstanceRef.current as { destroy: () => void }).destroy();
+        chartInstanceRef.current.destroy();
+        chartInstanceRef.current = null;
       }
     };
   }, [chartData, resizeKey, createChart]);
@@ -2742,24 +2758,6 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     }
   }, [canRerun, rerunKind, isRerunning, inputDisplay, workspaceId, conversationId, toolCall.connection, toolCall.input]);
 
-  // Special rendering for chart tool - show chart inline without collapsible
-  if (chartData) {
-    return (
-      <div className="tool-call tool-call-chart tool-call-complete">
-        <ChartDisplay chartData={chartData} />
-      </div>
-    );
-  }
-
-  // Special rendering for datatable tool - show table inline without collapsible
-  if (datatableData) {
-    return (
-      <div className="tool-call tool-call-datatable tool-call-complete">
-        <DataTableDisplay tableData={datatableData} />
-      </div>
-    );
-  }
-
   // Determine the tool-type icon (always visible)
   const getToolIcon = () => {
     const name = toolCall.tool.toLowerCase();
@@ -2830,6 +2828,26 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userspaceWriteBatch, userspaceDiffMap, userspaceDiffLoadingMap, userspaceDiffErrorMap, userspaceCurrentSnapshotId]);
+
+  // Special rendering for chart tool - show chart inline without collapsible.
+  // Keep these returns after every hook in this component so tool-call output
+  // transitions cannot change the hook count between renders.
+  if (chartData) {
+    return (
+      <div className="tool-call tool-call-chart tool-call-complete">
+        <ChartDisplay chartData={chartData} />
+      </div>
+    );
+  }
+
+  // Special rendering for datatable tool - show table inline without collapsible
+  if (datatableData) {
+    return (
+      <div className="tool-call tool-call-datatable tool-call-complete">
+        <DataTableDisplay tableData={datatableData} />
+      </div>
+    );
+  }
 
   const openUserspaceOverlayAt = (index: number) => {
     setUserspaceOverlayActiveIndex(index);
@@ -3795,7 +3813,6 @@ interface StreamingSegment {
   toolCall?: ActiveToolCall;  // For tool segments
   isComplete?: boolean;  // For reasoning segments - whether thinking has finished
   durationSeconds?: number;  // For reasoning segments - persisted final elapsed time
-  embeddedToolCalls?: ActiveToolCall[];  // For reasoning segments - nested tool executions
   reasoningParts?: ReasoningPart[];  // For reasoning segments - ordered text/tool parts
 }
 
@@ -3812,9 +3829,9 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
   content,
   isComplete,
   parts,
-  toolCalls,
   durationSeconds,
   visibility = 'compact',
+  showToolCalls = true,
   workspaceId,
   conversationId,
   onOpenWorkspaceFile,
@@ -3822,9 +3839,9 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
   content: string;
   isComplete: boolean;
   parts?: ReasoningPart[];
-  toolCalls?: ActiveToolCall[];
   durationSeconds?: number;
   visibility?: 'compact' | 'expanded' | 'hidden';
+  showToolCalls?: boolean;
   workspaceId?: string;
   conversationId?: string;
   onOpenWorkspaceFile?: (path: string) => void;
@@ -3847,9 +3864,8 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
     setIsExpanded(prev => !prev);
   }, []);
 
-  // Strip <tool_call> XML blocks from reasoning text — these are the model's
-  // planned tool calls that get promoted to real tool events. We show the real
-  // executed tool cards (from parts/embeddedToolCalls) instead of the raw XML.
+  // Strip generated tool-call markup from reasoning text. Executed non-artifact
+  // tools can render inline from structured commentary-channel events.
   const cleanToolCallXml = useCallback((text: string) => {
     // Strip complete <tool_call>...</tool_call> blocks
     let cleaned = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
@@ -3868,8 +3884,6 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
     return cleaned.replace(/\n{3,}/g, '\n\n').trimEnd();
   }, [isComplete]);
 
-  // Prefer structured reasoning parts from streaming events (ordered text + tools).
-  // Clean tool-call XML from each text part.
   const renderedParts = useMemo(() => {
     const raw = (parts && parts.length > 0) ? parts : [{ type: 'text' as const, text: content }];
     return raw.map(part => {
@@ -3881,7 +3895,7 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
   }, [parts, content, cleanToolCallXml]);
 
   const cleanedContent = useMemo(() => cleanToolCallXml(content), [content, cleanToolCallXml]);
-  const hasToolCalls = renderedParts.some((part) => part.type === 'tool' && !!part.toolCall);
+  const hasInlineToolCalls = showToolCalls && renderedParts.some((part) => part.type === 'tool' && !!part.toolCall);
 
   // Elapsed timer while streaming
   useEffect(() => {
@@ -3931,7 +3945,7 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
 
   // Metadata for header
   const charCount = cleanedContent.length;
-  const toolCount = renderedParts.filter((part) => part.type === 'tool' && !!part.toolCall).length || (toolCalls?.length ?? 0);
+  const toolCount = renderedParts.filter((part) => part.type === 'tool' && !!part.toolCall).length;
 
   // Summary: first meaningful line for compact header
   const summaryLine = useMemo(() => {
@@ -4018,7 +4032,7 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
               <Clock size={10} /> {formatElapsed(resolvedElapsed)}
             </span>
           )}
-          {toolCount > 0 && (
+          {showToolCalls && toolCount > 0 && (
             <span className="reasoning-meta-item" title={`${toolCount} tool call${toolCount !== 1 ? 's' : ''}`}>
               {toolCount} tool{toolCount !== 1 ? 's' : ''}
             </span>
@@ -4039,17 +4053,17 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
       )}
       <div className={`reasoning-content ${isExpanded ? 'reasoning-content-expanded' : 'reasoning-content-collapsed'}`}>
         <div className="reasoning-content-inner" ref={contentRef} onScroll={handleContentScroll}>
-          {hasToolCalls ? renderedParts.map((part, i) => {
+          {hasInlineToolCalls ? renderedParts.map((part, index) => {
             if (part.type === 'text') {
               return (
-                <div key={i} className="markdown-content">
+                <div key={index} className="markdown-content">
                   <MemoizedMarkdown content={formatReasoningText(part.text ?? '')} />
                 </div>
               );
             }
             if (!part.toolCall) return null;
             return (
-              <div key={i} className="chat-tool-calls reasoning-embedded-tool">
+              <div key={index} className="chat-tool-calls reasoning-embedded-tool">
                 <ToolCallDisplay
                   toolCall={part.toolCall}
                   defaultExpanded={false}
@@ -4096,9 +4110,9 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
       <ReasoningDisplay
         content={segment.content}
         isComplete={!!segment.isComplete}
-        durationSeconds={segment.durationSeconds}
         parts={segment.reasoningParts}
-        toolCalls={segment.embeddedToolCalls}
+        durationSeconds={segment.durationSeconds}
+        showToolCalls={showToolCalls}
         workspaceId={workspaceId}
         conversationId={conversationId}
         onOpenWorkspaceFile={onOpenWorkspaceFile}
@@ -5396,8 +5410,8 @@ export function ChatPanel({
     notifiedSnapshotEventKeysRef.current.clear();
   }, [activeTask?.id]);
 
-  // Memoized consolidated segments for streaming - groups adjacent content events
-  // Merges ALL reasoning events into a single segment per turn for unified display
+  // Memoized consolidated segments for streaming. Ordinary tool calls can stay
+  // inline inside active reasoning; visualization artifacts render standalone.
   const consolidatedSegments = useMemo((): StreamingSegment[] => {
     if (!streamingEvents.length) return [];
 
@@ -5405,7 +5419,6 @@ export function ChatPanel({
     let currentContent = '';
     let currentReasoning = '';
     let currentReasoningParts: ReasoningPart[] = [];
-    let reasoningToolCalls: ActiveToolCall[] = [];
     let currentReasoningDurationSeconds: number | undefined;
 
     // Flush accumulated reasoning into a NEW reasoning segment (adjacent reasoning merges, non-adjacent stays separate)
@@ -5416,13 +5429,11 @@ export function ChatPanel({
         content: currentReasoning,
         isComplete,
         durationSeconds: currentReasoningDurationSeconds,
-        embeddedToolCalls: reasoningToolCalls.length > 0 ? [...reasoningToolCalls] : [],
         reasoningParts: currentReasoningParts.length > 0 ? [...currentReasoningParts] : [{ type: 'text', text: currentReasoning }],
       };
       segments.push(seg);
       currentReasoning = '';
       currentReasoningParts = [];
-      reasoningToolCalls = [];
       currentReasoningDurationSeconds = undefined;
     };
 
@@ -5433,32 +5444,31 @@ export function ChatPanel({
     };
 
     for (const ev of streamingEvents) {
-      if (ev.type === 'reasoning') {
+      const channel = getChatEventChannel(ev);
+      if (channel === 'analysis' && ev.type === 'reasoning') {
         // Flush any pending content first — content breaks reasoning adjacency
         flushContent();
         // Accumulate reasoning (adjacent reasoning events merge)
         currentReasoning += ev.content;
-        if (typeof ev.durationSeconds === 'number') {
-          currentReasoningDurationSeconds = ev.durationSeconds;
-        }
         const lastPart = currentReasoningParts[currentReasoningParts.length - 1];
         if (lastPart && lastPart.type === 'text') {
           lastPart.text = (lastPart.text || '') + ev.content;
         } else {
           currentReasoningParts.push({ type: 'text', text: ev.content });
         }
-      } else if (ev.type === 'content') {
+        if (typeof ev.durationSeconds === 'number') {
+          currentReasoningDurationSeconds = ev.durationSeconds;
+        }
+      } else if (channel === 'final' && ev.type === 'content') {
         // Flush any pending reasoning — it's now complete since content follows
         flushReasoning(true);
         // Accumulate content
         currentContent += ev.content;
-      } else if (ev.type === 'tool') {
-        if (currentReasoning) {
-          // Tool arrived while reasoning is actively pending — embed in reasoning
-          reasoningToolCalls.push(ev.toolCall);
+      } else if (channel === 'commentary' && ev.type === 'tool') {
+        if (currentReasoning && !isVisualizationToolCall(ev.toolCall)) {
           currentReasoningParts.push({ type: 'tool', toolCall: ev.toolCall });
         } else {
-          // Reasoning is not pending — render as standalone tool
+          flushReasoning(true);
           flushContent();
           segments.push({ type: 'tool', toolCall: ev.toolCall });
         }
@@ -6394,10 +6404,12 @@ export function ChatPanel({
 
                 // Convert to StreamingRenderEvent format
                 return events.map((ev: any) => {
-                    if (ev.type === 'content') return { type: 'content' as const, content: ev.content || '' };
+                    const channel = getChatEventChannel(ev);
+                    if (channel === 'final' && ev.type === 'content') return { type: 'content' as const, channel: 'final' as const, content: ev.content || '' };
                     if (ev.type === 'reasoning') {
                       return {
                         type: 'reasoning' as const,
+                        channel: 'analysis' as const,
                         content: ev.content || '',
                         durationSeconds: typeof ev.duration_seconds === 'number' ? ev.duration_seconds : undefined,
                       };
@@ -6692,9 +6704,9 @@ export function ChatPanel({
 
     try {
       const updated = await api.updateConversationTitle(conversationId, titleInput.trim(), workspaceId);
-      setConversations(prev => prev.map(c => c.id === conversationId ? updated : c));
+      setConversations(prev => prev.map(c => c.id === conversationId ? { ...c, title: updated.title, updated_at: updated.updated_at } : c));
       if (activeConversation?.id === conversationId) {
-        setActiveConversation(updated);
+        setActiveConversation(prev => prev?.id === conversationId ? { ...prev, title: updated.title, updated_at: updated.updated_at } : prev);
       }
       setEditingTitle(null);
       setEditingHeaderTitle(null);
@@ -6728,8 +6740,8 @@ export function ChatPanel({
         workspaceId,
         selected?.provider || requestedProviderForApi,
       );
-      setActiveConversation(updated);
-      setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
+      setActiveConversation(prev => prev?.id === updated.id ? { ...prev, model: updated.model, updated_at: updated.updated_at } : prev);
+      setConversations(prev => prev.map(c => c.id === updated.id ? { ...c, model: updated.model, updated_at: updated.updated_at } : c));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to change model');
     }
@@ -8327,7 +8339,6 @@ export function ChatPanel({
                                   const result: React.ReactNode[] = [];
                                   let pendingReasoning = '';
                                   let pendingReasoningParts: ReasoningPart[] = [];
-                                  let pendingReasoningTools: ActiveToolCall[] = [];
                                   let pendingReasoningDurationSeconds: number | undefined;
                                   let reasoningBlockCount = 0;
 
@@ -8339,9 +8350,9 @@ export function ChatPanel({
                                         key={`reasoning-${reasoningBlockCount}`}
                                         content={pendingReasoning}
                                         isComplete={true}
-                                        durationSeconds={pendingReasoningDurationSeconds}
                                         parts={pendingReasoningParts.length > 0 ? pendingReasoningParts : undefined}
-                                        toolCalls={pendingReasoningTools.length > 0 ? pendingReasoningTools : undefined}
+                                        durationSeconds={pendingReasoningDurationSeconds}
+                                        showToolCalls={showToolCalls}
                                         workspaceId={workspaceId}
                                         conversationId={activeConversation.id}
                                         onOpenWorkspaceFile={onOpenWorkspaceFile}
@@ -8349,13 +8360,13 @@ export function ChatPanel({
                                     );
                                     pendingReasoning = '';
                                     pendingReasoningParts = [];
-                                    pendingReasoningTools = [];
                                     pendingReasoningDurationSeconds = undefined;
                                   };
 
                                   for (let evIdx = 0; evIdx < msg.events.length; evIdx++) {
                                     const ev = msg.events[evIdx];
-                                    if (ev.type === 'reasoning') {
+                                    const channel = getChatEventChannel(ev);
+                                    if (channel === 'analysis' && ev.type === 'reasoning') {
                                       // Accumulate adjacent reasoning
                                       pendingReasoning += (pendingReasoning ? '\n\n' : '') + ev.content;
                                       if (typeof ev.duration_seconds === 'number') {
@@ -8367,22 +8378,22 @@ export function ChatPanel({
                                       } else {
                                         pendingReasoningParts.push({ type: 'text', text: ev.content });
                                       }
-                                    } else if (ev.type === 'tool' && pendingReasoning) {
-                                      // Tool immediately following reasoning — embed in current reasoning block
-                                      const tc: ActiveToolCall = {
-                                        tool: ev.tool,
-                                        input: ev.input,
-                                        output: ev.output,
-                                        presentation: ev.presentation,
-                                        connection: ev.connection,
-                                        status: 'complete' as const,
-                                      };
-                                      pendingReasoningTools.push(tc);
-                                      pendingReasoningParts.push({ type: 'tool', toolCall: tc });
+                                    } else if (channel === 'commentary' && ev.type === 'tool' && pendingReasoning && !isVisualizationToolName(ev.tool)) {
+                                      pendingReasoningParts.push({
+                                        type: 'tool',
+                                        toolCall: {
+                                          tool: ev.tool,
+                                          input: ev.input,
+                                          output: ev.output,
+                                          presentation: ev.presentation,
+                                          connection: ev.connection,
+                                          status: 'complete' as const,
+                                        },
+                                      });
                                     } else {
-                                      // Content or standalone tool breaks reasoning adjacency
+                                      // Final content and visualization artifacts break reasoning adjacency.
                                       flushReasoning();
-                                      if (ev.type === 'tool' && showToolCalls) {
+                                      if (channel === 'commentary' && ev.type === 'tool' && showToolCalls) {
                                         result.push(
                                           <div key={`event-${evIdx}`} className="chat-tool-calls">
                                             <ToolCallDisplay
@@ -8402,7 +8413,7 @@ export function ChatPanel({
                                             />
                                           </div>
                                         );
-                                      } else if (ev.type === 'content') {
+                                      } else if (channel === 'final' && ev.type === 'content') {
                                         result.push(
                                           <div key={`event-${evIdx}`} className="chat-message-text markdown-content">
                                             <MemoizedMarkdown content={ev.content} />

@@ -145,6 +145,12 @@ This is a turn-level reminder to follow real tool-calling behavior.
 - Use LangChain-style tool calls via the tool calling API
     (assistant tool_call -> tool response -> assistant follow-up).
 - Do NOT write fake tool invocations or fake tool results as plain text.
+- Keep channels distinct: reasoning belongs only in the reasoning/analysis stream,
+    visible prose belongs in normal assistant content, and tool outputs must come
+    only from real tool calls.
+- For visualizations, call create_chart/create_datatable. Never inline chart/table
+    JSON, __chart__/__datatable__ markers, markdown tables, or tool-result payloads
+    in reasoning or visible message text.
 ]
 
 """

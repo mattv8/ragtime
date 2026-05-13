@@ -1807,11 +1807,13 @@ export interface ToolPresentation {
 
 export interface ContentEvent {
   type: 'content';
+  channel?: 'final';
   content: string;
 }
 
 export interface ToolCallEvent {
   type: 'tool';
+  channel?: 'commentary';
   tool: string;
   input?: Record<string, unknown>;
   output?: string;
@@ -1821,12 +1823,14 @@ export interface ToolCallEvent {
 
 export interface ReasoningEvent {
   type: 'reasoning';
+  channel?: 'analysis';
   content: string;
   duration_seconds?: number;
 }
 
 export interface ErrorMessageEvent {
   type: 'error';
+  channel?: 'final';
   content: string;
 }
 

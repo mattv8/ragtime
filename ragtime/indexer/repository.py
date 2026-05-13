@@ -64,6 +64,7 @@ from ragtime.indexer.models import (
     VectorStoreType,
 )
 from ragtime.indexer.models import ModelProviderPrecedence
+from ragtime.indexer.chat_events import with_event_channel
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.utils import safe_tool_name
@@ -239,11 +240,15 @@ def _normalize_message_events(
 
     normalized_events: list[dict[str, Any]] = []
     for event in events:
-        if not isinstance(event, dict) or event.get("type") != "tool":
+        if not isinstance(event, dict):
             normalized_events.append(event)
             continue
 
-        normalized_event = dict(event)
+        normalized_event = with_event_channel(event)
+        if event.get("type") != "tool":
+            normalized_events.append(normalized_event)
+            continue
+
         presentation = normalize_tool_presentation(
             str(event.get("tool", "")),
             cast(Optional[dict[str, Any]], event.get("connection")),
@@ -273,6 +278,7 @@ def _synthesize_events_from_legacy_message(
             continue
         event = {
             "type": "tool",
+            "channel": "commentary",
             "tool": tool_call.get("tool", ""),
             "input": tool_call.get("input"),
             "output": tool_call.get("output"),
@@ -289,7 +295,7 @@ def _synthesize_events_from_legacy_message(
 
     content = str(message.get("content", "") or "")
     if content:
-        events.append({"type": "content", "content": content})
+        events.append({"type": "content", "channel": "final", "content": content})
 
     return events or None
 
@@ -2450,7 +2456,12 @@ class IndexerRepository:
         # Sanitize content for PostgreSQL storage (remove null bytes)
         content = _sanitize_for_postgres(content)
         sanitized_events = (
-            cast(List[dict], _sanitize_json_for_postgres(events)) if events else None
+            cast(
+                List[dict],
+                _sanitize_json_for_postgres(_normalize_message_events(events)),
+            )
+            if events
+            else None
         )
 
         # Get current conversation
@@ -3594,7 +3605,10 @@ class IndexerRepository:
 
         # Sanitize content for PostgreSQL storage (remove null bytes)
         content = _sanitize_for_postgres(content)
-        sanitized_events = cast(List[dict], _sanitize_json_for_postgres(events))
+        normalized_events = _normalize_message_events(events) or []
+        sanitized_events = cast(
+            List[dict], _sanitize_json_for_postgres(normalized_events)
+        )
         sanitized_tool_calls = cast(List[dict], _sanitize_json_for_postgres(tool_calls))
 
         # Increment version for change detection
@@ -3636,8 +3650,9 @@ class IndexerRepository:
 
         # Sanitize content for PostgreSQL storage (remove null bytes)
         response_content = _sanitize_for_postgres(response_content)
+        normalized_final_events = _normalize_message_events(final_events) or []
         sanitized_final_events = cast(
-            List[dict], _sanitize_json_for_postgres(final_events)
+            List[dict], _sanitize_json_for_postgres(normalized_final_events)
         )
         sanitized_tool_calls = cast(List[dict], _sanitize_json_for_postgres(tool_calls))
 

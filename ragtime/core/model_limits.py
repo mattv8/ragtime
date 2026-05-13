@@ -31,6 +31,8 @@ _model_freshness_cache: dict[str, int] = {}
 _model_supports_function_calling: dict[str, bool] = {}
 # Cache for reasoning/thinking support
 _model_supports_reasoning: dict[str, bool] = {}
+# Cache for reasoning effort parameter support
+_model_supports_reasoning_effort: dict[str, bool] = {}
 # Cache for thinking budget support
 _model_supports_thinking_budget: dict[str, bool] = {}
 # Cache for models requiring Responses API (populated from Copilot /models)
@@ -39,6 +41,8 @@ _model_requires_responses_api: dict[str, bool] = {}
 _model_supports_responses_api: dict[str, bool] = {}
 # Cache for provider-reported reasoning capabilities (authoritative)
 _provider_supports_reasoning: dict[str, bool] = {}
+# Cache for provider-reported reasoning effort support (authoritative)
+_provider_supports_reasoning_effort: dict[str, bool] = {}
 # Cache for provider-reported thinking-budget capabilities (authoritative)
 _provider_supports_thinking_budget: dict[str, bool] = {}
 # Cache for provider-reported or live-probed image input capabilities (authoritative)
@@ -723,7 +727,7 @@ def _lookup_capability_flag(cache: dict[str, bool], model_id: str) -> bool | Non
 
 async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
     """Fetch model limits and capabilities from models.dev."""
-    global _model_supports_function_calling, _model_supports_reasoning, _model_supports_thinking_budget
+    global _model_supports_function_calling, _model_supports_reasoning, _model_supports_reasoning_effort, _model_supports_thinking_budget
     global _model_family_labels_cache, _model_provider_labels_cache, _model_display_names_cache, _model_freshness_cache
     limits: dict[str, int] = {}
     output_limits: dict[str, int] = {}
@@ -733,6 +737,7 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
     freshness: dict[str, int] = {}
     function_calling: dict[str, bool] = {}
     reasoning_support: dict[str, bool] = {}
+    reasoning_effort_support: dict[str, bool] = {}
     thinking_budget_support: dict[str, bool] = {}
 
     try:
@@ -804,11 +809,13 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
                             function_calling[key] = supports_fc
                         if isinstance(supports_reasoning_flag, bool):
                             reasoning_support[key] = supports_reasoning_flag
+                            reasoning_effort_support[key] = supports_reasoning_flag
                         if isinstance(supports_thinking_budget_flag, bool):
                             thinking_budget_support[key] = supports_thinking_budget_flag
 
             _model_supports_function_calling = function_calling
             _model_supports_reasoning = reasoning_support
+            _model_supports_reasoning_effort = reasoning_effort_support
             _model_supports_thinking_budget = thinking_budget_support
             _model_family_labels_cache = family_labels
             _model_provider_labels_cache = provider_labels
@@ -1155,9 +1162,11 @@ def invalidate_cache() -> None:
     _model_freshness_cache.clear()
     _model_supports_function_calling.clear()
     _model_supports_reasoning.clear()
+    _model_supports_reasoning_effort.clear()
     _model_supports_thinking_budget.clear()
     _model_requires_responses_api.clear()
     _provider_supports_reasoning.clear()
+    _provider_supports_reasoning_effort.clear()
     _provider_supports_thinking_budget.clear()
 
 
@@ -1210,6 +1219,21 @@ async def supports_reasoning(model_id: str) -> bool:
     return False
 
 
+async def supports_reasoning_effort(model_id: str) -> bool:
+    """Check if a model supports the ``reasoning_effort`` request parameter."""
+    await _ensure_cache_loaded()
+
+    matched = _lookup_capability_flag(_provider_supports_reasoning_effort, model_id)
+    if matched is not None:
+        return matched
+
+    matched = _lookup_capability_flag(_model_supports_reasoning_effort, model_id)
+    if matched is not None:
+        return matched
+
+    return False
+
+
 async def supports_thinking_budget(model_id: str) -> bool:
     """Check if a model supports Copilot/OpenAI-style `thinking_budget`.
 
@@ -1254,6 +1278,7 @@ def register_model_reasoning_capabilities(
     model_id: str,
     *,
     reasoning_supported: bool = False,
+    reasoning_effort_supported: bool = False,
     thinking_budget_supported: bool = False,
 ) -> None:
     """Register reasoning-related capability flags from provider metadata.
@@ -1261,7 +1286,11 @@ def register_model_reasoning_capabilities(
     This supplements models.dev-derived flags with provider-native capabilities
     (for example Copilot ``/models`` payloads).
     """
-    if not reasoning_supported and not thinking_budget_supported:
+    if (
+        not reasoning_supported
+        and not reasoning_effort_supported
+        and not thinking_budget_supported
+    ):
         return
 
     key_variants = {str(model_id).strip()}
@@ -1273,10 +1302,16 @@ def register_model_reasoning_capabilities(
     for key in key_variants:
         if reasoning_supported:
             _provider_supports_reasoning[key] = True
+        if reasoning_effort_supported:
+            _provider_supports_reasoning_effort[key] = True
+        elif reasoning_supported:
+            _provider_supports_reasoning_effort[key] = False
         if thinking_budget_supported:
             _provider_supports_thinking_budget[key] = True
         if reasoning_supported:
             _model_supports_reasoning[key] = True
+        if reasoning_effort_supported:
+            _model_supports_reasoning_effort[key] = True
         if thinking_budget_supported:
             _model_supports_thinking_budget[key] = True
 

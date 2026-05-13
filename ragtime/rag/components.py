@@ -78,6 +78,7 @@ from ragtime.core.model_limits import (
     register_model_supported_endpoints,
     requires_responses_api,
     supports_reasoning,
+    supports_reasoning_effort,
     supports_responses_api,
     supports_thinking_budget,
 )
@@ -1425,12 +1426,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
         self._force_chat_completions_api = True
         self.use_responses_api = False
         self.output_version = "v0"
-
-        reasoning = getattr(self, "reasoning", None)
-        if isinstance(reasoning, dict):
-            effort = str(reasoning.get("effort", "") or "").strip()
-            if effort and not getattr(self, "reasoning_effort", None):
-                self.reasoning_effort = effort
+        if isinstance(getattr(self, "reasoning", None), dict):
             self.reasoning = None
 
         if cache_result:
@@ -1448,12 +1444,16 @@ class _CopilotChatOpenAI(ChatOpenAI):
         attempted.
         """
         reasoning = getattr(self, "reasoning", None)
-        if not isinstance(reasoning, dict):
-            return False
-        reasoning_payload: dict[str, Any] = reasoning
+        reasoning_payload: dict[str, Any] | None = (
+            reasoning if isinstance(reasoning, dict) else None
+        )
 
         changed = False
-        if self._looks_like_summary_error(exc) and "summary" in reasoning_payload:
+        if (
+            reasoning_payload is not None
+            and self._looks_like_summary_error(exc)
+            and "summary" in reasoning_payload
+        ):
             reasoning_payload.pop("summary", None)
             changed = True
             logger.info(
@@ -1462,8 +1462,39 @@ class _CopilotChatOpenAI(ChatOpenAI):
             )
 
         if self._looks_like_effort_error(exc):
-            effort = str(reasoning_payload.get("effort", "")).lower()
-            if effort in {"high", "xhigh"}:
+            body = self._get_error_body(exc)
+            body_message = ""
+            if isinstance(body, dict):
+                error_obj = body.get("error")
+                if isinstance(error_obj, dict):
+                    body_message = str(error_obj.get("message", "") or "")
+            error_text = f"{body_message} {exc}".lower()
+            remove_effort = "not support reasoning effort" in error_text
+
+            if getattr(self, "reasoning_effort", None):
+                self.reasoning_effort = None
+                model_kwargs = getattr(self, "model_kwargs", None)
+                if isinstance(model_kwargs, dict):
+                    model_kwargs.pop("reasoning_effort", None)
+                changed = True
+                logger.info(
+                    "Model %s rejected reasoning_effort; retrying without it",
+                    self.model_name,
+                )
+
+            effort = (
+                str(reasoning_payload.get("effort", "")).lower()
+                if reasoning_payload is not None
+                else ""
+            )
+            if reasoning_payload is not None and effort and remove_effort:
+                reasoning_payload.pop("effort", None)
+                changed = True
+                logger.info(
+                    "Model %s does not support reasoning effort; retrying without effort",
+                    self.model_name,
+                )
+            elif reasoning_payload is not None and effort in {"high", "xhigh"}:
                 reasoning_payload["effort"] = "medium"
                 changed = True
                 logger.info(
@@ -1484,7 +1515,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
         try:
             return await call(*args, **kwargs)
         except Exception as exc:
-            if request_targets_responses and self._downgrade_reasoning_parameters(exc):
+            if self._downgrade_reasoning_parameters(exc):
                 return await call(*args, **kwargs)
             raise
 
@@ -1549,7 +1580,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
                     yield chunk
                 return
 
-            if request_targets_responses and self._downgrade_reasoning_parameters(exc):
+            if self._downgrade_reasoning_parameters(exc):
                 async for chunk in super()._astream(*args, **kwargs):
                     yield chunk
                 return
@@ -2676,6 +2707,9 @@ class RAGComponents:
                                         "reasoning_effort" in supports_flags
                                         or "reasoning" in supports_flags
                                     ),
+                                    reasoning_effort_supported=(
+                                        "reasoning_effort" in supports_flags
+                                    ),
                                     thinking_budget_supported=(
                                         "thinking_budget" in supports_flags
                                         or "max_thinking_budget" in supports_flags
@@ -2801,7 +2835,7 @@ class RAGComponents:
                 "request_timeout": LLM_REQUEST_TIMEOUT_SECONDS,
             }
 
-            if await supports_reasoning(model):
+            if await supports_reasoning_effort(model):
                 openrouter_kwargs["reasoning_effort"] = "high"
             if await supports_thinking_budget(model):
                 openrouter_kwargs["extra_body"] = {"thinking_budget": 16384}
@@ -2852,6 +2886,7 @@ class RAGComponents:
             }
 
             model_supports_reasoning = await supports_reasoning(model)
+            model_supports_reasoning_effort = await supports_reasoning_effort(model)
             model_supports_responses = await supports_responses_api(model)
             model_requires_responses = await requires_responses_api(model)
 
@@ -2869,10 +2904,10 @@ class RAGComponents:
                 # reasoning items in streamed content blocks.
                 copilot_kwargs["output_version"] = "responses/v1"
                 if model_supports_reasoning:
-                    copilot_kwargs["reasoning"] = {
-                        "effort": "high",
-                        "summary": "auto",
-                    }
+                    reasoning_payload = {"summary": "auto"}
+                    if model_supports_reasoning_effort:
+                        reasoning_payload["effort"] = "high"
+                    copilot_kwargs["reasoning"] = reasoning_payload
                 if model_requires_responses:
                     logger.info("Model %s requires Responses API (pre-detected)", model)
                 else:
@@ -2886,7 +2921,7 @@ class RAGComponents:
                         ),
                     )
             else:
-                if model_supports_reasoning:
+                if model_supports_reasoning_effort:
                     copilot_kwargs["reasoning_effort"] = "high"
                 if await supports_thinking_budget(model):
                     copilot_kwargs["extra_body"] = {"thinking_budget": 16384}
@@ -2927,7 +2962,7 @@ class RAGComponents:
                 },
             }
 
-            if await supports_reasoning(model):
+            if await supports_reasoning_effort(model):
                 github_models_kwargs["reasoning_effort"] = "high"
 
             # GitHub Models exposes OpenAI-compatible chat completions at /inference.
@@ -2958,7 +2993,7 @@ class RAGComponents:
             "request_timeout": LLM_REQUEST_TIMEOUT_SECONDS,
         }
 
-        if await supports_reasoning(model):
+        if await supports_reasoning_effort(model):
             openai_kwargs["reasoning_effort"] = "high"
 
         return _CopilotChatOpenAI(

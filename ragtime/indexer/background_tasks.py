@@ -1042,7 +1042,13 @@ class BackgroundTaskService:
                             if events and events[-1].get("type") == "content":
                                 events[-1]["content"] += token
                             else:
-                                events.append({"type": "content", "content": token})
+                                events.append(
+                                    {
+                                        "type": "content",
+                                        "channel": "final",
+                                        "content": token,
+                                    }
+                                )
 
                             # Update streaming state less frequently (every 400ms) for text tokens
                             # Tool events are still updated immediately above
@@ -1106,6 +1112,7 @@ class BackgroundTaskService:
                                 # This allows the frontend to show the hourglass/running state
                                 tool_event = {
                                     "type": "tool",
+                                    "channel": "commentary",
                                     "tool": tool_name,
                                     "input": event.get("input"),
                                     "connection": event.get("connection"),
@@ -1229,6 +1236,7 @@ class BackgroundTaskService:
                                     events.append(
                                         {
                                             "type": "tool",
+                                            "channel": "commentary",
                                             "tool": gen_tool,
                                             "generating_lines": gen_lines,
                                             **(
@@ -1288,7 +1296,13 @@ class BackgroundTaskService:
 
                     if synthesized_response:
                         full_response = synthesized_response
-                        events.append({"type": "content", "content": full_response})
+                        events.append(
+                            {
+                                "type": "content",
+                                "channel": "final",
+                                "content": full_response,
+                            }
+                        )
                         logger.warning(
                             "Background task %s ended without assistant text; "
                             "synthesized fallback response (events=%d, tool_calls=%d, hit_max_iterations=%s)",

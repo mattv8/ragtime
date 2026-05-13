@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -30,7 +31,13 @@ from ragtime.api.routes import (
     _normalize_runtime_model,
     _owned_by_from_openapi_model_id,
 )
-from ragtime.rag.components import RAGComponents
+from ragtime.rag.components import RAGComponents, _CopilotChatOpenAI
+
+
+class FakeProviderError(Exception):
+    def __init__(self, body: dict):
+        super().__init__(str(body))
+        self.body = body
 
 
 class ModelResolutionTests(unittest.TestCase):
@@ -71,6 +78,51 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(
             _normalize_conversation_model_provider("openrouter"), "openrouter"
         )
+
+    def test_provider_reasoning_metadata_can_disable_effort_parameter(self) -> None:
+        model_limits.invalidate_cache()
+        try:
+            model_limits._model_supports_reasoning_effort["claude-haiku-4.5"] = True
+            model_limits.register_model_reasoning_capabilities(
+                "claude-haiku-4.5",
+                reasoning_supported=True,
+                reasoning_effort_supported=False,
+            )
+
+            with mock.patch.object(
+                model_limits,
+                "_ensure_cache_loaded",
+                new=mock.AsyncMock(),
+            ):
+                self.assertTrue(
+                    asyncio.run(model_limits.supports_reasoning("claude-haiku-4.5"))
+                )
+                self.assertFalse(
+                    asyncio.run(
+                        model_limits.supports_reasoning_effort("claude-haiku-4.5")
+                    )
+                )
+        finally:
+            model_limits.invalidate_cache()
+
+    def test_copilot_retries_without_unsupported_direct_reasoning_effort(self) -> None:
+        llm = _CopilotChatOpenAI(
+            model="claude-haiku-4.5",
+            api_key="test-token",
+            base_url="https://api.githubcopilot.com",
+            reasoning_effort="high",
+        )
+        error = FakeProviderError(
+            {
+                "error": {
+                    "message": 'reasoning_effort "high" was provided, but model claude-haiku-4.5 does not support reasoning effort',
+                    "code": "invalid_reasoning_effort",
+                }
+            }
+        )
+
+        self.assertTrue(llm._downgrade_reasoning_parameters(error))
+        self.assertIsNone(getattr(llm, "reasoning_effort", None))
 
     def test_conversation_model_provider_rejects_unknown_provider(self) -> None:
         with self.assertRaises(indexer_routes.HTTPException) as raised:

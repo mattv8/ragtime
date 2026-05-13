@@ -1960,9 +1960,6 @@ textarea.chat-header-title-input {
   color: var(--color-text-primary);
   border-color: var(--color-text-secondary);
 }
-/* Tool calls rendered inline within reasoning/thinking blocks —
-   uses the same ToolCallDisplay component as standalone tool calls,
-   wrapped in .reasoning-embedded-tool for spacing/whitespace reset. */
 .reasoning-embedded-tool {
   margin: var(--space-xs) 0;
   white-space: normal;
@@ -2039,16 +2036,17 @@ textarea.chat-header-title-input {
   gap: var(--space-xs);
 }
 .tool-call-retry-btn {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-2xs);
-  padding: var(--space-xs) var(--space-sm);
-  margin: var(--space-xs);
+  gap: var(--space-xs);
+  padding: 2px var(--space-sm);
+  margin: 0 var(--space-xs);
   background: var(--color-surface-secondary);
   border: 1px solid var(--color-border);
   border-radius: var(--tool-call-radius-sm);
   color: var(--color-text-secondary);
   font-size: var(--tool-call-font-xs);
+  line-height: 1.4;
   cursor: pointer;
   transition: all var(--transition-fast);
   white-space: nowrap;
@@ -2872,6 +2870,9 @@ button.tool-call-userspace-write-path-link:hover {
   background: transparent;
   padding: 0;
 }
+.tool-call-chart:hover {
+  background: transparent;
+}
 .chart-container {
   position: relative;
   background: var(--color-surface);
@@ -3109,6 +3110,9 @@ button.tool-call-userspace-write-path-link:hover {
   background: transparent;
   padding: 0;
   border: none;
+}
+.tool-call-datatable:hover {
+  background: transparent;
 }
 
 .tool-call-screenshot-meta {
