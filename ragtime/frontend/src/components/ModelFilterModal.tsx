@@ -1,18 +1,7 @@
 import { useState, useMemo } from 'react';
 import type { AvailableModel, ModelProviderPrecedence } from '@/types';
 import { ProviderPrecedenceTabBody } from './ProviderPrecedenceTabBody';
-
-const PROVIDER_LABELS: Record<string, string> = {
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
-  openrouter: 'OpenRouter',
-  ollama: 'Ollama',
-  github_copilot: 'GitHub Copilot',
-  github_models: 'GitHub Copilot',
-  llama_cpp: 'llama.cpp',
-  lmstudio: 'LM Studio',
-  omlx: 'OMLX',
-};
+import { formatProviderDisplayName } from '@/utils/modelDisplay';
 
 export interface ModelFilterModalProps {
   isOpen: boolean;
@@ -187,7 +176,7 @@ export function ModelFilterModal({
                   {groupedAllowed.providerOrder.map((provider) => (
                     <div key={provider}>
                       <div className="family-group-header">
-                        {PROVIDER_LABELS[provider] || provider}
+                        {formatProviderDisplayName(provider)}
                       </div>
                       {Object.keys(groupedAllowed.providerGroups[provider]).sort().map((modelProvider) => (
                         <div key={modelProvider} className="model-group">
@@ -224,7 +213,7 @@ export function ModelFilterModal({
                                         color: 'var(--text-muted, #888)',
                                       }}
                                     >
-                                      via {PROVIDER_LABELS[model.provider] || model.provider}
+                                      via {formatProviderDisplayName(model.provider)}
                                     </span>
                                     {model.is_latest && (
                                       <span

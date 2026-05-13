@@ -14,16 +14,14 @@ import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, Con
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
-import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
+import { calculateConversationContextUsage } from '@/utils/contextUsage';
 import { fetchUserSpaceToolCatalog, getUserSpaceGroupToolIds } from '@/utils/userSpaceTools';
 import {
   KNOWN_PROVIDER_KEYS,
   modelIdentifierInList,
-  normalizeProviderAlias,
-  providersEquivalent,
-  resolveProviderForModel,
+  resolvedModelSelectionKey,
+  resolveProviderModelSelection,
   toProviderScopedModelKey,
-  type ModelPrecedenceLike,
 } from '@/utils/modelProviders';
 import {
   formatChatTimestamp,
@@ -432,69 +430,7 @@ function branchStartsGeneration(branchKind: ConversationBranchKind): boolean {
   return branchKind === 'edit' || branchKind === 'replay';
 }
 
-type ResolvedConversationModelSelection = {
-  modelId: string;
-  matchedModel?: AvailableModel;
-  /** True when the matched model came from a different provider than the saved one (precedence fallback). */
-  fallbackFromProvider?: string | null;
-};
-
-function resolveConversationModelSelection(
-  storedModel: string | null | undefined,
-  availableModels: AvailableModel[],
-  precedence?: ModelPrecedenceLike | null,
-): ResolvedConversationModelSelection {
-  const parsed = parseStoredModelIdentifier(storedModel || '');
-  const modelId = parsed.modelId.trim();
-  const explicitProvider = normalizeProviderAlias(parsed.provider) || null;
-
-  let matchedModel: AvailableModel | undefined;
-  let fallbackFromProvider: string | null = null;
-  if (modelId) {
-    if (explicitProvider) {
-      matchedModel = availableModels.find(
-        (model) => providersEquivalent(model.provider, explicitProvider) && model.id === modelId,
-      );
-    }
-    if (!matchedModel) {
-      // Precedence-aware fallback: among providers that offer this model_id,
-      // pick the one chosen by admin precedence/overrides.
-      const candidates = availableModels.filter((m) => m.id === modelId);
-      if (candidates.length) {
-        const preferredProvider = resolveProviderForModel(
-          precedence,
-          modelId,
-          candidates[0]?.group ?? null,
-          candidates.map((m) => m.provider),
-        );
-        if (preferredProvider) {
-          matchedModel = candidates.find((m) => normalizeProviderAlias(m.provider) === preferredProvider);
-        }
-        if (!matchedModel) {
-          matchedModel = candidates[0];
-        }
-        if (matchedModel && explicitProvider && !providersEquivalent(matchedModel.provider, explicitProvider)) {
-          fallbackFromProvider = explicitProvider;
-        }
-      }
-    }
-    if (!matchedModel && modelId.includes('/')) {
-      const slashIndex = modelId.indexOf('/');
-      const inferredProvider = normalizeProviderAlias(modelId.slice(0, slashIndex));
-      const providerModelId = modelId.slice(slashIndex + 1);
-      matchedModel = availableModels.find((model) =>
-        model.id === providerModelId
-        && providersEquivalent(model.provider, explicitProvider || inferredProvider)
-      );
-    }
-  }
-
-  return {
-    modelId,
-    matchedModel,
-    fallbackFromProvider,
-  };
-}
+const resolveConversationModelSelection = resolveProviderModelSelection<AvailableModel>;
 
 function conversationUpdatedAtMs(conversation: Conversation | null | undefined): number {
   const parsed = Date.parse(conversation?.updated_at || '');
@@ -6766,20 +6702,17 @@ export function ChatPanel({
     if (!activeConversation || isStreaming) return;
 
     try {
-      const parsedSelection = parseStoredModelIdentifier(newModel);
-      const requestedModelId = (parsedSelection.modelId || newModel).trim();
-      const requestedProvider = normalizeProviderAlias(parsedSelection.provider);
+      const selection = resolveConversationModelSelection(
+        newModel,
+        availableModels,
+        modelsMeta?.model_provider_precedence ?? null,
+      );
+      const requestedModelId = selection.modelId || newModel.trim();
+      const requestedProvider = selection.explicitProvider || selection.inferredProvider;
       const requestedProviderForApi = requestedProvider && KNOWN_PROVIDER_KEYS.has(requestedProvider)
         ? (requestedProvider as LlmProviderWire)
         : undefined;
-
-      let selected = availableModels.find((model) => (
-        model.id === requestedModelId
-        && providersEquivalent(model.provider, requestedProvider)
-      ));
-      if (!selected) {
-        selected = availableModels.find((model) => model.id === requestedModelId);
-      }
+      const selected = selection.matchedModel;
 
       const updated = await api.updateConversationModel(
         activeConversation.id,
@@ -6912,14 +6845,7 @@ export function ChatPanel({
       return null;
     }
 
-    const matchedIdentifier = selection.matchedModel
-      ? toProviderScopedModelKey(selection.matchedModel.provider, selection.matchedModel.id)
-      : null;
-    const parsed = parseStoredModelIdentifier(conversation.model || '');
-    const normalizedProvider = normalizeProviderAlias(parsed.provider)
-      || (selection.modelId.includes('/') ? normalizeProviderAlias(selection.modelId.split('/', 1)[0]) : null)
-      || null;
-    const scopedIdentifier = matchedIdentifier ?? toProviderScopedModelKey(normalizedProvider, selection.modelId);
+    const scopedIdentifier = resolvedModelSelectionKey(selection);
 
     if (!modelIdentifierInList(scopedIdentifier, allowedModels)) {
       return MODEL_REMOVED_FROM_CHAT_MODELS_MESSAGE;

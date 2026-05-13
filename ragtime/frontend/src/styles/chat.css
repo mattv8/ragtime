@@ -795,9 +795,13 @@ textarea.chat-header-title-input {
   outline-offset: 2px;
 }
 .model-selector-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.model-selector-text-responsive {
+  display: none;
 }
 .model-selector-arrow {
   font-size: 10px;

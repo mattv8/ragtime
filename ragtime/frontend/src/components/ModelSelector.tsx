@@ -65,6 +65,23 @@ function modelDisplayName(model: BaseModel): string {
   return model.display_name || model.name || model.id;
 }
 
+function modelTriggerDisplayName(model: BaseModel): string {
+  const displayName = modelDisplayName(model).trim();
+  const providerLabel = modelProviderLabel(model).trim();
+  const familyLabel = modelFamilyLabel(model).trim();
+  const parts: string[] = [];
+  if (providerLabel && !providerLabel.startsWith('Other')) {
+    parts.push(providerLabel);
+  }
+  if (familyLabel && !familyLabel.startsWith('Other') && !labelsMatch(familyLabel, providerLabel)) {
+    parts.push(familyLabel);
+  }
+  if (displayName && !parts.some(part => labelsMatch(part, displayName))) {
+    parts.push(displayName);
+  }
+  return parts.join(' ') || displayName;
+}
+
 function modelFamilyLabel(model: BaseModel): string {
   return model.model_family || model.group || 'Other';
 }
@@ -345,33 +362,15 @@ export function ModelSelector<T extends BaseModel>({
     if (!selectedModel) {
       return inferCompactFamilyLabelFromId(selectedModelId) || selectedModelId || placeholder;
     }
-    const selectedKey = selectionKeyFor(selectedModel);
-    // Find the leaf family node containing this model so we can decide whether
-    // to show the family label or the concrete model name.
-    const findLeaf = (nodes: MenuNode<T>[]): MenuNode<T> | undefined => {
-      for (const node of nodes) {
-        if (node.models?.some(m => selectionKeyFor(m) === selectedKey)) return node;
-        if (node.children) {
-          const found = findLeaf(node.children);
-          if (found) return found;
-        }
-      }
-      return undefined;
-    };
-    const leaf = findLeaf(menuTree);
-    const hasMultipleVersions = !!leaf && (leaf.models?.length || 0) > 1;
-    const familyLabel = modelFamilyLabel(selectedModel);
-    if (familyLabel && !familyLabel.startsWith('Other')) {
-      if (variant === 'compact' || hasMultipleVersions) {
-        return familyLabel;
-      }
+    return modelTriggerDisplayName(selectedModel);
+  }, [selectedModel, selectedModelId, placeholder]);
+
+  const responsiveDisplayText = useMemo(() => {
+    if (!selectedModel) {
+      return displayText;
     }
-    if (variant === 'compact') {
-      const inferred = inferCompactFamilyLabel(selectedModel);
-      if (inferred) return inferred;
-    }
-    return modelDisplayName(selectedModel);
-  }, [selectedModel, selectedModelId, placeholder, variant, menuTree, selectionKeyFor]);
+    return modelProviderLabel(selectedModel) || displayText;
+  }, [displayText, selectedModel]);
 
   // Compute and track fixed dropdown position so it draws over iframes without layout shift
   const computeDropdownPosition = useCallback(() => {
@@ -661,10 +660,11 @@ export function ModelSelector<T extends BaseModel>({
         className={triggerClasses}
         onClick={() => !disabled && setIsOpen(!isOpen)}
         disabled={disabled}
-        title="Select model"
+        title={displayText || 'Select model'}
       >
         {triggerIcon ? <span className="model-selector-icon" aria-hidden="true">{triggerIcon}</span> : null}
-        <span className="model-selector-text">{displayText}</span>
+        <span className="model-selector-text model-selector-text-default">{displayText}</span>
+        <span className="model-selector-text model-selector-text-responsive">{responsiveDisplayText}</span>
         <span className="model-selector-arrow">▾</span>
       </button>
 

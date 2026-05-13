@@ -142,6 +142,21 @@ export interface ParsedModelIdentifier {
   modelId: string;
 }
 
+export interface ProviderModelLike {
+  id: string;
+  provider?: string | null;
+  group?: string | null;
+}
+
+export interface ResolvedModelSelection<T extends ProviderModelLike> {
+  modelId: string;
+  matchedModel?: T;
+  explicitProvider: string | null;
+  inferredProvider: string | null;
+  /** True when the matched model came from a different provider than the saved one (precedence fallback). */
+  fallbackFromProvider?: string | null;
+}
+
 export function parseScopedModelIdentifier(value: string | null | undefined): ParsedModelIdentifier {
   const raw = (value || '').trim();
   if (!raw) {
@@ -155,6 +170,79 @@ export function parseScopedModelIdentifier(value: string | null | undefined): Pa
     provider: raw.slice(0, delimiterIndex).trim() || null,
     modelId: raw.slice(delimiterIndex + 2).trim(),
   };
+}
+
+export function inferProviderFromModelId(modelId: string | null | undefined): string | null {
+  const raw = (modelId || '').trim();
+  const slashIndex = raw.indexOf('/');
+  if (slashIndex <= 0) {
+    return null;
+  }
+  return normalizeProviderAlias(raw.slice(0, slashIndex)) || null;
+}
+
+export function resolveProviderModelSelection<T extends ProviderModelLike>(
+  storedModel: string | null | undefined,
+  availableModels: T[],
+  precedence?: ModelPrecedenceLike | null,
+): ResolvedModelSelection<T> {
+  const parsed = parseScopedModelIdentifier(storedModel);
+  const modelId = parsed.modelId.trim();
+  const explicitProvider = normalizeProviderAlias(parsed.provider) || null;
+
+  let matchedModel: T | undefined;
+  let fallbackFromProvider: string | null = null;
+  let inferredProvider: string | null = null;
+  if (modelId) {
+    if (explicitProvider) {
+      matchedModel = availableModels.find(
+        (model) => providersEquivalent(model.provider, explicitProvider) && model.id === modelId,
+      );
+    }
+    if (!matchedModel) {
+      const candidates = availableModels.filter((model) => model.id === modelId);
+      if (candidates.length) {
+        const preferredProvider = resolveProviderForModel(
+          precedence,
+          modelId,
+          candidates[0]?.group ?? null,
+          candidates.map((model) => model.provider || ''),
+        );
+        if (preferredProvider) {
+          matchedModel = candidates.find((model) => normalizeProviderAlias(model.provider) === preferredProvider);
+        }
+        if (!matchedModel) {
+          matchedModel = candidates[0];
+        }
+        if (matchedModel && explicitProvider && !providersEquivalent(matchedModel.provider, explicitProvider)) {
+          fallbackFromProvider = explicitProvider;
+        }
+      }
+    }
+    if (!matchedModel && modelId.includes('/')) {
+      const slashIndex = modelId.indexOf('/');
+      inferredProvider = inferProviderFromModelId(modelId);
+      const providerModelId = modelId.slice(slashIndex + 1);
+      matchedModel = availableModels.find((model) =>
+        model.id === providerModelId
+        && providersEquivalent(model.provider, explicitProvider || inferredProvider)
+      );
+    }
+  }
+
+  return {
+    modelId,
+    matchedModel,
+    explicitProvider,
+    inferredProvider,
+    fallbackFromProvider,
+  };
+}
+
+export function resolvedModelSelectionKey<T extends ProviderModelLike>(selection: ResolvedModelSelection<T>): string {
+  return selection.matchedModel
+    ? toProviderScopedModelKey(selection.matchedModel.provider, selection.matchedModel.id)
+    : toProviderScopedModelKey(selection.explicitProvider || selection.inferredProvider, selection.modelId);
 }
 
 function modelIdVariants(modelId: string): string[] {

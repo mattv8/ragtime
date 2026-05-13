@@ -886,6 +886,14 @@
     font-size: 0.65rem;
   }
 
+  .model-selector:not(.model-selector-full) .model-selector-text-default {
+    display: none;
+  }
+
+  .model-selector:not(.model-selector-full) .model-selector-text-responsive {
+    display: inline-block;
+  }
+
   .model-selector:not(.model-selector-full) .model-selector-submenu {
     left: 0;
     top: 100%;
