@@ -561,6 +561,56 @@ async def _repair_with_ai(
         return None
 
 
+async def _persist_repaired_event(
+    request: RetryVisualizationRequest,
+    context: VisualizationRetryContext,
+    new_output: str,
+) -> None:
+    """Write the repaired visualization output back to the conversation.
+
+    Silently no-ops when the caller did not provide ``message_id`` and
+    ``event_index``; logs a warning if the persistence call cannot locate
+    the target event.
+    """
+    if not request.message_id and request.message_index is None:
+        return
+    if request.event_index is None:
+        return
+    expected_tool = (
+        "create_chart" if request.tool_type == "chart" else "create_datatable"
+    )
+    try:
+        ok = await repository.update_message_event_output(
+            context.conversation.id,
+            request.message_id,
+            request.event_index,
+            new_output,
+            message_index=request.message_index,
+            expected_tool=expected_tool,
+        )
+    except Exception:
+        logger.exception(
+            "Error persisting repaired visualization output for "
+            "conversation=%s message_id=%s message_index=%s event_index=%s",
+            context.conversation.id,
+            request.message_id,
+            request.message_index,
+            request.event_index,
+        )
+        return
+    if not ok:
+        logger.warning(
+            "Repaired visualization output not persisted: target event not "
+            "found (conversation=%s message_id=%s message_index=%s "
+            "event_index=%s tool=%s)",
+            context.conversation.id,
+            request.message_id,
+            request.message_index,
+            request.event_index,
+            expected_tool,
+        )
+
+
 async def retry_visualization_with_repair(
     request: RetryVisualizationRequest,
     context: VisualizationRetryContext,
@@ -568,6 +618,7 @@ async def retry_visualization_with_repair(
     deterministic = _find_deterministic_payload(request)
     if deterministic:
         output = await _render_visualization(request.tool_type, request.title, deterministic)
+        await _persist_repaired_event(request, context, output)
         return RetryVisualizationResponse(
             success=True,
             output=output,
@@ -585,6 +636,7 @@ async def retry_visualization_with_repair(
                     request.tool_type, rerun_payload, "source_rerun"
                 )
                 output = await _render_visualization(request.tool_type, request.title, validated)
+                await _persist_repaired_event(request, context, output)
                 return RetryVisualizationResponse(
                     success=True,
                     output=output,
@@ -598,6 +650,7 @@ async def retry_visualization_with_repair(
     ai_payload = await _repair_with_ai(request, context, rerun_output)
     if ai_payload:
         output = await _render_visualization(request.tool_type, request.title, ai_payload)
+        await _persist_repaired_event(request, context, output)
         return RetryVisualizationResponse(
             success=True,
             output=output,

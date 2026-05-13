@@ -1827,6 +1827,9 @@ interface ToolCallDisplayProps {
   workspaceId?: string;
   allowRerun?: boolean;
   siblingEvents?: VisualizationRetrySiblingEvent[];
+  messageId?: string;
+  messageIndex?: number;
+  eventIndex?: number;
   onRetrySuccess?: (newOutput: string) => void;
   onOpenWorkspaceFile?: (path: string) => void;
 }
@@ -2178,6 +2181,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   workspaceId,
   allowRerun = true,
   siblingEvents,
+  messageId,
+  messageIndex,
+  eventIndex,
   onRetrySuccess,
   onOpenWorkspaceFile,
 }: ToolCallDisplayProps) {
@@ -2665,6 +2671,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         failed_tool_input: toolCall.input,
         failed_tool_output: toolCall.output,
         context_events: buildVisualizationRetryContextEvents(siblingEvents),
+        ...(messageId ? { message_id: messageId } : {}),
+        ...(typeof messageIndex === 'number' ? { message_index: messageIndex } : {}),
+        ...(typeof eventIndex === 'number' ? { event_index: eventIndex } : {}),
       };
 
       const result = await api.retryVisualization(conversationId, request, workspaceId);
@@ -2684,7 +2693,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       setRetryProgressText(null);
       setIsRetrying(false);
     }
-  }, [clearRetryProgressTimers, conversationId, siblingEvents, toolCall.input, toolCall.output, toolCall.tool, onRetrySuccess, workspaceId]);
+  }, [clearRetryProgressTimers, conversationId, eventIndex, messageId, messageIndex, siblingEvents, toolCall.input, toolCall.output, toolCall.tool, onRetrySuccess, workspaceId]);
 
   // Handle re-run for terminal commands
   const handleRerunCommand = useCallback(async (e: React.MouseEvent) => {
@@ -8382,6 +8391,9 @@ export function ChatPanel({
                                               conversationId={activeConversation.id}
                                               workspaceId={workspaceId}
                                               siblingEvents={msg.events}
+                                              messageId={msg.message_id}
+                                              messageIndex={idx}
+                                              eventIndex={evIdx}
                                               onOpenWorkspaceFile={onOpenWorkspaceFile}
                                             />
                                           </div>

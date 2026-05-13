@@ -191,6 +191,74 @@ class VisualizationRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.repair_used)
         self.assertEqual(result.repair_strategy, "failed")
 
+    async def test_successful_repair_persists_event_output(self) -> None:
+        request = RetryVisualizationRequest(
+            tool_type="datatable",
+            source_data={"columns": ["Name", "Count"], "rows": [["A", 2]]},
+            title="Counts",
+            message_id="msg-42",
+            event_index=3,
+        )
+        update_mock = mock.AsyncMock(return_value=True)
+        with mock.patch.object(
+            visualization_retry.repository,
+            "update_message_event_output",
+            new=update_mock,
+        ):
+            result = await retry_visualization_with_repair(request, _context())
+
+        self.assertTrue(result.success)
+        update_mock.assert_awaited_once()
+        args, kwargs = update_mock.call_args
+        self.assertEqual(args[0], "conv-1")
+        self.assertEqual(args[1], "msg-42")
+        self.assertEqual(args[2], 3)
+        self.assertEqual(args[3], result.output)
+        self.assertIsNone(kwargs.get("message_index"))
+        self.assertEqual(kwargs.get("expected_tool"), "create_datatable")
+
+    async def test_successful_repair_persists_with_message_index_fallback(self) -> None:
+        request = RetryVisualizationRequest(
+            tool_type="chart",
+            source_data={"columns": ["Month", "Revenue"], "rows": [["Jan", 12], ["Feb", 20]]},
+            title="Revenue",
+            message_index=2,
+            event_index=1,
+        )
+        update_mock = mock.AsyncMock(return_value=True)
+        with mock.patch.object(
+            visualization_retry.repository,
+            "update_message_event_output",
+            new=update_mock,
+        ):
+            result = await retry_visualization_with_repair(request, _context())
+
+        self.assertTrue(result.success)
+        update_mock.assert_awaited_once()
+        args, kwargs = update_mock.call_args
+        self.assertEqual(args[0], "conv-1")
+        self.assertIsNone(args[1])
+        self.assertEqual(args[2], 1)
+        self.assertEqual(args[3], result.output)
+        self.assertEqual(kwargs.get("message_index"), 2)
+        self.assertEqual(kwargs.get("expected_tool"), "create_chart")
+
+    async def test_persistence_skipped_without_message_identifiers(self) -> None:
+        request = RetryVisualizationRequest(
+            tool_type="datatable",
+            source_data={"columns": ["Name", "Count"], "rows": [["A", 2]]},
+        )
+        update_mock = mock.AsyncMock(return_value=True)
+        with mock.patch.object(
+            visualization_retry.repository,
+            "update_message_event_output",
+            new=update_mock,
+        ):
+            result = await retry_visualization_with_repair(request, _context())
+
+        self.assertTrue(result.success)
+        update_mock.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

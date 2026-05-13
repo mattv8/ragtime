@@ -3331,6 +3331,13 @@ export interface RetryVisualizationRequest {
     output?: string;
     connection?: ToolConnectionRef;
   }>;
+  // When persistence info is provided, a successful repair is written back to
+  // the conversation message so the rendered visualization survives a refresh.
+  // Either message_id (preferred) or message_index (fallback for legacy
+  // messages without a stable id) must accompany event_index.
+  message_id?: string;
+  message_index?: number;
+  event_index?: number;
 }
 
 export interface RetryVisualizationResponse {

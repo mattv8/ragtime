@@ -2783,6 +2783,18 @@ class RetryVisualizationRequest(BaseModel):
         default_factory=list,
         description="Recent relevant tool events that may contain source data or rerunnable query context.",
     )
+    message_id: str | None = Field(
+        default=None,
+        description="Stable identifier of the assistant message containing the failed visualization event. When provided alongside event_index, a successful repair is persisted back to the conversation.",
+    )
+    message_index: int | None = Field(
+        default=None,
+        description="Zero-based index of the assistant message in conversation.messages. Used as a fallback locator when message_id is missing (e.g. legacy messages persisted without a stable id).",
+    )
+    event_index: int | None = Field(
+        default=None,
+        description="Zero-based index of the failed visualization event within the assistant message's events. When provided alongside message_id, a successful repair is persisted back to the conversation.",
+    )
 
 
 class RetryVisualizationResponse(BaseModel):

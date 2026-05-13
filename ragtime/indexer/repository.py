@@ -2500,6 +2500,86 @@ class IndexerRepository:
 
         return self._prisma_conversation_to_model(updated)
 
+    async def update_message_event_output(
+        self,
+        conversation_id: str,
+        message_id: Optional[str],
+        event_index: int,
+        new_output: str,
+        *,
+        message_index: Optional[int] = None,
+        expected_tool: Optional[str] = None,
+    ) -> bool:
+        """Persist a replacement ``output`` for a single tool event in a message.
+
+        The target message is located by ``message_id`` first; if that is not
+        provided or does not match (e.g. legacy messages persisted before
+        per-message ids existed), ``message_index`` is used as a fallback.
+
+        Returns True when the conversation was updated. Returns False when the
+        message/event cannot be located, the event is not a tool event, or the
+        ``expected_tool`` does not match. Used by the visualization retry flow
+        to make a successful repair survive a page refresh.
+        """
+        if event_index < 0:
+            return False
+        if not message_id and message_index is None:
+            return False
+        db = await self._get_db()
+        prisma_conv = await db.conversation.find_unique(
+            where={"id": conversation_id}
+        )
+        if not prisma_conv:
+            return False
+
+        messages: List[dict[str, Any]] = _normalize_message_payloads(
+            prisma_conv.messages
+        )
+        target_msg: Optional[dict[str, Any]] = None
+        if message_id:
+            for m in messages:
+                if m.get("message_id") == message_id:
+                    target_msg = m
+                    break
+        if (
+            target_msg is None
+            and message_index is not None
+            and 0 <= message_index < len(messages)
+        ):
+            target_msg = messages[message_index]
+        if target_msg is None:
+            return False
+
+        events = target_msg.get("events")
+        if not isinstance(events, list) or event_index >= len(events):
+            return False
+        ev = events[event_index]
+        if not isinstance(ev, dict) or ev.get("type") != "tool":
+            return False
+        if expected_tool and ev.get("tool") != expected_tool:
+            return False
+
+        sanitized_output = _sanitize_for_postgres(new_output)
+        ev["output"] = sanitized_output
+        ev["repaired"] = True
+
+        try:
+            await db.conversation.update(
+                where={"id": conversation_id},
+                data={
+                    "messages": Json(messages),
+                    "updatedAt": datetime.utcnow(),
+                },
+            )
+            return True
+        except Exception as e:
+            logger.warning(
+                f"Failed to persist repaired event output for "
+                f"conversation={conversation_id} message_id={message_id} "
+                f"message_index={message_index} event_index={event_index}: {e}"
+            )
+            return False
+
     async def update_conversation_title(
         self, conversation_id: str, title: str
     ) -> Optional[Conversation]:
