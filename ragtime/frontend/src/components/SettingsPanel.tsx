@@ -40,7 +40,7 @@ import {
   PROVIDER_CONNECTIONS,
   buildProviderBaseUrl,
   normalizeProviderAlias,
-  providersEquivalent,
+  providersSame,
   type ProviderConnectionDescriptor,
 } from '@/utils/modelProviders';
 
@@ -345,7 +345,7 @@ function formatModelIdentifierForDisplay(identifier: string | null | undefined, 
   const exactMatch = models.find((m) => (
     m.id === modelId
     && provider
-    && providersEquivalent(m.provider, provider)
+    && providersSame(m.provider, provider)
   ));
   if (exactMatch) {
     return availableModelSettingsLabel(exactMatch);

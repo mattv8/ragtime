@@ -138,6 +138,24 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertTrue(llm._downgrade_reasoning_parameters(error))
         self.assertIsNone(getattr(llm, "reasoning_effort", None))
 
+    def test_chat_tools_reasoning_effort_error_probes_responses(self) -> None:
+        llm = _CopilotChatOpenAI(
+            model="gpt-5.4-mini",
+            api_key="test-token",
+            reasoning_effort="high",
+        )
+        error = FakeProviderError(
+            {
+                "error": {
+                    "message": "Function tools with reasoning_effort are not supported for gpt-5.4-mini in /v1/chat/completions. Please use /v1/responses instead.",
+                    "param": "reasoning_effort",
+                }
+            }
+        )
+
+        self.assertFalse(llm._downgrade_reasoning_parameters(error))
+        self.assertTrue(llm._should_probe_responses_fallback(error))
+
     def test_conversation_model_provider_rejects_unknown_provider(self) -> None:
         with self.assertRaises(indexer_routes.HTTPException) as raised:
             _normalize_conversation_model_provider("not_a_provider")
@@ -1035,6 +1053,44 @@ class ModelSendEligibilityTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_openai_reasoning_model_prefers_responses_api(self) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {"openai_api_key": "openai-key"}
+
+        with (
+            mock.patch(
+                "ragtime.rag.components.httpx.AsyncClient.get",
+                new=mock.AsyncMock(
+                    side_effect=RuntimeError("metadata fetch disabled in test")
+                ),
+            ),
+            mock.patch(
+                "ragtime.rag.components.supports_reasoning",
+                new=mock.AsyncMock(return_value=True),
+            ),
+            mock.patch(
+                "ragtime.rag.components.supports_reasoning_effort",
+                new=mock.AsyncMock(return_value=True),
+            ),
+            mock.patch(
+                "ragtime.rag.components.supports_responses_api",
+                new=mock.AsyncMock(return_value=True),
+            ),
+            mock.patch(
+                "ragtime.rag.components.requires_responses_api",
+                new=mock.AsyncMock(return_value=False),
+            ),
+        ):
+            llm = await rag._build_llm("openai", "gpt-5.4-mini", 4096)
+
+        self.assertIsInstance(llm, _CopilotChatOpenAI)
+        self.assertTrue(getattr(llm, "use_responses_api", False))
+        self.assertEqual(getattr(llm, "output_version", None), "responses/v1")
+        self.assertEqual(
+            getattr(llm, "reasoning", None),
+            {"summary": "auto", "effort": "high"},
+        )
+
     async def test_unscoped_allowed_copilot_model_uses_copilot_despite_openai_first(
         self,
     ) -> None:
@@ -1100,7 +1156,7 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolution.provider, "github_copilot")
         self.assertEqual(resolution.attempted_providers, ("openai", "github_copilot"))
 
-    async def test_openai_scoped_copilot_model_routes_through_copilot(self) -> None:
+    async def test_openai_scoped_model_prefers_openai_when_configured(self) -> None:
         rag = RAGComponents()
         rag._app_settings = {
             "llm_provider": "github_copilot",
@@ -1108,6 +1164,43 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
             "openai_api_key": "openai-key",
             "github_copilot_access_token": "copilot-token",
             "allowed_chat_models": ["github_copilot::gpt-5.4"],
+        }
+        openai_llm = object()
+        attempted: list[str] = []
+
+        async def build_llm(provider: str, model: str, max_tokens: int):
+            attempted.append(provider)
+            return openai_llm
+
+        with (
+            mock.patch.object(rag, "_build_llm", side_effect=build_llm),
+            mock.patch.object(
+                rag,
+                "_resolve_chat_request_max_tokens",
+                new=mock.AsyncMock(return_value=4096),
+            ),
+        ):
+            resolution = await rag._get_request_scoped_llm("openai::gpt-5.4")
+
+        self.assertEqual(attempted, ["openai"])
+        self.assertIs(resolution.llm, openai_llm)
+        self.assertEqual(resolution.provider, "openai")
+        self.assertEqual(resolution.model, "gpt-5.4")
+        self.assertEqual(resolution.attempted_providers, ("openai",))
+
+    async def test_github_scoped_model_prefers_github_when_openai_allowed_first(
+        self,
+    ) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {
+            "llm_provider": "openai",
+            "llm_model": "gpt-5.4",
+            "openai_api_key": "openai-key",
+            "github_copilot_access_token": "copilot-token",
+            "allowed_chat_models": [
+                "openai::gpt-5.4",
+                "github_copilot::gpt-5.4",
+            ],
         }
         copilot_llm = object()
         attempted: list[str] = []
@@ -1124,13 +1217,46 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
                 new=mock.AsyncMock(return_value=4096),
             ),
         ):
-            resolution = await rag._get_request_scoped_llm("openai::gpt-5.4")
+            resolution = await rag._get_request_scoped_llm("github_copilot::gpt-5.4")
 
         self.assertEqual(attempted, ["github_copilot"])
         self.assertIs(resolution.llm, copilot_llm)
         self.assertEqual(resolution.provider, "github_copilot")
         self.assertEqual(resolution.model, "gpt-5.4")
         self.assertEqual(resolution.attempted_providers, ("github_copilot",))
+
+    async def test_explicit_provider_does_not_reuse_equivalent_cached_llm(
+        self,
+    ) -> None:
+        rag = RAGComponents()
+        rag.llm = object()
+        rag._app_settings = {
+            "llm_provider": "github_copilot",
+            "llm_model": "gpt-5.4",
+            "openai_api_key": "openai-key",
+            "github_copilot_access_token": "copilot-token",
+            "allowed_chat_models": [],
+        }
+        openai_llm = object()
+        attempted: list[str] = []
+
+        async def build_llm(provider: str, model: str, max_tokens: int):
+            attempted.append(provider)
+            return openai_llm
+
+        with (
+            mock.patch.object(rag, "_build_llm", side_effect=build_llm),
+            mock.patch.object(
+                rag,
+                "_resolve_chat_request_max_tokens",
+                new=mock.AsyncMock(return_value=4096),
+            ),
+        ):
+            resolution = await rag._get_request_scoped_llm("openai::gpt-5.4")
+
+        self.assertEqual(attempted, ["openai"])
+        self.assertIs(resolution.llm, openai_llm)
+        self.assertEqual(resolution.provider, "openai")
 
     async def test_allowed_openai_alias_uses_configured_copilot_equivalent(
         self,

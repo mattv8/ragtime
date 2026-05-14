@@ -291,6 +291,13 @@ def providers_equivalent(selected: str | None, actual: str | None) -> bool:
     return {selected_norm, actual_norm} <= {"openai", "github_copilot"}
 
 
+def providers_same(selected: str | None, actual: str | None) -> bool:
+    """Return whether two provider labels name the same canonical provider."""
+    selected_norm = normalize_provider_name(selected)
+    actual_norm = normalize_provider_name(actual)
+    return bool(selected_norm and actual_norm and selected_norm == actual_norm)
+
+
 def get_provider(provider: str | None) -> ModelProvider | None:
     """Return provider metadata for a canonical or aliased provider name."""
     return MODEL_PROVIDERS.get(normalize_provider_name(provider))

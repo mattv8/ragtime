@@ -132,6 +132,12 @@ export function providersEquivalent(selected?: string | null, actual?: string | 
   return ['openai', 'github_copilot'].includes(selectedNorm) && ['openai', 'github_copilot'].includes(actualNorm);
 }
 
+export function providersSame(selected?: string | null, actual?: string | null): boolean {
+  const selectedNorm = normalizeProviderAlias(selected) || '';
+  const actualNorm = normalizeProviderAlias(actual) || '';
+  return Boolean(selectedNorm && actualNorm && selectedNorm === actualNorm);
+}
+
 export function toProviderScopedModelKey(provider: string | null | undefined, modelId: string): string {
   const normalizedProvider = normalizeProviderAlias(provider);
   return normalizedProvider ? `${normalizedProvider}::${modelId}` : modelId;
@@ -192,7 +198,7 @@ export function resolveProviderModelSelection<T extends ProviderModelLike>(
   if (modelId) {
     if (explicitProvider) {
       matchedModel = availableModels.find(
-        (model) => providersEquivalent(model.provider, explicitProvider) && model.id === modelId,
+        (model) => providersSame(model.provider, explicitProvider) && model.id === modelId,
       );
     }
     if (!matchedModel) {
@@ -207,7 +213,7 @@ export function resolveProviderModelSelection<T extends ProviderModelLike>(
       const providerModelId = modelId.slice(slashIndex + 1);
       matchedModel = availableModels.find((model) =>
         model.id === providerModelId
-        && providersEquivalent(model.provider, explicitProvider || inferredProvider)
+        && providersSame(model.provider, explicitProvider || inferredProvider)
       );
     }
   }

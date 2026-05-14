@@ -89,6 +89,7 @@ from ragtime.core.model_providers import (
     get_provider,
     normalize_provider_name,
     providers_equivalent,
+    providers_same,
     resolve_provider_base_url,
 )
 from ragtime.core.ollama import (
@@ -1296,9 +1297,25 @@ class _CopilotChatOpenAI(ChatOpenAI):
             error_obj = body.get("error")
             if isinstance(error_obj, dict):
                 param = str(error_obj.get("param", "") or "").lower()
-                if param == "reasoning.effort":
+                if param in {"reasoning.effort", "reasoning_effort"}:
                     return True
         return False
+
+    @staticmethod
+    def _looks_like_chat_reasoning_tools_require_responses(exc: Exception) -> bool:
+        """Return True when chat+tools+reasoning must be retried via Responses."""
+        body = _CopilotChatOpenAI._get_error_body(exc)
+        body_message = ""
+        if isinstance(body, dict):
+            error_obj = body.get("error")
+            if isinstance(error_obj, dict):
+                body_message = str(error_obj.get("message", "") or "")
+        error_text = f"{body_message} {exc}".lower()
+        return (
+            "reasoning_effort" in error_text
+            and "/responses" in error_text
+            and ("function tools" in error_text or "/chat/completions" in error_text)
+        )
 
     @staticmethod
     def _is_token_expired_auth_error(exc: Exception) -> bool:
@@ -1395,6 +1412,9 @@ class _CopilotChatOpenAI(ChatOpenAI):
         if code == "invalid_request_body":
             return True
 
+        if self._looks_like_chat_reasoning_tools_require_responses(exc):
+            return True
+
         if isinstance(body, dict):
             error_obj = body.get("error", {})
             return (
@@ -1449,6 +1469,9 @@ class _CopilotChatOpenAI(ChatOpenAI):
         )
 
         changed = False
+        if self._looks_like_chat_reasoning_tools_require_responses(exc):
+            return False
+
         if (
             reasoning_payload is not None
             and self._looks_like_summary_error(exc)
@@ -2993,7 +3016,33 @@ class RAGComponents:
             "request_timeout": LLM_REQUEST_TIMEOUT_SECONDS,
         }
 
-        if await supports_reasoning_effort(model):
+        model_supports_reasoning = await supports_reasoning(model)
+        model_supports_reasoning_effort = await supports_reasoning_effort(model)
+        model_supports_responses = await supports_responses_api(model)
+        model_requires_responses = await requires_responses_api(model)
+
+        use_responses_api = model_requires_responses or model_supports_reasoning
+        if use_responses_api:
+            openai_kwargs["use_responses_api"] = True
+            openai_kwargs["output_version"] = "responses/v1"
+            if model_supports_reasoning:
+                reasoning_payload = {"summary": "auto"}
+                if model_supports_reasoning_effort:
+                    reasoning_payload["effort"] = "high"
+                openai_kwargs["reasoning"] = reasoning_payload
+            if model_requires_responses:
+                logger.info("Model %s requires Responses API (pre-detected)", model)
+            else:
+                logger.info(
+                    "Model %s is reasoning-capable; preferring Responses API%s",
+                    model,
+                    (
+                        " (endpoint metadata unavailable)"
+                        if not model_supports_responses
+                        else ""
+                    ),
+                )
+        elif model_supports_reasoning_effort:
             openai_kwargs["reasoning_effort"] = "high"
 
         return _CopilotChatOpenAI(
@@ -13023,6 +13072,7 @@ except Exception as e:
         allowed_providers = self._allowed_llm_providers_for_model(model_id)
 
         if allowed_providers:
+            preferred_provider = normalize_provider_name(provider_override)
             provider_pool = [
                 provider
                 for provider in allowed_providers
@@ -13039,6 +13089,15 @@ except Exception as e:
                 ]
             if not provider_pool:
                 provider_pool = allowed_providers
+            if preferred_provider and any(
+                providers_equivalent(allowed_provider, preferred_provider)
+                for allowed_provider in allowed_providers
+            ):
+                if preferred_provider in configured_providers:
+                    provider_pool = [preferred_provider, *provider_pool]
+                elif preferred_provider in allowed_providers:
+                    provider_pool = [preferred_provider, *provider_pool]
+                provider_pool = list(dict.fromkeys(provider_pool))
         else:
             provider_pool = [requested_provider]
             provider_pool.extend(
@@ -13215,7 +13274,7 @@ except Exception as e:
             and self.llm is not None
             and (
                 provider_override is None
-                or providers_equivalent(provider_override, configured_provider)
+                or providers_same(provider_override, configured_provider)
             )
         ):
             await self._ensure_copilot_llm_fresh()

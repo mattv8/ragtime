@@ -95,6 +95,7 @@ from ragtime.core.model_providers import (
     get_provider_label,
     normalize_provider_name,
     providers_equivalent,
+    providers_same,
     resolve_model_family_from_metadata,
     resolve_provider_base_url,
 )
@@ -6962,6 +6963,11 @@ def _providers_equivalent(selected: str, actual: str) -> bool:
     return providers_equivalent(selected, actual)
 
 
+def _providers_same(selected: str, actual: str) -> bool:
+    """Check whether providers are the same after canonical alias normalization."""
+    return providers_same(selected, actual)
+
+
 def _normalize_provider_alias(provider: Optional[str]) -> str:
     return normalize_provider_name(provider)
 
@@ -7109,7 +7115,7 @@ def _find_available_model_for_identifier(
 
     if provider:
         for model in models:
-            if model.id == model_id and _providers_equivalent(provider, model.provider):
+            if model.id == model_id and _providers_same(provider, model.provider):
                 return model
         return None
 
