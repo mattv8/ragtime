@@ -8215,15 +8215,6 @@ export function ChatPanel({
                   triggerIcon={showWorkspaceConversationSelect ? <Bot size={14} /> : undefined}
                   triggerClassName={showWorkspaceConversationSelect ? 'chat-workspace-model-trigger' : undefined}
                 />
-                {!embedded && (
-                  <button
-                    className="btn btn-secondary btn-sm btn-icon"
-                    onClick={toggleFullscreen}
-                    title={isFullscreen ? 'Exit full screen' : 'Full screen'}
-                  >
-                    {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-                  </button>
-                )}
                 <button
                   className="btn btn-sm btn-secondary chat-new-chat-btn"
                   onClick={startFreshConversation}
@@ -8242,6 +8233,15 @@ export function ChatPanel({
                     </>
                   )}
                 </button>
+                {!embedded && (
+                  <button
+                    className="btn btn-secondary btn-sm btn-icon"
+                    onClick={toggleFullscreen}
+                    title={isFullscreen ? 'Exit full screen' : 'Full screen'}
+                  >
+                    {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                  </button>
+                )}
               </div>
             </div>
 

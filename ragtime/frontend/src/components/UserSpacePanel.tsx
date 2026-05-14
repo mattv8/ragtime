@@ -6830,19 +6830,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               </span>
             </button>
             <button
-              className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"
-              onClick={toggleFullscreen}
-              title={isFullscreen ? 'Exit full screen' : 'Full screen'}
-            >
-              {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-            </button>
-            <button
               className="btn btn-primary btn-sm btn-icon userspace-toolbar-action-btn userspace-snapshot-btn"
               onClick={handleCreateSnapshot}
               disabled={!activeWorkspaceId || !canEditWorkspace || creatingSnapshot}
               title={creatingSnapshot ? 'Creating snapshot...' : 'Take snapshot'}
             >
               <Save size={14} className={creatingSnapshot ? 'spinning' : undefined} />
+            </button>
+            <button
+              className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"
+              onClick={toggleFullscreen}
+              title={isFullscreen ? 'Exit full screen' : 'Full screen'}
+            >
+              {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             </button>
           </div>
         </div>

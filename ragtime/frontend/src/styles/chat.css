@@ -1046,7 +1046,7 @@ textarea.chat-header-title-input {
 .chat-header-actions {
   display: flex;
   align-items: center;
-  gap: var(--space-md);
+  gap: 4px;
   min-width: 0;
   flex-shrink: 0;
 }
