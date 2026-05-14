@@ -56,13 +56,14 @@ DEFAULT_CONTEXT_LIMIT = 8192
 
 PROVIDER_LABEL_OVERRIDES: dict[str, str] = {
     "ai21": "AI21",
-    "anthropic": "Anthropic",
     "arcee-ai": "Arcee AI",
     "baidu": "Baidu",
     "bytedance": "ByteDance",
     "bytedance-seed": "ByteDance Seed",
     "cohere": "Cohere",
+    "cognitivecomputations": "Cognitive Computations",
     "deepseek": "DeepSeek",
+    "deepcogito": "Deep Cogito",
     "essentialai": "Essential AI",
     "google": "Google",
     "ibm-granite": "IBM",
@@ -74,8 +75,6 @@ PROVIDER_LABEL_OVERRIDES: dict[str, str] = {
     "moonshotai": "Moonshot AI",
     "nousresearch": "Nous Research",
     "nvidia": "NVIDIA",
-    "openai": "OpenAI",
-    "openrouter": "OpenRouter",
     "perplexity": "Perplexity",
     "qwen": "Qwen",
     "rekaai": "Reka AI",
@@ -299,9 +298,43 @@ def _provider_label_from_slug(value: str | None) -> str | None:
     slug = str(value or "").strip().lstrip("~").lower()
     if not slug:
         return None
+    descriptor = get_provider(slug)
+    if descriptor and descriptor.label:
+        return descriptor.label
     if slug in PROVIDER_LABEL_OVERRIDES:
         return PROVIDER_LABEL_OVERRIDES[slug]
     return " ".join(part.capitalize() for part in re.split(r"[-_\s]+", slug) if part)
+
+
+def _label_prefix_pattern(label: str) -> str | None:
+    parts = [part for part in re.split(r"[-_\s]+", str(label or "").strip()) if part]
+    if not parts:
+        return None
+    flexible_label = r"[-_.\s]*".join(re.escape(part) for part in parts)
+    return rf"^{flexible_label}(?:\s*[:/-]\s*|[-_\s]+|(?=\d)|$)"
+
+
+def _compact_label_key(value: str | None) -> str:
+    return "".join(ch for ch in str(value or "").casefold() if ch.isalnum())
+
+
+def _strip_model_label_prefix(value: str, label: str) -> str:
+    cleaned = value.strip()
+    label_key = _compact_label_key(label)
+    colon_match = re.match(r"^([^:]{1,40}):\s*", cleaned)
+    if colon_match and label_key:
+        prefix_key = _compact_label_key(colon_match.group(1))
+        if prefix_key and (
+            label_key.startswith(prefix_key) or prefix_key.startswith(label_key)
+        ):
+            stripped = cleaned[colon_match.end() :].strip()
+            return stripped or cleaned
+
+    pattern = _label_prefix_pattern(label)
+    if not pattern:
+        return cleaned
+    stripped = re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE).strip()
+    return stripped or cleaned
 
 
 def _family_slug_to_label(value: str | None) -> str | None:
@@ -984,35 +1017,177 @@ def clean_model_display_name(
         label = label.strip()
         if not label:
             continue
-        next_cleaned = re.sub(
-            rf"^{re.escape(label)}\s*:\s*",
-            "",
-            cleaned,
-            flags=re.IGNORECASE,
-        ).strip()
+        next_cleaned = _strip_model_label_prefix(cleaned, label)
         if next_cleaned != cleaned:
             cleaned = next_cleaned
             continue
-        cleaned = re.sub(
-            rf"^{re.escape(label)}\s+",
-            "",
-            cleaned,
-            flags=re.IGNORECASE,
-        ).strip()
 
     family = str(family_label or "").strip()
     if family:
-        remainder = re.sub(
-            rf"^{re.escape(family)}(?:\s*[:-]\s*|[-_\s]+|(?=\d))",
-            "",
-            cleaned,
-            count=1,
-            flags=re.IGNORECASE,
-        ).strip()
+        remainder = _strip_model_label_prefix(cleaned, family)
+        if remainder == cleaned:
+            suffix_pattern = rf"(?:^|[-_.\s]+){re.escape(family)}(?P<suffix>\s*\([^)]*\))?$"
+            if re.search(suffix_pattern, cleaned, flags=re.IGNORECASE):
+                remainder = re.sub(
+                    suffix_pattern,
+                    lambda match: match.group("suffix") or "",
+                    cleaned,
+                    count=1,
+                    flags=re.IGNORECASE,
+                ).strip()
+        if remainder == cleaned:
+            family_parts = [part for part in re.split(r"[-_\s]+", family) if part]
+            if len(family_parts) > 1:
+                without_first = _strip_model_label_prefix(cleaned, family_parts[0])
+                last_part = family_parts[-1]
+                suffix_pattern = rf"(?:^|[-_.\s]+){re.escape(last_part)}(?P<suffix>\s*\([^)]*\))?$"
+                if without_first != cleaned and re.search(
+                    suffix_pattern,
+                    without_first,
+                    flags=re.IGNORECASE,
+                ):
+                    remainder = re.sub(
+                        suffix_pattern,
+                        lambda match: match.group("suffix") or "",
+                        without_first,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    ).strip()
         if remainder and not remainder.startswith("."):
             cleaned = remainder
 
     return cleaned or str(model_id or name or "").strip()
+
+
+def _normalize_model_label_part(value: str | None) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _model_labels_match(existing: str | None, candidate: str | None) -> bool:
+    existing_key = _compact_label_key(existing)
+    candidate_key = _compact_label_key(candidate)
+    if not existing_key or not candidate_key:
+        return False
+    return existing_key == candidate_key or (
+        len(candidate_key) > 2 and existing_key.endswith(candidate_key)
+    )
+
+
+def _append_distinct_model_label(parts: list[str], value: str | None) -> None:
+    label = _normalize_model_label_part(value)
+    if not label or label.casefold().startswith("other"):
+        return
+    if any(_model_labels_match(existing, label) for existing in parts):
+        return
+    parts.append(label)
+
+
+def _model_slug_display_name(model_id: str | None) -> str:
+    raw = str(model_id or "").strip().lstrip("/")
+    if not raw:
+        return ""
+    if "/" in raw:
+        raw = raw.split("/", 1)[1]
+    return format_model_display_label(raw.replace(":", " "), model_id=raw)
+
+
+def compose_model_display_label(
+    *,
+    model_id: str | None = None,
+    provider_label: str | None = None,
+    family_label: str | None = None,
+    display_name: str | None = None,
+    fallback_name: str | None = None,
+) -> str:
+    """Compose provider, family, and display metadata into one stable label."""
+    provider = _normalize_model_label_part(provider_label)
+    raw_family = _normalize_model_label_part(family_label)
+    raw_display = (
+        _normalize_model_label_part(display_name)
+        or _normalize_model_label_part(fallback_name)
+        or _model_slug_display_name(model_id)
+    )
+
+    family = ""
+    if raw_family:
+        family = format_model_display_label(raw_family, provider_label=provider)
+        provider_key = _compact_label_key(provider)
+        family_key = _compact_label_key(family)
+        display_key = _compact_label_key(raw_display)
+        family_parts = [part for part in family.split() if part]
+        if provider_key and family_key and (
+            provider_key.startswith(family_key) or provider_key.endswith(family_key)
+        ):
+            family = ""
+        elif (
+            len(family_parts) > 1
+            and display_key.startswith(_compact_label_key(family_parts[0]))
+            and not display_key.startswith(family_key)
+        ):
+            family = ""
+
+    display = clean_model_display_name(
+        raw_display,
+        model_id=model_id,
+        provider_label=provider,
+        family_label=raw_family,
+    )
+    if family:
+        display = clean_model_display_name(display, model_id=model_id, family_label=family)
+    display = format_model_display_label(display, model_id=model_id)
+
+    parts: list[str] = []
+    _append_distinct_model_label(parts, provider)
+    _append_distinct_model_label(parts, family)
+    _append_distinct_model_label(parts, display)
+    return _normalize_model_label_part(" ".join(parts)) or _model_slug_display_name(model_id)
+
+
+def format_model_display_label(
+    name: str,
+    *,
+    model_id: str | None = None,
+    provider_label: str | None = None,
+    family_label: str | None = None,
+) -> str:
+    """Return a human-readable model label after shared prefix cleanup."""
+    cleaned = clean_model_display_name(
+        name,
+        model_id=model_id,
+        provider_label=provider_label,
+        family_label=family_label,
+    )
+    if not cleaned:
+        cleaned = str(model_id or name or "").strip()
+    return _format_model_display_text(cleaned)
+
+
+def _format_model_display_text(value: str) -> str:
+    raw = str(value or "")
+    dates: dict[str, str] = {}
+
+    def _protect_date(match: re.Match[str]) -> str:
+        placeholder = f"DATEPLACEHOLDER{len(dates)}"
+        dates[placeholder] = match.group(0)
+        return placeholder
+
+    raw = re.sub(r"20\d{2}-\d{2}-\d{2}", _protect_date, raw)
+    normalized = re.sub(r"\s+", " ", raw.replace("_", " ").replace(":", " ")).strip()
+    if not normalized:
+        return ""
+
+    tokens: list[str] = []
+    for raw_token in normalized.split(" "):
+        token = raw_token.strip()
+        if not token:
+            continue
+        if token in dates:
+            tokens.append(dates[token])
+            continue
+        pieces = [piece for piece in re.split(r"[-/]+", token) if piece]
+        tokens.extend(dates.get(piece, piece) for piece in (pieces or [token]))
+
+    return " ".join(_format_model_variant_part(token) for token in tokens if token)
 
 
 def clean_model_variant_label(
@@ -1057,8 +1232,22 @@ def clean_model_variant_label(
 
 def _format_model_variant_part(value: str) -> str:
     lower = value.lower()
-    if lower in {"api", "gpt", "oss", "mlx"}:
+    if lower in {"api", "glm", "gpt", "lfm", "llm", "mlx", "ocr", "oss", "ui", "vl"}:
         return lower.upper()
+    if re.match(r"^qwen\d", value, flags=re.IGNORECASE):
+        return "Qwen" + value[4:]
+    if lower == "mimo":
+        return "MiMo"
+    if lower == "codellama":
+        return "CodeLLaMa"
+    if lower == "deepresearch":
+        return "Deep Research"
+    if re.match(r"^o\d", value, flags=re.IGNORECASE):
+        return lower
+    if re.match(r"^\d+(?:b|k|m|t)$", value, flags=re.IGNORECASE):
+        return value.upper()
+    if re.match(r"^[a-z]+\d+[a-z0-9]*$", value, flags=re.IGNORECASE):
+        return value.upper()
     if re.match(r"^(?:\d|o\d)", value, flags=re.IGNORECASE):
         return value
     return lower[:1].upper() + lower[1:]

@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
-import { CHAT_MODEL_PROVIDER_LABELS } from '@/utils/modelDisplay';
+import { formatProviderDisplayName } from '@/utils/modelDisplay';
 import { normalizeProviderAlias } from '@/utils/modelProviders';
 
 // Generic model interface that both AvailableModel and LLMModel satisfy
@@ -15,6 +15,8 @@ interface BaseModel {
   model_provider_label?: string;
   model_family?: string;
   display_name?: string;
+  selector_label?: string;
+  host_provider_label?: string;
   model_variant?: string;
   is_latest?: boolean;
 }
@@ -56,9 +58,8 @@ type MenuPosition =
 const ESTIMATED_SUBMENU_WIDTH = 240;
 const SUBMENU_GAP = 2;
 
-function hostProviderLabel(provider: string | undefined): string {
-  const normalized = normalizeProviderAlias(provider || '') || provider || '';
-  return CHAT_MODEL_PROVIDER_LABELS[normalized] || normalized || '';
+function hostProviderLabel(model: BaseModel): string {
+  return model.host_provider_label || formatProviderDisplayName(model.provider);
 }
 
 function modelDisplayName(model: BaseModel): string {
@@ -66,6 +67,9 @@ function modelDisplayName(model: BaseModel): string {
 }
 
 function modelTriggerDisplayName(model: BaseModel): string {
+  if (model.selector_label) {
+    return model.selector_label;
+  }
   const displayName = modelDisplayName(model).trim();
   const providerLabel = modelProviderLabel(model).trim();
   const familyLabel = modelFamilyLabel(model).trim();
@@ -87,7 +91,7 @@ function modelFamilyLabel(model: BaseModel): string {
 }
 
 function modelProviderLabel(model: BaseModel): string {
-  return model.model_provider_label || hostProviderLabel(model.provider) || 'Other';
+  return model.model_provider_label || hostProviderLabel(model) || 'Other';
 }
 
 function sortOtherLast(a: string, b: string): number {
@@ -197,7 +201,7 @@ export function ModelSelector<T extends BaseModel>({
     const providerLabels = new Map<string, string>();
 
     models.forEach((model) => {
-      const host = hostProviderLabel(model.provider) || 'Other';
+      const host = hostProviderLabel(model) || 'Other';
       const hostKey = host.toLowerCase();
       const provider = modelProviderLabel(model);
       const providerKey = provider.toLowerCase();
@@ -342,7 +346,8 @@ export function ModelSelector<T extends BaseModel>({
         model.group || '',
         model.model_family || '',
         model.model_provider_label || '',
-        hostProviderLabel(model.provider),
+        hostProviderLabel(model),
+        model.selector_label || '',
       ]
         .filter(Boolean)
         .join(' ')
@@ -724,6 +729,7 @@ export function ModelSelector<T extends BaseModel>({
                 filteredModels.map((model) => {
                   const key = selectionKeyFor(model);
                   const isSelected = isModelSelected(model);
+                  const hostLabel = hostProviderLabel(model);
                   return (
                     <button
                       key={key}
@@ -733,16 +739,11 @@ export function ModelSelector<T extends BaseModel>({
                       title={model.id}
                     >
                       <span className="model-selector-item-main">
-                        <span className="model-selector-item-name">{modelDisplayName(model)}</span>
-                        {(model.model_provider_label || model.model_family || model.group) && (
-                          <span className="model-selector-item-meta">
-                            {[model.model_provider_label, model.model_family || model.group].filter(Boolean).join(' / ')}
-                          </span>
-                        )}
+                        <span className="model-selector-item-name">{model.selector_label || modelTriggerDisplayName(model)}</span>
                       </span>
-                      {hostProviderLabel(model.provider) && !hostProviderLabel(model.provider).startsWith('Other') && (
+                      {hostLabel && !hostLabel.startsWith('Other') && (
                         <span className="model-selector-expand-indicator" aria-hidden="true">
-                          {hostProviderLabel(model.provider)}
+                          {hostLabel}
                         </span>
                       )}
                     </button>

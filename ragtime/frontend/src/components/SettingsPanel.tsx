@@ -35,7 +35,7 @@ import {
   mountSyncIntervalToSlider,
   sliderToMountSyncInterval,
 } from '@/utils/mountSyncIntervals';
-import { CHAT_MODEL_PROVIDER_LABELS, parseScopedModelIdentifier } from '@/utils/modelDisplay';
+import { formatProviderDisplayName, parseScopedModelIdentifier } from '@/utils/modelDisplay';
 import {
   PROVIDER_CONNECTIONS,
   buildProviderBaseUrl,
@@ -317,6 +317,25 @@ function toScopedModelIdentifier(model: AvailableModel): string {
   return `${model.provider}::${model.id}`;
 }
 
+function compactModelLabelKey(value: string | null | undefined): string {
+  return (value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function availableModelHostLabel(model: AvailableModel): string {
+  return model.host_provider_label || formatProviderDisplayName(model.provider);
+}
+
+function availableModelSettingsLabel(model: AvailableModel): string {
+  const label = model.selector_label || model.display_name || model.name || model.id;
+  const hostLabel = availableModelHostLabel(model);
+  const labelKey = compactModelLabelKey(label);
+  const hostKey = compactModelLabelKey(hostLabel);
+  if (hostLabel && hostKey && !labelKey.startsWith(hostKey)) {
+    return `${label} (${hostLabel})`;
+  }
+  return label;
+}
+
 function formatModelIdentifierForDisplay(identifier: string | null | undefined, models: AvailableModel[]): string {
   const { provider, modelId } = parseScopedModelIdentifier(identifier);
   if (!modelId) {
@@ -329,18 +348,16 @@ function formatModelIdentifierForDisplay(identifier: string | null | undefined, 
     && providersEquivalent(m.provider, provider)
   ));
   if (exactMatch) {
-    const label = CHAT_MODEL_PROVIDER_LABELS[exactMatch.provider] || exactMatch.provider;
-    return `${exactMatch.id} (${label})`;
+    return availableModelSettingsLabel(exactMatch);
   }
 
   const unscopedMatch = models.find((m) => m.id === modelId);
   if (unscopedMatch) {
-    const label = CHAT_MODEL_PROVIDER_LABELS[unscopedMatch.provider] || unscopedMatch.provider;
-    return `${unscopedMatch.id} (${label})`;
+    return availableModelSettingsLabel(unscopedMatch);
   }
 
   if (provider) {
-    const label = CHAT_MODEL_PROVIDER_LABELS[provider] || provider;
+    const label = formatProviderDisplayName(provider);
     return `${modelId} (${label})`;
   }
   return modelId;
@@ -2546,7 +2563,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
   })();
   const defaultChatModelOptions = filteredChatModels.map((model) => ({
     value: toScopedModelIdentifier(model),
-    label: `${model.id} (${CHAT_MODEL_PROVIDER_LABELS[model.provider] || model.provider})`,
+    label: availableModelSettingsLabel(model),
   }));
   const manualDefaultExistsInOptions = !!manualDefaultChatModel
     && defaultChatModelOptions.some((option) => option.value === manualDefaultChatModel);

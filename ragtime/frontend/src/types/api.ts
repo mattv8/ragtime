@@ -938,6 +938,8 @@ export interface LLMModel {
   model_provider_label?: string;
   model_family?: string;
   display_name?: string;
+  selector_label?: string;
+  host_provider_label?: string;
   model_variant?: string;
   freshness_rank?: number;
   is_latest?: boolean;
@@ -3368,6 +3370,8 @@ export interface AvailableModel {
   model_provider_label?: string;
   model_family?: string;
   display_name?: string;
+  selector_label?: string;
+  host_provider_label?: string;
   model_variant?: string;
   freshness_rank?: number;
   is_latest?: boolean; // Whether this model is considered the latest in its group

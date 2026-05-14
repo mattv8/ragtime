@@ -9,12 +9,18 @@ import ragtime.indexer.routes as indexer_routes
 from ragtime.core.model_limits import (
     clean_model_display_name,
     clean_model_variant_label,
+    compose_model_display_label,
     extract_openrouter_model_limits,
+    format_model_display_label,
     get_model_freshness_rank,
     resolve_model_family_label,
     resolve_model_provider_label,
 )
-from ragtime.core.model_providers import resolve_model_family_from_metadata
+from ragtime.core.model_providers import (
+    get_provider_label,
+    normalize_provider_name,
+    resolve_model_family_from_metadata,
+)
 from ragtime.indexer.routes import (
     AvailableModel,
     LLMModel,
@@ -27,9 +33,11 @@ from ragtime.indexer.routes import (
     _parse_model_identifier,
 )
 from ragtime.api.routes import (
+    _build_openapi_model_entry,
+    _ensure_unique_openapi_model_ids,
     _normalize_openapi_model_id,
     _normalize_runtime_model,
-    _owned_by_from_openapi_model_id,
+    _resolve_effective_model,
 )
 from ragtime.rag.components import RAGComponents, _CopilotChatOpenAI
 
@@ -78,6 +86,12 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(
             _normalize_conversation_model_provider("openrouter"), "openrouter"
         )
+
+    def test_shared_provider_metadata_resolves_api_aliases_and_labels(self) -> None:
+        self.assertEqual(normalize_provider_name("llama.cpp"), "llama_cpp")
+        self.assertEqual(normalize_provider_name("lm-studio"), "lmstudio")
+        self.assertEqual(normalize_provider_name("github"), "github_copilot")
+        self.assertEqual(get_provider_label("github"), "GitHub Copilot")
 
     def test_provider_reasoning_metadata_can_disable_effort_parameter(self) -> None:
         model_limits.invalidate_cache()
@@ -131,62 +145,205 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("omlx", str(raised.exception.detail))
 
-    def test_openapi_normalization_accepts_llama_cpp_token(self) -> None:
+    def test_openapi_normalization_uses_pretty_llama_cpp_id(self) -> None:
         self.assertEqual(
             _normalize_openapi_model_id("llama_cpp", "llama_cpp::my-chat-model"),
-            "lc::my-chat-model",
-        )
-        self.assertEqual(
-            _normalize_runtime_model("openai", "lc::my-chat-model"),
-            "llama_cpp::my-chat-model",
-        )
-        self.assertEqual(
-            _owned_by_from_openapi_model_id("openai", "lc::my-chat-model"),
-            "llama_cpp",
+            "llama.cpp My Chat Model",
         )
 
-    def test_openapi_normalization_accepts_lmstudio_token(self) -> None:
+    def test_openapi_normalization_uses_pretty_lmstudio_id(self) -> None:
         self.assertEqual(
             _normalize_openapi_model_id("lmstudio", "lmstudio::gemma-4-31b-it-mlx"),
-            "ls::gemma-4-31b-it-mlx",
-        )
-        self.assertEqual(
-            _normalize_runtime_model("openai", "ls::gemma-4-31b-it-mlx"),
-            "lmstudio::gemma-4-31b-it-mlx",
-        )
-        self.assertEqual(
-            _owned_by_from_openapi_model_id("openai", "ls::gemma-4-31b-it-mlx"),
-            "lmstudio",
+            "LM Studio Gemma 4 31B It MLX",
         )
 
-    def test_openapi_normalization_accepts_omlx_token(self) -> None:
+    def test_openapi_normalization_uses_pretty_omlx_id(self) -> None:
         self.assertEqual(
             _normalize_openapi_model_id("omlx", "omlx::qwen3-coder-next-8bit"),
-            "om::qwen3-coder-next-8bit",
-        )
-        self.assertEqual(
-            _normalize_runtime_model("openai", "om::qwen3-coder-next-8bit"),
-            "omlx::qwen3-coder-next-8bit",
-        )
-        self.assertEqual(
-            _owned_by_from_openapi_model_id("openai", "om::qwen3-coder-next-8bit"),
-            "omlx",
+            "oMLX Qwen3 Coder Next 8bit",
         )
 
-    def test_openapi_normalization_accepts_openrouter_token(self) -> None:
+    def test_openapi_normalization_uses_pretty_openrouter_id(self) -> None:
         self.assertEqual(
             _normalize_openapi_model_id(
                 "openrouter", "openrouter::anthropic/claude-sonnet-4.5"
             ),
-            "or::anthropic/claude-sonnet-4.5",
+            "OpenRouter Claude Sonnet 4.5",
+        )
+
+    def test_openapi_model_entry_uses_model_provider_label_for_display(self) -> None:
+        entry = _build_openapi_model_entry(
+            AvailableModel(
+                id="claude-haiku-4.5",
+                name="Claude Haiku 4.5",
+                provider="github_copilot",
+                model_provider_label="Anthropic",
+                model_family="Claude Haiku",
+                display_name="4.5",
+            ),
+            "openai",
+        )
+
+        self.assertEqual(entry.id, "Anthropic Claude Haiku 4.5")
+        self.assertEqual(entry.runtime_model, "github_copilot::claude-haiku-4.5")
+        self.assertEqual(entry.owned_by, "Anthropic")
+        self.assertNotIn("gh::", entry.id)
+
+    def test_openapi_model_entry_strips_github_catalog_publisher_for_runtime(
+        self,
+    ) -> None:
+        entry = _build_openapi_model_entry(
+            AvailableModel(
+                id="openai/gpt-4o",
+                name="OpenAI: GPT-4o",
+                provider="github_copilot",
+                model_provider_label="OpenAI",
+                model_family="GPT",
+                display_name="4o",
+            ),
+            "openai",
+        )
+
+        self.assertEqual(entry.id, "OpenAI GPT 4o")
+        self.assertEqual(entry.runtime_model, "github_copilot::gpt-4o")
+
+    def test_openapi_model_entry_reuses_shared_prefix_cleanup(self) -> None:
+        cases = [
+            (
+                AvailableModel(
+                    id="z-ai/glm-4.5-air",
+                    name="Z.ai: GLM 4.5 Air",
+                    provider="openrouter",
+                    model_provider_label="Z AI",
+                    model_family="GLM Air",
+                    display_name="Z.ai: GLM 4.5 Air",
+                ),
+                "Z AI GLM Air 4.5",
+            ),
+            (
+                AvailableModel(
+                    id="nousresearch/hermes-4-70b",
+                    name="Nous: Hermes 4 70B",
+                    provider="openrouter",
+                    model_provider_label="Nous Research",
+                    model_family="Hermes",
+                    display_name="Nous: Hermes 4 70B",
+                ),
+                "Nous Research Hermes 4 70B",
+            ),
+            (
+                AvailableModel(
+                    id="mistralai/mistral-small-2603",
+                    name="Mistral: Mistral Small 4",
+                    provider="openrouter",
+                    model_provider_label="Mistral",
+                    model_family="Mistral Small",
+                    display_name="Mistral Small 4",
+                ),
+                "Mistral Small 4",
+            ),
+            (
+                AvailableModel(
+                    id="inclusionai/ring-2.6-1t-free",
+                    name="Ring 2.6 1T (free)",
+                    provider="openrouter",
+                    model_provider_label="Inclusion AI",
+                    model_family="Ring 1T Free",
+                    display_name="Ring 2.6 1T (free)",
+                ),
+                "Inclusion AI Ring 2.6 1T (free)",
+            ),
+        ]
+
+        for model, expected_id in cases:
+            with self.subTest(model_id=model.id):
+                entry = _build_openapi_model_entry(model, "openai")
+                self.assertEqual(entry.id, expected_id)
+
+    def test_shared_display_formatter_preserves_versions_and_acronyms(self) -> None:
+        self.assertEqual(
+            clean_model_display_name(
+                "Google: Gemini 3.1 Flash Lite",
+                provider_label="Google",
+                family_label="Gemini 3",
+            ),
+            "Gemini 3.1 Flash Lite",
         )
         self.assertEqual(
-            _normalize_runtime_model("openai", "or::openai/gpt-4o"),
-            "openrouter::openai/gpt-4o",
+            format_model_display_label("qwen3-35b-a3b-2026-04-20"),
+            "Qwen3 35B A3B 2026-04-20",
         )
         self.assertEqual(
-            _owned_by_from_openapi_model_id("openai", "or::openai/gpt-4o"),
-            "openrouter",
+            format_model_display_label("Venice: Uncensored (free)"),
+            "Venice Uncensored (free)",
+        )
+        self.assertEqual(
+            compose_model_display_label(
+                model_id="inclusionai/ring-2.6-1t-free",
+                provider_label="Inclusion AI",
+                family_label="Ring 1T Free",
+                display_name="Ring 2.6 1T (free)",
+            ),
+            "Inclusion AI Ring 2.6 1T (free)",
+        )
+
+    def test_openapi_model_entry_disambiguates_duplicate_display_ids(self) -> None:
+        openai_entry = _build_openapi_model_entry(
+            AvailableModel(
+                id="gpt-4o",
+                name="GPT-4o",
+                provider="openai",
+                model_provider_label="OpenAI",
+                model_family="GPT",
+                display_name="4o",
+            ),
+            "openai",
+        )
+        copilot_entry = _build_openapi_model_entry(
+            AvailableModel(
+                id="openai/gpt-4o",
+                name="OpenAI: GPT-4o",
+                provider="github_copilot",
+                model_provider_label="OpenAI",
+                model_family="GPT",
+                display_name="4o",
+            ),
+            "openai",
+        )
+
+        deduped = _ensure_unique_openapi_model_ids([openai_entry, copilot_entry])
+
+        self.assertEqual(deduped[0].id, "OpenAI GPT 4o (via OpenAI)")
+        self.assertEqual(deduped[1].id, "OpenAI GPT 4o (via GitHub Copilot)")
+
+    def test_openapi_pretty_model_id_resolves_to_runtime_model(self) -> None:
+        entry = _build_openapi_model_entry(
+            AvailableModel(
+                id="claude-haiku-4.5",
+                name="Claude Haiku 4.5",
+                provider="github_copilot",
+                model_provider_label="Anthropic",
+                model_family="Claude Haiku",
+                display_name="4.5",
+            ),
+            "openai",
+        )
+
+        with mock.patch(
+            "ragtime.api.routes._get_openapi_model_entries",
+            new=mock.AsyncMock(return_value=[entry]),
+        ):
+            runtime_model, response_model = asyncio.run(
+                _resolve_effective_model(entry.id, {}, "openai")
+            )
+
+        self.assertEqual(runtime_model, "github_copilot::claude-haiku-4.5")
+        self.assertEqual(response_model, "Anthropic Claude Haiku 4.5")
+
+    def test_openapi_compact_provider_tokens_are_not_runtime_aliases(self) -> None:
+        self.assertEqual(
+            _normalize_runtime_model("openai", "gh::claude-haiku-4.5"),
+            "gh::claude-haiku-4.5",
         )
 
     def test_allowed_model_matching_accepts_provider_alias_and_publisher_prefix(
@@ -618,6 +775,8 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(latest[0].id, "mistralai/mistral-small-2603")
         self.assertTrue(all(model.group == "Mistral Small" for model in grouped))
         self.assertEqual(latest[0].display_name, "4")
+        self.assertEqual(latest[0].selector_label, "Mistral Small 4")
+        self.assertEqual(latest[0].host_provider_label, "OpenRouter")
         latest_rank = get_model_freshness_rank(latest[0].id, latest[0].created)
         comparison_model = next(model for model in grouped if model.id != latest[0].id)
         comparison_rank = get_model_freshness_rank(

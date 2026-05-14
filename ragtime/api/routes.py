@@ -3,6 +3,7 @@ API route definitions.
 """
 
 import asyncio
+from dataclasses import dataclass, replace
 import hmac
 import json
 import time
@@ -18,10 +19,16 @@ from ragtime.config import settings
 from ragtime.core.api_accounting import log_api_request
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
-from ragtime.core.model_providers import LLM_PROVIDER_NAMES, normalize_provider_name
+from ragtime.core.model_limits import (
+    compose_model_display_label,
+)
+from ragtime.core.model_providers import (
+    get_provider_label,
+    normalize_provider_name,
+)
 from ragtime.core.security import get_current_user_optional
 from ragtime.indexer.background_tasks import rebuild_tool_messages_from_events
-from ragtime.indexer.routes import get_available_chat_models
+from ragtime.indexer.routes import AvailableModel, get_available_chat_models
 from ragtime.models import (
     ChatChoice,
     ChatCompletionRequest,
@@ -41,67 +48,19 @@ router = APIRouter()
 
 _MODELS_CACHE_TTL_SECONDS = 30.0
 _models_cache_lock = asyncio.Lock()
-_models_cache: dict[tuple, tuple[float, list[str]]] = {}
 
 
-# Canonical provider aliases accepted on input.
-_PROVIDER_ALIASES: dict[str, str] = {
-    **{provider: provider for provider in LLM_PROVIDER_NAMES},
-    "oa": "openai",
-    "an": "anthropic",
-    "or": "openrouter",
-    "ol": "ollama",
-    "llama.cpp": "llama_cpp",
-    "llamacpp": "llama_cpp",
-    "lc": "llama_cpp",
-    "lm_studio": "lmstudio",
-    "lm-studio": "lmstudio",
-    "ls": "lmstudio",
-    "om": "omlx",
-    "github": "github_copilot",
-    "gh": "github_copilot",
-    "copilot": "github_copilot",
-}
-
-# Short provider tokens emitted by /v1/models to keep IDs compact.
-_OPENAPI_PROVIDER_TOKENS: dict[str, str] = {
-    "openai": "oa",
-    "anthropic": "an",
-    "openrouter": "or",
-    "ollama": "ol",
-    "llama_cpp": "lc",
-    "lmstudio": "ls",
-    "omlx": "om",
-    "github_copilot": "gh",
-}
+@dataclass(frozen=True)
+class _OpenAPIModelEntry:
+    id: str
+    runtime_model: str
+    provider: str
+    owned_by: str
+    root: str
+    selection_keys: tuple[str, ...]
 
 
-def _canonical_provider_name(provider: str) -> str:
-    token = (provider or "").strip().lower()
-    return _PROVIDER_ALIASES.get(token, normalize_provider_name(token))
-
-
-def _openapi_provider_token(provider: str) -> str:
-    canonical = _canonical_provider_name(provider)
-    return _OPENAPI_PROVIDER_TOKENS.get(canonical, canonical)
-
-
-def _owned_by_from_openapi_model_id(default_provider: str, model_id: str) -> str:
-    """Resolve ModelInfo.owned_by from a scoped or bare OpenAPI model ID."""
-    raw = (model_id or "").strip()
-    if "::" in raw:
-        scope, _, _ = raw.partition("::")
-        return _canonical_provider_name(scope)
-    return _canonical_provider_name(default_provider)
-
-
-def _split_openapi_model_id(default_provider: str, model_id: str) -> tuple[str, str]:
-    """Split OpenAPI model ID into (canonical_provider, model_slug)."""
-    raw = (model_id or "").strip()
-    if "::" in raw:
-        scope, _, slug = raw.partition("::")
-        return _canonical_provider_name(scope), slug.strip()
-    return _canonical_provider_name(default_provider), raw
+_models_cache: dict[tuple, tuple[float, list[_OpenAPIModelEntry]]] = {}
 
 
 def _models_cache_key(app_settings: dict, default_provider: str) -> tuple:
@@ -129,23 +88,26 @@ def _models_cache_key(app_settings: dict, default_provider: str) -> tuple:
     )
 
 
-def _get_cached_model_ids(cache_key: tuple) -> Optional[list[str]]:
+def _get_cached_model_entries(cache_key: tuple) -> Optional[list[_OpenAPIModelEntry]]:
     entry = _models_cache.get(cache_key)
     if not entry:
         return None
 
-    expires_at, model_ids = entry
+    expires_at, model_entries = entry
     if expires_at <= time.monotonic():
         _models_cache.pop(cache_key, None)
         return None
 
-    return list(model_ids)
+    return list(model_entries)
 
 
-def _set_cached_model_ids(cache_key: tuple, model_ids: list[str]) -> None:
+def _set_cached_model_entries(
+    cache_key: tuple,
+    model_entries: list[_OpenAPIModelEntry],
+) -> None:
     _models_cache[cache_key] = (
         time.monotonic() + _MODELS_CACHE_TTL_SECONDS,
-        list(model_ids),
+        list(model_entries),
     )
 
 
@@ -190,7 +152,7 @@ def _normalize_runtime_model(provider: str, model: str) -> str:
 
     if "::" in model_id:
         scoped_provider, _, scoped_model = model_id.partition("::")
-        scoped_provider = _canonical_provider_name(scoped_provider)
+        scoped_provider = normalize_provider_name(scoped_provider)
         scoped_model = scoped_model.strip()
         if not scoped_provider or not scoped_model:
             return model_id
@@ -199,7 +161,7 @@ def _normalize_runtime_model(provider: str, model: str) -> str:
         )
         return f"{scoped_provider}::{normalized_scoped_model}"
 
-    provider_name = _canonical_provider_name(provider)
+    provider_name = normalize_provider_name(provider)
     model_id = model_id.lstrip("/")
 
     # Copilot chat endpoints expect bare model slugs (e.g. "gpt-4.1"),
@@ -212,48 +174,321 @@ def _normalize_runtime_model(provider: str, model: str) -> str:
     return model_id
 
 
-def _resolve_effective_model(requested_model: Optional[str], app_settings: dict) -> str:
-    """Resolve the provider runtime model from OpenAPI request model aliases."""
-    provider = str(app_settings.get("llm_provider", "openai") or "openai")
-    configured_openapi_model = _configured_openapi_model(app_settings)
-    configured_runtime_model = _normalize_runtime_model(
-        provider, configured_openapi_model
+def _normalize_label_part(value: Optional[str]) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _split_runtime_model(default_provider: str, runtime_model: str) -> tuple[str, str]:
+    raw = str(runtime_model or "").strip()
+    if "::" in raw:
+        provider, _, model_id = raw.partition("::")
+        return normalize_provider_name(provider), model_id.strip()
+    return normalize_provider_name(default_provider), raw
+
+
+def _openapi_display_id_for_parts(
+    *,
+    provider: str,
+    model_id: str,
+    model_provider_label: Optional[str] = None,
+    family_label: Optional[str] = None,
+    display_name: Optional[str] = None,
+) -> str:
+    return compose_model_display_label(
+        model_id=model_id,
+        provider_label=_normalize_label_part(model_provider_label)
+        or get_provider_label(provider),
+        family_label=family_label,
+        display_name=display_name,
     )
 
-    requested = (requested_model or "").strip()
-    if not requested:
-        return configured_runtime_model
 
-    requested_runtime_model = _normalize_runtime_model(provider, requested)
+def _openapi_display_id_from_available_model(
+    model: AvailableModel,
+    provider: str,
+) -> str:
+    if getattr(model, "selector_label", None):
+        return _normalize_label_part(model.selector_label)
+    return _openapi_display_id_for_parts(
+        provider=provider,
+        model_id=model.id,
+        model_provider_label=model.model_provider_label,
+        family_label=model.model_family or model.group,
+        display_name=model.display_name or model.name,
+    )
 
-    if configured_runtime_model:
-        configured_aliases = {
-            configured_openapi_model.lower(),
-            configured_runtime_model.lower(),
-        }
-        # Configured OpenAPI model aliases all map to the configured runtime model.
-        if requested.lower() in configured_aliases:
-            return configured_runtime_model
 
-    return requested_runtime_model
+def _selection_key_variants(*values: Optional[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    variants: list[str] = []
+    for value in values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        folded = raw.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        variants.append(raw)
+    return tuple(variants)
+
+
+def _build_openapi_model_entry(model: AvailableModel, default_provider: str) -> _OpenAPIModelEntry:
+    provider = normalize_provider_name(str(model.provider or default_provider))
+    base_model_id = str(model.id or "").strip()
+    runtime_model = _normalize_runtime_model(provider, f"{provider}::{base_model_id}")
+    _runtime_provider, runtime_model_id = _split_runtime_model(provider, runtime_model)
+    display_id = _openapi_display_id_from_available_model(model, provider)
+    owned_by = _normalize_label_part(model.model_provider_label) or get_provider_label(
+        provider
+    )
+    provider_scoped_model_id = f"{provider}::{base_model_id}"
+    return _OpenAPIModelEntry(
+        id=display_id,
+        runtime_model=runtime_model,
+        provider=provider,
+        owned_by=owned_by,
+        root=display_id,
+        selection_keys=_selection_key_variants(
+            display_id,
+            provider_scoped_model_id,
+            runtime_model,
+            base_model_id,
+            runtime_model_id,
+        ),
+    )
+
+
+def _build_fallback_openapi_model_entry(
+    default_provider: str,
+    model_id: str,
+) -> _OpenAPIModelEntry:
+    runtime_model = _normalize_runtime_model(default_provider, model_id)
+    provider, runtime_model_id = _split_runtime_model(default_provider, runtime_model)
+    display_id = _openapi_display_id_for_parts(
+        provider=provider,
+        model_id=runtime_model_id,
+    )
+    provider_scoped_model_id = f"{provider}::{runtime_model_id}"
+    return _OpenAPIModelEntry(
+        id=display_id,
+        runtime_model=runtime_model,
+        provider=provider,
+        owned_by=get_provider_label(provider),
+        root=display_id,
+        selection_keys=_selection_key_variants(
+            display_id,
+            provider_scoped_model_id,
+            runtime_model,
+            model_id,
+            runtime_model_id,
+        ),
+    )
+
+
+def _entry_duplicate_slug(entry: _OpenAPIModelEntry) -> str:
+    _provider, model_id = _split_runtime_model(entry.provider, entry.runtime_model)
+    return model_id.casefold()
+
+
+def _entry_matches_allowed(entry: _OpenAPIModelEntry, allowed_models: set[str]) -> bool:
+    if not allowed_models:
+        return True
+    folded_allowed = {value.casefold() for value in allowed_models}
+    return any(key.casefold() in folded_allowed for key in entry.selection_keys)
+
+
+def _ensure_unique_openapi_model_ids(
+    entries: list[_OpenAPIModelEntry],
+) -> list[_OpenAPIModelEntry]:
+    counts: dict[str, int] = {}
+    for entry in entries:
+        key = entry.id.casefold()
+        counts[key] = counts.get(key, 0) + 1
+
+    used: set[str] = set()
+    result: list[_OpenAPIModelEntry] = []
+    for entry in entries:
+        display_id = entry.id
+        if counts[entry.id.casefold()] > 1:
+            base = f"{entry.id} (via {get_provider_label(entry.provider)})"
+            display_id = base
+            suffix = 2
+            while display_id.casefold() in used:
+                display_id = f"{base} {suffix}"
+                suffix += 1
+
+        used.add(display_id.casefold())
+        if display_id == entry.id:
+            result.append(entry)
+            continue
+        result.append(
+            replace(
+                entry,
+                id=display_id,
+                root=display_id,
+                selection_keys=_selection_key_variants(display_id, *entry.selection_keys),
+            )
+        )
+    return result
+
+
+def _model_entry_to_info(entry: _OpenAPIModelEntry, created: int) -> ModelInfo:
+    return ModelInfo(
+        id=entry.id,
+        created=created,
+        owned_by=entry.owned_by,
+        root=entry.root,
+        parent=None,
+    )
 
 
 def _normalize_openapi_model_id(default_provider: str, model_id: str) -> str:
-    """Normalize to deterministic scoped OpenAPI ID with compact provider token."""
-    raw = (model_id or "").strip()
-    if not raw:
-        return ""
-    runtime_id = _normalize_runtime_model(default_provider, raw)
+    """Return the pretty OpenAI-compatible ID advertised for a fallback model."""
+    runtime_id = _normalize_runtime_model(default_provider, model_id)
     if not runtime_id:
         return ""
+    provider, runtime_model_id = _split_runtime_model(default_provider, runtime_id)
+    return _openapi_display_id_for_parts(provider=provider, model_id=runtime_model_id)
 
-    if "::" in runtime_id:
-        provider, _, scoped_model = runtime_id.partition("::")
-        provider_token = _openapi_provider_token(provider)
-        return f"{provider_token}::{scoped_model}"
 
-    provider_token = _openapi_provider_token(default_provider)
-    return f"{provider_token}::{runtime_id}"
+async def _get_openapi_model_entries(
+    app_settings: dict,
+    default_provider: str,
+) -> list[_OpenAPIModelEntry]:
+    cache_key = _models_cache_key(app_settings, default_provider)
+
+    cached_model_entries = _get_cached_model_entries(cache_key)
+    if cached_model_entries is not None:
+        return cached_model_entries
+
+    async with _models_cache_lock:
+        cached_model_entries = _get_cached_model_entries(cache_key)
+        if cached_model_entries is not None:
+            return cached_model_entries
+
+        sync_chat = app_settings.get("openapi_sync_chat_models", True)
+        allowed_openapi = {
+            str(value).strip()
+            for value in (app_settings.get("allowed_openapi_models") or [])
+            if str(value).strip()
+        } if not sync_chat else set()
+
+        entries: list[_OpenAPIModelEntry] = []
+        collapse_cross_provider_duplicates = not allowed_openapi
+        selected_by_slug: dict[str, _OpenAPIModelEntry] = {}
+        selected_slug_order: list[str] = []
+
+        def _append_or_select(entry: _OpenAPIModelEntry) -> None:
+            if not collapse_cross_provider_duplicates:
+                entries.append(entry)
+                return
+
+            slug = _entry_duplicate_slug(entry)
+            if not slug:
+                return
+
+            current = selected_by_slug.get(slug)
+            if current is None:
+                selected_by_slug[slug] = entry
+                selected_slug_order.append(slug)
+                return
+
+            if current.provider != default_provider and entry.provider == default_provider:
+                selected_by_slug[slug] = entry
+
+        try:
+            available = await get_available_chat_models()
+
+            for model in available.models:
+                if not str(model.id or "").strip():
+                    continue
+                entry = _build_openapi_model_entry(model, default_provider)
+
+                if allowed_openapi and not _entry_matches_allowed(entry, allowed_openapi):
+                    continue
+
+                _append_or_select(entry)
+        except Exception as exc:
+            logger.warning(
+                "Failed to load available chat models for /v1/models: %s", exc
+            )
+
+        if collapse_cross_provider_duplicates and selected_slug_order:
+            entries = [selected_by_slug[slug] for slug in selected_slug_order]
+
+        if not entries:
+            for model_id in _configured_openapi_models(app_settings):
+                entry = _build_fallback_openapi_model_entry(default_provider, model_id)
+                if allowed_openapi and not _entry_matches_allowed(entry, allowed_openapi):
+                    continue
+                _append_or_select(entry)
+            if collapse_cross_provider_duplicates and selected_slug_order:
+                entries = [selected_by_slug[slug] for slug in selected_slug_order]
+
+        if not entries:
+            entries = [_build_fallback_openapi_model_entry(default_provider, "gpt-4.1")]
+
+        entries = _ensure_unique_openapi_model_ids(entries)
+        _set_cached_model_entries(cache_key, entries)
+        return entries
+
+
+def _find_openapi_model_entry(
+    entries: list[_OpenAPIModelEntry],
+    requested_model: str,
+) -> Optional[_OpenAPIModelEntry]:
+    requested = str(requested_model or "").strip().casefold()
+    if not requested:
+        return None
+    for entry in entries:
+        if entry.id.casefold() == requested:
+            return entry
+    return None
+
+
+async def _resolve_effective_model(
+    requested_model: Optional[str],
+    app_settings: dict,
+    default_provider: str,
+) -> tuple[str, str]:
+    """Resolve an advertised OpenAPI model ID to a provider runtime model."""
+    entries = await _get_openapi_model_entries(app_settings, default_provider)
+
+    requested = (requested_model or "").strip()
+    if requested:
+        entry = _find_openapi_model_entry(entries, requested)
+        if entry:
+            return entry.runtime_model, entry.id
+
+        runtime_model = _normalize_runtime_model(default_provider, requested)
+        advertised_model = _normalize_openapi_model_id(default_provider, runtime_model)
+        return runtime_model, advertised_model or requested
+
+    configured_openapi_model = _configured_openapi_model(app_settings)
+    configured_runtime_model = _normalize_runtime_model(
+        default_provider,
+        configured_openapi_model,
+    )
+    if configured_runtime_model:
+        for entry in entries:
+            if entry.runtime_model.casefold() == configured_runtime_model.casefold():
+                return entry.runtime_model, entry.id
+            if configured_openapi_model.casefold() in (
+                key.casefold() for key in entry.selection_keys
+            ):
+                return entry.runtime_model, entry.id
+        advertised_model = _normalize_openapi_model_id(
+            default_provider,
+            configured_runtime_model,
+        )
+        return configured_runtime_model, advertised_model
+
+    first_entry = entries[0] if entries else None
+    if first_entry:
+        return first_entry.runtime_model, first_entry.id
+
+    return "", ""
 
 
 async def verify_api_key(authorization: Optional[str] = Header(None)):
@@ -354,177 +589,12 @@ async def list_models():
     """List available models (OpenAI-compatible)."""
     now = int(time.time())
     app_settings = await get_app_settings()
-    default_provider = _canonical_provider_name(
+    default_provider = normalize_provider_name(
         str(app_settings.get("llm_provider", "openai") or "openai")
     )
-    cache_key = _models_cache_key(app_settings, default_provider)
-
-    cached_model_ids = _get_cached_model_ids(cache_key)
-    if cached_model_ids is not None:
-        return ModelsResponse(
-            data=[
-                ModelInfo(
-                    id=model_id,
-                    created=now,
-                    owned_by=_owned_by_from_openapi_model_id(
-                        default_provider, model_id
-                    ),
-                    root=model_id,
-                    parent=None,
-                )
-                for model_id in cached_model_ids
-            ]
-        )
-
-    async with _models_cache_lock:
-        cached_model_ids = _get_cached_model_ids(cache_key)
-        if cached_model_ids is not None:
-            return ModelsResponse(
-                data=[
-                    ModelInfo(
-                        id=model_id,
-                        created=now,
-                        owned_by=_owned_by_from_openapi_model_id(
-                            default_provider, model_id
-                        ),
-                        root=model_id,
-                        parent=None,
-                    )
-                    for model_id in cached_model_ids
-                ]
-            )
-
-        sync_chat = app_settings.get("openapi_sync_chat_models", True)
-        allowed_openapi = (
-            [
-                str(v).strip()
-                for v in (app_settings.get("allowed_openapi_models") or [])
-                if str(v).strip()
-            ]
-            if not sync_chat
-            else []
-        )
-        allowed_openapi_scoped_set: Optional[set[str]] = None
-        allowed_openapi_bare_set: Optional[set[str]] = None
-        if allowed_openapi:
-            allowed_openapi_scoped_set = set()
-            allowed_openapi_bare_set = set()
-            for allowed_model in allowed_openapi:
-                normalized_openapi_id = _normalize_openapi_model_id(
-                    default_provider, allowed_model
-                )
-                if normalized_openapi_id:
-                    allowed_openapi_scoped_set.add(normalized_openapi_id)
-
-                normalized_runtime_id = _normalize_runtime_model(
-                    default_provider, allowed_model
-                )
-                if normalized_runtime_id and "::" not in normalized_runtime_id:
-                    allowed_openapi_bare_set.add(normalized_runtime_id)
-
-        allowed_openapi_bare_lookup = allowed_openapi_bare_set or set()
-
-        model_ids: list[str] = []
-        # In synced mode, collapse duplicate slugs across providers to avoid
-        # duplicate choices in OpenWebUI model discovery.
-        collapse_cross_provider_duplicates = allowed_openapi_scoped_set is None
-        selected_by_slug: dict[str, str] = {}
-        selected_slug_order: list[str] = []
-
-        def _append_or_select(normalized_model_id: str) -> None:
-            if not normalized_model_id:
-                return
-            if not collapse_cross_provider_duplicates:
-                if normalized_model_id not in model_ids:
-                    model_ids.append(normalized_model_id)
-                return
-
-            candidate_provider, candidate_slug = _split_openapi_model_id(
-                default_provider, normalized_model_id
-            )
-            if not candidate_slug:
-                return
-
-            current = selected_by_slug.get(candidate_slug)
-            if current is None:
-                selected_by_slug[candidate_slug] = normalized_model_id
-                selected_slug_order.append(candidate_slug)
-                return
-
-            current_provider, _ = _split_openapi_model_id(default_provider, current)
-            # Prefer the configured default provider when the slug exists from
-            # multiple providers (e.g. openai and github-copilot catalogs).
-            if (
-                current_provider != default_provider
-                and candidate_provider == default_provider
-            ):
-                selected_by_slug[candidate_slug] = normalized_model_id
-
-        try:
-            available = await get_available_chat_models()
-
-            for model in available.models:
-                base_model_id = str(model.id or "").strip()
-                model_provider = _canonical_provider_name(
-                    str(model.provider or default_provider).strip().lower()
-                    or default_provider
-                )
-                if not base_model_id:
-                    continue
-
-                scoped_openapi_id = _normalize_openapi_model_id(
-                    model_provider, f"{model_provider}::{base_model_id}"
-                )
-                runtime_base_id = _normalize_runtime_model(
-                    model_provider, base_model_id
-                )
-
-                # When using a separate OpenAPI list, filter to only allowed models.
-                if allowed_openapi_scoped_set is not None:
-                    if (
-                        scoped_openapi_id not in allowed_openapi_scoped_set
-                        and runtime_base_id not in allowed_openapi_bare_lookup
-                    ):
-                        continue
-
-                # Deterministic contract: always emit provider-scoped model IDs.
-                normalized = scoped_openapi_id
-                _append_or_select(normalized)
-        except Exception as exc:
-            logger.warning(
-                "Failed to load available chat models for /v1/models: %s", exc
-            )
-
-        if collapse_cross_provider_duplicates and selected_slug_order:
-            model_ids = [selected_by_slug[slug] for slug in selected_slug_order]
-
-        if not model_ids:
-            for model_id in _configured_openapi_models(app_settings):
-                _append_or_select(
-                    _normalize_openapi_model_id(default_provider, model_id)
-                )
-            if collapse_cross_provider_duplicates and selected_slug_order:
-                model_ids = [selected_by_slug[slug] for slug in selected_slug_order]
-            else:
-                model_ids = [model_id for model_id in model_ids if model_id]
-
-        if not model_ids:
-            # Last-resort fallback for partially configured instances.
-            model_ids = ["gpt-4.1"]
-
-        _set_cached_model_ids(cache_key, model_ids)
-
+    model_entries = await _get_openapi_model_entries(app_settings, default_provider)
     return ModelsResponse(
-        data=[
-            ModelInfo(
-                id=model_id,
-                created=now,
-                owned_by=_owned_by_from_openapi_model_id(default_provider, model_id),
-                root=model_id,
-                parent=None,
-            )
-            for model_id in model_ids
-        ]
+        data=[_model_entry_to_info(entry, now) for entry in model_entries]
     )
 
 
@@ -547,10 +617,14 @@ async def chat_completions(request: ChatCompletionRequest):
         )
 
     app_settings = await get_app_settings()
-    default_provider = _canonical_provider_name(
+    default_provider = normalize_provider_name(
         str(app_settings.get("llm_provider", "openai") or "openai")
     )
-    effective_model = _resolve_effective_model(request.model, app_settings)
+    effective_model, response_model = await _resolve_effective_model(
+        request.model,
+        app_settings,
+        default_provider,
+    )
     if not effective_model:
         asyncio.ensure_future(
             log_api_request(
@@ -563,9 +637,6 @@ async def chat_completions(request: ChatCompletionRequest):
             status_code=400,
             detail="No model configured. Set an LLM model in Settings.",
         )
-    response_model = _normalize_openapi_model_id(
-        default_provider, request.model or effective_model
-    ) or _normalize_openapi_model_id(default_provider, effective_model)
     tool_output_mode = (
         request.agent_options.tool_output_mode
         if request.agent_options and request.agent_options.tool_output_mode is not None

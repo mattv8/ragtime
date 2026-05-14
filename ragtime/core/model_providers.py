@@ -191,6 +191,7 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
     "llama_cpp": ModelProvider(
         name="llama_cpp",
         label="llama.cpp",
+        aliases=("llama.cpp", "llamacpp"),
         llm_connection=LLAMA_CPP_LLM_CONNECTION,
         embedding_connection=LLAMA_CPP_EMBEDDING_CONNECTION,
         supports_llm=True,
@@ -203,6 +204,7 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
     "lmstudio": ModelProvider(
         name="lmstudio",
         label="LM Studio",
+        aliases=("lm_studio", "lm-studio"),
         llm_connection=LMSTUDIO_LLM_CONNECTION,
         embedding_connection=LMSTUDIO_CONNECTION,
         supports_llm=True,
@@ -229,14 +231,14 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
     "github_copilot": ModelProvider(
         name="github_copilot",
         label="GitHub Copilot",
-        aliases=("github_models",),
+        aliases=("github_models", "github", "copilot"),
         supports_llm=True,
         openai_compatible_chat=True,
     ),
 }
 
 PROVIDER_ALIASES = {
-    alias: provider.name
+    alias.lower().replace("-", "_"): provider.name
     for provider in MODEL_PROVIDERS.values()
     for alias in provider.aliases
 }
@@ -292,6 +294,17 @@ def providers_equivalent(selected: str | None, actual: str | None) -> bool:
 def get_provider(provider: str | None) -> ModelProvider | None:
     """Return provider metadata for a canonical or aliased provider name."""
     return MODEL_PROVIDERS.get(normalize_provider_name(provider))
+
+
+def get_provider_label(provider: str | None, *, default: str = "Unknown") -> str:
+    """Return the shared human display label for a provider identifier."""
+    descriptor = get_provider(provider)
+    if descriptor is not None and descriptor.label:
+        return descriptor.label
+    normalized = normalize_provider_name(provider)
+    if not normalized:
+        return default
+    return normalized.replace("_", " ").title()
 
 
 def resolve_model_family_from_metadata(

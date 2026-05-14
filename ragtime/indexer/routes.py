@@ -69,6 +69,7 @@ from ragtime.core.model_limits import (
     MODEL_FAMILY_PATTERNS,
     clean_model_display_name,
     clean_model_variant_label,
+    compose_model_display_label,
     ensure_model_metadata_loaded,
     get_context_limit,
     get_model_freshness_rank,
@@ -91,6 +92,7 @@ from ragtime.core.model_providers import (
     LLM_PROVIDER_NAMES,
     LOCAL_LLM_PROVIDER_NAMES,
     get_provider,
+    get_provider_label,
     normalize_provider_name,
     providers_equivalent,
     resolve_model_family_from_metadata,
@@ -6855,6 +6857,8 @@ class LLMModel(BaseModel):
     model_provider_label: Optional[str] = None
     model_family: Optional[str] = None
     display_name: Optional[str] = None
+    selector_label: Optional[str] = None
+    host_provider_label: Optional[str] = None
     model_variant: Optional[str] = None
     freshness_rank: Optional[int] = None
     is_latest: bool = False
@@ -6895,6 +6899,8 @@ class AvailableModel(BaseModel):
     model_provider_label: Optional[str] = None  # Human label for model publisher/provider
     model_family: Optional[str] = None  # Model family for hierarchical UI organization
     display_name: Optional[str] = None  # Provider/family-stripped display label
+    selector_label: Optional[str] = None  # Full backend-composed selector label
+    host_provider_label: Optional[str] = None  # Human label for the serving host/provider
     model_variant: Optional[str] = None  # Compact variant label for selector grouping
     freshness_rank: Optional[int] = None  # Comparable release/freshness rank
     is_latest: bool = False  # Whether this is the latest version in its group
@@ -7020,6 +7026,22 @@ def _enrich_model_metadata(
         model_id=model.id,
         provider_label=model.model_provider_label,
         family_label=model.model_family or model.group,
+    )
+    _set_model_selector_labels(model, provider)
+
+
+def _set_model_selector_labels(
+    model: LLMModel | AvailableModel,
+    provider: str,
+) -> None:
+    """Attach backend-composed labels consumed directly by model selectors."""
+    model.host_provider_label = get_provider_label(provider)
+    model.selector_label = compose_model_display_label(
+        model_id=model.id,
+        provider_label=model.model_provider_label,
+        family_label=model.model_family or model.group,
+        display_name=model.display_name,
+        fallback_name=model.name,
     )
 
 
@@ -8106,6 +8128,9 @@ def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
 
         if not found_group:
             model.group = f"Other {provider.title()}"
+        if not model.model_family and model.group:
+            model.model_family = model.group
+        _set_model_selector_labels(model, provider)
 
     _mark_latest_models(models, provider)
 
@@ -8194,6 +8219,10 @@ def _merge_model_metadata(primary: LLMModel, extra: LLMModel) -> LLMModel:
         merged.model_family = extra.model_family
     if not merged.display_name:
         merged.display_name = extra.display_name
+    if not merged.selector_label:
+        merged.selector_label = extra.selector_label
+    if not merged.host_provider_label:
+        merged.host_provider_label = extra.host_provider_label
     if not merged.model_variant:
         merged.model_variant = extra.model_variant
     if merged.freshness_rank is None:
@@ -8244,6 +8273,9 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
 
         if not found_group:
             model.group = f"Other {model.provider.title()}"
+        if not model.model_family and model.group:
+            model.model_family = model.group
+        _set_model_selector_labels(model, model.provider)
 
     _mark_latest_models(models, "")
 
@@ -9743,6 +9775,8 @@ async def get_available_chat_models():
                     model_provider_label=m.model_provider_label,
                     model_family=m.model_family,
                     display_name=m.display_name,
+                    selector_label=m.selector_label,
+                    host_provider_label=m.host_provider_label,
                     model_variant=m.model_variant,
                     freshness_rank=m.freshness_rank,
                     created=m.created,
@@ -10041,6 +10075,8 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                     model_provider_label=m.model_provider_label,
                     model_family=m.model_family,
                     display_name=m.display_name,
+                    selector_label=m.selector_label,
+                    host_provider_label=m.host_provider_label,
                     model_variant=m.model_variant,
                     freshness_rank=m.freshness_rank,
                     created=m.created,
