@@ -121,6 +121,8 @@ _PDF_CONTENT_TYPES = {
     "text/pdf",
     "text/x-pdf",
 }
+_PDF_READ_USER_AGENT = "RagtimeBot/1.0"
+_PDF_READ_RETRY_STATUS_CODES = {403, 406, 429}
 
 # Maps runtime-entrypoint framework names to pip packages that should be
 # auto-installed before the devserver starts.  pip is invoked with
@@ -2976,59 +2978,59 @@ class WorkerService:
                     )
                 session.updated_at = utc_now()
 
-        headers = {
-            "Accept": "application/pdf,application/octet-stream;q=0.8,*/*;q=0.2",
-            "User-Agent": str(payload.user_agent or "Ragtime web_read_pdf"),
-        }
+        requested_user_agent = str(payload.user_agent or "").strip()
+        user_agent_candidates: list[str | None] = []
+        if requested_user_agent:
+            user_agent_candidates.append(requested_user_agent)
+        else:
+            user_agent_candidates.append(None)
+        for candidate in (None, _PDF_READ_USER_AGENT):
+            if candidate not in user_agent_candidates:
+                user_agent_candidates.append(candidate)
+
         timeout = httpx.Timeout(max(10.0, min(60.0, int(payload.max_bytes) / 512_000)))
         try:
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                async with client.stream("GET", payload.url, headers=headers) as response:
-                    content_type = response.headers.get("content-type") or ""
-                    content_length = response.headers.get("content-length") or ""
-                    final_url = str(response.url)
-                    if response.status_code >= 400:
-                        body_preview = await self._response_text_preview(response)
-                        return RuntimePdfReadResponse(
-                            status="error",
-                            ok=False,
-                            requested_url=payload.url,
-                            url=final_url,
-                            status_code=response.status_code,
-                            content_type=content_type,
-                            byte_limit=int(payload.max_bytes),
-                            failure_mode="upstream_http_error",
-                            body_preview=body_preview,
-                            error=self._pdf_http_error_message(
-                                response.status_code,
-                                body_preview,
-                            ),
-                        )
+                for index, user_agent in enumerate(user_agent_candidates):
+                    headers = {
+                        "Accept": "application/pdf,application/octet-stream;q=0.8,*/*;q=0.2",
+                    }
+                    if user_agent:
+                        headers["User-Agent"] = user_agent
 
-                    try:
-                        declared_length = int(content_length)
-                    except (TypeError, ValueError):
-                        declared_length = 0
-                    if declared_length > int(payload.max_bytes):
-                        return RuntimePdfReadResponse(
-                            status="too_large",
-                            ok=False,
-                            requested_url=payload.url,
-                            url=final_url,
-                            status_code=response.status_code,
-                            content_type=content_type,
-                            byte_limit=int(payload.max_bytes),
-                            declared_bytes=declared_length,
-                            failure_mode="pdf_too_large",
-                            error="PDF exceeds web_read_pdf byte limit",
-                        )
+                    async with client.stream("GET", payload.url, headers=headers) as response:
+                        content_type = response.headers.get("content-type") or ""
+                        content_length = response.headers.get("content-length") or ""
+                        final_url = str(response.url)
+                        if response.status_code >= 400:
+                            body_preview = await self._response_text_preview(response)
+                            error_response = RuntimePdfReadResponse(
+                                status="error",
+                                ok=False,
+                                requested_url=payload.url,
+                                url=final_url,
+                                status_code=response.status_code,
+                                content_type=content_type,
+                                byte_limit=int(payload.max_bytes),
+                                failure_mode="upstream_http_error",
+                                body_preview=body_preview,
+                                error=self._pdf_http_error_message(
+                                    response.status_code,
+                                    body_preview,
+                                ),
+                            )
+                            if (
+                                response.status_code in _PDF_READ_RETRY_STATUS_CODES
+                                and index < len(user_agent_candidates) - 1
+                            ):
+                                continue
+                            return error_response
 
-                    content = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        if not chunk:
-                            continue
-                        content.extend(chunk)
-                        if len(content) > int(payload.max_bytes):
+                        try:
+                            declared_length = int(content_length)
+                        except (TypeError, ValueError):
+                            declared_length = 0
+                        if declared_length > int(payload.max_bytes):
                             return RuntimePdfReadResponse(
                                 status="too_large",
                                 ok=False,
@@ -3037,10 +3039,40 @@ class WorkerService:
                                 status_code=response.status_code,
                                 content_type=content_type,
                                 byte_limit=int(payload.max_bytes),
-                                downloaded_bytes=len(content),
+                                declared_bytes=declared_length,
                                 failure_mode="pdf_too_large",
                                 error="PDF exceeds web_read_pdf byte limit",
                             )
+
+                        content = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if not chunk:
+                                continue
+                            content.extend(chunk)
+                            if len(content) > int(payload.max_bytes):
+                                return RuntimePdfReadResponse(
+                                    status="too_large",
+                                    ok=False,
+                                    requested_url=payload.url,
+                                    url=final_url,
+                                    status_code=response.status_code,
+                                    content_type=content_type,
+                                    byte_limit=int(payload.max_bytes),
+                                    downloaded_bytes=len(content),
+                                    failure_mode="pdf_too_large",
+                                    error="PDF exceeds web_read_pdf byte limit",
+                                )
+                        break
+                else:
+                    return RuntimePdfReadResponse(
+                        status="error",
+                        ok=False,
+                        requested_url=payload.url,
+                        url=payload.url,
+                        byte_limit=int(payload.max_bytes),
+                        failure_mode="request_error",
+                        error="PDF request failed before any response was read",
+                    )
         except Exception as exc:
             return RuntimePdfReadResponse(
                 status="error",

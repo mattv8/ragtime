@@ -765,7 +765,6 @@ class ChatRuntimeService:
             "query": " ".join(str(query or "").split()),
             "max_matches": max(1, min(20, int(max_matches))),
             "max_bytes": self._max_search_pdf_bytes(),
-            "user_agent": "Ragtime web_read_pdf",
         }
         return await self._request_with_session_retry(
             conversation_id=conversation_id,

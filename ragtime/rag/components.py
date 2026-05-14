@@ -331,6 +331,15 @@ def truncate_tool_output(output: str, max_chars: int) -> str:
     if max_chars <= 0 or len(output) <= max_chars:
         return output
 
+    try:
+        structured_output = json.loads(output)
+    except (TypeError, ValueError):
+        structured_output = None
+    if isinstance(structured_output, (dict, list)):
+        truncated_json = _truncate_structured_tool_output(structured_output, max_chars)
+        if truncated_json:
+            return truncated_json
+
     # Keep 60% from start, 30% from end (leaving 10% for truncation notice)
     head_chars = int(max_chars * 0.6)
     tail_chars = int(max_chars * 0.3)
@@ -341,6 +350,64 @@ def truncate_tool_output(output: str, max_chars: int) -> str:
         + f"\n\n... [{omitted:,} characters omitted] ...\n\n"
         + output[-tail_chars:]
     )
+
+
+def _truncate_structured_tool_output(value: Any, max_chars: int) -> str | None:
+    """Shrink large string fields while keeping tool JSON parseable."""
+
+    def compact_json() -> str:
+        return json.dumps(value, separators=(",", ":"))
+
+    def find_largest_string(container: Any) -> tuple[Any, Any, str] | None:
+        largest: tuple[Any, Any, str] | None = None
+
+        def visit(parent: Any, key: Any, current: Any) -> None:
+            nonlocal largest
+            if isinstance(current, str):
+                if largest is None or len(current) > len(largest[2]):
+                    largest = (parent, key, current)
+                return
+            if isinstance(current, dict):
+                for child_key, child_value in current.items():
+                    visit(current, child_key, child_value)
+            elif isinstance(current, list):
+                for index, child_value in enumerate(current):
+                    visit(current, index, child_value)
+
+        visit(None, None, container)
+        return largest
+
+    if isinstance(value, dict):
+        value.setdefault("_ragtime_output_truncated", True)
+
+    for _ in range(20):
+        serialized = compact_json()
+        if len(serialized) <= max_chars:
+            return serialized
+
+        largest = find_largest_string(value)
+        if largest is None:
+            return None
+        parent, key, text = largest
+        if parent is None or key is None or len(text) <= 40:
+            return None
+
+        excess = len(serialized) - max_chars
+        target_length = max(40, len(text) - excess - 120)
+        if target_length >= len(text):
+            target_length = max(40, len(text) // 2)
+
+        head_chars = max(10, int(target_length * 0.6))
+        tail_chars = max(0, int(target_length * 0.25))
+        omitted = max(0, len(text) - head_chars - tail_chars)
+        parent[key] = (
+            text[:head_chars]
+            + f"\n\n... [{omitted:,} characters omitted] ...\n\n"
+            + (text[-tail_chars:] if tail_chars else "")
+        )
+
+    serialized = compact_json()
+    return serialized if len(serialized) <= max_chars else None
 
 
 def wrap_tool_with_truncation(tool: StructuredTool, max_chars: int) -> StructuredTool:

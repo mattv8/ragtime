@@ -75,8 +75,33 @@ const CHAT_BUILT_IN_TOOLS: UserSpaceAvailableTool[] = [
 
 const CHAT_BUILT_IN_TOOL_IDS = CHAT_BUILT_IN_TOOLS.map((tool) => tool.id);
 const CHAT_BUILT_IN_TOOL_ID_SET = new Set(CHAT_BUILT_IN_TOOL_IDS);
+const WEB_BROWSE_TOOL_ID = 'web_browse';
+const WEB_READ_PDF_TOOL_ID = 'web_read_pdf';
 const WORKSPACE_BUILT_IN_TOOL_ID_SET = new Set(['web_search', 'web_read_pdf', 'web_browse']);
 const WORKSPACE_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter((tool) => WORKSPACE_BUILT_IN_TOOL_ID_SET.has(tool.id));
+const VISIBLE_CHAT_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter((tool) => tool.id !== WEB_READ_PDF_TOOL_ID);
+const VISIBLE_WORKSPACE_BUILT_IN_TOOLS = WORKSPACE_BUILT_IN_TOOLS.filter((tool) => tool.id !== WEB_READ_PDF_TOOL_ID);
+
+function getToolVisualName(toolId: string): string {
+  return toolId === WEB_READ_PDF_TOOL_ID ? WEB_BROWSE_TOOL_ID : toolId;
+}
+
+function maskHiddenToolNames(text: string): string {
+  return text.split(WEB_READ_PDF_TOOL_ID).join(WEB_BROWSE_TOOL_ID);
+}
+
+function normalizeDisabledBuiltInToolIds(disabledToolIds: string[]): string[] {
+  const normalized = new Set(
+    disabledToolIds.filter((id) => CHAT_BUILT_IN_TOOL_ID_SET.has(id)),
+  );
+
+  // Keep read_pdf as an internal implementation detail of web_browse when browse is enabled.
+  if (!normalized.has(WEB_BROWSE_TOOL_ID)) {
+    normalized.delete(WEB_READ_PDF_TOOL_ID);
+  }
+
+  return CHAT_BUILT_IN_TOOL_IDS.filter((id) => normalized.has(id));
+}
 
 interface CodeBlockProps {
   inline?: boolean;
@@ -2192,6 +2217,97 @@ function parseWebBrowseOutput(output: string | undefined | null): ParsedWebBrows
   }
 }
 
+interface ParsedWebReadPdfMatch {
+  text: string;
+  matchStart: number | null;
+  matchEnd: number | null;
+}
+
+interface ParsedWebReadPdfOutput {
+  ok: boolean;
+  error: string;
+  url: string;
+  requestedUrl: string;
+  query: string;
+  text: string;
+  textLength: number;
+  textStartChar: number | null;
+  textEndChar: number | null;
+  truncated: boolean;
+  matches: ParsedWebReadPdfMatch[];
+  durationMs?: number;
+}
+
+function parsePartialWebReadPdfOutput(output: string): ParsedWebReadPdfOutput | null {
+  const mode = readJsonStringField(output, 'mode');
+  const tool = readJsonStringField(output, 'tool');
+  if (mode !== 'pdf_read' && tool !== WEB_READ_PDF_TOOL_ID && tool !== WEB_BROWSE_TOOL_ID) return null;
+
+  const text = readJsonStringField(output, 'text') ?? '';
+  const textLength = readJsonNumberField(output, 'text_length');
+  const durationMs = readJsonNumberField(output, 'duration_ms');
+  const ok = readJsonBooleanField(output, 'ok');
+
+  return {
+    ok: ok !== false,
+    error: readJsonStringField(output, 'error') ?? '',
+    url: readJsonStringField(output, 'url') ?? '',
+    requestedUrl: readJsonStringField(output, 'requested_url') ?? '',
+    query: readJsonStringField(output, 'query') ?? '',
+    text,
+    textLength: textLength ?? text.length,
+    textStartChar: readJsonNumberField(output, 'text_start_char'),
+    textEndChar: readJsonNumberField(output, 'text_end_char'),
+    truncated: readJsonBooleanField(output, 'truncated') ?? true,
+    matches: [],
+    durationMs: durationMs ?? undefined,
+  };
+}
+
+function parseWebReadPdfOutput(output: string | undefined | null): ParsedWebReadPdfOutput | null {
+  if (!output) return null;
+  try {
+    const parsed = JSON.parse(output) as Record<string, unknown>;
+    if (parsed.tool !== WEB_READ_PDF_TOOL_ID && !(parsed.tool === WEB_BROWSE_TOOL_ID && parsed.mode === 'pdf_read')) return null;
+
+    const rawMatches = Array.isArray(parsed.matches) ? parsed.matches : [];
+    const matches: ParsedWebReadPdfMatch[] = [];
+    for (const item of rawMatches) {
+      if (!item || typeof item !== 'object') continue;
+      const record = item as Record<string, unknown>;
+      const text = typeof record.text === 'string' ? record.text : '';
+      const matchStartRaw = record.match_start_char;
+      const matchEndRaw = record.match_end_char;
+      const matchStart = typeof matchStartRaw === 'number' && Number.isFinite(matchStartRaw) ? matchStartRaw : null;
+      const matchEnd = typeof matchEndRaw === 'number' && Number.isFinite(matchEndRaw) ? matchEndRaw : null;
+      if (!text && matchStart == null && matchEnd == null) continue;
+      matches.push({ text, matchStart, matchEnd });
+    }
+
+    const textStartRaw = parsed.text_start_char;
+    const textEndRaw = parsed.text_end_char;
+    const textLengthRaw = parsed.text_length;
+    const text = typeof parsed.text === 'string' ? parsed.text : '';
+
+    return {
+      ok: parsed.ok === true,
+      error: typeof parsed.error === 'string' ? parsed.error : '',
+      url: typeof parsed.url === 'string' ? parsed.url : '',
+      requestedUrl: typeof parsed.requested_url === 'string' ? parsed.requested_url : '',
+      query: typeof parsed.query === 'string' ? parsed.query : '',
+      text,
+      textLength: typeof textLengthRaw === 'number' && Number.isFinite(textLengthRaw) ? textLengthRaw : text.length,
+      textStartChar: typeof textStartRaw === 'number' && Number.isFinite(textStartRaw) ? textStartRaw : null,
+      textEndChar: typeof textEndRaw === 'number' && Number.isFinite(textEndRaw) ? textEndRaw : null,
+      truncated: parsed.truncated === true,
+      matches,
+      durationMs: typeof parsed.duration_ms === 'number' ? parsed.duration_ms : undefined,
+    };
+  } catch {
+    return parsePartialWebReadPdfOutput(output);
+  }
+}
+
 export const ToolCallDisplay = memo(function ToolCallDisplay({
   toolCall,
   defaultExpanded = false,
@@ -2206,13 +2322,14 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   onOpenWorkspaceFile,
 }: ToolCallDisplayProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
-  const [copiedQuery, setCopiedQuery] = useState(false);
-  const [copiedResult, setCopiedResult] = useState(false);
+  const [copiedButtonKey, setCopiedButtonKey] = useState<string | null>(null);
+  const copyFeedbackTimer = useRef<number | null>(null);
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryOutput, setRetryOutput] = useState<string | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
   const [retryProgressText, setRetryProgressText] = useState<string | null>(null);
   const retryProgressTimers = useRef<number[]>([]);
+  const visualToolName = useMemo(() => getToolVisualName(toolCall.tool), [toolCall.tool]);
   const [isRerunning, setIsRerunning] = useState(false);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   // Per-entry diff state keyed by snapshot+path+writeSignature so a batched
@@ -2579,6 +2696,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     return parseWebBrowseOutput(effectiveOutput);
   }, [toolCall.tool, effectiveOutput]);
 
+  const webReadPdfOutput = useMemo(() => {
+    if (toolCall.tool !== WEB_READ_PDF_TOOL_ID || !effectiveOutput) return null;
+    return parseWebReadPdfOutput(effectiveOutput);
+  }, [toolCall.tool, effectiveOutput]);
+
   // Check if this is a datatable tool
   const datatableData = useMemo(() => {
     if (toolCall.tool === 'create_datatable' && effectiveOutput && !hasErrorInOutput) {
@@ -2605,6 +2727,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     if (!effectiveOutput) return { tableData: null, displayText: '' };
     return parseTableMetadata(effectiveOutput);
   }, [effectiveOutput]);
+  const visibleDisplayText = toolCall.tool === WEB_READ_PDF_TOOL_ID
+    ? maskHiddenToolNames(displayText)
+    : displayText;
 
   // Memoize formatted input to avoid recalculating on every render
   const inputDisplay = useMemo(() => {
@@ -2620,18 +2745,29 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     return JSON.stringify(toolCall.input, null, 2);
   }, [toolCall.input]);
 
-  const copyToClipboard = useCallback(async (text: string, type: 'query' | 'result') => {
+  const copyToClipboard = useCallback(async (text: string, type: 'query' | 'result', buttonId = 'default') => {
     try {
       await navigator.clipboard.writeText(text);
-      if (type === 'query') {
-        setCopiedQuery(true);
-        setTimeout(() => setCopiedQuery(false), 2000);
-      } else {
-        setCopiedResult(true);
-        setTimeout(() => setCopiedResult(false), 2000);
+      const key = `${type}:${buttonId}`;
+      setCopiedButtonKey(key);
+      if (copyFeedbackTimer.current != null) {
+        window.clearTimeout(copyFeedbackTimer.current);
       }
+      copyFeedbackTimer.current = window.setTimeout(() => {
+        setCopiedButtonKey((current) => (current === key ? null : current));
+      }, 2000);
     } catch (err) {
       console.error('Failed to copy:', err);
+    }
+  }, []);
+
+  const isCopiedButton = useCallback(
+    (type: 'query' | 'result', buttonId: string) => copiedButtonKey === `${type}:${buttonId}`,
+    [copiedButtonKey],
+  );
+  useEffect(() => () => {
+    if (copyFeedbackTimer.current != null) {
+      window.clearTimeout(copyFeedbackTimer.current);
     }
   }, []);
 
@@ -2775,7 +2911,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
   // Determine the tool-type icon (always visible)
   const getToolIcon = () => {
-    const name = toolCall.tool.toLowerCase();
+    if (toolCall.tool === WEB_READ_PDF_TOOL_ID) return <FileText size={14} />;
+    const name = visualToolName.toLowerCase();
     if (name.includes('sql') || name.includes('database') || name.includes('db')) return <Database size={14} />;
     if (name.includes('search') || name.includes('retrieval') || name.includes('index')) return <Search size={14} />;
     if (name.includes('chart') || name.includes('datatable') || name.includes('visuali')) return <BarChart3 size={14} />;
@@ -2921,10 +3058,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             ) : (
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(fallbackText || entry.path, 'result')}
+                onClick={() => copyToClipboard(fallbackText || entry.path, 'result', `userspace-write-${index}`)}
                 title="Copy result"
               >
-                {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                {isCopiedButton('result', `userspace-write-${index}`) ? <Check size={12} /> : <Copy size={12} />}
               </button>
             )}
           </div>
@@ -3021,10 +3158,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <span className="tool-call-section-label">Batched result:</span>
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(aggregateMessage || displayText || (toolCall.output ?? ''), 'result')}
+                  onClick={() => copyToClipboard(aggregateMessage || displayText || (toolCall.output ?? ''), 'result', 'userspace-write-batch-summary')}
                   title="Copy summary"
                 >
-                  {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('result', 'userspace-write-batch-summary') ? <Check size={12} /> : <Copy size={12} />}
                 </button>
               </div>
               <div className="tool-call-userspace-write-meta">
@@ -3084,10 +3221,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   <span className="tool-call-section-label">Read:</span>
                   <button
                     className="tool-call-copy-btn"
-                    onClick={() => copyToClipboard(entry.content ?? entry.message ?? entry.path, 'result')}
+                    onClick={() => copyToClipboard(entry.content ?? entry.message ?? entry.path, 'result', `userspace-read-${idx}`)}
                     title="Copy result"
                   >
-                    {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                    {isCopiedButton('result', `userspace-read-${idx}`) ? <Check size={12} /> : <Copy size={12} />}
                   </button>
                 </div>
               )}
@@ -3117,10 +3254,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                     <button
                       type="button"
                       className="tool-call-userspace-batched-action"
-                      onClick={() => copyToClipboard(entry.content ?? entry.message ?? entry.path, 'result')}
+                      onClick={() => copyToClipboard(entry.content ?? entry.message ?? entry.path, 'result', `userspace-read-batch-${idx}`)}
                       title="Copy snippet"
                     >
-                      {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                      {isCopiedButton('result', `userspace-read-batch-${idx}`) ? <Check size={12} /> : <Copy size={12} />}
                     </button>
                   )}
                 </div>
@@ -3160,10 +3297,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <span className="tool-call-section-label">Batched read:</span>
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(aggregateMessage || displayText || (toolCall.output ?? ''), 'result')}
+                  onClick={() => copyToClipboard(aggregateMessage || displayText || (toolCall.output ?? ''), 'result', 'userspace-read-batch-summary')}
                   title="Copy summary"
                 >
-                  {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('result', 'userspace-read-batch-summary') ? <Check size={12} /> : <Copy size={12} />}
                 </button>
               </div>
               <div className="tool-call-userspace-write-meta">
@@ -3220,10 +3357,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               <span className="tool-call-section-label">Workspace files:</span>
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(copyAllPaths || (toolCall.output ?? ''), 'result')}
+                onClick={() => copyToClipboard(copyAllPaths || (toolCall.output ?? ''), 'result', 'userspace-list-paths')}
                 title="Copy all paths"
               >
-                {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                {isCopiedButton('result', 'userspace-list-paths') ? <Check size={12} /> : <Copy size={12} />}
               </button>
             </div>
             <div className="tool-call-userspace-list-summary">{summaryText}</div>
@@ -3295,10 +3432,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <span className="tool-call-section-label">Result:</span>
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(displayText || effectiveOutput, 'result')}
+                  onClick={() => copyToClipboard(displayText || effectiveOutput, 'result', 'web-search-fallback')}
                   title="Copy result"
                 >
-                  {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('result', 'web-search-fallback') ? <Check size={12} /> : <Copy size={12} />}
                 </button>
               </div>
               <pre className="tool-call-code">{displayText}</pre>
@@ -3315,13 +3452,6 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           metaParts.push(`${search.durationMs} ms`);
         }
         const queryText = search.query || (toolCall.input?.query as string) || '';
-        const copyResults = () => {
-          const lines = search.results.map((r) => `- ${r.title}\n  ${r.url}\n  ${r.snippet}`).join('\n\n');
-          copyToClipboard(
-            [search.answer ? `Answer: ${search.answer}\n` : '', lines].filter(Boolean).join('\n'),
-            'result',
-          );
-        };
 
         return (
           <div className="tool-call-section tool-call-web-section">
@@ -3331,29 +3461,19 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <span>Web search</span>
               </span>
               <div className="tool-call-terminal-header-actions">
-                {queryText && (
-                  <button
-                    className="tool-call-copy-btn"
-                    onClick={() => copyToClipboard(queryText, 'query')}
-                    title="Copy query"
-                  >
-                    {copiedQuery ? <Check size={12} /> : <Copy size={12} />}
-                  </button>
-                )}
-                <button
-                  className="tool-call-copy-btn"
-                  onClick={copyResults}
-                  title="Copy results"
-                  disabled={search.results.length === 0 && !search.answer}
-                >
-                  {copiedResult ? <Check size={12} /> : <Copy size={12} />}
-                </button>
               </div>
             </div>
             {queryText && (
               <div className="tool-call-web-query" title={queryText}>
                 <Search size={12} aria-hidden="true" />
                 <span>{queryText}</span>
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={() => copyToClipboard(queryText, 'query', 'web-search-query')}
+                  title="Copy query"
+                >
+                  {isCopiedButton('query', 'web-search-query') ? <Check size={12} /> : <Copy size={12} />}
+                </button>
               </div>
             )}
             <div className="tool-call-web-meta">{metaParts.join(' \u00b7 ')}</div>
@@ -3394,6 +3514,13 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                       >
                         {result.title}
                       </a>
+                      <button
+                        className="tool-call-copy-btn"
+                        onClick={() => copyToClipboard(result.url, 'result', `web-search-result-url-${idx}`)}
+                        title="Copy result URL"
+                      >
+                        {isCopiedButton('result', `web-search-result-url-${idx}`) ? <Check size={12} /> : <Copy size={12} />}
+                      </button>
                     </div>
                     <a
                       className="tool-call-web-result-url"
@@ -3428,10 +3555,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <span className="tool-call-section-label">Result:</span>
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(displayText || effectiveOutput, 'result')}
+                  onClick={() => copyToClipboard(displayText || effectiveOutput, 'result', 'web-browse-fallback')}
                   title="Copy result"
                 >
-                  {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('result', 'web-browse-fallback') ? <Check size={12} /> : <Copy size={12} />}
                 </button>
               </div>
               <pre className="tool-call-code">{displayText}</pre>
@@ -3472,25 +3599,34 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 {browse.text && (
                   <button
                     className="tool-call-copy-btn"
-                    onClick={() => copyToClipboard(browse.text, 'result')}
+                    onClick={() => copyToClipboard(browse.text, 'result', 'web-browse-page-text')}
                     title="Copy page text"
                   >
-                    {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                    {isCopiedButton('result', 'web-browse-page-text') ? <Check size={12} /> : <Copy size={12} />}
                   </button>
                 )}
               </div>
             </div>
             {requestedUrl && (
-              <a
-                className="tool-call-web-query"
-                href={requestedUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                title={requestedUrl}
-              >
-                <Globe size={12} aria-hidden="true" />
-                <span>{requestedUrl}</span>
-              </a>
+              <div className="tool-call-web-query" title={requestedUrl}>
+                <a
+                  className="tool-call-web-query-link"
+                  href={requestedUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={requestedUrl}
+                >
+                  <Globe size={12} aria-hidden="true" />
+                  <span>{requestedUrl}</span>
+                </a>
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={() => copyToClipboard(requestedUrl, 'query', 'web-browse-requested-url')}
+                  title="Copy URL"
+                >
+                  {isCopiedButton('query', 'web-browse-requested-url') ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
             )}
             <div className="tool-call-web-page-head">
               {browse.title && (
@@ -3529,7 +3665,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <summary>{browse.links.length} link{browse.links.length === 1 ? '' : 's'}</summary>
                 <ul className="tool-call-web-links-list">
                   {browse.links.map((link, idx) => (
-                    <li key={`${link.url}-${idx}`} className="tool-call-web-link-item">
+                    <li key={`${link.url}-${idx}`} className="tool-call-web-link-item tool-call-web-link-row">
                       <a
                         href={link.url}
                         target="_blank"
@@ -3538,6 +3674,13 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                       >
                         {link.text || link.url}
                       </a>
+                      <button
+                        className="tool-call-copy-btn"
+                        onClick={() => copyToClipboard(link.url, 'result', `web-browse-link-${idx}`)}
+                        title="Copy link URL"
+                      >
+                        {isCopiedButton('result', `web-browse-link-${idx}`) ? <Check size={12} /> : <Copy size={12} />}
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -3557,6 +3700,163 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         );
       }
 
+      case WEB_READ_PDF_TOOL_ID: {
+        if (!webReadPdfOutput) {
+          return (
+            <div className="tool-call-section">
+              <div className="tool-call-section-header">
+                <span className="tool-call-section-label">Result:</span>
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={() => copyToClipboard(visibleDisplayText || maskHiddenToolNames(effectiveOutput), 'result', 'web-read-pdf-fallback')}
+                  title="Copy result"
+                >
+                  {isCopiedButton('result', 'web-read-pdf-fallback') ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
+              <pre className="tool-call-code">{visibleDisplayText}</pre>
+            </div>
+          );
+        }
+
+        const pdf = webReadPdfOutput;
+        const isErrorState = !pdf.ok || Boolean(pdf.error);
+        const finalUrl = pdf.url || pdf.requestedUrl;
+        const requestedUrl = pdf.requestedUrl || (toolCall.input?.url as string) || finalUrl;
+        const showResolvedUrl = Boolean(finalUrl && finalUrl !== requestedUrl);
+        const metaParts: string[] = [];
+        if (pdf.textLength > 0) {
+          if (pdf.textStartChar != null && pdf.textEndChar != null) {
+            metaParts.push(
+              `chars ${pdf.textStartChar.toLocaleString()}\u2013${pdf.textEndChar.toLocaleString()} of ${pdf.textLength.toLocaleString()}`,
+            );
+          } else {
+            metaParts.push(`${pdf.textLength.toLocaleString()} chars`);
+          }
+        }
+        if (pdf.truncated) metaParts.push('truncated');
+        if (pdf.matches.length > 0) {
+          metaParts.push(`${pdf.matches.length} match${pdf.matches.length === 1 ? '' : 'es'}`);
+        }
+        if (typeof pdf.durationMs === 'number') metaParts.push(`${pdf.durationMs} ms`);
+
+        return (
+          <div className="tool-call-section tool-call-web-section">
+            <div className="tool-call-section-header">
+              <span className="tool-call-section-label">
+                <FileText size={12} />
+                <span>Web page</span>
+              </span>
+              <div className="tool-call-terminal-header-actions">
+                {finalUrl && (
+                  <a
+                    className="tool-call-copy-btn tool-call-web-open-btn"
+                    href={finalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open in new tab"
+                  >
+                    <Link size={12} />
+                  </a>
+                )}
+                {pdf.text && (
+                  <button
+                    className="tool-call-copy-btn"
+                    onClick={() => copyToClipboard(pdf.text, 'result', 'web-read-pdf-text')}
+                    title="Copy page text"
+                  >
+                    {isCopiedButton('result', 'web-read-pdf-text') ? <Check size={12} /> : <Copy size={12} />}
+                  </button>
+                )}
+              </div>
+            </div>
+            {requestedUrl && (
+              <div className="tool-call-web-query" title={requestedUrl}>
+                <a
+                  className="tool-call-web-query-link"
+                  href={requestedUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={requestedUrl}
+                >
+                  <FileText size={12} aria-hidden="true" />
+                  <span>{requestedUrl}</span>
+                </a>
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={() => copyToClipboard(requestedUrl, 'query', 'web-read-pdf-requested-url')}
+                  title="Copy URL"
+                >
+                  {isCopiedButton('query', 'web-read-pdf-requested-url') ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
+            )}
+            {pdf.query && (
+              <div className="tool-call-web-page-head">
+                <div className="tool-call-web-page-title" title={pdf.query}>
+                  <Search size={12} aria-hidden="true" />
+                  <span>{pdf.query}</span>
+                </div>
+              </div>
+            )}
+            {showResolvedUrl && finalUrl && (
+              <div className="tool-call-web-page-head">
+                <a
+                  className="tool-call-web-page-url"
+                  href={finalUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={finalUrl}
+                >
+                  {finalUrl}
+                </a>
+              </div>
+            )}
+            {metaParts.length > 0 && (
+              <div className="tool-call-web-meta">{metaParts.join(' \u00b7 ')}</div>
+            )}
+            {isErrorState && (
+              <div className="tool-call-web-error">
+                <AlertCircle size={12} />
+                <span>{pdf.error || 'Read failed.'}</span>
+              </div>
+            )}
+            {pdf.matches.length > 0 && (
+              <details className="tool-call-web-links" open>
+                <summary>
+                  {pdf.matches.length} match{pdf.matches.length === 1 ? '' : 'es'}
+                </summary>
+                <ul className="tool-call-web-links-list">
+                  {pdf.matches.map((match, idx) => (
+                    <li
+                      key={`${match.matchStart ?? idx}-${idx}`}
+                      className="tool-call-web-link-item"
+                    >
+                      {match.matchStart != null && (
+                        <div className="tool-call-web-meta">
+                          char {match.matchStart.toLocaleString()}
+                          {match.matchEnd != null
+                            ? `\u2013${match.matchEnd.toLocaleString()}`
+                            : ''}
+                        </div>
+                      )}
+                      {match.text && (
+                        <pre className="tool-call-web-page-text">{match.text}</pre>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+            {pdf.matches.length === 0 && pdf.text && (
+              <div className="tool-call-web-page-text-wrap">
+                <pre className="tool-call-web-page-text">{pdf.text}</pre>
+              </div>
+            )}
+          </div>
+        );
+      }
+
       default: {
         return (
           <div className="tool-call-section">
@@ -3564,16 +3864,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               <span className="tool-call-section-label">Result:</span>
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(displayText || effectiveOutput, 'result')}
+                onClick={() => copyToClipboard(visibleDisplayText || maskHiddenToolNames(effectiveOutput), 'result', 'tool-default-result')}
                 title="Copy result"
               >
-                {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                {isCopiedButton('result', 'tool-default-result') ? <Check size={12} /> : <Copy size={12} />}
               </button>
             </div>
             {tableData ? (
               <DataTable data={tableData} />
             ) : (
-              <pre className="tool-call-code">{displayText}</pre>
+              <pre className="tool-call-code">{visibleDisplayText}</pre>
             )}
           </div>
         );
@@ -3595,7 +3895,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               {inputDisplay || toolCall.tool}
             </span>
           ) : (
-            <span className="tool-call-name">{toolCall.tool}</span>
+            <span className="tool-call-name">{visualToolName}</span>
           )}
           {toolCall.status === 'running' && toolCall.generating_lines ? (
             <span className="tool-call-progress">{toolCall.generating_lines} lines</span>
@@ -3635,17 +3935,17 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               <pre className="tool-call-code tool-call-error-text">{retryError}</pre>
             </div>
           )}
-          {inputDisplay && !userspaceWriteResult && !userspaceReadResult && toolCall.tool !== 'list_userspace_files' && !isTerminalCommand && toolCall.tool !== 'web_search' && toolCall.tool !== 'web_browse' && (
+          {inputDisplay && !userspaceWriteResult && !userspaceReadResult && toolCall.tool !== 'list_userspace_files' && !isTerminalCommand && toolCall.tool !== 'web_search' && toolCall.tool !== 'web_browse' && toolCall.tool !== WEB_READ_PDF_TOOL_ID && (
             <div className="tool-call-section">
               <div className="tool-call-section-header">
                 <span className="tool-call-section-label">Query:</span>
                 <div className="tool-call-terminal-header-actions">
                   <button
                     className="tool-call-copy-btn"
-                    onClick={() => copyToClipboard(inputDisplay, 'query')}
+                    onClick={() => copyToClipboard(inputDisplay, 'query', 'generic-query')}
                     title="Copy query"
                   >
-                    {copiedQuery ? <Check size={12} /> : <Copy size={12} />}
+                    {isCopiedButton('query', 'generic-query') ? <Check size={12} /> : <Copy size={12} />}
                   </button>
                   {isSqlTool && canRerun && hasRerunContext && (
                     <button
@@ -3670,20 +3970,21 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   <div className="tool-call-terminal-header-actions">
                     <button
                       className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(inputDisplay, 'query')}
+                      onClick={() => copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-complete')}
                       title="Copy command"
                     >
-                      {copiedQuery ? <Check size={12} /> : <Terminal size={12} />}
+                      {isCopiedButton('query', 'terminal-copy-command-complete') ? <Check size={12} /> : <Terminal size={12} />}
                     </button>
                     <button
                       className="tool-call-copy-btn"
                       onClick={() => copyToClipboard(
                         [terminalOutput.stdout, terminalOutput.stderr].filter(Boolean).join('\n') || inputDisplay,
-                        'result'
+                        'result',
+                        'terminal-copy-output-complete'
                       )}
                       title="Copy output"
                     >
-                      {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                      {isCopiedButton('result', 'terminal-copy-output-complete') ? <Check size={12} /> : <Copy size={12} />}
                     </button>
                     {canRerun && hasRerunContext && (
                       <button
@@ -3724,17 +4025,17 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   <div className="tool-call-terminal-header-actions">
                     <button
                       className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(inputDisplay, 'query')}
+                      onClick={() => copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-running')}
                       title="Copy command"
                     >
-                      {copiedQuery ? <Check size={12} /> : <Terminal size={12} />}
+                      {isCopiedButton('query', 'terminal-copy-command-running') ? <Check size={12} /> : <Terminal size={12} />}
                     </button>
                     <button
                       className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(activeTerminalOutput || inputDisplay, 'result')}
+                      onClick={() => copyToClipboard(activeTerminalOutput || inputDisplay, 'result', 'terminal-copy-output-running')}
                       title="Copy output"
                     >
-                      {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                      {isCopiedButton('result', 'terminal-copy-output-running') ? <Check size={12} /> : <Copy size={12} />}
                     </button>
                     {canRerun && hasRerunContext && (
                       <button
@@ -3763,17 +4064,17 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   <div className="tool-call-terminal-header-actions">
                     <button
                       className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(inputDisplay, 'query')}
+                      onClick={() => copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-empty')}
                       title="Copy command"
                     >
-                      {copiedQuery ? <Check size={12} /> : <Terminal size={12} />}
+                      {isCopiedButton('query', 'terminal-copy-command-empty') ? <Check size={12} /> : <Terminal size={12} />}
                     </button>
                     <button
                       className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(activeTerminalOutput || inputDisplay, 'result')}
+                      onClick={() => copyToClipboard(activeTerminalOutput || inputDisplay, 'result', 'terminal-copy-output-empty')}
                       title="Copy output"
                     >
-                      {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                      {isCopiedButton('result', 'terminal-copy-output-empty') ? <Check size={12} /> : <Copy size={12} />}
                     </button>
                     {canRerun && hasRerunContext && (
                       <button
@@ -4836,8 +5137,8 @@ export function ChatPanel({
     workspaceId || activeConversation?.workspace_id || activeConversation?.workspaceId,
   );
   const conversationBuiltInTools = hasWorkspaceConversationContext
-    ? WORKSPACE_BUILT_IN_TOOLS
-    : CHAT_BUILT_IN_TOOLS;
+    ? VISIBLE_WORKSPACE_BUILT_IN_TOOLS
+    : VISIBLE_CHAT_BUILT_IN_TOOLS;
   const selectedConversationBuiltInToolIdSet = useMemo(() => {
     const disabledIds = new Set(conversationDisabledBuiltInToolIds);
     return new Set(CHAT_BUILT_IN_TOOL_IDS.filter((id) => !disabledIds.has(id)));
@@ -5988,7 +6289,9 @@ export function ChatPanel({
       const data = await api.getConversationTools(conversationId);
       setConversationToolIds(data.tool_config_ids);
       setConversationToolGroupIds(data.tool_group_ids);
-      setConversationDisabledBuiltInToolIds(data.disabled_builtin_tool_ids);
+      setConversationDisabledBuiltInToolIds(
+        normalizeDisabledBuiltInToolIds(data.disabled_builtin_tool_ids),
+      );
     } catch (err) {
       console.error('Failed to fetch conversation tools:', err);
       setConversationToolIds([]);
@@ -6105,17 +6408,19 @@ export function ChatPanel({
   const persistConversationBuiltInToolSelection = useCallback(async (nextDisabledBuiltInToolIds: string[]) => {
     if (!activeConversation) return;
 
+    const normalizedDisabledBuiltInToolIds = normalizeDisabledBuiltInToolIds(nextDisabledBuiltInToolIds);
+
     setSavingTools(true);
     try {
       await api.updateConversationTools(activeConversation.id, {
         tool_config_ids: resolvedConversationToolIds,
         tool_group_ids: conversationToolGroupIds,
-        disabled_builtin_tool_ids: nextDisabledBuiltInToolIds,
+        disabled_builtin_tool_ids: normalizedDisabledBuiltInToolIds,
       });
-      setConversationDisabledBuiltInToolIds(nextDisabledBuiltInToolIds);
+      setConversationDisabledBuiltInToolIds(normalizedDisabledBuiltInToolIds);
       const updatedConversation: Conversation = {
         ...activeConversation,
-        disabled_builtin_tool_ids: nextDisabledBuiltInToolIds,
+        disabled_builtin_tool_ids: normalizedDisabledBuiltInToolIds,
       };
       setActiveConversation(updatedConversation);
       setConversations(prev => prev.map(c => c.id === updatedConversation.id ? updatedConversation : c));
@@ -6133,8 +6438,14 @@ export function ChatPanel({
     const nextDisabled = new Set(conversationDisabledBuiltInToolIds);
     if (nextDisabled.has(toolId)) {
       nextDisabled.delete(toolId);
+      if (toolId === WEB_BROWSE_TOOL_ID) {
+        nextDisabled.delete(WEB_READ_PDF_TOOL_ID);
+      }
     } else {
       nextDisabled.add(toolId);
+      if (toolId === WEB_BROWSE_TOOL_ID) {
+        nextDisabled.add(WEB_READ_PDF_TOOL_ID);
+      }
     }
 
     await persistConversationBuiltInToolSelection(
@@ -6248,7 +6559,9 @@ export function ChatPanel({
     setActiveConversation(conversation);
     setConversationToolIds([]);
     setConversationToolGroupIds([]);
-    setConversationDisabledBuiltInToolIds(conversation.disabled_builtin_tool_ids || []);
+    setConversationDisabledBuiltInToolIds(
+      normalizeDisabledBuiltInToolIds(conversation.disabled_builtin_tool_ids || []),
+    );
   }, []);
 
   const createNewConversation = async () => {

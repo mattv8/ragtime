@@ -2348,6 +2348,24 @@ textarea.chat-header-title-input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.tool-call-web-query-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  color: inherit;
+  text-decoration: none;
+}
+.tool-call-web-query-link > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-call-web-query .tool-call-copy-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
 .tool-call-web-meta {
   font-size: var(--tool-call-font-xs);
   color: var(--color-text-muted);
@@ -2548,7 +2566,22 @@ textarea.chat-header-title-input {
   max-height: 220px;
   overflow: auto;
 }
-.tool-call-web-link-item a {
+.tool-call-web-link-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 4px;
+  border-radius: var(--tool-call-radius-sm);
+  transition: background var(--transition-fast);
+}
+.tool-call-web-link-row:hover,
+.tool-call-web-link-row:focus-within {
+  background: var(--color-surface-hover);
+}
+.tool-call-web-link-row a {
+  min-width: 0;
+  flex: 1;
   font-family: var(--font-mono);
   font-size: var(--tool-call-font-xs);
   color: var(--color-link, var(--color-primary));
@@ -2558,8 +2591,11 @@ textarea.chat-header-title-input {
   white-space: nowrap;
   display: block;
 }
-.tool-call-web-link-item a:hover {
+.tool-call-web-link-row a:hover {
   text-decoration: underline;
+}
+.tool-call-web-link-row .tool-call-copy-btn {
+  flex-shrink: 0;
 }
 .tool-call-web-console-errors ul {
   list-style: disc;
