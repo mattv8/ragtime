@@ -740,9 +740,9 @@ export function ModelSelector<T extends BaseModel>({
                           </span>
                         )}
                       </span>
-                      {modelFamilyLabel(model) && !modelFamilyLabel(model).startsWith('Other') && (
+                      {hostProviderLabel(model.provider) && !hostProviderLabel(model.provider).startsWith('Other') && (
                         <span className="model-selector-expand-indicator" aria-hidden="true">
-                          {modelFamilyLabel(model)}
+                          {hostProviderLabel(model.provider)}
                         </span>
                       )}
                     </button>
