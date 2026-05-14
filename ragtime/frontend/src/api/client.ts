@@ -2399,6 +2399,13 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceScmConnectionResponse>(response);
   },
 
+  async disconnectUserSpaceWorkspaceScm(workspaceId: string): Promise<UserSpaceWorkspaceScmConnectionResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm`, {
+      method: 'DELETE',
+    });
+    return handleResponse<UserSpaceWorkspaceScmConnectionResponse>(response);
+  },
+
   async checkUserSpaceWorkspaceScmRepoVisibility(workspaceId: string, request: CheckRepoVisibilityRequest): Promise<RepoVisibilityResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/check-visibility`, {
       method: 'POST',

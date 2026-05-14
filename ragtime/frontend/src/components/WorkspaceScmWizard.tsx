@@ -16,6 +16,7 @@ import type {
   UserSpaceWorkspaceScmImportRequest,
   UserSpaceWorkspaceScmPreviewResponse,
   UserSpaceWorkspaceScmSettingsRequest,
+  UserSpaceWorkspaceScmStatus,
   UserSpaceWorkspaceScmSyncResponse,
 } from '@/types';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
@@ -266,8 +267,9 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [archiveExportsScanned, setArchiveExportsScanned] = useState(false);
   const [deletingExportTaskId, setDeletingExportTaskId] = useState<string | null>(null);
   const [downloadedExportTaskIds, setDownloadedExportTaskIds] = useState<Set<string>>(new Set());
-  const [loadingAction, setLoadingAction] = useState<'pull' | 'push' | 'overwrite' | 'sync' | 'preview' | 'execute' | 'save-settings' | null>(null);
+  const [loadingAction, setLoadingAction] = useState<'pull' | 'push' | 'overwrite' | 'sync' | 'preview' | 'execute' | 'save-settings' | 'disconnect' | null>(null);
   const [showOverwriteMenu, setShowOverwriteMenu] = useState(false);
+  const [scmState, setScmState] = useState<UserSpaceWorkspaceScmStatus | null>(null);
   const [autoPushEnabled, setAutoPushEnabled] = useState(initialScm?.auto_sync_policy === 'auto_push');
   const [autoPullEnabled, setAutoPullEnabled] = useState(Boolean(initialScm?.auto_pull_enabled));
   const [autoPushIntervalSeconds, setAutoPushIntervalSeconds] = useState(initialScm?.auto_push_interval_seconds ?? 3600);
@@ -277,9 +279,26 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const lastDownloadedArchiveTaskIdRef = useRef<string | null>(null);
   const lastNotifiedArchiveExportTaskIdRef = useRef<string | null>(null);
   const lastNotifiedArchiveImportTaskIdRef = useRef<string | null>(null);
-  const activeScm = result?.scm ?? initialScm ?? null;
+  const activeScm = scmState ?? result?.scm ?? initialScm ?? null;
   const hasConfiguredRemote = Boolean(activeScm?.connected || activeScm?.git_url);
   const clearStatus = useCallback(() => setStatus(EMPTY_STATUS), []);
+
+  const resetGitSourceState = useCallback((nextScm?: UserSpaceWorkspaceScmStatus | null) => {
+    setPreview(null);
+    setResult(null);
+    setGitUrl(nextScm?.git_url || '');
+    setGitBranch(nextScm?.git_branch || 'main');
+    setGitToken('');
+    setRepoVisibility(nextScm?.repo_visibility || null);
+    setHasStoredToken(Boolean(nextScm?.has_stored_token));
+    setStoredTokenValid(Boolean(nextScm?.has_stored_token));
+    setBranches([]);
+    setBranchError(null);
+    setShowOverwriteMenu(false);
+    setLoadingAction(null);
+    setStep('input');
+    setMode(nextScm?.connected || nextScm?.git_url ? 'import' : 'import');
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -321,6 +340,18 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     setArchiveExports([]);
     setArchiveExportsScanned(false);
     setDownloadedExportTaskIds(new Set());
+    setScmState(null);
+    setPreview(null);
+    setResult(null);
+    setGitUrl(workspace.scm?.git_url || '');
+    setGitBranch(workspace.scm?.git_branch || 'main');
+    setGitToken('');
+    setRepoVisibility(workspace.scm?.repo_visibility || null);
+    setHasStoredToken(Boolean(workspace.scm?.has_stored_token));
+    setStoredTokenValid(Boolean(workspace.scm?.has_stored_token));
+    setBranches([]);
+    setBranchError(null);
+    setShowOverwriteMenu(false);
   }, [workspace.id]);
 
   useEffect(() => {
@@ -403,6 +434,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     direction: 'import' | 'export',
   ) => {
     const resp = await api.updateUserSpaceWorkspaceScmSettings(workspace.id, patch);
+    setScmState(resp.scm);
     await onSyncComplete({ workspace_id: workspace.id, direction, state: 'settings_updated', summary, scm: resp.scm });
   }, [onSyncComplete, workspace.id]);
 
@@ -431,6 +463,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
           repo_visibility: activeScm.repo_visibility || undefined,
         });
         savedTokenOnly = true;
+        setScmState(connResp.scm);
         setHasStoredToken(true);
         setStoredTokenValid(true);
         if (!hasDirtyUpstreamSyncSettings) {
@@ -591,6 +624,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
       const nextResult = direction === 'import'
         ? await api.importUserSpaceWorkspaceFromScm(workspace.id, payload as UserSpaceWorkspaceScmImportRequest)
         : await api.exportUserSpaceWorkspaceToScm(workspace.id, payload as UserSpaceWorkspaceScmExportRequest);
+      setScmState(nextResult.scm);
       setResult(nextResult);
       setStatus({ type: 'success', message: nextResult.summary });
       setStep('result');
@@ -607,6 +641,29 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     if (!result?.suggested_setup_prompt || !onAskAgent) return;
     onClose();
     await onAskAgent(result.suggested_setup_prompt);
+  }
+
+  async function handleDisconnectScm(): Promise<void> {
+    if (!hasConfiguredRemote) {
+      return;
+    }
+
+    setIsLoading(true);
+    setLoadingAction('disconnect');
+    setShowOverwriteMenu(false);
+    clearStatus();
+    try {
+      const resp = await api.disconnectUserSpaceWorkspaceScm(workspace.id);
+      setScmState(resp.scm);
+      resetGitSourceState(resp.scm);
+      toast.success('Remote disconnected.');
+      await onWorkspaceChanged?.();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to disconnect remote.');
+    } finally {
+      setIsLoading(false);
+      setLoadingAction(null);
+    }
   }
 
   async function handleSqlImport(): Promise<void> {
@@ -1381,6 +1438,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                         onClick={async () => {
                           try {
                             const resp = await api.updateUserSpaceWorkspaceScmSettings(workspace.id, { clear_sync_paused: true });
+                            setScmState(resp.scm);
                             await onSyncComplete({ workspace_id: workspace.id, direction: 'export', state: 'resumed', summary: 'Sync resumed', scm: resp.scm });
                           } catch (error) {
                             setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to resume sync' });
@@ -1795,6 +1853,16 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                 {loadingAction === 'save-settings' ? <MiniLoadingSpinner variant="icon" size={14} /> : <Check size={14} />}
                 Save
               </button>
+            )}
+            {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && hasConfiguredRemote && (
+              <DeleteConfirmButton
+                onDelete={() => void handleDisconnectScm()}
+                disabled={isLoading}
+                deleting={loadingAction === 'disconnect'}
+                className="btn btn-danger"
+                title="Disconnect the configured remote and clear the stored token"
+                buttonText="Disconnect Remote"
+              />
             )}
             {activeTab === 'sql-import' && step === 'input' && mode === 'sql-import' && (
               <button className="btn btn-primary" onClick={() => void handleSqlImport()} disabled={isLoading || !sqlFile || isSqliteImportTaskActive(sqlImportResult)}>

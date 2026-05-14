@@ -55,7 +55,6 @@ from runtime.worker.sandbox import (
     spawn_sandboxed,
 )
 
-from ..core.utils import get_positive_int_env, utc_now
 from ..core.shared import (
     RUNTIME_BOOTSTRAP_CONFIG_PATH,
     RUNTIME_BOOTSTRAP_STAMP_PATH,
@@ -64,6 +63,7 @@ from ..core.shared import (
     normalize_file_path,
     parse_entrypoint_config,
 )
+from ..core.utils import get_positive_int_env, utc_now
 from ..core.workspace_ops import (
     PLATFORM_MANAGED_GITIGNORE_PATTERNS,
     deduplicate_ancestor_paths,

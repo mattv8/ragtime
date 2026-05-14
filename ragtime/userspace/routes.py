@@ -641,6 +641,20 @@ async def update_workspace_scm_connection(
     )
 
 
+@router.delete(
+    "/workspaces/{workspace_id}/scm",
+    response_model=UserSpaceWorkspaceScmConnectionResponse,
+)
+async def disconnect_workspace_scm_connection(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.disconnect_workspace_scm_connection(
+        workspace_id,
+        user.id,
+    )
+
+
 @router.patch(
     "/workspaces/{workspace_id}/scm/settings",
     response_model=UserSpaceWorkspaceScmConnectionResponse,

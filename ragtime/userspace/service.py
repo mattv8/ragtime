@@ -1401,6 +1401,17 @@ class UserSpaceService:
                 ),
             )
 
+    async def _clear_workspace_scm_previews(self, workspace_id: str) -> None:
+        async with self._workspace_scm_previews_lock:
+            for direction in (
+                cast(WorkspaceScmDirection, "import"),
+                cast(WorkspaceScmDirection, "export"),
+            ):
+                self._workspace_scm_previews.pop(
+                    self._workspace_scm_preview_key(workspace_id, direction),
+                    None,
+                )
+
     def _prune_workspace_scm_backfill_task(
         self,
         workspace_id: str,
@@ -7065,6 +7076,15 @@ class UserSpaceService:
         key = self._workspace_scm_watch_key(workspace_id, direction)
         self._workspace_scm_watch_next_due_monotonic[key] = 0.0
 
+    def _clear_workspace_scm_watch_state(self, workspace_id: str) -> None:
+        for direction in (
+            cast(WorkspaceScmDirection, "export"),
+            cast(WorkspaceScmDirection, "import"),
+        ):
+            key = self._workspace_scm_watch_key(workspace_id, direction)
+            self._workspace_scm_watch_next_due_monotonic.pop(key, None)
+            self._workspace_scm_watch_inflight.discard(key)
+
     def _is_workspace_auto_push_enabled(self, workspace_record: Any) -> bool:
         policy = self._normalize_scm_enum(
             getattr(workspace_record, "scmAutoSyncPolicy", None),
@@ -11196,6 +11216,50 @@ class UserSpaceService:
         updated = await db.workspace.update(
             where={"id": workspace_id}, data=update_data
         )
+        return UserSpaceWorkspaceScmConnectionResponse(
+            workspace_id=workspace_id,
+            scm=self._workspace_from_record(updated).scm
+            or UserSpaceWorkspaceScmStatus(),
+        )
+
+    async def disconnect_workspace_scm_connection(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> UserSpaceWorkspaceScmConnectionResponse:
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="owner"
+        )
+        operation_lock = await self._get_workspace_scm_operation_lock(workspace_id)
+        async with operation_lock:
+            db = await get_db()
+            workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+            if not workspace_record:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+
+            updated = await db.workspace.update(
+                where={"id": workspace_id},
+                data={
+                    "scmGitUrl": None,
+                    "scmGitBranch": None,
+                    "scmProvider": None,
+                    "scmRepoVisibility": None,
+                    "scmToken": None,
+                    "scmConnectedAt": None,
+                    "scmRemoteRole": None,
+                    "scmAutoSyncPolicy": None,
+                    "scmAutoPullEnabled": False,
+                    "scmAutoPushIntervalSeconds": _WORKSPACE_SCM_AUTO_SYNC_DEFAULT_INTERVAL_SECONDS,
+                    "scmAutoPullIntervalSeconds": _WORKSPACE_SCM_AUTO_SYNC_DEFAULT_INTERVAL_SECONDS,
+                    "scmSyncPaused": False,
+                    "scmSyncPausedReason": None,
+                    "updatedAt": _utc_now(),
+                },
+            )
+
+            await self._clear_workspace_scm_previews(workspace_id)
+            self._clear_workspace_scm_watch_state(workspace_id)
+
         return UserSpaceWorkspaceScmConnectionResponse(
             workspace_id=workspace_id,
             scm=self._workspace_from_record(updated).scm
