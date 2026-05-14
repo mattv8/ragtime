@@ -9,6 +9,8 @@ interface ToolSelectorTool {
   description?: string | null;
   group_id?: string | null;
   group_name?: string | null;
+  available?: boolean;
+  disabled_reason?: string | null;
 }
 
 export interface ToolGroupInfo {
@@ -36,6 +38,10 @@ interface ToolSelectorDropdownProps {
   /** When provided, renders a "Show tool calls" toggle at the bottom of the dropdown. */
   showToolCalls?: boolean;
   onToggleToolCalls?: (value: boolean) => void;
+}
+
+function isToolAvailable(tool: ToolSelectorTool) {
+  return tool.available !== false;
 }
 
 export function ToolSelectorDropdown({
@@ -145,69 +151,85 @@ export function ToolSelectorDropdown({
   const hasGroups = groups.length > 0;
   const builtInSelectedIds = selectedBuiltInToolIds ?? new Set<string>();
   const builtInSelectedCount = builtInTools.filter((tool) => builtInSelectedIds.has(tool.id)).length;
-  const totalToolCount = availableTools.length + builtInTools.length;
+  const totalToolCount = availableTools.filter(isToolAvailable).length + builtInTools.length;
 
   // Effective selected count: direct + group-expanded
   const effectiveSelectedCount = useMemo(() => {
     const ids = new Set(selectedToolIds);
     if (selectedToolGroupIds) {
       for (const tool of availableTools) {
-        if (tool.group_id && selectedToolGroupIds.has(tool.group_id)) {
+        if (isToolAvailable(tool) && tool.group_id && selectedToolGroupIds.has(tool.group_id)) {
           ids.add(tool.id);
         }
       }
     }
-    return ids.size + builtInSelectedCount;
+    const visibleSelectedCount = availableTools.filter((tool) => isToolAvailable(tool) && ids.has(tool.id)).length;
+    return visibleSelectedCount + builtInSelectedCount;
   }, [selectedToolIds, selectedToolGroupIds, availableTools, builtInSelectedCount]);
 
   // Group checkbox state
   const getGroupCheckState = (groupId: string, tools: ToolSelectorTool[]): 'all' | 'some' | 'none' => {
+    const selectableTools = tools.filter(isToolAvailable);
+    if (selectableTools.length === 0) return 'none';
     if (selectedToolGroupIds?.has(groupId)) return 'all';
-    const selected = tools.filter((t) => selectedToolIds.has(t.id)).length;
+    const selected = selectableTools.filter((t) => selectedToolIds.has(t.id)).length;
     if (selected === 0) return 'none';
-    if (selected === tools.length) return 'all';
+    if (selected === selectableTools.length) return 'all';
     return 'some';
   };
 
   const handleGroupToggle = (groupId: string, tools: ToolSelectorTool[]) => {
     if (readOnly || saving || disabled) return;
+    const selectableTools = tools.filter(isToolAvailable);
+    if (selectableTools.length === 0) return;
     if (onToggleToolGroup) {
       // Use group-level selection
       onToggleToolGroup(groupId);
     } else {
       // Fallback: toggle all individual tools in the group
-      const state = getGroupCheckState(groupId, tools);
+      const state = getGroupCheckState(groupId, selectableTools);
       if (state === 'all') {
         // Deselect all tools in this group
-        for (const t of tools) {
+        for (const t of selectableTools) {
           if (selectedToolIds.has(t.id)) onToggleTool(t.id);
         }
       } else {
         // Select all tools in this group
-        for (const t of tools) {
+        for (const t of selectableTools) {
           if (!selectedToolIds.has(t.id)) onToggleTool(t.id);
         }
       }
     }
   };
 
-  const renderToolItem = (tool: ToolSelectorTool) => (
-    <label key={tool.id} className="checkbox-label userspace-tool-item">
-      <input
-        type="checkbox"
-        checked={
-          selectedToolIds.has(tool.id) ||
-          !!(tool.group_id && selectedToolGroupIds?.has(tool.group_id))
-        }
-        onChange={() => onToggleTool(tool.id)}
-        disabled={saving || readOnly || disabled}
-      />
-      <span>
-        <strong>{tool.name}</strong>
-        <small className="userspace-muted">{tool.tool_type}</small>
-      </span>
-    </label>
-  );
+  const renderToolItem = (tool: ToolSelectorTool) => {
+    const toolAvailable = isToolAvailable(tool);
+    const checked = toolAvailable && (
+      selectedToolIds.has(tool.id) ||
+      !!(tool.group_id && selectedToolGroupIds?.has(tool.group_id))
+    );
+    const reason = tool.disabled_reason || 'No recent heartbeat';
+    return (
+      <label
+        key={tool.id}
+        className={`checkbox-label userspace-tool-item ${toolAvailable ? '' : 'userspace-tool-item-disabled'}`}
+        title={toolAvailable ? undefined : reason}
+      >
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={() => {
+            if (toolAvailable) onToggleTool(tool.id);
+          }}
+          disabled={saving || readOnly || disabled || !toolAvailable}
+        />
+        <span>
+          <strong>{tool.name}</strong>
+          <small className="userspace-muted">{toolAvailable ? tool.tool_type : `${tool.tool_type} - Offline`}</small>
+        </span>
+      </label>
+    );
+  };
 
   const renderBuiltInToolItem = (tool: ToolSelectorTool) => (
     <label key={tool.id} className="checkbox-label userspace-tool-item userspace-tool-item-builtin">
@@ -286,7 +308,7 @@ export function ToolSelectorDropdown({
                         if (el) el.indeterminate = checkState === 'some';
                       }}
                       onChange={() => handleGroupToggle(group.id, group.tools)}
-                      disabled={saving || readOnly || disabled}
+                      disabled={saving || readOnly || disabled || !group.tools.some(isToolAvailable)}
                       onClick={(e) => e.stopPropagation()}
                       aria-label={`Select all tools in ${group.name}`}
                     />

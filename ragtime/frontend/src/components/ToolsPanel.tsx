@@ -665,6 +665,16 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       setTestingToolId(toolId);
       const result = await api.testSavedToolConnection(toolId);
       await loadTools();
+      setHeartbeats((current) => ({
+        ...current,
+        [toolId]: {
+          tool_id: toolId,
+          alive: result.success,
+          latency_ms: null,
+          error: result.success ? null : result.message,
+          checked_at: new Date().toISOString(),
+        },
+      }));
       if (result.success) {
         toast.success('Connection test successful');
       } else {

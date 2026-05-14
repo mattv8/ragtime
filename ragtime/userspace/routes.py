@@ -41,6 +41,7 @@ from ragtime.indexer.models import (
     RepoVisibilityResponse,
 )
 from ragtime.indexer.repository import repository
+from ragtime.indexer.tool_health import tool_health_monitor
 from ragtime.userspace.cloud_mounts import microsoft_tenant_endpoint_error_message
 from ragtime.userspace.models import (
     BrowseCloudMountSourceRequest,
@@ -284,8 +285,7 @@ async def _normalize_selected_tool_ids(
     if selected_tool_ids is None:
         return None
 
-    tool_configs = await repository.list_tool_configs(enabled_only=True)
-    enabled_tool_ids = {tool.id for tool in tool_configs if tool.id}
+    enabled_tool_ids = set(await repository.list_healthy_enabled_tool_ids())
 
     normalized: list[str] = []
     seen: set[str] = set()
@@ -306,6 +306,7 @@ async def list_userspace_tools(user: Any = Depends(get_current_user)):
         tool_id = tool.id
         if not tool_id:
             continue
+        available = tool_health_monitor.is_tool_healthy(tool_id)
         results.append(
             UserSpaceAvailableTool(
                 id=tool_id,
@@ -314,6 +315,10 @@ async def list_userspace_tools(user: Any = Depends(get_current_user)):
                 description=tool.description,
                 group_id=tool.group_id,
                 group_name=tool.group_name,
+                available=available,
+                disabled_reason=(
+                    None if available else tool_health_monitor.get_unavailable_reason(tool_id)
+                ),
             )
         )
     return results

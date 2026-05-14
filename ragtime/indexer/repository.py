@@ -64,7 +64,7 @@ from ragtime.indexer.models import (
     ToolType,
     VectorStoreType,
 )
-from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
+from ragtime.indexer.tool_health import tool_health_monitor
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
@@ -2023,50 +2023,11 @@ class IndexerRepository:
         return [t.id for t in tools]
 
     async def list_healthy_enabled_tool_ids(self) -> list[str]:
-        """Return enabled tool config IDs that currently pass heartbeat checks."""
+        """Return enabled tool config IDs with a recent successful heartbeat."""
         tool_configs = await self.list_tool_configs(enabled_only=True)
         if not tool_configs:
             return []
-
-        try:
-            from ragtime.indexer.routes import _heartbeat_check
-        except Exception as exc:
-            logger.warning(
-                "Heartbeat helper unavailable for default tool selection; "
-                "falling back to enabled tools: %s",
-                exc,
-            )
-            return [tool.id for tool in tool_configs if tool.id]
-
-        async def check_single_tool(tool: ToolConfig) -> tuple[str | None, bool]:
-            tool_id = tool.id
-            if not tool_id:
-                return None, False
-
-            connection_config = tool.connection_config or {}
-            heartbeat_timeout = get_heartbeat_timeout_seconds(connection_config)
-
-            try:
-                result = await asyncio.wait_for(
-                    _heartbeat_check(tool.tool_type, connection_config),
-                    timeout=heartbeat_timeout,
-                )
-                return tool_id, bool(result.success)
-            except asyncio.TimeoutError:
-                return tool_id, False
-            except Exception:
-                logger.debug(
-                    "Default tool heartbeat check failed for %s",
-                    tool.name,
-                    exc_info=True,
-                )
-                return tool_id, False
-
-        results = await asyncio.gather(
-            *(check_single_tool(tool) for tool in tool_configs)
-        )
-
-        return [tool_id for tool_id, is_healthy in results if tool_id and is_healthy]
+        return tool_health_monitor.healthy_tool_ids_for_configs(tool_configs)
 
     # -------------------------------------------------------------------------
     # Conversation Operations

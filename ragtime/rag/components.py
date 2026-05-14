@@ -12513,6 +12513,13 @@ except Exception as e:
                 allowed_tool_config_ids = (
                     await repository.list_healthy_enabled_tool_ids()
                 )
+            if allowed_tool_config_ids:
+                healthy_ids = {
+                    str(config.get("id") or "") for config in self._tool_configs or []
+                }
+                allowed_tool_config_ids = [
+                    tool_id for tool_id in allowed_tool_config_ids if tool_id in healthy_ids
+                ]
 
             include_sqlite_persistence = workspace.sqlite_persistence_mode == "include"
 

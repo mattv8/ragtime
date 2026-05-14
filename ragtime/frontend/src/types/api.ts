@@ -2362,6 +2362,8 @@ export interface UserSpaceAvailableTool {
   description?: string | null;
   group_id?: string | null;
   group_name?: string | null;
+  available?: boolean;
+  disabled_reason?: string | null;
 }
 
 export interface CreateUserSpaceWorkspaceRequest {

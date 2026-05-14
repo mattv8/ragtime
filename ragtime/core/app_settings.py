@@ -479,7 +479,7 @@ class SettingsCache:
                 where={"enabled": True}, order={"createdAt": "desc"}
             )
 
-            self._tool_configs = [
+            enabled_tool_configs = [
                 {
                     "id": cfg.id,
                     "name": cfg.name,
@@ -495,6 +495,17 @@ class SettingsCache:
                 }
                 for cfg in prisma_configs
             ]
+            from ragtime.indexer.tool_health import tool_health_monitor
+
+            self._tool_configs = tool_health_monitor.filter_healthy_tool_config_dicts(
+                enabled_tool_configs
+            )
+            unavailable_count = len(enabled_tool_configs) - len(self._tool_configs)
+            if unavailable_count > 0:
+                logger.info(
+                    "Filtered %d enabled tool config(s) without healthy heartbeats",
+                    unavailable_count,
+                )
             return self._tool_configs
 
         except Exception as e:

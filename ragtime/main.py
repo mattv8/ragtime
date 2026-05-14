@@ -51,7 +51,7 @@ from ragtime.api.auth import oauth2_token as _oauth2_token_handler
 from ragtime.api.auth import router as auth_router
 from ragtime.api.auth import validate_redirect_uri
 from ragtime.config import settings
-from ragtime.core.app_settings import get_app_settings
+from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.auth import (
     create_access_token,
     create_session,
@@ -74,6 +74,7 @@ from ragtime.indexer.routes import DIST_DIR
 from ragtime.indexer.routes import router as indexer_router
 from ragtime.indexer.schema_service import schema_indexer
 from ragtime.indexer.service import indexer
+from ragtime.indexer.tool_health import ToolHealthCheckResult, tool_health_monitor
 from ragtime.mcp.config_routes import default_filter_router as mcp_default_filter_router
 from ragtime.mcp.config_routes import router as mcp_config_router
 from ragtime.mcp.oauth import (
@@ -82,6 +83,7 @@ from ragtime.mcp.oauth import (
 )
 from ragtime.mcp.routes import get_mcp_routes, mcp_lifespan_manager
 from ragtime.mcp.routes import router as mcp_router
+from ragtime.mcp.server import notify_tools_changed
 from ragtime.oauth_redirects import DEFAULT_ALLOWED_ORIGINS, build_allowed_origins
 from ragtime.rag import rag
 from ragtime.userspace.preview_host import PreviewHostDispatchMiddleware
@@ -109,6 +111,18 @@ load_dotenv()
 logger = setup_logging("rag_api")
 
 _SHARE_PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+
+async def _handle_tool_health_change(result: ToolHealthCheckResult) -> None:
+    if not result.changed_tool_ids:
+        return
+    logger.info(
+        "Tool heartbeat status changed for %d tool(s); refreshing runtime tools",
+        len(result.changed_tool_ids),
+    )
+    invalidate_settings_cache()
+    await rag.initialize()
+    notify_tools_changed()
 
 
 def _oauth_request_context(request: Request) -> str:
@@ -175,6 +189,10 @@ async def lifespan(app: FastAPI):
     # Connect to database
     await connect_db()
 
+    # Prime tool heartbeat state before runtime tools are materialized. Missing
+    # or failed heartbeats are treated as unavailable for chat/tool selection.
+    await tool_health_monitor.check_once()
+
     # Initialize RAG components
     await rag.initialize()
 
@@ -215,6 +233,7 @@ async def lifespan(app: FastAPI):
     userspace_service.schedule_workspace_sqlite_import_recovery()
     userspace_service.schedule_workspace_mount_watch()
     userspace_service.schedule_workspace_scm_watch()
+    tool_health_monitor.start(on_change=_handle_tool_health_change)
 
     # Start MCP session manager (enable/disable checked at request time)
     async with mcp_lifespan_manager():
@@ -224,6 +243,7 @@ async def lifespan(app: FastAPI):
     await userspace_service.shutdown_git_drift_reconciliation()
     await userspace_service.shutdown_workspace_mount_watch()
     await userspace_service.shutdown_workspace_scm_watch()
+    await tool_health_monitor.stop()
 
     # Cleanup - stop background services before disconnecting DB
     await background_task_service.stop()

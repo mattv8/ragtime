@@ -208,6 +208,8 @@ class UserSpaceAvailableTool(BaseModel):
     description: str | None = None
     group_id: str | None = None
     group_name: str | None = None
+    available: bool = True
+    disabled_reason: str | None = None
 
 
 class UserSpaceWorkspace(BaseModel):
