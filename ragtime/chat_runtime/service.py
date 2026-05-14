@@ -47,6 +47,7 @@ from ragtime.config import settings
 from ragtime.core.logging import get_logger
 from ragtime.core.runtime_manager_client import runtime_manager_enabled
 from ragtime.core.runtime_manager_client import runtime_manager_request
+from ragtime.core.security import validate_chat_diagnostic_command
 from ragtime.core.security import validate_external_url
 
 logger = get_logger(__name__)
@@ -82,6 +83,9 @@ class ChatRuntimeService:
 
     def is_enabled(self) -> bool:
         return self._enabled()
+
+    def validate_command(self, command: str) -> tuple[bool, str]:
+        return validate_chat_diagnostic_command(command)
 
     def _idle_ttl_seconds(self) -> int:
         return max(

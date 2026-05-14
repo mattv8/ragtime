@@ -58,6 +58,10 @@ from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID
 from ragtime.chat_runtime.presets import CHAT_WEB_BROWSE_TOOL_ID
 from ragtime.chat_runtime.presets import CHAT_WEB_READ_PDF_TOOL_ID
 from ragtime.chat_runtime.presets import CHAT_WEB_SEARCH_TOOL_ID
+from ragtime.chat_runtime.payloads import build_chat_diagnostic_command_payload
+from ragtime.chat_runtime.payloads import build_chat_diagnostic_rejection_payload
+from ragtime.chat_runtime.payloads import normalize_chat_diagnostic_timeout_seconds
+from ragtime.chat_runtime.payloads import resolve_chat_diagnostic_conversation_id
 from ragtime.config import settings
 from ragtime.core import llama_cpp, lmstudio, omlx
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
@@ -105,7 +109,6 @@ from ragtime.core.ollama import (
 from ragtime.core.security import (
     _SSH_ENV_VAR_RE,
     sanitize_output,
-    validate_chat_diagnostic_command,
     validate_external_url,
     validate_odoo_code,
     validate_sql_query,
@@ -11806,11 +11809,10 @@ except Exception as e:
 
         # Conversation id is preferred; fall back to a per-user namespace so
         # anonymous tool usage still operates inside an isolated sandbox.
-        effective_conversation_id = (conversation_id or "").strip()
-        if not effective_conversation_id:
-            effective_conversation_id = (
-                f"chat-anon-{(request_user_id or 'anonymous').strip() or 'anonymous'}"
-            )
+        effective_conversation_id = resolve_chat_diagnostic_conversation_id(
+            conversation_id,
+            request_user_id,
+        )
 
         cmd_timeout_max = max(
             1,
@@ -11929,7 +11931,12 @@ except Exception as e:
             timeout_seconds: int = min(30, cmd_timeout_max),
             reason: str = "",
         ) -> str:
-            ok, error_message = validate_chat_diagnostic_command(command)
+            command = (command or "").strip()
+            timeout_seconds = normalize_chat_diagnostic_timeout_seconds(
+                timeout_seconds,
+                default=min(30, cmd_timeout_max),
+            )
+            ok, error_message = chat_runtime_service.validate_command(command)
             if not ok:
                 logger.info(
                     "chat_diagnostic_command rejected conv=%s user=%s reason=%s err=%s",
@@ -11940,11 +11947,11 @@ except Exception as e:
                 )
                 raise ToolException(
                     json.dumps(
-                        {
-                            "tool": "run_chat_diagnostic_command",
-                            "status": "rejected_not_persisted",
-                            "error": error_message,
-                        }
+                        build_chat_diagnostic_rejection_payload(
+                            command=command,
+                            timeout_seconds=timeout_seconds,
+                            error=error_message,
+                        )
                     )
                 )
 
@@ -11964,7 +11971,7 @@ except Exception as e:
                 raise ToolException(
                     json.dumps(
                         {
-                            "tool": "run_chat_diagnostic_command",
+                            "tool": CHAT_DIAGNOSTIC_COMMAND_TOOL_ID,
                             "status": "runtime_error",
                             "error": _format_exception_message(exc),
                         }
@@ -11984,16 +11991,12 @@ except Exception as e:
                 (reason or "")[:120],
             )
             return json.dumps(
-                {
-                    "tool": "run_chat_diagnostic_command",
-                    "status": "ok",
-                    "exit_code": response.get("exit_code"),
-                    "stdout": response.get("stdout") or "",
-                    "stderr": response.get("stderr") or "",
-                    "timed_out": bool(response.get("timed_out", False)),
-                    "truncated": bool(response.get("truncated", False)),
-                    "duration_ms": duration_ms,
-                }
+                build_chat_diagnostic_command_payload(
+                    command=command,
+                    timeout_seconds=timeout_seconds,
+                    response=response,
+                    duration_ms=duration_ms,
+                )
             )
 
         async def _web_search(

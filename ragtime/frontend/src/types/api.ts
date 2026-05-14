@@ -3348,7 +3348,8 @@ export interface RetryVisualizationResponse {
 }
 
 export interface RetryTerminalToolRequest {
-  tool_config_id: string;
+  tool_config_id?: string;
+  builtin_tool_id?: string;
   input: Record<string, unknown>;
 }
 

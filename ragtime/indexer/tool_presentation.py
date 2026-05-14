@@ -6,6 +6,7 @@ from typing import Any, Mapping
 TERMINAL_PRESENTATION_KIND = "terminal"
 USERSPACE_EXEC_RERUN_KIND = "userspace_exec"
 CONVERSATION_TOOL_RERUN_KIND = "conversation_tool"
+CHAT_DIAGNOSTIC_RERUN_KIND = "chat_diagnostic"
 TERMINAL_CONNECTION_TOOL_TYPES = frozenset({"ssh_shell"})
 
 
@@ -47,6 +48,12 @@ def normalize_tool_presentation(
         return {
             "kind": TERMINAL_PRESENTATION_KIND,
             "rerun_kind": USERSPACE_EXEC_RERUN_KIND,
+        }
+
+    if normalized_tool_name == "run_chat_diagnostic_command":
+        return {
+            "kind": TERMINAL_PRESENTATION_KIND,
+            "rerun_kind": CHAT_DIAGNOSTIC_RERUN_KIND,
         }
 
     if tool_type in TERMINAL_CONNECTION_TOOL_TYPES:

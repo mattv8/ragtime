@@ -44,9 +44,11 @@ import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorD
 import { UserSpaceFileDiffView, formatDiffStatus } from './shared/UserSpaceFileDiffView';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 
+const CHAT_DIAGNOSTIC_COMMAND_TOOL_ID = 'run_chat_diagnostic_command';
+
 const CHAT_BUILT_IN_TOOLS: UserSpaceAvailableTool[] = [
   {
-    id: 'run_chat_diagnostic_command',
+    id: CHAT_DIAGNOSTIC_COMMAND_TOOL_ID,
     name: 'Local terminal',
     tool_type: 'built-in',
     description: 'Run read-only diagnostic shell commands in a chat sandbox.',
@@ -1863,12 +1865,18 @@ interface ParsedTerminalOutput {
   truncated?: boolean;
 }
 
-const TERMINAL_TOOL_NAMES = new Set(['run_terminal_command']);
+const TERMINAL_TOOL_NAMES = new Set(['run_terminal_command', CHAT_DIAGNOSTIC_COMMAND_TOOL_ID]);
 const TERMINAL_TOOL_CONNECTION_TYPES = new Set(['ssh_shell']);
 const SQL_TOOL_CONNECTION_TYPES = new Set(['postgres', 'mysql', 'mssql', 'influxdb']);
 const TERMINAL_PRESENTATION_KIND = 'terminal';
 const USERSPACE_EXEC_RERUN_KIND = 'userspace_exec';
 const CONVERSATION_TOOL_RERUN_KIND = 'conversation_tool';
+const CHAT_DIAGNOSTIC_RERUN_KIND = 'chat_diagnostic';
+const TERMINAL_RERUN_KINDS = new Set([
+  USERSPACE_EXEC_RERUN_KIND,
+  CONVERSATION_TOOL_RERUN_KIND,
+  CHAT_DIAGNOSTIC_RERUN_KIND,
+]);
 
 function normalizedPresentationValue(value?: string | null): string {
   return (value || '').trim().toLowerCase();
@@ -1907,11 +1915,16 @@ function isConversationToolRerunnable(toolCall: ActiveToolCall): boolean {
   );
 }
 
+function getPresentationRerunKind(toolCall: ActiveToolCall): string | null {
+  const rerunKind = normalizedPresentationValue(toolCall.presentation?.rerun_kind);
+  return TERMINAL_RERUN_KINDS.has(rerunKind) ? rerunKind : null;
+}
+
 function canRerunToolCall(toolCall: ActiveToolCall): boolean {
-  if (normalizedPresentationValue(toolCall.presentation?.rerun_kind) === USERSPACE_EXEC_RERUN_KIND) {
+  if (getPresentationRerunKind(toolCall)) {
     return true;
   }
-  if (normalizedPresentationValue(toolCall.presentation?.rerun_kind) === CONVERSATION_TOOL_RERUN_KIND) {
+  if (toolCall.tool === CHAT_DIAGNOSTIC_COMMAND_TOOL_ID) {
     return true;
   }
   if (isConversationToolRerunnable(toolCall)) {
@@ -1921,9 +1934,12 @@ function canRerunToolCall(toolCall: ActiveToolCall): boolean {
 }
 
 function getTerminalRerunKind(toolCall: ActiveToolCall): string | null {
-  const presentationKind = normalizedPresentationValue(toolCall.presentation?.rerun_kind);
-  if (presentationKind === USERSPACE_EXEC_RERUN_KIND || presentationKind === CONVERSATION_TOOL_RERUN_KIND) {
-    return presentationKind;
+  const presentationRerunKind = getPresentationRerunKind(toolCall);
+  if (presentationRerunKind) {
+    return presentationRerunKind;
+  }
+  if (toolCall.tool === CHAT_DIAGNOSTIC_COMMAND_TOOL_ID) {
+    return CHAT_DIAGNOSTIC_RERUN_KIND;
   }
   if (isConversationToolRerunnable(toolCall)) {
     return CONVERSATION_TOOL_RERUN_KIND;
@@ -1977,7 +1993,9 @@ function extractJsonStringPropertyFragment(source: string, property: string): st
 }
 
 function parseTruncatedTerminalOutput(output: string): ParsedTerminalOutput | null {
-  if (!output.includes('... (truncated)')) return null;
+  const hasLegacyTruncationMarker = output.includes('... (truncated)');
+  const hasOmittedCharsMarker = /\.\.\. \[[\d,]+ characters omitted\] \.\.\./.test(output);
+  if (!hasLegacyTruncationMarker && !hasOmittedCharsMarker) return null;
   if (!/"exit_code"\s*:/.test(output)) return null;
   if (!/"(?:stdout|stderr|error)"\s*:/.test(output)) return null;
 
@@ -2223,6 +2241,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     ? Boolean(workspaceId)
     : rerunKind === CONVERSATION_TOOL_RERUN_KIND
       ? Boolean(conversationId && toolCall.connection?.tool_config_id)
+      : rerunKind === CHAT_DIAGNOSTIC_RERUN_KIND
+        ? Boolean(conversationId)
       : false;
   const activeTerminalOutput = activeOutput;
 
@@ -2725,12 +2745,17 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         return;
       }
 
-      if (rerunKind === CONVERSATION_TOOL_RERUN_KIND) {
-        if (!conversationId || !toolCall.connection?.tool_config_id) return;
+      if (rerunKind === CONVERSATION_TOOL_RERUN_KIND || rerunKind === CHAT_DIAGNOSTIC_RERUN_KIND) {
+        if (!conversationId) return;
+        const toolConfigId = toolCall.connection?.tool_config_id;
+        if (rerunKind === CONVERSATION_TOOL_RERUN_KIND && !toolConfigId) return;
         const result = await api.retryTerminalToolCall(
           conversationId,
-          {
-            tool_config_id: toolCall.connection.tool_config_id,
+          rerunKind === CONVERSATION_TOOL_RERUN_KIND ? {
+            tool_config_id: toolConfigId,
+            input: toolCall.input || {},
+          } : {
+            builtin_tool_id: CHAT_DIAGNOSTIC_COMMAND_TOOL_ID,
             input: toolCall.input || {},
           },
           workspaceId,
@@ -2739,6 +2764,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           throw new Error(result.error || 'Re-run failed');
         }
         setRetryOutput(result.output);
+        return;
       }
     } catch (err) {
       setRetryError(err instanceof Error ? err.message : 'Re-run failed');
@@ -3693,6 +3719,35 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           ) : isTerminalCommand && (toolCall.status === 'running' || isRerunning) ? (
             <div className="tool-call-section tool-call-terminal-section">
               <div className="tool-call-terminal-block">
+                <div className="tool-call-terminal-header-bar">
+                  <span className="tool-call-terminal-cwd">~</span>
+                  <div className="tool-call-terminal-header-actions">
+                    <button
+                      className="tool-call-copy-btn"
+                      onClick={() => copyToClipboard(inputDisplay, 'query')}
+                      title="Copy command"
+                    >
+                      {copiedQuery ? <Check size={12} /> : <Terminal size={12} />}
+                    </button>
+                    <button
+                      className="tool-call-copy-btn"
+                      onClick={() => copyToClipboard(activeTerminalOutput || inputDisplay, 'result')}
+                      title="Copy output"
+                    >
+                      {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                    </button>
+                    {canRerun && hasRerunContext && (
+                      <button
+                        className="tool-call-copy-btn tool-call-terminal-rerun-btn"
+                        onClick={handleRerunCommand}
+                        title="Re-run command"
+                        disabled={isRerunning}
+                      >
+                        {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                      </button>
+                    )}
+                  </div>
+                </div>
                 <pre className="tool-call-terminal-output">
                   <span className="tool-call-terminal-prompt-line">$ {inputDisplay}</span>
                   {'\n'}
@@ -3712,6 +3767,13 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                       title="Copy command"
                     >
                       {copiedQuery ? <Check size={12} /> : <Terminal size={12} />}
+                    </button>
+                    <button
+                      className="tool-call-copy-btn"
+                      onClick={() => copyToClipboard(activeTerminalOutput || inputDisplay, 'result')}
+                      title="Copy output"
+                    >
+                      {copiedResult ? <Check size={12} /> : <Copy size={12} />}
                     </button>
                     {canRerun && hasRerunContext && (
                       <button

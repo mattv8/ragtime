@@ -45,7 +45,13 @@ from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID
 from ragtime.chat_runtime.presets import CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
+from ragtime.chat_runtime.payloads import build_chat_diagnostic_command_payload
+from ragtime.chat_runtime.payloads import build_chat_diagnostic_rejection_payload
+from ragtime.chat_runtime.payloads import normalize_chat_diagnostic_timeout_seconds
+from ragtime.chat_runtime.payloads import resolve_chat_diagnostic_conversation_id
+from ragtime.chat_runtime.service import chat_runtime_service
 from ragtime.core import llama_cpp, lmstudio, omlx
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.auth import get_browser_matched_origin
@@ -12551,7 +12557,19 @@ async def send_message_stream(
 
 
 class RetryTerminalToolRequest(BaseModel):
-    tool_config_id: str = Field(min_length=1, description="Tool config ID to replay")
+    tool_config_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        description="Tool config ID to replay",
+    )
+    builtin_tool_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Optional built-in tool ID to replay when no tool config is used "
+            "(currently supports run_chat_diagnostic_command)."
+        ),
+    )
     input: dict[str, Any] = Field(
         default_factory=dict,
         description="Captured tool input to replay through the configured tool",
@@ -12661,16 +12679,81 @@ async def retry_terminal_tool(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    builtin_tool_id = (request.builtin_tool_id or "").strip()
+    tool_config_id = (request.tool_config_id or "").strip()
+
+    if builtin_tool_id:
+        if builtin_tool_id != CHAT_DIAGNOSTIC_COMMAND_TOOL_ID:
+            raise HTTPException(status_code=400, detail="Built-in tool is not replayable")
+
+        if builtin_tool_id not in CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS:
+            raise HTTPException(status_code=404, detail="Built-in tool not available")
+
+        if not chat_runtime_service.is_enabled():
+            raise HTTPException(status_code=503, detail="Chat diagnostics runtime unavailable")
+
+        command = str(request.input.get("command") or "").strip()
+        timeout_seconds = normalize_chat_diagnostic_timeout_seconds(
+            request.input.get("timeout_seconds"),
+        )
+        reason = str(request.input.get("reason") or "").strip()
+
+        if not command:
+            raise HTTPException(status_code=400, detail="command is required")
+
+        ok, error_message = chat_runtime_service.validate_command(command)
+        if not ok:
+            return RetryTerminalToolResponse(
+                success=False,
+                output=json.dumps(
+                    build_chat_diagnostic_rejection_payload(
+                        command=command,
+                        timeout_seconds=timeout_seconds,
+                        error=error_message,
+                    )
+                ),
+                error=error_message,
+            )
+
+        effective_conversation_id = resolve_chat_diagnostic_conversation_id(
+            conversation_id,
+            user.id,
+        )
+
+        try:
+            response = await chat_runtime_service.exec_command(
+                conversation_id=effective_conversation_id,
+                command=command,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as e:
+            logger.exception(f"Error replaying chat diagnostic command: {e}")
+            return RetryTerminalToolResponse(success=False, error=str(e))
+
+        payload = build_chat_diagnostic_command_payload(
+            command=command,
+            timeout_seconds=timeout_seconds,
+            response=response,
+            reason=reason,
+        )
+        return RetryTerminalToolResponse(success=True, output=json.dumps(payload))
+
+    if not tool_config_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either tool_config_id or builtin_tool_id",
+        )
+
     _, selected_tool_ids, _ = await _resolve_selected_tool_ids_for_request(
         conversation,
         user,
         workspace_id,
         _workspace_chat_required_role(workspace_id),
     )
-    if request.tool_config_id not in selected_tool_ids:
+    if tool_config_id not in selected_tool_ids:
         raise HTTPException(status_code=404, detail="Tool not available")
 
-    tool_config = await repository.get_tool_config(request.tool_config_id)
+    tool_config = await repository.get_tool_config(tool_config_id)
     if not tool_config or not tool_config.enabled:
         raise HTTPException(status_code=404, detail="Tool not found")
 

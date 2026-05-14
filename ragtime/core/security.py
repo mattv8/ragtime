@@ -7,6 +7,7 @@ The enable_write_ops parameter should be passed from the database settings.
 
 from __future__ import annotations
 
+import ast
 import re
 import shlex
 from typing import TYPE_CHECKING, Optional, Tuple
@@ -925,9 +926,8 @@ CHAT_DIAGNOSTIC_ALLOWED_COMMANDS: frozenset[str] = frozenset(
         # archive / encoding inspection (read-only)
         "tar",  # accepted only without extraction args; we still block writes via patterns
         "unzip",  # listing only via -l - we rely on exec sandbox + redirection blocks
-        # python/node read-only one-liners (still constrained by sandbox + denylist)
-        # NOTE: deliberately excluded by default. Re-enable by listing here only
-        # when it is necessary; pip/npm/etc remain blocked below.
+        # Python read-only one-liners are handled by a dedicated AST validator
+        # below; node/ruby/php remain excluded by default.
     }
 )
 
@@ -960,7 +960,6 @@ _CHAT_DIAG_DENY_PATTERN_STRINGS: list[str] = [
     r"(?:^|[\s;&|`(])zsh\b",
     r"(?:^|[\s;&|`(])ksh\b",
     r"(?:^|[\s;&|`(])fish\b",
-    r"(?:^|[\s;&|`(])python[0-9.]*\b",
     r"(?:^|[\s;&|`(])node\b",
     r"(?:^|[\s;&|`(])ruby\b",
     r"(?:^|[\s;&|`(])php\b",
@@ -1021,6 +1020,183 @@ CHAT_DIAGNOSTIC_DENY_PATTERNS: list[re.Pattern[str]] = [
     re.compile(p, re.IGNORECASE) for p in _CHAT_DIAG_DENY_PATTERN_STRINGS
 ]
 
+_CHAT_DIAG_PYTHON_BINARY_RE = re.compile(r"python(?:3(?:\.\d+)?)?$")
+_CHAT_DIAG_PYTHON_SAFE_FLAGS = frozenset({"-B", "-E", "-I", "-S", "-s", "-u", "-q"})
+_CHAT_DIAG_PYTHON_ALLOWED_MODULES = frozenset(
+    {
+        "base64",
+        "collections",
+        "csv",
+        "datetime",
+        "decimal",
+        "email",
+        "fractions",
+        "functools",
+        "hashlib",
+        "html",
+        "io",
+        "itertools",
+        "json",
+        "math",
+        "operator",
+        "re",
+        "statistics",
+        "textwrap",
+        "time",
+        "urllib",
+        "urllib.parse",
+        "urllib.request",
+        "xml",
+        "xml.etree",
+        "xml.etree.ElementTree",
+    }
+)
+_CHAT_DIAG_PYTHON_DANGEROUS_NAMES = frozenset(
+    {
+        "__import__",
+        "breakpoint",
+        "compile",
+        "eval",
+        "exec",
+        "exit",
+        "globals",
+        "help",
+        "input",
+        "locals",
+        "open",
+        "quit",
+        "vars",
+    }
+)
+_CHAT_DIAG_PYTHON_DANGEROUS_ATTRS = frozenset(
+    {
+        "Popen",
+        "Request",
+        "call",
+        "check_call",
+        "check_output",
+        "chmod",
+        "chown",
+        "execv",
+        "execve",
+        "fork",
+        "kill",
+        "makedirs",
+        "mkdir",
+        "open",
+        "popen",
+        "remove",
+        "rename",
+        "replace",
+        "rmdir",
+        "run",
+        "spawnl",
+        "spawnle",
+        "spawnlp",
+        "spawnlpe",
+        "spawnv",
+        "spawnve",
+        "spawnvp",
+        "spawnvpe",
+        "system",
+        "unlink",
+        "urlretrieve",
+        "write",
+        "write_bytes",
+        "write_text",
+        "writelines",
+    }
+)
+
+
+def _split_chat_diagnostic_command_segments(raw: str) -> list[str]:
+    """Split command chains on unquoted shell separators."""
+    segments: list[str] = []
+    buffer: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if quote:
+            buffer.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < len(raw):
+                i += 1
+                buffer.append(raw[i])
+            elif ch == quote:
+                quote = None
+        else:
+            if ch in {"'", '"'}:
+                quote = ch
+                buffer.append(ch)
+            elif ch in {"|", ";", "\n"}:
+                segments.append("".join(buffer))
+                buffer = []
+            elif ch == "&" and i + 1 < len(raw) and raw[i + 1] == "&":
+                segments.append("".join(buffer))
+                buffer = []
+                i += 1
+            else:
+                buffer.append(ch)
+        i += 1
+    segments.append("".join(buffer))
+    return segments
+
+
+def _is_chat_diagnostic_python_binary(binary: str) -> bool:
+    return bool(_CHAT_DIAG_PYTHON_BINARY_RE.fullmatch(binary))
+
+
+def _validate_chat_diagnostic_python_code(code: str) -> Tuple[bool, str]:
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError as exc:
+        return False, f"Python diagnostic snippet could not be parsed: {exc.msg}"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in _CHAT_DIAG_PYTHON_ALLOWED_MODULES:
+                    return False, f"Python module '{alias.name}' is not allowed"
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module not in _CHAT_DIAG_PYTHON_ALLOWED_MODULES:
+                return False, f"Python module '{module}' is not allowed"
+        elif isinstance(node, ast.Name):
+            if node.id.startswith("__") or node.id in _CHAT_DIAG_PYTHON_DANGEROUS_NAMES:
+                return False, f"Python name '{node.id}' is not allowed"
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("__") or node.attr in _CHAT_DIAG_PYTHON_DANGEROUS_ATTRS:
+                return False, f"Python attribute '{node.attr}' is not allowed"
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "urlopen":
+                if len(node.args) > 1 or any(
+                    keyword.arg in {"data", "method"} for keyword in node.keywords
+                ):
+                    return False, "Python urlopen writes are not allowed"
+
+    return True, "Python snippet is safe"
+
+
+def _validate_chat_diagnostic_python_tokens(
+    tokens: list[str],
+    binary_index: int,
+) -> Tuple[bool, str]:
+    args = tokens[binary_index + 1 :]
+    idx = 0
+    while idx < len(args) and args[idx] in _CHAT_DIAG_PYTHON_SAFE_FLAGS:
+        idx += 1
+
+    if idx >= len(args) or args[idx] != "-c":
+        return False, "Only python -c diagnostic snippets are allowed"
+    if idx + 1 >= len(args):
+        return False, "Python -c requires a snippet"
+    for extra_arg in args[idx + 2 :]:
+        if extra_arg.startswith("-"):
+            return False, "Additional python options are not allowed after -c"
+
+    return _validate_chat_diagnostic_python_code(args[idx + 1])
+
 
 def validate_chat_diagnostic_command(command: str) -> Tuple[bool, str]:
     """Validate a shell command for read-only chat diagnostic execution.
@@ -1035,10 +1211,9 @@ def validate_chat_diagnostic_command(command: str) -> Tuple[bool, str]:
         return False, "Command is empty"
     if len(raw) > 4000:
         return False, "Command exceeds 4000 character limit"
-    if "\n" in raw or "\r" in raw:
-        return False, "Multi-line commands are not allowed"
     if "\x00" in raw:
         return False, "Null bytes are not allowed in commands"
+    raw = raw.replace("\r\n", "\n").replace("\r", "\n")
 
     for pattern in CHAT_DIAGNOSTIC_DENY_PATTERNS:
         if pattern.search(raw):
@@ -1048,22 +1223,7 @@ def validate_chat_diagnostic_command(command: str) -> Tuple[bool, str]:
             return False, "Command contains a forbidden pattern for chat diagnostics"
 
     # Split into pipeline / sequence segments and check the first token of each.
-    segments: list[str] = []
-    buffer: list[str] = []
-    i = 0
-    while i < len(raw):
-        ch = raw[i]
-        if ch in "|;":
-            segments.append("".join(buffer))
-            buffer = []
-        elif ch == "&" and i + 1 < len(raw) and raw[i + 1] == "&":
-            segments.append("".join(buffer))
-            buffer = []
-            i += 1
-        else:
-            buffer.append(ch)
-        i += 1
-    segments.append("".join(buffer))
+    segments = _split_chat_diagnostic_command_segments(raw)
 
     for segment in segments:
         seg = segment.strip()
@@ -1080,7 +1240,11 @@ def validate_chat_diagnostic_command(command: str) -> Tuple[bool, str]:
         if idx >= len(tokens):
             return False, "Empty command segment"
         binary = tokens[idx].split("/")[-1].lower()
-        if binary not in CHAT_DIAGNOSTIC_ALLOWED_COMMANDS:
+        if _is_chat_diagnostic_python_binary(binary):
+            ok, message = _validate_chat_diagnostic_python_tokens(tokens, idx)
+            if not ok:
+                return False, message
+        elif binary not in CHAT_DIAGNOSTIC_ALLOWED_COMMANDS:
             return (
                 False,
                 f"Command '{binary}' is not on the chat diagnostics allowlist",
