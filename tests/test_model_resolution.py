@@ -886,11 +886,6 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
             "openai_api_key": "openai-key",
             "github_copilot_access_token": "copilot-token",
             "allowed_chat_models": ["github_copilot::claude-haiku-4.5"],
-            "model_provider_precedence": {
-                "providers": ["openai", "github_copilot"],
-                "model_overrides": {},
-                "family_overrides": {},
-            },
         }
         copilot_llm = object()
 
@@ -913,7 +908,7 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolution.provider, "github_copilot")
         self.assertEqual(resolution.attempted_providers, ("github_copilot",))
 
-    async def test_provider_precedence_falls_back_when_first_provider_unavailable(
+    async def test_candidate_order_falls_back_when_first_provider_unavailable(
         self,
     ) -> None:
         rag = RAGComponents()
@@ -923,11 +918,6 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
             "openai_api_key": "openai-key",
             "github_copilot_access_token": "copilot-token",
             "allowed_chat_models": [],
-            "model_provider_precedence": {
-                "providers": ["openai", "github_copilot"],
-                "model_overrides": {},
-                "family_overrides": {},
-            },
         }
         copilot_llm = object()
         attempted: list[str] = []
@@ -959,11 +949,6 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
             "openai_api_key": "openai-key",
             "github_copilot_access_token": "copilot-token",
             "allowed_chat_models": ["github_copilot::gpt-5.4"],
-            "model_provider_precedence": {
-                "providers": ["github_copilot", "openai", "anthropic"],
-                "model_overrides": {},
-                "family_overrides": {},
-            },
         }
         copilot_llm = object()
         attempted: list[str] = []
@@ -998,11 +983,6 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
             "openai_api_key": "",
             "github_copilot_access_token": "copilot-token",
             "allowed_chat_models": ["openai::gpt-5.4"],
-            "model_provider_precedence": {
-                "providers": ["github_copilot", "openai", "anthropic"],
-                "model_overrides": {},
-                "family_overrides": {},
-            },
         }
         copilot_llm = object()
         attempted: list[str] = []
@@ -1036,11 +1016,6 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
             "llm_model": "gpt-4.1",
             "openai_api_key": "",
             "allowed_chat_models": [],
-            "model_provider_precedence": {
-                "providers": ["openai", "github_copilot"],
-                "model_overrides": {},
-                "family_overrides": {},
-            },
         }
 
         with (
@@ -1071,11 +1046,6 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
             "llm_model": "claude-haiku-4.5",
             "github_copilot_access_token": "copilot-token",
             "allowed_chat_models": ["github_copilot::claude-haiku-4.5"],
-            "model_provider_precedence": {
-                "providers": ["openai", "github_copilot"],
-                "model_overrides": {},
-                "family_overrides": {},
-            },
         }
         copilot_llm = object()
 

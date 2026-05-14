@@ -7,7 +7,7 @@ import hashlib
 import json
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -33,24 +33,6 @@ class IndexStatus(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
-
-
-class ModelProviderPrecedence(BaseModel):
-    """Admin-configured model-provider precedence for chat model resolution."""
-
-    providers: List[str] = Field(
-        default_factory=list,
-        description="Ordered list of provider names from highest to lowest precedence.",
-    )
-    model_overrides: Dict[str, str] = Field(
-        default_factory=dict,
-        description="Map of exact model_id -> preferred provider (overrides provider order).",
-    )
-    family_overrides: Dict[str, str] = Field(
-        default_factory=dict,
-        description="Map of model family/group label -> preferred provider (used when no exact match).",
-    )
-
 
 
 class ToolOutputMode(str, Enum):
@@ -737,10 +719,6 @@ class AppSettings(BaseModel):
         default=None,
         description="Optional manual override for the default chat model. Must be in filtered Chat Models to apply.",
     )
-    model_provider_precedence: "ModelProviderPrecedence" = Field(
-        default_factory=lambda: ModelProviderPrecedence(),
-        description="Admin-configured provider ordering plus per-model/family overrides.",
-    )
 
     # OpenAPI-compatible endpoint model configuration
     allowed_openapi_models: List[str] = Field(
@@ -750,10 +728,6 @@ class AppSettings(BaseModel):
     openapi_sync_chat_models: bool = Field(
         default=True,
         description="When true, /v1/models mirrors the Chat Models list.",
-    )
-    openapi_model_provider_precedence: "ModelProviderPrecedence" = Field(
-        default_factory=lambda: ModelProviderPrecedence(),
-        description="Provider ordering and per-model/family overrides applied to the /v1/models endpoint.",
     )
 
     # Agent behavior
@@ -1219,10 +1193,8 @@ class UpdateSettingsRequest(BaseModel):
     include_copilot_third_party_models: Optional[bool] = None
     allowed_chat_models: Optional[List[str]] = None
     default_chat_model: Optional[str] = None
-    model_provider_precedence: Optional["ModelProviderPrecedence"] = None
     allowed_openapi_models: Optional[List[str]] = None
     openapi_sync_chat_models: Optional[bool] = None
-    openapi_model_provider_precedence: Optional["ModelProviderPrecedence"] = None
     max_iterations: Optional[int] = Field(default=None, ge=1, le=100)
     # Token optimization settings
     max_tool_output_chars: Optional[int] = Field(default=None, ge=0, le=100000)

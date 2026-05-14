@@ -43,7 +43,6 @@ import {
   providersEquivalent,
   type ProviderConnectionDescriptor,
 } from '@/utils/modelProviders';
-import type { ModelProviderPrecedence } from '@/types';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -521,12 +520,6 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
   // Model filter modal state (chat)
   const [showModelFilterModal, setShowModelFilterModal] = useState(false);
-  const [modelProviderPrecedence, setModelProviderPrecedence] = useState<ModelProviderPrecedence>({
-    providers: [],
-    model_overrides: {},
-    family_overrides: {},
-  });
-  const [savingPrecedence, setSavingPrecedence] = useState(false);
   const [allAvailableModels, setAllAvailableModels] = useState<AvailableModel[]>([]);
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -539,12 +532,6 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
   const [selectedOpenapiModels, setSelectedOpenapiModels] = useState<Set<string>>(new Set());
   const [openapiModelsLoading, setOpenapiModelsLoading] = useState(false);
   const [openapiAvailableModels, setOpenapiAvailableModels] = useState<AvailableModel[]>([]);
-  const [openapiModelProviderPrecedence, setOpenapiModelProviderPrecedence] = useState<ModelProviderPrecedence>({
-    providers: [],
-    model_overrides: {},
-    family_overrides: {},
-  });
-  const [savingOpenapiPrecedence, setSavingOpenapiPrecedence] = useState(false);
 
   // MCP Routes panel state
   const [showMcpRoutesPanel, setShowMcpRoutesPanel] = useState(false);
@@ -1216,32 +1203,6 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       setAllAvailableModels(models);
       const allowedModels = response.allowed_models || [];
       setSelectedModels(initSelectedFromAllowed(models, allowedModels));
-      // Hydrate precedence from response (falling back to discovered providers).
-      const fromResponse = response.model_provider_precedence;
-      const discoveredProviders: string[] = [];
-      const seen = new Set<string>();
-      for (const m of models) {
-        const norm = normalizeProviderAlias(m.provider);
-        if (norm && !seen.has(norm)) {
-          seen.add(norm);
-          discoveredProviders.push(norm);
-        }
-      }
-      const savedOrder = (fromResponse?.providers || []).filter((p) => !!normalizeProviderAlias(p));
-      const merged: string[] = [];
-      const mergedSet = new Set<string>();
-      for (const p of savedOrder) {
-        const n = normalizeProviderAlias(p);
-        if (n && !mergedSet.has(n)) { mergedSet.add(n); merged.push(n); }
-      }
-      for (const p of discoveredProviders) {
-        if (!mergedSet.has(p)) { mergedSet.add(p); merged.push(p); }
-      }
-      setModelProviderPrecedence({
-        providers: merged,
-        model_overrides: { ...(fromResponse?.model_overrides || {}) },
-        family_overrides: { ...(fromResponse?.family_overrides || {}) },
-      });
     } catch (err) {
       console.error('Failed to load models:', err);
     } finally {
@@ -1277,19 +1238,6 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     }
   };
 
-  const saveProviderPrecedence = async () => {
-    setSavingPrecedence(true);
-    try {
-      await api.updateSettings({ model_provider_precedence: modelProviderPrecedence });
-      toast.success('Provider precedence saved');
-      refreshModels();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save provider precedence');
-    } finally {
-      setSavingPrecedence(false);
-    }
-  };
-
   const openOpenapiModelModal = useCallback(async () => {
     setOpenapiModelsLoading(true);
     setShowOpenapiModelModal(true);
@@ -1299,32 +1247,6 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       setOpenapiAvailableModels(models);
       const allowedOpenapiModels = response.allowed_openapi_models || [];
       setSelectedOpenapiModels(initSelectedFromAllowed(models, allowedOpenapiModels));
-      // Hydrate openapi precedence (mirrors chat-side logic).
-      const fromResponse = response.openapi_model_provider_precedence;
-      const discoveredProviders: string[] = [];
-      const seen = new Set<string>();
-      for (const m of models) {
-        const norm = normalizeProviderAlias(m.provider);
-        if (norm && !seen.has(norm)) {
-          seen.add(norm);
-          discoveredProviders.push(norm);
-        }
-      }
-      const savedOrder = (fromResponse?.providers || []).filter((p) => !!normalizeProviderAlias(p));
-      const merged: string[] = [];
-      const mergedSet = new Set<string>();
-      for (const p of savedOrder) {
-        const n = normalizeProviderAlias(p);
-        if (n && !mergedSet.has(n)) { mergedSet.add(n); merged.push(n); }
-      }
-      for (const p of discoveredProviders) {
-        if (!mergedSet.has(p)) { mergedSet.add(p); merged.push(p); }
-      }
-      setOpenapiModelProviderPrecedence({
-        providers: merged,
-        model_overrides: { ...(fromResponse?.model_overrides || {}) },
-        family_overrides: { ...(fromResponse?.family_overrides || {}) },
-      });
     } catch (err) {
       console.error('Failed to load models:', err);
     } finally {
@@ -1354,18 +1276,6 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       toast.success('OpenAPI model filter saved');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save OpenAPI model filter');
-    }
-  };
-
-  const saveOpenapiProviderPrecedence = async () => {
-    setSavingOpenapiPrecedence(true);
-    try {
-      await api.updateSettings({ openapi_model_provider_precedence: openapiModelProviderPrecedence });
-      toast.success('OpenAPI provider precedence saved');
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save OpenAPI provider precedence');
-    } finally {
-      setSavingOpenapiPrecedence(false);
     }
   };
 
@@ -5920,7 +5830,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       )}
 
 
-      {/* Chat Models Filter + Provider Precedence Modal */}
+      {/* Chat Models Filter Modal */}
       <ModelFilterModal
         isOpen={showModelFilterModal}
         title="Allowed Chat Models"
@@ -5928,18 +5838,14 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         allModels={allAvailableModels}
         modelsLoading={modelsLoading}
         selectedModels={selectedModels}
-        precedence={modelProviderPrecedence}
-        setPrecedence={setModelProviderPrecedence}
-        allowedHelpText="If the same model exists from multiple providers, selecting a row sets the provider to use for that model."
+        allowedHelpText="Select host-specific model rows to allow them in chat. Selecting every row stores the default all-models setting."
         toggleModel={toggleModel}
         selectAll={selectAllModels}
         deselectAll={deselectAllModels}
         onSaveAllowed={saveModelFilter}
-        onSavePrecedence={saveProviderPrecedence}
-        savingPrecedence={savingPrecedence}
       />
 
-      {/* OpenAPI Models Filter + Provider Precedence Modal */}
+      {/* OpenAPI Models Filter Modal */}
       <ModelFilterModal
         isOpen={showOpenapiModelModal}
         title="Allowed OpenAPI Models"
@@ -5947,15 +5853,11 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         allModels={openapiAvailableModels}
         modelsLoading={openapiModelsLoading}
         selectedModels={selectedOpenapiModels}
-        precedence={openapiModelProviderPrecedence}
-        setPrecedence={setOpenapiModelProviderPrecedence}
-        allowedHelpText="Select models to expose via the /v1/models endpoint for external clients (e.g., Open WebUI). When the same model exists from multiple providers, selecting a row sets the provider used for it."
+        allowedHelpText="Select host-specific model rows to expose via the /v1/models endpoint for external clients."
         toggleModel={toggleOpenapiModel}
         selectAll={selectAllOpenapiModels}
         deselectAll={deselectAllOpenapiModels}
         onSaveAllowed={saveOpenapiModelFilter}
-        onSavePrecedence={saveOpenapiProviderPrecedence}
-        savingPrecedence={savingOpenapiPrecedence}
       />
 
       {/* User Space Preview Sandbox Modal */}

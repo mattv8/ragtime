@@ -5301,16 +5301,6 @@ textarea {
   word-break: break-word;
 }
 
-.model-filter-provider {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  background: var(--color-surface-secondary);
-  padding: 2px var(--space-xs);
-  border-radius: var(--radius-sm);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
 /* Settings page keyword filter */
 .settings-filter-search {
   display: flex;

@@ -90,7 +90,6 @@ from ragtime.core.model_providers import (
     normalize_provider_name,
     providers_equivalent,
     resolve_provider_base_url,
-    resolve_provider_for_model,
 )
 from ragtime.core.ollama import (
     DEFAULT_WARMUP_TIMEOUT_SECONDS,
@@ -13012,47 +13011,6 @@ except Exception as e:
                 providers.append(normalized_provider)
         return providers
 
-    def _provider_precedence_order(
-        self,
-        providers: list[str],
-        model_id: str,
-    ) -> list[str]:
-        """Order candidate providers with configured precedence, preserving leftovers."""
-        candidates = list(dict.fromkeys(normalize_provider_name(p) for p in providers if p))
-        if not candidates:
-            return []
-
-        precedence = (self._app_settings or {}).get("model_provider_precedence")
-        ordered: list[str] = []
-
-        def append(provider: str | None) -> None:
-            normalized = normalize_provider_name(provider)
-            if normalized in candidates and normalized not in ordered:
-                ordered.append(normalized)
-
-        resolved = resolve_provider_for_model(
-            precedence,
-            model_id=model_id,
-            family=None,
-            candidate_providers=candidates,
-        )
-        append(resolved)
-
-        if hasattr(precedence, "model_dump"):
-            precedence_data = precedence.model_dump()
-        elif isinstance(precedence, dict):
-            precedence_data = precedence
-        else:
-            precedence_data = {}
-
-        for provider in precedence_data.get("providers") or []:
-            append(str(provider))
-
-        for provider in candidates:
-            append(provider)
-
-        return ordered
-
     def _ordered_llm_candidate_providers(
         self,
         *,
@@ -13090,7 +13048,9 @@ except Exception as e:
             )
             provider_pool = list(dict.fromkeys(provider_pool))
 
-        ordered = self._provider_precedence_order(provider_pool, model_id)
+        ordered = list(
+            dict.fromkeys(normalize_provider_name(provider) for provider in provider_pool if provider)
+        )
         if provider_override and not allowed_providers:
             return list(
                 dict.fromkeys([normalize_provider_name(provider_override), *ordered])
@@ -13205,7 +13165,7 @@ except Exception as e:
     async def _get_request_scoped_llm(
         self, conversation_model: Optional[str]
     ) -> RequestLLMResolution:
-        """Resolve a request-scoped LLM honoring provider precedence."""
+        """Resolve a request-scoped LLM for the requested model and host."""
         if self.llm is None and self._core_ready:
             try:
                 fresh_settings = await get_app_settings()
@@ -13275,7 +13235,7 @@ except Exception as e:
             )
         except Exception:  # pragma: no cover - defensive: never block chat on resolver
             logger.exception(
-                "model_provider_precedence resolution failed; using configured provider"
+                "LLM candidate provider resolution failed; using configured provider"
             )
             candidate_providers = [provider]
 
@@ -13296,7 +13256,7 @@ except Exception as e:
 
             if candidate_provider != provider:
                 logger.info(
-                    "Resolved chat model %s via %s after considering provider precedence (requested %s)",
+                    "Resolved chat model %s via %s after considering candidate providers (requested %s)",
                     model_id,
                     self._provider_label(candidate_provider),
                     self._provider_label(provider),
@@ -13317,7 +13277,7 @@ except Exception as e:
         )
         details = "; ".join(unavailable_reasons)
         error_message = (
-            f"Tried providers for model '{model_id}' in precedence order: "
+            f"Tried providers for model '{model_id}' in candidate order: "
             f"{provider_list or 'none'}."
         )
         if details:

@@ -18,7 +18,7 @@ interface AvailableModelsContextValue {
   /** Readiness details for provider/model availability checks. */
   readiness: Pick<AvailableModelsResponse, 'models_loading' | 'copilot_refresh_in_progress' | 'provider_states'> | null;
   /** Metadata returned alongside models (default/current model, allowed list). */
-  meta: Pick<AvailableModelsResponse, 'default_model' | 'current_model' | 'discovered_model_identifiers' | 'allowed_models' | 'model_provider_precedence' | 'openapi_model_provider_precedence'> | null;
+  meta: Pick<AvailableModelsResponse, 'default_model' | 'current_model' | 'discovered_model_identifiers' | 'allowed_models'> | null;
   /** Trigger a (re)fetch. Safe to call multiple times; concurrent calls are coalesced. */
   refresh: () => void;
   /**
@@ -143,8 +143,6 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
         current_model: data.current_model,
         discovered_model_identifiers: data.discovered_model_identifiers ?? [],
         allowed_models: data.allowed_models,
-        model_provider_precedence: data.model_provider_precedence ?? null,
-        openapi_model_provider_precedence: data.openapi_model_provider_precedence ?? null,
       });
       lastSuccessfulFetchAtRef.current = Date.now();
     } catch (err) {

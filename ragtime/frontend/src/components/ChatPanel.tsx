@@ -6169,7 +6169,6 @@ export function ChatPanel({
     const selection = resolveConversationModelSelection(
       storedModel,
       availableModels,
-      modelsMeta?.model_provider_precedence ?? null,
     );
     if (!selection.modelId) {
       return defaultContextLimit;
@@ -6714,7 +6713,6 @@ export function ChatPanel({
       const selection = resolveConversationModelSelection(
         newModel,
         availableModels,
-        modelsMeta?.model_provider_precedence ?? null,
       );
       const requestedModelId = selection.modelId || newModel.trim();
       const requestedProvider = selection.explicitProvider || selection.inferredProvider;
@@ -6848,7 +6846,6 @@ export function ChatPanel({
     const selection = resolveConversationModelSelection(
       conversation.model || '',
       modelState.models,
-      modelState.meta?.model_provider_precedence ?? null,
     );
     if (!selection.modelId) {
       return null;
@@ -8202,7 +8199,6 @@ export function ChatPanel({
                     const selection = resolveConversationModelSelection(
                       activeConversation.model || '',
                       availableModels,
-                      modelsMeta?.model_provider_precedence ?? null,
                     );
                     return selection.matchedModel
                       ? toProviderScopedModelKey(selection.matchedModel.provider, selection.matchedModel.id)

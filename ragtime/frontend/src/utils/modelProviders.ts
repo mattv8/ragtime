@@ -153,8 +153,6 @@ export interface ResolvedModelSelection<T extends ProviderModelLike> {
   matchedModel?: T;
   explicitProvider: string | null;
   inferredProvider: string | null;
-  /** True when the matched model came from a different provider than the saved one (precedence fallback). */
-  fallbackFromProvider?: string | null;
 }
 
 export function parseScopedModelIdentifier(value: string | null | undefined): ParsedModelIdentifier {
@@ -184,14 +182,12 @@ export function inferProviderFromModelId(modelId: string | null | undefined): st
 export function resolveProviderModelSelection<T extends ProviderModelLike>(
   storedModel: string | null | undefined,
   availableModels: T[],
-  precedence?: ModelPrecedenceLike | null,
 ): ResolvedModelSelection<T> {
   const parsed = parseScopedModelIdentifier(storedModel);
   const modelId = parsed.modelId.trim();
   const explicitProvider = normalizeProviderAlias(parsed.provider) || null;
 
   let matchedModel: T | undefined;
-  let fallbackFromProvider: string | null = null;
   let inferredProvider: string | null = null;
   if (modelId) {
     if (explicitProvider) {
@@ -202,21 +198,7 @@ export function resolveProviderModelSelection<T extends ProviderModelLike>(
     if (!matchedModel) {
       const candidates = availableModels.filter((model) => model.id === modelId);
       if (candidates.length) {
-        const preferredProvider = resolveProviderForModel(
-          precedence,
-          modelId,
-          candidates[0]?.group ?? null,
-          candidates.map((model) => model.provider || ''),
-        );
-        if (preferredProvider) {
-          matchedModel = candidates.find((model) => normalizeProviderAlias(model.provider) === preferredProvider);
-        }
-        if (!matchedModel) {
-          matchedModel = candidates[0];
-        }
-        if (matchedModel && explicitProvider && !providersEquivalent(matchedModel.provider, explicitProvider)) {
-          fallbackFromProvider = explicitProvider;
-        }
+        matchedModel = candidates[0];
       }
     }
     if (!matchedModel && modelId.includes('/')) {
@@ -235,7 +217,6 @@ export function resolveProviderModelSelection<T extends ProviderModelLike>(
     matchedModel,
     explicitProvider,
     inferredProvider,
-    fallbackFromProvider,
   };
 }
 
@@ -292,52 +273,4 @@ export function buildProviderBaseUrl(
   port?: number | null,
 ): string {
   return `${protocol || connection.defaultProtocol}://${host || connection.defaultHost}:${port || connection.defaultPort}`;
-}
-
-export interface ModelPrecedenceLike {
-  providers?: string[] | null;
-  model_overrides?: Record<string, string> | null;
-  family_overrides?: Record<string, string> | null;
-}
-
-/**
- * Pick the preferred provider for a model from a candidate set, using:
- *   1. Exact model_id override
- *   2. Family override
- *   3. providers[] ordering
- *   4. null (caller decides default)
- */
-export function resolveProviderForModel(
-  precedence: ModelPrecedenceLike | null | undefined,
-  modelId: string,
-  family: string | null | undefined,
-  candidateProviders: Iterable<string>,
-): string | null {
-  const candidates = new Set<string>();
-  for (const p of candidateProviders) {
-    const norm = normalizeProviderAlias(p);
-    if (norm) candidates.add(norm);
-  }
-  if (!candidates.size) return null;
-  if (!precedence) return null;
-
-  const id = (modelId || '').trim();
-  const fam = (family || '').trim();
-  const overrides = precedence.model_overrides || {};
-  const familyOverrides = precedence.family_overrides || {};
-  const order = precedence.providers || [];
-
-  if (id && overrides[id]) {
-    const c = normalizeProviderAlias(overrides[id]);
-    if (c && candidates.has(c)) return c;
-  }
-  if (fam && familyOverrides[fam]) {
-    const c = normalizeProviderAlias(familyOverrides[fam]);
-    if (c && candidates.has(c)) return c;
-  }
-  for (const p of order) {
-    const c = normalizeProviderAlias(p);
-    if (c && candidates.has(c)) return c;
-  }
-  return null;
 }

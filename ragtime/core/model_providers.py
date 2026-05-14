@@ -289,59 +289,6 @@ def providers_equivalent(selected: str | None, actual: str | None) -> bool:
     return {selected_norm, actual_norm} <= {"openai", "github_copilot"}
 
 
-def resolve_provider_for_model(
-    precedence: Any,
-    *,
-    model_id: str,
-    family: str | None,
-    candidate_providers: list[str] | tuple[str, ...] | set[str],
-) -> str | None:
-    """Pick the preferred provider for a model from the candidate set.
-
-    Resolution order:
-      1. Exact ``model_overrides[model_id]`` if that provider is a candidate.
-      2. ``family_overrides[family]`` if that provider is a candidate.
-      3. First provider in ``providers`` ordering that is a candidate.
-      4. None (caller decides default).
-    """
-    candidates = {normalize_provider_name(p) for p in candidate_providers if p}
-    if not candidates:
-        return None
-
-    if precedence is None:
-        return None
-
-    if hasattr(precedence, "model_dump"):
-        data = precedence.model_dump()
-    elif isinstance(precedence, dict):
-        data = precedence
-    else:
-        return None
-
-    model_overrides = data.get("model_overrides") or {}
-    family_overrides = data.get("family_overrides") or {}
-    providers_order = data.get("providers") or []
-
-    normalized_id = (model_id or "").strip()
-    if normalized_id and normalized_id in model_overrides:
-        candidate = normalize_provider_name(model_overrides[normalized_id])
-        if candidate in candidates:
-            return candidate
-
-    normalized_family = (family or "").strip()
-    if normalized_family and normalized_family in family_overrides:
-        candidate = normalize_provider_name(family_overrides[normalized_family])
-        if candidate in candidates:
-            return candidate
-
-    for provider in providers_order:
-        candidate = normalize_provider_name(provider)
-        if candidate in candidates:
-            return candidate
-
-    return None
-
-
 def get_provider(provider: str | None) -> ModelProvider | None:
     """Return provider metadata for a canonical or aliased provider name."""
     return MODEL_PROVIDERS.get(normalize_provider_name(provider))
