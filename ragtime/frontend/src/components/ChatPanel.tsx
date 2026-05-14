@@ -4894,6 +4894,17 @@ export function ChatPanel({
     const grouped = new Map<number, BranchRenderGroup[]>();
 
     for (const point of branchPoints) {
+      // Skip branches whose anchor message no longer exists in the current
+      // (possibly optimistically truncated) message list. Without this,
+      // getConversationBranchAnchorIndex's Math.min clamp would pin a
+      // deeper-message branch group onto the last visible user message
+      // during the brief window between edit/replay/delete creating the
+      // new branch and the streamed assistant reply re-extending the
+      // conversation. See the "Oddly the anchor from messages further on
+      // attaches to the user message until streaming begins" report.
+      const anchorTarget = point.branch_point_index;
+      if (anchorTarget >= messageCount) continue;
+
       const groupsForPoint = new Map<number, ConversationBranchSummary[]>();
       for (const branch of point.branches) {
         const anchorIndex = getConversationBranchAnchorIndex(
@@ -7423,6 +7434,23 @@ export function ChatPanel({
       workspaceId,
     );
 
+    // The backend always clears active_branch_id when a new branch is
+    // created (the conversation moves to the live path). Mirror that in
+    // local state immediately so the branch nav lineage walk does not
+    // still resolve to the prior branch and show e.g. "5/11" when the
+    // user is actually on the new "11/11" branch. This applies uniformly
+    // to edit, replay, and delete flows.
+    setActiveConversation((prev) => (
+      prev && prev.id === conversationId && prev.active_branch_id !== null
+        ? { ...prev, active_branch_id: null }
+        : prev
+    ));
+    setConversations((prev) => prev.map((c) => (
+      c.id === conversationId && c.active_branch_id !== null
+        ? { ...c, active_branch_id: null }
+        : c
+    )));
+
     if (createdBranch.parent_branch_id) {
       const anchorIndex = getConversationBranchAnchorIndex(
         branchPointIndex,
@@ -7620,9 +7648,14 @@ export function ChatPanel({
         content: rawContent as any,
         timestamp: new Date().toISOString(),
       };
+      // The backend cleared active_branch_id when it created the new branch
+      // (we are now on the live path). Mirror that here so the branch nav
+      // lineage walk does not still resolve to the prior branch and show
+      // e.g. "5/11" when the user is actually on the new "11/11" branch.
       const optimisticConv: Conversation = {
         ...activeConversation,
         messages: [...messagesToKeep, optimisticMsg],
+        active_branch_id: null,
       };
       setActiveConversation(optimisticConv);
       setConversations(prev => prev.map(c => c.id === optimisticConv.id ? optimisticConv : c));
@@ -7797,9 +7830,14 @@ export function ChatPanel({
         timestamp: new Date().toISOString()
       };
 
+      // The backend cleared active_branch_id when it created the new branch
+      // (we are now on the live path). Mirror that here so the branch nav
+      // lineage walk does not still resolve to the prior branch and show
+      // e.g. "5/11" when the user is actually on the new "11/11" branch.
       const optimisticConv: Conversation = {
         ...activeConversation,
-        messages: [...messagesToKeep, optimisticMsg]
+        messages: [...messagesToKeep, optimisticMsg],
+        active_branch_id: null,
       };
 
       setActiveConversation(optimisticConv);
@@ -8864,11 +8902,17 @@ export function ChatPanel({
                             let matchIdx = lineageBranchId
                               ? allOptions.findIndex(o => o.id === lineageBranchId)
                               : -1;
-                            if (matchIdx < 0 && hasLivePathOption) {
-                              matchIdx = allOptions.findIndex(o => o.id === livePathOptionId);
-                            }
-                            if (matchIdx < 0 && !activeBranchId && storedLivePathBranch) {
-                              matchIdx = allOptions.findIndex(o => o.id === storedLivePathBranch.id);
+                            if (matchIdx < 0 && !activeBranchId) {
+                              if (hasLivePathOption) {
+                                matchIdx = allOptions.findIndex(o => o.id === livePathOptionId);
+                              } else if (storedLivePathBranch) {
+                                // active_branch_id=null is the authoritative live path.
+                                // A saved branch_kind=null row can be an older stashed
+                                // Current path, so after edit/replay branch creation the
+                                // live UI should snap to the newest option instead of
+                                // reselecting that older stored row.
+                                matchIdx = allOptions.length - 1;
+                              }
                             }
                             if (matchIdx < 0 && branchSelections[group.selectionKey]) {
                               matchIdx = allOptions.findIndex(o => o.id === branchSelections[group.selectionKey]);
