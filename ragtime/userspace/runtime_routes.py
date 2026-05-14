@@ -183,8 +183,6 @@ def _preview_host_unreachable_response(
         "point <code>USERSPACE_PREVIEW_BASE_DOMAIN</code> at a domain whose "
         "wildcard already proxies to Ragtime. Verify with:<br>"
         f"<code>curl -I https://{preview_host}/__ragtime/preview-host-probe</code>"
-        "<br>A correctly routed host returns <code>HTTP 204</code> with "
-        "<code>x-ragtime-preview-probe: ok</code>.</p></div>"
         "</body></html>"
     )
     return HTMLResponse(
