@@ -2647,40 +2647,9 @@ class IndexerRepository:
                     if branch_point_index < 0 or branch_point_index > len(messages):
                         return None
 
-                    # Absorb existing sibling branches anchored AFTER this
-                    # new branch point that share the same parent lineage.
-                    # Their preserved content describes the same pre-delete
-                    # tail, so consolidating them into this new branch keeps
-                    # restoration coherent when the user has stacked
-                    # consecutive deletes on adjacent turn messages. Without
-                    # this, each delete leaves an orphan branch whose own
-                    # `messages[:K]` base no longer contains the context it
-                    # was created from, causing duplicate rows and split
-                    # X/N nav handles on restore.
-                    sibling_branches = await tx.conversationbranch.find_many(
-                        where={
-                            "conversationId": conversation_id,
-                            "branchPointIndex": {"gt": branch_point_index},
-                            "parentBranchId": parent_branch_id,
-                        },
-                        order=[{"branchPointIndex": "asc"}],
-                    )
-
                     preserved: list[dict[str, Any]] = list(
                         messages[branch_point_index:]
                     )
-                    absorbed_ids: list[str] = []
-                    for sib in sibling_branches:
-                        sib_preserved = _normalize_message_payloads(
-                            sib.preservedMessages
-                        )
-                        preserved.extend(sib_preserved)
-                        absorbed_ids.append(sib.id)
-
-                    if absorbed_ids:
-                        await tx.conversationbranch.delete_many(
-                            where={"id": {"in": absorbed_ids}}
-                        )
 
                     branch_id = str(uuid.uuid4())
                     await tx.conversationbranch.create(
@@ -2773,18 +2742,42 @@ class IndexerRepository:
                             user_id = (
                                 str(prisma_conv.userId) if prisma_conv.userId else None
                             )
-                            await tx.conversationbranch.create(
-                                data={
-                                    "id": str(uuid.uuid4()),
-                                    "conversationId": conversation_id,
-                                    "parentBranchId": getattr(
-                                        target_branch, "parentBranchId", None
-                                    ),
-                                    "branchPointIndex": branch_point,
-                                    "preservedMessages": Json(current_downstream),
-                                    "createdByUserId": user_id,
-                                }
+                            parent_branch_id = getattr(
+                                target_branch, "parentBranchId", None
                             )
+                            live_branch = await tx.conversationbranch.find_first(
+                                where={
+                                    "conversationId": conversation_id,
+                                    "parentBranchId": parent_branch_id,
+                                    "branchPointIndex": branch_point,
+                                    "branchKind": None,
+                                },
+                                order=[{"createdAt": "desc"}],
+                            )
+                            if live_branch:
+                                await tx.conversationbranch.update(
+                                    where={"id": live_branch.id},
+                                    data={
+                                        "preservedMessages": Json(
+                                            current_downstream
+                                        ),
+                                        "updatedAt": datetime.utcnow(),
+                                    },
+                                )
+                            else:
+                                await tx.conversationbranch.create(
+                                    data={
+                                        "id": str(uuid.uuid4()),
+                                        "conversationId": conversation_id,
+                                        "parentBranchId": parent_branch_id,
+                                        "branchPointIndex": branch_point,
+                                        "branchKind": None,
+                                        "preservedMessages": Json(
+                                            current_downstream
+                                        ),
+                                        "createdByUserId": user_id,
+                                    }
+                                )
 
                     base_messages = messages[:branch_point]
                     target_preserved: List[dict[str, Any]] = (
@@ -2884,6 +2877,46 @@ class IndexerRepository:
                                 "updatedAt": datetime.utcnow(),
                             },
                         )
+
+                    if getattr(active_branch, "branchKind", None) is None:
+                        return self._prisma_conversation_to_model(prisma_conv)
+
+                    live_branches = await tx.conversationbranch.find_many(
+                        where={
+                            "conversationId": conversation_id,
+                            "parentBranchId": getattr(
+                                active_branch, "parentBranchId", None
+                            ),
+                            "branchPointIndex": branch_point,
+                            "branchKind": None,
+                        },
+                        order=[{"createdAt": "desc"}],
+                    )
+                    live_branch = next(
+                        (
+                            branch
+                            for branch in live_branches
+                            if branch.id != active_branch_id
+                        ),
+                        None,
+                    )
+                    if live_branch:
+                        target_preserved = _normalize_message_payloads(
+                            live_branch.preservedMessages
+                        )
+                        new_messages = messages[:branch_point] + target_preserved
+                        total_tokens = _estimate_conversation_tokens(new_messages)
+                        updated = await tx.conversation.update(
+                            where={"id": conversation_id},
+                            data={
+                                "messages": Json(new_messages),
+                                "totalTokens": total_tokens,
+                                "activeBranchId": live_branch.id,
+                                "updatedAt": datetime.utcnow(),
+                            },
+                            include={"user": True},
+                        )
+                        return self._prisma_conversation_to_model(updated)
 
                     truncated = messages[:branch_point]
                     total_tokens = _estimate_conversation_tokens(truncated)

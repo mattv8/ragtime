@@ -7184,7 +7184,11 @@ export function ChatPanel({
         } else {
           const allBranches = refreshedPoints.flatMap(bp => bp.branches);
           const targetBranch = allBranches.find(b => b.id === branchId);
-          onBranchSwitch(branchId, targetBranch?.associated_snapshot_id ?? null);
+          if (targetBranch && !targetBranch.branch_kind) {
+            onBranchSwitch(null, null);
+          } else {
+            onBranchSwitch(branchId, targetBranch?.associated_snapshot_id ?? null);
+          }
         }
       }
     } catch (err) {
@@ -8458,9 +8462,10 @@ export function ChatPanel({
                         <span className="chat-branch-nav-stack">
                           {branchGroups.map((group) => {
                             const livePathOptionId = `__current__:${group.sourceBranchPointIndex}`;
-                            const hasLivePathOption = true;
+                            const storedLivePathBranch = group.branches.find(b => !b.branch_kind) ?? null;
+                            const hasLivePathOption = !storedLivePathBranch;
                             const allOptions = [
-                              ...group.branches.map(b => ({ id: b.id, label: b.created_by_username || 'Branch' })),
+                              ...group.branches.map(b => ({ id: b.id, label: b.branch_kind ? (b.created_by_username || 'Branch') : 'Current' })),
                               ...(hasLivePathOption ? [{ id: livePathOptionId, label: 'Current' }] : []),
                             ];
                             const newestBranch = group.branches.length > 0 ? group.branches[group.branches.length - 1] : null;
@@ -8486,6 +8491,9 @@ export function ChatPanel({
                               : -1;
                             if (matchIdx < 0 && hasLivePathOption) {
                               matchIdx = allOptions.findIndex(o => o.id === livePathOptionId);
+                            }
+                            if (matchIdx < 0 && !activeBranchId && storedLivePathBranch) {
+                              matchIdx = allOptions.findIndex(o => o.id === storedLivePathBranch.id);
                             }
                             if (matchIdx < 0 && branchSelections[group.selectionKey]) {
                               matchIdx = allOptions.findIndex(o => o.id === branchSelections[group.selectionKey]);
