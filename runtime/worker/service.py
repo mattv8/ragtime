@@ -15,7 +15,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -55,6 +55,7 @@ from runtime.worker.sandbox import (
     spawn_sandboxed,
 )
 
+from ..core.utils import get_positive_int_env, utc_now
 from ..core.shared import (
     RUNTIME_BOOTSTRAP_CONFIG_PATH,
     RUNTIME_BOOTSTRAP_STAMP_PATH,
@@ -241,15 +242,15 @@ class WorkerService:
         self._startup_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_startup_locks: dict[str, asyncio.Lock] = {}
         self._startup_semaphore = asyncio.Semaphore(
-            self._get_positive_int_env("RUNTIME_STARTUP_CONCURRENCY", 2)
+            get_positive_int_env("RUNTIME_STARTUP_CONCURRENCY", 2)
         )
         self._mount_materialization_semaphore = asyncio.Semaphore(
-            self._get_positive_int_env(
+            get_positive_int_env(
                 "RUNTIME_MOUNT_MATERIALIZATION_CONCURRENCY",
                 2,
             )
         )
-        self._playwright_pool_size = self._get_positive_int_env(
+        self._playwright_pool_size = get_positive_int_env(
             "RUNTIME_PLAYWRIGHT_BROKER_POOL_SIZE",
             _PLAYWRIGHT_BROKER_POOL_SIZE,
         )
@@ -263,19 +264,6 @@ class WorkerService:
         for index in range(self._playwright_pool_size):
             self._playwright_available_slots.put_nowait(index)
         self._playwright_request_counter = 0
-
-    @staticmethod
-    def _utc_now() -> datetime:
-        return datetime.now(timezone.utc)
-
-    @staticmethod
-    def _get_positive_int_env(name: str, default_value: int) -> int:
-        raw_value = os.getenv(name, str(default_value)).strip()
-        try:
-            parsed = int(raw_value)
-            return parsed if parsed > 0 else default_value
-        except Exception:
-            return default_value
 
     def _normalize_file_path(
         self,
@@ -898,7 +886,7 @@ class WorkerService:
         return lock
 
     def _begin_operation(self, session: WorkerSession, phase: str) -> None:
-        now = self._utc_now()
+        now = utc_now()
         session.runtime_operation_id = os.urandom(12).hex()
         session.runtime_operation_phase = phase
         session.runtime_operation_started_at = now
@@ -906,7 +894,7 @@ class WorkerService:
 
     def _set_operation_phase(self, session: WorkerSession, phase: str) -> None:
         session.runtime_operation_phase = phase
-        session.runtime_operation_updated_at = self._utc_now()
+        session.runtime_operation_updated_at = utc_now()
 
     def _runtime_file_response(
         self,
@@ -1321,7 +1309,7 @@ class WorkerService:
                 )
 
         stamp_path.parent.mkdir(parents=True, exist_ok=True)
-        stamp_value = config_digest or self._utc_now().isoformat()
+        stamp_value = config_digest or utc_now().isoformat()
         await asyncio.to_thread(
             stamp_path.write_text,
             stamp_value,
@@ -1890,8 +1878,8 @@ class WorkerService:
                     f"{session.last_error} Retrying workspace bootstrap on next start."
                 )
             session.runtime_operation_phase = "failed"
-            session.runtime_operation_updated_at = self._utc_now()
-        session.updated_at = self._utc_now()
+            session.runtime_operation_updated_at = utc_now()
+        session.updated_at = utc_now()
 
     async def _mark_operation_failed(
         self,
@@ -1908,7 +1896,7 @@ class WorkerService:
             session.devserver_running = False
             session.last_error = error
             self._set_operation_phase(session, "failed")
-            session.updated_at = self._utc_now()
+            session.updated_at = utc_now()
 
     async def _run_startup_pipeline(
         self,
@@ -1929,7 +1917,7 @@ class WorkerService:
                     if not session or session.runtime_operation_id != operation_id:
                         return
                     self._set_operation_phase(session, "provisioning")
-                    session.updated_at = self._utc_now()
+                    session.updated_at = utc_now()
 
                 try:
                     await asyncio.to_thread(ensure_sandbox_ready, session.sandbox_spec)
@@ -1957,7 +1945,7 @@ class WorkerService:
                         return
                     session.mount_targets_to_clear = set()
                     self._set_operation_phase(session, "bootstrapping")
-                    session.updated_at = self._utc_now()
+                    session.updated_at = utc_now()
 
                 bootstrap_error = await self._run_workspace_bootstrap_if_needed(session)
                 if bootstrap_error:
@@ -1973,7 +1961,7 @@ class WorkerService:
                     if not session or session.runtime_operation_id != operation_id:
                         return
                     self._set_operation_phase(session, "deps_install")
-                    session.updated_at = self._utc_now()
+                    session.updated_at = utc_now()
 
                 deps_error = await self._ensure_entrypoint_dependencies(session)
                 if deps_error:
@@ -1996,7 +1984,7 @@ class WorkerService:
                         session.devserver_running = False
                         session.last_error = object_storage_error
                         self._set_operation_phase(session, "failed")
-                        session.updated_at = self._utc_now()
+                        session.updated_at = utc_now()
                         return
 
                 # --- Part 1: prepare for spawn (inside lock) ---
@@ -2011,7 +1999,7 @@ class WorkerService:
                     if not session or session.runtime_operation_id != operation_id:
                         return
                     self._set_operation_phase(session, "launching")
-                    session.updated_at = self._utc_now()
+                    session.updated_at = utc_now()
                     port = session.devserver_port or self._pick_free_port()
                     resolution = self._resolve_devserver_command(
                         session.workspace_files_path, port
@@ -2027,7 +2015,7 @@ class WorkerService:
                         session.devserver_running = False
                         session.last_error = error
                         self._set_operation_phase(session, "failed")
-                        session.updated_at = self._utc_now()
+                        session.updated_at = utc_now()
                         return
 
                     session.devserver_port = resolution.port or port
@@ -2042,7 +2030,7 @@ class WorkerService:
                             f"Failed to initialize devserver log file: {exc}"
                         )
                         self._set_operation_phase(session, "failed")
-                        session.updated_at = self._utc_now()
+                        session.updated_at = utc_now()
                         return
 
                     self._devserver_log_paths[session.id] = log_path
@@ -2112,12 +2100,12 @@ class WorkerService:
                             _spawn_error or "Failed to launch dev server"
                         )
                         self._set_operation_phase(session, "failed")
-                        session.updated_at = self._utc_now()
+                        session.updated_at = utc_now()
                         return
                     self._devserver_processes[session.id] = _process
                     session.devserver_command = _spawn_command
                     self._set_operation_phase(session, "probing")
-                    session.updated_at = self._utc_now()
+                    session.updated_at = utc_now()
                     target_port = session.devserver_port
 
                 ready = await self._wait_devserver_ready(target_port or 0)
@@ -2139,7 +2127,7 @@ class WorkerService:
                                 "Ensure the runtime-entrypoint command serves HTTP on PORT."
                             )
                         self._set_operation_phase(session, "failed")
-                        session.updated_at = self._utc_now()
+                        session.updated_at = utc_now()
                     return
 
                 async with self._lock:
@@ -2151,7 +2139,7 @@ class WorkerService:
                     session.last_error = None
                     self._bootstrap_retry_flags.pop(session.id, None)
                     self._set_operation_phase(session, "ready")
-                    session.updated_at = self._utc_now()
+                    session.updated_at = utc_now()
 
     def _schedule_startup_locked(self, session: WorkerSession) -> None:
         existing = self._startup_tasks.get(session.id)
@@ -2161,7 +2149,7 @@ class WorkerService:
         session.state = "starting"
         session.devserver_running = False
         session.last_error = None
-        session.updated_at = self._utc_now()
+        session.updated_at = utc_now()
         op_id = session.runtime_operation_id or ""
         task = asyncio.create_task(self._run_startup_pipeline(session.id, op_id))
         self._startup_tasks[session.id] = task
@@ -2200,7 +2188,7 @@ class WorkerService:
                     | self._mount_target_paths(session.workspace_mounts)
                 )
                 self._schedule_startup_locked(session)
-                session.updated_at = self._utc_now()
+                session.updated_at = utc_now()
                 return self._session_response(session)
 
             session_id = f"wkr-{request.workspace_id[:8]}-{os.urandom(4).hex()}"
@@ -2236,7 +2224,7 @@ class WorkerService:
                 runtime_operation_phase=None,
                 runtime_operation_started_at=None,
                 runtime_operation_updated_at=None,
-                updated_at=self._utc_now(),
+                updated_at=utc_now(),
             )
             self._sessions[session_id] = session
             self._provider_to_session[request.provider_session_id] = session_id
@@ -2249,7 +2237,7 @@ class WorkerService:
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
             await self._sync_devserver_state_locked(session)
-            session.updated_at = self._utc_now()
+            session.updated_at = utc_now()
             return self._session_response(session)
 
     async def stop_session(self, worker_session_id: str) -> WorkerSessionResponse:
@@ -2267,7 +2255,7 @@ class WorkerService:
             session.devserver_running = False
             session.last_error = None
             self._set_operation_phase(session, "stopped")
-            session.updated_at = self._utc_now()
+            session.updated_at = utc_now()
             return self._session_response(session)
 
     async def restart_session(
@@ -2300,7 +2288,7 @@ class WorkerService:
             # Pick a fresh port to avoid TIME_WAIT "address already in use"
             session.devserver_port = self._pick_free_port()
             self._schedule_startup_locked(session)
-            session.updated_at = self._utc_now()
+            session.updated_at = utc_now()
             return self._session_response(session)
 
     async def refresh_mounts(
@@ -2341,7 +2329,7 @@ class WorkerService:
                 mounts_by_target[str(mount.get("target_path") or "").strip()] = mount
             session.workspace_mounts = list(mounts_by_target.values())
             session.mount_targets_to_clear |= target_paths
-            session.updated_at = self._utc_now()
+            session.updated_at = utc_now()
 
         workspace_lock = self._workspace_startup_lock(workspace_id)
         async with workspace_lock:
@@ -2359,7 +2347,7 @@ class WorkerService:
                     current = self._sessions.get(worker_session_id)
                     if current:
                         current.last_error = error_message
-                        current.updated_at = self._utc_now()
+                        current.updated_at = utc_now()
                 raise HTTPException(status_code=500, detail=error_message) from exc
 
             async with self._lock:
@@ -2370,7 +2358,7 @@ class WorkerService:
                     )
                 current.mount_targets_to_clear.difference_update(target_paths)
                 current.last_error = None
-                current.updated_at = self._utc_now()
+                current.updated_at = utc_now()
                 return self._session_response(current)
 
     async def read_file(
@@ -2390,7 +2378,7 @@ class WorkerService:
             if not target.exists() or not target.is_file():
                 return self._runtime_file_response(session, rel_path, "", False)
             content = await asyncio.to_thread(target.read_text, encoding="utf-8")
-            session.updated_at = self._utc_now()
+            session.updated_at = utc_now()
             return self._runtime_file_response(session, rel_path, content, True)
 
     async def write_file(
@@ -2410,7 +2398,7 @@ class WorkerService:
             target = session.workspace_files_path / rel_path
             target.parent.mkdir(parents=True, exist_ok=True)
             await asyncio.to_thread(target.write_text, content, encoding="utf-8")
-            session.updated_at = self._utc_now()
+            session.updated_at = utc_now()
             return self._runtime_file_response(session, rel_path, content, True)
 
     async def delete_file(
@@ -2427,7 +2415,7 @@ class WorkerService:
             target = session.workspace_files_path / rel_path
             if target.exists() and target.is_file():
                 target.unlink()
-            session.updated_at = self._utc_now()
+            session.updated_at = utc_now()
             return {"success": True, "path": rel_path}
 
     _EXEC_MAX_OUTPUT_BYTES = 60_000
@@ -2810,7 +2798,7 @@ class WorkerService:
                     raise HTTPException(
                         status_code=409, detail="Worker session not active"
                     )
-                session.updated_at = self._utc_now()
+                session.updated_at = utc_now()
 
         probe = await self._invoke_playwright_broker(
             {
@@ -2986,7 +2974,7 @@ class WorkerService:
                     raise HTTPException(
                         status_code=409, detail="Worker session not active"
                     )
-                session.updated_at = self._utc_now()
+                session.updated_at = utc_now()
 
         headers = {
             "Accept": "application/pdf,application/octet-stream;q=0.8,*/*;q=0.2",

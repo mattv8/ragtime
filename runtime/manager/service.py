@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from contextlib import suppress
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 from fastapi import HTTPException
 
+from runtime.core.utils import get_positive_int_env, utc_now
 from runtime.manager.models import (
     ManagerSession,
     RuntimeContentProbeRequest,
@@ -41,38 +41,25 @@ class SessionManager:
         self._workspace_index: dict[str, str] = {}
         self._lock = asyncio.Lock()
         self._worker_service: Any = get_worker_service()
-        self._max_sessions = self._get_positive_int_env(
+        self._max_sessions = get_positive_int_env(
             "RUNTIME_MAX_SESSIONS",
             12,
         )
-        self._lease_ttl_seconds = self._get_positive_int_env(
+        self._lease_ttl_seconds = get_positive_int_env(
             "RUNTIME_LEASE_TTL_SECONDS",
             3600,
         )
-        self._reconcile_interval_seconds = self._get_positive_int_env(
+        self._reconcile_interval_seconds = get_positive_int_env(
             "RUNTIME_RECONCILE_INTERVAL_SECONDS",
             15,
         )
-        self._worker_call_timeout = self._get_positive_int_env(
+        self._worker_call_timeout = get_positive_int_env(
             "RUNTIME_WORKER_CALL_TIMEOUT_SECONDS",
             10,
         )
         self._workspace_start_locks: dict[str, asyncio.Lock] = {}
         self._provider_locks: dict[str, asyncio.Lock] = {}
         self._reconcile_task: asyncio.Task[None] | None = None
-
-    @staticmethod
-    def _utc_now() -> datetime:
-        return datetime.now(timezone.utc)
-
-    @staticmethod
-    def _get_positive_int_env(name: str, default_value: int) -> int:
-        raw_value = os.getenv(name, str(default_value)).strip()
-        try:
-            parsed = int(raw_value)
-            return parsed if parsed > 0 else default_value
-        except Exception:
-            return default_value
 
     async def startup(self) -> None:
         if self._reconcile_task is None:
@@ -154,7 +141,7 @@ class SessionManager:
         worker_data: WorkerSessionResponse,
         pty_access_token: str,
     ) -> ManagerSession:
-        now = self._utc_now()
+        now = utc_now()
         return ManagerSession(
             provider_session_id=provider_session_id,
             workspace_id=workspace_id,
@@ -199,7 +186,7 @@ class SessionManager:
                 if not session or session.worker_session_id != worker_session_id:
                     return None
                 self._apply_worker_state(session, worker_data)
-                now = self._utc_now()
+                now = utc_now()
                 session.updated_at = now
                 session.lease_expires_at = now + timedelta(
                     seconds=self._lease_ttl_seconds
@@ -262,7 +249,7 @@ class SessionManager:
     async def _reconcile_loop(self) -> None:
         while True:
             await asyncio.sleep(self._reconcile_interval_seconds)
-            now = self._utc_now()
+            now = utc_now()
             await self._cleanup_expired_sessions(now)
             async with self._lock:
                 active_session_ids = [
@@ -290,7 +277,7 @@ class SessionManager:
         self,
         request: StartSessionRequest,
     ) -> RuntimeSessionResponse:
-        await self._cleanup_expired_sessions(self._utc_now())
+        await self._cleanup_expired_sessions(utc_now())
 
         async with self._workspace_start_lock(request.workspace_id):
             existing_provider_id: str | None = None
@@ -328,7 +315,7 @@ class SessionManager:
                             status_code=404,
                             detail="Runtime session not found",
                         )
-                    now = self._utc_now()
+                    now = utc_now()
                     session.leased_by_user_id = request.leased_by_user_id
                     session.lease_expires_at = now + timedelta(
                         seconds=self._lease_ttl_seconds
@@ -372,7 +359,7 @@ class SessionManager:
                     self._workspace_index[session.workspace_id] = (
                         session.provider_session_id
                     )
-                now = self._utc_now()
+                now = utc_now()
                 session.leased_by_user_id = request.leased_by_user_id
                 session.lease_expires_at = now + timedelta(
                     seconds=self._lease_ttl_seconds
@@ -390,7 +377,7 @@ class SessionManager:
             return response
 
     async def get_session(self, provider_session_id: str) -> RuntimeSessionResponse:
-        await self._cleanup_expired_sessions(self._utc_now())
+        await self._cleanup_expired_sessions(utc_now())
         async with self._lock:
             if provider_session_id not in self._sessions:
                 raise HTTPException(status_code=404, detail="Runtime session not found")
@@ -422,7 +409,7 @@ class SessionManager:
                 response_session.state = "stopped"
                 response_session.devserver_running = False
                 response_session.last_error = "Worker stop timed out"
-            response_session.updated_at = self._utc_now()
+            response_session.updated_at = utc_now()
 
             async with self._lock:
                 session = self._sessions.get(provider_session_id)
@@ -463,7 +450,7 @@ class SessionManager:
                         status_code=404, detail="Runtime session not found"
                     )
                 self._apply_worker_state(session, worker_data)
-                now = self._utc_now()
+                now = utc_now()
                 session.updated_at = now
                 session.lease_expires_at = now + timedelta(
                     seconds=self._lease_ttl_seconds
@@ -498,7 +485,7 @@ class SessionManager:
                         status_code=404, detail="Runtime session not found"
                     )
                 self._apply_worker_state(session, worker_data)
-                now = self._utc_now()
+                now = utc_now()
                 session.updated_at = now
                 session.lease_expires_at = now + timedelta(
                     seconds=self._lease_ttl_seconds
