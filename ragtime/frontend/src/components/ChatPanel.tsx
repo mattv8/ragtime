@@ -327,6 +327,21 @@ type StreamingRenderEvent =
 
 type ChatEventChannel = 'analysis' | 'commentary' | 'final';
 
+type ReasoningEventLike = {
+  type?: string;
+  channel?: unknown;
+  content?: unknown;
+  reasoning?: unknown;
+  reasoning_text?: unknown;
+  reasoning_content?: unknown;
+  reasoning_summary?: unknown;
+  reasoning_summary_text?: unknown;
+  reasoning_details?: unknown;
+  thinking?: unknown;
+  duration_seconds?: unknown;
+  durationSeconds?: unknown;
+};
+
 function getChatEventChannel(event: { type?: string; channel?: unknown }): ChatEventChannel {
   if (event.channel === 'analysis' || event.channel === 'commentary' || event.channel === 'final') {
     return event.channel;
@@ -334,6 +349,59 @@ function getChatEventChannel(event: { type?: string; channel?: unknown }): ChatE
   if (event.type === 'reasoning') return 'analysis';
   if (event.type === 'tool') return 'commentary';
   return 'final';
+}
+
+function reasoningTextFromValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(reasoningTextFromValue).join('');
+  if (!value || typeof value !== 'object') return '';
+
+  const record = value as Record<string, unknown>;
+  return firstStringValue(
+    record.cot_summary,
+    record.text,
+    record.delta,
+    record.summary_text,
+    record.thinking,
+    record.reasoning,
+    record.reasoning_text,
+    record.reasoning_content,
+    record.reasoning_summary,
+    record.reasoning_summary_text,
+    record.summary,
+    record.content,
+  );
+}
+
+function firstStringValue(...values: unknown[]): string {
+  for (const value of values) {
+    const text = reasoningTextFromValue(value);
+    if (text.length > 0) return text;
+  }
+  return '';
+}
+
+function getReasoningEventContent(event: ReasoningEventLike): string {
+  if (getChatEventChannel(event) !== 'analysis' && event.type !== 'reasoning') return '';
+  return firstStringValue(
+    event.content,
+    event.reasoning,
+    event.reasoning_text,
+    event.reasoning_content,
+    event.reasoning_summary,
+    event.reasoning_summary_text,
+    event.reasoning_details,
+    event.thinking,
+  );
+}
+
+function getReasoningEventDurationSeconds(event: ReasoningEventLike): number | undefined {
+  const value = typeof event.durationSeconds === 'number'
+    ? event.durationSeconds
+    : typeof event.duration_seconds === 'number'
+      ? event.duration_seconds
+      : undefined;
+  return Number.isFinite(value) ? value : undefined;
 }
 
 function isVisualizationToolName(toolName?: string): boolean {
@@ -6325,8 +6393,13 @@ export function ChatPanel({
       if (ev.type === 'content') {
         textContent += ev.content;
         events.push({ type: 'content', content: ev.content });
-      } else if (ev.type === 'reasoning') {
-        events.push({ type: 'reasoning', content: ev.content });
+      } else if (getReasoningEventContent(ev)) {
+        events.push({
+          type: 'reasoning',
+          channel: 'analysis',
+          content: getReasoningEventContent(ev),
+          duration_seconds: getReasoningEventDurationSeconds(ev),
+        });
       } else if (ev.type === 'tool') {
         events.push({
           type: 'tool',
@@ -6431,19 +6504,21 @@ export function ChatPanel({
 
     for (const ev of streamingEvents) {
       const channel = getChatEventChannel(ev);
-      if (channel === 'analysis' && ev.type === 'reasoning') {
+      const reasoningContent = getReasoningEventContent(ev);
+      if (channel === 'analysis' && reasoningContent) {
         // Flush any pending content first — content breaks reasoning adjacency
         flushContent();
         // Accumulate reasoning (adjacent reasoning events merge)
-        currentReasoning += ev.content;
+        currentReasoning += reasoningContent;
         const lastPart = currentReasoningParts[currentReasoningParts.length - 1];
         if (lastPart && lastPart.type === 'text') {
-          lastPart.text = (lastPart.text || '') + ev.content;
+          lastPart.text = (lastPart.text || '') + reasoningContent;
         } else {
-          currentReasoningParts.push({ type: 'text', text: ev.content });
+          currentReasoningParts.push({ type: 'text', text: reasoningContent });
         }
-        if (typeof ev.durationSeconds === 'number') {
-          currentReasoningDurationSeconds = ev.durationSeconds;
+        const durationSeconds = getReasoningEventDurationSeconds(ev);
+        if (typeof durationSeconds === 'number') {
+          currentReasoningDurationSeconds = durationSeconds;
         }
       } else if (channel === 'final' && ev.type === 'content') {
         // Flush any pending reasoning — it's now complete since content follows
@@ -7410,12 +7485,13 @@ export function ChatPanel({
                 return events.map((ev: any) => {
                     const channel = getChatEventChannel(ev);
                     if (channel === 'final' && ev.type === 'content') return { type: 'content' as const, channel: 'final' as const, content: ev.content || '' };
-                    if (ev.type === 'reasoning') {
+                    const reasoningContent = getReasoningEventContent(ev);
+                    if (channel === 'analysis' && reasoningContent) {
                       return {
                         type: 'reasoning' as const,
                         channel: 'analysis' as const,
-                        content: ev.content || '',
-                        durationSeconds: typeof ev.duration_seconds === 'number' ? ev.duration_seconds : undefined,
+                        content: reasoningContent,
+                        durationSeconds: getReasoningEventDurationSeconds(ev),
                       };
                     }
                     return normalizeStreamingToolEvent(ev);
@@ -9388,17 +9464,19 @@ export function ChatPanel({
                                   for (let evIdx = 0; evIdx < msg.events.length; evIdx++) {
                                     const ev = msg.events[evIdx];
                                     const channel = getChatEventChannel(ev);
-                                    if (channel === 'analysis' && ev.type === 'reasoning') {
+                                    const reasoningContent = getReasoningEventContent(ev);
+                                    if (channel === 'analysis' && reasoningContent) {
                                       // Accumulate adjacent reasoning
-                                      pendingReasoning += (pendingReasoning ? '\n\n' : '') + ev.content;
-                                      if (typeof ev.duration_seconds === 'number') {
-                                        pendingReasoningDurationSeconds = ev.duration_seconds;
+                                      pendingReasoning += (pendingReasoning ? '\n\n' : '') + reasoningContent;
+                                      const durationSeconds = getReasoningEventDurationSeconds(ev);
+                                      if (typeof durationSeconds === 'number') {
+                                        pendingReasoningDurationSeconds = durationSeconds;
                                       }
                                       const lastPart = pendingReasoningParts[pendingReasoningParts.length - 1];
                                       if (lastPart && lastPart.type === 'text') {
-                                        lastPart.text = (lastPart.text || '') + (lastPart.text ? '\n\n' : '') + ev.content;
+                                        lastPart.text = (lastPart.text || '') + (lastPart.text ? '\n\n' : '') + reasoningContent;
                                       } else {
-                                        pendingReasoningParts.push({ type: 'text', text: ev.content });
+                                        pendingReasoningParts.push({ type: 'text', text: reasoningContent });
                                       }
                                     } else if (channel === 'commentary' && ev.type === 'tool' && pendingReasoning && !isVisualizationToolName(ev.tool)) {
                                       pendingReasoningParts.push({

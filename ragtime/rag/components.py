@@ -1118,9 +1118,18 @@ class _CopilotChatOpenAI(ChatOpenAI):
         choices = chunk.get("choices") or []
         if choices:
             delta = choices[0].get("delta") or {}
-            reasoning_text = delta.get("reasoning_text")
-            if reasoning_text:
-                result.message.additional_kwargs["reasoning_text"] = reasoning_text
+            for reasoning_key in (
+                "reasoning_text",
+                "reasoning",
+                "reasoning_content",
+                "reasoning_summary",
+                "reasoning_summary_text",
+                "reasoning_details",
+                "thinking",
+            ):
+                reasoning_value = delta.get(reasoning_key)
+                if reasoning_value:
+                    result.message.additional_kwargs[reasoning_key] = reasoning_value
 
         return result
 
@@ -2932,8 +2941,14 @@ class RAGComponents:
 
             if await supports_reasoning_effort(model):
                 openrouter_kwargs["reasoning_effort"] = "high"
+            openrouter_extra_body: dict[str, Any] = {}
+            if await supports_reasoning(model):
+                openrouter_extra_body["include_reasoning"] = True
+                openrouter_extra_body["reasoning"] = {"enabled": True}
             if await supports_thinking_budget(model):
-                openrouter_kwargs["extra_body"] = {"thinking_budget": 16384}
+                openrouter_extra_body["thinking_budget"] = 16384
+            if openrouter_extra_body:
+                openrouter_kwargs["extra_body"] = openrouter_extra_body
 
             return _CopilotChatOpenAI(**openrouter_kwargs)
 
@@ -7071,9 +7086,11 @@ except Exception as e:
         reasoning_block_types = {
             "thinking",
             "reasoning",
+            "reasoning.text",
             "reasoning_content",
             "reasoning_summary",
             "reasoning_text",
+            "reasoning.summary",
             "reasoning_summary_text",
             "redacted_thinking",
         }
@@ -7209,6 +7226,7 @@ except Exception as e:
                 or additional_kwargs.get("reasoning_text")
                 or additional_kwargs.get("reasoning_summary")
                 or additional_kwargs.get("reasoning_summary_text")
+                or additional_kwargs.get("reasoning_details")
                 or additional_kwargs.get("thinking")
             )
             if reasoning_text:

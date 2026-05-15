@@ -1278,11 +1278,40 @@ class BackgroundTaskService:
                             # Reasoning/thinking content from LLM
                             reasoning_text = event.get("content", "")
                             if reasoning_text:
+                                reasoning_was_inactive = reasoning_block_started_at is None
                                 reasoning_block_started_at = append_reasoning_event(
                                     events,
                                     reasoning_text,
                                     reasoning_block_started_at,
                                 )
+
+                                # Publish reasoning while it is still streaming. Without
+                                # this, the UI only sees the thinking block after a later
+                                # final/commentary/tool update flushes task state.
+                                now = datetime.utcnow()
+                                if (
+                                    reasoning_was_inactive
+                                    or (now - last_update).total_seconds() > 0.4
+                                ):
+                                    result = (
+                                        await repository.update_chat_task_streaming_state(
+                                            task_id,
+                                            full_response,
+                                            events,
+                                            tool_calls,
+                                            hit_max_iterations,
+                                            current_version,
+                                        )
+                                    )
+                                    if result and result.streaming_state:
+                                        current_version = result.streaming_state.version
+                                        await task_event_bus.publish(
+                                            task_id, result.streaming_state.dict()
+                                        )
+                                        await _notify_conversation_progress(
+                                            conversation_id, task_id
+                                        )
+                                    last_update = now
                 finally:
                     await _close_stream_handles(_stream_iter, _stream, task_id)
 

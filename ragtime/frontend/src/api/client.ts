@@ -1881,10 +1881,12 @@ export const api = {
               }
             }
             // Check for reasoning/thinking tokens
-            else if (delta?.reasoning) {
+            else if (delta?.reasoning || delta?.reasoning_text || delta?.reasoning_content || delta?.reasoning_summary || delta?.reasoning_summary_text || delta?.reasoning_details || delta?.thinking) {
+              const reasoning = delta.reasoning || delta.reasoning_text || delta.reasoning_content || delta.reasoning_summary || delta.reasoning_summary_text || delta.reasoning_details || delta.thinking;
               yield {
                 type: 'reasoning',
-                reasoning: delta.reasoning
+                content: reasoning,
+                reasoning,
               };
             }
             // Check for content tokens
