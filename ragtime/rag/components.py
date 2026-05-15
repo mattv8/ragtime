@@ -7529,7 +7529,7 @@ except Exception as e:
         elif mode == "chat":
             prompt += (
                 "When creating chat charts or datatables from SQL query results, pass the successful query result rows as visualization `source_data` and use the listed id as `data_connection.component_id`. "
-                "Persist the exact successful bounded query payload as `data_connection.request`. For charts, also persist `data_connection.result_mapping` so initial render and live refresh transform rows into the same chart shape.\n"
+                "Persist the exact successful query payload as `data_connection.request`. For charts, also persist `data_connection.result_mapping` so initial render and live refresh transform rows into the same chart shape.\n"
             )
 
         return prompt + "\n" + "\n".join(lines)
@@ -7659,13 +7659,13 @@ except Exception as e:
             "- Query/search tools should provide source data and request payloads for live-wired dashboard components.\n"
             "- Do not assume static snapshots are acceptable persistence for dashboard artifacts.\n"
             "- Use the exact successful query payload as the baseline connection request for live wiring.\n"
-            "- Keep explicit result limits in persisted live_data_connections request payloads so previews and live refreshes stay bounded."
+            "- Do not add result limits to persisted live_data_connections request payloads when dashboard calculations need the complete dataset."
         )
 
         chat_query_suffix = (
             "\n\nChat mode override:\n"
-            "- Use this tool for current-response analysis and keep explicit result limits in query payloads.\n"
-            "- When a result is rendered with create_chart or create_datatable, pass the returned columns/rows as visualization source_data, then copy this tool's active ToolConfig ID and exact successful bounded input payload into the visualization data_connection so the chat UI can refresh the same bounded live data."
+            "- Use this tool for current-response analysis and follow the tool's own query-safety requirements.\n"
+            "- When a result is rendered with create_chart or create_datatable, pass the returned columns/rows as visualization source_data, then copy this tool's active ToolConfig ID and exact successful input payload into the visualization data_connection so the chat UI can refresh the same live data."
         )
 
         overridden_tools: list[Any] = []

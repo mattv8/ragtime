@@ -41,7 +41,7 @@ CHAT_DATATABLE_DESCRIPTION_SUFFIX = """
 Chat mode override:
 - For SQL-backed tables, pass the raw successful query result as `source_data` with `columns` and `rows`.
 - Do not manually transform rows into the final DataTables `data` array; this tool formats the table payload.
-- Include `data_connection` with component_kind=tool_config, component_id, and the exact bounded request payload used to fetch the rows.
+- Include `data_connection` with component_kind=tool_config, component_id, and the exact request payload used to fetch the rows.
 - Validate that `source_data.columns` matches each row before calling this tool.
 """
 

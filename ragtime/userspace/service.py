@@ -20092,6 +20092,7 @@ class UserSpaceService:
             error_log_prefix=error_log_prefix,
             sidecar_workspace_id=workspace.id,
             require_result_limit=False,
+            enforce_result_limit=False,
         )
 
         # Mint server-side execution proof for live-data contract verification.
@@ -20111,7 +20112,8 @@ class UserSpaceService:
         request: ExecuteComponentRequest,
         *,
         error_log_prefix: str = "Chat component execution failed",
-        require_result_limit: bool = True,
+        require_result_limit: bool = False,
+        enforce_result_limit: bool = False,
     ) -> ExecuteComponentResponse:
         """Execute a live data component against an explicit ToolConfig allow-list.
 
@@ -20126,6 +20128,7 @@ class UserSpaceService:
             error_log_prefix=error_log_prefix,
             sidecar_workspace_id=None,
             require_result_limit=require_result_limit,
+            enforce_result_limit=enforce_result_limit,
         )
         return response
 
@@ -20138,6 +20141,7 @@ class UserSpaceService:
         error_log_prefix: str,
         sidecar_workspace_id: str | None = None,
         require_result_limit: bool = True,
+        enforce_result_limit: bool = True,
     ) -> tuple[ExecuteComponentResponse, str]:
         tool_type, conn_config, tool_config = (
             await self._resolve_component_execution_config_for_tool_ids(
@@ -20172,6 +20176,7 @@ class UserSpaceService:
                 tool_config,
                 query,
                 require_result_limit=require_result_limit,
+                enforce_result_limit=enforce_result_limit,
             )
         except Exception as exc:
             logger.error(
@@ -20308,6 +20313,7 @@ class UserSpaceService:
         query: str,
         *,
         require_result_limit: bool,
+        enforce_result_limit: bool,
     ) -> str:
         """Route a query to the correct database executor."""
         host = conn_config.get("host", "")
@@ -20328,6 +20334,7 @@ class UserSpaceService:
                 timeout,
                 max_results,
                 require_result_limit=require_result_limit,
+                enforce_result_limit=enforce_result_limit,
             )
         elif tool_type == "mssql":
             from ragtime.tools.mssql import execute_mssql_query_async
@@ -20344,6 +20351,7 @@ class UserSpaceService:
                 max_results=max_results,
                 allow_write=False,
                 require_result_limit=require_result_limit,
+                enforce_result_limit=enforce_result_limit,
                 description="Preview component execution",
                 ssh_tunnel_config=ssh_tunnel_config,
                 include_metadata=True,
@@ -20363,6 +20371,7 @@ class UserSpaceService:
                 max_results=max_results,
                 allow_write=False,
                 require_result_limit=require_result_limit,
+                enforce_result_limit=enforce_result_limit,
                 description="Preview component execution",
                 ssh_tunnel_config=ssh_tunnel_config,
                 include_metadata=True,
@@ -20392,6 +20401,7 @@ class UserSpaceService:
                 max_results=max_results,
                 allow_write=False,
                 require_result_limit=require_result_limit,
+                enforce_result_limit=enforce_result_limit,
                 description="Preview component execution",
                 ssh_tunnel_config=ssh_tunnel_config,
                 include_metadata=True,
@@ -20409,6 +20419,7 @@ class UserSpaceService:
         max_results: int,
         *,
         require_result_limit: bool,
+        enforce_result_limit: bool = True,
     ) -> str:
         """Execute a read-only postgres query using shared SQL utility helpers."""
         is_safe, reason = validate_sql_query(
@@ -20420,7 +20431,8 @@ class UserSpaceService:
         if not is_safe:
             return f"Error: {reason}"
 
-        query = enforce_max_results(query, max_results, db_type=DB_TYPE_POSTGRES)
+        if enforce_result_limit:
+            query = enforce_max_results(query, max_results, db_type=DB_TYPE_POSTGRES)
 
         host = conn_config.get("host", "")
         port = conn_config.get("port", 5432)

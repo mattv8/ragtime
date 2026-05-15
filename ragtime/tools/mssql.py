@@ -110,6 +110,7 @@ async def execute_mssql_query_async(
     max_results: int = 100,
     allow_write: bool = False,
     require_result_limit: bool = True,
+    enforce_result_limit: bool = True,
     description: str = "",
     ssh_tunnel_config: dict[str, Any] | None = None,
     include_metadata: bool = True,
@@ -130,6 +131,7 @@ async def execute_mssql_query_async(
         max_results: Maximum rows to return.
         allow_write: Whether to allow write operations.
         require_result_limit: Whether TOP/FETCH is required for SELECT.
+        enforce_result_limit: Whether existing TOP/FETCH clauses are capped to max_results.
         description: Brief description for logging purposes.
         ssh_tunnel_config: Optional SSH tunnel configuration dict.
 
@@ -151,8 +153,9 @@ async def execute_mssql_query_async(
         logger.warning(error_msg)
         return f"Error: {error_msg}"
 
-    # Enforce max results
-    query = enforce_max_results(query, max_results, db_type=DB_TYPE_MSSQL)
+    # Enforce max results when this executor is used as an ordinary query tool.
+    if enforce_result_limit:
+        query = enforce_max_results(query, max_results, db_type=DB_TYPE_MSSQL)
 
     def run_query() -> str:
         """Execute query in thread pool."""

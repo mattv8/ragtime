@@ -533,7 +533,7 @@ UI_VISUALIZATION_CHAT_PROMPT = """
 
 1. **NEVER use markdown tables** - Always use create_datatable instead
 2. **Use raw query results as source data** - For SQL-backed chat visualizations, pass the successful query result as `source_data` with `columns` and `rows`; do not manually build chart `labels`/`datasets` or DataTables `data`
-3. **Persist live refresh metadata** - When a chart/table is based on an active SQL query tool, include `data_connection` with `component_kind=tool_config`, the exact active ToolConfig ID as `component_id`, and the exact successful bounded query payload as `request`
+3. **Persist live refresh metadata** - When a chart/table is based on an active SQL query tool, include `data_connection` with `component_kind=tool_config`, the exact active ToolConfig ID as `component_id`, and the exact successful query payload as `request`
 4. **Map chart rows deterministically** - For charts sourced from row data, include `data_connection.result_mapping` with a label field and dataset field mappings so initial render and refresh rebuild the same chart without guessing
 5. **Visualize proactively** - Don't wait to be asked; render charts and tables automatically
 """
@@ -579,7 +579,7 @@ USERSPACE_SHARED_LIVE_DATA_GUARDRAILS = """
 
 - **NEVER embed hardcoded, mock, sample, or static data arrays in entrypoint source files** (including `dashboard/main.ts`, `app.py`, `main.py`, `server.js`, or whatever the runtime entrypoint declares). The system detects hardcoded data patterns in all source file types and flags violations when the workspace has selected tools.
 - For TypeScript dashboard modules, the system additionally performs AST analysis to verify structural `context.components[componentId].execute()` binding.
-- Keep explicit result limits in live query payloads so initial renders, previews, and refreshes stay bounded.
+- Do not add result limits to live query payloads when downstream calculations need the complete dataset.
 - When workspace tools are available, treat live tool responses as the dashboard source of truth. Do not route dashboard datasets through local SQLite as a substitute for live wiring.
 - Use SQLite only for out-of-scope local persistence (for example: UI preferences, drafts, local cache, or non-live operational state).
 - If live wiring is blocked by missing context, persist a scaffold with `execute()` call sites and state the blocker. Do NOT substitute mock data.

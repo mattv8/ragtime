@@ -121,6 +121,7 @@ async def execute_influxdb_query_async(
     max_results: int = 100,
     allow_write: bool = False,
     require_result_limit: bool = True,
+    enforce_result_limit: bool = True,
     description: str = "",
     ssh_tunnel_config: dict[str, Any] | None = None,
     include_metadata: bool = True,
@@ -144,7 +145,8 @@ async def execute_influxdb_query_async(
         logger.warning(error_msg)
         return f"Error: {error_msg}"
 
-    query = enforce_max_results(query, max_results, db_type=DB_TYPE_INFLUXDB)
+    if enforce_result_limit:
+        query = enforce_max_results(query, max_results, db_type=DB_TYPE_INFLUXDB)
 
     def run_query() -> str:
         """Execute query in thread pool."""

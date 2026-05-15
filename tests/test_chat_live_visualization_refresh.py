@@ -5,6 +5,8 @@ import json
 import sys
 import types
 import unittest
+from datetime import datetime, timezone
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -25,12 +27,32 @@ from ragtime.indexer.live_visualizations import (
 )
 from ragtime.tools.chart import CreateLiveChartInput, create_chart
 from ragtime.tools.datatable import CreateLiveDataTableInput, create_datatable
-from ragtime.userspace.models import ExecuteComponentResponse
+from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse
+from ragtime.userspace.models import UserSpaceWorkspace
 from ragtime.userspace.service import UserSpaceService
 
 if inserted_fake_rag_prompts:
     sys.modules.pop("ragtime.rag", None)
     sys.modules.pop("ragtime.rag.prompts", None)
+
+
+class _CaptureComponentExecutionService(UserSpaceService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.component_execution_calls: list[dict[str, object]] = []
+
+    async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.component_execution_calls.append(dict(kwargs))
+        return (
+            ExecuteComponentResponse(
+                component_id=str(kwargs.get("component_id") or "tool-1"),
+                columns=[],
+                rows=[],
+                row_count=0,
+                error="captured",
+            ),
+            "select * from accounts",
+        )
 
 
 class ChatLiveVisualizationRefreshTests(unittest.TestCase):
@@ -244,10 +266,74 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
                 30,
                 100,
                 require_result_limit=False,
+                enforce_result_limit=False,
             )
         )
 
         self.assertEqual(result, "Error: No connection configured")
+
+    def test_postgres_live_component_execution_skips_limit_enforcement(self) -> None:
+        with patch(
+            "ragtime.userspace.service.enforce_max_results",
+            side_effect=AssertionError("live component queries should not be capped"),
+        ) as enforce_mock:
+            result = asyncio.run(
+                UserSpaceService()._execute_postgres_query(
+                    {},
+                    "select name from accounts limit 100000",
+                    30,
+                    100,
+                    require_result_limit=False,
+                    enforce_result_limit=False,
+                )
+            )
+
+        self.assertEqual(result, "Error: No connection configured")
+        enforce_mock.assert_not_called()
+
+    def test_workspace_component_execution_defaults_to_unbounded_live_data(self) -> None:
+        service = _CaptureComponentExecutionService()
+        now = datetime.now(timezone.utc)
+        workspace = UserSpaceWorkspace(
+            id="workspace-1",
+            name="Workspace",
+            owner_user_id="user-1",
+            selected_tool_ids=["tool-1"],
+            created_at=now,
+            updated_at=now,
+        )
+
+        asyncio.run(
+            service._execute_component_for_workspace(
+                workspace,
+                ExecuteComponentRequest(
+                    component_id="tool-1",
+                    request={"query": "select * from accounts"},
+                ),
+                error_log_prefix="test",
+            )
+        )
+
+        call = service.component_execution_calls[0]
+        self.assertIs(call["require_result_limit"], False)
+        self.assertIs(call["enforce_result_limit"], False)
+
+    def test_chat_live_component_execution_defaults_to_unbounded_data(self) -> None:
+        service = _CaptureComponentExecutionService()
+
+        asyncio.run(
+            service.execute_component_for_selected_tools(
+                ["tool-1"],
+                ExecuteComponentRequest(
+                    component_id="tool-1",
+                    request={"query": "select * from accounts"},
+                ),
+            )
+        )
+
+        call = service.component_execution_calls[0]
+        self.assertIs(call["require_result_limit"], False)
+        self.assertIs(call["enforce_result_limit"], False)
 
     def test_postgres_csv_formatter_keeps_multiline_description_in_one_row(self) -> None:
         output = format_psql_csv_output(
