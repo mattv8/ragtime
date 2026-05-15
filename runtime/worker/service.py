@@ -1809,28 +1809,37 @@ class WorkerService:
                 except Exception:
                     pass
             return
-        if process.returncode is None:
-            # Kill the entire process group so that grandchild processes
-            # (e.g. esbuild spawned via sh -lc) are also terminated.
-            try:
-                pgid = os.getpgid(process.pid)
-                os.killpg(pgid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=3)
-            except Exception:
-                try:
-                    pgid = os.getpgid(process.pid)
-                    os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, OSError):
-                    process.kill()
-                await process.wait()
+        await self._terminate_devserver_process(process)
         if log_handle:
             try:
                 log_handle.close()
             except Exception:
                 pass
+
+    async def _terminate_devserver_process(
+        self,
+        process: asyncio.subprocess.Process,
+        *,
+        timeout: float = 3,
+    ) -> None:
+        if process.returncode is not None:
+            return
+        # Kill the entire process group so that grandchild processes
+        # (e.g. Node/esbuild spawned via sh -lc) are also terminated.
+        try:
+            pgid = os.getpgid(process.pid)
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except Exception:
+            try:
+                pgid = os.getpgid(process.pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                process.kill()
+            await process.wait()
 
     async def _sync_devserver_state_locked(self, session: WorkerSession) -> None:
         process = self._devserver_processes.get(session.id)
@@ -2053,62 +2062,88 @@ class WorkerService:
                 _process: asyncio.subprocess.Process | None = None
                 _spawn_error: str | None = None
                 try:
-                    _process = await spawn_sandboxed(
-                        _sandbox_spec,
-                        _spawn_command,
-                        cwd=_launch_cwd,
-                        env=_workspace_env,
-                        stdout=log_handle,
-                        stderr=asyncio.subprocess.STDOUT,
-                        start_new_session=True,
-                        ensure_ready=False,
-                    )
-                except FileNotFoundError:
                     try:
-                        log_handle.close()
-                    except Exception:
-                        pass
-                    _spawn_error = (
-                        "Dev server command not found: "
-                        f"{_spawn_command[0]}. Install the required runtime dependency or "
-                        "set .ragtime/runtime-entrypoint.json command to an available executable. "
-                        f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
-                    )
-                except Exception as exc:
-                    try:
-                        log_handle.close()
-                    except Exception:
-                        pass
-                    _spawn_error = f"Failed to launch dev server: {exc}"
-
-                # --- Part 3: commit spawn result (inside lock) ---
-                async with self._lock:
-                    session = self._sessions.get(session_id)
-                    if not session or session.runtime_operation_id != operation_id:
-                        # Session was invalidated while we were spawning.
-                        if _process is not None:
-                            try:
-                                _process.kill()
-                            except Exception:
-                                pass
-                        self._devserver_log_handles.pop(session_id, None)
-                        return
-                    if _spawn_error or _process is None:
-                        await self._terminate_object_storage_locked(session.id)
-                        self._devserver_log_handles.pop(session.id, None)
-                        session.state = "running"
-                        session.devserver_running = False
-                        session.last_error = (
-                            _spawn_error or "Failed to launch dev server"
+                        _process = await spawn_sandboxed(
+                            _sandbox_spec,
+                            _spawn_command,
+                            cwd=_launch_cwd,
+                            env=_workspace_env,
+                            stdout=log_handle,
+                            stderr=asyncio.subprocess.STDOUT,
+                            start_new_session=True,
+                            ensure_ready=False,
                         )
-                        self._set_operation_phase(session, "failed")
+                    except FileNotFoundError:
+                        try:
+                            log_handle.close()
+                        except Exception:
+                            pass
+                        _spawn_error = (
+                            "Dev server command not found: "
+                            f"{_spawn_command[0]}. Install the required runtime dependency or "
+                            "set .ragtime/runtime-entrypoint.json command to an available executable. "
+                            f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
+                        )
+                    except Exception as exc:
+                        try:
+                            log_handle.close()
+                        except Exception:
+                            pass
+                        _spawn_error = f"Failed to launch dev server: {exc}"
+
+                    # --- Part 3: commit spawn result (inside lock) ---
+                    async with self._lock:
+                        session = self._sessions.get(session_id)
+                        if not session or session.runtime_operation_id != operation_id:
+                            # Session was invalidated while we were spawning.
+                            if _process is not None:
+                                await self._terminate_devserver_process(_process)
+                            tracked_log_handle = self._devserver_log_handles.get(
+                                session_id
+                            )
+                            if tracked_log_handle is log_handle:
+                                self._devserver_log_handles.pop(session_id, None)
+                                try:
+                                    log_handle.close()
+                                except Exception:
+                                    pass
+                            return
+                        if _spawn_error or _process is None:
+                            await self._terminate_object_storage_locked(session.id)
+                            self._devserver_log_handles.pop(session.id, None)
+                            session.state = "running"
+                            session.devserver_running = False
+                            session.last_error = (
+                                _spawn_error or "Failed to launch dev server"
+                            )
+                            self._set_operation_phase(session, "failed")
+                            session.updated_at = utc_now()
+                            return
+                        self._devserver_processes[session.id] = _process
+                        session.devserver_command = _spawn_command
+                        self._set_operation_phase(session, "probing")
                         session.updated_at = utc_now()
-                        return
-                    self._devserver_processes[session.id] = _process
-                    session.devserver_command = _spawn_command
-                    self._set_operation_phase(session, "probing")
-                    session.updated_at = utc_now()
-                    target_port = session.devserver_port
+                        target_port = session.devserver_port
+                except asyncio.CancelledError:
+                    if _process is not None:
+                        await self._terminate_devserver_process(_process)
+                    async with self._lock:
+                        tracked_process = self._devserver_processes.get(session_id)
+                        if tracked_process is _process:
+                            self._devserver_processes.pop(session_id, None)
+                        tracked_log_handle = self._devserver_log_handles.get(
+                            session_id
+                        )
+                        if tracked_log_handle is log_handle:
+                            self._devserver_log_handles.pop(session_id, None)
+                        else:
+                            tracked_log_handle = None
+                    if tracked_log_handle:
+                        try:
+                            tracked_log_handle.close()
+                        except Exception:
+                            pass
+                    raise
 
                 ready = await self._wait_devserver_ready(target_port or 0)
                 if not ready:
