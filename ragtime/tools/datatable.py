@@ -15,9 +15,13 @@ import json
 from typing import Any
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ragtime.core.logging import get_logger
+from ragtime.userspace.live_data import (
+    normalize_live_data_connection,
+    validate_live_data_connection,
+)
 
 logger = get_logger(__name__)
 
@@ -35,67 +39,43 @@ User Space mode override:
 CHAT_DATATABLE_DESCRIPTION_SUFFIX = """
 
 Chat mode override:
-- For this response, include explicit row values in `data`.
-- Do not assume prior tool outputs are implicitly available; pass table rows directly.
+- For SQL-backed tables, pass the raw successful query result as `source_data` with `columns` and `rows`.
+- Do not manually transform rows into the final DataTables `data` array; this tool formats the table payload.
+- Include `data_connection` with component_kind=tool_config, component_id, and the exact bounded request payload used to fetch the rows.
+- Validate that `source_data.columns` matches each row before calling this tool.
 """
 
 
-def _normalize_data_connection(
-    data_connection: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """Normalize data connection metadata to strict component schema."""
-    if not isinstance(data_connection, dict):
-        return None
+def _normalize_source_table(source_data: Any) -> tuple[list[str], list[list[Any]]]:
+    if not isinstance(source_data, dict):
+        raise ValueError("source_data must be an object with columns and rows")
 
-    component_id = (
-        str(data_connection.get("component_id") or "").strip()
-        or str(data_connection.get("source_tool_config_id") or "").strip()
-    )
-    component_name = (
-        str(data_connection.get("component_name") or "").strip()
-        or str(data_connection.get("source_tool") or "").strip()
-        or None
-    )
-    component_type = (
-        str(data_connection.get("component_type") or "").strip()
-        or str(data_connection.get("source_tool_type") or "").strip()
-        or None
-    )
+    raw_columns = source_data.get("columns")
+    raw_rows = source_data.get("rows", source_data.get("data"))
+    if not isinstance(raw_columns, list) or not raw_columns:
+        raise ValueError("source_data.columns must be a non-empty array")
+    if not isinstance(raw_rows, list) or not raw_rows:
+        raise ValueError("source_data.rows must be a non-empty array")
 
-    request_payload = data_connection.get("request")
-    if request_payload is None:
-        request_payload = data_connection.get("source_input")
-    if request_payload is None:
-        request_payload = {}
-    if not isinstance(request_payload, dict):
-        request_payload = {"value": request_payload}
+    columns = [
+        str(column).strip() or f"Column {index + 1}"
+        for index, column in enumerate(raw_columns)
+    ]
+    rows: list[list[Any]] = []
+    for raw_row in raw_rows:
+        if isinstance(raw_row, dict):
+            rows.append([raw_row.get(column) for column in columns])
+        elif isinstance(raw_row, (list, tuple)):
+            values = list(raw_row)
+            if len(values) < len(columns):
+                values = values + [None] * (len(columns) - len(values))
+            rows.append(values[: len(columns)])
+        else:
+            raise ValueError("source_data.rows must contain objects or arrays")
 
-    refresh_raw = data_connection.get("refresh_interval_seconds")
-    refresh_interval_seconds: int | None = None
-    if refresh_raw is not None:
-        try:
-            refresh_interval_seconds = max(1, int(refresh_raw))
-        except (TypeError, ValueError):
-            refresh_interval_seconds = None
-
-    component_kind = (
-        str(data_connection.get("component_kind") or "").strip() or "tool_config"
-    )
-
-    normalized: dict[str, Any] = {
-        "component_kind": component_kind,
-        "request": request_payload,
-    }
-    if component_id:
-        normalized["component_id"] = component_id
-    if component_name:
-        normalized["component_name"] = component_name
-    if component_type:
-        normalized["component_type"] = component_type
-    if refresh_interval_seconds is not None:
-        normalized["refresh_interval_seconds"] = refresh_interval_seconds
-
-    return normalized
+    if not rows:
+        raise ValueError("source_data.rows must contain at least one valid row")
+    return columns, rows
 
 
 class CreateDataTableInput(BaseModel):
@@ -124,7 +104,7 @@ class CreateDataTableInput(BaseModel):
         default=None,
         description=(
             "Optional internal data-connection component reference metadata. "
-            "In User Space mode, this should reference admin-configured tool components (for example tool_config IDs)."
+            "When sourced from a query tool, reference the admin-configured tool_config ID and exact request payload for refresh."
         ),
     )
 
@@ -155,13 +135,55 @@ class CreateDataTableInput(BaseModel):
         return values
 
 
+class CreateLiveDataTableInput(BaseModel):
+    """Chat-mode datatable schema that formats raw query rows."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(description="Table title displayed above the table")
+    source_data: dict[str, Any] = Field(
+        description=(
+            "Raw successful query result payload with columns and rows. Use the query "
+            "tool's returned table data directly; do not pre-format it as DataTables config."
+        ),
+    )
+    description: str = Field(
+        default="",
+        description="Brief description of what this table shows",
+    )
+    raw_config: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional DataTables.js options to merge after table data is generated.",
+    )
+
+    data_connection: dict[str, Any] = Field(
+        ...,
+        description=(
+            "Required live data-connection metadata. Must include component_kind=tool_config, "
+            "component_id, and the exact successful query payload as request."
+        ),
+    )
+
+    @field_validator("data_connection", mode="before")
+    @classmethod
+    def require_live_data_connection(cls, value: Any) -> dict[str, Any]:
+        return validate_live_data_connection(value)
+
+    @field_validator("source_data", mode="before")
+    @classmethod
+    def require_valid_source_data(cls, value: Any) -> dict[str, Any]:
+        _normalize_source_table(value)
+        return value
+
+
 async def create_datatable(
     title: str,
-    columns: list[str],
-    data: list[list[Any]],
+    columns: list[str] | None = None,
+    data: list[list[Any]] | None = None,
     description: str = "",
     raw_config: dict[str, Any] | None = None,
     data_connection: dict[str, Any] | None = None,
+    source_data: dict[str, Any] | None = None,
 ) -> str:
     """
     Create an interactive data table specification.
@@ -179,6 +201,17 @@ async def create_datatable(
     Returns:
         JSON string containing the table specification for frontend rendering.
     """
+    if source_data is not None:
+        try:
+            columns, data = _normalize_source_table(source_data)
+        except ValueError as exc:
+            return f"Error: Cannot create datatable '{title}' - {exc}"
+
+    if not columns:
+        return f"Error: Cannot create datatable '{title}' - no columns provided."
+    if not data:
+        return f"Error: Cannot create datatable '{title}' - no row data provided."
+
     logger.info(f"Creating datatable: {title} ({len(data)} rows)")
 
     row_count = len(data)
@@ -205,7 +238,7 @@ async def create_datatable(
         "title": title,
         "config": table_config,
         "description": description,
-        "data_connection": _normalize_data_connection(data_connection),
+        "data_connection": normalize_live_data_connection(data_connection),
     }
 
     return json.dumps(output, indent=2)

@@ -3087,6 +3087,50 @@ export const api = {
     return handleResponse<import('@/types').RetryVisualizationResponse>(response);
   },
 
+  async refreshLiveVisualization(
+    conversationId: string,
+    request: import('@/types').RefreshLiveVisualizationRequest,
+    workspaceId?: string,
+  ): Promise<import('@/types').RefreshLiveVisualizationResponse> {
+    const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/visualizations/refresh-live-data${suffix}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<import('@/types').RefreshLiveVisualizationResponse>(response);
+  },
+
+  async listVisualizationBranches(
+    conversationId: string,
+    request: import('@/types').RefreshLiveVisualizationRequest,
+    workspaceId?: string,
+  ): Promise<import('@/types').ListVisualizationBranchesResponse> {
+    const params = new URLSearchParams({
+      tool_type: request.tool_type,
+      event_index: String(request.event_index),
+    });
+    if (request.message_id) params.set('message_id', request.message_id);
+    if (typeof request.message_index === 'number') params.set('message_index', String(request.message_index));
+    if (workspaceId) params.set('workspace_id', workspaceId);
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/visualizations/branches?${params.toString()}`);
+    return handleResponse<import('@/types').ListVisualizationBranchesResponse>(response);
+  },
+
+  async switchVisualizationBranch(
+    conversationId: string,
+    request: import('@/types').SwitchVisualizationBranchRequest,
+    workspaceId?: string,
+  ): Promise<import('@/types').SwitchVisualizationBranchResponse> {
+    const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/visualizations/branches/switch${suffix}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<import('@/types').SwitchVisualizationBranchResponse>(response);
+  },
+
   async listUserSpaceWorkspaceShareLinks(workspaceId: string): Promise<UserSpaceWorkspaceShareLinkListResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links`);
     return handleResponse<UserSpaceWorkspaceShareLinkListResponse>(response);

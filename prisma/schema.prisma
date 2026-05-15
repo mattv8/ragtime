@@ -831,6 +831,7 @@ model User {
   runtimeAuditEvents                   UserSpaceRuntimeAuditEvent[]          @relation("RuntimeAuditUser")
   userspaceChangedFileAcknowledgements UserSpaceChangedFileAcknowledgement[]
   conversationBranches                 ConversationBranch[]
+  conversationVisualizationBranches    ConversationVisualizationBranch[]
   usageAttempts                        UserUsageAttempt[]
   mcpRequestLogs                       McpRequestLog[]
   apiRequestLogs                       ApiRequestLog[]
@@ -1046,7 +1047,8 @@ model Conversation {
   shares              ConversationShare[]
 
   // Chat branches
-  branches ConversationBranch[]
+  branches              ConversationBranch[]
+  visualizationBranches ConversationVisualizationBranch[]
 
   // Per-message snapshot links for combined workspace + chat rollback
   messageSnapshotLinks ConversationMessageSnapshotLink[]
@@ -1119,6 +1121,35 @@ model ConversationBranch {
   @@index([conversationId, branchPointIndex, createdAt])
   @@index([conversationId, createdAt])
   @@map("conversation_branches")
+}
+
+/// Version history for a single chat visualization event.
+/// Stores chart/datatable outputs independently from whole-chat branching.
+model ConversationVisualizationBranch {
+  id String @id @default(uuid())
+
+  conversationId String       @map("conversation_id")
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  messageId    String? @map("message_id")
+  messageIndex Int     @map("message_index")
+  eventIndex   Int     @map("event_index")
+  toolName     String  @map("tool_name")
+
+  sequence Int
+  output   String @map("output")
+  active   Boolean @default(false)
+
+  createdByUserId String? @map("created_by_user_id")
+  createdByUser   User?   @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([conversationId, messageId, eventIndex, sequence], map: "conv_viz_branch_msg_id_idx")
+  @@index([conversationId, messageIndex, eventIndex, sequence], map: "conv_viz_branch_msg_index_idx")
+  @@index([conversationId, active], map: "conv_viz_branch_active_idx")
+  @@map("conversation_visualization_branches")
 }
 
 /// User Space workspace metadata and ACL source-of-truth

@@ -1244,8 +1244,6 @@ textarea.chat-header-title-input {
 .chat-message-user {
   justify-content: flex-end;
 }
-.chat-message-assistant {
-}
 .chat-message-content {
   background: var(--color-surface-hover);
   border-radius: var(--radius-lg);
@@ -1386,6 +1384,90 @@ textarea.chat-header-title-input {
   font-variant-numeric: tabular-nums;
   min-width: 24px;
   text-align: center;
+}
+
+/* Visualization version anchor — positioned below chart/datatable.
+   Styled to match .chat-message-actions / .chat-message-actions-left, but always visible. */
+.viz-version-anchor {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 0 8px 2px;
+  font-size: var(--text-xs);
+  flex-wrap: wrap;
+  width: 100%;
+  opacity: 1; /* always visible, unlike chat-message-actions which is hover-gated */
+}
+
+.viz-version-anchor .datatable-controls {
+  justify-content: flex-end;
+  margin-left: var(--space-xs);
+}
+
+/* All interactive controls inside the anchor share the same icon-button styling
+   as .chat-action-icon-btn — flat, muted, hover-highlighted. */
+.viz-version-anchor .live-data-refresh-btn,
+.viz-version-anchor .visualization-branch-btn,
+.viz-version-anchor .datatable-paging-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 3px 5px;
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.viz-version-anchor .live-data-refresh-btn:hover:not(:disabled),
+.viz-version-anchor .visualization-branch-btn:hover:not(:disabled),
+.viz-version-anchor .datatable-paging-btn:hover:not(:disabled) {
+  color: var(--color-text);
+  background: var(--color-surface-hover);
+}
+
+.viz-version-anchor .live-data-refresh-btn:disabled,
+.viz-version-anchor .visualization-branch-btn:disabled,
+.viz-version-anchor .datatable-paging-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Search input inside viz-version-anchor — compact, flush with the muted button style. */
+.viz-version-anchor .datatable-search-input {
+  min-width: 120px;
+  height: 22px;
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  outline: none;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.viz-version-anchor .datatable-search-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.viz-version-anchor .datatable-search-input:focus {
+  border-color: var(--color-primary);
+  background: var(--color-bg-secondary);
+}
+
+/* Error message within visualization version anchor */
+.viz-version-anchor .live-data-refresh-error {
+  margin: 0;
+  padding: 4px 8px;
+  font-size: var(--text-xs);
+  color: var(--color-error);
+  background: var(--color-error-bg, rgba(255, 68, 68, 0.1));
+  border-radius: var(--radius-sm);
 }
 
 .chat-branch-wrapper {
@@ -2482,6 +2564,7 @@ textarea.chat-header-title-input {
   line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 3;
+  line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -2927,36 +3010,33 @@ button.tool-call-userspace-write-path-link:hover {
   padding: var(--space-md);
   margin: var(--space-sm) 0;
   width: 100%;
-  max-width: 700px;
   min-height: 200px;
 }
 .chart-container canvas {
   display: block;
 }
-.chart-resize-btn {
-  position: absolute;
-  top: var(--space-sm);
-  right: var(--space-sm);
-  display: flex;
+.live-data-refresh-btn {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
+  gap: var(--space-xs);
+  min-height: 28px;
+  padding: 0 var(--space-sm);
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: 1;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--transition-fast), background var(--transition-fast);
-  z-index: 5;
+  transition: background var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
 }
-.chart-container:hover .chart-resize-btn {
-  opacity: 1;
-}
-.chart-resize-btn:hover {
+.live-data-refresh-btn:hover:not(:disabled) {
   background: var(--color-surface-hover);
   color: var(--color-text-primary);
+}
+.live-data-refresh-btn:disabled {
+  cursor: default;
+  opacity: 0.72;
 }
 .chart-description {
   font-size: var(--text-xs);
@@ -2967,22 +3047,131 @@ button.tool-call-userspace-write-path-link:hover {
 }
 /* DataTables container styling */
 .datatable-container {
+  position: relative;
   background: var(--color-bg-secondary);
   border-radius: var(--radius-md);
   padding: var(--space-sm) var(--space-md);
-  padding-right: calc(var(--space-md) + 24px);  /* Extra right padding for scroll breathing room */
-  margin: var(--space-sm) 0;
-  overflow-x: auto;
+  margin: var(--space-sm) 0 0 0;
+}
+.datatable-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+  flex-wrap: nowrap;
+}
+.datatable-header .viz-version-anchor {
+  width: auto;
+  flex: 0 1 auto;
+  margin-left: auto;
+  padding: 0;
+}
+.datatable-header .viz-version-anchor .datatable-controls {
+  margin-left: var(--space-xs);
+}
+.datatable-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.datatable-search-input {
+  min-width: 140px;
+  height: 28px;
+  box-sizing: border-box;
+}
+/* React-rendered pagination cluster used in both the datatable header and the viz-version-anchor. */
+.datatable-paging {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+.datatable-paging-info {
+  padding: 0 var(--space-xs);
+  white-space: nowrap;
+}
+/* Header instance: buttons get a visible bordered chip; anchor instance is restyled flat in .viz-version-anchor block. */
+.datatable-header .datatable-paging-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  padding: 3px 6px;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  min-width: 24px;
+  height: 24px;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.datatable-header .datatable-paging-btn:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  border-color: var(--color-primary);
+}
+.datatable-header .datatable-paging-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.visualization-branch-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+.visualization-branch-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  height: auto;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 1px 2px;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.visualization-branch-btn:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+.visualization-branch-btn:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+.visualization-branch-label {
+  white-space: nowrap;
+}
+.visualization-branch-label span {
+  color: var(--color-text-subtle);
+}
+.live-data-refresh-error {
+  margin: var(--space-sm) 0 0 0;
+  color: var(--color-danger);
+  font-size: var(--text-xs);
 }
 .datatable-table-wrapper {
+  overflow-x: auto;
   min-height: 50px;
   padding-right: 24px;  /* Right padding so table doesn't abruptly stop when scrolled */
 }
 .datatable-title {
-  margin: 0 0 var(--space-sm) 0;
+  margin: 0;
   font-size: var(--text-base);
   font-weight: 600;
   color: var(--color-text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .datatable-description {
   font-size: var(--text-xs);
@@ -2997,7 +3186,6 @@ button.tool-call-userspace-write-path-link:hover {
 .datatable-container .dt-container {
   color: var(--color-text-primary);
   font-size: var(--text-sm);
-  padding-right: 24px;  /* Right padding so table doesn't abruptly stop when scrolled */
 }
 /* Layout rows - flexbox for controls */
 .datatable-container .dt-layout-row {

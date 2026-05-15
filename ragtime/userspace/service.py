@@ -47,8 +47,8 @@ from ragtime.core.sql_utils import (
     DB_TYPE_POSTGRES,
     TABLE_METADATA_END,
     TABLE_METADATA_START,
-    add_table_metadata_to_psql_output,
     enforce_max_results,
+    format_psql_csv_output,
     format_query_result,
     validate_sql_query,
 )
@@ -20085,23 +20085,77 @@ class UserSpaceService:
         *,
         error_log_prefix: str,
     ) -> ExecuteComponentResponse:
+        response, query = await self._execute_component_for_selected_tool_ids(
+            selected_tool_ids=list(workspace.selected_tool_ids),
+            component_id=request.component_id,
+            request_payload=request.request,
+            error_log_prefix=error_log_prefix,
+            sidecar_workspace_id=workspace.id,
+            require_result_limit=False,
+        )
+
+        # Mint server-side execution proof for live-data contract verification.
+        if not response.error:
+            self.record_execution_proof(
+                workspace.id,
+                request.component_id,
+                response.row_count,
+                query,
+            )
+
+        return response
+
+    async def execute_component_for_selected_tools(
+        self,
+        selected_tool_ids: list[str] | set[str],
+        request: ExecuteComponentRequest,
+        *,
+        error_log_prefix: str = "Chat component execution failed",
+        require_result_limit: bool = True,
+    ) -> ExecuteComponentResponse:
+        """Execute a live data component against an explicit ToolConfig allow-list.
+
+        This is the chat-side reuse point for the same SQL component execution
+        path used by User Space previews. It intentionally does not read or
+        write User Space sidecars/proofs.
+        """
+        response, _query = await self._execute_component_for_selected_tool_ids(
+            selected_tool_ids=list(selected_tool_ids),
+            component_id=request.component_id,
+            request_payload=request.request,
+            error_log_prefix=error_log_prefix,
+            sidecar_workspace_id=None,
+            require_result_limit=require_result_limit,
+        )
+        return response
+
+    async def _execute_component_for_selected_tool_ids(
+        self,
+        *,
+        selected_tool_ids: list[str],
+        component_id: str,
+        request_payload: dict[str, Any] | str,
+        error_log_prefix: str,
+        sidecar_workspace_id: str | None = None,
+        require_result_limit: bool = True,
+    ) -> tuple[ExecuteComponentResponse, str]:
         tool_type, conn_config, tool_config = (
-            await self._resolve_component_execution_config(
-                workspace, request.component_id
+            await self._resolve_component_execution_config_for_tool_ids(
+                selected_tool_ids, component_id
             )
         )
 
-        query = self._extract_query_text(request.request)
-        if not query.strip():
+        query = self._extract_query_text(request_payload)
+        if not query.strip() and sidecar_workspace_id:
             # Fallback: look up default query from live_data_connections sidecar.
             # Try the resolved tool config ID first, then the original component_id.
             resolved_tool_id = str(getattr(tool_config, "id", "") or "").strip()
             sidecar_query = await self._lookup_sidecar_query(
-                workspace.id, resolved_tool_id
+                sidecar_workspace_id, resolved_tool_id
             )
-            if not sidecar_query and resolved_tool_id != request.component_id:
+            if not sidecar_query and resolved_tool_id != component_id:
                 sidecar_query = await self._lookup_sidecar_query(
-                    workspace.id, request.component_id
+                    sidecar_workspace_id, component_id
                 )
             if sidecar_query:
                 query = sidecar_query
@@ -20117,56 +20171,58 @@ class UserSpaceService:
                 conn_config,
                 tool_config,
                 query,
+                require_result_limit=require_result_limit,
             )
         except Exception as exc:
             logger.error(
                 "%s for %s: %s",
                 error_log_prefix,
-                request.component_id,
+                component_id,
                 exc,
             )
-            return ExecuteComponentResponse(
-                component_id=request.component_id,
-                rows=[],
-                columns=[],
-                row_count=0,
-                error=str(exc),
-            )
-        response = self._build_execute_component_response(
-            component_id=request.component_id,
-            raw_output=raw_output,
-        )
-
-        # Mint server-side execution proof for live-data contract verification.
-        if not response.error:
-            query = self._extract_query_text(request.request)
-            self.record_execution_proof(
-                workspace.id,
-                request.component_id,
-                response.row_count,
+            return (
+                ExecuteComponentResponse(
+                    component_id=component_id,
+                    rows=[],
+                    columns=[],
+                    row_count=0,
+                    error=str(exc),
+                ),
                 query,
             )
-
-        return response
+        response = self._build_execute_component_response(
+            component_id=component_id,
+            raw_output=raw_output,
+        )
+        return response, query
 
     async def _resolve_component_execution_config(
         self,
         workspace: UserSpaceWorkspace,
         component_id: str,
     ) -> tuple[str, dict[str, Any], Any]:
+        return await self._resolve_component_execution_config_for_tool_ids(
+            list(workspace.selected_tool_ids), component_id
+        )
+
+    async def _resolve_component_execution_config_for_tool_ids(
+        self,
+        selected_tool_ids: list[str],
+        component_id: str,
+    ) -> tuple[str, dict[str, Any], Any]:
         resolved_id = component_id
 
-        if resolved_id not in workspace.selected_tool_ids:
+        if resolved_id not in selected_tool_ids:
             # Fallback: try to match by tool name among selected tools.
-            matched_id = await self._resolve_component_id_by_name(
-                workspace, component_id
+            matched_id = await self._resolve_component_id_by_name_for_tool_ids(
+                selected_tool_ids, component_id
             )
             if matched_id is None:
                 raise HTTPException(
                     status_code=403,
                     detail=(
                         f"Component {component_id} is not selected "
-                        "for this workspace."
+                        "for this request."
                     ),
                 )
             resolved_id = matched_id
@@ -20192,15 +20248,15 @@ class UserSpaceService:
         return tool_type, conn_config, tool_config
 
     @staticmethod
-    async def _resolve_component_id_by_name(
-        workspace: UserSpaceWorkspace,
+    async def _resolve_component_id_by_name_for_tool_ids(
+        selected_tool_ids: list[str],
         name: str,
     ) -> str | None:
-        """Try to find a tool config by name among the workspace's selected tools."""
+        """Try to find a tool config by name among selected tool IDs."""
         name_lower = name.strip().lower().replace(" ", "_")
         if not name_lower:
             return None
-        for tool_id in workspace.selected_tool_ids:
+        for tool_id in selected_tool_ids:
             try:
                 tool_config = await repository.get_tool_config(tool_id)
             except Exception:
@@ -20211,6 +20267,16 @@ class UserSpaceService:
             if tool_name.lower().replace(" ", "_") == name_lower:
                 return tool_id
         return None
+
+    @staticmethod
+    async def _resolve_component_id_by_name(
+        workspace: UserSpaceWorkspace,
+        name: str,
+    ) -> str | None:
+        """Try to find a tool config by name among the workspace's selected tools."""
+        return await UserSpaceService._resolve_component_id_by_name_for_tool_ids(
+            list(workspace.selected_tool_ids), name
+        )
 
     def _build_execute_component_response(
         self,
@@ -20240,6 +20306,8 @@ class UserSpaceService:
         conn_config: dict,
         tool_config: Any,
         query: str,
+        *,
+        require_result_limit: bool,
     ) -> str:
         """Route a query to the correct database executor."""
         host = conn_config.get("host", "")
@@ -20255,7 +20323,11 @@ class UserSpaceService:
 
         if tool_type == "postgres":
             return await self._execute_postgres_query(
-                conn_config, query, timeout, max_results
+                conn_config,
+                query,
+                timeout,
+                max_results,
+                require_result_limit=require_result_limit,
             )
         elif tool_type == "mssql":
             from ragtime.tools.mssql import execute_mssql_query_async
@@ -20271,7 +20343,7 @@ class UserSpaceService:
                 timeout=timeout,
                 max_results=max_results,
                 allow_write=False,
-                require_result_limit=False,
+                require_result_limit=require_result_limit,
                 description="Preview component execution",
                 ssh_tunnel_config=ssh_tunnel_config,
                 include_metadata=True,
@@ -20290,7 +20362,7 @@ class UserSpaceService:
                 timeout=timeout,
                 max_results=max_results,
                 allow_write=False,
-                require_result_limit=False,
+                require_result_limit=require_result_limit,
                 description="Preview component execution",
                 ssh_tunnel_config=ssh_tunnel_config,
                 include_metadata=True,
@@ -20319,7 +20391,7 @@ class UserSpaceService:
                 timeout=timeout,
                 max_results=max_results,
                 allow_write=False,
-                require_result_limit=False,
+                require_result_limit=require_result_limit,
                 description="Preview component execution",
                 ssh_tunnel_config=ssh_tunnel_config,
                 include_metadata=True,
@@ -20335,13 +20407,15 @@ class UserSpaceService:
         query: str,
         timeout: int,
         max_results: int,
+        *,
+        require_result_limit: bool,
     ) -> str:
         """Execute a read-only postgres query using shared SQL utility helpers."""
         is_safe, reason = validate_sql_query(
             query,
             enable_write=False,
             db_type=DB_TYPE_POSTGRES,
-            require_result_limit=False,
+            require_result_limit=require_result_limit,
         )
         if not is_safe:
             return f"Error: {reason}"
@@ -20426,6 +20500,7 @@ class UserSpaceService:
         if host:
             cmd = [
                 "psql",
+                "--csv",
                 "-h",
                 host,
                 "-p",
@@ -20447,7 +20522,11 @@ class UserSpaceService:
                 container,
                 "bash",
                 "-c",
-                f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \'{escaped_query}\'',
+                (
+                    'PGPASSWORD="$POSTGRES_PASSWORD" psql --csv '
+                    '-U "$POSTGRES_USER" -d "$POSTGRES_DB" '
+                    f"-c '{escaped_query}'"
+                ),
             ]
             env = None
         else:
@@ -20483,7 +20562,7 @@ class UserSpaceService:
             if not output:
                 return "Query executed successfully (no results)"
 
-            return add_table_metadata_to_psql_output(output, include_metadata=True)
+            return format_psql_csv_output(output)
         except asyncio.TimeoutError:
             return (
                 f"Error: Query timed out after {timeout}s. "

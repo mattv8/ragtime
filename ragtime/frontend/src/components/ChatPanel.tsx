@@ -8,9 +8,9 @@ import 'katex/dist/katex.min.css';
 import { diffLines } from 'diff';
 import Chart from 'chart.js/auto';
 import type { Chart as ChartInstance, ChartConfiguration } from 'chart.js';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2 } from 'lucide-react';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2 } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, AvailableModel, RetryVisualizationRequest, ToolConnectionRef } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, AvailableModel, RetryVisualizationRequest, ToolConnectionRef, RefreshLiveVisualizationResponse, SwitchVisualizationBranchResponse, VisualizationBranchSummary } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -42,6 +42,7 @@ import { MemberManagementModal } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
 import { UserSpaceFileDiffView, formatDiffStatus } from './shared/UserSpaceFileDiffView';
+import { useToast, ToastContainer } from './shared/Toast';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 
 const CHAT_DIAGNOSTIC_COMMAND_TOOL_ID = 'run_chat_diagnostic_command';
@@ -528,17 +529,26 @@ export const LinkifiedText = memo(function LinkifiedText({ text }: { text: strin
   );
 });
 
+interface VisualizationDataConnection {
+  component_kind?: string;
+  component_id?: string;
+  component_name?: string;
+  component_type?: string;
+  request?: Record<string, unknown> | string;
+  result_mapping?: Record<string, unknown>;
+  visualization_mapping?: Record<string, unknown>;
+  source_tool?: string;
+  source_tool_config_id?: string;
+  source_tool_type?: string;
+  source_input?: Record<string, unknown>;
+  refresh_interval_seconds?: number;
+}
+
 interface ChartData {
   __chart__: true;
   config: ChartConfig;
   description?: string;
-  data_connection?: {
-    source_tool?: string;
-    source_tool_config_id?: string;
-    source_tool_type?: string;
-    source_input?: Record<string, unknown>;
-    refresh_interval_seconds?: number;
-  };
+  data_connection?: VisualizationDataConnection;
 }
 
 // Parse datatable data from create_datatable tool output
@@ -558,13 +568,21 @@ interface DataTableData {
   title: string;
   config: DataTableConfig;
   description?: string;
-  data_connection?: {
-    source_tool?: string;
-    source_tool_config_id?: string;
-    source_tool_type?: string;
-    source_input?: Record<string, unknown>;
-    refresh_interval_seconds?: number;
-  };
+  data_connection?: VisualizationDataConnection;
+}
+
+function hasRefreshableVisualizationConnection(
+  dataConnection: VisualizationDataConnection | undefined,
+  toolType: 'chart' | 'datatable',
+): boolean {
+  if (!dataConnection) return false;
+  const componentId = String(dataConnection.component_id || dataConnection.source_tool_config_id || '').trim();
+  const requestPayload = dataConnection.request ?? dataConnection.source_input;
+  if (!componentId || requestPayload == null) return false;
+  if (toolType === 'chart') {
+    return Boolean(dataConnection.result_mapping || dataConnection.visualization_mapping);
+  }
+  return true;
 }
 
 interface StoredChatLayout {
@@ -623,6 +641,37 @@ function parseDataTableData(output: string): DataTableData | null {
   return null;
 }
 
+function validateDataTableData(tableData: DataTableData): string | null {
+  const columns = tableData.config.columns;
+  const rows = tableData.config.data;
+
+  if (!Array.isArray(columns)) {
+    return 'Table render failed: columns must be an array.';
+  }
+  if (!Array.isArray(rows)) {
+    return 'Table render failed: rows must be an array.';
+  }
+
+  const columnCount = columns.length;
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
+    if (!Array.isArray(row)) {
+      return `Table render failed: row ${rowIndex + 1} is not an array.`;
+    }
+    if (row.length !== columnCount) {
+      return `Table render failed: row ${rowIndex + 1} has ${row.length} cells but ${columnCount} columns are configured.`;
+    }
+  }
+
+  return null;
+}
+
+function normalizeDataTableErrorMessage(message: string): string {
+  const trimmed = message.trim();
+  const withoutPrefix = trimmed.replace(/^DataTables warning:\s*table id=[^-]+-\s*/i, 'Table render failed: ');
+  return withoutPrefix.replace(/\s*For more information about this error, please see.*$/i, '').trim();
+}
+
 // Component to render a simple data table (for SQL results with table metadata)
 const DataTable = memo(function DataTable({ data }: { data: TableData }) {
   return (
@@ -659,11 +708,125 @@ const DataTable = memo(function DataTable({ data }: { data: TableData }) {
 });
 
 // Component to render a Chart.js chart
-const ChartDisplay = memo(function ChartDisplay({ chartData }: { chartData: ChartData }) {
+interface LiveRefreshControlsProps {
+  canRefresh?: boolean;
+  isRefreshDisabled?: boolean;
+  refreshDisabledReason?: string | null;
+  isRefreshing?: boolean;
+  refreshError?: string | null;
+  onRefresh?: (event: React.MouseEvent) => void;
+  branches?: VisualizationBranchSummary[];
+  activeBranchId?: string | null;
+  isSwitchingBranch?: boolean;
+  onSelectBranch?: (branchId: string) => void;
+}
+
+const VisualizationBranchControls = memo(function VisualizationBranchControls({
+  branches = [],
+  activeBranchId = null,
+  isSwitching = false,
+  onSelectBranch,
+}: {
+  branches?: VisualizationBranchSummary[];
+  activeBranchId?: string | null;
+  isSwitching?: boolean;
+  onSelectBranch?: (branchId: string) => void;
+}) {
+  if (!branches || branches.length < 2 || !onSelectBranch) return null;
+  const activeIndex = Math.max(0, branches.findIndex(branch => branch.id === activeBranchId));
+  const activeBranch = branches[activeIndex] || branches[0];
+  const previousBranch = branches[activeIndex - 1];
+  const nextBranch = branches[activeIndex + 1];
+  return (
+    <div className="visualization-branch-controls" aria-label="Visualization versions">
+      <button
+        type="button"
+        className="visualization-branch-btn"
+        onClick={() => previousBranch && onSelectBranch(previousBranch.id)}
+        disabled={isSwitching || !previousBranch}
+        title="Previous version"
+      >
+        <ChevronLeft size={12} />
+      </button>
+      <span className="visualization-branch-label">
+        Version {activeIndex + 1} of {branches.length}
+        {activeBranch?.created_at && (
+          <> &middot; <span title={activeBranch.created_at}>{formatChatTimestamp(activeBranch.created_at)}</span></>
+        )}
+      </span>
+      <button
+        type="button"
+        className="visualization-branch-btn"
+        onClick={() => nextBranch && onSelectBranch(nextBranch.id)}
+        disabled={isSwitching || !nextBranch}
+        title="Next version"
+      >
+        <ChevronRight size={12} />
+      </button>
+      {isSwitching && <MiniLoadingSpinner variant="icon" size={12} />}
+    </div>
+  );
+});
+
+// Shared anchor row that appears below a chart/datatable: refresh button + version nav + inline error.
+// Mirrors the chat-branch-nav placement pattern for visual consistency.
+const VisualizationVersionAnchor = memo(function VisualizationVersionAnchor({
+  canRefresh,
+  isRefreshDisabled,
+  refreshDisabledReason,
+  isRefreshing,
+  refreshError,
+  onRefresh,
+  branches,
+  activeBranchId,
+  isSwitchingBranch,
+  onSelectBranch,
+  extraControls,
+}: LiveRefreshControlsProps & { extraControls?: React.ReactNode }) {
+  const hasBranchControls = !!(branches && branches.length >= 2 && onSelectBranch);
+  const showRefresh = !!(canRefresh && onRefresh);
+  if (!showRefresh && !hasBranchControls && !refreshError && !extraControls) return null;
+  return (
+    <div className="viz-version-anchor">
+      {showRefresh && (
+        <button
+          className="live-data-refresh-btn"
+          onClick={onRefresh}
+          disabled={isRefreshing || isRefreshDisabled}
+          title={refreshDisabledReason || "Refresh live data"}
+        >
+          {isRefreshing ? <MiniLoadingSpinner variant="icon" size={12} /> : <RefreshCw size={12} />}
+          <span>Refresh live data</span>
+        </button>
+      )}
+      <VisualizationBranchControls
+        branches={branches}
+        activeBranchId={activeBranchId}
+        isSwitching={isSwitchingBranch}
+        onSelectBranch={onSelectBranch}
+      />
+      {extraControls}
+      {refreshError && <p className="live-data-refresh-error">{refreshError}</p>}
+    </div>
+  );
+});
+
+const ChartDisplay = memo(function ChartDisplay({
+  chartData,
+  canRefresh = false,
+  isRefreshDisabled = false,
+  refreshDisabledReason = null,
+  isRefreshing = false,
+  refreshError = null,
+  onRefresh,
+  branches = [],
+  activeBranchId = null,
+  isSwitchingBranch = false,
+  onSelectBranch,
+}: { chartData: ChartData } & LiveRefreshControlsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartInstanceRef = useRef<ChartInstance | null>(null);
-  const [resizeKey, setResizeKey] = useState(0);
 
   // Get theme colors from CSS variables
   const getThemeColors = useCallback(() => {
@@ -763,70 +926,233 @@ const ChartDisplay = memo(function ChartDisplay({ chartData }: { chartData: Char
         chartInstanceRef.current = null;
       }
     };
-  }, [chartData, resizeKey, createChart]);
-
-  const handleResize = () => {
-    setResizeKey(k => k + 1);
-  };
+  }, [chartData, createChart]);
 
   return (
-    <div className="chart-container" ref={containerRef}>
-      <button
-        className="chart-resize-btn"
-        onClick={handleResize}
-        title="Resize chart"
-      >
-        <Maximize2 size={14} />
-      </button>
-      <canvas ref={canvasRef}></canvas>
-      {chartData.description && (
-        <p className="chart-description">
-          <LinkifiedText text={chartData.description} />
-        </p>
+    <>
+      <div className="chart-container" ref={containerRef}>
+        <canvas ref={canvasRef}></canvas>
+        {chartData.description && (
+          <p className="chart-description">
+            <LinkifiedText text={chartData.description} />
+          </p>
+        )}
+      </div>
+      <VisualizationVersionAnchor
+        canRefresh={canRefresh}
+        isRefreshDisabled={isRefreshDisabled}
+        refreshDisabledReason={refreshDisabledReason}
+        isRefreshing={isRefreshing}
+        refreshError={refreshError}
+        onRefresh={onRefresh}
+        branches={branches}
+        activeBranchId={activeBranchId}
+        isSwitchingBranch={isSwitchingBranch}
+        onSelectBranch={onSelectBranch}
+      />
+    </>
+  );
+});
+
+// Component to render an interactive DataTable using DataTables.js
+interface DataTablePageInfo {
+  page: number;
+  pages: number;
+  recordsDisplay: number;
+}
+
+// Shared search + paging controls rendered both in the datatable header and the viz-version-anchor.
+const DataTableControls = memo(function DataTableControls({
+  searchingEnabled,
+  pagingEnabled,
+  searchQuery,
+  onSearchChange,
+  pageInfo,
+  onPage,
+}: {
+  searchingEnabled: boolean;
+  pagingEnabled: boolean;
+  searchQuery: string;
+  onSearchChange: (value: string) => void;
+  pageInfo: DataTablePageInfo;
+  onPage: (page: number) => void;
+}) {
+  const hasMultiplePages = pagingEnabled && pageInfo.pages > 1;
+  if (!searchingEnabled && !hasMultiplePages) return null;
+  const atFirst = pageInfo.page <= 0;
+  const atLast = pageInfo.page >= pageInfo.pages - 1;
+  return (
+    <div className="datatable-controls">
+      {searchingEnabled && (
+        <input
+          className="dt-input datatable-search-input"
+          type="search"
+          placeholder="Search…"
+          value={searchQuery}
+          onChange={e => onSearchChange(e.target.value)}
+          aria-label="Search table"
+        />
+      )}
+      {hasMultiplePages && (
+        <div className="datatable-paging" aria-label="Table pagination">
+          <button
+            type="button"
+            className="datatable-paging-btn"
+            onClick={() => onPage(0)}
+            disabled={atFirst}
+            title="First page"
+            aria-label="First page"
+          >
+            <ChevronsLeft size={12} />
+          </button>
+          <button
+            type="button"
+            className="datatable-paging-btn"
+            onClick={() => onPage(pageInfo.page - 1)}
+            disabled={atFirst}
+            title="Previous page"
+            aria-label="Previous page"
+          >
+            <ChevronLeft size={12} />
+          </button>
+          <span className="datatable-paging-info">
+            Page {pageInfo.page + 1} of {pageInfo.pages}
+          </span>
+          <button
+            type="button"
+            className="datatable-paging-btn"
+            onClick={() => onPage(pageInfo.page + 1)}
+            disabled={atLast}
+            title="Next page"
+            aria-label="Next page"
+          >
+            <ChevronRight size={12} />
+          </button>
+          <button
+            type="button"
+            className="datatable-paging-btn"
+            onClick={() => onPage(pageInfo.pages - 1)}
+            disabled={atLast}
+            title="Last page"
+            aria-label="Last page"
+          >
+            <ChevronsRight size={12} />
+          </button>
+        </div>
       )}
     </div>
   );
 });
 
-// Component to render an interactive DataTable using DataTables.js
-const DataTableDisplay = memo(function DataTableDisplay({ tableData }: { tableData: DataTableData }) {
+const DataTableDisplay = memo(function DataTableDisplay({
+  tableData,
+  canRefresh = false,
+  isRefreshDisabled = false,
+  refreshDisabledReason = null,
+  isRefreshing = false,
+  refreshError = null,
+  onRefresh,
+  branches = [],
+  activeBranchId = null,
+  isSwitchingBranch = false,
+  onSelectBranch,
+  onDisplayError,
+}: { tableData: DataTableData; onDisplayError?: (message: string) => void } & LiveRefreshControlsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const tableInstanceRef = useRef<unknown>(null);
+  const lastNotifiedErrorRef = useRef<string | null>(null);
+  // Persist page index across re-inits (e.g. visualization branch switches).
+  // The DataTables instance is destroyed when tableData changes, which would
+  // otherwise reset paging to page 0. We snapshot the active page on each
+  // re-init and restore it (clamped) after the new instance is built.
+  const persistedPageRef = useRef<number>(0);
   const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [pageInfo, setPageInfo] = useState<DataTablePageInfo>({ page: 0, pages: 1, recordsDisplay: 0 });
+
+  const rowCount = Array.isArray(tableData.config.data) ? tableData.config.data.length : 0;
+  const configuredPageLength = Number((tableData.config as any).pageLength);
+  const effectivePageLength = Number.isFinite(configuredPageLength) && configuredPageLength > 0
+    ? configuredPageLength
+    : rowCount > 10
+      ? 10
+      : Math.max(rowCount, 1);
+  const searchingEnabled = (tableData.config as any).searching !== false;
+  const pagingEnabled = rowCount > effectivePageLength;
+
+  const reportDisplayError = useCallback((message: string) => {
+    const normalizedMessage = normalizeDataTableErrorMessage(message);
+    setError(normalizedMessage);
+    if (lastNotifiedErrorRef.current !== normalizedMessage) {
+      lastNotifiedErrorRef.current = normalizedMessage;
+      onDisplayError?.(normalizedMessage);
+    }
+  }, [onDisplayError]);
+
+  const handlePage = useCallback((page: number) => {
+    persistedPageRef.current = page;
+    if (!tableInstanceRef.current) return;
+    try {
+      (tableInstanceRef.current as any).page(page).draw('page');
+    } catch { /* ignore */ }
+  }, []);
 
   useEffect(() => {
+    lastNotifiedErrorRef.current = null;
+    setError(null);
     // Small delay to ensure DOM is ready
     const timeoutId = setTimeout(() => {
       try {
         // @ts-expect-error jQuery is loaded from CDN
         const $ = window.jQuery;
         if (!$) {
-          setError('jQuery not loaded');
+          reportDisplayError('jQuery not loaded');
           return;
         }
         if (!$.fn.DataTable) {
-          setError('DataTables.js not loaded');
+          reportDisplayError('DataTables.js not loaded');
+          return;
+        }
+
+        const validationError = validateDataTableData(tableData);
+        if (validationError) {
+          reportDisplayError(validationError);
           return;
         }
 
         if (containerRef.current) {
-          // Find or create the table element
-          let tableEl = containerRef.current.querySelector('table');
-          if (!tableEl) {
-            tableEl = document.createElement('table');
-            tableEl.className = 'display';
-            tableEl.style.width = '100%';
-            containerRef.current.querySelector('.datatable-table-wrapper')?.appendChild(tableEl);
-          }
+          const wrapper = containerRef.current.querySelector('.datatable-table-wrapper');
+          if (!wrapper) return;
 
-          // Destroy previous instance if exists
+          // Snapshot the current page before destroying so we can restore it
+          // after re-init (e.g. when switching visualization branches).
           if (tableInstanceRef.current) {
             try {
-              (tableInstanceRef.current as { destroy: () => void }).destroy();
+              const info = (tableInstanceRef.current as any).page.info();
+              if (info && typeof info.page === 'number') {
+                persistedPageRef.current = info.page;
+              }
+            } catch { /* ignore */ }
+            try {
+              // Pass `true` to fully remove the table element from the DOM.
+              // Without this, DataTables leaves the previous <thead>/<tbody>
+              // attached, which mismatches the new column config on re-init
+              // and triggers "Cannot read properties of undefined (reading
+              // 'mData')" when DataTables walks stale <th> cells.
+              (tableInstanceRef.current as { destroy: (remove?: boolean) => void }).destroy(true);
             } catch {
               // Ignore destroy errors
             }
+            tableInstanceRef.current = null;
           }
+
+          // Always create a fresh table element to guarantee no stale DOM
+          // from a previous DataTables instance leaks into the new init.
+          wrapper.innerHTML = '';
+          const tableEl = document.createElement('table');
+          tableEl.className = 'display';
+          tableEl.style.width = '100%';
+          wrapper.appendChild(tableEl);
 
           // Prepare columns with linkification support
           const existingColumns = tableData.config.columns || [];
@@ -853,19 +1179,74 @@ const DataTableDisplay = memo(function DataTableDisplay({ tableData }: { tableDa
             };
           });
 
-          // Initialize DataTable
-          tableInstanceRef.current = $(tableEl).DataTable({
-            ...tableData.config,
-            columns: preparedColumns,
-            destroy: true, // Allow re-initialization
-            columnDefs: [
-              ...(Array.isArray((tableData.config as any).columnDefs) ? (tableData.config as any).columnDefs : [])
-            ]
-          });
+          // Initialize DataTable — disable all built-in layout rows; we render search + paging in React.
+          const dataTableNamespace = ($.fn as any).dataTable;
+          const previousErrMode = dataTableNamespace?.ext?.errMode;
+          let dataTablesError: string | null = null;
+          if (dataTableNamespace?.ext) {
+            dataTableNamespace.ext.errMode = (_settings: unknown, _techNote: unknown, message: string) => {
+              dataTablesError = message || 'DataTables render failed';
+            };
+          }
+          try {
+            tableInstanceRef.current = $(tableEl).DataTable({
+              ...tableData.config,
+              pageLength: effectivePageLength,
+              paging: pagingEnabled,
+              columns: preparedColumns,
+              destroy: true, // Allow re-initialization
+              columnDefs: [
+                ...(Array.isArray((tableData.config as any).columnDefs) ? (tableData.config as any).columnDefs : [])
+              ],
+              layout: {
+                ...(tableData.config.layout || {}),
+                topStart: null,
+                topEnd: null,
+                bottomStart: null,
+                bottomEnd: null,
+              },
+            });
+          } finally {
+            if (dataTableNamespace?.ext) {
+              dataTableNamespace.ext.errMode = previousErrMode;
+            }
+          }
+          if (dataTablesError) {
+            throw new Error(dataTablesError);
+          }
+
+          // Sync page state with DataTables draws
+          const syncPageInfo = () => {
+            try {
+              const info = (tableInstanceRef.current as any).page.info();
+              setPageInfo({ page: info.page, pages: info.pages, recordsDisplay: info.recordsDisplay });
+            } catch { /* ignore */ }
+          };
+          $(tableEl).off('draw.dt.pageInfo').on('draw.dt.pageInfo', syncPageInfo);
+
+          // Restore persisted page (clamped to the new page count) before the
+          // first sync so the user stays on the same page across branch swaps.
+          try {
+            const info = (tableInstanceRef.current as any).page.info();
+            const totalPages = Math.max(1, info?.pages ?? 1);
+            const targetPage = Math.min(persistedPageRef.current, totalPages - 1);
+            if (targetPage > 0) {
+              (tableInstanceRef.current as any).page(targetPage).draw('page');
+            }
+          } catch { /* ignore */ }
+
+          syncPageInfo();
+
+          // Re-apply any active search query after (re-)init
+          if (searchQuery) {
+            try {
+              (tableInstanceRef.current as any).search(searchQuery).draw();
+            } catch { /* ignore */ }
+          }
         }
       } catch (err) {
         console.error('Failed to create datatable:', err);
-        setError(String(err));
+        reportDisplayError(err instanceof Error ? err.message : String(err));
       }
     }, 100);
 
@@ -873,61 +1254,147 @@ const DataTableDisplay = memo(function DataTableDisplay({ tableData }: { tableDa
       clearTimeout(timeoutId);
       if (tableInstanceRef.current) {
         try {
-          (tableInstanceRef.current as { destroy: () => void }).destroy();
+          (tableInstanceRef.current as { destroy: (remove?: boolean) => void }).destroy(true);
         } catch {
           // Ignore destroy errors
         }
+        tableInstanceRef.current = null;
       }
     };
-  }, [tableData]);
+  }, [reportDisplayError, tableData]);
+
+  // Wire custom search input to DataTable instance
+  useEffect(() => {
+    if (!tableInstanceRef.current) return;
+    try {
+      (tableInstanceRef.current as any).search(searchQuery).draw();
+    } catch { /* ignore */ }
+  }, [searchQuery]);
 
   if (error) {
+    const fallbackColumns = Array.isArray(tableData.config.columns) ? tableData.config.columns : [];
+    const fallbackRows = Array.isArray(tableData.config.data)
+      ? tableData.config.data.filter((row): row is unknown[] => Array.isArray(row))
+      : [];
+    const fallbackColumnCount = Math.max(
+      fallbackColumns.length,
+      ...fallbackRows.map(row => row.length),
+      1,
+    );
     // Fallback to simple table if DataTables fails
     return (
-      <div className="datatable-container">
-        {tableData.title && <h4 className="datatable-title">{tableData.title}</h4>}
-        <div className="tool-result-table-wrapper">
-          <table className="tool-result-table">
-            <thead>
-              <tr>
-                {tableData.config.columns.map((col, i) => (
-                  <th key={i}>{typeof col === 'string' ? col : col.title}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {tableData.config.data.map((row, rowIdx) => (
-                <tr key={rowIdx}>
-                  {(row as unknown[]).map((cell, cellIdx) => (
-                    <td key={cellIdx}>
-                      {cell === null ? (
-                        'NULL'
-                      ) : typeof cell === 'string' ? (
-                        <LinkifiedText text={cell} />
-                      ) : (
-                        String(cell)
-                      )}
-                    </td>
-                  ))}
+      <>
+        <div className="datatable-container">
+          {tableData.title && (
+            <div className="datatable-header">
+              <h4 className="datatable-title">{tableData.title}</h4>
+            </div>
+          )}
+          <div className="tool-result-table-wrapper">
+            <table className="tool-result-table">
+              <thead>
+                <tr>
+                  {Array.from({ length: fallbackColumnCount }, (_, i) => {
+                    const col = fallbackColumns[i];
+                    return (
+                      <th key={i}>{typeof col === 'string' ? col : col?.title || `Column ${i + 1}`}</th>
+                    );
+                  })}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {fallbackRows.map((row, rowIdx) => (
+                  <tr key={rowIdx}>
+                    {Array.from({ length: fallbackColumnCount }, (_, cellIdx) => row[cellIdx]).map((cell, cellIdx) => (
+                      <td key={cellIdx}>
+                        {cell === null ? (
+                          'NULL'
+                        ) : typeof cell === 'string' ? (
+                          <LinkifiedText text={cell} />
+                        ) : (
+                          String(cell)
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+        <VisualizationVersionAnchor
+          canRefresh={canRefresh}
+          isRefreshDisabled={isRefreshDisabled}
+          refreshDisabledReason={refreshDisabledReason}
+          isRefreshing={isRefreshing}
+          refreshError={refreshError}
+          onRefresh={onRefresh}
+          branches={branches}
+          activeBranchId={activeBranchId}
+          isSwitchingBranch={isSwitchingBranch}
+          onSelectBranch={onSelectBranch}
+        />
+      </>
     );
   }
 
+  const renderControls = () => (
+    <DataTableControls
+      searchingEnabled={searchingEnabled}
+      pagingEnabled={pagingEnabled}
+      searchQuery={searchQuery}
+      onSearchChange={setSearchQuery}
+      pageInfo={pageInfo}
+      onPage={handlePage}
+    />
+  );
+  const hasMultiplePages = pagingEnabled && pageInfo.pages > 1;
+  const headerHasAnchor = searchingEnabled || hasMultiplePages || !!(canRefresh && onRefresh) || !!(branches && branches.length >= 2 && onSelectBranch) || !!refreshError;
+
   return (
-    <div className="datatable-container" ref={containerRef}>
-      {tableData.title && <h4 className="datatable-title">{tableData.title}</h4>}
-      <div className="datatable-table-wrapper">
-        <table className="display" style={{ width: '100%' }}></table>
+    <>
+      <div className="datatable-container" ref={containerRef}>
+        {(tableData.title || headerHasAnchor) && (
+          <div className="datatable-header">
+            {tableData.title && <h4 className="datatable-title">{tableData.title}</h4>}
+            <VisualizationVersionAnchor
+              canRefresh={canRefresh}
+              isRefreshDisabled={isRefreshDisabled}
+              refreshDisabledReason={refreshDisabledReason}
+              isRefreshing={isRefreshing}
+              refreshError={refreshError}
+              onRefresh={onRefresh}
+              branches={branches}
+              activeBranchId={activeBranchId}
+              isSwitchingBranch={isSwitchingBranch}
+              onSelectBranch={onSelectBranch}
+              extraControls={renderControls()}
+            />
+          </div>
+        )}
+        <div className="datatable-table-wrapper">
+          {/* Table element is created/destroyed dynamically by the effect to
+              avoid stale <thead>/<tbody> leaking between (re-)inits, which
+              causes DataTables "mData undefined" on branch switches. */}
+        </div>
+        {tableData.description && (
+          <p className="datatable-description">{tableData.description}</p>
+        )}
       </div>
-      {tableData.description && (
-        <p className="datatable-description">{tableData.description}</p>
-      )}
-    </div>
+      <VisualizationVersionAnchor
+        canRefresh={canRefresh}
+        isRefreshDisabled={isRefreshDisabled}
+        refreshDisabledReason={refreshDisabledReason}
+        isRefreshing={isRefreshing}
+        refreshError={refreshError}
+        onRefresh={onRefresh}
+        branches={branches}
+        activeBranchId={activeBranchId}
+        isSwitchingBranch={isSwitchingBranch}
+        onSelectBranch={onSelectBranch}
+        extraControls={renderControls()}
+      />
+    </>
   );
 });
 
@@ -1858,6 +2325,8 @@ interface ToolCallDisplayProps {
   messageIndex?: number;
   eventIndex?: number;
   onRetrySuccess?: (newOutput: string) => void;
+  onLiveVisualizationRefreshSuccess?: (response: RefreshLiveVisualizationResponse | SwitchVisualizationBranchResponse) => void;
+  onVisualizationDisplayError?: (message: string) => void;
   onOpenWorkspaceFile?: (path: string) => void;
 }
 
@@ -2319,6 +2788,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   messageIndex,
   eventIndex,
   onRetrySuccess,
+  onLiveVisualizationRefreshSuccess,
+  onVisualizationDisplayError,
   onOpenWorkspaceFile,
 }: ToolCallDisplayProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
@@ -2328,6 +2799,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const [retryOutput, setRetryOutput] = useState<string | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
   const [retryProgressText, setRetryProgressText] = useState<string | null>(null);
+  const [isRefreshingLiveData, setIsRefreshingLiveData] = useState(false);
+  const [liveDataRefreshError, setLiveDataRefreshError] = useState<string | null>(null);
+  const [visualizationBranches, setVisualizationBranches] = useState<VisualizationBranchSummary[]>([]);
+  const [activeVisualizationBranchId, setActiveVisualizationBranchId] = useState<string | null>(null);
+  const [isSwitchingVisualizationBranch, setIsSwitchingVisualizationBranch] = useState(false);
   const retryProgressTimers = useRef<number[]>([]);
   const visualToolName = useMemo(() => getToolVisualName(toolCall.tool), [toolCall.tool]);
   const [isRerunning, setIsRerunning] = useState(false);
@@ -2710,6 +3186,50 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     return null;
   }, [toolCall.tool, effectiveOutput, hasErrorInOutput]);
 
+  const visualizationToolType: 'chart' | 'datatable' | null = toolCall.tool === 'create_chart'
+    ? 'chart'
+    : toolCall.tool === 'create_datatable'
+      ? 'datatable'
+      : null;
+  const visualizationDataConnection = chartData?.data_connection ?? datatableData?.data_connection;
+  const hasRefreshableLiveVisualization = Boolean(
+    visualizationToolType && hasRefreshableVisualizationConnection(visualizationDataConnection, visualizationToolType),
+  );
+  const hasPersistedVisualizationContext = Boolean(conversationId) && typeof eventIndex === 'number';
+  const refreshDisabledReason = hasRefreshableLiveVisualization && !hasPersistedVisualizationContext
+    ? 'Refresh available when response finishes'
+    : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!conversationId || !visualizationToolType || typeof eventIndex !== 'number' || !hasRefreshableLiveVisualization) {
+      setVisualizationBranches([]);
+      setActiveVisualizationBranchId(null);
+      return;
+    }
+    void api.listVisualizationBranches(
+      conversationId,
+      {
+        tool_type: visualizationToolType,
+        ...(messageId ? { message_id: messageId } : {}),
+        ...(typeof messageIndex === 'number' ? { message_index: messageIndex } : {}),
+        event_index: eventIndex,
+      },
+      workspaceId,
+    ).then(result => {
+      if (cancelled) return;
+      setVisualizationBranches(result.branches || []);
+      setActiveVisualizationBranchId(result.active_branch_id || null);
+    }).catch(() => {
+      if (cancelled) return;
+      setVisualizationBranches([]);
+      setActiveVisualizationBranchId(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId, eventIndex, hasRefreshableLiveVisualization, messageId, messageIndex, visualizationToolType, workspaceId]);
+
   // Determine if this visualization tool call actually failed
   // (either error in output OR parsing failed for visualization tools)
   const isFailed = useMemo(() => {
@@ -2851,6 +3371,75 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     }
   }, [clearRetryProgressTimers, conversationId, eventIndex, messageId, messageIndex, siblingEvents, toolCall.input, toolCall.output, toolCall.tool, onRetrySuccess, workspaceId]);
 
+  const handleLiveDataRefresh = useCallback(async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!conversationId) {
+      setLiveDataRefreshError('Cannot refresh: missing conversation context');
+      return;
+    }
+    if (typeof eventIndex !== 'number') {
+      setLiveDataRefreshError('Cannot refresh: missing visualization event context');
+      return;
+    }
+
+    if (!visualizationToolType) {
+      setLiveDataRefreshError('Cannot refresh: unsupported visualization tool');
+      return;
+    }
+    setIsRefreshingLiveData(true);
+    setLiveDataRefreshError(null);
+    try {
+      const result = await api.refreshLiveVisualization(
+        conversationId,
+        {
+          tool_type: visualizationToolType,
+          ...(messageId ? { message_id: messageId } : {}),
+          ...(typeof messageIndex === 'number' ? { message_index: messageIndex } : {}),
+          event_index: eventIndex,
+        },
+        workspaceId,
+      );
+      if (!result.success || !result.output) {
+        throw new Error(result.error || 'Live data refresh failed');
+      }
+      setRetryOutput(result.output);
+      setVisualizationBranches(result.branches || []);
+      setActiveVisualizationBranchId(result.active_branch_id || null);
+      onLiveVisualizationRefreshSuccess?.(result);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Live data refresh failed';
+      setLiveDataRefreshError(errorMsg);
+    } finally {
+      setIsRefreshingLiveData(false);
+    }
+  }, [conversationId, eventIndex, messageId, messageIndex, onLiveVisualizationRefreshSuccess, visualizationToolType, workspaceId]);
+
+  const handleVisualizationBranchSelect = useCallback(async (branchId: string) => {
+    if (!conversationId || !branchId || branchId === activeVisualizationBranchId) return;
+    setIsSwitchingVisualizationBranch(true);
+    setLiveDataRefreshError(null);
+    try {
+      const result = await api.switchVisualizationBranch(
+        conversationId,
+        { branch_id: branchId },
+        workspaceId,
+      );
+      if (!result.success || !result.output) {
+        throw new Error(result.error || 'Visualization version switch failed');
+      }
+      setRetryOutput(result.output);
+      setVisualizationBranches(result.branches || []);
+      setActiveVisualizationBranchId(result.active_branch_id || branchId);
+      onLiveVisualizationRefreshSuccess?.(result);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Visualization version switch failed';
+      setLiveDataRefreshError(errorMsg);
+    } finally {
+      setIsSwitchingVisualizationBranch(false);
+    }
+  }, [activeVisualizationBranchId, conversationId, onLiveVisualizationRefreshSuccess, workspaceId]);
+
   // Handle re-run for terminal commands
   const handleRerunCommand = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -2985,18 +3574,47 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   // Keep these returns after every hook in this component so tool-call output
   // transitions cannot change the hook count between renders.
   if (chartData) {
+    const canRefreshChart = hasRefreshableVisualizationConnection(chartData.data_connection, 'chart')
+      && Boolean(conversationId);
     return (
       <div className="tool-call tool-call-chart tool-call-complete">
-        <ChartDisplay chartData={chartData} />
+        <ChartDisplay
+          chartData={chartData}
+          canRefresh={canRefreshChart}
+          isRefreshDisabled={!hasPersistedVisualizationContext}
+          refreshDisabledReason={refreshDisabledReason}
+          isRefreshing={isRefreshingLiveData}
+          refreshError={liveDataRefreshError}
+          onRefresh={handleLiveDataRefresh}
+          branches={visualizationBranches}
+          activeBranchId={activeVisualizationBranchId}
+          isSwitchingBranch={isSwitchingVisualizationBranch}
+          onSelectBranch={handleVisualizationBranchSelect}
+        />
       </div>
     );
   }
 
   // Special rendering for datatable tool - show table inline without collapsible
   if (datatableData) {
+    const canRefreshTable = hasRefreshableVisualizationConnection(datatableData.data_connection, 'datatable')
+      && Boolean(conversationId);
     return (
       <div className="tool-call tool-call-datatable tool-call-complete">
-        <DataTableDisplay tableData={datatableData} />
+        <DataTableDisplay
+          tableData={datatableData}
+          canRefresh={canRefreshTable}
+          isRefreshDisabled={!hasPersistedVisualizationContext}
+          refreshDisabledReason={refreshDisabledReason}
+          isRefreshing={isRefreshingLiveData}
+          refreshError={liveDataRefreshError}
+          onRefresh={handleLiveDataRefresh}
+          branches={visualizationBranches}
+          activeBranchId={activeVisualizationBranchId}
+          isSwitchingBranch={isSwitchingVisualizationBranch}
+          onSelectBranch={handleVisualizationBranchSelect}
+          onDisplayError={onVisualizationDisplayError}
+        />
       </div>
     );
   }
@@ -4854,6 +5472,8 @@ export function ChatPanel({
   const INPUT_AREA_COLLAPSE_THRESHOLD = 80;
   const chatLayoutCookieName = getChatLayoutCookieName(currentUser.id);
 
+  const [toasts, toastActions] = useToast();
+
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [isConversationSwitchLoading, setIsConversationSwitchLoading] = useState(false);
@@ -6321,6 +6941,13 @@ export function ChatPanel({
       return [];
     }
   }, [workspaceId]);
+
+  const handleLiveVisualizationRefreshSuccess = useCallback((response: RefreshLiveVisualizationResponse | SwitchVisualizationBranchResponse) => {
+    if (response.conversation) {
+      setActiveConversation(response.conversation);
+      setConversations(prev => prev.map(c => c.id === response.conversation!.id ? response.conversation! : c));
+    }
+  }, []);
 
   useEffect(() => {
     setBranchPoints([]);
@@ -8807,6 +9434,8 @@ export function ChatPanel({
                                               messageId={msg.message_id}
                                               messageIndex={idx}
                                               eventIndex={evIdx}
+                                              onLiveVisualizationRefreshSuccess={handleLiveVisualizationRefreshSuccess}
+                                              onVisualizationDisplayError={toastActions.error}
                                               onOpenWorkspaceFile={onOpenWorkspaceFile}
                                             />
                                           </div>
@@ -9653,6 +10282,7 @@ export function ChatPanel({
           </div>
         </div>
       )}
+      <ToastContainer toasts={toasts} onDismiss={toastActions.dismiss} />
     </div>
   );
 }

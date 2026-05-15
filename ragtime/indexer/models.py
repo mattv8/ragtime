@@ -2788,6 +2788,93 @@ class RetryVisualizationResponse(BaseModel):
     )
 
 
+class VisualizationBranchSummary(BaseModel):
+    """Version summary for a single chart/datatable event."""
+
+    id: str
+    conversation_id: str
+    message_id: Optional[str] = None
+    message_index: int
+    event_index: int
+    tool_name: str
+    sequence: int
+    active: bool = False
+    created_by_user_id: Optional[str] = None
+    created_by_username: Optional[str] = None
+    created_at: datetime
+
+
+class RefreshLiveVisualizationRequest(BaseModel):
+    """Request to rerun a live component-backed chat visualization."""
+
+    tool_type: Literal["datatable", "chart"] = Field(
+        description="Type of visualization to refresh: 'datatable' or 'chart'"
+    )
+    message_id: Optional[str] = Field(
+        default=None,
+        description="Stable identifier of the assistant message containing the visualization event.",
+    )
+    message_index: Optional[int] = Field(
+        default=None,
+        description="Zero-based assistant message index fallback for legacy messages.",
+    )
+    event_index: int = Field(
+        ge=0,
+        description="Zero-based index of the visualization tool event within the assistant message.",
+    )
+
+
+class RefreshLiveVisualizationResponse(BaseModel):
+    """Response from live data refresh for a chat visualization."""
+
+    success: bool = Field(description="Whether live data refresh succeeded")
+    output: Optional[str] = Field(
+        default=None, description="The refreshed visualization output JSON on success"
+    )
+    error: Optional[str] = Field(default=None, description="Error message on failure")
+    conversation: Optional[ConversationResponse] = Field(
+        default=None, description="Updated conversation after live-data refresh"
+    )
+    branches: List[VisualizationBranchSummary] = Field(
+        default_factory=list,
+        description="Visualization-local versions available for this chart/table",
+    )
+    active_branch_id: Optional[str] = Field(
+        default=None, description="Active visualization version ID after refresh"
+    )
+
+
+class ListVisualizationBranchesResponse(BaseModel):
+    """Response listing versions for a chart/datatable event."""
+
+    branches: List[VisualizationBranchSummary] = Field(default_factory=list)
+    active_branch_id: Optional[str] = None
+
+
+class SwitchVisualizationBranchRequest(BaseModel):
+    """Request to switch one chart/datatable event to a stored version."""
+
+    branch_id: str = Field(description="Visualization branch/version ID to activate")
+
+
+class SwitchVisualizationBranchResponse(BaseModel):
+    """Response from activating a visualization-local version."""
+
+    success: bool = Field(description="Whether the visualization branch switch succeeded")
+    output: Optional[str] = Field(default=None, description="Activated visualization output JSON")
+    error: Optional[str] = Field(default=None, description="Error message on failure")
+    conversation: Optional[ConversationResponse] = Field(
+        default=None, description="Updated conversation after visualization branch switch"
+    )
+    branches: List[VisualizationBranchSummary] = Field(
+        default_factory=list,
+        description="Visualization-local versions available for this chart/table",
+    )
+    active_branch_id: Optional[str] = Field(
+        default=None, description="Active visualization version ID after switch"
+    )
+
+
 # =============================================================================
 # Background Chat Task Models
 # =============================================================================

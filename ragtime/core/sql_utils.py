@@ -7,6 +7,8 @@ Handles query validation, result limiting, and output formatting.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 from datetime import date, datetime
@@ -506,6 +508,43 @@ def strip_table_metadata(output: str) -> str:
         content_start += 1
 
     return output[content_start:]
+
+
+def _parse_psql_csv_value(value: str) -> Any:
+    raw = value.strip()
+    if raw == "" or raw.lower() == "null":
+        return None
+    try:
+        if re.fullmatch(r"[-+]?\d+", raw):
+            return int(raw)
+        float_pattern = r"[-+]?(?:(?:\d+\.\d*|\d*\.\d+)(?:[eE][-+]?\d+)?|\d+[eE][-+]?\d+)"
+        if re.fullmatch(float_pattern, raw):
+            return float(raw)
+    except ValueError:
+        return value
+    return value
+
+
+def format_psql_csv_output(output: str, include_metadata: bool = True) -> str:
+    """Format psql --csv output with table metadata for UI rendering."""
+    try:
+        parsed_rows = list(csv.reader(io.StringIO(output)))
+    except csv.Error:
+        return output
+
+    if not parsed_rows:
+        return "Query executed successfully (no results)"
+
+    columns = [str(column) for column in parsed_rows[0]]
+    rows = [
+        {
+            column: _parse_psql_csv_value(raw_row[index] if index < len(raw_row) else "")
+            for index, column in enumerate(columns)
+        }
+        for raw_row in parsed_rows[1:]
+    ]
+
+    return format_query_result(rows, columns, include_metadata=include_metadata)
 
 
 def add_table_metadata_to_psql_output(

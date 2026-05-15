@@ -63,6 +63,7 @@ from ragtime.indexer.models import (
     ToolOutputMode,
     ToolType,
     VectorStoreType,
+    VisualizationBranchSummary,
 )
 from ragtime.indexer.tool_health import tool_health_monitor
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
@@ -2763,6 +2764,339 @@ class IndexerRepository:
             logger.warning(f"Failed to switch conversation branch: {e}")
             return None
 
+    @staticmethod
+    def _locate_visualization_event_in_messages(
+        messages: List[dict[str, Any]],
+        *,
+        message_id: Optional[str],
+        message_index: Optional[int],
+        event_index: int,
+        expected_tool: Optional[str] = None,
+    ) -> tuple[Optional[int], Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+        target_index: Optional[int] = None
+        if message_id:
+            for idx, message in enumerate(messages):
+                if str(message.get("message_id") or "") == message_id:
+                    target_index = idx
+                    break
+        if target_index is None and message_index is not None:
+            if 0 <= message_index < len(messages):
+                target_index = message_index
+        if target_index is None:
+            return None, None, None
+
+        target_message = messages[target_index]
+        if target_message.get("role") != "assistant":
+            return None, None, None
+        events = target_message.get("events")
+        if not isinstance(events, list) or event_index < 0 or event_index >= len(events):
+            return None, None, None
+        target_event = events[event_index]
+        if not isinstance(target_event, dict) or target_event.get("type") != "tool":
+            return None, None, None
+        if expected_tool and target_event.get("tool") != expected_tool:
+            return None, None, None
+        return target_index, target_message, target_event
+
+    @staticmethod
+    def _visualization_branch_where(
+        conversation_id: str,
+        *,
+        message_id: Optional[str],
+        message_index: int,
+        event_index: int,
+        tool_name: str,
+    ) -> dict[str, Any]:
+        where: dict[str, Any] = {
+            "conversationId": conversation_id,
+            "messageIndex": message_index,
+            "eventIndex": event_index,
+            "toolName": tool_name,
+        }
+        if message_id:
+            where["messageId"] = message_id
+        return where
+
+    async def create_visualization_refresh_version(
+        self,
+        conversation_id: str,
+        *,
+        message_id: Optional[str],
+        message_index: Optional[int],
+        event_index: int,
+        new_output: str,
+        expected_tool: str,
+        user_id: Optional[str] = None,
+    ) -> tuple[Optional[Conversation], list[VisualizationBranchSummary], Optional[str]]:
+        """Store a new version for one visualization and make it active."""
+        if event_index < 0:
+            return None, [], None
+        if not message_id and message_index is None:
+            return None, [], None
+
+        db = await self._get_db()
+        try:
+            async with self._get_conversation_branch_lock(conversation_id):
+                async with db.tx() as tx:
+                    prisma_conv = await tx.conversation.find_unique(
+                        where={"id": conversation_id},
+                        include={"user": True},
+                    )
+                    if not prisma_conv:
+                        return None, None
+
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(
+                        prisma_conv.messages
+                    )
+                    target_index, target_message, target_event = (
+                        self._locate_visualization_event_in_messages(
+                            messages,
+                            message_id=message_id,
+                            message_index=message_index,
+                            event_index=event_index,
+                            expected_tool=expected_tool,
+                        )
+                    )
+                    if target_index is None or not target_message or not target_event:
+                        return None, [], None
+
+                    current_output = target_event.get("output")
+                    if not isinstance(current_output, str) or not current_output.strip():
+                        return None, [], None
+
+                    resolved_message_id = str(target_message.get("message_id") or message_id or "").strip() or None
+                    branch_where = self._visualization_branch_where(
+                        conversation_id,
+                        message_id=resolved_message_id,
+                        message_index=target_index,
+                        event_index=event_index,
+                        tool_name=expected_tool,
+                    )
+                    existing_branches = await tx.conversationvisualizationbranch.find_many(
+                        where=branch_where,
+                        order=[{"sequence": "asc"}],
+                        include={"createdByUser": True},
+                    )
+                    next_sequence = (
+                        max((int(getattr(branch, "sequence", 0) or 0) for branch in existing_branches), default=0)
+                        + 1
+                    )
+
+                    if not existing_branches:
+                        await tx.conversationvisualizationbranch.create(
+                            data={
+                                "id": str(uuid.uuid4()),
+                                "conversationId": conversation_id,
+                                "messageId": resolved_message_id,
+                                "messageIndex": target_index,
+                                "eventIndex": event_index,
+                                "toolName": expected_tool,
+                                "sequence": next_sequence,
+                                "output": current_output,
+                                "active": False,
+                                "createdByUserId": user_id,
+                            }
+                        )
+                        next_sequence += 1
+
+                    await tx.conversationvisualizationbranch.update_many(
+                        where=branch_where,
+                        data={"active": False},
+                    )
+                    created_branch = await tx.conversationvisualizationbranch.create(
+                        data={
+                            "id": str(uuid.uuid4()),
+                            "conversationId": conversation_id,
+                            "messageId": resolved_message_id,
+                            "messageIndex": target_index,
+                            "eventIndex": event_index,
+                            "toolName": expected_tool,
+                            "sequence": next_sequence,
+                            "output": new_output,
+                            "active": True,
+                            "createdByUserId": user_id,
+                        }
+                    )
+
+                    refreshed_messages = json.loads(json.dumps(messages, default=str))
+                    refreshed_events = refreshed_messages[target_index].get("events")
+                    if not isinstance(refreshed_events, list):
+                        return None, [], None
+                    refreshed_event = refreshed_events[event_index]
+                    if not isinstance(refreshed_event, dict):
+                        return None, [], None
+                    refreshed_event["output"] = new_output
+
+                    total_tokens = _estimate_conversation_tokens(refreshed_messages)
+                    updated = await tx.conversation.update(
+                        where={"id": conversation_id},
+                        data={
+                            "messages": Json(refreshed_messages),
+                            "totalTokens": total_tokens,
+                            "updatedAt": datetime.utcnow(),
+                        },
+                        include={"user": True},
+                    )
+                    branches = await tx.conversationvisualizationbranch.find_many(
+                        where=branch_where,
+                        order=[{"sequence": "asc"}],
+                        include={"createdByUser": True},
+                    )
+
+                return (
+                    self._prisma_conversation_to_model(updated),
+                    [self._prisma_visualization_branch_to_summary(branch) for branch in branches],
+                    getattr(created_branch, "id", None),
+                )
+        except Exception as e:
+            logger.warning(f"Failed to refresh visualization version: {e}")
+            return None, [], None
+
+    async def get_visualization_branches(
+        self,
+        conversation_id: str,
+        *,
+        message_id: Optional[str],
+        message_index: Optional[int],
+        event_index: int,
+        expected_tool: str,
+    ) -> list[VisualizationBranchSummary]:
+        """List stored versions for one chart/datatable event."""
+        if event_index < 0:
+            return []
+        if not message_id and message_index is None:
+            return []
+
+        conversation = await self.get_conversation(conversation_id)
+        if not conversation:
+            return []
+        target_index: Optional[int] = None
+        resolved_message_id = message_id
+        if message_id:
+            for idx, message in enumerate(conversation.messages):
+                if message.message_id == message_id:
+                    target_index = idx
+                    resolved_message_id = message.message_id
+                    break
+        if target_index is None and message_index is not None:
+            if 0 <= message_index < len(conversation.messages):
+                target_index = message_index
+                resolved_message_id = conversation.messages[message_index].message_id or message_id
+        if target_index is None:
+            return []
+
+        db = await self._get_db()
+        try:
+            where = self._visualization_branch_where(
+                conversation_id,
+                message_id=resolved_message_id,
+                message_index=target_index,
+                event_index=event_index,
+                tool_name=expected_tool,
+            )
+            branches = await db.conversationvisualizationbranch.find_many(
+                where=where,
+                order=[{"sequence": "asc"}],
+                include={"createdByUser": True},
+            )
+            return [self._prisma_visualization_branch_to_summary(branch) for branch in branches]
+        except Exception as e:
+            logger.warning(f"Failed to list visualization branches: {e}")
+            return []
+
+    async def switch_visualization_branch(
+        self,
+        conversation_id: str,
+        branch_id: str,
+    ) -> tuple[Optional[Conversation], list[VisualizationBranchSummary], Optional[str], Optional[str]]:
+        """Activate a stored visualization version and update only that event output."""
+        db = await self._get_db()
+        try:
+            async with self._get_conversation_branch_lock(conversation_id):
+                async with db.tx() as tx:
+                    branch = await tx.conversationvisualizationbranch.find_unique(
+                        where={"id": branch_id},
+                    )
+                    if not branch or getattr(branch, "conversationId", None) != conversation_id:
+                        return None, [], None, None
+
+                    prisma_conv = await tx.conversation.find_unique(
+                        where={"id": conversation_id},
+                        include={"user": True},
+                    )
+                    if not prisma_conv:
+                        return None, [], None, None
+
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(
+                        prisma_conv.messages
+                    )
+                    target_index, _target_message, target_event = (
+                        self._locate_visualization_event_in_messages(
+                            messages,
+                            message_id=getattr(branch, "messageId", None),
+                            message_index=getattr(branch, "messageIndex", None),
+                            event_index=int(getattr(branch, "eventIndex", -1)),
+                            expected_tool=getattr(branch, "toolName", None),
+                        )
+                    )
+                    if target_index is None or not target_event:
+                        return None, [], None, None
+
+                    output = str(getattr(branch, "output", "") or "")
+                    if not output.strip():
+                        return None, [], None, None
+
+                    refreshed_messages = json.loads(json.dumps(messages, default=str))
+                    refreshed_events = refreshed_messages[target_index].get("events")
+                    if not isinstance(refreshed_events, list):
+                        return None, [], None, None
+                    refreshed_event = refreshed_events[int(getattr(branch, "eventIndex", -1))]
+                    if not isinstance(refreshed_event, dict):
+                        return None, [], None, None
+                    refreshed_event["output"] = output
+
+                    branch_where = self._visualization_branch_where(
+                        conversation_id,
+                        message_id=getattr(branch, "messageId", None),
+                        message_index=int(getattr(branch, "messageIndex", target_index)),
+                        event_index=int(getattr(branch, "eventIndex", -1)),
+                        tool_name=str(getattr(branch, "toolName", "") or ""),
+                    )
+                    await tx.conversationvisualizationbranch.update_many(
+                        where=branch_where,
+                        data={"active": False},
+                    )
+                    await tx.conversationvisualizationbranch.update(
+                        where={"id": branch_id},
+                        data={"active": True},
+                    )
+
+                    total_tokens = _estimate_conversation_tokens(refreshed_messages)
+                    updated = await tx.conversation.update(
+                        where={"id": conversation_id},
+                        data={
+                            "messages": Json(refreshed_messages),
+                            "totalTokens": total_tokens,
+                            "updatedAt": datetime.utcnow(),
+                        },
+                        include={"user": True},
+                    )
+                    branches = await tx.conversationvisualizationbranch.find_many(
+                        where=branch_where,
+                        order=[{"sequence": "asc"}],
+                        include={"createdByUser": True},
+                    )
+
+                return (
+                    self._prisma_conversation_to_model(updated),
+                    [self._prisma_visualization_branch_to_summary(item) for item in branches],
+                    branch_id,
+                    output,
+                )
+        except Exception as e:
+            logger.warning(f"Failed to switch visualization branch: {e}")
+            return None, [], None, None
+
     async def get_conversation_branches(
         self,
         conversation_id: str,
@@ -3160,6 +3494,25 @@ class IndexerRepository:
             branch_kind=getattr(prisma_branch, "branchKind", None),
             message_count=message_count,
             associated_snapshot_id=getattr(prisma_branch, "associatedSnapshotId", None),
+            created_by_user_id=getattr(prisma_branch, "createdByUserId", None),
+            created_by_username=getattr(user, "username", None) if user else None,
+            created_at=prisma_branch.createdAt,
+        )
+
+    def _prisma_visualization_branch_to_summary(
+        self, prisma_branch: Any
+    ) -> VisualizationBranchSummary:
+        """Convert Prisma ConversationVisualizationBranch to lightweight summary."""
+        user = getattr(prisma_branch, "createdByUser", None)
+        return VisualizationBranchSummary(
+            id=prisma_branch.id,
+            conversation_id=prisma_branch.conversationId,
+            message_id=getattr(prisma_branch, "messageId", None),
+            message_index=prisma_branch.messageIndex,
+            event_index=prisma_branch.eventIndex,
+            tool_name=prisma_branch.toolName,
+            sequence=prisma_branch.sequence,
+            active=bool(getattr(prisma_branch, "active", False)),
             created_by_user_id=getattr(prisma_branch, "createdByUserId", None),
             created_by_username=getattr(user, "username", None) if user else None,
             created_at=prisma_branch.createdAt,

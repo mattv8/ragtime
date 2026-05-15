@@ -3349,6 +3349,54 @@ export interface RetryVisualizationResponse {
   source_rerun_used?: boolean;
 }
 
+export interface RefreshLiveVisualizationRequest {
+  tool_type: 'datatable' | 'chart';
+  message_id?: string | null;
+  message_index?: number | null;
+  event_index: number;
+}
+
+export interface VisualizationBranchSummary {
+  id: string;
+  conversation_id: string;
+  message_id?: string | null;
+  message_index: number;
+  event_index: number;
+  tool_name: string;
+  sequence: number;
+  active: boolean;
+  created_by_user_id?: string | null;
+  created_by_username?: string | null;
+  created_at: string;
+}
+
+export interface ListVisualizationBranchesResponse {
+  branches: VisualizationBranchSummary[];
+  active_branch_id?: string | null;
+}
+
+export interface SwitchVisualizationBranchRequest {
+  branch_id: string;
+}
+
+export interface SwitchVisualizationBranchResponse {
+  success: boolean;
+  output?: string | null;
+  error?: string | null;
+  conversation?: Conversation | null;
+  branches: VisualizationBranchSummary[];
+  active_branch_id?: string | null;
+}
+
+export interface RefreshLiveVisualizationResponse {
+  success: boolean;
+  output?: string | null;
+  error?: string | null;
+  conversation?: Conversation | null;
+  branches: VisualizationBranchSummary[];
+  active_branch_id?: string | null;
+}
+
 export interface RetryTerminalToolRequest {
   tool_config_id?: string;
   builtin_tool_id?: string;

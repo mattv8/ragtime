@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
 from ragtime.core.security import sanitize_output, validate_sql_query
-from ragtime.core.sql_utils import add_table_metadata_to_psql_output
+from ragtime.core.sql_utils import format_psql_csv_output
 
 logger = get_logger(__name__)
 
@@ -84,6 +84,7 @@ async def execute_postgres_query(query: str, description: str) -> str:
         # Direct connection using psql
         cmd = [
             "psql",
+            "--csv",
             "-h",
             postgres_host,
             "-p",
@@ -105,7 +106,11 @@ async def execute_postgres_query(query: str, description: str) -> str:
             postgres_container,
             "bash",
             "-c",
-            f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \'{escaped_query}\'',
+            (
+                'PGPASSWORD="$POSTGRES_PASSWORD" psql --csv '
+                '-U "$POSTGRES_USER" -d "$POSTGRES_DB" '
+                f"-c '{escaped_query}'"
+            ),
         ]
         env = None
 
@@ -128,7 +133,7 @@ async def execute_postgres_query(query: str, description: str) -> str:
         logger.debug(f"Result rows: {output.count(chr(10))}")
         if output:
             # Add table metadata for UI rendering, then sanitize
-            output_with_metadata = add_table_metadata_to_psql_output(output)
+            output_with_metadata = format_psql_csv_output(output)
             return sanitize_output(output_with_metadata)
         return "Query executed successfully (no results)"
 

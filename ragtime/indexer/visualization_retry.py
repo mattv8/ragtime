@@ -22,6 +22,7 @@ from ragtime.indexer.repository import repository
 from ragtime.rag import rag
 from ragtime.tools.chart import create_chart
 from ragtime.tools.datatable import create_datatable
+from ragtime.userspace.live_data import normalize_live_data_connection
 
 logger = get_logger(__name__)
 
@@ -324,22 +325,30 @@ def _table_to_chart_source(table_source: dict[str, Any], strategy: str) -> _Vali
     if label_index in numeric_columns and len(columns) > 1:
         label_index = next((idx for idx in range(len(columns)) if idx not in numeric_columns), 0)
     datasets = []
+    dataset_mappings = []
     for column_index in numeric_columns[:MAX_CHART_DATASETS]:
         if column_index == label_index and len(numeric_columns) > 1:
             continue
+        label = columns[column_index]
         datasets.append(
             {
-                "label": columns[column_index],
+                "label": label,
                 "data": [_coerce_number(row[column_index]) for row in rows],
             }
         )
+        dataset_mappings.append({"label": label, "data_field": columns[column_index]})
     if not datasets:
         raise ValueError("No numeric chart dataset found")
+    result_mapping = {
+        "label_field": columns[label_index],
+        "datasets": dataset_mappings,
+    }
     return _ValidatedPayload(
         source_data={
             "labels": [str(row[label_index]) for row in rows],
             "datasets": datasets,
             "chart_type": "bar",
+            "result_mapping": result_mapping,
         },
         strategy=f"{strategy}_table_to_chart",
     )
@@ -365,8 +374,43 @@ def _find_deterministic_payload(request: RetryVisualizationRequest) -> _Validate
     return None
 
 
+def _build_retry_data_connection(
+    request: RetryVisualizationRequest,
+    tool_type: str,
+    validated: _ValidatedPayload,
+) -> dict[str, Any] | None:
+    for event in reversed(request.context_events[-MAX_CONTEXT_EVENTS:]):
+        if not isinstance(event, dict):
+            continue
+        connection = event.get("connection")
+        event_input = event.get("input")
+        if not isinstance(connection, dict) or not isinstance(event_input, dict) or not event_input:
+            continue
+
+        data_connection = {**connection, "request": event_input}
+        if tool_type == "chart":
+            mapping = validated.source_data.get("result_mapping")
+            if isinstance(mapping, dict) and mapping:
+                data_connection["result_mapping"] = mapping
+            else:
+                return None
+        try:
+            return normalize_live_data_connection(
+                data_connection,
+                require_component_id=True,
+                require_request=True,
+                require_result_mapping=tool_type == "chart",
+            )
+        except ValueError:
+            continue
+    return None
+
+
 async def _render_visualization(
-    tool_type: str, title: str | None, validated: _ValidatedPayload
+    tool_type: str,
+    title: str | None,
+    validated: _ValidatedPayload,
+    data_connection: dict[str, Any] | None = None,
 ) -> str:
     if tool_type == "datatable":
         rows = validated.source_data["rows"]
@@ -375,6 +419,7 @@ async def _render_visualization(
             columns=validated.source_data["columns"],
             data=rows,
             description=f"Table with {len(rows)} rows",
+            data_connection=data_connection,
         )
 
     labels = validated.source_data["labels"]
@@ -384,6 +429,7 @@ async def _render_visualization(
         labels=labels,
         datasets=validated.source_data["datasets"],
         description=f"Chart with {len(labels)} data points",
+        data_connection=data_connection,
     )
 
 
@@ -617,7 +663,12 @@ async def retry_visualization_with_repair(
 ) -> RetryVisualizationResponse:
     deterministic = _find_deterministic_payload(request)
     if deterministic:
-        output = await _render_visualization(request.tool_type, request.title, deterministic)
+        output = await _render_visualization(
+            request.tool_type,
+            request.title,
+            deterministic,
+            _build_retry_data_connection(request, request.tool_type, deterministic),
+        )
         await _persist_repaired_event(request, context, output)
         return RetryVisualizationResponse(
             success=True,
@@ -635,7 +686,12 @@ async def retry_visualization_with_repair(
                 validated = _validate_payload_for_tool(
                     request.tool_type, rerun_payload, "source_rerun"
                 )
-                output = await _render_visualization(request.tool_type, request.title, validated)
+                output = await _render_visualization(
+                    request.tool_type,
+                    request.title,
+                    validated,
+                    _build_retry_data_connection(request, request.tool_type, validated),
+                )
                 await _persist_repaired_event(request, context, output)
                 return RetryVisualizationResponse(
                     success=True,
@@ -649,7 +705,12 @@ async def retry_visualization_with_repair(
 
     ai_payload = await _repair_with_ai(request, context, rerun_output)
     if ai_payload:
-        output = await _render_visualization(request.tool_type, request.title, ai_payload)
+        output = await _render_visualization(
+            request.tool_type,
+            request.title,
+            ai_payload,
+            _build_retry_data_connection(request, request.tool_type, ai_payload),
+        )
         await _persist_repaired_event(request, context, output)
         return RetryVisualizationResponse(
             success=True,

@@ -161,6 +161,41 @@ class VisualizationRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.repair_used)
         self.assertTrue(result.source_rerun_used)
         self.assertEqual(result.repair_strategy, "source_rerun")
+        assert result.output is not None
+        payload = json.loads(result.output)
+        self.assertEqual(payload["data_connection"]["component_id"], "tool-1")
+        self.assertEqual(payload["data_connection"]["request"], {"query": "select name, count from metrics"})
+
+    async def test_chart_retry_from_live_context_keeps_refresh_mapping(self) -> None:
+        metadata = '<!--TABLEDATA:{"columns":["month","revenue"],"rows":[["Jan",12],["Feb",20]]}-->\nmonth | revenue'
+        request = RetryVisualizationRequest(
+            tool_type="chart",
+            allow_ai_repair=False,
+            allow_source_rerun=False,
+            context_events=[
+                {
+                    "type": "tool",
+                    "tool": "postgres_query",
+                    "input": {"query": "select month, revenue from sales"},
+                    "output": metadata,
+                    "connection": {"tool_config_id": "tool-1", "tool_type": "postgres"},
+                }
+            ],
+        )
+
+        result = await retry_visualization_with_repair(request, _context({"tool-1"}))
+
+        self.assertTrue(result.success)
+        assert result.output is not None
+        payload = json.loads(result.output)
+        data_connection = payload["data_connection"]
+        self.assertEqual(data_connection["component_id"], "tool-1")
+        self.assertEqual(data_connection["request"], {"query": "select month, revenue from sales"})
+        self.assertEqual(data_connection["result_mapping"]["label_field"], "month")
+        self.assertEqual(
+            data_connection["result_mapping"]["datasets"],
+            [{"label": "revenue", "data_field": "revenue"}],
+        )
 
     async def test_invalid_ai_repair_is_rejected(self) -> None:
         request = RetryVisualizationRequest(

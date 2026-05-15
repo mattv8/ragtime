@@ -49,6 +49,10 @@ from langchain_openai.chat_models.base import (
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from ragtime.chat_runtime import chat_runtime_service
+from ragtime.chat_runtime.payloads import build_chat_diagnostic_command_payload
+from ragtime.chat_runtime.payloads import build_chat_diagnostic_rejection_payload
+from ragtime.chat_runtime.payloads import normalize_chat_diagnostic_timeout_seconds
+from ragtime.chat_runtime.payloads import resolve_chat_diagnostic_conversation_id
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_BLOCK_PRIVATE_NETWORKS
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_ENABLED
@@ -58,10 +62,6 @@ from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID
 from ragtime.chat_runtime.presets import CHAT_WEB_BROWSE_TOOL_ID
 from ragtime.chat_runtime.presets import CHAT_WEB_READ_PDF_TOOL_ID
 from ragtime.chat_runtime.presets import CHAT_WEB_SEARCH_TOOL_ID
-from ragtime.chat_runtime.payloads import build_chat_diagnostic_command_payload
-from ragtime.chat_runtime.payloads import build_chat_diagnostic_rejection_payload
-from ragtime.chat_runtime.payloads import normalize_chat_diagnostic_timeout_seconds
-from ragtime.chat_runtime.payloads import resolve_chat_diagnostic_conversation_id
 from ragtime.config import settings
 from ragtime.core import llama_cpp, lmstudio, omlx
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
@@ -160,11 +160,13 @@ from ragtime.rag.userspace_window_validator import find_cross_origin_window_acce
 from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.chart import (
     CHAT_CHART_DESCRIPTION_SUFFIX,
+    CreateLiveChartInput,
     USERSPACE_CHART_DESCRIPTION_SUFFIX,
     create_chart_tool,
 )
 from ragtime.tools.datatable import (
     CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    CreateLiveDataTableInput,
     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
     create_datatable_tool,
 )
@@ -7506,6 +7508,11 @@ except Exception as e:
                 "Dashboard component execution via `context.components[id].execute()` shares the tool's configured timeout. "
                 "If a complex query risks exceeding the timeout, optimize the query or advise the user to ask an admin to increase the tool timeout in Settings > Tools.\n"
             )
+        elif mode == "chat":
+            prompt += (
+                "When creating chat charts or datatables from SQL query results, pass the successful query result rows as visualization `source_data` and use the listed id as `data_connection.component_id`. "
+                "Persist the exact successful bounded query payload as `data_connection.request`. For charts, also persist `data_connection.result_mapping` so initial render and live refresh transform rows into the same chart shape.\n"
+            )
 
         return prompt + "\n" + "\n".join(lines)
 
@@ -7622,6 +7629,8 @@ except Exception as e:
         self,
         tools: list[Any],
         mode: str,
+        *,
+        require_live_visualizations: bool = False,
     ) -> list[Any]:
         """Return tools with mode-specific descriptions for this request."""
         if not tools:
@@ -7632,12 +7641,13 @@ except Exception as e:
             "- Query/search tools should provide source data and request payloads for live-wired dashboard components.\n"
             "- Do not assume static snapshots are acceptable persistence for dashboard artifacts.\n"
             "- Use the exact successful query payload as the baseline connection request for live wiring.\n"
-            "- Chat query tools may enforce LIMIT for safe exploration, but persisted live_data_connections request payloads do not require LIMIT unless intentionally desired."
+            "- Keep explicit result limits in persisted live_data_connections request payloads so previews and live refreshes stay bounded."
         )
 
         chat_query_suffix = (
             "\n\nChat mode override:\n"
-            "- Use this tool for current-response analysis and include explicit payload values per call."
+            "- Use this tool for current-response analysis and keep explicit result limits in query payloads.\n"
+            "- When a result is rendered with create_chart or create_datatable, pass the returned columns/rows as visualization source_data, then copy this tool's active ToolConfig ID and exact successful bounded input payload into the visualization data_connection so the chat UI can refresh the same bounded live data."
         )
 
         overridden_tools: list[Any] = []
@@ -7668,13 +7678,17 @@ except Exception as e:
                 overridden_tools.append(tool)
                 continue
 
+            overrides: dict[str, Any] = {
+                "description": description.rstrip() + "\n" + description_suffix.strip(),
+            }
+            if mode == "chat" and require_live_visualizations:
+                if tool_name == "create_chart":
+                    overrides["args_schema"] = CreateLiveChartInput
+                elif tool_name == "create_datatable":
+                    overrides["args_schema"] = CreateLiveDataTableInput
+
             overridden_tools.append(
-                self._clone_structured_tool(
-                    tool,
-                    description=(
-                        description.rstrip() + "\n" + description_suffix.strip()
-                    ),
-                )
+                self._clone_structured_tool(tool, **overrides)
             )
 
         return overridden_tools
@@ -12677,9 +12691,16 @@ except Exception as e:
                 for tool in runtime_tools
             )
             if has_workspace_payload or has_inline_viz_tools:
+                has_live_tool_connections = any(
+                    self._get_tool_connection_metadata(getattr(tool, "name", ""))
+                    for tool in runtime_tools
+                    if getattr(tool, "name", "")
+                    not in {"create_chart", "create_datatable"}
+                )
                 runtime_tools = self._apply_mode_specific_tool_description_overrides(
                     runtime_tools,
                     mode="chat",
+                    require_live_visualizations=has_live_tool_connections,
                 )
                 if add_chat_visualization_prompt:
                     prompt_additions += UI_VISUALIZATION_CHAT_PROMPT

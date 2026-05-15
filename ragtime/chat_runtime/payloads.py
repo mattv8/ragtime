@@ -1,12 +1,12 @@
 """Shared payload helpers for chat diagnostics tool results."""
 
+
 from __future__ import annotations
 
 from typing import Any, Mapping
 
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID
-
 
 def resolve_chat_diagnostic_conversation_id(
     conversation_id: str | None,

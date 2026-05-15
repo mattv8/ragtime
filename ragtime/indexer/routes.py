@@ -21,7 +21,7 @@ import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Literal, Optional, cast
 
 import httpx
 import posixpath
@@ -44,13 +44,13 @@ from prisma import Json, Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID
-from ragtime.chat_runtime.presets import CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.chat_runtime.payloads import build_chat_diagnostic_command_payload
 from ragtime.chat_runtime.payloads import build_chat_diagnostic_rejection_payload
 from ragtime.chat_runtime.payloads import normalize_chat_diagnostic_timeout_seconds
 from ragtime.chat_runtime.payloads import resolve_chat_diagnostic_conversation_id
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID
+from ragtime.chat_runtime.presets import CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.chat_runtime.service import chat_runtime_service
 from ragtime.core import llama_cpp, lmstudio, omlx
 from ragtime.core.app_settings import invalidate_settings_cache
@@ -157,6 +157,11 @@ from ragtime.indexer.background_tasks import (
 from ragtime.indexer.chat_attachments import store_chat_attachment_upload
 from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
 from ragtime.indexer.filesystem_service import filesystem_indexer
+from ragtime.indexer.live_visualizations import (
+    LiveVisualizationRefreshError,
+    build_component_request_from_visualization,
+    render_refreshed_visualization,
+)
 from ragtime.indexer.models import (
     AnalyzeIndexRequest,
     AppSettings,
@@ -211,12 +216,17 @@ from ragtime.indexer.models import (
     ProviderPromptDebugListResponse,
     ProviderPromptDebugRecord,
     PublicShareTargetResponse,
+    ListVisualizationBranchesResponse,
+    RefreshLiveVisualizationRequest,
+    RefreshLiveVisualizationResponse,
     RepoVisibilityResponse,
     RetryVisualizationRequest,
     RetryVisualizationResponse,
     SchemaIndexJobResponse,
     SendMessageRequest,
     SharedConversationResponse,
+    SwitchVisualizationBranchRequest,
+    SwitchVisualizationBranchResponse,
     SwitchConversationBranchRequest,
     ToolConfig,
     ToolGroup,
@@ -12615,6 +12625,217 @@ async def retry_visualization(
     except Exception as e:
         logger.exception(f"Error retrying visualization: {e}")
         return RetryVisualizationResponse(success=False, error=str(e))
+
+
+def _get_visualization_event_output(
+    conversation: Conversation,
+    request: RefreshLiveVisualizationRequest,
+    expected_tool: str,
+) -> tuple[int, str]:
+    target_index: int | None = None
+    if request.message_id:
+        for idx, message in enumerate(conversation.messages):
+            if message.message_id == request.message_id:
+                target_index = idx
+                break
+    if target_index is None and request.message_index is not None:
+        if 0 <= request.message_index < len(conversation.messages):
+            target_index = request.message_index
+    if target_index is None:
+        raise HTTPException(status_code=400, detail="Visualization message not found")
+
+    message = conversation.messages[target_index]
+    if message.role != "assistant" or not message.events:
+        raise HTTPException(status_code=400, detail="Target message is not an assistant visualization message")
+    if request.event_index >= len(message.events):
+        raise HTTPException(status_code=400, detail="Visualization event not found")
+    event = message.events[request.event_index]
+    if not isinstance(event, dict) or event.get("type") != "tool":
+        raise HTTPException(status_code=400, detail="Target event is not a tool event")
+    if event.get("tool") != expected_tool:
+        raise HTTPException(status_code=400, detail="Target event tool does not match refresh type")
+    output = event.get("output")
+    if not isinstance(output, str) or not output.strip():
+        raise HTTPException(status_code=400, detail="Target visualization has no output")
+    return target_index, output
+
+
+def _active_visualization_branch_id(branches: list[Any]) -> str | None:
+    for branch in branches:
+        if getattr(branch, "active", False):
+            return getattr(branch, "id", None)
+    return None
+
+
+@router.post(
+    "/conversations/{conversation_id}/visualizations/refresh-live-data",
+    response_model=RefreshLiveVisualizationResponse,
+)
+async def refresh_live_visualization(
+    conversation_id: str,
+    request: RefreshLiveVisualizationRequest,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Rerun a live component-backed chart/datatable and version this event."""
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conversation = await repository.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    expected_tool = "create_chart" if request.tool_type == "chart" else "create_datatable"
+    try:
+        message_index, original_output = _get_visualization_event_output(
+            conversation, request, expected_tool
+        )
+        component_request = build_component_request_from_visualization(
+            original_output,
+            request.tool_type,
+        )
+    except LiveVisualizationRefreshError as exc:
+        return RefreshLiveVisualizationResponse(success=False, error=str(exc))
+
+    _, selected_tool_ids, _ = await _resolve_selected_tool_ids_for_request(
+        conversation,
+        user,
+        workspace_id,
+        _workspace_chat_required_role(workspace_id),
+    )
+
+    try:
+        component_response = await userspace_service.execute_component_for_selected_tools(
+            set(selected_tool_ids),
+            component_request,
+            error_log_prefix="Chat live visualization refresh failed",
+        )
+        refreshed_output = render_refreshed_visualization(
+            original_output=original_output,
+            tool_type=request.tool_type,
+            component_response=component_response,
+        )
+    except HTTPException as exc:
+        return RefreshLiveVisualizationResponse(success=False, error=str(exc.detail))
+    except LiveVisualizationRefreshError as exc:
+        return RefreshLiveVisualizationResponse(success=False, error=str(exc))
+    except Exception as exc:
+        logger.exception("Error refreshing live visualization: %s", exc)
+        return RefreshLiveVisualizationResponse(success=False, error=str(exc))
+
+    updated, branches, active_branch_id = await repository.create_visualization_refresh_version(
+        conversation_id,
+        message_id=request.message_id,
+        message_index=message_index,
+        event_index=request.event_index,
+        new_output=refreshed_output,
+        expected_tool=expected_tool,
+        user_id=user.id,
+    )
+    if not updated or not active_branch_id:
+        return RefreshLiveVisualizationResponse(
+            success=False,
+            error="Failed to persist refreshed visualization version.",
+        )
+
+    decorated = await repository.attach_message_snapshot_links(updated)
+    return RefreshLiveVisualizationResponse(
+        success=True,
+        output=refreshed_output,
+        conversation=_to_conversation_response(decorated or updated),
+        branches=branches,
+        active_branch_id=active_branch_id,
+    )
+
+
+@router.get(
+    "/conversations/{conversation_id}/visualizations/branches",
+    response_model=ListVisualizationBranchesResponse,
+)
+async def list_visualization_branches(
+    conversation_id: str,
+    tool_type: Literal["datatable", "chart"],
+    event_index: int,
+    message_id: Optional[str] = None,
+    message_index: Optional[int] = None,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """List stored versions for one chart/datatable event."""
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    expected_tool = "create_chart" if tool_type == "chart" else "create_datatable"
+    branches = await repository.get_visualization_branches(
+        conversation_id,
+        message_id=message_id,
+        message_index=message_index,
+        event_index=event_index,
+        expected_tool=expected_tool,
+    )
+    return ListVisualizationBranchesResponse(
+        branches=branches,
+        active_branch_id=_active_visualization_branch_id(branches),
+    )
+
+
+@router.post(
+    "/conversations/{conversation_id}/visualizations/branches/switch",
+    response_model=SwitchVisualizationBranchResponse,
+)
+async def switch_visualization_branch(
+    conversation_id: str,
+    request: SwitchVisualizationBranchRequest,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Activate a stored version for one chart/datatable event."""
+    await _assert_workspace_access(
+        workspace_id, user, _workspace_chat_required_role(workspace_id)
+    )
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    updated, branches, active_branch_id, output = await repository.switch_visualization_branch(
+        conversation_id,
+        request.branch_id,
+    )
+    if not updated or not output or not active_branch_id:
+        return SwitchVisualizationBranchResponse(
+            success=False,
+            error="Failed to switch visualization version.",
+        )
+    decorated = await repository.attach_message_snapshot_links(updated)
+    return SwitchVisualizationBranchResponse(
+        success=True,
+        output=output,
+        conversation=_to_conversation_response(decorated or updated),
+        branches=branches,
+        active_branch_id=active_branch_id,
+    )
 
 
 @router.post(
