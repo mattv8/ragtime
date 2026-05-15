@@ -123,8 +123,15 @@ function getConversationBranchAnchorIndex(
   messageCount: number,
 ): number {
   if (messageCount <= 0) return 0;
-  const target = branchKind === 'delete' ? branchPointIndex - 1 : branchPointIndex;
+  const target = getConversationBranchAnchorTargetIndex(branchPointIndex, branchKind);
   return Math.max(0, Math.min(target, messageCount - 1));
+}
+
+function getConversationBranchAnchorTargetIndex(
+  branchPointIndex: number,
+  branchKind: ConversationBranchKind | null | undefined,
+): number {
+  return branchKind === 'delete' ? branchPointIndex - 1 : branchPointIndex;
 }
 
 function getConversationBranchSelectionKey(branchPointIndex: number, anchorIndex: number): string {
@@ -5582,19 +5589,18 @@ export function ChatPanel({
     const grouped = new Map<number, BranchRenderGroup[]>();
 
     for (const point of branchPoints) {
-      // Skip branches whose anchor message no longer exists in the current
-      // (possibly optimistically truncated) message list. Without this,
-      // getConversationBranchAnchorIndex's Math.min clamp would pin a
-      // deeper-message branch group onto the last visible user message
-      // during the brief window between edit/replay/delete creating the
-      // new branch and the streamed assistant reply re-extending the
-      // conversation. See the "Oddly the anchor from messages further on
-      // attaches to the user message until streaming begins" report.
-      const anchorTarget = point.branch_point_index;
-      if (anchorTarget >= messageCount) continue;
-
       const groupsForPoint = new Map<number, ConversationBranchSummary[]>();
       for (const branch of point.branches) {
+        // Skip branches whose anchor message no longer exists in the current
+        // (possibly optimistically truncated) message list. Use the branch-kind
+        // specific target here so delete branches at the first removed message
+        // can still attach to the previous surviving row.
+        const anchorTarget = getConversationBranchAnchorTargetIndex(
+          point.branch_point_index,
+          branch.branch_kind,
+        );
+        if (anchorTarget < 0 || anchorTarget >= messageCount) continue;
+
         const anchorIndex = getConversationBranchAnchorIndex(
           point.branch_point_index,
           branch.branch_kind,
