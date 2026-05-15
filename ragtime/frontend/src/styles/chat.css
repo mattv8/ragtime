@@ -3011,9 +3011,39 @@ button.tool-call-userspace-write-path-link:hover {
   margin: var(--space-sm) 0;
   width: 100%;
   min-height: 200px;
+  max-width: 730px;
 }
 .chart-container canvas {
   display: block;
+}
+.chart-container-expanded {
+  max-width: none;
+}
+.chart-resize-btn {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition-fast), background var(--transition-fast);
+  z-index: 5;
+}
+.chart-container:hover .chart-resize-btn,
+.chart-container-expanded .chart-resize-btn {
+  opacity: 1;
+}
+.chart-resize-btn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
 }
 .live-data-refresh-btn {
   display: inline-flex;

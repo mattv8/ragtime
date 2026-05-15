@@ -902,6 +902,7 @@ const ChartDisplay = memo(function ChartDisplay({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartInstanceRef = useRef<ChartInstance | null>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
 
   // Get theme colors from CSS variables
   const getThemeColors = useCallback(() => {
@@ -1005,7 +1006,14 @@ const ChartDisplay = memo(function ChartDisplay({
 
   return (
     <>
-      <div className="chart-container" ref={containerRef}>
+      <div className={`chart-container${isExpanded ? ' chart-container-expanded' : ''}`} ref={containerRef}>
+        <button
+          className="chart-resize-btn"
+          onClick={() => setIsExpanded(e => !e)}
+          title={isExpanded ? 'Collapse chart' : 'Expand chart'}
+        >
+          {isExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </button>
         <canvas ref={canvasRef}></canvas>
         {chartData.description && (
           <p className="chart-description">
