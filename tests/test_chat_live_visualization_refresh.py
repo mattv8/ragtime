@@ -19,7 +19,7 @@ if inserted_fake_rag_prompts:
     sys.modules.setdefault("ragtime.rag", fake_rag_package)
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
 
-from ragtime.core.sql_utils import format_psql_csv_output
+from ragtime.core.sql_utils import format_psql_csv_output, format_query_result
 from ragtime.indexer.live_visualizations import (
     LiveVisualizationRefreshError,
     build_component_request_from_visualization,
@@ -351,6 +351,32 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
         self.assertEqual(rows[0]["part_number"], "ABC-100")
         self.assertEqual(rows[1]["description"], "Plain description")
         self.assertEqual(rows[1]["part_number"], "XYZ-200")
+
+    def test_component_formatter_preserves_large_result_metadata(self) -> None:
+        source_rows = [
+            {"id": index, "amount": index * 2, "name": f"Customer {index}"}
+            for index in range(2500)
+        ]
+        output = format_query_result(
+            source_rows,
+            ["id", "amount", "name"],
+            max_output_length=None,
+            metadata_max_length=None,
+            include_ascii=False,
+        )
+
+        rows, columns = UserSpaceService._parse_query_output(output)
+
+        self.assertEqual(columns, ["id", "amount", "name"])
+        self.assertEqual(len(rows), len(source_rows))
+        self.assertEqual(rows[-1]["id"], 2499)
+        self.assertEqual(rows[-1]["amount"], 4998)
+
+    def test_default_formatter_still_omits_oversized_metadata_for_tool_display(self) -> None:
+        source_rows = [{"id": index, "name": f"Customer {index}"} for index in range(2500)]
+        output = format_query_result(source_rows, ["id", "name"])
+
+        self.assertFalse(output.startswith("<!--TABLEDATA:"))
 
     def test_datatable_refresh_preserves_options_and_replaces_rows(self) -> None:
         output = json.dumps(

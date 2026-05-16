@@ -384,8 +384,10 @@ def _serialize_value(value: Any) -> Any:
 def format_query_result(
     rows: list[dict[str, Any]] | list[tuple[Any, ...]],
     columns: list[str] | None = None,
-    max_output_length: int = 50000,
+    max_output_length: int | None = 50000,
     include_metadata: bool = True,
+    metadata_max_length: int | None = 30000,
+    include_ascii: bool = True,
 ) -> str:
     """
     Format query results as a readable table string with embedded metadata.
@@ -405,7 +407,10 @@ def format_query_result(
     Args:
         rows: Query result rows (list of dicts or tuples).
         columns: Column names (required if rows are tuples).
-        max_output_length: Maximum output string length.
+        max_output_length: Maximum output string length, or None for no truncation.
+        include_metadata: Whether to include hidden JSON table metadata.
+        metadata_max_length: Maximum JSON metadata length, or None for no metadata cap.
+        include_ascii: Whether to include the readable ASCII fallback table.
 
     Returns:
         Formatted table string with embedded metadata.
@@ -443,14 +448,22 @@ def format_query_result(
         # Limit metadata size to avoid bloating output
         try:
             metadata_json = json.dumps(table_metadata, separators=(",", ":"))
-            # If metadata is too large, skip it (ASCII table is still readable)
-            if len(metadata_json) > 30000:
+            # If metadata is too large, skip it for ordinary tool output (ASCII
+            # table is still readable). Component execution can disable this
+            # cap because the metadata is the transport for full row data.
+            if metadata_max_length is not None and len(metadata_json) > metadata_max_length:
                 metadata_line = ""
             else:
                 metadata_line = f"<!--TABLEDATA:{metadata_json}-->\n"
         except (TypeError, ValueError):
             # JSON serialization failed, skip metadata
             metadata_line = ""
+
+    if not include_ascii:
+        result = metadata_line.rstrip("\n")
+        if max_output_length is None:
+            return result.replace("\x00", "")
+        return sanitize_output(result, max_output_length)
 
     # Build ASCII table (fallback display)
     lines = []
@@ -480,6 +493,8 @@ def format_query_result(
 
     result = metadata_line + ascii_table
 
+    if max_output_length is None:
+        return result.replace("\x00", "")
     return sanitize_output(result, max_output_length)
 
 
@@ -525,7 +540,13 @@ def _parse_psql_csv_value(value: str) -> Any:
     return value
 
 
-def format_psql_csv_output(output: str, include_metadata: bool = True) -> str:
+def format_psql_csv_output(
+    output: str,
+    include_metadata: bool = True,
+    max_output_length: int | None = 50000,
+    metadata_max_length: int | None = 30000,
+    include_ascii: bool = True,
+) -> str:
     """Format psql --csv output with table metadata for UI rendering."""
     try:
         parsed_rows = list(csv.reader(io.StringIO(output)))
@@ -544,7 +565,14 @@ def format_psql_csv_output(output: str, include_metadata: bool = True) -> str:
         for raw_row in parsed_rows[1:]
     ]
 
-    return format_query_result(rows, columns, include_metadata=include_metadata)
+    return format_query_result(
+        rows,
+        columns,
+        include_metadata=include_metadata,
+        max_output_length=max_output_length,
+        metadata_max_length=metadata_max_length,
+        include_ascii=include_ascii,
+    )
 
 
 def add_table_metadata_to_psql_output(

@@ -20355,6 +20355,9 @@ class UserSpaceService:
                 description="Preview component execution",
                 ssh_tunnel_config=ssh_tunnel_config,
                 include_metadata=True,
+                metadata_max_length=None,
+                max_output_length=None,
+                include_ascii=False,
             )
         elif tool_type == "mysql":
             from ragtime.tools.mysql import execute_mysql_query_async
@@ -20375,6 +20378,9 @@ class UserSpaceService:
                 description="Preview component execution",
                 ssh_tunnel_config=ssh_tunnel_config,
                 include_metadata=True,
+                metadata_max_length=None,
+                max_output_length=None,
+                include_ascii=False,
             )
         elif tool_type == "influxdb":
             from ragtime.tools.influxdb import execute_influxdb_query_async
@@ -20405,6 +20411,9 @@ class UserSpaceService:
                 description="Preview component execution",
                 ssh_tunnel_config=ssh_tunnel_config,
                 include_metadata=True,
+                metadata_max_length=None,
+                max_output_length=None,
+                include_ascii=False,
             )
         else:
             raise ValueError(
@@ -20482,6 +20491,9 @@ class UserSpaceService:
                             rows,
                             columns,
                             include_metadata=True,
+                            metadata_max_length=None,
+                            max_output_length=None,
+                            include_ascii=False,
                         )
                     return "Query executed successfully (no results)"
                 except Exception as e:
@@ -20574,7 +20586,12 @@ class UserSpaceService:
             if not output:
                 return "Query executed successfully (no results)"
 
-            return format_psql_csv_output(output)
+            return format_psql_csv_output(
+                output,
+                max_output_length=None,
+                metadata_max_length=None,
+                include_ascii=False,
+            )
         except asyncio.TimeoutError:
             return (
                 f"Error: Query timed out after {timeout}s. "

@@ -114,6 +114,9 @@ async def execute_mssql_query_async(
     description: str = "",
     ssh_tunnel_config: dict[str, Any] | None = None,
     include_metadata: bool = True,
+    metadata_max_length: int | None = 30000,
+    max_output_length: int | None = 50000,
+    include_ascii: bool = True,
 ) -> str:
     """
     Execute a read-only SQL query against MSSQL Server.
@@ -134,6 +137,9 @@ async def execute_mssql_query_async(
         enforce_result_limit: Whether existing TOP/FETCH clauses are capped to max_results.
         description: Brief description for logging purposes.
         ssh_tunnel_config: Optional SSH tunnel configuration dict.
+        metadata_max_length: Maximum embedded JSON metadata length, or None for no cap.
+        max_output_length: Maximum formatted output length, or None for no truncation.
+        include_ascii: Whether to include a readable ASCII fallback table.
 
     Returns:
         String output from the MSSQL query.
@@ -208,7 +214,14 @@ async def execute_mssql_query_async(
             if not rows and not columns:
                 return "Query executed successfully (no results)"
 
-            return format_query_result(rows, columns, include_metadata=include_metadata)
+            return format_query_result(
+                rows,
+                columns,
+                include_metadata=include_metadata,
+                metadata_max_length=metadata_max_length,
+                max_output_length=max_output_length,
+                include_ascii=include_ascii,
+            )
 
         except pymssql.OperationalError as e:
             error_str = str(e)

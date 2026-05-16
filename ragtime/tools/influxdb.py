@@ -125,6 +125,9 @@ async def execute_influxdb_query_async(
     description: str = "",
     ssh_tunnel_config: dict[str, Any] | None = None,
     include_metadata: bool = True,
+    metadata_max_length: int | None = 30000,
+    max_output_length: int | None = 50000,
+    include_ascii: bool = True,
 ) -> str:
     """
     Execute a Flux query against InfluxDB 2.x.
@@ -211,6 +214,9 @@ async def execute_influxdb_query_async(
                 rows,
                 column_names,
                 include_metadata=include_metadata,
+                metadata_max_length=metadata_max_length,
+                max_output_length=max_output_length,
+                include_ascii=include_ascii,
             )
 
         except Exception as e:
