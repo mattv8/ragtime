@@ -48,7 +48,6 @@ from ragtime.core.sql_utils import (
     TABLE_METADATA_END,
     TABLE_METADATA_START,
     enforce_max_results,
-    format_psql_csv_output,
     format_query_result,
     validate_sql_query,
 )
@@ -20452,28 +20451,34 @@ class UserSpaceService:
 
         ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
 
-        if ssh_tunnel_config:
+        if ssh_tunnel_config or host:
 
             def run_tunnel_query() -> str:
                 try:
                     import psycopg2  # type: ignore[import-untyped]
                     import psycopg2.extras  # type: ignore[import-untyped]
                 except ImportError:
+                    if host and not ssh_tunnel_config:
+                        return ""
                     return "Error: psycopg2 not available"
 
                 tunnel: SSHTunnel | None = None
                 conn = None
                 try:
-                    tunnel_cfg = ssh_tunnel_config_from_dict(
-                        ssh_tunnel_config, default_remote_port=5432
-                    )
-                    if not tunnel_cfg:
-                        return "Error: Invalid SSH tunnel configuration"
-                    tunnel = SSHTunnel(tunnel_cfg)
-                    local_port = tunnel.start()
+                    connect_host = host
+                    connect_port = port
+                    if ssh_tunnel_config:
+                        tunnel_cfg = ssh_tunnel_config_from_dict(
+                            ssh_tunnel_config, default_remote_port=5432
+                        )
+                        if not tunnel_cfg:
+                            return "Error: Invalid SSH tunnel configuration"
+                        tunnel = SSHTunnel(tunnel_cfg)
+                        connect_host = "127.0.0.1"
+                        connect_port = tunnel.start()
                     conn = psycopg2.connect(
-                        host="127.0.0.1",
-                        port=local_port,
+                        host=connect_host,
+                        port=connect_port,
                         user=user,
                         password=password,
                         dbname=database,
@@ -20482,19 +20487,7 @@ class UserSpaceService:
                     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
                     cursor.execute(query)
                     if cursor.description:
-                        rows = [dict(row) for row in cursor.fetchall()]
-                        columns = [
-                            col.name if getattr(col, "name", None) else str(col[0])
-                            for col in cursor.description
-                        ]
-                        return format_query_result(
-                            rows,
-                            columns,
-                            include_metadata=True,
-                            metadata_max_length=None,
-                            max_output_length=None,
-                            include_ascii=False,
-                        )
+                        return self._format_postgres_cursor_result(cursor)
                     return "Query executed successfully (no results)"
                 except Exception as e:
                     return f"Error: {e}"
@@ -20511,20 +20504,24 @@ class UserSpaceService:
                             pass
 
             if timeout > 0:
-                return await asyncio.wait_for(
+                driver_result = await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(None, run_tunnel_query),
                     timeout=timeout + 5,
                 )
-            return await asyncio.get_event_loop().run_in_executor(
-                None, run_tunnel_query
-            )
+            else:
+                driver_result = await asyncio.get_event_loop().run_in_executor(
+                    None, run_tunnel_query
+                )
+            if driver_result:
+                return driver_result
 
         # Direct host or docker container
-        escaped_query = query.replace("'", "'\\''")
+        json_query = self._wrap_postgres_query_for_json_transport(query)
         if host:
             cmd = [
                 "psql",
-                "--csv",
+                "--tuples-only",
+                "--no-align",
                 "-h",
                 host,
                 "-p",
@@ -20534,11 +20531,12 @@ class UserSpaceService:
                 "-d",
                 database,
                 "-c",
-                query,
+                json_query,
             ]
             env = dict(os.environ)
             env["PGPASSWORD"] = password
         elif container:
+            escaped_query = json_query.replace("'", "'\\''")
             cmd = [
                 "docker",
                 "exec",
@@ -20547,7 +20545,7 @@ class UserSpaceService:
                 "bash",
                 "-c",
                 (
-                    'PGPASSWORD="$POSTGRES_PASSWORD" psql --csv '
+                    'PGPASSWORD="$POSTGRES_PASSWORD" psql --tuples-only --no-align '
                     '-U "$POSTGRES_USER" -d "$POSTGRES_DB" '
                     f"-c '{escaped_query}'"
                 ),
@@ -20586,12 +20584,10 @@ class UserSpaceService:
             if not output:
                 return "Query executed successfully (no results)"
 
-            return format_psql_csv_output(
-                output,
-                max_output_length=None,
-                metadata_max_length=None,
-                include_ascii=False,
-            )
+            formatted_output = self._format_postgres_json_transport_output(output)
+            if formatted_output is not None:
+                return formatted_output
+            return "Error: Unable to parse PostgreSQL component result"
         except asyncio.TimeoutError:
             return (
                 f"Error: Query timed out after {timeout}s. "
@@ -20600,6 +20596,81 @@ class UserSpaceService:
             )
         except Exception as e:
             return f"Error: {e}"
+
+    @staticmethod
+    def _format_postgres_cursor_result(cursor: Any) -> str:
+        rows = [dict(row) for row in cursor.fetchall()]
+        columns = [
+            col.name if getattr(col, "name", None) else str(col[0])
+            for col in cursor.description
+        ]
+        return format_query_result(
+            rows,
+            columns,
+            include_metadata=True,
+            metadata_max_length=None,
+            max_output_length=None,
+            include_ascii=False,
+        )
+
+    @staticmethod
+    def _wrap_postgres_query_for_json_transport(query: str) -> str:
+        stripped_query = query.strip().rstrip(";")
+        return f"""
+WITH __ragtime_component_query AS (
+{stripped_query}
+),
+__ragtime_component_rows AS (
+    SELECT
+        row_number() OVER () AS __ragtime_row_number,
+        row_to_json(__ragtime_component_query) AS __ragtime_row
+    FROM __ragtime_component_query
+)
+SELECT json_build_object(
+    'columns', COALESCE((
+        SELECT json_agg(__ragtime_field.key ORDER BY __ragtime_field.ordinality)
+        FROM __ragtime_component_rows
+        CROSS JOIN LATERAL json_each(__ragtime_row) WITH ORDINALITY AS __ragtime_field(key, value, ordinality)
+        WHERE __ragtime_row_number = 1
+    ), '[]'::json),
+    'rows', COALESCE((
+        SELECT json_agg(__ragtime_row ORDER BY __ragtime_row_number)
+        FROM __ragtime_component_rows
+    ), '[]'::json)
+) AS result
+""".strip()
+
+    @staticmethod
+    def _format_postgres_json_transport_output(output: str) -> str | None:
+        try:
+            payload = json.loads(output.strip())
+        except Exception:
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        raw_columns = payload.get("columns")
+        raw_rows = payload.get("rows")
+        if not isinstance(raw_rows, list):
+            return None
+
+        rows = [row for row in raw_rows if isinstance(row, dict)]
+        if isinstance(raw_columns, list):
+            columns = [str(column) for column in raw_columns]
+        elif rows:
+            columns = [str(column) for column in rows[0].keys()]
+        else:
+            columns = []
+
+        return format_query_result(
+            rows,
+            columns,
+            include_metadata=True,
+            metadata_max_length=None,
+            max_output_length=None,
+            include_ascii=False,
+        )
 
     @staticmethod
     def _parse_query_output(output: str) -> tuple[list[dict[str, Any]], list[str]]:

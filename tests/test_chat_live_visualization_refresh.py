@@ -352,6 +352,43 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
         self.assertEqual(rows[1]["description"], "Plain description")
         self.assertEqual(rows[1]["part_number"], "XYZ-200")
 
+    def test_postgres_json_transport_preserves_nested_jsonb_values(self) -> None:
+        output = UserSpaceService._format_postgres_json_transport_output(
+            json.dumps(
+                {
+                    "columns": ["id", "payload"],
+                    "rows": [
+                        {
+                            "id": 1,
+                            "payload": {
+                                "active": True,
+                                "items": ["A", "B"],
+                                "nested": {"amount": 12.5},
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+
+        self.assertIsNotNone(output)
+        rows, columns = UserSpaceService._parse_query_output(output or "")
+
+        self.assertEqual(columns, ["id", "payload"])
+        self.assertEqual(rows[0]["id"], 1)
+        self.assertEqual(rows[0]["payload"]["active"], True)
+        self.assertEqual(rows[0]["payload"]["items"], ["A", "B"])
+        self.assertEqual(rows[0]["payload"]["nested"], {"amount": 12.5})
+
+    def test_postgres_json_transport_wrapper_removes_trailing_semicolon(self) -> None:
+        wrapped_query = UserSpaceService._wrap_postgres_query_for_json_transport(
+            "select id, payload from accounts;"
+        )
+
+        self.assertIn("row_to_json(__ragtime_component_query)", wrapped_query)
+        self.assertIn("select id, payload from accounts", wrapped_query)
+        self.assertNotIn("accounts;", wrapped_query)
+
     def test_component_formatter_preserves_large_result_metadata(self) -> None:
         source_rows = [
             {"id": index, "amount": index * 2, "name": f"Customer {index}"}
