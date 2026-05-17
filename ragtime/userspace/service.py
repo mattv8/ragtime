@@ -20615,7 +20615,7 @@ class UserSpaceService:
 
     @staticmethod
     def _wrap_postgres_query_for_json_transport(query: str) -> str:
-        stripped_query = query.strip().rstrip(";")
+        stripped_query = UserSpaceService._strip_postgres_query_terminator(query)
         return f"""
 WITH __ragtime_component_query AS (
 {stripped_query}
@@ -20639,6 +20639,18 @@ SELECT json_build_object(
     ), '[]'::json)
 ) AS result
 """.strip()
+
+    # Component queries arrive as standalone SQL, but the psql fallback embeds
+    # them inside a CTE for JSON transport. Any trailing terminator/comment
+    # noise must be removed before embedding or Postgres sees a syntax error.
+    _POSTGRES_TRAILING_NOISE_RE = re.compile(
+        r"(?:\s+|;+|--[^\n]*|/\*[^*]*(?:\*(?!/)[^*]*)*\*/)+\Z"
+    )
+
+    @staticmethod
+    def _strip_postgres_query_terminator(query: str) -> str:
+        """Make standalone SQL safe to place inside the JSON transport CTE."""
+        return UserSpaceService._POSTGRES_TRAILING_NOISE_RE.sub("", query.strip())
 
     @staticmethod
     def _format_postgres_json_transport_output(output: str) -> str | None:

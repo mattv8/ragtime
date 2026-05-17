@@ -549,12 +549,9 @@ def validate_sql_query(
                 )
 
     # Must have LIMIT clause for SELECT queries to prevent huge result sets
-    if (
-        require_limit_clause
-        and query_upper.startswith("SELECT")
-        and "LIMIT" not in query_upper
-    ):
-        return False, "SELECT queries must include a LIMIT clause"
+    if require_limit_clause and query_upper.startswith("SELECT"):
+        if not re.search(r"\bLIMIT\s+\d+\b", query_upper):
+            return False, "SELECT queries must include a numeric LIMIT clause"
 
     return True, "Query is safe"
 

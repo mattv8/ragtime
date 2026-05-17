@@ -291,6 +291,17 @@ def enforce_max_results(
     current_limit = extract_limit_value(query, db_type)
 
     if current_limit is None:
+        if db_type in {DB_TYPE_POSTGRES, DB_TYPE_MYSQL}:
+            updated = re.sub(
+                r"\bLIMIT\s+ALL\b",
+                f"LIMIT {max_results}",
+                query,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            if updated != query:
+                logger.info(f"Reducing unbounded LIMIT ALL to {max_results}")
+                return updated
         logger.warning(f"No limit clause found in query for {db_type}")
         return query
 

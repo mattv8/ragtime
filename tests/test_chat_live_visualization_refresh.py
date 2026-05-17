@@ -19,7 +19,8 @@ if inserted_fake_rag_prompts:
     sys.modules.setdefault("ragtime.rag", fake_rag_package)
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
 
-from ragtime.core.sql_utils import format_psql_csv_output, format_query_result
+from ragtime.core.security import validate_sql_query
+from ragtime.core.sql_utils import enforce_max_results, format_psql_csv_output, format_query_result
 from ragtime.indexer.live_visualizations import (
     LiveVisualizationRefreshError,
     build_component_request_from_visualization,
@@ -256,7 +257,10 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result, "Error: SELECT queries must include a LIMIT clause")
+        self.assertEqual(
+            result,
+            "Error: SELECT queries must include a numeric LIMIT clause",
+        )
 
     def test_preview_component_execution_can_skip_limit_requirement(self) -> None:
         result = asyncio.run(
@@ -388,6 +392,60 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
         self.assertIn("row_to_json(__ragtime_component_query)", wrapped_query)
         self.assertIn("select id, payload from accounts", wrapped_query)
         self.assertNotIn("accounts;", wrapped_query)
+
+    def test_postgres_json_transport_wrapper_removes_semicolon_before_nonce_comment(self) -> None:
+        wrapped_query = UserSpaceService._wrap_postgres_query_for_json_transport(
+            "select id, payload from accounts LIMIT ALL;\n-- ui_refresh_nonce:123"
+        )
+
+        self.assertIn("select id, payload from accounts LIMIT ALL", wrapped_query)
+        self.assertNotIn("LIMIT ALL;", wrapped_query)
+        self.assertNotIn("ui_refresh_nonce", wrapped_query)
+
+    def test_limit_all_does_not_satisfy_bounded_query_validation(self) -> None:
+        is_safe, reason = validate_sql_query(
+            "select id from accounts limit all",
+            require_limit_clause=True,
+        )
+
+        self.assertFalse(is_safe)
+        self.assertEqual(reason, "SELECT queries must include a numeric LIMIT clause")
+
+    def test_enforce_max_results_replaces_limit_all(self) -> None:
+        query = enforce_max_results("select id from accounts limit all", 100)
+
+        self.assertEqual(query, "select id from accounts LIMIT 100")
+
+    def test_strip_postgres_terminator_handles_interleaved_noise(self) -> None:
+        cases = [
+            ("select 1;", "select 1"),
+            ("select 1;;\n;", "select 1"),
+            ("select 1;\n-- ui_refresh_nonce:42", "select 1"),
+            ("select 1;\n/* trailing */\n-- nonce:1", "select 1"),
+            ("select 1 /* internal */ from t;", "select 1 /* internal */ from t"),
+            ("select 1", "select 1"),
+        ]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    UserSpaceService._strip_postgres_query_terminator(raw),
+                    expected,
+                )
+
+    def test_strip_postgres_terminator_is_linear_on_pathological_input(self) -> None:
+        import time
+
+        # Long block comment without any '*' inside; the naive ``.*?`` form
+        # combined with repeated outer iteration is quadratic. The refactor
+        # must finish well under a second even at 200k chars.
+        payload = "x" * 200_000
+        query = f"select 1;\n/* {payload} */"
+        start = time.perf_counter()
+        result = UserSpaceService._strip_postgres_query_terminator(query)
+        elapsed = time.perf_counter() - start
+
+        self.assertEqual(result, "select 1")
+        self.assertLess(elapsed, 0.5)
 
     def test_component_formatter_preserves_large_result_metadata(self) -> None:
         source_rows = [
