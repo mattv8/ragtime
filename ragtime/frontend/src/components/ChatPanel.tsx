@@ -1005,7 +1005,7 @@ const ChartDisplay = memo(function ChartDisplay({
   }, [chartData, createChart]);
 
   return (
-    <>
+    <div className={`chart-with-anchor${isExpanded ? ' chart-with-anchor-expanded' : ''}`}>
       <div className={`chart-container${isExpanded ? ' chart-container-expanded' : ''}`} ref={containerRef}>
         <button
           className="chart-resize-btn"
@@ -1033,7 +1033,7 @@ const ChartDisplay = memo(function ChartDisplay({
         isSwitchingBranch={isSwitchingBranch}
         onSelectBranch={onSelectBranch}
       />
-    </>
+    </div>
   );
 });
 

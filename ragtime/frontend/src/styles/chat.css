@@ -3002,6 +3002,17 @@ button.tool-call-userspace-write-path-link:hover {
 .tool-call-chart:hover {
   background: transparent;
 }
+.chart-with-anchor {
+  width: 100%;
+  max-width: 730px;
+}
+.chart-with-anchor-expanded {
+  max-width: none;
+}
+.chart-with-anchor > .viz-version-anchor {
+  padding-left: 0;
+  padding-right: 0;
+}
 .chart-container {
   position: relative;
   background: var(--color-surface);
