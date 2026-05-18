@@ -1954,6 +1954,22 @@ async def user_matches_group_identifier(user: Any, group_identifier: str) -> boo
     return False
 
 
+async def validate_session_and_fetch_user(
+    token: Optional[str],
+) -> tuple[Optional[TokenData], Any | None]:
+    """Validate a session token and fetch its backing user record."""
+    if not token:
+        return None, None
+
+    token_data = await validate_session(token)
+    if not token_data:
+        return None, None
+
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": token_data.user_id})
+    return token_data, user
+
+
 # =============================================================================
 # Combined Authentication
 # =============================================================================

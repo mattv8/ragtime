@@ -57,7 +57,7 @@ from ragtime.core.auth import (
     create_session,
     get_browser_matched_origin,
     get_external_origin,
-    validate_session,
+    validate_session_and_fetch_user,
 )
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import setup_logging
@@ -775,15 +775,12 @@ async def authorize_with_session(
         )
 
     # Validate session
-    token_data = await validate_session(session_cookie)
+    token_data, user = await validate_session_and_fetch_user(session_cookie)
     if not token_data:
         return JSONResponse(
             status_code=401, content={"error": "Session expired", "require_login": True}
         )
 
-    # Get user from database
-    db = await get_db()
-    user = await db.user.find_unique(where={"id": token_data.user_id})
     if not user:
         return JSONResponse(
             status_code=401, content={"error": "User not found", "require_login": True}
@@ -1037,25 +1034,18 @@ def _share_form_value(form: Any, key: str) -> str:
 
 
 async def _share_current_user_from_request(request: Request):
-    session_cookie = request.cookies.get("ragtime_session")
-    if not session_cookie:
-        return None
-    token_data = await validate_session(session_cookie)
-    if not token_data:
-        return None
-    db = await get_db()
-    return await db.user.find_unique(where={"id": token_data.user_id})
+    return await _share_current_user_from_token_source(request)
 
 
 async def _share_current_user_from_websocket(websocket: WebSocket):
-    session_cookie = websocket.cookies.get("ragtime_session")
-    if not session_cookie:
-        return None
-    token_data = await validate_session(session_cookie)
-    if not token_data:
-        return None
-    db = await get_db()
-    return await db.user.find_unique(where={"id": token_data.user_id})
+    return await _share_current_user_from_token_source(websocket)
+
+
+async def _share_current_user_from_token_source(source: Request | WebSocket):
+    _, user = await validate_session_and_fetch_user(
+        source.cookies.get("ragtime_session")
+    )
+    return user
 
 
 async def _proxy_shared_workspace_websocket(

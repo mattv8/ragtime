@@ -32,12 +32,16 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from ragtime.core.app_settings import get_app_settings
-from ragtime.core.auth import user_matches_group_identifier, validate_session
+from ragtime.core.auth import (
+    user_matches_group_identifier,
+    validate_session,
+    validate_session_and_fetch_user,
+)
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.mcp_accounting import log_mcp_request
-from ragtime.core.security import require_admin
+from ragtime.core.security import extract_bearer_token, require_admin
 from ragtime.mcp.oauth import (
     handle_authorization_server_metadata,
     handle_protected_resource_metadata,
@@ -261,14 +265,9 @@ async def _validate_bearer_token(scope: Scope) -> bool:
     Returns:
         True if valid, False otherwise
     """
-    # Get Authorization header
-    headers = dict(scope.get("headers", []))
-    auth_header = headers.get(b"authorization", b"").decode()
-
-    if not auth_header.startswith("Bearer "):
+    token = extract_bearer_token(dict(scope.get("headers", [])))
+    if not token:
         return False
-
-    token = auth_header[7:]  # Remove "Bearer " prefix
 
     try:
         token_data = await validate_session(token)
@@ -300,31 +299,23 @@ async def _validate_oauth2_token(
         LDAP group membership. Regular local users are denied if group restriction
         is configured.
     """
-    # Get Authorization header
-    headers = dict(scope.get("headers", []))
-    auth_header = headers.get(b"authorization", b"").decode()
-
-    if not auth_header.startswith("Bearer "):
+    token = extract_bearer_token(dict(scope.get("headers", [])))
+    if not token:
         return False
 
-    token = auth_header[7:]  # Remove "Bearer " prefix
-
     try:
-        token_data = await validate_session(token)
+        token_data, user = await validate_session_and_fetch_user(token)
         if token_data is None:
             return False
 
         # Annotate scope for downstream MCP request logging
         scope["_mcp_user_id"] = token_data.user_id
 
-        # If no group restriction, token is valid
         if not allowed_group_dn:
             return True
 
         # Check if user is in the allowed provider group. LDAP users are checked
         # live when a DN is supplied; internal/local groups use cached memberships.
-        db = await get_db()
-        user = await db.user.find_unique(where={"id": token_data.user_id})
         if not user:
             logger.debug(f"User {token_data.user_id} not found in database")
             return False
@@ -360,27 +351,21 @@ async def _get_user_matching_filter(scope: Scope) -> str | None:
     """
     logger.debug("_get_user_matching_filter: Starting filter check")
 
-    # Get Authorization header
-    headers = dict(scope.get("headers", []))
-    auth_header = headers.get(b"authorization", b"").decode()
-
-    if not auth_header.startswith("Bearer "):
+    token = extract_bearer_token(dict(scope.get("headers", [])))
+    if not token:
         logger.debug("_get_user_matching_filter: No Bearer token found")
         return None
 
-    token = auth_header[7:]  # Remove "Bearer " prefix
-
     try:
-        token_data = await validate_session(token)
+        token_data, user = await validate_session_and_fetch_user(token)
         if token_data is None:
             logger.debug("_get_user_matching_filter: Token validation failed")
             return None
-
-        db = await get_db()
-        user = await db.user.find_unique(where={"id": token_data.user_id})
         if not user:
             logger.debug("_get_user_matching_filter: User not found in database")
             return None
+
+        db = await get_db()
 
         logger.debug(
             f"_get_user_matching_filter: User={user.username}, provider={user.authProvider}, role={user.role}"

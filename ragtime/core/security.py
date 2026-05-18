@@ -10,15 +10,18 @@ from __future__ import annotations
 import ast
 import re
 import shlex
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional, Tuple
 from urllib.parse import urlsplit
 
 import ipaddress
 import posixpath
 from fastapi import Cookie, Depends, HTTPException, Request, status
 
-from ragtime.core.auth import TokenData, validate_session
-from ragtime.core.database import get_db
+from ragtime.core.auth import (
+    TokenData,
+    validate_session,
+    validate_session_and_fetch_user,
+)
 from ragtime.core.logging import get_logger
 
 if TYPE_CHECKING:
@@ -30,6 +33,29 @@ logger = get_logger(__name__)
 # =============================================================================
 # AUTHENTICATION DEPENDENCIES
 # =============================================================================
+
+
+def extract_bearer_token(headers: Any) -> Optional[str]:
+    """Extract a Bearer token from request-style or ASGI-style headers."""
+    auth_header = None
+    try:
+        auth_header = headers.get("Authorization") or headers.get("authorization")
+    except AttributeError:
+        auth_header = None
+
+    if auth_header is None:
+        try:
+            auth_header = headers.get(b"authorization", b"")
+        except AttributeError:
+            return None
+
+    if isinstance(auth_header, bytes):
+        auth_header = auth_header.decode()
+
+    if isinstance(auth_header, str) and auth_header.startswith("Bearer "):
+        return auth_header[7:]
+
+    return None
 
 
 async def get_session_token(
@@ -45,12 +71,7 @@ async def get_session_token(
     if session_cookie:
         return session_cookie
 
-    # Fall back to Authorization header
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        return auth_header[7:]
-
-    return None
+    return extract_bearer_token(request.headers)
 
 
 async def get_current_user(
@@ -68,17 +89,13 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token_data = await validate_session(token)
+    token_data, user = await validate_session_and_fetch_user(token)
     if not token_data:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired session",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-    # Fetch user from database
-    db = await get_db()
-    user = await db.user.find_unique(where={"id": token_data.user_id})
 
     if not user:
         raise HTTPException(
@@ -101,12 +118,8 @@ async def get_current_user_optional(
     if not token:
         return None
 
-    token_data = await validate_session(token)
-    if not token_data:
-        return None
-
-    db = await get_db()
-    return await db.user.find_unique(where={"id": token_data.user_id})
+    _, user = await validate_session_and_fetch_user(token)
+    return user
 
 
 async def require_admin(
