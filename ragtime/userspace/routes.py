@@ -152,8 +152,12 @@ def _cloud_oauth_popup_response(
     event_type: str,
     status_code: int = 200,
     close_window: bool = False,
+    event_data: dict[str, Any] | None = None,
 ) -> HTMLResponse:
-    payload = json.dumps({"type": event_type, "message": message})
+    payload_data = {"type": event_type, "message": message}
+    if event_data:
+        payload_data.update(event_data)
+    payload = json.dumps(payload_data)
     escaped_title = html.escape(title)
     escaped_message = html.escape(message)
     close_script = " window.close();" if close_window else ""
@@ -1354,6 +1358,7 @@ async def complete_user_cloud_oauth_browser_callback(
         title="Cloud Drive Connected",
         message=f"Connected {label}. You can close this window.",
         event_type="ragtime-cloud-oauth-complete",
+        event_data={"account_id": account.id, "provider": account.provider},
         close_window=True,
     )
 

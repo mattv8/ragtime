@@ -5167,6 +5167,46 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, [activeWorkspaceId, isOwner, loadWorkspaceData]);
 
+  const showMountUpdateError = useCallback((
+    mount: WorkspaceMount,
+    err: unknown,
+    fallback: string,
+    options: { assumeGlobalSourceDisabled?: boolean } = {},
+  ) => {
+    const message = getApiErrorMessage(err, fallback);
+    const canNavigateToGlobalSource = mount.mount_source_scope === 'global' && Boolean(onNavigateToTools);
+    const shouldOfferToolsLink = err instanceof ApiError
+      && err.status === 400
+      && canNavigateToGlobalSource
+      && (
+        options.assumeGlobalSourceDisabled === true
+        || mount.source_unavailable_kind === 'mount_source_unavailable'
+      );
+
+    setError(message);
+    if (shouldOfferToolsLink && onNavigateToTools) {
+      toast.error(
+        <>
+          This mount source has been disabled by an administrator.{' '}
+          <a
+            href="#"
+            onClick={(event) => {
+              event.preventDefault();
+              onNavigateToTools('mount-sources');
+            }}
+            style={{ color: 'inherit', textDecoration: 'underline' }}
+          >
+            Re-enable in Tools
+          </a>
+        </>,
+        8000,
+      );
+      return;
+    }
+
+    toast.error(message, 8000);
+  }, [onNavigateToTools, toast]);
+
   const handleEjectMount = useCallback(async (mount: WorkspaceMount) => {
     if (!activeWorkspaceId || !isOwner) return;
     setSavingMountWatchId(mount.id);
@@ -5178,11 +5218,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setError(null);
       void loadWorkspaceData(activeWorkspaceId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to eject mount');
+      showMountUpdateError(mount, err, 'Failed to eject mount');
     } finally {
       setSavingMountWatchId(null);
     }
-  }, [activeWorkspaceId, isOwner, loadWorkspaceData]);
+  }, [activeWorkspaceId, isOwner, loadWorkspaceData, showMountUpdateError]);
 
   const handleRemount = useCallback(async (mount: WorkspaceMount) => {
     if (!activeWorkspaceId || !isOwner) return;
@@ -5195,11 +5235,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setError(null);
       void loadWorkspaceData(activeWorkspaceId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to remount');
+      showMountUpdateError(mount, err, 'Failed to remount', {
+        assumeGlobalSourceDisabled: true,
+      });
     } finally {
       setSavingMountWatchId(null);
     }
-  }, [activeWorkspaceId, isOwner, loadWorkspaceData]);
+  }, [activeWorkspaceId, isOwner, loadWorkspaceData, showMountUpdateError]);
 
   const applyMountSyncFailure = useCallback((mountId: string, err: unknown, fallback: string) => {
     const message = getApiErrorMessage(err, fallback);
@@ -5300,7 +5342,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         setError(updated.last_sync_error || updated.sync_notice || null);
       } catch (err) {
         handleCloseMountSyncPreview();
-        setError(err instanceof Error ? err.message : 'Failed to enable auto-sync');
+        showMountUpdateError(mountSyncPreviewMount, err, 'Failed to enable auto-sync', {
+          assumeGlobalSourceDisabled: true,
+        });
       } finally {
         setSavingMountWatchId(null);
       }
@@ -5319,11 +5363,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setError(updated.last_sync_error || updated.sync_notice || null);
     } catch (err) {
       handleCloseMountSyncPreview();
-      setError(err instanceof Error ? err.message : 'Failed to update mount sync mode');
+      showMountUpdateError(mountSyncPreviewMount, err, 'Failed to update mount sync mode');
     } finally {
       setSavingMountWatchId(null);
     }
-  }, [activeWorkspaceId, applyMountSyncFailure, handleCloseMountSyncPreview, isOwner, mountSyncPreview, mountSyncPreviewIntent, mountSyncPreviewMount, mountSyncPreviewNextSyncMode]);
+  }, [activeWorkspaceId, applyMountSyncFailure, handleCloseMountSyncPreview, isOwner, mountSyncPreview, mountSyncPreviewIntent, mountSyncPreviewMount, mountSyncPreviewNextSyncMode, showMountUpdateError]);
 
   const handleToggleMountAutoSync = useCallback(async (mount: WorkspaceMount, enabled: boolean) => {
     if (!activeWorkspaceId || !isOwner) return;
@@ -5354,11 +5398,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update mount watch mode');
+      showMountUpdateError(mount, err, 'Failed to update mount watch mode', {
+        assumeGlobalSourceDisabled: enabled,
+      });
     } finally {
       setSavingMountWatchId(null);
     }
-  }, [activeWorkspaceId, applyMountSyncFailure, isOwner]);
+  }, [activeWorkspaceId, applyMountSyncFailure, isOwner, showMountUpdateError]);
 
   const handleUpdateMountSyncInterval = useCallback(async (mount: WorkspaceMount, intervalSeconds: number | null) => {
     if (!activeWorkspaceId || !isOwner) return;
@@ -5370,11 +5416,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update mount sync interval');
+      showMountUpdateError(mount, err, 'Failed to update mount sync interval');
     } finally {
       setSavingMountIntervalId(null);
     }
-  }, [activeWorkspaceId, isOwner]);
+  }, [activeWorkspaceId, isOwner, showMountUpdateError]);
 
   const handleUpdateMountSyncMode = useCallback(async (mount: WorkspaceMount, syncMode: WorkspaceMountSyncMode) => {
     if (!activeWorkspaceId || !isOwner) return;
@@ -5407,11 +5453,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update mount sync mode');
+      showMountUpdateError(mount, err, 'Failed to update mount sync mode');
     } finally {
       setSavingMountWatchId(null);
     }
-  }, [activeWorkspaceId, applyMountSyncFailure, isOwner]);
+  }, [activeWorkspaceId, applyMountSyncFailure, isOwner, showMountUpdateError]);
 
   const browseWorkspaceMountTargetPath = useCallback(async (browserPath: string): Promise<BrowseResponse> => {
     const normalizedBrowserPath = normalizeMountBrowserPath(browserPath);
@@ -7674,6 +7720,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                         const SyncModeIcon = getMountSyncModeIcon(mount.sync_mode);
                         const displaySourcePath = resolveSourceDisplayPath(mount.source_path, undefined, { sourceType: mount.source_type });
                         const isMountEditable = mount.editable !== false;
+                        const mountCloudProvider = isCloudMountProvider(mount.source_type) ? mount.source_type : null;
+                        const hasCloudSourceAuthIssue = !isEjected
+                          && !mount.source_available
+                          && mount.source_unavailable_kind === 'cloud_auth';
+                        const mountSyncErrorMessage =
+                          isEjected
+                            ? null
+                            : hasCloudSourceAuthIssue
+                            ? mount.source_unavailable_reason || 'Cloud connection is no longer available. Reconnect OAuth for this mount source, then sync again.'
+                            : mount.last_sync_error;
+                        const shouldShowSyncNotice = Boolean(mount.sync_notice) && !hasCloudSourceAuthIssue;
+                        const canRunManualSync = mount.source_available && !isEjected && isMountEditable;
                         const mountReadOnlyReason = 'Read-only: access to this source was revoked by an admin.';
                         return (
                         <div key={mount.id} className="userspace-mount-row" style={isEjected ? { opacity: 0.45, filter: 'grayscale(0.6)' } : undefined}>
@@ -7687,14 +7745,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             </span>
                             <div className="userspace-mount-controls">
                               <span className="userspace-mount-sync-status">
-                                {!mount.source_available && <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title="Mount source is no longer available">Disconnected</span>}
-                                {mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && (syncingMountId === mount.id || previewingMountId === mount.id) && <span className="userspace-status-pill userspace-status-pill-warning" style={{ fontSize: 11 }}>In Progress</span>}
-                                {mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
-                                {mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
-                                {mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'error' && (
+                                {isEjected && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }} title="Mount is currently unmounted">Unmounted</span>}
+                                {!isEjected && !mount.source_available && <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title="Mount source is no longer available">Disconnected</span>}
+                                {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && (syncingMountId === mount.id || previewingMountId === mount.id) && <span className="userspace-status-pill userspace-status-pill-warning" style={{ fontSize: 11 }}>In Progress</span>}
+                                {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
+                                {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
+                                {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'error' && (
                                   <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title={mount.last_sync_error ?? undefined}>Error</span>
                                 )}
-                                {mount.source_available && !isWorkspaceMountSyncCapableSourceType(mount.source_type) && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
+                                {!isEjected && mount.source_available && !isWorkspaceMountSyncCapableSourceType(mount.source_type) && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
                               </span>
                               <div className="userspace-mount-actions">
                                 {isWorkspaceMountSyncCapableSourceType(mount.source_type) && (
@@ -7869,12 +7928,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                     <button
                                       className="btn btn-secondary btn-sm userspace-mount-sync-now-btn userspace-mount-icon-btn"
                                       onClick={() => handleSyncMount(mount)}
-                                      disabled={syncingMountId === mount.id || previewingMountId === mount.id || isEjected || !isMountEditable}
-                                      title={isMountEditable
+                                      disabled={syncingMountId === mount.id || previewingMountId === mount.id || !canRunManualSync}
+                                      title={canRunManualSync
                                         ? (mount.auto_sync_enabled
                                           ? 'Run an immediate sync now (Auto Sync remains enabled)'
                                           : 'Run a one-time on-demand sync now')
-                                        : mountReadOnlyReason}
+                                        : (!mount.source_available
+                                          ? 'Reconnect OAuth for this mount source before syncing'
+                                          : mountReadOnlyReason)}
                                     >
                                       {syncingMountId === mount.id || previewingMountId === mount.id
                                         ? <MiniLoadingSpinner variant="icon" size={12} />
@@ -7979,13 +8040,45 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                               </div>
                             )}
                           </div>
-                          {mount.sync_status === 'error' && mount.last_sync_error && (
+                          {mount.sync_status === 'error' && mountSyncErrorMessage && (
                             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 4, color: 'var(--color-error, #c0392b)', fontSize: 12 }}>
                               <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
-                              <span>{mount.last_sync_error}</span>
+                              <span>
+                                {mountSyncErrorMessage}
+                                {hasCloudSourceAuthIssue && mount.mount_source_scope === 'global' && onNavigateToTools && (
+                                  <>
+                                    {' '}
+                                    <a
+                                      href="#"
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        onNavigateToTools('mount-sources');
+                                      }}
+                                      style={{ color: 'inherit', textDecoration: 'underline' }}
+                                    >
+                                      Open Mount Sources
+                                    </a>
+                                  </>
+                                )}
+                                {hasCloudSourceAuthIssue && mount.mount_source_scope === 'user' && showPersonalCloudDrives && mountCloudProvider && (
+                                  <>
+                                    {' '}
+                                    <a
+                                      href="#"
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        void handleConnectCloudProvider(mountCloudProvider);
+                                      }}
+                                      style={{ color: 'inherit', textDecoration: 'underline' }}
+                                    >
+                                      Reconnect OAuth
+                                    </a>
+                                  </>
+                                )}
+                              </span>
                             </div>
                           )}
-                          {mount.sync_notice && (
+                          {shouldShowSyncNotice && (
                             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
                               <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
                               <span>{mount.sync_notice}</span>
@@ -8011,6 +8104,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       <span style={{ marginLeft: 'auto' }} />
                       {configuredCloudProviders.map((provider) => {
                         const label = provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive';
+                        const hasConnectedAccount = cloudOAuthAccounts.some((account) => account.provider === provider);
                         return (
                           <button
                             key={provider}
@@ -8021,7 +8115,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             title={`Connect ${label}`}
                           >
                             {savingCloudProvider === provider ? <MiniLoadingSpinner variant="icon" size={12} /> : <ExternalLink size={12} />}
-                            {provider === 'microsoft_drive' ? 'Connect OneDrive' : 'Connect Google'}
+                            {provider === 'microsoft_drive'
+                              ? (hasConnectedAccount ? 'Reconnect OneDrive' : 'Connect OneDrive')
+                              : (hasConnectedAccount ? 'Reconnect Google' : 'Connect Google')}
                           </button>
                         );
                       })}
@@ -8054,19 +8150,52 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             </div>
                           );
                         })}
-                        {visiblePersonalMountSources.map((source) => (
-                          <div key={source.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                            <Check size={12} />
-                            <span>{source.name}</span>
-                            <span className="userspace-muted">{source.source_type === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'}</span>
-                            <span style={{ marginLeft: 'auto' }} />
-                            {source.usage_count === 0 && (
-                              <button className="btn btn-secondary btn-sm" onClick={() => void handleDeletePersonalCloudSource(source.id)} title="Delete personal source">
-                                <Trash2 size={12} />
-                              </button>
+                        {visiblePersonalMountSources.map((source) => {
+                          const sourceCloudProvider: UserCloudOAuthProvider | null = isCloudMountProvider(source.source_type) ? source.source_type : null;
+                          return (
+                          <div key={source.id} style={{ display: 'grid', gap: 4 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                              <Check size={12} />
+                              <span>{source.name}</span>
+                              <span className="userspace-muted">{source.source_type === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'}</span>
+                              {source.source_available === false && (
+                                <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title={source.source_unavailable_reason || undefined}>
+                                  Disconnected
+                                </span>
+                              )}
+                              <span style={{ marginLeft: 'auto' }} />
+                              {source.usage_count === 0 && (
+                                <button className="btn btn-secondary btn-sm" onClick={() => void handleDeletePersonalCloudSource(source.id)} title="Delete personal source">
+                                  <Trash2 size={12} />
+                                </button>
+                              )}
+                            </div>
+                            {source.source_available === false && (
+                              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, color: 'var(--color-error, #c0392b)', fontSize: 12, marginLeft: 20 }}>
+                                <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                                <span>
+                                  {source.source_unavailable_reason || 'Cloud connection is no longer available.'}
+                                  {source.source_unavailable_kind === 'cloud_auth' && sourceCloudProvider && (
+                                    <>
+                                      {' '}
+                                      <a
+                                        href="#"
+                                        onClick={(event) => {
+                                          event.preventDefault();
+                                          void handleConnectCloudProvider(sourceCloudProvider);
+                                        }}
+                                        style={{ color: 'inherit', textDecoration: 'underline' }}
+                                      >
+                                        Reconnect OAuth
+                                      </a>
+                                    </>
+                                  )}
+                                </span>
+                              </div>
                             )}
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>

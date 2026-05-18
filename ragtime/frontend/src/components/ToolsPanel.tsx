@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { api } from '@/api';
-import type { ToolConfig, ToolGroup, HeartbeatStatus, SchemaIndexStats, SchemaIndexJob, UserspaceMountSource, MountSourceAffectedWorkspacesResponse } from '@/types';
+import type { ToolConfig, ToolGroup, HeartbeatStatus, SchemaIndexStats, SchemaIndexJob, UserspaceMountSource, MountSourceAffectedWorkspacesResponse, UserCloudOAuthAccount } from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
 import { ToolWizard } from './ToolWizard';
 import { MountSourceWizard } from './MountSourceWizard';
@@ -45,6 +45,24 @@ function isAutoSyncMountSource(source: UserspaceMountSource): boolean {
   return source.source_type === 'ssh'
     || source.source_type === 'microsoft_drive'
     || source.source_type === 'google_drive';
+}
+
+function isCloudMountSource(source: UserspaceMountSource): source is UserspaceMountSource & { source_type: 'microsoft_drive' | 'google_drive' } {
+  return source.source_type === 'microsoft_drive' || source.source_type === 'google_drive';
+}
+
+function getCloudOAuthCallbackUrl(): string {
+  return new URL('/indexes/userspace/cloud-oauth/callback', window.location.origin).toString();
+}
+
+function pickLatestConnectedCloudAccount(
+  accounts: UserCloudOAuthAccount[],
+  provider: 'microsoft_drive' | 'google_drive',
+): UserCloudOAuthAccount | null {
+  const sorted = [...accounts]
+    .filter((account) => account.provider === provider && account.connected)
+    .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
+  return sorted[0] ?? null;
 }
 
 function getSuggestedGroupName(tool: ToolConfig | null | undefined): string {
@@ -475,6 +493,11 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const [mountSourceDeletingId, setMountSourceDeletingId] = useState<string | null>(null);
   const [showMountSourceWizard, setShowMountSourceWizard] = useState(false);
   const [editingMountSource, setEditingMountSource] = useState<UserspaceMountSource | null>(null);
+  const [reconnectingMountSource, setReconnectingMountSource] = useState<{
+    mountSourceId: string;
+    provider: 'microsoft_drive' | 'google_drive';
+  } | null>(null);
+  const [reconnectStartingMountSourceId, setReconnectStartingMountSourceId] = useState<string | null>(null);
   const [disableConfirmation, setDisableConfirmation] = useState<{
     source: UserspaceMountSource;
     affected: MountSourceAffectedWorkspacesResponse | null;
@@ -901,18 +924,38 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     }
   }, []);
 
+  const handleStartReconnectMountSource = useCallback(async (source: UserspaceMountSource & { source_type: 'microsoft_drive' | 'google_drive' }) => {
+    setReconnectStartingMountSourceId(source.id);
+    try {
+      const response = await api.startUserCloudOAuth({
+        provider: source.source_type,
+        redirect_uri: getCloudOAuthCallbackUrl(),
+      });
+      setReconnectingMountSource({ mountSourceId: source.id, provider: source.source_type });
+      window.open(response.auth_url, 'ragtime-cloud-oauth', 'popup,width=720,height=820');
+    } catch (reconnectErr) {
+      toast.error(reconnectErr instanceof Error ? reconnectErr.message : 'Failed to start cloud OAuth reconnect');
+      setReconnectingMountSource(null);
+    } finally {
+      setReconnectStartingMountSourceId(null);
+    }
+  }, [toast]);
+
   const handleToggleMountSourceEnabled = useCallback(async (source: UserspaceMountSource) => {
     const nextEnabled = !source.enabled;
 
-    if (!nextEnabled && source.usage_count > 0) {
+    if (!nextEnabled) {
       setDisableConfirmation({ source, affected: null, loading: true });
       try {
         const affected = await api.getMountSourceAffectedWorkspaces(source.id);
-        setDisableConfirmation({ source, affected, loading: false });
+        if (affected.total_mounts > 0) {
+          setDisableConfirmation({ source, affected, loading: false });
+          return;
+        }
+        setDisableConfirmation(null);
       } catch {
-        setDisableConfirmation({ source, affected: null, loading: false });
+        setDisableConfirmation(null);
       }
-      return;
     }
 
     setMountSources((current) =>
@@ -924,9 +967,77 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       setMountSources((current) =>
         current.map((s) => s.id === source.id ? { ...s, enabled: source.enabled } : s)
       );
-      toast.error(err instanceof Error ? err.message : 'Failed to update mount source');
+      if (source.source_unavailable_kind === 'cloud_auth' && isCloudMountSource(source)) {
+        toast.error(
+          <>
+            Cloud authentication is unavailable for this mount source.{' '}
+            <a
+              href="#"
+              onClick={(event) => {
+                event.preventDefault();
+                void handleStartReconnectMountSource(source);
+              }}
+              style={{ color: 'inherit', textDecoration: 'underline' }}
+            >
+              Reconnect now
+            </a>
+          </>,
+          10000,
+        );
+      } else {
+        toast.error(err instanceof Error ? err.message : 'Failed to update mount source');
+      }
     }
-  }, []);
+  }, [handleStartReconnectMountSource, toast]);
+
+  useEffect(() => {
+    const listener = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin || !reconnectingMountSource) {
+        return;
+      }
+      if (event.data?.type === 'ragtime-cloud-oauth-error') {
+        toast.error(typeof event.data.message === 'string' ? event.data.message : 'Cloud OAuth reconnect failed');
+        setReconnectingMountSource(null);
+        return;
+      }
+      if (event.data?.type !== 'ragtime-cloud-oauth-complete') {
+        return;
+      }
+
+      void (async () => {
+        try {
+          const accounts = await api.listUserCloudOAuthAccounts();
+          const callbackAccountId = typeof event.data?.account_id === 'string' ? event.data.account_id : null;
+          const account = callbackAccountId
+            ? accounts.find((item) => item.id === callbackAccountId && item.provider === reconnectingMountSource.provider && item.connected) ?? null
+            : pickLatestConnectedCloudAccount(accounts, reconnectingMountSource.provider);
+          if (!account) {
+            toast.error('Connected account was not found after OAuth completion. Try reconnecting again.');
+            return;
+          }
+
+          const updated = await api.updateUserspaceMountSource(reconnectingMountSource.mountSourceId, {
+            enabled: true,
+            connection_config: {
+              oauth_account_id: account.id,
+            },
+          });
+
+          setMountSources((current) =>
+            current.map((source) => source.id === updated.id ? { ...updated, usage_count: source.usage_count } : source)
+          );
+          toast.success('Cloud account reconnected and mount source re-enabled.', 5000);
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : 'Failed to reconnect mount source');
+        } finally {
+          setReconnectingMountSource(null);
+        }
+      })();
+    };
+
+    window.addEventListener('message', listener);
+    return () => window.removeEventListener('message', listener);
+  }, [reconnectingMountSource, toast]);
 
   const handleConfirmDisableMountSource = useCallback(async () => {
     if (!disableConfirmation) return;
@@ -1595,6 +1706,12 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
               className="card"
               style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '12px 14px', opacity: source.enabled ? 1 : 0.6 }}
             >
+              {(() => {
+                const sourceUnavailable = source.enabled && source.source_available === false;
+                const sourceUnavailableReason = source.source_unavailable_reason || 'Mount source is currently unavailable.';
+                const sourceNeedsOAuthReconnect = source.source_unavailable_kind === 'cloud_auth' && isCloudMountSource(source);
+                return (
+                  <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
                   <HardDrive size={14} style={{ flexShrink: 0 }} />
@@ -1613,6 +1730,11 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
                       }
                     })()}
                   </span>
+                  {sourceUnavailable && (
+                    <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title={sourceUnavailableReason}>
+                      Disconnected
+                    </span>
+                  )}
                   {source.usage_count > 0 && (
                     <span
                       style={{
@@ -1651,11 +1773,35 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
                       type="checkbox"
                       checked={source.enabled}
                       onChange={() => void handleToggleMountSourceEnabled(source)}
+                      disabled={reconnectStartingMountSourceId === source.id}
                     />
                     <span className="toggle-slider"></span>
                   </label>
                 </span>
               </div>
+              {sourceUnavailable && (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 2, color: 'var(--color-error, #c0392b)', fontSize: 12 }}>
+                  <Icon name="alert-circle" size={12} />
+                  <span>
+                    {sourceUnavailableReason}
+                    {sourceNeedsOAuthReconnect && (
+                      <>
+                        {' '}
+                        <a
+                          href="#"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            void handleStartReconnectMountSource(source);
+                          }}
+                          style={{ color: 'inherit', textDecoration: 'underline' }}
+                        >
+                          Reconnect OAuth
+                        </a>
+                      </>
+                    )}
+                  </span>
+                </div>
+              )}
               {source.approved_paths.length > 0 && (
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {source.approved_paths.map((p) => {
@@ -1685,6 +1831,9 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
                   Account: {source.account_email}
                 </span>
               )}
+                  </>
+                );
+              })()}
             </div>
           )) : (
             <p className="muted" style={{ margin: 0 }}>No mount sources configured yet.</p>

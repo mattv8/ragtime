@@ -18,6 +18,7 @@ if "ragtime.rag.prompts" not in sys.modules:
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
 
 from ragtime.userspace.runtime_service import UserSpaceRuntimeService
+from ragtime.userspace.models import UpdateUserspaceMountSourceRequest
 from ragtime.userspace.service import UserSpaceService
 
 _NOW = datetime(2026, 5, 8, tzinfo=timezone.utc)
@@ -92,6 +93,72 @@ class _FakeMountWatchDb:
         self.workspacemount = _FakeWorkspaceMountTable(rows)
 
 
+class _FakeMountSourceTable:
+    def __init__(self) -> None:
+        self.update_calls: list[dict[str, Any]] = []
+
+    async def update(
+        self,
+        *,
+        where: dict[str, Any],
+        data: dict[str, Any],
+        include: dict[str, Any] | None = None,
+    ) -> SimpleNamespace:
+        self.update_calls.append({"where": where, "data": data, "include": include})
+        return SimpleNamespace(id=str(where.get("id") or ""), enabled=bool(data.get("enabled", True)))
+
+
+class _FakeWorkspaceMountCascadeTable:
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self.rows = rows
+        self.update_calls: list[dict[str, Any]] = []
+        self.update_many_calls: list[dict[str, Any]] = []
+
+    async def find_many(self, *, where: dict[str, Any]) -> list[SimpleNamespace]:
+        mount_source_id = where.get("mountSourceId")
+        require_enabled = where.get("enabled")
+        results: list[SimpleNamespace] = []
+        for row in self.rows:
+            if str(getattr(row, "mountSourceId", "")) != str(mount_source_id):
+                continue
+            if require_enabled is not None and bool(getattr(row, "enabled", False)) != bool(require_enabled):
+                continue
+            results.append(row)
+        return results
+
+    async def update(self, *, where: dict[str, Any], data: dict[str, Any]) -> SimpleNamespace:
+        self.update_calls.append({"where": where, "data": data})
+        return SimpleNamespace(id=str(where.get("id") or ""), **data)
+
+    async def update_many(self, *, where: dict[str, Any], data: dict[str, Any]) -> None:
+        self.update_many_calls.append({"where": where, "data": data})
+
+
+class _FakeWorkspaceTable:
+    def __init__(self) -> None:
+        self.update_calls: list[dict[str, Any]] = []
+
+    async def update(self, *, where: dict[str, Any], data: dict[str, Any]) -> SimpleNamespace:
+        self.update_calls.append({"where": where, "data": data})
+        return SimpleNamespace(id=str(where.get("id") or ""), **data)
+
+
+class _FakeMountSourceDisableDb:
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self.userspacemountsource = _FakeMountSourceTable()
+        self.workspacemount = _FakeWorkspaceMountCascadeTable(rows)
+        self.workspace = _FakeWorkspaceTable()
+
+    async def query_raw(self, query: str, mount_source_id: str) -> list[dict[str, Any]]:
+        if "SELECT id FROM workspace_mounts" in query:
+            return [
+                {"id": str(getattr(row, "id", ""))}
+                for row in self.workspacemount.rows
+                if str(getattr(row, "mountSourceId", "")) == str(mount_source_id)
+            ]
+        return []
+
+
 class _MountWatchService(UserSpaceService):
     def __init__(self) -> None:
         super().__init__()
@@ -126,6 +193,77 @@ class _MountListService(UserSpaceService):
 
 
 class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_disabling_mount_source_force_unmounts_enabled_workspace_mounts(self) -> None:
+        mount_source_id = "source-1"
+        rows = [
+            SimpleNamespace(
+                id="mount-enabled-1",
+                workspaceId="workspace-1",
+                mountSourceId=mount_source_id,
+                enabled=True,
+                targetPath="/workspace/mount-a",
+            ),
+            SimpleNamespace(
+                id="mount-enabled-2",
+                workspaceId="workspace-2",
+                mountSourceId=mount_source_id,
+                enabled=True,
+                targetPath="/workspace/mount-b",
+            ),
+            SimpleNamespace(
+                id="mount-disabled",
+                workspaceId="workspace-3",
+                mountSourceId=mount_source_id,
+                enabled=False,
+                targetPath="/workspace/mount-c",
+            ),
+        ]
+        db = _FakeMountSourceDisableDb(rows)
+        service = UserSpaceService()
+        service.invalidate_file_list_cache = lambda _workspace_id: None
+
+        async def _fake_get_mount_source_record(_db: Any, _mount_source_id: str) -> SimpleNamespace:
+            return SimpleNamespace(id=mount_source_id, enabled=True)
+
+        def _fake_source_from_record(record: Any, **_: Any) -> SimpleNamespace:
+            enabled = bool(getattr(record, "enabled", False))
+            return SimpleNamespace(
+                id=mount_source_id,
+                name="Global Source",
+                description=None,
+                enabled=enabled,
+                source_type="filesystem",
+                connection_config={},
+                approved_paths=[],
+                sync_interval_seconds=30,
+                access_user_ids=[],
+                access_group_identifiers=[],
+            )
+
+        with (
+            patch("ragtime.userspace.service.get_db", AsyncMock(return_value=db)),
+            patch.object(service, "_get_mount_source_record", AsyncMock(side_effect=_fake_get_mount_source_record)),
+            patch.object(service, "_userspace_mount_source_from_record", side_effect=_fake_source_from_record),
+            patch.object(service, "_normalize_mount_source_payload", return_value=({}, [], "docker_volume")),
+            patch.object(service, "_invalidate_workspace_mount_sync_preview", AsyncMock()),
+            patch.object(service, "_resolve_workspace_mount_runtime_target_dir", return_value=None),
+        ):
+            await service.update_userspace_mount_source(
+                mount_source_id,
+                UpdateUserspaceMountSourceRequest(enabled=False),
+                user_id="admin-1",
+            )
+
+        updated_mount_ids = {
+            str(call["where"].get("id") or "") for call in db.workspacemount.update_calls
+        }
+        self.assertEqual(updated_mount_ids, {"mount-enabled-1", "mount-enabled-2"})
+        self.assertEqual(len(db.workspace.update_calls), 2)
+        self.assertEqual(
+            db.workspacemount.update_many_calls[0]["where"],
+            {"mountSourceId": mount_source_id, "autoSyncEnabled": True},
+        )
+
     async def test_auto_refresh_marks_missing_provider_session_stopped(self) -> None:
         workspace_id = "workspace-1"
         mount_id = "mount-1"

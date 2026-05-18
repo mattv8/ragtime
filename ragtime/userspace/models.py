@@ -1084,6 +1084,12 @@ class PaginatedWorkspacesResponse(BaseModel):
 # -------------------------------------------------------------------------
 
 MountSyncStatus = Literal["pending", "syncing", "synced", "error"]
+MountSourceUnavailableKind = Literal[
+    "cloud_auth",
+    "cloud_unavailable",
+    "filesystem_unavailable",
+    "mount_source_unavailable",
+]
 
 
 class UserspaceMountSource(BaseModel):
@@ -1107,6 +1113,9 @@ class UserspaceMountSource(BaseModel):
         default=30,
         description="Polling interval in seconds for auto-sync (1 to 2592000)",
     )
+    source_available: bool = True
+    source_unavailable_reason: str | None = None
+    source_unavailable_kind: MountSourceUnavailableKind | None = None
     usage_count: int = 0
     created_at: datetime
     updated_at: datetime
@@ -1284,6 +1293,8 @@ class WorkspaceMount(BaseModel):
     source_type: UserspaceMountSourceType | None = None
     mount_backend: UserspaceMountBackend | None = None
     source_available: bool = True
+    source_unavailable_reason: str | None = None
+    source_unavailable_kind: MountSourceUnavailableKind | None = None
     editable: bool = True
     created_at: datetime
     updated_at: datetime

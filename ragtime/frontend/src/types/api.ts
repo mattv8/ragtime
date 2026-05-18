@@ -2500,6 +2500,7 @@ export interface DeleteUserSpaceObjectStorageBucketResponse {
 
 export type MountSyncStatus = 'pending' | 'syncing' | 'synced' | 'error';
 export type WorkspaceMountSyncMode = 'merge' | 'source_authoritative' | 'target_authoritative';
+export type MountSourceUnavailableKind = 'cloud_auth' | 'cloud_unavailable' | 'filesystem_unavailable' | 'mount_source_unavailable';
 
 export interface UserspaceMountSource {
   id: string;
@@ -2519,6 +2520,9 @@ export interface UserspaceMountSource {
   access_user_ids: string[];
   access_group_identifiers: string[];
   sync_interval_seconds: number | null;
+  source_available?: boolean;
+  source_unavailable_reason?: string | null;
+  source_unavailable_kind?: MountSourceUnavailableKind | null;
   usage_count: number;
   created_at: string;
   updated_at: string;
@@ -2661,6 +2665,8 @@ export interface WorkspaceMount {
   source_type: UserspaceMountSourceType | null;
   mount_backend: UserspaceMountBackend | null;
   source_available: boolean;
+  source_unavailable_reason: string | null;
+  source_unavailable_kind: MountSourceUnavailableKind | null;
   editable: boolean;
   created_at: string;
   updated_at: string;

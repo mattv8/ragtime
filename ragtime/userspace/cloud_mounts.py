@@ -44,6 +44,10 @@ CloudSyncMode = Literal["merge", "source_authoritative", "target_authoritative"]
 CloudSyncProgressCallback = Callable[[int, int | None, str | None], Awaitable[None]]
 
 
+class CloudProviderAuthError(RuntimeError):
+    """Raised when cloud provider authentication (OAuth) fails or expires."""
+
+
 @dataclass
 class CloudSyncResult:
     files_synced: int
@@ -818,7 +822,7 @@ class CloudMountProvider:
     def _access_token(self) -> str:
         token = str(self.config.get("access_token") or self.config.get("oauth_token") or "").strip()
         if not token:
-            raise RuntimeError(f"{self.provider} mount source is not connected")
+            raise CloudProviderAuthError(f"{self.provider} mount source is not connected")
         return token
 
     def _ensure_provider_scopes(self) -> None:
@@ -833,6 +837,12 @@ class CloudMountProvider:
 
     def _provider_request_error(self, response: httpx.Response) -> str:
         text = response.text[:300]
+        if response.status_code == 401:
+            if self.provider == "google_drive":
+                return "Google Drive authentication expired or was revoked. Reconnect Google Drive and sync again."
+            if self.provider == "microsoft_drive":
+                return "Microsoft Drive authentication expired or was revoked. Reconnect Microsoft Drive and sync again."
+            return "Cloud provider authentication expired or was revoked. Reconnect this provider and sync again."
         if self.provider == "google_drive" and response.status_code == 403:
             lower_text = response.text.lower()
             if "insufficient" in lower_text:
@@ -855,6 +865,8 @@ class CloudMountProvider:
                 headers["Authorization"] = f"Bearer {self._access_token()}"
                 response = await client.request(method, url, headers=headers, **kwargs)
         if response.status_code >= 400:
+            if response.status_code == 401:
+                raise CloudProviderAuthError(self._provider_request_error(response))
             raise RuntimeError(self._provider_request_error(response))
         return response.json()
 
@@ -868,6 +880,8 @@ class CloudMountProvider:
                 headers["Authorization"] = f"Bearer {self._access_token()}"
                 response = await client.request(method, url, headers=headers, **kwargs)
         if response.status_code >= 400:
+            if response.status_code == 401:
+                raise CloudProviderAuthError(self._provider_request_error(response))
             if self.provider == "google_drive" and response.status_code == 403:
                 provider_error = self._provider_request_error(response)
                 if provider_error != f"Cloud provider request failed ({response.status_code}): {response.text[:300]}":
@@ -885,6 +899,8 @@ class CloudMountProvider:
                 headers["Authorization"] = f"Bearer {self._access_token()}"
                 response = await client.request(method, url, headers=headers, **kwargs)
         if response.status_code >= 400:
+            if response.status_code == 401:
+                raise CloudProviderAuthError(self._provider_request_error(response))
             raise RuntimeError(self._provider_request_error(response))
 
     async def _refresh_access_token(self) -> bool:

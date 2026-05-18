@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 type ToastType = 'success' | 'error';
@@ -6,12 +7,12 @@ type ToastType = 'success' | 'error';
 interface ToastItem {
   id: number;
   type: ToastType;
-  message: string;
+  message: ReactNode;
 }
 
 interface ToastActions {
-  success: (message: string, durationMs?: number) => void;
-  error: (message: string, durationMs?: number) => void;
+  success: (message: ReactNode, durationMs?: number) => void;
+  error: (message: ReactNode, durationMs?: number) => void;
   dismiss: (id: number) => void;
   clear: () => void;
 }
@@ -33,7 +34,7 @@ export function useToast(): [ToastItem[], ToastActions] {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const add = useCallback((type: ToastType, message: string, durationMs?: number) => {
+  const add = useCallback((type: ToastType, message: ReactNode, durationMs?: number) => {
     const id = nextId.current++;
     setToasts((prev) => [...prev, { id, type, message }]);
     const timeout = durationMs ?? (type === 'success' ? DEFAULT_SUCCESS_DURATION : DEFAULT_ERROR_DURATION);
@@ -44,8 +45,8 @@ export function useToast(): [ToastItem[], ToastActions] {
     timers.current.set(id, timer);
   }, []);
 
-  const success = useCallback((message: string, durationMs?: number) => add('success', message, durationMs), [add]);
-  const error = useCallback((message: string, durationMs?: number) => add('error', message, durationMs), [add]);
+  const success = useCallback((message: ReactNode, durationMs?: number) => add('success', message, durationMs), [add]);
+  const error = useCallback((message: ReactNode, durationMs?: number) => add('error', message, durationMs), [add]);
 
   const clear = useCallback(() => {
     for (const timer of timers.current.values()) clearTimeout(timer);

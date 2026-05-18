@@ -969,6 +969,12 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
           <div style={{ display: 'grid', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <strong>OAuth Account</strong>
+              {(() => {
+                const hasExistingProviderAccount = selectedProviderAccounts.length > 0;
+                const connectLabel = selectedCloudSource === 'microsoft_drive'
+                  ? (hasExistingProviderAccount ? 'Reconnect OneDrive' : 'Connect OneDrive')
+                  : (hasExistingProviderAccount ? 'Reconnect Google' : 'Connect Google');
+                return (
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
@@ -979,8 +985,10 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
                 <ExternalLink size={12} />
                 {savingCloudProvider === selectedCloudSource
                   ? 'Connecting...'
-                  : selectedCloudSource === 'microsoft_drive' ? 'Connect OneDrive' : 'Connect Google'}
+                  : connectLabel}
               </button>
+                );
+              })()}
             </div>
 
             {selectedProviderAccounts.length > 0 ? (
