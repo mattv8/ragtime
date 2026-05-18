@@ -51,7 +51,6 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY pyproject.toml /tmp/pyproject.toml
 COPY docker/scripts/install_deps_from_pyproject.py /tmp/install_deps_from_pyproject.py
 RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=locked \
-    pip install --upgrade pip && \
     python /tmp/install_deps_from_pyproject.py /tmp/pyproject.toml app /tmp/requirements.app.txt && \
     if [ "$LEGACY_CPU" = "1" ]; then \
         echo "Installing all dependencies..." && \
@@ -85,7 +84,9 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
 
 WORKDIR /ragtime
 COPY prisma/ /ragtime/prisma/
-RUN python -m prisma generate >/dev/null
+RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
+    --mount=type=cache,id=ragtime-prisma-cache,target=/root/.cache/prisma-python,sharing=locked \
+    python -m prisma generate
 COPY ragtime/ /ragtime/ragtime/
 COPY runtime/ /ragtime/runtime/
 COPY tests/ /ragtime/tests/
@@ -151,7 +152,9 @@ WORKDIR /ragtime
 
 # Copy Prisma schema and migrations, then generate client
 COPY prisma/ /ragtime/prisma/
-RUN cd /ragtime && python -m prisma generate
+RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
+    --mount=type=cache,id=ragtime-prisma-cache,target=/root/.cache/prisma-python,sharing=locked \
+    python -m prisma generate
 
 # Install frontend node modules for runtime tooling (Playwright screenshots)
 COPY ragtime/frontend/package.json ragtime/frontend/package-lock.json* /ragtime/ragtime/frontend/
