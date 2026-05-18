@@ -356,9 +356,11 @@ class IndexerService:
 
         return int(round(max(min_timeout, min(max_timeout, timeout))))
 
-    async def _reinitialize_rag_components(self) -> None:
+    async def _reinitialize_rag_components(
+        self, index_name: Optional[str] = None
+    ) -> None:
         """
-        Reinitialize RAG components to load newly created indexes.
+        Refresh RAG components to load newly created indexes.
 
         Called after successful index creation to make the new index
         immediately available for search without requiring a server restart.
@@ -372,10 +374,21 @@ class IndexerService:
         try:
             from ragtime.rag.components import rag
 
-            logger.info("Reinitializing RAG components to load new index")
+            logger.info("Refreshing RAG components to load new index")
             invalidate_settings_cache()
-            await rag.initialize()
-            logger.info("RAG components reinitialized successfully")
+            if index_name:
+                loaded = await rag.load_faiss_index_from_metadata(index_name)
+                if loaded:
+                    logger.info(
+                        f"RAG components refreshed successfully for index '{index_name}'"
+                    )
+                else:
+                    logger.warning(
+                        f"RAG refresh completed but index '{index_name}' was not loaded"
+                    )
+            else:
+                await rag.initialize()
+                logger.info("RAG components reinitialized successfully")
         except Exception as e:
             # Log but don't fail the indexing job if RAG reinitialization fails
             logger.warning(f"Failed to reinitialize RAG components: {e}")
@@ -384,8 +397,8 @@ class IndexerService:
         """
         Conditionally reinitialize RAG components for completed jobs.
 
-        This is called in finally blocks after job status is persisted to ensure:
-        1. Job status is saved before reinitialization
+        This is called before publishing completed job status to ensure:
+        1. Completed jobs are queryable as soon as completion is visible
         2. Reinitialize errors don't affect job completion status
         3. New index is loaded even if there were warnings during indexing
 
@@ -393,7 +406,7 @@ class IndexerService:
             job: The index job to check
         """
         if job.status == IndexStatus.COMPLETED:
-            await self._reinitialize_rag_components()
+            await self._reinitialize_rag_components(job.name)
 
     async def recover_interrupted_jobs(self) -> int:
         """
@@ -2058,14 +2071,6 @@ class IndexerService:
             self._active_jobs.pop(job.id, None)
             self._processing_tasks.pop(job.id, None)
 
-            # Update job status - gracefully handle database disconnection
-            try:
-                await repository.update_job(job)
-            except Exception as db_err:
-                logger.warning(
-                    f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}"
-                )
-
             # Release process pool workers if no other indexing jobs need them.
             # Workers persist as long as the pool exists and consume significant
             # memory (each imports chunking libs like Chonkie/tree-sitter).
@@ -2075,12 +2080,21 @@ class IndexerService:
                 except Exception:
                     pass
 
-            # Reinitialize RAG components if job completed successfully
+            # Load into RAG before publishing completed status so newly completed
+            # indexes are immediately queryable without a restart.
             try:
                 await self._maybe_reinitialize_rag(job)
             except Exception as rag_err:
                 logger.warning(
                     f"Job {job.id}: Could not reinitialize RAG components: {rag_err}"
+                )
+
+            # Update job status - gracefully handle database disconnection
+            try:
+                await repository.update_job(job)
+            except Exception as db_err:
+                logger.warning(
+                    f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}"
                 )
 
     async def _process_git(self, job: IndexJob, skip_clone: bool = False):
@@ -2176,14 +2190,6 @@ class IndexerService:
             self._active_jobs.pop(job.id, None)
             self._processing_tasks.pop(job.id, None)
 
-            # Update job status - gracefully handle database disconnection
-            try:
-                await repository.update_job(job)
-            except Exception as db_err:
-                logger.warning(
-                    f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}"
-                )
-
             # Release process pool workers if no other indexing jobs need them.
             if not self._active_jobs:
                 try:
@@ -2191,12 +2197,21 @@ class IndexerService:
                 except Exception:
                     pass
 
-            # Reinitialize RAG components if job completed successfully
+            # Load into RAG before publishing completed status so newly completed
+            # indexes are immediately queryable without a restart.
             try:
                 await self._maybe_reinitialize_rag(job)
             except Exception as rag_err:
                 logger.warning(
                     f"Job {job.id}: Could not reinitialize RAG components: {rag_err}"
+                )
+
+            # Update job status - gracefully handle database disconnection
+            try:
+                await repository.update_job(job)
+            except Exception as db_err:
+                logger.warning(
+                    f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}"
                 )
 
     async def _clone_git_repo(self, job: IndexJob, repo_dir: Path) -> None:

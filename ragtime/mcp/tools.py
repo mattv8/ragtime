@@ -239,7 +239,7 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
                 "type": "string",
                 "description": (
                     "The git action to perform. One of: "
-                    "'search_commits' - Search commit messages for keywords, "
+                    "'search_commits' - Semantic/fuzzy search over commit messages and changed files, "
                     "'get_commit' - Get detailed info about a specific commit, "
                     "'file_history' - Get commit history for a specific file, "
                     "'blame' - Show who last modified each line of a file, "
@@ -255,7 +255,7 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
             },
             "query": {
                 "type": "string",
-                "description": "Search query for 'search_commits' action - keywords to find in commit messages",
+                "description": "Natural language query for 'search_commits' action - searches embedded commit history when available and falls back to fuzzy matching",
             },
             "commit_hash": {
                 "type": "string",
@@ -269,7 +269,7 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
                 "type": "string",
                 "description": "Optional: specific index/repo to search (searches all git repos if not specified)",
             },
-            "max_results": {
+            "k": {
                 "type": "integer",
                 "description": "Maximum number of results to return for search operations",
                 "default": 10,
@@ -1425,7 +1425,7 @@ class MCPToolAdapter:
                     name="search_git_history",
                     description=(
                         "Search git repository history for detailed commit information. "
-                        "Actions: 'search_commits' (find commits by message keywords), "
+                        "Actions: 'search_commits' (semantic/fuzzy search over commits), "
                         "'get_commit' (show full commit details), "
                         "'file_history' (show commits that modified a file), "
                         "'blame' (show who last modified each line), "
@@ -1461,8 +1461,8 @@ class MCPToolAdapter:
                         "file_path": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
                             "file_path"
                         ],
-                        "max_results": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
-                            "max_results"
+                        "k": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
+                            "k"
                         ],
                     },
                     "required": ["action"],

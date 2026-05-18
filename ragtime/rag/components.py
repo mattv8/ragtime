@@ -2382,6 +2382,175 @@ class RAGComponents:
 
         return True
 
+    def _refresh_system_prompts(self) -> None:
+        """Rebuild cached system prompts from current settings and metadata."""
+        assert self._app_settings is not None
+        tool_prompt_section = build_tool_system_prompt(self._tool_configs or [])
+        index_prompt_section = build_index_system_prompt(self._index_metadata or [])
+
+        self._system_prompt = (
+            BASE_CHAT_SYSTEM_PROMPT + index_prompt_section + tool_prompt_section
+        )
+        self._system_prompt_ui = (
+            BASE_CHAT_SYSTEM_PROMPT
+            + index_prompt_section
+            + tool_prompt_section
+            + UI_VISUALIZATION_COMMON_PROMPT
+        )
+        if self._app_settings.get("tool_output_mode", "default") == "auto":
+            self._system_prompt_ui += TOOL_OUTPUT_VISIBILITY_PROMPT
+
+    async def load_faiss_index_from_metadata(self, index_name: str) -> bool:
+        """Synchronously load or reload one completed FAISS index into memory."""
+        if not index_name:
+            return False
+
+        if not self._core_ready:
+            await self.initialize()
+
+        async with self._init_lock:
+            logger.info(f"Hot-loading FAISS index '{index_name}' from metadata")
+            self._app_settings = await get_app_settings()
+            self._tool_configs = await get_tool_configs()
+            self._index_metadata = await self._load_index_metadata()
+            self._refresh_system_prompts()
+
+            if self._embedding_model is None:
+                self._embedding_model = await self._get_embedding_model()
+
+            if self._embedding_model is None:
+                logger.warning(
+                    f"Cannot hot-load FAISS index '{index_name}': no embedding model available"
+                )
+                await self._create_agent()
+                return False
+
+            metadata = next(
+                (
+                    idx
+                    for idx in self._index_metadata or []
+                    if idx.get("name") == index_name
+                ),
+                None,
+            )
+            if metadata is None:
+                logger.warning(
+                    f"Cannot hot-load FAISS index '{index_name}': metadata not found"
+                )
+                self.unload_index(index_name)
+                await self._create_agent()
+                return False
+
+            if not metadata.get("enabled", True) or metadata.get("chunk_count", 0) <= 0:
+                logger.info(
+                    f"Skipping hot-load for FAISS index '{index_name}': disabled or empty"
+                )
+                self.unload_index(index_name)
+                await self._create_agent()
+                return False
+
+            index_path_str = metadata.get("path")
+            if not index_path_str:
+                logger.warning(
+                    f"Cannot hot-load FAISS index '{index_name}': no path in metadata"
+                )
+                await self._create_agent()
+                return False
+
+            index_path = Path(index_path_str)
+            if not index_path.exists():
+                logger.warning(
+                    f"Cannot hot-load FAISS index '{index_name}': path not found: {index_path}"
+                )
+                await self._create_agent()
+                return False
+
+            self._index_details[index_name] = {
+                "name": index_name,
+                "status": "loading",
+                "type": "document",
+                "size_mb": (
+                    metadata.get("size_bytes", 0) / (1024 * 1024)
+                    if metadata.get("size_bytes")
+                    else None
+                ),
+                "chunk_count": metadata.get("chunk_count"),
+                "load_time_seconds": None,
+                "error": None,
+            }
+
+            current_embedding_dim = None
+            try:
+                test_embedding = await asyncio.to_thread(
+                    self._embedding_model.embed_query, "test"
+                )
+                current_embedding_dim = len(test_embedding)
+            except Exception as e:
+                current_embedding_dim = self._app_settings.get("embedding_dimension")
+                logger.warning(
+                    f"Could not probe embedding dimension before hot-loading '{index_name}': {e}. "
+                    f"Using tracked dimension: {current_embedding_dim}"
+                )
+
+            try:
+                start = time.time()
+                mem_before = get_process_memory_bytes()
+                db = await asyncio.to_thread(
+                    FAISS.load_local,
+                    str(index_path),
+                    self._embedding_model,
+                    allow_dangerous_deserialization=True,
+                )
+                elapsed = time.time() - start
+                mem_after = get_process_memory_bytes()
+                embedding_dim = db.index.d if hasattr(db, "index") else None
+
+                if (
+                    current_embedding_dim
+                    and embedding_dim
+                    and embedding_dim != current_embedding_dim
+                ):
+                    mismatch_msg = (
+                        f"Embedding dimension mismatch: index has {embedding_dim} dims, "
+                        f"but current model produces {current_embedding_dim} dims. "
+                        f"Re-index required."
+                    )
+                    logger.warning(f"Index {index_name}: {mismatch_msg}")
+                    self._index_details[index_name]["status"] = "error"
+                    self._index_details[index_name]["error"] = mismatch_msg
+                    self._index_details[index_name]["embedding_dimension"] = embedding_dim
+                    self.unload_index(index_name)
+                    await self._create_agent()
+                    return False
+
+                retriever = self._create_retriever_from_faiss(db, index_name)
+                self.retrievers[index_name] = retriever
+                self.faiss_dbs[index_name] = db
+                self._index_details[index_name]["status"] = "loaded"
+                self._index_details[index_name]["load_time_seconds"] = elapsed
+
+                memory_stats = {
+                    "embedding_dimension": embedding_dim,
+                    "steady_memory_bytes": max(0, mem_after - mem_before),
+                    "load_time_seconds": elapsed,
+                }
+                try:
+                    await repository.update_index_memory_stats(index_name, memory_stats)
+                except Exception as e:
+                    logger.debug(f"Failed to update memory stats for {index_name}: {e}")
+
+                await self._create_agent()
+                logger.info(
+                    f"Hot-loaded FAISS index '{index_name}' from {index_path} ({elapsed:.1f}s)"
+                )
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to hot-load FAISS index '{index_name}': {e}")
+                self._index_details[index_name]["status"] = "error"
+                self._index_details[index_name]["error"] = str(e)
+                await self._create_agent()
+                return False
+
     async def rebuild_agent(self) -> None:
         """Rebuild the agent with current tools and retrievers.
 
@@ -2434,27 +2603,7 @@ class RAGComponents:
         self._tool_configs = await get_tool_configs()
         self._index_metadata = await self._load_index_metadata()
         self._request_prompt_cache.clear()
-
-        # Build system prompts with tool and index descriptions
-        tool_prompt_section = build_tool_system_prompt(self._tool_configs)
-        index_prompt_section = build_index_system_prompt(self._index_metadata or [])
-
-        # Base system prompt (for API/MCP)
-        self._system_prompt = (
-            BASE_CHAT_SYSTEM_PROMPT + index_prompt_section + tool_prompt_section
-        )
-
-        # UI system prompt (includes common visualization instructions)
-        self._system_prompt_ui = (
-            BASE_CHAT_SYSTEM_PROMPT
-            + index_prompt_section
-            + tool_prompt_section
-            + UI_VISUALIZATION_COMMON_PROMPT
-        )
-
-        # Add visibility prompt when mode is 'auto' (AI decides)
-        if self._app_settings.get("tool_output_mode", "default") == "auto":
-            self._system_prompt_ui += TOOL_OUTPUT_VISIBILITY_PROMPT
+        self._refresh_system_prompts()
 
         # Initialize LLM based on provider from database settings
         await self._init_llm()
@@ -3174,6 +3323,7 @@ class RAGComponents:
         Returns:
             A retriever configured with current settings
         """
+        assert self._app_settings is not None
         search_k = self._app_settings.get("search_results_k", 5)
         use_mmr = self._app_settings.get("search_use_mmr", True)
         mmr_lambda = self._app_settings.get("search_mmr_lambda", 0.5)
@@ -3423,7 +3573,7 @@ class RAGComponents:
 
         async def load_single_index(
             idx: dict,
-        ) -> tuple[str, Any, dict] | None:
+        ) -> tuple[str, Any, Any, dict] | None:
             """Load a single FAISS index in a thread and measure memory."""
             index_name = idx.get("name")
             if not index_name:
@@ -3493,7 +3643,7 @@ class RAGComponents:
                 # Memory used by this index (approximate - may include GC overhead)
                 steady_mem = max(0, mem_after - mem_before)
 
-                # Create retriever with MMR support if enabledfrom ragtime.core.ssh import
+                # Create retriever with MMR support if enabled
                 retriever = self._create_retriever_from_faiss(db, index_name)
                 logger.info(
                     f"Loaded FAISS index: {index_name} from {index_path} "

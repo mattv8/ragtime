@@ -10,9 +10,11 @@ for each git-based index.
 """
 
 import asyncio
+import re
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -26,6 +28,30 @@ logger = get_logger(__name__)
 MAX_FILES_DISPLAY_LIMIT = 50
 # Maximum number of lines to display in diff output
 MAX_DIFF_LINES = 200
+# Number of git-log candidates to score when falling back to fuzzy local search
+FUZZY_COMMIT_CANDIDATE_LIMIT = 500
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _tokenize_query(query: str) -> List[str]:
+    """Tokenize natural-language git history queries for fuzzy matching."""
+    normalized = query.lower().replace("_", " ").replace("-", " ")
+    return [token for token in _TOKEN_RE.findall(normalized) if len(token) >= 2]
+
+
+def _normalize_search_text(text: str) -> str:
+    return " ".join(_TOKEN_RE.findall(text.lower().replace("_", " ").replace("-", " ")))
+
+
+def _parse_commit_subject(content: str) -> str:
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[Commit "):
+            return re.sub(r"^\[Commit\s+[0-9a-fA-F]+\]\s*", "", stripped).strip()
+
+    first_line = content.splitlines()[0] if content else ""
+    return re.sub(r"^\[Commit\s+[0-9a-fA-F]+\]\s*", "", first_line).strip()
 
 
 async def _get_repo_diagnostics(repo_path: Path) -> str:
@@ -74,7 +100,7 @@ def _create_git_history_input_schema(available_repos: Optional[List[str]] = None
         action: str = Field(
             description=(
                 "The git action to perform. One of: "
-                "'search_commits' - Search commit messages for keywords, "
+                "'search_commits' - Semantic/fuzzy search over commit messages and changed files, "
                 "'get_commit' - Get detailed info about a specific commit, "
                 "'show_changes' (or 'get_diff') - Show the code changes (diff) for a commit, "
                 "'file_history' - Get commit history for a specific file, "
@@ -84,7 +110,7 @@ def _create_git_history_input_schema(available_repos: Optional[List[str]] = None
         )
         query: Optional[str] = Field(
             default=None,
-            description="Search query for 'search_commits' action - keywords to find in commit messages",
+            description="Natural language query for 'search_commits' action - searches embedded commit history when available and falls back to fuzzy matching",
         )
         commit_hash: Optional[str] = Field(
             default=None,
@@ -98,7 +124,7 @@ def _create_git_history_input_schema(available_repos: Optional[List[str]] = None
             default=None,
             description=repo_desc,
         )
-        max_results: int = Field(
+        k: int = Field(
             default=10,
             ge=1,
             le=50,
@@ -221,36 +247,351 @@ async def _find_git_repos(index_name: Optional[str] = None) -> List[tuple[str, P
     return repos
 
 
-async def _search_commits(repo_path: Path, query: str, max_results: int) -> str:
-    """Search commit messages for keywords."""
-    # Use --all to search all branches, --grep for message search
-    args = [
-        "log",
-        "--all",
-        f"--grep={query}",
-        "-i",  # Case insensitive
-        f"-n{max_results}",
-        "--format=%H|%an|%ad|%s",
-        "--date=short",
-    ]
+def _semantic_result_to_match(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    metadata = result.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("type") != "git_commit":
+        return None
 
-    returncode, stdout, stderr = await _run_git_command(repo_path, args)
+    commit_hash = str(metadata.get("commit_hash") or "").strip()
+    if not commit_hash:
+        source = str(metadata.get("source") or "")
+        if source.startswith("git:commit:"):
+            commit_hash = source.rsplit(":", 1)[-1]
 
+    if not commit_hash:
+        return None
+
+    content = str(result.get("content") or "")
+    return {
+        "commit_hash": commit_hash,
+        "author": str(metadata.get("author") or "?"),
+        "date": str(metadata.get("date") or "")[:10],
+        "subject": _parse_commit_subject(content),
+        "semantic_similarity": float(result.get("similarity") or 0.0),
+        "fuzzy_score": 0.0,
+        "matched_terms": [],
+    }
+
+
+async def _search_commits_semantic(
+    index_name: Optional[str], query: str, k: int
+) -> List[Dict[str, Any]]:
+    """Search embedded git commit-history documents when the index has them."""
+    if not index_name:
+        return []
+
+    try:
+        from ragtime.core.app_settings import get_app_settings
+        from ragtime.indexer.vector_backends import get_faiss_backend
+        from ragtime.indexer.vector_utils import (
+            FILESYSTEM_COLUMNS,
+            get_embeddings_model,
+            search_pgvector_embeddings,
+        )
+        from ragtime.rag.components import rag
+
+        app_settings = await get_app_settings()
+        embeddings = await get_embeddings_model(
+            app_settings,
+            return_none_on_error=True,
+            logger_override=logger,
+        )
+        if embeddings is None:
+            return []
+
+        try:
+            query_embedding = await embeddings.aembed_query(query)
+        except AttributeError:
+            embedded_query = await asyncio.to_thread(embeddings.embed_documents, [query])
+            if not embedded_query:
+                return []
+            query_embedding = embedded_query[0]
+
+        search_limit = max(k * 10, 100)
+        raw_results: List[Dict[str, Any]] = []
+
+        try:
+            raw_results.extend(
+                await search_pgvector_embeddings(
+                    table_name="filesystem_embeddings",
+                    query_embedding=query_embedding,
+                    index_name=index_name,
+                    max_results=search_limit,
+                    columns=FILESYSTEM_COLUMNS,
+                    extra_where="metadata->>'type' = 'git_commit'",
+                    logger_override=logger,
+                )
+            )
+        except Exception as e:
+            logger.debug(f"pgvector git commit semantic search skipped: {e}")
+
+        try:
+            if index_name in rag.faiss_dbs:
+                docs_with_scores = await asyncio.to_thread(
+                    rag.faiss_dbs[index_name].similarity_search_with_score,
+                    query,
+                    k=search_limit,
+                )
+                for doc, score in docs_with_scores:
+                    raw_results.append(
+                        {
+                            "content": doc.page_content,
+                            "metadata": doc.metadata,
+                            "similarity": 1 - (float(score) / 2),
+                        }
+                    )
+            else:
+                faiss_backend = get_faiss_backend()
+                if index_name in faiss_backend.get_loaded_indexes():
+                    faiss_results = await faiss_backend.search(
+                        query_embedding=query_embedding,
+                        index_name=index_name,
+                        max_results=search_limit,
+                    )
+                    raw_results.extend(faiss_results)
+        except Exception as e:
+            logger.debug(f"FAISS git commit semantic search skipped: {e}")
+
+        matches: List[Dict[str, Any]] = []
+        seen_hashes: set[str] = set()
+        for result in raw_results:
+            match = _semantic_result_to_match(result)
+            if not match:
+                continue
+            dedupe_key = str(match["commit_hash"])[:12]
+            if dedupe_key in seen_hashes:
+                continue
+            seen_hashes.add(dedupe_key)
+            matches.append(match)
+
+        matches.sort(key=lambda item: item.get("semantic_similarity", 0.0), reverse=True)
+        return matches[:k]
+    except Exception as e:
+        logger.debug(f"Git commit semantic search unavailable: {e}")
+        return []
+
+
+def _parse_git_log_candidates(stdout: str, record_sep: str, field_sep: str) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    for block in stdout.split(record_sep):
+        block = block.strip()
+        if not block:
+            continue
+
+        parts = block.split(field_sep, 4)
+        if len(parts) < 5:
+            continue
+
+        commit_hash, author, date, subject, details = parts
+        candidates.append(
+            {
+                "commit_hash": commit_hash.strip(),
+                "author": author.strip() or "?",
+                "date": date.strip(),
+                "subject": subject.strip(),
+                "details": details.strip(),
+            }
+        )
+    return candidates
+
+
+async def _load_fuzzy_commit_candidates(
+    repo_path: Path, query: str, k: int
+) -> tuple[Optional[str], List[Dict[str, Any]]]:
+    tokens = _tokenize_query(query)
+    record_sep = "\x1e"
+    field_sep = "\x1f"
+    candidate_limit = max(FUZZY_COMMIT_CANDIDATE_LIMIT, k * 50)
+    format_arg = f"--format={record_sep}%H{field_sep}%an{field_sep}%ad{field_sep}%s{field_sep}%b"
+
+    def build_args(use_grep: bool) -> List[str]:
+        args = [
+            "log",
+            "--all",
+            f"-n{candidate_limit}",
+            format_arg,
+            "--date=short",
+            "--name-only",
+        ]
+        if use_grep and tokens:
+            grep_pattern = "|".join(re.escape(token) for token in tokens)
+            args.insert(2, "--extended-regexp")
+            args.insert(3, "--regexp-ignore-case")
+            args.insert(4, f"--grep={grep_pattern}")
+        return args
+
+    returncode, stdout, stderr = await _run_git_command(
+        repo_path, build_args(use_grep=True), timeout=60
+    )
     if returncode != 0:
-        return f"Error searching commits: {stderr}"
+        return f"Error searching commits: {stderr}", []
 
-    if not stdout.strip():
+    candidates = _parse_git_log_candidates(stdout, record_sep, field_sep)
+    if candidates:
+        return None, candidates
+
+    returncode, stdout, stderr = await _run_git_command(
+        repo_path, build_args(use_grep=False), timeout=60
+    )
+    if returncode != 0:
+        return f"Error searching commits: {stderr}", []
+
+    return None, _parse_git_log_candidates(stdout, record_sep, field_sep)
+
+
+def _score_fuzzy_commit(candidate: Dict[str, Any], query: str) -> Dict[str, Any]:
+    tokens = _tokenize_query(query)
+    if not tokens:
+        return {**candidate, "fuzzy_score": 0.0, "matched_terms": []}
+
+    subject = str(candidate.get("subject") or "")
+    searchable_text = f"{subject}\n{candidate.get('details') or ''}"
+    normalized_text = _normalize_search_text(searchable_text)
+    normalized_subject = _normalize_search_text(subject)
+    words = normalized_text.split()
+    word_set = set(words)
+    compact_text = normalized_text.replace(" ", "")
+    normalized_query = " ".join(tokens)
+
+    score = 0.0
+    matched_terms: List[str] = []
+
+    if normalized_query and normalized_query in normalized_text:
+        score += len(tokens) + 2.0
+
+    for token in tokens:
+        token_score = 0.0
+        if token in word_set:
+            token_score = 1.5
+        elif token in normalized_text or token in compact_text:
+            token_score = 1.0
+        elif words:
+            best_ratio = max(SequenceMatcher(None, token, word).ratio() for word in words)
+            if best_ratio >= 0.82:
+                token_score = best_ratio * 0.8
+
+        if token_score > 0:
+            matched_terms.append(token)
+            if token in normalized_subject:
+                token_score += 0.4
+            score += token_score
+
+    coverage = len(set(matched_terms)) / len(tokens)
+    score *= 0.5 + coverage
+
+    return {
+        **candidate,
+        "fuzzy_score": score,
+        "matched_terms": sorted(set(matched_terms)),
+        "semantic_similarity": 0.0,
+    }
+
+
+async def _search_commits_fuzzy(
+    repo_path: Path, query: str, k: int
+) -> tuple[Optional[str], List[Dict[str, Any]]]:
+    error, candidates = await _load_fuzzy_commit_candidates(repo_path, query, k)
+    if error:
+        return error, []
+
+    scored = [_score_fuzzy_commit(candidate, query) for candidate in candidates]
+    threshold = 0.75 if len(_tokenize_query(query)) <= 1 else 1.2
+    matches = [candidate for candidate in scored if candidate.get("fuzzy_score", 0.0) >= threshold]
+    matches.sort(key=lambda item: item.get("fuzzy_score", 0.0), reverse=True)
+    return None, matches[:k]
+
+
+def _merge_commit_matches(
+    semantic_matches: List[Dict[str, Any]], fuzzy_matches: List[Dict[str, Any]], k: int
+) -> List[Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = {}
+
+    for match in semantic_matches + fuzzy_matches:
+        commit_hash = str(match.get("commit_hash") or "")
+        if not commit_hash:
+            continue
+        key = commit_hash[:12]
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = match
+            continue
+
+        existing["semantic_similarity"] = max(
+            float(existing.get("semantic_similarity") or 0.0),
+            float(match.get("semantic_similarity") or 0.0),
+        )
+        existing["fuzzy_score"] = max(
+            float(existing.get("fuzzy_score") or 0.0),
+            float(match.get("fuzzy_score") or 0.0),
+        )
+        existing_terms = set(existing.get("matched_terms") or [])
+        existing_terms.update(match.get("matched_terms") or [])
+        existing["matched_terms"] = sorted(existing_terms)
+
+    def sort_key(match: Dict[str, Any]) -> float:
+        semantic = float(match.get("semantic_similarity") or 0.0)
+        fuzzy = float(match.get("fuzzy_score") or 0.0)
+        return max(semantic * 10.0, fuzzy)
+
+    results = list(merged.values())
+    results.sort(key=sort_key, reverse=True)
+    return results[:k]
+
+
+def _format_commit_matches(
+    query: str,
+    matches: List[Dict[str, Any]],
+    semantic_available: bool,
+) -> str:
+    if not matches:
         return f"No commits found matching '{query}'"
 
-    lines = stdout.strip().split("\n")
-    results = []
-    for line in lines:
-        parts = line.split("|", 3)
-        if len(parts) >= 4:
-            commit_hash, author, date, subject = parts
-            results.append(f"- [{commit_hash[:8]}] {date} {author}: {subject}")
+    search_modes = ["semantic"] if semantic_available else []
+    search_modes.append("fuzzy")
+    lines = [
+        f"Found {len(matches)} commit(s) matching '{query}' ({' + '.join(search_modes)} search):"
+    ]
 
-    return f"Found {len(results)} commit(s) matching '{query}':\n" + "\n".join(results)
+    for match in matches:
+        commit_hash = str(match.get("commit_hash") or "")
+        date = str(match.get("date") or "")[:10]
+        author = str(match.get("author") or "?")
+        subject = str(match.get("subject") or "").strip() or "(no subject)"
+        score_bits: List[str] = []
+        semantic = float(match.get("semantic_similarity") or 0.0)
+        fuzzy = float(match.get("fuzzy_score") or 0.0)
+        matched_terms = match.get("matched_terms") or []
+        if semantic > 0:
+            score_bits.append(f"semantic {semantic:.3f}")
+        if fuzzy > 0:
+            score_bits.append(f"fuzzy {fuzzy:.1f}")
+        if matched_terms:
+            score_bits.append("terms: " + ", ".join(matched_terms[:6]))
+
+        suffix = f" ({'; '.join(score_bits)})" if score_bits else ""
+        lines.append(f"- [{commit_hash[:8]}] {date} {author}: {subject}{suffix}")
+
+    return "\n".join(lines)
+
+
+async def _search_commits(
+    repo_path: Path,
+    query: str,
+    k: int,
+    index_name: Optional[str] = None,
+) -> str:
+    """Search commits using embedded history when available, with fuzzy git-log fallback."""
+    semantic_matches = await _search_commits_semantic(index_name, query, k)
+    fuzzy_error, fuzzy_matches = await _search_commits_fuzzy(repo_path, query, k)
+    if fuzzy_error and not semantic_matches:
+        return fuzzy_error
+
+    matches = _merge_commit_matches(semantic_matches, fuzzy_matches, k)
+    return _format_commit_matches(
+        query=query,
+        matches=matches,
+        semantic_available=bool(semantic_matches),
+    )
 
 
 async def _get_commit_details(repo_path: Path, commit_hash: str) -> str:
@@ -353,11 +694,11 @@ async def _get_commit_diff(
     return stdout
 
 
-async def _get_file_history(repo_path: Path, file_path: str, max_results: int) -> str:
+async def _get_file_history(repo_path: Path, file_path: str, k: int) -> str:
     """Get commit history for a specific file."""
     args = [
         "log",
-        f"-n{max_results}",
+        f"-n{k}",
         "--format=%H|%an|%ad|%s",
         "--date=short",
         "--follow",  # Follow file renames
@@ -483,7 +824,7 @@ async def _git_blame(repo_path: Path, file_path: str, max_lines: int = 100) -> s
     return result
 
 
-async def _find_files(repo_path: Path, pattern: str, max_results: int = 20) -> str:
+async def _find_files(repo_path: Path, pattern: str, k: int = 20) -> str:
     """Find files in the repository matching a pattern."""
     # Use git ls-files with pattern matching
     # First try exact match
@@ -508,11 +849,11 @@ async def _find_files(repo_path: Path, pattern: str, max_results: int = 20) -> s
         return f"No files found matching '{pattern}'"
 
     # Limit results
-    if len(files) > max_results:
-        display_files = files[:max_results]
+    if len(files) > k:
+        display_files = files[:k]
         return (
             f"Found {len(files)} files matching '{pattern}' "
-            f"(showing first {max_results}):\n"
+            f"(showing first {k}):\n"
             + "\n".join(f"  {f}" for f in display_files)
         )
 
@@ -527,7 +868,7 @@ async def search_git_history(
     commit_hash: Optional[str] = None,
     file_path: Optional[str] = None,
     index_name: Optional[str] = None,
-    max_results: int = 10,
+    k: int = 10,
 ) -> str:
     """
     Search git repository history for commits, files, and blame information.
@@ -566,7 +907,9 @@ async def search_git_history(
             result: str
             if action == "search_commits":
                 assert query is not None  # Validated above
-                result = await _search_commits(repo_path, query, max_results)
+                result = await _search_commits(
+                    repo_path, query, k, index_name=repo_name
+                )
             elif action == "get_commit":
                 assert commit_hash is not None  # Validated above
                 result = await _get_commit_details(repo_path, commit_hash)
@@ -575,11 +918,12 @@ async def search_git_history(
                 result = await _get_commit_diff(repo_path, commit_hash, file_path)
             elif action == "file_history":
                 assert file_path is not None  # Validated above
-                result = await _get_file_history(repo_path, file_path, max_results)
+                result = await _get_file_history(repo_path, file_path, k)
             elif action == "find_files":
                 assert file_path is not None  # Validated above
-                result = await _find_files(repo_path, file_path, max_results)
+                result = await _find_files(repo_path, file_path, k)
             elif action == "blame":
+                assert file_path is not None  # Validated above
                 result = await _git_blame(repo_path, file_path)
             else:
                 continue
@@ -608,7 +952,7 @@ def create_aggregate_git_history_tool(
     """
     description = (
         "Search git repository history for detailed commit information. "
-        "Actions: 'search_commits' (find commits by message keywords), "
+        "Actions: 'search_commits' (semantic/fuzzy search over commits), "
         "'get_commit' (show full commit details), "
         "'show_changes' (show code diff for a commit), "
         "'file_history' (show commits that modified a file), "
@@ -651,7 +995,7 @@ def create_per_index_git_history_tool(
         action: str = Field(
             description=(
                 "The git action to perform. One of: "
-                "'search_commits' - Search commit messages for keywords, "
+                "'search_commits' - Semantic/fuzzy search over commit messages and changed files, "
                 "'get_commit' - Get detailed info about a specific commit, "
                 "'show_changes' (or 'get_diff') - Show the code changes (diff) for a commit, "
                 "'file_history' - Get commit history for a specific file, "
@@ -661,7 +1005,7 @@ def create_per_index_git_history_tool(
         )
         query: Optional[str] = Field(
             default=None,
-            description="Search query for 'search_commits' action",
+            description="Natural language query for 'search_commits' action",
         )
         commit_hash: Optional[str] = Field(
             default=None,
@@ -671,7 +1015,7 @@ def create_per_index_git_history_tool(
             default=None,
             description="File path for 'file_history'/'blame' actions, optional filter for 'show_changes', or pattern for 'find_files' (e.g., 'index.php', '*.py')",
         )
-        max_results: int = Field(
+        k: int = Field(
             default=10,
             ge=1,
             le=50,
@@ -683,7 +1027,7 @@ def create_per_index_git_history_tool(
         query: Optional[str] = None,
         commit_hash: Optional[str] = None,
         file_path: Optional[str] = None,
-        max_results: int = 10,
+        k: int = 10,
         **_,
     ) -> str:
         """Search git history for this specific index."""
@@ -695,7 +1039,9 @@ def create_per_index_git_history_tool(
         if action == "search_commits":
             if not query:
                 return "Error: 'query' parameter is required for search_commits"
-            return await _search_commits(repo_path, query, max_results)
+            return await _search_commits(
+                repo_path, query, k, index_name=index_name
+            )
         elif action == "get_commit":
             if not commit_hash:
                 return "Error: 'commit_hash' parameter is required for get_commit"
@@ -707,7 +1053,7 @@ def create_per_index_git_history_tool(
         elif action == "file_history":
             if not file_path:
                 return "Error: 'file_path' parameter is required for file_history"
-            return await _get_file_history(repo_path, file_path, max_results)
+            return await _get_file_history(repo_path, file_path, k)
         elif action == "blame":
             if not file_path:
                 return "Error: 'file_path' parameter is required for blame"
