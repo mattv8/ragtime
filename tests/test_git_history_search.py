@@ -1,6 +1,7 @@
 import subprocess
 import unittest
 from pathlib import Path
+from shutil import which
 from unittest.mock import patch
 
 from ragtime.tools.git_history import _search_commits
@@ -23,6 +24,12 @@ async def _no_semantic_matches(*_args, **_kwargs):
 
 
 class GitHistorySearchTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        if which("git") is None:
+            raise unittest.SkipTest("git executable is required for git history tests")
+
     def _init_repo(self, tmp_path: Path) -> Path:
         repo = tmp_path / "repo"
         repo.mkdir()
