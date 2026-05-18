@@ -1373,6 +1373,16 @@ async def runtime_pty(workspace_id: str, websocket: WebSocket):
 
 @router.websocket("/collab/workspaces/{workspace_id}/files/{file_path:path}")
 async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSocket):
+    accepted = False
+
+    async def _reject_collab(code: int) -> None:
+        nonlocal accepted
+        if not accepted:
+            with contextlib.suppress(Exception):
+                await websocket.accept()
+            accepted = True
+        await _safe_close_websocket(websocket, code)
+
     token = _extract_cookie_token_from_websocket(
         websocket,
         _COLLAB_CAPABILITY_COOKIE,
@@ -1384,7 +1394,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
             "userspace.collab_connect",
         )
     except HTTPException:
-        await websocket.close(code=4401)
+        await _reject_collab(4401)
         return
 
     try:
@@ -1394,12 +1404,13 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
             user_id,
         )
     except HTTPException as exc:
-        await websocket.close(code=4403 if exc.status_code == 403 else 4404)
+        await _reject_collab(4403 if exc.status_code == 403 else 4404)
         return
 
     can_edit = not snapshot.read_only
 
     await websocket.accept()
+    accepted = True
     await _runtime_service().register_collab_client(
         workspace_id, snapshot.file_path, websocket, user_id
     )
