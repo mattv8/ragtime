@@ -5,18 +5,24 @@ Uses tiktoken for accurate token counting with OpenAI models, with
 a fallback character-based estimation for other models.
 """
 
-import functools
-from typing import Callable, Optional
+from typing import Callable, Protocol, cast
 
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+
 # Cache for tiktoken encoders (expensive to create)
-_encoder_cache: dict[str, object] = {}
+class _TokenEncoder(Protocol):
+    def encode(self, text: str) -> list[int]: ...
+
+    def decode(self, tokens: list[int]) -> str: ...
 
 
-def _get_tiktoken_encoder(model: str = "cl100k_base"):
+_encoder_cache: dict[str, _TokenEncoder] = {}
+
+
+def _get_tiktoken_encoder(model: str = "cl100k_base") -> _TokenEncoder | None:
     """Get or create a tiktoken encoder."""
     if model in _encoder_cache:
         return _encoder_cache[model]
@@ -25,7 +31,7 @@ def _get_tiktoken_encoder(model: str = "cl100k_base"):
         import tiktoken
 
         # Use cl100k_base as default - works for GPT-4, text-embedding-3-*, etc.
-        encoder = tiktoken.get_encoding(model)
+        encoder = cast(_TokenEncoder, tiktoken.get_encoding(model))
         _encoder_cache[model] = encoder
         return encoder
     except Exception as e:
@@ -108,11 +114,11 @@ def truncate_to_token_budget(
         return "", 0
 
     encoder = _get_tiktoken_encoder(model)
+    result_parts: list[str] = []
     if not encoder:
         # Fallback: estimate and truncate by characters
         char_budget = max_tokens * 4
         separator_chars = len(separator)
-        result_parts = []
         total_chars = 0
 
         for text in texts:
@@ -131,7 +137,6 @@ def truncate_to_token_budget(
 
     # Token-accurate truncation
     separator_tokens = len(encoder.encode(separator))
-    result_parts = []
     total_tokens = 0
 
     for text in texts:

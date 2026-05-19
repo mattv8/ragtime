@@ -406,7 +406,7 @@ async def test_mssql_connection(
             db_name = db_row[0] if db_row else database
 
             details: dict[str, Any] = {
-                "version": version.split("\n")[0] if version else "Unknown",
+                "version": str(version).split("\n")[0] if version else "Unknown",
                 "database": db_name,
             }
 
@@ -417,7 +417,7 @@ async def test_mssql_connection(
                 details["host"] = host
                 details["port"] = port
 
-            msg = f"Connected to {db_name} successfully"
+            msg = f"Connected to {str(db_name)} successfully"
             if tunnel:
                 msg += " (via SSH tunnel)"
 

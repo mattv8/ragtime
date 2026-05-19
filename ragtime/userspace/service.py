@@ -346,7 +346,7 @@ class _WorkspaceScmPreviewRecord:
     ) -> None:
         self.token = token
         self.workspace_id = workspace_id
-        self.direction = direction
+        self.direction: WorkspaceScmDirection = direction
         self.state_fingerprint = state_fingerprint
         self.expires_at = expires_at
 
@@ -2793,17 +2793,20 @@ class UserSpaceService:
                 id_map=message_id_map,
             )
             await db.conversation.create(
-                data={
-                    "id": cloned_conversation_id,
-                    "title": str(payload.get("title") or "Untitled Chat"),
-                    "model": str(payload.get("model") or ""),
-                    "messages": Json(cloned_messages),
-                    "totalTokens": int(payload.get("total_tokens") or 0),
-                    "toolOutputMode": str(payload.get("tool_output_mode") or "default"),
-                    "userId": user_id,
-                    "workspaceId": workspace_id,
-                    "activeTaskId": None,
-                }
+                data=cast(
+                    Any,
+                    {
+                        "id": cloned_conversation_id,
+                        "title": str(payload.get("title") or "Untitled Chat"),
+                        "model": str(payload.get("model") or ""),
+                        "messages": Json(cloned_messages),
+                        "totalTokens": int(payload.get("total_tokens") or 0),
+                        "toolOutputMode": str(payload.get("tool_output_mode") or "default"),
+                        "userId": user_id,
+                        "workspaceId": workspace_id,
+                        "activeTaskId": None,
+                    },
+                )
             )
 
             resolved_tool_config_ids = (
@@ -2850,21 +2853,24 @@ class UserSpaceService:
                 if parent_branch_id is not None:
                     resolved_parent_branch_id = branch_id_map.get(parent_branch_id)
                 await db.conversationbranch.create(
-                    data={
-                        "id": cloned_branch_id,
-                        "conversationId": cloned_conversation_id,
-                        "parentBranchId": resolved_parent_branch_id,
-                        "branchPointIndex": int(branch_payload.get("branch_point_index") or 0),
-                        "branchKind": (str(branch_payload.get("branch_kind") or "") or None),
-                        "preservedMessages": Json(
-                            _rekey_chat_messages(
-                                branch_payload.get("preserved_messages"),
-                                id_map=message_id_map,
-                            )
-                        ),
-                        "associatedSnapshotId": None,
-                        "createdByUserId": user_id,
-                    }
+                    data=cast(
+                        Any,
+                        {
+                            "id": cloned_branch_id,
+                            "conversationId": cloned_conversation_id,
+                            "parentBranchId": resolved_parent_branch_id,
+                            "branchPointIndex": int(branch_payload.get("branch_point_index") or 0),
+                            "branchKind": (str(branch_payload.get("branch_kind") or "") or None),
+                            "preservedMessages": Json(
+                                _rekey_chat_messages(
+                                    branch_payload.get("preserved_messages"),
+                                    id_map=message_id_map,
+                                )
+                            ),
+                            "associatedSnapshotId": None,
+                            "createdByUserId": user_id,
+                        },
+                    )
                 )
 
             active_branch_id = branch_id_map.get(str(payload.get("active_branch_id") or "") or "")
@@ -6633,7 +6639,7 @@ class UserSpaceService:
     async def _workspace_scm_watch_tick(self) -> None:
         db = await get_db()
         workspaces = await db.workspace.find_many(
-            where={"scmGitUrl": {"not": None}},
+            where=cast(Any, {"scmGitUrl": {"not": None}}),
             order={"updatedAt": "desc"},
         )
 
@@ -8099,7 +8105,7 @@ class UserSpaceService:
             include["workspace"] = {"include": {"owner": True}}
         return await db.workspaceshare.find_first(
             where={"shareToken": token},
-            include=include,
+            include=cast(Any, include),
         )
 
     async def _find_workspace_share_by_slug(
@@ -8122,7 +8128,7 @@ class UserSpaceService:
         include: dict[str, Any] = {"workspace": True}
         if include_owner:
             include["workspace"] = {"include": {"owner": True}}
-        return await db.workspaceshare.find_first(where=where, include=include)
+        return await db.workspaceshare.find_first(where=cast(Any, where), include=cast(Any, include))
 
     async def _get_primary_workspace_share_record(
         self,
@@ -8181,7 +8187,7 @@ class UserSpaceService:
         if include is not None:
             return await db.conversationshare.find_first(
                 where={"shareToken": token},
-                include=include,
+                include=cast(Any, include),
             )
         return await db.conversationshare.find_first(where={"shareToken": token})
 
@@ -8210,8 +8216,8 @@ class UserSpaceService:
             if include_conversation:
                 include["conversation"] = True
         if include is not None:
-            return await db.conversationshare.find_first(where=where, include=include)
-        return await db.conversationshare.find_first(where=where)
+            return await db.conversationshare.find_first(where=cast(Any, where), include=cast(Any, include))
+        return await db.conversationshare.find_first(where=cast(Any, where))
 
     async def _resolve_public_share_record_by_token(
         self,
@@ -8302,7 +8308,7 @@ class UserSpaceService:
             workspace_share_where["NOT"] = {"workspaceId": exclude_workspace_id}
         elif exclude_workspace_share_id:
             workspace_share_where["NOT"] = {"id": exclude_workspace_share_id}
-        workspace_share = await db.workspaceshare.find_first(where=workspace_share_where)
+        workspace_share = await db.workspaceshare.find_first(where=cast(Any, workspace_share_where))
         if workspace_share is not None:
             return True
 
@@ -8314,7 +8320,7 @@ class UserSpaceService:
             conversation_where["NOT"] = {"id": exclude_share_id}
         elif exclude_conversation_id:
             conversation_where["NOT"] = {"conversationId": exclude_conversation_id}
-        conversation_share = await db.conversationshare.find_first(where=conversation_where)
+        conversation_share = await db.conversationshare.find_first(where=cast(Any, conversation_where))
         return conversation_share is not None
 
     async def _resolve_share_owner_ids(self, owner_username: str) -> list[str]:
@@ -9498,7 +9504,7 @@ class UserSpaceService:
 
         updated = await db.workspace.update(
             where={"id": workspace_id},
-            data=update_data,
+            data=cast(Any, update_data),
         )
         return self._workspace_from_record(updated).scm or UserSpaceWorkspaceScmStatus()
 
@@ -9565,7 +9571,7 @@ class UserSpaceService:
 
         updated = await db.workspace.update(
             where={"id": workspace_id},
-            data=update_data,
+            data=cast(Any, update_data),
         )
         if request.auto_sync_policy == "auto_push" or request.auto_push_interval_seconds is not None:
             self._nudge_workspace_scm_watch_due(workspace_id, "export")
@@ -10214,7 +10220,7 @@ class UserSpaceService:
         if request.git_token:
             update_data["scmToken"] = encrypt_secret(request.git_token.strip())
 
-        updated = await db.workspace.update(where={"id": workspace_id}, data=update_data)
+        updated = await db.workspace.update(where={"id": workspace_id}, data=cast(Any, update_data))
         return UserSpaceWorkspaceScmConnectionResponse(
             workspace_id=workspace_id,
             scm=self._workspace_from_record(updated).scm or UserSpaceWorkspaceScmStatus(),
@@ -10455,8 +10461,8 @@ class UserSpaceService:
             updated_ws = await db.workspace.update(
                 where={"id": workspace_id},
                 data={
-                    "scmRemoteRole": "upstream",
-                    "scmAutoSyncPolicy": "manual",
+                    "scmRemoteRole": cast(Any, "upstream"),
+                    "scmAutoSyncPolicy": cast(Any, "manual"),
                     "scmSyncPaused": False,
                     "scmSyncPausedReason": None,
                 },
@@ -10731,7 +10737,7 @@ class UserSpaceService:
             }
 
         rows = await db.workspace.find_many(
-            where=where_clause,
+            where=cast(Any, where_clause),
             include={
                 "members": True,
                 "toolSelections": True,
@@ -10742,7 +10748,7 @@ class UserSpaceService:
             skip=offset,
             take=limit,
         )
-        total = await db.workspace.count(where=where_clause)
+        total = await db.workspace.count(where=cast(Any, where_clause))
 
         conversation_ids_by_workspace_id: dict[str, list[str]] = {}
         workspace_ids = [str(getattr(row, "id", "")) for row in rows if getattr(row, "id", None)]
@@ -10846,16 +10852,19 @@ class UserSpaceService:
 
         try:
             await db.workspace.create(
-                data={
-                    "id": workspace_id,
-                    "name": final_name,
-                    "nameNormalized": name_normalized,
-                    "description": request.description,
-                    "sqlitePersistenceMode": _normalize_sqlite_persistence_mode(request.sqlite_persistence_mode),
-                    "ownerUserId": user_id,
-                    "createdAt": now,
-                    "updatedAt": now,
-                },
+                data=cast(
+                    Any,
+                    {
+                        "id": workspace_id,
+                        "name": final_name,
+                        "nameNormalized": name_normalized,
+                        "description": request.description,
+                        "sqlitePersistenceMode": _normalize_sqlite_persistence_mode(request.sqlite_persistence_mode),
+                        "ownerUserId": user_id,
+                        "createdAt": now,
+                        "updatedAt": now,
+                    },
+                ),
                 include={
                     "members": True,
                     "toolSelections": True,
@@ -10871,11 +10880,14 @@ class UserSpaceService:
             raise
 
         await db.workspacemember.create(
-            data={
-                "workspaceId": workspace_id,
-                "userId": user_id,
-                "role": "owner",
-            }
+            data=cast(
+                Any,
+                {
+                    "workspaceId": workspace_id,
+                    "userId": user_id,
+                    "role": "owner",
+                },
+            )
         )
 
         requested_tool_ids = request.selected_tool_ids
@@ -11219,7 +11231,7 @@ class UserSpaceService:
             update_data["sharePassword"] = None
 
         db = await get_db()
-        share_record = await db.workspaceshare.update(where={"id": share_id}, data=update_data)
+        share_record = await db.workspaceshare.update(where={"id": share_id}, data=cast(Any, update_data))
 
         await invalidate_preview_sessions_for_workspace(workspace_id)
         from ragtime.userspace.runtime_service import userspace_runtime_service
@@ -11315,7 +11327,7 @@ class UserSpaceService:
         if include is not None:
             return await db.conversationshare.find_unique(
                 where={"id": share_id},
-                include=include,
+                include=cast(Any, include),
             )
         return await db.conversationshare.find_unique(where={"id": share_id})
 
@@ -11461,20 +11473,23 @@ class UserSpaceService:
                 continue
             try:
                 share_record = await db.conversationshare.create(
-                    data={
-                        "conversationId": conversation_id,
-                        "ownerUserId": owner_user_id,
-                        "label": normalized_label,
-                        "shareToken": candidate,
-                        "shareTokenCreatedAt": _utc_now(),
-                        "shareSlug": share_slug,
-                        "shareAccessMode": "token",
-                        "shareSelectedUserIds": Json([]),
-                        "shareSelectedLdapGroups": Json([]),
-                        "grantedRole": "viewer",
-                        "scopeAnchorMessageIdx": anchor_idx,
-                        "scopeDirection": direction,
-                    }
+                    data=cast(
+                        Any,
+                        {
+                            "conversationId": conversation_id,
+                            "ownerUserId": owner_user_id,
+                            "label": normalized_label,
+                            "shareToken": candidate,
+                            "shareTokenCreatedAt": _utc_now(),
+                            "shareSlug": share_slug,
+                            "shareAccessMode": "token",
+                            "shareSelectedUserIds": Json([]),
+                            "shareSelectedLdapGroups": Json([]),
+                            "grantedRole": "viewer",
+                            "scopeAnchorMessageIdx": anchor_idx,
+                            "scopeDirection": direction,
+                        },
+                    )
                 )
                 share_token = candidate
                 break
@@ -11589,7 +11604,7 @@ class UserSpaceService:
             update_data["scopeAnchorMessageIdx"] = anchor_idx
             update_data["scopeDirection"] = direction
         db = await get_db()
-        share_record = await db.conversationshare.update(where={"id": share_id}, data=update_data)
+        share_record = await db.conversationshare.update(where={"id": share_id}, data=cast(Any, update_data))
         return self._conversation_share_status_from_record(conversation_id, owner_username, share_record, base_url=base_url)
 
     async def update_conversation_share_link_slug(
@@ -11618,11 +11633,14 @@ class UserSpaceService:
         db = await get_db()
         share_record = await db.conversationshare.update(
             where={"id": share_id},
-            data={
-                "shareSlug": normalized_slug,
-                "ownerUserId": owner_user_id,
-                "updatedAt": _utc_now(),
-            },
+            data=cast(
+                Any,
+                {
+                    "shareSlug": normalized_slug,
+                    "ownerUserId": owner_user_id,
+                    "updatedAt": _utc_now(),
+                },
+            ),
         )
         owner_username = await self._get_public_owner_username(owner_user_id)
         return self._conversation_share_status_from_record(conversation_id, owner_username, share_record, base_url=base_url)
@@ -11698,7 +11716,7 @@ class UserSpaceService:
             update_data["sharePassword"] = None
 
         db = await get_db()
-        share_record = await db.conversationshare.update(where={"id": share_id}, data=update_data)
+        share_record = await db.conversationshare.update(where={"id": share_id}, data=cast(Any, update_data))
         owner_username = await self._get_public_owner_username(owner_user_id)
         return self._conversation_share_status_from_record(conversation_id, owner_username, share_record, base_url=base_url)
 
@@ -11943,7 +11961,9 @@ class UserSpaceService:
             password=password,
             share_auth_token=share_auth_token,
         )
-        return authorization["workspace_id"]
+        if not (workspace_id := authorization.get("workspace_id")):
+            raise HTTPException(status_code=403, detail="Shared workspace access was not authorized")
+        return workspace_id
 
     async def get_shared_preview_by_slug(
         self,
@@ -12002,7 +12022,9 @@ class UserSpaceService:
             password=password,
             share_auth_token=share_auth_token,
         )
-        return authorization["workspace_id"]
+        if not (workspace_id := authorization.get("workspace_id")):
+            raise HTTPException(status_code=403, detail="Shared workspace access was not authorized")
+        return workspace_id
 
     async def _build_shared_preview_response(
         self,
@@ -12096,15 +12118,18 @@ class UserSpaceService:
             if existing_member:
                 await db.workspacemember.update(
                     where={"id": existing_member.id},
-                    data={"role": "owner"},
+                    data=cast(Any, {"role": "owner"}),
                 )
             else:
                 await db.workspacemember.create(
-                    data={
-                        "workspaceId": workspace_id,
-                        "userId": request.owner_user_id,
-                        "role": "owner",
-                    }
+                    data=cast(
+                        Any,
+                        {
+                            "workspaceId": workspace_id,
+                            "userId": request.owner_user_id,
+                            "role": "owner",
+                        },
+                    )
                 )
             # Downgrade previous owner to editor in members
             old_owner_id = current_ws.owner_user_id
@@ -12113,7 +12138,7 @@ class UserSpaceService:
                 if old_owner_member:
                     await db.workspacemember.update(
                         where={"id": old_owner_member.id},
-                        data={"role": "editor"},
+                        data=cast(Any, {"role": "editor"}),
                     )
 
         if request.name is not None:
@@ -12128,7 +12153,7 @@ class UserSpaceService:
             update_data["sqlitePersistenceMode"] = _normalize_sqlite_persistence_mode(request.sqlite_persistence_mode)
 
         try:
-            await db.workspace.update(where={"id": workspace_id}, data=update_data)
+            await db.workspace.update(where={"id": workspace_id}, data=cast(Any, update_data))
         except Exception as exc:
             if _is_workspace_name_conflict_error(exc):
                 raise HTTPException(
@@ -12192,11 +12217,14 @@ class UserSpaceService:
             if not user:
                 continue
             await db.workspacemember.create(
-                data={
-                    "workspaceId": workspace_id,
-                    "userId": member.user_id,
-                    "role": member.role,
-                }
+                data=cast(
+                    Any,
+                    {
+                        "workspaceId": workspace_id,
+                        "userId": member.user_id,
+                        "role": member.role,
+                    },
+                )
             )
 
         await db.workspace.update(
@@ -12873,17 +12901,17 @@ class UserSpaceService:
         )
 
         event_type = "global_env_var_updated"
-        payload: dict[str, Any] = {"key": key}
+        audit_payload: dict[str, Any] = {"key": key}
         if target_key != key:
             event_type = "global_env_var_renamed"
-            payload["new_key"] = target_key
+            audit_payload["new_key"] = target_key
         if request.value is not None:
-            payload["value_replaced"] = True
+            audit_payload["value_replaced"] = True
         await self._audit_workspace_env_var_event(
             workspace_id="__global__",
             user_id=user_id,
             event_type=event_type,
-            payload=payload,
+            payload=audit_payload,
         )
 
         return self._workspace_env_var_from_record(updated, source="global")
@@ -13071,12 +13099,13 @@ class UserSpaceService:
         workspace_id: str,
     ) -> dict[str, str]:
         db = await get_db()
+        global_env_model = self._global_env_var_model(db)
         workspace_rows, global_rows = await asyncio.gather(
             self._workspace_env_var_model(db).find_many(
                 where={"workspaceId": workspace_id},
                 order={"key": "asc"},
             ),
-            self._global_env_var_model(db).find_many(order={"key": "asc"}),
+            global_env_model.find_many(order={"key": "asc"}) if global_env_model is not None else asyncio.sleep(0, result=[]),
         )
         env_map = {
             **self._sanitize_workspace_env_map(list(global_rows)),
@@ -13090,12 +13119,13 @@ class UserSpaceService:
         workspace_id: str,
     ) -> dict[str, bool]:
         db = await get_db()
+        global_env_model = self._global_env_var_model(db)
         workspace_rows, global_rows = await asyncio.gather(
             self._workspace_env_var_model(db).find_many(
                 where={"workspaceId": workspace_id},
                 order={"key": "asc"},
             ),
-            self._global_env_var_model(db).find_many(order={"key": "asc"}),
+            global_env_model.find_many(order={"key": "asc"}) if global_env_model is not None else asyncio.sleep(0, result=[]),
         )
         visibility: dict[str, bool] = {}
         for row in global_rows:
@@ -14372,7 +14402,7 @@ class UserSpaceService:
         }
         if files_total is not None:
             data["syncProgressFilesTotal"] = max(0, int(files_total))
-        await db.workspacemount.update(where={"id": mount_id}, data=data)
+        await db.workspacemount.update(where={"id": mount_id}, data=cast(Any, data))
         self.invalidate_file_list_cache(workspace_id)
 
     def _workspace_mount_sync_progress_callback(
@@ -15046,19 +15076,25 @@ class UserSpaceService:
         db = await get_db()
         now = _utc_now()
         existing_account = await db.usercloudoauthaccount.find_first(
-            where={
-                "userId": user_id,
-                "provider": request.provider,
-                "accountEmail": email or None,
-            }
+            where=cast(
+                Any,
+                {
+                    "userId": user_id,
+                    "provider": request.provider,
+                    "accountEmail": email or None,
+                },
+            )
         )
         if existing_account is None and account_name:
             existing_account = await db.usercloudoauthaccount.find_first(
-                where={
-                    "userId": user_id,
-                    "provider": request.provider,
-                    "accountName": account_name,
-                }
+                where=cast(
+                    Any,
+                    {
+                        "userId": user_id,
+                        "provider": request.provider,
+                        "accountName": account_name,
+                    },
+                )
             )
         if existing_account is None and workspace_id_from_state:
             linked_rows: list[dict[str, Any]] = await db.query_raw(
@@ -15075,10 +15111,10 @@ class UserSpaceService:
             )
             linked_account_ids = [str(row.get("oauth_account_id") or "").strip() for row in linked_rows if str(row.get("oauth_account_id") or "").strip()]
             if len(linked_account_ids) == 1:
-                existing_account = await db.usercloudoauthaccount.find_first(where={"id": linked_account_ids[0], "userId": user_id})
+                existing_account = await db.usercloudoauthaccount.find_first(where=cast(Any, {"id": linked_account_ids[0], "userId": user_id}))
         if existing_account is None:
             provider_accounts = await db.usercloudoauthaccount.find_many(
-                where={"userId": user_id, "provider": request.provider},
+                where=cast(Any, {"userId": user_id, "provider": request.provider}),
                 order={"createdAt": "asc"},
             )
             if len(provider_accounts) == 1:
@@ -15157,20 +15193,23 @@ class UserSpaceService:
             return self._user_cloud_oauth_account_from_record(updated)
 
         created = await db.usercloudoauthaccount.create(
-            data={
-                "id": str(uuid4()),
-                "userId": user_id,
-                "provider": request.provider,
-                "accountEmail": email or None,
-                "accountName": account_name or None,
-                "accessToken": encrypt_secret(access_token),
-                "refreshToken": encrypt_secret(refresh_token),
-                "expiresAt": expires_at if isinstance(expires_at, datetime) else None,
-                "scopes": Json(scopes),
-                "metadata": Json(metadata),
-                "createdAt": now,
-                "updatedAt": now,
-            }
+            data=cast(
+                Any,
+                {
+                    "id": str(uuid4()),
+                    "userId": user_id,
+                    "provider": request.provider,
+                    "accountEmail": email or None,
+                    "accountName": account_name or None,
+                    "accessToken": encrypt_secret(access_token),
+                    "refreshToken": encrypt_secret(refresh_token),
+                    "expiresAt": expires_at if isinstance(expires_at, datetime) else None,
+                    "scopes": Json(scopes),
+                    "metadata": Json(metadata),
+                    "createdAt": now,
+                    "updatedAt": now,
+                },
+            )
         )
         return self._user_cloud_oauth_account_from_record(created)
 
@@ -15281,20 +15320,23 @@ class UserSpaceService:
         )
         now = _utc_now()
         created = await db.useruserspacemountsource.create(
-            data={
-                "id": str(uuid4()),
-                "userId": user_id,
-                "name": self._normalize_mount_source_name(request.name),
-                "description": self._normalize_mount_source_description(request.description),
-                "enabled": bool(request.enabled),
-                "sourceType": request.source_type,
-                "oauthAccountId": request.oauth_account_id,
-                "connectionConfig": Json(encrypt_json_passwords(normalized_config, CONNECTION_CONFIG_PASSWORD_FIELDS)),
-                "approvedPaths": Json(approved_paths),
-                "syncIntervalSeconds": 30,
-                "createdAt": now,
-                "updatedAt": now,
-            },
+            data=cast(
+                Any,
+                {
+                    "id": str(uuid4()),
+                    "userId": user_id,
+                    "name": self._normalize_mount_source_name(request.name),
+                    "description": self._normalize_mount_source_description(request.description),
+                    "enabled": bool(request.enabled),
+                    "sourceType": request.source_type,
+                    "oauthAccountId": request.oauth_account_id,
+                    "connectionConfig": Json(encrypt_json_passwords(normalized_config, CONNECTION_CONFIG_PASSWORD_FIELDS)),
+                    "approvedPaths": Json(approved_paths),
+                    "syncIntervalSeconds": 30,
+                    "createdAt": now,
+                    "updatedAt": now,
+                },
+            ),
             include={"oauthAccount": True},
         )
         return self._userspace_mount_source_from_record(created, source_scope="user")
@@ -15312,7 +15354,7 @@ class UserSpaceService:
         next_config = existing.connection_config if "connection_config" not in fields_set else dict(request.connection_config or {})
         next_oauth_account_id = existing.oauth_account_id if "oauth_account_id" not in fields_set else request.oauth_account_id
         if next_oauth_account_id:
-            oauth_account = await db.usercloudoauthaccount.find_first(where={"id": next_oauth_account_id, "userId": user_id})
+            oauth_account = await db.usercloudoauthaccount.find_first(where=cast(Any, {"id": next_oauth_account_id, "userId": user_id}))
             if not oauth_account:
                 raise HTTPException(status_code=400, detail="Cloud account not found")
             next_config["oauth_account_id"] = next_oauth_account_id
@@ -15323,15 +15365,18 @@ class UserSpaceService:
         )
         updated = await db.useruserspacemountsource.update(
             where={"id": mount_source_id},
-            data={
-                "name": existing.name if "name" not in fields_set else self._normalize_mount_source_name(request.name or ""),
-                "description": existing.description if "description" not in fields_set else self._normalize_mount_source_description(request.description),
-                "enabled": existing.enabled if "enabled" not in fields_set else bool(request.enabled),
-                "oauthAccountId": next_oauth_account_id,
-                "connectionConfig": Json(encrypt_json_passwords(normalized_config, CONNECTION_CONFIG_PASSWORD_FIELDS)),
-                "approvedPaths": Json(approved_paths),
-                "updatedAt": _utc_now(),
-            },
+            data=cast(
+                Any,
+                {
+                    "name": existing.name if "name" not in fields_set else self._normalize_mount_source_name(request.name or ""),
+                    "description": existing.description if "description" not in fields_set else self._normalize_mount_source_description(request.description),
+                    "enabled": existing.enabled if "enabled" not in fields_set else bool(request.enabled),
+                    "oauthAccountId": next_oauth_account_id,
+                    "connectionConfig": Json(encrypt_json_passwords(normalized_config, CONNECTION_CONFIG_PASSWORD_FIELDS)),
+                    "approvedPaths": Json(approved_paths),
+                    "updatedAt": _utc_now(),
+                },
+            ),
             include={"oauthAccount": True},
         )
         return self._userspace_mount_source_from_record(updated, source_scope="user")
@@ -15441,7 +15486,7 @@ class UserSpaceService:
         if tool_config_id:
             data["toolConfigId"] = tool_config_id
         created = await db.userspacemountsource.create(
-            data=data,
+            data=cast(Any, data),
             include={"toolConfig": True},
         )
         return self._userspace_mount_source_from_record(created)
@@ -15545,7 +15590,7 @@ class UserSpaceService:
             update_data["syncIntervalSeconds"] = max(1, min(2592000, next_sync_interval))
         updated = await db.userspacemountsource.update(
             where={"id": mount_source_id},
-            data=update_data,
+            data=cast(Any, update_data),
             include={"toolConfig": True},
         )
 
@@ -15958,19 +16003,19 @@ class UserSpaceService:
             order={"name": "asc"},
             include={"oauthAccount": True},
         )
-        for row in user_rows:
-            mount_source = self._userspace_mount_source_from_record(
-                row,
+        for user_row in user_rows:
+            user_mount_source = self._userspace_mount_source_from_record(
+                user_row,
                 source_scope="user",
             )
-            for path in mount_source.approved_paths:
+            for path in user_mount_source.approved_paths:
                 sources.append(
                     MountableSource(
-                        mount_source_id=mount_source.id,
+                        mount_source_id=user_mount_source.id,
                         source_scope="user",
-                        source_name=mount_source.name,
-                        source_type=mount_source.source_type,
-                        mount_backend=mount_source.mount_backend,
+                        source_name=user_mount_source.name,
+                        source_type=user_mount_source.source_type,
+                        mount_backend=user_mount_source.mount_backend,
                         source_path=path,
                     )
                 )
@@ -16091,7 +16136,7 @@ class UserSpaceService:
             create_data["userMountSourceId"] = mount_source.id
         else:
             create_data["mountSourceId"] = mount_source.id
-        created = await db.workspacemount.create(data=create_data)
+        created = await db.workspacemount.create(data=cast(Any, create_data))
         await db.workspace.update(where={"id": workspace_id}, data={"updatedAt": now})
         return self._workspace_mount_from_record(created, mount_source)
 
@@ -16236,7 +16281,7 @@ class UserSpaceService:
 
         await self._invalidate_workspace_mount_sync_preview(mount_id)
 
-        updated = await db.workspacemount.update(where={"id": mount_id}, data=update_data)
+        updated = await db.workspacemount.update(where={"id": mount_id}, data=cast(Any, update_data))
         await db.workspace.update(
             where={"id": workspace_id},
             data={"updatedAt": update_data["updatedAt"]},
@@ -17166,7 +17211,7 @@ class UserSpaceService:
             where["path"] = normalized
 
         db = await get_db()
-        await db.userspacechangedfileacknowledgement.delete_many(where=where)
+        await db.userspacechangedfileacknowledgement.delete_many(where=cast(Any, where))
         return await self.list_workspace_changed_file_acknowledgements(workspace_id, user_id)
 
     async def clear_workspace_changed_file_acknowledgements_for_all_users(
@@ -17853,7 +17898,7 @@ class UserSpaceService:
         # Build ordered ancestor chain from the current head snapshot backward.
         snapshot_by_id = {s.id: s for s in snapshots}
         ancestor_depth: dict[str, int] = {}
-        cursor = current_snapshot_id
+        cursor: str | None = current_snapshot_id
         depth = 0
         while cursor:
             ancestor_depth[cursor] = depth

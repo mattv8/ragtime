@@ -22,6 +22,8 @@ from typing import Any, BinaryIO, Dict, List, Optional
 from langchain_community.document_loaders import TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangChainDocument
+from langchain_core.embeddings import Embeddings
+from pydantic import SecretStr
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
@@ -114,7 +116,7 @@ async def generate_index_description(
         provider = app_settings.get("llm_provider", "openai").lower()
 
         # Get the appropriate LLM based on configured provider
-        llm = None
+        llm: Any = None
 
         if provider == "ollama":
             try:
@@ -185,7 +187,7 @@ async def generate_index_description(
                 llm = ChatOpenAI(
                     model="gpt-4o-mini",
                     temperature=0.3,
-                    api_key=api_key,
+                    api_key=SecretStr(str(api_key)),
                 )
                 logger.debug("Using OpenAI for description generation: gpt-4o-mini")
             else:
@@ -200,7 +202,7 @@ async def generate_index_description(
                 llm = ChatOpenAI(
                     model=model,
                     temperature=0.3,
-                    api_key=api_key,
+                    api_key=SecretStr(str(api_key)),
                     base_url="https://openrouter.ai/api/v1",
                 )
                 logger.debug(f"Using OpenRouter for description generation: {model}")
@@ -220,7 +222,7 @@ async def generate_index_description(
                 llm = ChatOpenAI(
                     model=model,
                     temperature=0.3,
-                    api_key=token,
+                    api_key=SecretStr(str(token)),
                     base_url=str(base_url).rstrip("/"),
                     default_headers={
                         "Openai-Intent": "conversation-edits",
@@ -241,7 +243,7 @@ async def generate_index_description(
                 llm = ChatOpenAI(
                     model=model,
                     temperature=0.3,
-                    api_key=token,
+                    api_key=SecretStr(str(token)),
                     base_url="https://models.github.ai/inference",
                     default_headers={
                         "Accept": "application/vnd.github+json",
@@ -648,7 +650,7 @@ class IndexerService:
             self._active_jobs.pop(job.id, None)
             self._processing_tasks.pop(job.id, None)
 
-    async def _get_embeddings(self, app_settings: AppSettings):
+    async def _get_embeddings(self, app_settings: AppSettings) -> Embeddings:
         """Get the configured embedding model based on app settings."""
         # Use dict-safe access for logging (app_settings may be dict or object)
         provider = app_settings.get("embedding_provider") if isinstance(app_settings, dict) else getattr(app_settings, "embedding_provider", None)
@@ -656,12 +658,15 @@ class IndexerService:
         dims = app_settings.get("embedding_dimensions") if isinstance(app_settings, dict) else getattr(app_settings, "embedding_dimensions", None)
         logger.info(f"Getting embeddings: provider={provider}, model={model}, dimensions={dims}")
 
-        return await get_embeddings_model(
+        embeddings = await get_embeddings_model(
             app_settings,
             allow_missing_api_key=False,
             return_none_on_error=False,
             logger_override=logger,
         )
+        if embeddings is None:
+            raise ValueError("Embedding model could not be initialized")
+        return embeddings
 
     def _is_rate_limit_error(self, exc: Exception) -> bool:
         """Detect OpenAI rate limit errors across libraries."""
@@ -778,6 +783,7 @@ class IndexerService:
                     if result_db is None:
                         result_db = single_db
                     else:
+                        assert single_db is not None
                         await asyncio.to_thread(result_db.merge_from, single_db)
 
                 continue  # Skip the merge below, already handled
@@ -785,6 +791,7 @@ class IndexerService:
             if result_db is None:
                 result_db = micro_db
             else:
+                assert micro_db is not None
                 await asyncio.to_thread(result_db.merge_from, micro_db)
 
         if skipped > 0:

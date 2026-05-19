@@ -452,12 +452,14 @@ def wrap_tool_with_truncation(tool: StructuredTool, max_chars: int) -> Structure
     original_coroutine = tool.coroutine
 
     def truncating_func(*args, **kwargs):
+        assert original_func is not None
         result = original_func(*args, **kwargs)
         if isinstance(result, str):
             return truncate_tool_output(result, max_chars)
         return result
 
     async def truncating_coroutine(*args, **kwargs):
+        assert original_coroutine is not None
         result = await original_coroutine(*args, **kwargs)
         if isinstance(result, str):
             return truncate_tool_output(result, max_chars)
@@ -1186,7 +1188,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
         leading_system_messages: list[SystemMessage] = []
         remaining_messages = list(messages)
         while remaining_messages and isinstance(remaining_messages[0], SystemMessage):
-            leading_system_messages.append(remaining_messages.pop(0))
+            leading_system_messages.append(cast(SystemMessage, remaining_messages.pop(0)))
 
         if leading_system_messages:
             instructions_text = "\n\n".join(text for text in (self._message_content_to_text(message.content) for message in leading_system_messages) if text)
@@ -2062,12 +2064,12 @@ class RAGComponents:
                     return json.dumps(payload, indent=2)
                 parsed = self._parse_json_object(result)
                 status = "completed"
-                failure_class: str | None = None
+                parsed_failure_class: str | None = None
                 if parsed:
                     status = str(parsed.get("status") or status)
-                    failure_class = str(parsed.get("failure_class") or "").strip() or None
-                    if not failure_class and (parsed.get("rejected") or parsed.get("persisted_with_violations")):
-                        failure_class = self._classify_userspace_failure(
+                    parsed_failure_class = str(parsed.get("failure_class") or "").strip() or None
+                    if not parsed_failure_class and (parsed.get("rejected") or parsed.get("persisted_with_violations")):
+                        parsed_failure_class = self._classify_userspace_failure(
                             parsed.get("message"),
                             parsed.get("error"),
                             parsed.get("contract_violations"),
@@ -2079,16 +2081,16 @@ class RAGComponents:
                         "signature": signature,
                         "repeat_count": call_count,
                         "status": status,
-                        "failure_class": failure_class,
+                        "failure_class": parsed_failure_class,
                         "blocked": False,
                     }
                 )
 
-                if workspace_id and failure_class and parsed and (parsed.get("rejected") or parsed.get("persisted_with_violations")):
-                    summary = str(parsed.get("message") or parsed.get("error") or failure_class)
+                if workspace_id and parsed_failure_class and parsed and (parsed.get("rejected") or parsed.get("persisted_with_violations")):
+                    summary = str(parsed.get("message") or parsed.get("error") or parsed_failure_class)
                     self._record_userspace_failure(
                         workspace_id,
-                        failure_class=failure_class,
+                        failure_class=parsed_failure_class,
                         summary=summary,
                         tool_name=_tool_name,
                     )
@@ -2510,7 +2512,8 @@ class RAGComponents:
 
         try:
             self._indexes_loading = True
-            sequential = self._app_settings.get("sequential_index_loading", False)
+            app_settings = self._app_settings or {}
+            sequential = app_settings.get("sequential_index_loading", False)
             if sequential:
                 await self._load_faiss_indexes_sequential(self._embedding_model)
             else:
@@ -2665,7 +2668,7 @@ class RAGComponents:
         logger.info(f"Using {self._provider_label(normalized_provider)} embeddings: {model} at {base_url}")
         return OpenAIEmbeddings(
             model=model,
-            api_key=api_keys[normalized_provider],
+            api_key=SecretStr(str(api_keys[normalized_provider])),
             base_url=f"{base_url}/v1",
             check_embedding_ctx_length=False,
         )
@@ -2844,7 +2847,7 @@ class RAGComponents:
                 headers=metadata_headers,
                 requested_model=model,
             )
-            return _CopilotChatOpenAI(
+            return cast(Any, _CopilotChatOpenAI)(
                 model=model,
                 temperature=0,
                 streaming=True,
@@ -2866,7 +2869,7 @@ class RAGComponents:
                 logger.warning("Anthropic selected but no API key configured")
                 return None
             try:
-                return ChatAnthropic(
+                return cast(Any, ChatAnthropic)(
                     model=model,
                     temperature=0,
                     api_key=api_key,
@@ -3306,7 +3309,7 @@ class RAGComponents:
             logger.info(f"Detected embedding dimension: {current_embedding_dim} (will check indexes for mismatch)")
         except Exception as e:
             # Fall back to tracked dimension if probe fails
-            current_embedding_dim = self._app_settings.get("embedding_dimension")
+            current_embedding_dim = (self._app_settings or {}).get("embedding_dimension")
             logger.warning(f"Could not probe embedding dimension: {e}. Using tracked dimension: {current_embedding_dim}")
 
         # Initialize index details for all indexes
@@ -3459,7 +3462,8 @@ class RAGComponents:
 
         self._indexes_total = len(enabled_indexes)
         self._indexes_loaded = 0
-        search_k = self._app_settings.get("search_results_k", 5)
+        app_settings = self._app_settings or {}
+        search_k = app_settings.get("search_results_k", 5)
 
         # Get current embedding dimension by probing the embedding model
         # This is more reliable than tracked app_settings when provider changes
@@ -3470,7 +3474,7 @@ class RAGComponents:
             logger.info(f"Detected embedding dimension: {current_embedding_dim} (will check indexes for mismatch)")
         except Exception as e:
             # Fall back to tracked dimension if probe fails
-            current_embedding_dim = self._app_settings.get("embedding_dimension")
+            current_embedding_dim = app_settings.get("embedding_dimension")
             logger.warning(f"Could not probe embedding dimension: {e}. Using tracked dimension: {current_embedding_dim}")
 
         # Initialize index details for all indexes
@@ -5985,7 +5989,7 @@ except Exception as e:
                 return url
 
             with Image.open(io.BytesIO(raw_bytes)) as original:
-                image = ImageOps.exif_transpose(original)
+                image = cast(Image.Image, ImageOps.exif_transpose(original))
                 width, height = image.size
                 limits = self._get_image_payload_limits()
 
@@ -6235,7 +6239,7 @@ except Exception as e:
                     content.extend(reference_content)
                     augmented_messages.append(
                         ToolMessage(
-                            content=content,
+                            content=cast(str | list[str | dict[str, Any]], content),
                             tool_call_id=msg.tool_call_id,
                             additional_kwargs=(dict(msg.additional_kwargs) if getattr(msg, "additional_kwargs", None) else None),
                         )
@@ -6481,8 +6485,10 @@ except Exception as e:
             for item in content:
                 if isinstance(item, dict) and item.get("type") == "text":
                     text_parts.append(item.get("text", ""))
-                elif hasattr(item, "type") and item.type == "text":
-                    text_parts.append(item.text)
+                else:
+                    item_any = cast(Any, item)
+                    if hasattr(item_any, "type") and item_any.type == "text":
+                        text_parts.append(item_any.text)
             return " ".join(text_parts)
 
         return str(content)
@@ -6797,19 +6803,22 @@ except Exception as e:
                     if text is not None:
                         return cls._extract_text_from_stream_content(text)
 
-                if hasattr(first_generation, "message"):
-                    message = first_generation.message
+                first_generation_any = cast(Any, first_generation)
+                if hasattr(first_generation_any, "message"):
+                    message = first_generation_any.message
                     if hasattr(message, "content"):
                         return cls._extract_text_from_stream_content(message.content)
 
-        if hasattr(output, "generations"):
-            generations = output.generations
+        output_any = cast(Any, output)
+        if hasattr(output_any, "generations"):
+            generations = output_any.generations
             if isinstance(generations, list) and generations:
                 first_generation = generations[0]
                 if isinstance(first_generation, list) and first_generation:
                     first_generation = first_generation[0]
-                if hasattr(first_generation, "message"):
-                    message = first_generation.message
+                first_generation_any = cast(Any, first_generation)
+                if hasattr(first_generation_any, "message"):
+                    message = first_generation_any.message
                     if hasattr(message, "content"):
                         return cls._extract_text_from_stream_content(message.content)
 
@@ -6884,8 +6893,9 @@ except Exception as e:
                         if message_reasoning:
                             return message_reasoning
 
-                if hasattr(first_generation, "message"):
-                    message = first_generation.message
+                first_generation_any = cast(Any, first_generation)
+                if hasattr(first_generation_any, "message"):
+                    message = first_generation_any.message
                     if hasattr(message, "content"):
                         message_reasoning = cls._extract_reasoning_text_from_content_list(message.content)
                         if message_reasoning:
@@ -11745,7 +11755,7 @@ except Exception as e:
             MessagesPlaceholder(variable_name="chat_history", optional=True),
         ]
         if include_ai_turn_reminder:
-            messages.append(("ai", escape_prompt_template_braces(turn_system_content)))
+            messages.append(("ai", escape_prompt_template_braces(cast(str, turn_system_content))))
         messages.extend(
             [
                 MessagesPlaceholder(variable_name="user_input"),
@@ -11897,7 +11907,7 @@ except Exception as e:
             len(parsed),
             [tc["name"] for tc in parsed],
         )
-        message.tool_calls = parsed
+        message.tool_calls = cast(Any, parsed)
         return message
 
     def _create_thinking_aware_agent(
@@ -12411,7 +12421,7 @@ except Exception as e:
                 # Default executor exists but needs turn system content injected
                 scoped_prompt = system_prompt
                 executor = self._build_runtime_executor(
-                    executor.tools,
+                    list(executor.tools),
                     scoped_prompt,
                     llm=request_llm,
                     turn_system_content=turn_system_content,
@@ -12651,7 +12661,7 @@ except Exception as e:
             # Default executor exists but needs turn system content injected
             scoped_prompt = system_prompt
             executor = self._build_runtime_executor(
-                executor.tools,
+                list(executor.tools),
                 scoped_prompt,
                 llm=request_llm,
                 turn_system_content=turn_system_content,
@@ -12742,7 +12752,7 @@ except Exception as e:
                                 any_tool_activity = True
 
                                 tool_name = event.get("name", "unknown")
-                                tool_input = event.get("data", {}).get("input", {})
+                                tool_input: Any = event.get("data", {}).get("input", {})
                                 connection_meta = self._get_tool_connection_metadata(tool_name)
                                 presentation_meta = normalize_tool_presentation(tool_name, connection_meta)
                                 _tool_start_payloads[run_id] = {

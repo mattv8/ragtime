@@ -3,7 +3,7 @@
 # =============================================================================
 # Unified container for RAG API + Indexer (development)
 
-FROM python:3.12-slim
+FROM python:3.12-slim-trixie
 
 # Environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -12,12 +12,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Install system dependencies including Node.js for frontend dev
 # tini provides proper zombie process reaping when running as PID 1
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     dos2unix \
     git \
-    libmagic1 \
+    libmagic1t64 \
     ca-certificates \
     gnupg \
     openssl \

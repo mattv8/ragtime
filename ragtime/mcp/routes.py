@@ -29,7 +29,7 @@ from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from prisma.models import User
 from starlette.routing import Route
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import (
@@ -484,7 +484,7 @@ def _wrap_send_for_status(
     """Wrap ASGI send to capture the final response status code."""
     response_state: dict[str, int | None] = {"status_code": None}
 
-    async def send_with_status(message: dict[str, Any]) -> None:
+    async def send_with_status(message: Message) -> None:
         if message.get("type") == "http.response.start":
             response_state["status_code"] = int(message.get("status", 200))
         await send(message)

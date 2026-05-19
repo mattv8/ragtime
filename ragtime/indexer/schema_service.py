@@ -22,7 +22,7 @@ import json
 import subprocess
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, cast
 
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
@@ -151,10 +151,13 @@ class SchemaIndexerService:
         try:
             db = await get_db()
             prisma_job = await db.schemaindexjob.find_first(
-                where={
-                    "toolConfigId": tool_config_id,
-                    "status": {"in": ["pending", "indexing"]},
-                },
+                where=cast(
+                    Any,
+                    {
+                        "toolConfigId": tool_config_id,
+                        "status": {"in": ["pending", "indexing"]},
+                    },
+                ),
                 order={"createdAt": "desc"},
             )
             if prisma_job:
@@ -330,6 +333,9 @@ class SchemaIndexerService:
             tool_config = await repository.get_tool_config(db_job.toolConfigId)
             if not tool_config:
                 logger.warning(f"Cannot retry: tool config {db_job.toolConfigId} not found")
+                return None
+            if not tool_config.id:
+                logger.warning(f"Cannot retry schema job {job_id}: tool config has no id")
                 return None
 
             # Trigger a new indexing job
@@ -773,7 +779,7 @@ class SchemaIndexerService:
         container: str,
     ) -> Dict[str, Dict[Tuple[str, str], list]]:
         """Fetch PostgreSQL schema metadata for all discovered objects in bulk."""
-        empty_metadata = {
+        empty_metadata: Dict[str, Dict[Tuple[str, str], list]] = {
             "columns": {},
             "primary_keys": {},
             "foreign_keys": {},
@@ -950,7 +956,7 @@ class SchemaIndexerService:
             ),
         )
 
-        metadata = {
+        metadata: Dict[str, Dict[Tuple[str, str], list]] = {
             "columns": {},
             "primary_keys": {},
             "foreign_keys": {},
@@ -1521,9 +1527,9 @@ class SchemaIndexerService:
                 skipped_objects: List[str] = []
 
                 for row in table_rows:
-                    schema = row["table_schema"]
-                    table_name = row["table_name"]
-                    table_type = row["table_type"]
+                    schema = str(row["table_schema"])
+                    table_name = str(row["table_name"])
+                    table_type = str(row["table_type"])
                     row_estimate = row.get("row_estimate")
                     table_comment = row.get("table_comment")
                     # Cast extended property value if returned as bytes
@@ -1564,9 +1570,9 @@ class SchemaIndexerService:
                                 col_desc = col_desc.decode("utf-8", errors="replace")
                             columns.append(
                                 {
-                                    "name": c["column_name"],
-                                    "type": c["data_type"],
-                                    "nullable": c["is_nullable"],
+                                    "name": str(c["column_name"]),
+                                    "type": str(c["data_type"]),
+                                    "nullable": bool(c["is_nullable"]),
                                     "default": c["column_default"],
                                     "description": col_desc or None,
                                 }
@@ -1584,7 +1590,7 @@ class SchemaIndexerService:
                             ORDER BY ic.key_ordinal
                         """
                         )
-                        pk = [r["column_name"] for r in cursor.fetchall()]
+                        pk = [str(r["column_name"]) for r in cursor.fetchall()]
 
                         # Get foreign keys
                         cursor.execute(
@@ -1602,16 +1608,16 @@ class SchemaIndexerService:
 
                         fk_map: Dict[str, dict] = {}
                         for r in cursor.fetchall():
-                            name = r["constraint_name"]
+                            name = str(r["constraint_name"])
                             if name not in fk_map:
                                 fk_map[name] = {
                                     "name": name,
                                     "columns": [],
-                                    "references_table": r["references_table"],
+                                    "references_table": str(r["references_table"]),
                                     "references_columns": [],
                                 }
-                            fk_map[name]["columns"].append(r["column_name"])
-                            fk_map[name]["references_columns"].append(r["references_column"])
+                            fk_map[name]["columns"].append(str(r["column_name"]))
+                            fk_map[name]["references_columns"].append(str(r["references_column"]))
                         fks = list(fk_map.values())
 
                         # Get indexes (non-primary key)
@@ -1632,9 +1638,9 @@ class SchemaIndexerService:
                         )
                         indexes = [
                             {
-                                "name": r["index_name"],
-                                "unique": r["is_unique"],
-                                "columns": (r["columns"].split(",") if r["columns"] else []),
+                                "name": str(r["index_name"]),
+                                "unique": bool(r["is_unique"]),
+                                "columns": (str(r["columns"]).split(",") if r["columns"] else []),
                             }
                             for r in cursor.fetchall()
                         ]
@@ -1652,8 +1658,8 @@ class SchemaIndexerService:
                         )
                         check_constraints = [
                             {
-                                "name": r["constraint_name"],
-                                "definition": r["constraint_definition"],
+                                "name": str(r["constraint_name"]),
+                                "definition": str(r["constraint_definition"]),
                             }
                             for r in cursor.fetchall()
                         ]
@@ -1670,7 +1676,7 @@ class SchemaIndexerService:
                                 foreign_keys=fks,
                                 indexes=indexes,
                                 check_constraints=check_constraints,
-                                row_count_estimate=(int(row_estimate) if row_estimate else None),
+                                row_count_estimate=(int(str(row_estimate)) if row_estimate else None),
                             )
                         )
                     except Exception as e:
@@ -2285,17 +2291,20 @@ class SchemaIndexerService:
         try:
             db = await get_db()
             await db.schemaindexjob.create(
-                data={
-                    "id": job.id,
-                    "toolConfigId": job.tool_config_id,
-                    "status": job.status.value,
-                    "indexName": job.index_name,
-                    "totalTables": job.total_tables,
-                    "processedTables": job.processed_tables,
-                    "totalChunks": job.total_chunks,
-                    "processedChunks": job.processed_chunks,
-                    "createdAt": job.created_at,
-                }
+                data=cast(
+                    Any,
+                    {
+                        "id": job.id,
+                        "toolConfigId": job.tool_config_id,
+                        "status": job.status.value,
+                        "indexName": job.index_name,
+                        "totalTables": job.total_tables,
+                        "processedTables": job.processed_tables,
+                        "totalChunks": job.total_chunks,
+                        "processedChunks": job.processed_chunks,
+                        "createdAt": job.created_at,
+                    },
+                )
             )
         except Exception as e:
             logger.error(f"Error creating schema job: {e}")
@@ -2306,16 +2315,19 @@ class SchemaIndexerService:
             db = await get_db()
             await db.schemaindexjob.update(
                 where={"id": job.id},
-                data={
-                    "status": job.status.value,
-                    "totalTables": job.total_tables,
-                    "processedTables": job.processed_tables,
-                    "totalChunks": job.total_chunks,
-                    "processedChunks": job.processed_chunks,
-                    "errorMessage": job.error_message,
-                    "startedAt": job.started_at,
-                    "completedAt": job.completed_at,
-                },
+                data=cast(
+                    Any,
+                    {
+                        "status": job.status.value,
+                        "totalTables": job.total_tables,
+                        "processedTables": job.processed_tables,
+                        "totalChunks": job.total_chunks,
+                        "processedChunks": job.processed_chunks,
+                        "errorMessage": job.error_message,
+                        "startedAt": job.started_at,
+                        "completedAt": job.completed_at,
+                    },
+                ),
             )
         except Exception as e:
             logger.warning(f"Error updating schema job: {e}")

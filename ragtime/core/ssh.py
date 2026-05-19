@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path as _Path
 from pathlib import PurePosixPath
-from typing import Callable, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 import paramiko
 
@@ -144,12 +144,12 @@ def _load_private_key(
 
     key_file = io.StringIO(key_data)
     passphrase_bytes = passphrase.encode() if passphrase else None
-    key_classes = [
+    key_classes: tuple[Any, ...] = (
         paramiko.RSAKey,
         paramiko.Ed25519Key,
         paramiko.ECDSAKey,
         paramiko.DSSKey,
-    ]
+    )
 
     last_error = None
     for key_class in key_classes:
@@ -350,19 +350,26 @@ def ssh_config_from_dict(config_dict: dict) -> SSHConfig:
     Handles both 'ssh_' prefixed and non-prefixed field names.
     """
 
-    def get_field(name: str, default=None):
+    def get_field(name: str, default: object = None) -> object:
         """Get field with or without ssh_ prefix."""
         return config_dict.get(f"ssh_{name}") or config_dict.get(name, default)
 
+    host = str(get_field("host", "") or "")
+    user = str(get_field("user", "") or "")
+    port_raw: Any = get_field("port", 22) or 22
+    timeout_raw: Any = get_field("timeout", 30) or 30
+    port = int(port_raw)
+    timeout = int(timeout_raw)
+
     return SSHConfig(
-        host=get_field("host", ""),
-        user=get_field("user", ""),
-        port=int(get_field("port", 22)),
-        password=get_field("password"),
-        key_path=get_field("key_path"),
-        key_content=get_field("key_content"),
-        key_passphrase=get_field("key_passphrase"),
-        timeout=int(get_field("timeout", 30)),
+        host=host,
+        user=user,
+        port=port,
+        password=str(password) if (password := get_field("password")) else None,
+        key_path=str(key_path) if (key_path := get_field("key_path")) else None,
+        key_content=str(key_content) if (key_content := get_field("key_content")) else None,
+        key_passphrase=str(key_passphrase) if (key_passphrase := get_field("key_passphrase")) else None,
+        timeout=timeout,
     )
 
 
@@ -446,7 +453,7 @@ class SSHTunnel:
         self._transport: Optional[paramiko.Transport] = None
         self._local_port: int = 0
         self._server_socket: Optional[socket.socket] = None
-        self._forward_thread: Optional[socket.socket] = None
+        self._forward_thread: Optional[threading.Thread] = None
         self._running = False
         self._connections: list = []
 
@@ -471,6 +478,8 @@ class SSHTunnel:
         ssh_config = self.config.to_ssh_config()
         self._client = _create_ssh_client(ssh_config)
         self._transport = self._client.get_transport()
+        if self._transport is None:
+            raise RuntimeError("SSH transport is not available")
 
         # Create local server socket
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -493,13 +502,17 @@ class SSHTunnel:
     def _forward_loop(self) -> None:
         """Accept connections and forward them through SSH."""
         while self._running:
+            server_socket = self._server_socket
+            transport = self._transport
+            if server_socket is None or transport is None:
+                return
             try:
-                client_socket, addr = self._server_socket.accept()
+                client_socket, addr = server_socket.accept()
                 logger.debug(f"SSH tunnel connection from {addr}")
 
                 # Open channel to remote host
                 try:
-                    channel = self._transport.open_channel(
+                    channel = transport.open_channel(
                         "direct-tcpip",
                         (self.config.remote_host, self.config.remote_port),
                         addr,
@@ -1820,6 +1833,8 @@ def test_ssh_tunnel(config: SSHTunnelConfig) -> tuple[bool, str]:
     try:
         client = _create_ssh_client(config.to_ssh_config())
         transport = client.get_transport()
+        if transport is None:
+            return False, "SSH tunnel test failed: transport is not available"
 
         # Try to open a channel to verify the remote endpoint is reachable
         try:

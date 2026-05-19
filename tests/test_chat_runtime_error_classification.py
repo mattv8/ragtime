@@ -14,7 +14,7 @@ from ragtime.userspace.service import UserSpaceService
 
 if "ragtime.indexer.service" not in sys.modules:
     fake_indexer_service = types.ModuleType("ragtime.indexer.service")
-    fake_indexer_service.IndexerService = object
+    setattr(fake_indexer_service, "IndexerService", object)
     sys.modules["ragtime.indexer.service"] = fake_indexer_service
 
 

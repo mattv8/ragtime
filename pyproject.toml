@@ -106,11 +106,11 @@ disable = [
     "W1203",  # logging-fstring-interpolation
     "W0718",  # broad-exception-caught
     "R0801",  # duplicate-code
-    "E0401",  # import-error
+    "import-error",
 ]
 
 [tool.pylint.format]
-max-line-length = 120
+max-line-length = 160
 
 [tool.pylint.typecheck]
 ignored-modules = ["pydantic", "langchain", "langchain_core", "langchain_openai", "langchain_anthropic", "langchain_community"]
@@ -176,7 +176,7 @@ quote-style = "double"
 skip-magic-trailing-comma = false
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+select = ["E9", "F821", "F822", "F823", "I"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]

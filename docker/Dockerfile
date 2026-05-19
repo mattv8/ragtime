@@ -8,7 +8,7 @@
 # =============================================================================
 # Stage 1: Build frontend
 # =============================================================================
-FROM node:20-slim AS frontend-builder
+FROM node:24-alpine3.22 AS frontend-builder
 
 ARG ENVIRONMENT=main
 ARG APP_VERSION=dev
@@ -16,6 +16,8 @@ ENV VITE_RAGTIME_ENVIRONMENT=${ENVIRONMENT}
 ENV VITE_RAGTIME_VERSION=${APP_VERSION}
 
 WORKDIR /frontend
+
+RUN npm install -g npm@latest
 
 # Copy frontend manifest files
 COPY ragtime/frontend/package*.json ./
@@ -33,7 +35,7 @@ RUN npm run build
 # =============================================================================
 # Stage 2: Build Python dependencies
 # =============================================================================
-FROM python:3.12-slim AS python-builder
+FROM python:3.12-slim-trixie AS python-builder
 
 # Build arguments
 ARG DEBIAN_FRONTEND=noninteractive
@@ -41,7 +43,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG LEGACY_CPU=0
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -150,7 +152,7 @@ RUN mkdir -p "$INDEX_DATA_PATH" && \
 # =============================================================================
 # Stage 5: Production image
 # =============================================================================
-FROM python:3.12-slim AS production
+FROM python:3.12-slim-trixie AS production
 
 ARG APP_VERSION=dev
 
@@ -168,14 +170,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Install runtime dependencies
 # tini: lightweight init for zombie process reaping (uvicorn as PID 1 doesn't reap children)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl \
     tini \
     dos2unix \
     git \
     gnupg \
     docker.io \
-    libmagic1 \
+    libmagic1t64 \
     openssl \
     openssh-client \
     rsync \

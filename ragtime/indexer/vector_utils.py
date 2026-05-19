@@ -10,6 +10,9 @@ This module centralizes:
 import asyncio
 from typing import Any, Dict, List, Mapping, Optional
 
+from langchain_core.embeddings import Embeddings
+from pydantic import SecretStr
+
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
@@ -326,12 +329,12 @@ async def get_embeddings_model(
     allow_missing_api_key: bool = False,
     return_none_on_error: bool = False,
     logger_override=None,
-):
+) -> Embeddings | None:
     """Build an embeddings model from settings (dict or settings object)."""
     log = logger_override or logger
 
-    provider = (_get_setting(settings, "embedding_provider", "ollama") or "").lower()
-    model = _get_setting(settings, "embedding_model", "nomic-embed-text")
+    provider = str(_get_setting(settings, "embedding_provider", "ollama") or "").lower()
+    model = str(_get_setting(settings, "embedding_model", "nomic-embed-text") or "nomic-embed-text")
     dimensions = _get_setting(settings, "embedding_dimensions")
 
     if provider == "ollama":
@@ -353,7 +356,7 @@ async def get_embeddings_model(
                 return None
             raise ValueError(message)
 
-        kwargs = {"model": model, "api_key": api_key}
+        kwargs: dict[str, Any] = {"model": model, "api_key": SecretStr(str(api_key))}
         if dimensions and str(model).startswith("text-embedding-3"):
             kwargs["dimensions"] = dimensions
             log.info(f"Using OpenAI embeddings with {dimensions} dimensions")
@@ -365,7 +368,7 @@ async def get_embeddings_model(
         base_url = str(_get_setting(settings, "llama_cpp_base_url", "http://host.docker.internal:8081") or "http://host.docker.internal:8081").rstrip("/")
         return OpenAIEmbeddings(
             model=model,
-            api_key="llama-cpp-local",
+            api_key=SecretStr("llama-cpp-local"),
             base_url=f"{base_url}/v1",
             check_embedding_ctx_length=False,
         )
@@ -377,7 +380,7 @@ async def get_embeddings_model(
         api_key = str(_get_setting(settings, "lmstudio_api_key", "") or "lmstudio-local")
         return OpenAIEmbeddings(
             model=model,
-            api_key=api_key,
+            api_key=SecretStr(api_key),
             base_url=f"{base_url}/v1",
             check_embedding_ctx_length=False,
         )
@@ -389,7 +392,7 @@ async def get_embeddings_model(
         api_key = str(_get_setting(settings, "omlx_api_key", "") or "omlx-local")
         return OpenAIEmbeddings(
             model=model,
-            api_key=api_key,
+            api_key=SecretStr(api_key),
             base_url=f"{base_url}/v1",
             check_embedding_ctx_length=False,
         )

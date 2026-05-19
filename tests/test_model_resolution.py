@@ -3,6 +3,8 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from pydantic import SecretStr
+
 import ragtime.core.model_limits as model_limits
 import ragtime.indexer.routes as indexer_routes
 from ragtime.api.routes import (
@@ -113,7 +115,7 @@ class ModelResolutionTests(unittest.TestCase):
     def test_copilot_retries_without_unsupported_direct_reasoning_effort(self) -> None:
         llm = _CopilotChatOpenAI(
             model="claude-haiku-4.5",
-            api_key="test-token",
+            api_key=SecretStr("test-token"),
             base_url="https://api.githubcopilot.com",
             reasoning_effort="high",
         )
@@ -132,7 +134,7 @@ class ModelResolutionTests(unittest.TestCase):
     def test_chat_tools_reasoning_effort_error_probes_responses(self) -> None:
         llm = _CopilotChatOpenAI(
             model="gpt-5.4-mini",
-            api_key="test-token",
+            api_key=SecretStr("test-token"),
             reasoning_effort="high",
         )
         error = FakeProviderError(

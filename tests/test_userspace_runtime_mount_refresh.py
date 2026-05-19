@@ -9,15 +9,15 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-from ragtime.userspace.models import UpdateUserspaceMountSourceRequest
+from ragtime.userspace.models import UpdateUserspaceMountSourceRequest, UserSpaceWorkspace
 from ragtime.userspace.runtime_service import UserSpaceRuntimeService
 from ragtime.userspace.service import UserSpaceService
 
 if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package = types.ModuleType("ragtime.rag")
     fake_prompts_module = types.ModuleType("ragtime.rag.prompts")
-    fake_prompts_module.build_workspace_scm_setup_prompt = lambda *args, **kwargs: ""
-    fake_rag_package.prompts = fake_prompts_module
+    setattr(fake_prompts_module, "build_workspace_scm_setup_prompt", lambda *args, **kwargs: "")
+    setattr(fake_rag_package, "prompts", fake_prompts_module)
     sys.modules.setdefault("ragtime.rag", fake_rag_package)
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
 
@@ -177,8 +177,21 @@ class _MountListService(UserSpaceService):
         super().__init__()
         self.availability_checks: list[str] = []
 
-    async def _enforce_workspace_access(self, workspace_id: str, user_id: str) -> None:
-        return None
+    async def _enforce_workspace_access(
+        self,
+        workspace_id: str,
+        user_id: str,
+        required_role: str | None = None,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspace:
+        return UserSpaceWorkspace(
+            id=workspace_id,
+            name="Workspace",
+            owner_user_id=user_id,
+            members=[],
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
 
     async def _workspace_mount_editable_by_user(self, row: Any, user_id: str) -> bool:
         return True
@@ -216,7 +229,11 @@ class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
         ]
         db = _FakeMountSourceDisableDb(rows)
         service = UserSpaceService()
-        service.invalidate_file_list_cache = lambda _workspace_id: None
+
+        def invalidate_file_list_cache(workspace_id: str) -> None:
+            return None
+
+        setattr(service, "invalidate_file_list_cache", invalidate_file_list_cache)
 
         async def _fake_get_mount_source_record(_db: Any, _mount_source_id: str) -> SimpleNamespace:
             return SimpleNamespace(id=mount_source_id, enabled=True)

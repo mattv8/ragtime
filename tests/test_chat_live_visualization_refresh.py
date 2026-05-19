@@ -26,8 +26,8 @@ inserted_fake_rag_prompts = "ragtime.rag.prompts" not in sys.modules
 if inserted_fake_rag_prompts:
     fake_rag_package = types.ModuleType("ragtime.rag")
     fake_prompts_module = types.ModuleType("ragtime.rag.prompts")
-    fake_prompts_module.build_workspace_scm_setup_prompt = lambda *args, **kwargs: ""
-    fake_rag_package.prompts = fake_prompts_module
+    setattr(fake_prompts_module, "build_workspace_scm_setup_prompt", lambda *args, **kwargs: "")
+    setattr(fake_rag_package, "prompts", fake_prompts_module)
     sys.modules.setdefault("ragtime.rag", fake_rag_package)
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
 

@@ -232,10 +232,10 @@ def decode_sql_dump_bytes(content: bytes) -> str:
         import chardet
 
         detected = chardet.detect(content)
-        encoding = detected.get("encoding")
+        encoding_name = detected.get("encoding")
         confidence = float(detected.get("confidence") or 0)
-        if encoding and confidence >= 0.6:
-            return content.decode(encoding)
+        if encoding_name and confidence >= 0.6:
+            return content.decode(encoding_name)
     except Exception:
         pass
 
@@ -837,10 +837,10 @@ def _split_sql_statements(sql: str) -> list[str]:
     return statements
 
 
-def _strip_schema_qualifiers(expression: exp.Expression, warnings: list[str]) -> exp.Expression:
+def _strip_schema_qualifiers(expression: Any, warnings: list[str]) -> Any:
     stripped_any = False
 
-    def _transform(node: exp.Expression) -> exp.Expression:
+    def _transform(node: Any) -> Any:
         nonlocal stripped_any
         if isinstance(node, exp.Table) and (node.args.get("db") or node.args.get("catalog")):
             node.set("db", None)

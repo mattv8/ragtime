@@ -56,6 +56,8 @@ from ragtime.indexer.models import (
     IndexJob,
     IndexStatus,
     MessageSnapshotRestore,
+    OcrMode,
+    OcrProvider,
     ProviderPromptDebugRecord,
     ToolCallRecord,
     ToolConfig,
@@ -560,6 +562,8 @@ class IndexerRepository:
             embedding_model=prisma_job.config.embeddingModel,
         )
 
+        git_token_raw = getattr(prisma_job, "gitToken", None)
+
         return IndexJob(
             id=prisma_job.id,
             name=prisma_job.name,
@@ -569,7 +573,7 @@ class IndexerRepository:
             source_path=prisma_job.sourcePath,
             git_url=prisma_job.gitUrl,
             git_branch=prisma_job.gitBranch,
-            git_token=(decrypt_secret(prisma_job.gitToken) if getattr(prisma_job, "gitToken", None) else None),
+            git_token=(decrypt_secret(git_token_raw) if git_token_raw else None),
             total_files=prisma_job.totalFiles,
             processed_files=prisma_job.processedFiles,
             total_chunks=prisma_job.totalChunks,
@@ -1083,7 +1087,7 @@ class IndexerRepository:
             # Performance configuration
             sequential_index_loading=getattr(settings, "sequentialIndexLoading", False),
             # API Tool Output configuration
-            tool_output_mode=getattr(settings, "toolOutputMode", "default"),
+            tool_output_mode=ToolOutputMode(getattr(settings, "toolOutputMode", "default") or "default"),
             # MCP configuration
             mcp_enabled=getattr(settings, "mcpEnabled", False),
             mcp_default_route_auth=getattr(settings, "mcpDefaultRouteAuth", False),
@@ -1096,8 +1100,8 @@ class IndexerRepository:
             embedding_dimension=getattr(settings, "embeddingDimension", None),
             embedding_config_hash=getattr(settings, "embeddingConfigHash", None),
             # OCR configuration
-            default_ocr_mode=_normalize_ocr_mode_value(getattr(settings, "defaultOcrMode", "disabled")),
-            default_ocr_provider=getattr(settings, "defaultOcrProvider", "ollama"),
+            default_ocr_mode=OcrMode(_normalize_ocr_mode_value(getattr(settings, "defaultOcrMode", "disabled"))),
+            default_ocr_provider=(OcrProvider(default_provider) if (default_provider := getattr(settings, "defaultOcrProvider", "ollama")) else None),
             default_ocr_vision_model=getattr(settings, "defaultOcrVisionModel", None),
             ocr_concurrency_limit=getattr(settings, "ocrConcurrencyLimit", 1),
             ollama_embedding_timeout_seconds=getattr(settings, "ollamaEmbeddingTimeoutSeconds", 180),
@@ -1476,6 +1480,8 @@ class IndexerRepository:
 
                             if config.enabled:
                                 logger.warning(f"Auto-disabling filesystem index '{config.name}': {reason}")
+                                if not config.id:
+                                    continue
                                 # Update DB
                                 await db.toolconfig.update(
                                     where={"id": config.id},
@@ -1812,8 +1818,10 @@ class IndexerRepository:
         if not data:
             return await self.get_tool_group(group_id)
         try:
-            r = await db.toolgroup.update(where={"id": group_id}, data=data)
+            r = await db.toolgroup.update(where={"id": group_id}, data=cast(Any, data))
         except Exception:
+            return None
+        if r is None:
             return None
         return ToolGroup(
             id=r.id,
@@ -2074,8 +2082,8 @@ class IndexerRepository:
                 total_tokens=int(row.get("total_tokens") or 0),
                 active_task_id=row.get("active_task_id"),
                 active_branch_id=row.get("active_branch_id"),
-                created_at=row.get("created_at"),
-                updated_at=row.get("updated_at"),
+                created_at=cast(datetime, row.get("created_at")),
+                updated_at=cast(datetime, row.get("updated_at")),
             )
             for row in rows
         ]
@@ -2302,10 +2310,13 @@ class IndexerRepository:
         try:
             updated = await db.conversation.update(
                 where={"id": conversation_id},
-                data={
-                    "toolOutputMode": tool_output_mode,
-                    "updatedAt": datetime.utcnow(),
-                },
+                data=cast(
+                    Any,
+                    {
+                        "toolOutputMode": tool_output_mode,
+                        "updatedAt": datetime.utcnow(),
+                    },
+                ),
                 include={"user": True},
             )
             return self._prisma_conversation_to_model(updated)
@@ -2383,7 +2394,7 @@ class IndexerRepository:
                             "conversationId": conversation_id,
                             "parentBranchId": parent_branch_id,
                             "branchPointIndex": branch_point_index,
-                            "branchKind": branch_kind.value if branch_kind else None,
+                            "branchKind": cast(Any, branch_kind.value if branch_kind else None),
                             "preservedMessages": Json(preserved),
                             "associatedSnapshotId": associated_snapshot_id,
                             "createdByUserId": user_id,
@@ -2460,12 +2471,15 @@ class IndexerRepository:
                             user_id = str(prisma_conv.userId) if prisma_conv.userId else None
                             parent_branch_id = getattr(target_branch, "parentBranchId", None)
                             live_branch = await tx.conversationbranch.find_first(
-                                where={
-                                    "conversationId": conversation_id,
-                                    "parentBranchId": parent_branch_id,
-                                    "branchPointIndex": branch_point,
-                                    "branchKind": None,
-                                },
+                                where=cast(
+                                    Any,
+                                    {
+                                        "conversationId": conversation_id,
+                                        "parentBranchId": parent_branch_id,
+                                        "branchPointIndex": branch_point,
+                                        "branchKind": None,
+                                    },
+                                ),
                                 order=[{"createdAt": "desc"}],
                             )
                             if live_branch:
@@ -2552,7 +2566,7 @@ class IndexerRepository:
         message_index: int,
         event_index: int,
         tool_name: str,
-    ) -> dict[str, Any]:
+    ) -> Any:
         where: dict[str, Any] = {
             "conversationId": conversation_id,
             "messageIndex": message_index,
@@ -2589,7 +2603,7 @@ class IndexerRepository:
                         include={"user": True},
                     )
                     if not prisma_conv:
-                        return None, None
+                        return None, [], None
 
                     messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
                     target_index, target_message, target_event = self._locate_visualization_event_in_messages(
@@ -2905,12 +2919,15 @@ class IndexerRepository:
                         return self._prisma_conversation_to_model(prisma_conv)
 
                     live_branches = await tx.conversationbranch.find_many(
-                        where={
-                            "conversationId": conversation_id,
-                            "parentBranchId": getattr(active_branch, "parentBranchId", None),
-                            "branchPointIndex": branch_point,
-                            "branchKind": None,
-                        },
+                        where=cast(
+                            Any,
+                            {
+                                "conversationId": conversation_id,
+                                "parentBranchId": getattr(active_branch, "parentBranchId", None),
+                                "branchPointIndex": branch_point,
+                                "branchKind": None,
+                            },
+                        ),
                         order=[{"createdAt": "desc"}],
                     )
                     live_branch = next(
@@ -3013,22 +3030,25 @@ class IndexerRepository:
                         "messageId": message_id,
                     }
                 },
-                data={
-                    "create": {
-                        "id": str(uuid.uuid4()),
-                        "conversationId": conversation_id,
-                        "workspaceId": workspace_id,
-                        "messageId": message_id,
-                        "snapshotId": snapshot_id,
-                        "restoreMessageCount": restore_message_count,
+                data=cast(
+                    Any,
+                    {
+                        "create": {
+                            "id": str(uuid.uuid4()),
+                            "conversationId": conversation_id,
+                            "workspaceId": workspace_id,
+                            "messageId": message_id,
+                            "snapshotId": snapshot_id,
+                            "restoreMessageCount": restore_message_count,
+                        },
+                        "update": {
+                            "snapshotId": snapshot_id,
+                            "restoreMessageCount": restore_message_count,
+                            "workspaceId": workspace_id,
+                            "updatedAt": now,
+                        },
                     },
-                    "update": {
-                        "snapshotId": snapshot_id,
-                        "restoreMessageCount": restore_message_count,
-                        "workspaceId": workspace_id,
-                        "updatedAt": now,
-                    },
-                },
+                ),
             )
             return True
         except Exception as e:

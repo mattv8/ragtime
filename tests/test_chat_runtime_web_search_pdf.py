@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timezone
+from typing import Any
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -39,7 +40,7 @@ class ChatRuntimeWebSearchPdfTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_attach_pdf_metadata_only_marks_likely_candidates(self):
         service = ChatRuntimeService()
-        results = [
+        results: list[dict[str, Any]] = [
             {
                 "title": "[PDF] First paper",
                 "url": "https://example.com/first",
@@ -142,7 +143,9 @@ class ChatRuntimeWebSearchPdfTests(unittest.IsolatedAsyncioTestCase):
                 ("POST", "/sessions/new-session/pdf-read"),
             ],
         )
-        self.assertEqual(calls[-1][2]["query"], "needle")
+        payload = calls[-1][2]
+        assert payload is not None
+        self.assertEqual(payload["query"], "needle")
         self.assertEqual(service._sessions["conv"].provider_session_id, "new-session")
 
 

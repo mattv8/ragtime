@@ -25,8 +25,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncContextManager, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncContextManager, AsyncIterator, Callable, Dict, List, Optional
 
+from prisma.enums import FilesystemIndexStatus as PrismaFilesystemIndexStatus
 from prisma.errors import TableNotFoundError
 
 from ragtime.core.app_settings import get_app_settings
@@ -68,6 +69,7 @@ from ragtime.indexer.models import (
     FilesystemIndexStatus,
     FileTypeStats,
     OcrMode,
+    OcrProvider,
     VectorStoreType,
 )
 from ragtime.indexer.repository import IndexerRepository, repository
@@ -535,8 +537,8 @@ class FilesystemIndexerService:
         self,
         config: FilesystemConnectionConfig,
         limit: Optional[int] = None,
-        progress_callback: Optional[callable] = None,
-        cancel_check: Optional[callable] = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> List[Path]:
         """
         Collect files matching the configuration patterns.
@@ -686,7 +688,7 @@ class FilesystemIndexerService:
             data={
                 "id": job.id,
                 "toolConfigId": job.tool_config_id,
-                "status": job.status.value,
+                "status": PrismaFilesystemIndexStatus(job.status.value),
                 "indexName": job.index_name,
                 "totalFiles": job.total_files,
                 "processedFiles": job.processed_files,
@@ -704,7 +706,7 @@ class FilesystemIndexerService:
         await db.filesystemindexjob.update(
             where={"id": job.id},
             data={
-                "status": job.status.value,
+                "status": PrismaFilesystemIndexStatus(job.status.value),
                 "totalFiles": job.total_files,
                 "processedFiles": job.processed_files,
                 "skippedFiles": job.skipped_files,
@@ -746,12 +748,17 @@ class FilesystemIndexerService:
     async def list_jobs(self, tool_config_id: Optional[str] = None) -> List[FilesystemIndexJob]:
         """List filesystem index jobs, optionally filtered by tool config."""
         db = await get_db()
-        where = {"toolConfigId": tool_config_id} if tool_config_id else {}
-        prisma_jobs = await db.filesystemindexjob.find_many(
-            where=where,
-            order={"createdAt": "desc"},
-            take=50,
-        )
+        if tool_config_id:
+            prisma_jobs = await db.filesystemindexjob.find_many(
+                where={"toolConfigId": tool_config_id},
+                order={"createdAt": "desc"},
+                take=50,
+            )
+        else:
+            prisma_jobs = await db.filesystemindexjob.find_many(
+                order={"createdAt": "desc"},
+                take=50,
+            )
 
         jobs = []
         for j in prisma_jobs:
@@ -811,13 +818,13 @@ class FilesystemIndexerService:
             return False
 
         # Can only cancel pending/indexing jobs
-        if prisma_job.status in ("pending", "indexing"):
+        if prisma_job.status in (PrismaFilesystemIndexStatus.pending, PrismaFilesystemIndexStatus.indexing):
             # Job is not running in memory but stuck in DB - directly mark as cancelled
             logger.info(f"Directly cancelling orphaned job {job_id} (not in active jobs)")
             await db.filesystemindexjob.update(
                 where={"id": job_id},
                 data={
-                    "status": "cancelled",
+                    "status": PrismaFilesystemIndexStatus.cancelled,
                     "errorMessage": "Job cancelled (was orphaned)",
                     "completedAt": datetime.now(timezone.utc),
                 },
@@ -887,6 +894,10 @@ class FilesystemIndexerService:
             fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
         except Exception as e:
             logger.error(f"Cannot retry job {job_id}: invalid config - {e}")
+            return None
+
+        if not tool_config.id:
+            logger.error(f"Cannot retry job {job_id}: tool config has no id")
             return None
 
         # Start a new job
@@ -1304,7 +1315,7 @@ class FilesystemIndexerService:
                     max_file_size_mb=config.max_file_size_mb,
                     max_total_files=config.max_total_files,
                     ocr_mode=config.ocr_mode,
-                    ocr_provider=resolved_ocr_provider,
+                    ocr_provider=OcrProvider(resolved_ocr_provider) if resolved_ocr_provider else None,
                     ocr_vision_model=resolved_ocr_vision_model,
                 )
 
@@ -1312,7 +1323,7 @@ class FilesystemIndexerService:
                 logger.info(f"Collecting files from {effective_path}...")
 
                 # Progress tracking for file collection
-                collection_progress = {"files_found": 0, "current_dir": "Starting..."}
+                collection_progress: dict[str, Any] = {"files_found": 0, "current_dir": "Starting..."}
 
                 def update_collection_progress(files_found: int, current_dir: str):
                     collection_progress["files_found"] = files_found
@@ -1389,7 +1400,8 @@ class FilesystemIndexerService:
                 # Process files in parallel batches (like document indexer)
                 # Concurrency limit: scale with hardware but leave headroom for
                 # the chunking process pool and embedding work
-                max_concurrent = min(os.cpu_count() // 2 or 4, 16)
+                cpu_count = os.cpu_count() or 8
+                max_concurrent = min(cpu_count // 2 or 4, 16)
                 file_semaphore = asyncio.Semaphore(max_concurrent)
                 batch_size = max_concurrent * 2  # 2x concurrency for good pipeline
 

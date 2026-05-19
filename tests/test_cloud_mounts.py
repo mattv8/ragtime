@@ -2,7 +2,7 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, cast
 
 from ragtime.userspace.cloud_mounts import (
     GOOGLE_DRIVE_SCOPE,
@@ -170,10 +170,13 @@ class CloudMountProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_google_drive_api_disabled_error_is_actionable(self) -> None:
         provider = CloudMountProvider("google_drive", {"access_token": "token"})
         error = provider._provider_request_error(  # type: ignore[arg-type]
-            _StubResponse(
-                403,
-                "Google Drive API has not been used in project 742727405992 before or it is disabled. "
-                "Enable it by visiting https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=742727405992",
+            cast(
+                Any,
+                _StubResponse(
+                    403,
+                    "Google Drive API has not been used in project 742727405992 before or it is disabled. "
+                    "Enable it by visiting https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=742727405992",
+                ),
             )
         )
 
@@ -183,9 +186,12 @@ class CloudMountProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_microsoft_graph_permission_error_is_actionable(self) -> None:
         provider = CloudMountProvider("microsoft_drive", {"access_token": "token"})
         error = provider._provider_request_error(  # type: ignore[arg-type]
-            _StubResponse(
-                403,
-                '{"error":{"code":"accessDenied","message":"Access denied"}}',
+            cast(
+                Any,
+                _StubResponse(
+                    403,
+                    '{"error":{"code":"accessDenied","message":"Access denied"}}',
+                ),
             )
         )
 

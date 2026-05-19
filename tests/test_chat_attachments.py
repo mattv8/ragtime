@@ -8,8 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fastapi import HTTPException
-from starlette.datastructures import Headers, UploadFile
+from fastapi import HTTPException, UploadFile
+from starlette.datastructures import Headers
 
 from ragtime.indexer import chat_attachments
 

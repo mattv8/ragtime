@@ -23,7 +23,7 @@ import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Literal, Optional, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Dict, List, Literal, Optional, cast
 
 import httpx
 from fastapi import (
@@ -41,6 +41,7 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from prisma import Json, Prisma
+from prisma.enums import WorkspaceRole
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
@@ -176,9 +177,11 @@ from ragtime.indexer.models import (
     ConversationBranchSummary,
     ConversationCountResponse,
     ConversationResponse,
+    ConversationShareAccessMode,
     ConversationShareLink,
     ConversationShareLinkListResponse,
     ConversationShareLinkStatus,
+    ConversationShareRole,
     ConversationShareSlugAvailabilityResponse,
     ConversationSummaryResponse,
     CreateConversationBranchRequest,
@@ -241,6 +244,7 @@ from ragtime.indexer.models import (
     UpdateSettingsRequest,
     UpdateToolConfigRequest,
     UpdateToolGroupRequest,
+    UserSpacePreviewSandboxFlagOptionResponse,
     UserSpacePreviewSettingsResponse,
     VectorStoreType,
     WorkspaceChatStateResponse,
@@ -340,7 +344,7 @@ def _copilot_token_fingerprint(token: str) -> str:
 
 async def _get_or_fetch_model_discovery(
     cache_key: str,
-    fetcher: Callable[[], Awaitable["LLMModelsResponse"]],
+    fetcher: Callable[[], Coroutine[Any, Any, "LLMModelsResponse"]],
     *,
     force_refresh: bool = False,
 ) -> "LLMModelsResponse":
@@ -1474,7 +1478,7 @@ async def get_settings(_user: User = Depends(require_admin)):
     chunk_count = 0
     try:
         indexes = await repository.list_index_metadata()
-        chunk_count = sum(idx.chunk_count or 0 for idx in indexes)
+        chunk_count = sum(int(getattr(idx, "chunkCount", 0) or 0) for idx in indexes)
     except Exception:
         pass
 
@@ -1495,7 +1499,7 @@ async def get_userspace_preview_settings():
     return UserSpacePreviewSettingsResponse(
         userspace_preview_sandbox_flags=settings.userspace_preview_sandbox_flags,
         userspace_preview_sandbox_default_flags=list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
-        userspace_preview_sandbox_flag_options=[dict(option) for option in USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS],
+        userspace_preview_sandbox_flag_options=[UserSpacePreviewSandboxFlagOptionResponse(**option) for option in USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS],
         userspace_sqlite_import_max_bytes=settings.userspace_sqlite_import_max_bytes,
     )
 
@@ -1782,6 +1786,8 @@ async def create_tool_config(request: CreateToolConfigRequest, _user: User = Dep
     # Auto-start indexing for filesystem_indexer tools (unless skip_indexing requested)
     if request.tool_type == ToolType.FILESYSTEM_INDEXER and not request.skip_indexing:
         try:
+            if not result.id:
+                raise ValueError("Created filesystem tool is missing an id")
             # Use the sanitized connection_config
             fs_config = FilesystemConnectionConfig(**connection_config)
             await filesystem_indexer.trigger_index(
@@ -9404,11 +9410,11 @@ async def _to_shared_conversation_response(
         active_task=_to_chat_task_response(active_task) if active_task else None,
         owner_username=owner_username,
         owner_display_name=owner_display_name,
-        share_access_mode=str(getattr(share_record, "shareAccessMode", "token") or "token"),
-        granted_role=str(authorization.get("granted_role") or "viewer"),
+        share_access_mode=_conversation_share_access_mode(getattr(share_record, "shareAccessMode", "token")),
+        granted_role=_conversation_share_role(authorization.get("granted_role")),
         can_edit=bool(authorization.get("can_edit")),
         is_authenticated=current_user is not None,
-        current_user_member_role=current_user_member_role,
+        current_user_member_role=_conversation_member_role(current_user_member_role),
         context_limit=context_limit,
         scope_anchor_message_idx=scope_anchor,
         scope_direction=(scope_direction if scope_direction in ("forward", "backward") else None),
@@ -9444,6 +9450,22 @@ async def _get_conversation_member_role(
     return str(getattr(member, "role", "") or "") or None
 
 
+def _conversation_share_access_mode(value: object) -> ConversationShareAccessMode:
+    mode = str(value or "token")
+    allowed = {"token", "password", "authenticated_users", "selected_users", "ldap_groups"}
+    return cast(ConversationShareAccessMode, mode if mode in allowed else "token")
+
+
+def _conversation_share_role(value: object) -> ConversationShareRole:
+    role = str(value or "viewer")
+    return cast(ConversationShareRole, role if role in {"viewer", "editor"} else "viewer")
+
+
+def _conversation_member_role(value: object) -> Literal["owner", "editor", "viewer"] | None:
+    role = str(value or "")
+    return cast(Literal["owner", "editor", "viewer"], role) if role in {"owner", "editor", "viewer"} else None
+
+
 async def _add_or_update_conversation_member(
     db: Prisma,
     conversation_id: str,
@@ -9451,6 +9473,7 @@ async def _add_or_update_conversation_member(
     role: str,
 ) -> str:
     role = role if role in {"owner", "editor", "viewer"} else "viewer"
+    workspace_role = WorkspaceRole(role)
     existing = await db.conversationmember.find_first(where={"conversationId": conversation_id, "userId": user_id})
     if existing:
         existing_role = str(getattr(existing, "role", "") or "")
@@ -9460,11 +9483,11 @@ async def _add_or_update_conversation_member(
             return existing_role or role
         updated = await db.conversationmember.update(
             where={"id": existing.id},
-            data={"role": role},
+            data={"role": workspace_role},
         )
         return str(getattr(updated, "role", role) or role)
 
-    created = await db.conversationmember.create(data={"conversationId": conversation_id, "userId": user_id, "role": role})
+    created = await db.conversationmember.create(data={"conversationId": conversation_id, "userId": user_id, "role": workspace_role})
     return str(getattr(created, "role", role) or role)
 
 
@@ -12426,12 +12449,13 @@ async def get_conversation_members(
         if workspace_id:
             await _assert_workspace_access(workspace_id, user, "viewer")
         else:
-            user_member = next((m for m in conversation.members if m.userId == user.id), None)
+            members = conversation.members or []
+            user_member = next((m for m in members if m.userId == user.id), None)
             if not is_admin and not user_member and conversation.userId != user.id:
                 raise HTTPException(status_code=403, detail="Access denied")
 
         # Return members
-        return [{"user_id": m.userId, "role": m.role} for m in conversation.members]
+        return [{"user_id": m.userId, "role": m.role} for m in (conversation.members or [])]
     finally:
         await db.disconnect()
 
@@ -12455,14 +12479,15 @@ async def update_conversation_members(
         if workspace_id:
             await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
         else:
-            user_member = next((m for m in conversation.members if m.userId == user.id), None)
+            members = conversation.members or []
+            user_member = next((m for m in members if m.userId == user.id), None)
             if user.role != "admin" and ((not user_member or user_member.role != "owner") and conversation.userId != user.id):
                 raise HTTPException(status_code=403, detail="Only owner can manage members")
 
         members = request.get("members", [])
 
         # Delete existing non-owner members
-        await db.conversationmember.delete_many(where={"conversationId": conversation_id, "role": {"not": "owner"}})
+        await db.conversationmember.delete_many(where=cast(Any, {"conversationId": conversation_id, "role": {"not": WorkspaceRole.owner}}))
 
         # Add new members
         for member in members:
@@ -12498,7 +12523,8 @@ async def get_conversation_tools(
         if workspace_id:
             await _assert_workspace_access(workspace_id, user, "viewer")
         else:
-            user_member = next((m for m in conversation.members if m.userId == user.id), None)
+            members = conversation.members or []
+            user_member = next((m for m in members if m.userId == user.id), None)
             if not is_admin and not user_member and conversation.userId != user.id:
                 raise HTTPException(status_code=403, detail="Access denied")
 
@@ -12541,7 +12567,8 @@ async def update_conversation_tools(
         if workspace_id:
             await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
         else:
-            user_member = next((m for m in conversation.members if m.userId == user.id), None)
+            members = conversation.members or []
+            user_member = next((m for m in members if m.userId == user.id), None)
             if user.role != "admin" and ((not user_member or user_member.role == "viewer") and conversation.userId != user.id):
                 raise HTTPException(status_code=403, detail="Only owner/editor can manage tools")
 

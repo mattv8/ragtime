@@ -23,6 +23,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import Response, StreamingResponse
+from websockets.typing import Subprotocol
 
 from runtime.auth import OptionalWorkerAuth, WorkerAuth
 from runtime.manager.models import (
@@ -444,7 +445,7 @@ async def preview_websocket(
     # Convert http:// to ws://
     ws_url = upstream_url.replace("http://", "ws://", 1).replace("https://", "wss://", 1)
 
-    requested_subprotocols = [str(p).strip() for p in (websocket.scope.get("subprotocols") or []) if str(p).strip()]
+    requested_subprotocols = [Subprotocol(protocol) for p in (websocket.scope.get("subprotocols") or []) if (protocol := str(p).strip())]
 
     try:
         import websockets as _ws_mod

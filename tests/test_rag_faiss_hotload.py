@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 from ragtime.indexer.models import IndexStatus
@@ -97,7 +98,7 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch("ragtime.indexer.service.invalidate_settings_cache"),
             ):
-                await service._maybe_reinitialize_rag(job)
+                await service._maybe_reinitialize_rag(cast(Any, job))
 
             load_index.assert_awaited_once_with("hot-index")
 
@@ -135,7 +136,7 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(service, "_maybe_reinitialize_rag", new=hot_load),
                 patch("ragtime.indexer.service.shutdown_process_pool"),
             ):
-                await service._process_git(job)
+                await service._process_git(cast(Any, job))
 
             self.assertEqual(order[-2:], ["hot-load", "update:completed"])
 

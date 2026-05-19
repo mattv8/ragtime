@@ -12,7 +12,7 @@ import re
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
 from ragtime.core.file_constants import (
     MINIFIED_PATTERNS,
@@ -332,7 +332,7 @@ def extract_archive(
             zf.extractall(extract_dir)
 
     elif archive_name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2")):
-        mode = "r:*"  # Auto-detect compression
+        mode: Literal["r:*"] = "r:*"  # Auto-detect compression
         with tarfile.open(archive_path, mode) as tf:
             for member in tf.getmembers():
                 file_count += 1

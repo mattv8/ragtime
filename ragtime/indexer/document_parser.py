@@ -28,7 +28,7 @@ import subprocess
 import time
 from email.policy import default
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from ragtime.core.file_constants import (
     DOCUMENT_EXTENSIONS,
@@ -647,12 +647,12 @@ def _extract_eml(content: bytes) -> str:
                 content_type = part.get_content_type()
                 if content_type == "text/plain":
                     payload = part.get_payload(decode=True)
-                    if payload:
+                    if isinstance(payload, bytes):
                         charset = part.get_content_charset() or "utf-8"
                         text_parts.append(payload.decode(charset, errors="replace"))
                 elif content_type == "text/html":
                     payload = part.get_payload(decode=True)
-                    if payload:
+                    if isinstance(payload, bytes):
                         # Strip HTML tags for plain text
                         try:
                             from bs4 import BeautifulSoup
@@ -666,7 +666,7 @@ def _extract_eml(content: bytes) -> str:
                             text_parts.append(payload.decode(charset, errors="replace"))
         else:
             payload = msg.get_payload(decode=True)
-            if payload:
+            if isinstance(payload, bytes):
                 charset = msg.get_content_charset() or "utf-8"
                 text_parts.append(payload.decode(charset, errors="replace"))
 
@@ -685,7 +685,7 @@ def _extract_msg(content: bytes) -> str:
         return ""
 
     try:
-        msg = extract_msg.openMsg(io.BytesIO(content))
+        msg: Any = extract_msg.openMsg(io.BytesIO(content))
         text_parts = []
 
         # Add headers
@@ -752,14 +752,14 @@ def _extract_image_ocr(content: bytes) -> str:
         start_time = time.time()
 
         # Open image from bytes
-        image = Image.open(io.BytesIO(content))
+        image: Image.Image = Image.open(io.BytesIO(content))
         original_size = image.size
 
         # Aggressively resize for fast OCR - 1200px is plenty for text extraction
         max_dimension = 1200
         if max(image.size) > max_dimension:
             ratio = max_dimension / max(image.size)
-            new_size = tuple(int(dim * ratio) for dim in image.size)
+            new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
             image = image.resize(new_size, Image.Resampling.LANCZOS)
             logger.debug(f"OCR: Resized image from {original_size} to {image.size}")
         else:

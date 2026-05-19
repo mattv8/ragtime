@@ -7,12 +7,12 @@ import hmac
 import json
 import time
 from dataclasses import dataclass, replace
-from typing import Optional
+from typing import Any, Optional
 
 import psutil
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from ragtime import __version__
 from ragtime.config import settings
@@ -633,7 +633,7 @@ async def chat_completions(request: ChatCompletionRequest):
     logger.info(f"Processing query with model {effective_model}: {user_text[:100]}...")
 
     # Build chat history for context (convert to LangChain format)
-    chat_history = []
+    chat_history: list[BaseMessage] = []
     for msg in request.messages[:-1]:  # Exclude the current message
         if msg.role == "user":
             chat_history.append(HumanMessage(content=await rag._convert_message_to_langchain_async(msg)))
@@ -766,7 +766,7 @@ async def _stream_response_tokens(
     # Track active tool for formatting
     current_tool: str | None = None
 
-    def _detect_code_language(tool_name: str, tool_input: dict) -> str:
+    def _detect_code_language(tool_name: str, tool_input: dict[str, Any]) -> str:
         """Detect the appropriate code language for syntax highlighting."""
         if "sql" in tool_input:
             return "sql"
@@ -796,6 +796,7 @@ async def _stream_response_tokens(
             if event_type == "tool_start":
                 tool_name = event.get("tool", "unknown")
                 tool_input = event.get("input", {})
+                tool_input_dict = tool_input if isinstance(tool_input, dict) else {}
                 current_tool = tool_name
 
                 # Skip tool output if suppressed
@@ -804,15 +805,15 @@ async def _stream_response_tokens(
 
                 # Format tool input for immediate display
                 input_display = ""
-                if tool_input:
+                if tool_input_dict:
                     for field in ["query", "sql", "code", "command", "python_code"]:
-                        if field in tool_input and tool_input[field]:
-                            input_display = str(tool_input[field])
+                        if field in tool_input_dict and tool_input_dict[field]:
+                            input_display = str(tool_input_dict[field])
                             break
                     if not input_display:
-                        input_display = json.dumps(tool_input, indent=2)
+                        input_display = json.dumps(tool_input_dict, indent=2)
 
-                lang = _detect_code_language(tool_name, tool_input)
+                lang = _detect_code_language(str(tool_name), tool_input_dict)
 
                 # Emit collapsible tool call block
                 block = f'\n\n<details type="tool_call">\n<summary>Calling {tool_name}...</summary>\n\n```{lang}\n{input_display}\n```\n\n</details>\n'

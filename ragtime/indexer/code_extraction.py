@@ -14,7 +14,7 @@ Supported languages include:
 - PHP
 """
 
-from typing import Dict, List
+from typing import Any, Dict, List, cast
 
 from tree_sitter import Query, QueryCursor
 from tree_sitter_language_pack import get_language, get_parser
@@ -153,7 +153,9 @@ def extract_metadata(text: str, file_ext: str) -> tuple[List[str], List[str]]:
 
     try:
         source_bytes = text.encode("utf-8")
-        tree = parser.parse(source_bytes)
+        tree = cast(Any, parser).parse(source_bytes)
+        if tree is None:
+            return [], []
         root_node = tree.root_node
 
         imports = []
@@ -167,7 +169,7 @@ def extract_metadata(text: str, file_ext: str) -> tuple[List[str], List[str]]:
             try:
                 query = Query(language, lang_queries["imports"])
                 cursor = QueryCursor(query)
-                matches = cursor.matches(root_node)
+                matches = cursor.matches(cast(Any, root_node))
                 seen_imports = set()
                 for _pattern_idx, captures in matches:
                     for capture_name, nodes in captures.items():
@@ -187,7 +189,7 @@ def extract_metadata(text: str, file_ext: str) -> tuple[List[str], List[str]]:
             try:
                 query = Query(language, lang_queries["definitions"])
                 cursor = QueryCursor(query)
-                matches = cursor.matches(root_node)
+                matches = cursor.matches(cast(Any, root_node))
                 seen_defs = set()
                 for _pattern_idx, captures in matches:
                     for capture_name, nodes in captures.items():

@@ -179,7 +179,7 @@ async def execute_influxdb_query_async(
                 url=effective_url,
                 token=token,
                 org=org,
-                timeout=timeout * 1000 if timeout > 0 else None,
+                timeout=timeout * 1000 if timeout > 0 else 0,
             )
 
             query_api = client.query_api()
@@ -336,7 +336,7 @@ async def test_influxdb_connection(
                 url=effective_url,
                 token=token,
                 org=org or "",
-                timeout=timeout * 1000 if timeout > 0 else None,
+                timeout=timeout * 1000 if timeout > 0 else 0,
             )
 
             # Step 1: confirm server is reachable (no auth required)

@@ -19,7 +19,8 @@ import multiprocessing
 import os
 import warnings
 from concurrent.futures import ProcessPoolExecutor
-from typing import Callable, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Tuple, get_args
 
 from chonkie import CodeChunker, OverlapRefinery, RecursiveChunker
 from langchain_core.documents import Document
@@ -232,7 +233,7 @@ def _get_treesitter_langs() -> set[str]:
 
             # Try __args__ for Literal union types (pre-2024 versions)
             try:
-                _treesitter_langs_cache = set(SupportedLanguage.__args__)
+                _treesitter_langs_cache = set(get_args(SupportedLanguage))
             except AttributeError:
                 # Newer versions: fall back to an empty set.
                 # This is safe because:
@@ -887,7 +888,7 @@ def rechunk_documents_batch(
 
 
 def rechunk_texts_batch(
-    files_data: list[tuple[str, list[str], ...]],
+    files_data: list[tuple[str, list[str], str, Path]],
     safe_token_limit: int,
     chunk_overlap: int = 0,
     max_warnings: int = 5,

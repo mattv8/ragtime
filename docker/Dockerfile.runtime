@@ -4,7 +4,7 @@
 # Ragtime - Runtime Manager Dockerfile
 # =============================================================================
 
-FROM python:3.12-slim
+FROM python:3.12-slim-trixie
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -13,7 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     BUN_INSTALL=/usr/local/bun \
     PATH=/usr/local/bun/bin:$PATH
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     bash \
     bind9-dnsutils \
     bind9-host \

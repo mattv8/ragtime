@@ -11,7 +11,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, cast
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -598,6 +598,10 @@ class BackgroundTaskService:
                             continue  # Not due yet
 
                     # Trigger schema re-indexing
+                    if not config.id:
+                        logger.warning("Skipping scheduled schema re-index for '%s': tool config has no id", config.name)
+                        continue
+
                     logger.info(f"Triggering scheduled schema re-index for '{config.name}' (last indexed: {last_indexed or 'never'})")
                     await schema_indexer.trigger_index(
                         tool_config_id=config.id,
@@ -814,7 +818,7 @@ class BackgroundTaskService:
                                 )
                         # Strip images from history - they consume tokens but add little value
                         parsed_content = strip_images_from_content(parsed_content)
-                        chat_history.append(HumanMessage(content=parsed_content))
+                        chat_history.append(HumanMessage(content=cast(str | list[str | dict[str, Any]], parsed_content)))
                     elif msg.role == "assistant":
                         if msg.events:
                             # Reconstruct native AIMessage(tool_calls) + ToolMessage pairs

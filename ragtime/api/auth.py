@@ -10,7 +10,7 @@ import hashlib
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal, Optional, Tuple
+from typing import Any, Literal, Optional, Tuple, cast
 from urllib.parse import urlparse
 
 from fastapi import (
@@ -1727,7 +1727,7 @@ async def update_auth_group(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
     role = _role_from_form_value(body.role)
     group_provider = _auth_provider_value(group.provider)
-    update_data = {
+    update_data: dict[str, Any] = {
         "role": role,
         "isLogonGroup": body.is_logon_group,
     }
@@ -1739,7 +1739,7 @@ async def update_auth_group(
                 "description": body.description,
             }
         )
-    updated = await db.authgroup.update(where={"id": group_id}, data=update_data)
+    updated = await db.authgroup.update(where={"id": group_id}, data=cast(Any, update_data))
     await _set_ldap_group_assignment(
         updated,
         role=role,
@@ -1983,6 +1983,8 @@ async def reset_user_role_override(
         where={"id": user_id},
         data={"role": resolved_role, "roleManuallySet": False},
     )
+    if not updated_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     role_value: Literal["user", "admin"] = "admin" if updated_user.role == UserRole.admin else "user"
 

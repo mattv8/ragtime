@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 from starlette.requests import Request
@@ -104,7 +105,7 @@ class PreviewEntryRouteTests(unittest.IsolatedAsyncioTestCase):
         ):
             response = await issue_workspace_preview_launch(
                 "workspace-id",
-                SimpleNamespace(path="/preview", parent_origin=None),
+                cast(Any, SimpleNamespace(path="/preview", parent_origin=None)),
                 request,
                 SimpleNamespace(id="user-123"),
                 None,

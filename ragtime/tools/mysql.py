@@ -208,7 +208,7 @@ async def execute_mysql_query_async(
                 return "Query executed successfully (no results)"
 
             return format_query_result(
-                rows,
+                list(rows),
                 columns,
                 include_metadata=include_metadata,
                 metadata_max_length=metadata_max_length,
@@ -492,23 +492,23 @@ async def test_mysql_connection(
             db_row = cursor.fetchone()
             db_name = db_row[0] if db_row else database
 
-            details: dict[str, Any] = {
+            direct_details: dict[str, Any] = {
                 "version": version,
                 "database": db_name,
             }
 
             if tunnel:
-                details["mode"] = "ssh_tunnel"
-                details["ssh_host"] = ssh_tunnel_config.get("ssh_tunnel_host", "") if ssh_tunnel_config else ""
+                direct_details["mode"] = "ssh_tunnel"
+                direct_details["ssh_host"] = ssh_tunnel_config.get("ssh_tunnel_host", "") if ssh_tunnel_config else ""
             else:
-                details["host"] = host
-                details["port"] = port
+                direct_details["host"] = host
+                direct_details["port"] = port
 
             msg = f"Connected to {db_name} successfully"
             if tunnel:
                 msg += " (via SSH tunnel)"
 
-            return True, msg, details
+            return True, msg, direct_details
 
         except pymysql.OperationalError as e:
             error_str = str(e)

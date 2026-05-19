@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, cast
+
+from prisma.enums import UsageAttemptStatus
 
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
@@ -17,6 +19,10 @@ from ragtime.core.model_limits import normalize_provider_name
 from ragtime.core.tokenization import count_tokens
 
 logger = get_logger(__name__)
+
+
+def _usage_attempt_status(status: str | UsageAttemptStatus) -> UsageAttemptStatus:
+    return status if isinstance(status, UsageAttemptStatus) else UsageAttemptStatus(status)
 
 
 def _estimate_input_tokens(user_message: str, chat_history: Optional[list] = None) -> int:
@@ -78,7 +84,7 @@ async def create_usage_attempt(
                 "inputTokens": input_tokens,
                 "totalTokens": input_tokens,
                 "tokensEstimated": True,
-                "status": "started",
+                "status": UsageAttemptStatus.started,
             }
         )
     except Exception as e:
@@ -103,7 +109,7 @@ async def bind_usage_attempt_task(attempt_id: str, chat_task_id: str) -> None:
 async def finalize_usage_attempt(
     attempt_id: str,
     *,
-    status: str,
+    status: str | UsageAttemptStatus,
     output_tokens: int = 0,
     input_tokens: Optional[int] = None,
     failure_reason: Optional[str] = None,
@@ -123,7 +129,7 @@ async def finalize_usage_attempt(
             return  # Already finalized or missing
 
         update_data: dict[str, Any] = {
-            "status": status,
+            "status": _usage_attempt_status(status),
             "outputTokens": output_tokens,
             "finalizedAt": datetime.utcnow(),
         }
@@ -142,7 +148,7 @@ async def finalize_usage_attempt(
 
         await db.userusageattempt.update(
             where={"id": attempt_id},
-            data=update_data,
+            data=cast(Any, update_data),
         )
     except Exception as e:
         logger.warning(f"Failed to finalize usage attempt {attempt_id}: {e}")
@@ -165,7 +171,7 @@ async def finalize_stale_attempts_for_tasks(task_ids: list[str]) -> int:
             await db.userusageattempt.update(
                 where={"id": attempt.id},
                 data={
-                    "status": "interrupted",
+                    "status": UsageAttemptStatus.interrupted,
                     "finalizedAt": datetime.utcnow(),
                     "failureReason": "Task interrupted by server restart",
                 },

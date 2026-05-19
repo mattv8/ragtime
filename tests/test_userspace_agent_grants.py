@@ -3,7 +3,7 @@ import types
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -18,8 +18,8 @@ from ragtime.userspace.service import UserSpaceService
 if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package = types.ModuleType("ragtime.rag")
     fake_prompts_module = types.ModuleType("ragtime.rag.prompts")
-    fake_prompts_module.build_workspace_scm_setup_prompt = lambda *args, **kwargs: ""
-    fake_rag_package.prompts = fake_prompts_module
+    setattr(fake_prompts_module, "build_workspace_scm_setup_prompt", lambda *args, **kwargs: "")
+    setattr(fake_rag_package, "prompts", fake_prompts_module)
     sys.modules.setdefault("ragtime.rag", fake_rag_package)
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
 
@@ -114,13 +114,22 @@ class _GrantService(UserSpaceService):
             id=workspace_id,
             name=f"Workspace {workspace_id}",
             owner_user_id="user-1" if role == "owner" else "owner-other",
-            members=([] if role in {None, "owner"} else [WorkspaceMember(user_id=user_id, role=role)]),
+            members=([] if role in {None, "owner"} else [WorkspaceMember(user_id=user_id, role=cast(Any, role))]),
             created_at=_NOW,
             updated_at=_NOW,
         )
 
-    async def _record_runtime_audit_event(self, *args: Any, **kwargs: Any) -> None:
-        return None
+    async def _record_runtime_audit_event(
+        self,
+        workspace_id: str,
+        user_id: str | None,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        session_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> bool:
+        return True
 
 
 class UserSpaceAgentGrantTests(unittest.IsolatedAsyncioTestCase):

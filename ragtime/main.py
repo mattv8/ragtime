@@ -20,7 +20,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, cast
 from urllib.parse import quote, urlencode
 
 from dotenv import load_dotenv
@@ -351,7 +351,7 @@ app.add_middleware(PreviewHostDispatchMiddleware)
 
 # Rate limiting
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, cast(Any, _rate_limit_exceeded_handler))
 
 # Include API routes
 app.include_router(router)
@@ -656,10 +656,11 @@ async def authorize_post(
         "expires": time.time() + AUTH_CODE_EXPIRY,
     }
 
-    logger.info(f"OAuth2 authorization code issued for '{result.username}'")
+    username = result.username or result.user_id
+    logger.info(f"OAuth2 authorization code issued for '{username}'")
 
     # Create session for the user (so they stay logged in to Ragtime)
-    token = create_access_token(result.user_id, result.username, result.role)
+    token = create_access_token(result.user_id, username, result.role)
 
     await create_session(
         user_id=result.user_id,
@@ -1249,11 +1250,11 @@ async def userspace_share_token_authorize(share_token: str, request: Request):
         return error_response
 
     redirect_response = RedirectResponse(url=next_target, status_code=303)
-    if authorization["share_auth_token"]:
+    if share_auth_token := authorization.get("share_auth_token"):
         set_share_auth_cookie(
             redirect_response,
-            authorization["share_auth_token"],
-            max_age=_share_cookie_max_age(authorization["expires_at"]),
+            share_auth_token,
+            max_age=_share_cookie_max_age(authorization.get("expires_at")),
             secure=settings.session_cookie_secure,
             share_token=share_token,
         )
@@ -1364,11 +1365,11 @@ async def userspace_share_slug_authorize(
         return error_response
 
     redirect_response = RedirectResponse(url=next_target, status_code=303)
-    if authorization["share_auth_token"]:
+    if share_auth_token := authorization.get("share_auth_token"):
         set_share_auth_cookie(
             redirect_response,
-            authorization["share_auth_token"],
-            max_age=_share_cookie_max_age(authorization["expires_at"]),
+            share_auth_token,
+            max_age=_share_cookie_max_age(authorization.get("expires_at")),
             secure=settings.session_cookie_secure,
             owner_username=owner_username,
             share_slug=share_slug,
