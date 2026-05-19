@@ -163,7 +163,7 @@ Most contributors only need this section. Maintainers handle promotion from `bet
 - Mention any database, auth, runtime, or configuration impact.
 - For UI changes, include a screenshot or short note about what you checked.
 
-CI runs automatically on every branch and PR. It checks backend tests, frontend build, critical lint failures, and duplicate-code drift.
+CI runs automatically on non-release branch pushes and PRs into `beta` or `main`. It checks backend tests, frontend build, critical lint failures, and duplicate-code drift.
 
 Useful local checks:
 
@@ -297,8 +297,8 @@ docker logs -f ragtime-db-dev
 
 GitHub Actions separates validation from publishing:
 
-- Every branch push runs backend quality checks, the pytest suite, and the frontend build.
-- PRs into `beta` run the same required checks.
+- Non-release branch pushes run backend quality checks, the pytest suite, and the frontend build.
+- PRs into `beta` or `main` run the same required checks.
 - Maintainers can promote tested `beta` changes to `main` directly; if a PR is opened into `main`, it must come from `beta`.
 - Container images are published only from `beta`, `main`, and manual workflow dispatches.
 - Branch tags are published as `:beta` and `:main`; beta also publishes `:latest-beta`; main also publishes `:latest`.
