@@ -84,6 +84,7 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
     pip install -r /tmp/requirements.test.txt
 
 WORKDIR /ragtime
+COPY docker/Dockerfile /ragtime/docker/Dockerfile
 COPY prisma/ /ragtime/prisma/
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     --mount=type=cache,id=ragtime-prisma-cache,target=/root/.cache/prisma-python,sharing=locked \
@@ -154,7 +155,6 @@ WORKDIR /ragtime
 # Copy Prisma schema and migrations, then generate client
 COPY prisma/ /ragtime/prisma/
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
-    --mount=type=cache,id=ragtime-prisma-cache,target=/root/.cache/prisma-python,sharing=locked \
     python -m prisma generate
 
 # Install frontend node modules for runtime tooling (Playwright screenshots)
