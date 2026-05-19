@@ -1,3 +1,6 @@
+# Downgrade high-frequency polling endpoints from INFO to DEBUG.
+
+
 import logging
 import os
 import sys
@@ -7,7 +10,6 @@ from runtime.worker.api import create_app as create_worker_app
 from runtime.worker.api import include_worker_routes
 
 
-# Downgrade high-frequency polling endpoints from INFO to DEBUG.
 class UvicornAccessFilter(logging.Filter):
     QUIET_PATHS = {
         "/health",

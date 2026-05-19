@@ -48,9 +48,7 @@ def _build_influxdb_url(host: str, port: int, use_https: bool) -> str:
     return f"{scheme}://{host}:{port}"
 
 
-def create_influxdb_query_input(
-    default_timeout: int, timeout_max_seconds: int
-) -> type[BaseModel]:
+def create_influxdb_query_input(default_timeout: int, timeout_max_seconds: int) -> type[BaseModel]:
     """Create InfluxdbQueryInput with dynamic default timeout."""
 
     class InfluxdbQueryInputModel(BaseModel):
@@ -156,10 +154,7 @@ async def execute_influxdb_query_async(
         try:
             from influxdb_client import InfluxDBClient  # type: ignore[import-untyped]
         except ImportError:
-            return (
-                "Error: influxdb-client package not installed. "
-                "Install with: pip install influxdb-client"
-            )
+            return "Error: influxdb-client package not installed. Install with: pip install influxdb-client"
 
         tunnel: SSHTunnel | None = None
         client: Any = None
@@ -173,17 +168,12 @@ async def execute_influxdb_query_async(
                 tunnel_dict.setdefault("host", host)
                 tunnel_dict.setdefault("port", port)
 
-                tunnel_cfg = ssh_tunnel_config_from_dict(
-                    tunnel_dict, default_remote_port=port
-                )
+                tunnel_cfg = ssh_tunnel_config_from_dict(tunnel_dict, default_remote_port=port)
                 if tunnel_cfg:
                     tunnel = SSHTunnel(tunnel_cfg)
                     local_port = tunnel.start()
                     effective_url = f"{scheme}://127.0.0.1:{local_port}"
-                    logger.debug(
-                        f"SSH tunnel established: localhost:{local_port} -> "
-                        f"{tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}"
-                    )
+                    logger.debug(f"SSH tunnel established: localhost:{local_port} -> {tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}")
 
             client = InfluxDBClient(
                 url=effective_url,
@@ -198,11 +188,7 @@ async def execute_influxdb_query_async(
             rows: list[dict[str, Any]] = []
             for table in tables:
                 for record in table.records:
-                    values = {
-                        k: v
-                        for k, v in record.values.items()
-                        if k not in {"result", "table"}
-                    }
+                    values = {k: v for k, v in record.values.items() if k not in {"result", "table"}}
                     rows.append(values)
 
             if not rows:
@@ -274,14 +260,10 @@ def create_influxdb_tool(
     """Create a configured InfluxDB query tool for LangChain."""
     QueryInput = create_influxdb_query_input(timeout, timeout_max_seconds)
 
-    async def execute_query(
-        query: str = "", description: str = "", timeout: int = timeout, **_: Any
-    ) -> str:
+    async def execute_query(query: str = "", description: str = "", timeout: int = timeout, **_: Any) -> str:
         """Execute InfluxDB query using configured connection."""
         if not query or not query.strip():
-            return (
-                "Error: 'query' parameter is required. Provide a Flux query to execute."
-            )
+            return "Error: 'query' parameter is required. Provide a Flux query to execute."
         if not description:
             description = "Flux query"
 
@@ -305,10 +287,7 @@ def create_influxdb_tool(
     tool_description = f"Query the {name} InfluxDB database using Flux."
     if description:
         tool_description += f" This database contains: {description}"
-    tool_description += (
-        " Include |> limit(n: ...) to restrict results. "
-        "Read-only queries only unless writes are enabled."
-    )
+    tool_description += " Include |> limit(n: ...) to restrict results. Read-only queries only unless writes are enabled."
 
     return StructuredTool.from_function(
         coroutine=execute_query,
@@ -347,9 +326,7 @@ async def test_influxdb_connection(
                 tunnel_dict = dict(ssh_tunnel_config)
                 tunnel_dict.setdefault("host", host)
                 tunnel_dict.setdefault("port", port)
-                tunnel_cfg = ssh_tunnel_config_from_dict(
-                    tunnel_dict, default_remote_port=port
-                )
+                tunnel_cfg = ssh_tunnel_config_from_dict(tunnel_dict, default_remote_port=port)
                 if tunnel_cfg:
                     tunnel = SSHTunnel(tunnel_cfg)
                     local_port = tunnel.start()
@@ -383,9 +360,7 @@ async def test_influxdb_connection(
 
             try:
                 tables = client.query_api().query("buckets() |> limit(n: 1)", org=org)
-                bucket_names = [
-                    r.values.get("name", "") for t in tables for r in t.records
-                ]
+                bucket_names = [r.values.get("name", "") for t in tables for r in t.records]
             except Exception as qe:
                 qe_str = str(qe)
                 if "401" in qe_str or "unauthorized" in qe_str.lower():
@@ -412,15 +387,9 @@ async def test_influxdb_connection(
                 details["bucket"] = bucket
             if tunnel:
                 details["mode"] = "ssh_tunnel"
-                details["ssh_host"] = (
-                    ssh_tunnel_config.get("ssh_tunnel_host", "")
-                    if ssh_tunnel_config
-                    else ""
-                )
+                details["ssh_host"] = ssh_tunnel_config.get("ssh_tunnel_host", "") if ssh_tunnel_config else ""
 
-            bucket_hint = (
-                f" ({len(bucket_names)} bucket(s) accessible)" if bucket_names else ""
-            )
+            bucket_hint = f" ({len(bucket_names)} bucket(s) accessible)" if bucket_names else ""
             return True, f"InfluxDB connection successful{bucket_hint}", details
 
         except Exception as e:

@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import patch
 
+from ragtime.userspace.service import UserSpaceService
+
 if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package = types.ModuleType("ragtime.rag")
     fake_prompts_module = types.ModuleType("ragtime.rag.prompts")
@@ -12,8 +14,6 @@ if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package.prompts = fake_prompts_module
     sys.modules.setdefault("ragtime.rag", fake_rag_package)
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
-
-from ragtime.userspace.service import UserSpaceService
 
 
 class _FakeToolConfigTable:
@@ -90,18 +90,8 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(allowed_tool_ids, {"tool-a"})
         self.assertEqual(allowed_tool_group_ids, {"group-a"})
-        self.assertTrue(
-            any(
-                "Skipped 2 archived tool selection references" in warning
-                for warning in warnings
-            )
-        )
-        self.assertTrue(
-            any(
-                "Skipped 1 archived tool group reference" in warning
-                for warning in warnings
-            )
-        )
+        self.assertTrue(any("Skipped 2 archived tool selection references" in warning for warning in warnings))
+        self.assertTrue(any("Skipped 1 archived tool group reference" in warning for warning in warnings))
 
     async def test_import_workspace_chat_payloads_filters_to_allowed_exact_ids(
         self,
@@ -142,10 +132,7 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
             ["tool-a"],
         )
         self.assertEqual(
-            [
-                row["toolGroupId"]
-                for row in fake_db.conversationtoolgroupselection.created
-            ],
+            [row["toolGroupId"] for row in fake_db.conversationtoolgroupselection.created],
             ["group-a"],
         )
 

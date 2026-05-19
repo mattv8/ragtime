@@ -52,30 +52,21 @@ async def _capture_response(call) -> tuple[int, dict[str, str], dict]:
 
     await call(send)
     status = messages[0]["status"]
-    headers = {
-        key.decode("latin1"): value.decode("latin1")
-        for key, value in messages[0].get("headers", [])
-    }
+    headers = {key.decode("latin1"): value.decode("latin1") for key, value in messages[0].get("headers", [])}
     body = json.loads(messages[-1].get("body", b"{}"))
     return status, headers, body
 
 
 class McpOAuthMetadataTests(unittest.IsolatedAsyncioTestCase):
     def test_client_credentials_protected_resource_uses_route_issuer(self) -> None:
-        metadata = oauth.build_protected_resource_metadata(
-            "https://ragtime.example", "cowork"
-        )
+        metadata = oauth.build_protected_resource_metadata("https://ragtime.example", "cowork")
 
         self.assertEqual(metadata["resource"], "https://ragtime.example/mcp/cowork")
-        self.assertEqual(
-            metadata["authorization_servers"], ["https://ragtime.example/mcp/cowork"]
-        )
+        self.assertEqual(metadata["authorization_servers"], ["https://ragtime.example/mcp/cowork"])
         self.assertNotIn(".well-known", metadata["authorization_servers"][0])
 
     def test_oauth2_custom_route_uses_app_level_authorization_metadata(self) -> None:
-        metadata = oauth.build_interactive_protected_resource_metadata(
-            "https://ragtime.example", "workspace"
-        )
+        metadata = oauth.build_interactive_protected_resource_metadata("https://ragtime.example", "workspace")
 
         self.assertEqual(metadata["resource"], "https://ragtime.example/mcp/workspace")
         self.assertEqual(metadata["authorization_servers"], ["https://ragtime.example"])
@@ -86,11 +77,7 @@ class McpOAuthMetadataTests(unittest.IsolatedAsyncioTestCase):
             "_get_route_client_credentials",
             new=mock.AsyncMock(return_value=("client-a", "secret-a")),
         ):
-            status, _headers, body = await _capture_response(
-                lambda send: oauth.handle_protected_resource_metadata(
-                    _scope(), _empty_receive, send, "cowork"
-                )
-            )
+            status, _headers, body = await _capture_response(lambda send: oauth.handle_protected_resource_metadata(_scope(), _empty_receive, send, "cowork"))
 
         self.assertEqual(status, 200)
         self.assertEqual(body["resource"], "https://ragtime.example/mcp/cowork")
@@ -102,11 +89,7 @@ class McpOAuthMetadataTests(unittest.IsolatedAsyncioTestCase):
             "_get_route_client_credentials",
             new=mock.AsyncMock(return_value=None),
         ):
-            status, _headers, body = await _capture_response(
-                lambda send: oauth.handle_protected_resource_metadata(
-                    _scope(), _empty_receive, send, "workspace"
-                )
-            )
+            status, _headers, body = await _capture_response(lambda send: oauth.handle_protected_resource_metadata(_scope(), _empty_receive, send, "workspace"))
 
         self.assertEqual(status, 200)
         self.assertEqual(body["resource"], "https://ragtime.example/mcp/workspace")

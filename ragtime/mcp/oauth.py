@@ -35,13 +35,13 @@ Security notes:
 from __future__ import annotations
 
 import base64
+import binascii
 import hmac
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs
 
-import binascii
 from starlette.types import Receive, Scope, Send
 
 from ragtime.core.app_settings import get_app_settings
@@ -108,9 +108,7 @@ async def _read_form_body(receive: Receive) -> dict[str, str]:
     return {k: v[0] for k, v in parsed.items() if v}
 
 
-def _extract_client_credentials(
-    scope: Scope, form: dict[str, str] | None = None
-) -> tuple[str, str] | None:
+def _extract_client_credentials(scope: Scope, form: dict[str, str] | None = None) -> tuple[str, str] | None:
     """
     Extract ``(client_id, client_secret)`` from the request.
 
@@ -142,9 +140,7 @@ def _credentials_match(
         return False
     stored_secret = decrypt_secret(encrypted_secret)
     if not stored_secret:
-        logger.warning(
-            "MCP client_credentials secret decryption failed - encryption key may have changed"
-        )
+        logger.warning("MCP client_credentials secret decryption failed - encryption key may have changed")
         return False
     # Evaluate both halves to avoid short-circuiting timing differences.
     cid_ok = hmac.compare_digest(provided[0], expected_client_id)
@@ -172,9 +168,7 @@ async def validate_client_credentials_basic(
     return True
 
 
-def issue_client_credentials_token(
-    client_id: str, route_path: str | None
-) -> dict[str, Any]:
+def issue_client_credentials_token(client_id: str, route_path: str | None) -> dict[str, Any]:
     """
     Mint a short-lived JWT bearer token for a client_credentials grant.
 
@@ -249,9 +243,7 @@ async def _send_json(
     ]
     if headers:
         base_headers.extend(headers)
-    await send(
-        {"type": "http.response.start", "status": status, "headers": base_headers}
-    )
+    await send({"type": "http.response.start", "status": status, "headers": base_headers})
     await send({"type": "http.response.body", "body": body})
 
 
@@ -296,9 +288,7 @@ async def _get_route_client_credentials(
     )
 
 
-async def handle_token_request(
-    scope: Scope, receive: Receive, send: Send, route_path: str | None
-) -> None:
+async def handle_token_request(scope: Scope, receive: Receive, send: Send, route_path: str | None) -> None:
     """
     RFC 6749 §4.4 token endpoint for MCP routes.
 
@@ -366,20 +356,14 @@ def _resource_base(scope: Scope) -> str:
     if forwarded_proto:
         scheme = forwarded_proto.split(",")[0].strip() or scheme
     host = (
-        (
-            headers.get(b"x-forwarded-host", b"").decode(errors="ignore")
-            or headers.get(b"host", b"").decode(errors="ignore")
-            or "localhost"
-        )
+        (headers.get(b"x-forwarded-host", b"").decode(errors="ignore") or headers.get(b"host", b"").decode(errors="ignore") or "localhost")
         .split(",")[0]
         .strip()
     )
     return f"{scheme}://{host}"
 
 
-def build_authorization_server_metadata(
-    base: str, route_path: str | None
-) -> dict[str, Any]:
+def build_authorization_server_metadata(base: str, route_path: str | None) -> dict[str, Any]:
     """Build RFC 8414 authorization-server metadata for an MCP route."""
     if route_path:
         issuer = f"{base}/mcp/{route_path}"
@@ -418,9 +402,7 @@ def build_interactive_authorization_server_metadata(base: str) -> dict[str, Any]
     }
 
 
-def build_interactive_protected_resource_metadata(
-    base: str, route_path: str | None
-) -> dict[str, Any]:
+def build_interactive_protected_resource_metadata(base: str, route_path: str | None) -> dict[str, Any]:
     """Build protected-resource metadata for routes that use app-level OAuth."""
     if route_path:
         resource = f"{base}/mcp/{route_path}"
@@ -434,9 +416,7 @@ def build_interactive_protected_resource_metadata(
     }
 
 
-def build_protected_resource_metadata(
-    base: str, route_path: str | None
-) -> dict[str, Any]:
+def build_protected_resource_metadata(base: str, route_path: str | None) -> dict[str, Any]:
     """Build RFC 9728 protected-resource metadata for an MCP route."""
     if route_path:
         resource = f"{base}/mcp/{route_path}"
@@ -451,9 +431,7 @@ def build_protected_resource_metadata(
     }
 
 
-async def handle_authorization_server_metadata(
-    scope: Scope, _receive: Receive, send: Send, route_path: str | None
-) -> None:
+async def handle_authorization_server_metadata(scope: Scope, _receive: Receive, send: Send, route_path: str | None) -> None:
     """
     RFC 8414 OAuth 2.0 Authorization Server Metadata document.
 
@@ -469,9 +447,7 @@ async def handle_authorization_server_metadata(
     await _send_json(send, 200, payload)
 
 
-async def handle_protected_resource_metadata(
-    scope: Scope, _receive: Receive, send: Send, route_path: str | None
-) -> None:
+async def handle_protected_resource_metadata(scope: Scope, _receive: Receive, send: Send, route_path: str | None) -> None:
     """
     RFC 9728 Protected Resource Metadata, aligned with the MCP
     authorization specification. Points clients at the authorization server

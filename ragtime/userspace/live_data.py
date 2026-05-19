@@ -1,6 +1,5 @@
 """Shared helpers for User Space live-data connection metadata."""
 
-
 from __future__ import annotations
 
 from typing import Any
@@ -30,9 +29,7 @@ def _first_present_value(source: dict[str, Any], keys: tuple[str, ...]) -> Any:
 
 
 def _is_empty_request(value: Any) -> bool:
-    return (isinstance(value, str) and not value.strip()) or (
-        isinstance(value, dict) and not value
-    )
+    return (isinstance(value, str) and not value.strip()) or (isinstance(value, dict) and not value)
 
 
 def _validate_canonical_connection(payload: dict[str, Any]) -> None:

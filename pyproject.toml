@@ -5,6 +5,14 @@ description = "RAG API with Tool Calling - OpenAI-Compatible FastAPI Server"
 requires-python = ">=3.10"
 readme = "README.md"
 
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["ragtime*", "runtime*"]
+exclude = ["docker*", "prisma*", "tests*"]
+
 [project.optional-dependencies]
 app = [
     "fastapi>=0.109.0,<1.0.0",
@@ -64,8 +72,15 @@ runtime = [
     "pypdf>=4.0.0,<5.0.0",
 ]
 test = [
+    "mypy>=1.15.0,<2.0.0",
     "pytest>=8.3.0,<9.0.0",
     "ruff>=0.8.0,<1.0.0",
+    "types-ldap3>=0.1.0,<3.0.0",
+    "types-openpyxl>=0.1.0,<4.0.0",
+    "types-paramiko>=0.1.0,<1.0.0",
+    "types-psutil>=0.1.0,<8.0.0",
+    "types-PyMySQL>=0.1.0,<2.0.0",
+    "types-xlrd>=0.1.0,<3.0.0",
 ]
 legacy = [
     "numpy>=1.24.0,<2.0.0",
@@ -101,9 +116,9 @@ max-line-length = 120
 ignored-modules = ["pydantic", "langchain", "langchain_core", "langchain_openai", "langchain_anthropic", "langchain_community"]
 
 [tool.pyright]
-include = ["app", "ragtime", "indexer", "scripts"]
-exclude = ["**/node_modules", "**/__pycache__", ".git", "data", ".data", ".venv", "venv"]
-extraPaths = ["./ragtime", "./indexer", "./app"]
+include = ["docker/scripts", "ragtime", "runtime", "tests"]
+exclude = ["**/node_modules", "**/__pycache__", ".git", "data", ".data", ".mypy_cache", ".venv", "venv", "ragtime/frontend"]
+extraPaths = ["."]
 venvPath = "."
 venv = ".venv"
 pythonVersion = "3.12"
@@ -120,10 +135,51 @@ stubPath = "typings"
 # Optional dependencies that may not be installed in all environments
 ignore = ["**/smb/**", "**/pysmb/**"]
 
+[tool.mypy]
+python_version = "3.12"
+cache_dir = ".mypy_cache/3.12"
+exclude = [
+    "^\\.data/",
+    "^\\.venv/",
+    "^ragtime/frontend/",
+]
+ignore_missing_imports = false
+show_error_codes = true
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+module = [
+    "ebooklib",
+    "odf",
+    "odf.*",
+    "pptx",
+    "pytesseract",
+]
+ignore_missing_imports = true
+
 [tool.ruff]
-line-length = 120
+line-length = 160
 target-version = "py312"
+extend-exclude = [
+    ".data",
+    ".venv",
+    "ragtime/frontend/node_modules",
+    "ragtime/frontend/dist",
+    "ragtime/frontend/dist-build-check",
+]
+
+[tool.ruff.format]
+docstring-code-format = true
+indent-style = "space"
+line-ending = "auto"
+quote-style = "double"
+skip-magic-trailing-comma = false
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ragtime", "runtime", "tests"]
+known-third-party = ["prisma"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+
+
 from __future__ import annotations
 
 import ast
@@ -21,9 +23,7 @@ def main() -> int:
     deps = _extract_group(pyproject_path.read_text(encoding="utf-8"), group)
 
     if not deps:
-        print(
-            f"Dependency group '{group}' not found in pyproject.toml", file=sys.stderr
-        )
+        print(f"Dependency group '{group}' not found in pyproject.toml", file=sys.stderr)
         return 1
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

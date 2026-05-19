@@ -8,6 +8,13 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
+from ragtime.userspace.models import (
+    UpsertWorkspaceAgentGrantRequest,
+    UserSpaceWorkspace,
+    WorkspaceMember,
+)
+from ragtime.userspace.service import UserSpaceService
+
 if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package = types.ModuleType("ragtime.rag")
     fake_prompts_module = types.ModuleType("ragtime.rag.prompts")
@@ -15,13 +22,6 @@ if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package.prompts = fake_prompts_module
     sys.modules.setdefault("ragtime.rag", fake_rag_package)
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
-
-from ragtime.userspace.models import (
-    UpsertWorkspaceAgentGrantRequest,
-    UserSpaceWorkspace,
-    WorkspaceMember,
-)
-from ragtime.userspace.service import UserSpaceService
 
 _NOW = datetime(2026, 5, 5, tzinfo=timezone.utc)
 
@@ -39,11 +39,7 @@ class _FakeWorkspaceAgentGrantTable:
         where: dict[str, str],
         order: dict[str, str] | None = None,
     ) -> list[SimpleNamespace]:
-        return [
-            row
-            for row in self.rows
-            if all(getattr(row, key, None) == value for key, value in where.items())
-        ]
+        return [row for row in self.rows if all(getattr(row, key, None) == value for key, value in where.items())]
 
     async def find_first(self, *, where: dict[str, str]) -> SimpleNamespace | None:
         for row in self.rows:
@@ -110,11 +106,7 @@ class _GrantService(UserSpaceService):
         role = self.roles.get(workspace_id)
         if role is None and not is_admin:
             raise HTTPException(status_code=404, detail="Workspace not found")
-        if (
-            required_role == "editor"
-            and role not in {"owner", "editor"}
-            and not is_admin
-        ):
+        if required_role == "editor" and role not in {"owner", "editor"} and not is_admin:
             raise HTTPException(status_code=403, detail="Editor access required")
         if required_role == "owner" and role != "owner" and not is_admin:
             raise HTTPException(status_code=403, detail="Owner access required")
@@ -122,11 +114,7 @@ class _GrantService(UserSpaceService):
             id=workspace_id,
             name=f"Workspace {workspace_id}",
             owner_user_id="user-1" if role == "owner" else "owner-other",
-            members=(
-                []
-                if role in {None, "owner"}
-                else [WorkspaceMember(user_id=user_id, role=role)]
-            ),
+            members=([] if role in {None, "owner"} else [WorkspaceMember(user_id=user_id, role=role)]),
             created_at=_NOW,
             updated_at=_NOW,
         )

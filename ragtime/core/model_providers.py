@@ -237,36 +237,16 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
     ),
 }
 
-PROVIDER_ALIASES = {
-    alias.lower().replace("-", "_"): provider.name
-    for provider in MODEL_PROVIDERS.values()
-    for alias in provider.aliases
-}
+PROVIDER_ALIASES = {alias.lower().replace("-", "_"): provider.name for provider in MODEL_PROVIDERS.values() for alias in provider.aliases}
 
-LLM_PROVIDER_NAMES = tuple(
-    name for name, provider in MODEL_PROVIDERS.items() if provider.supports_llm
-)
-EMBEDDING_PROVIDER_NAMES = tuple(
-    name for name, provider in MODEL_PROVIDERS.items() if provider.supports_embeddings
-)
-LOCAL_LLM_PROVIDER_NAMES = tuple(
-    name
-    for name, provider in MODEL_PROVIDERS.items()
-    if provider.supports_llm and provider.local
-)
-VISION_OCR_PROVIDER_NAMES = tuple(
-    name for name, provider in MODEL_PROVIDERS.items() if provider.supports_vision_ocr
-)
-LOCAL_EMBEDDING_PROVIDER_NAMES = tuple(
-    name
-    for name, provider in MODEL_PROVIDERS.items()
-    if provider.supports_embeddings and provider.local
-)
+LLM_PROVIDER_NAMES = tuple(name for name, provider in MODEL_PROVIDERS.items() if provider.supports_llm)
+EMBEDDING_PROVIDER_NAMES = tuple(name for name, provider in MODEL_PROVIDERS.items() if provider.supports_embeddings)
+LOCAL_LLM_PROVIDER_NAMES = tuple(name for name, provider in MODEL_PROVIDERS.items() if provider.supports_llm and provider.local)
+VISION_OCR_PROVIDER_NAMES = tuple(name for name, provider in MODEL_PROVIDERS.items() if provider.supports_vision_ocr)
+LOCAL_EMBEDDING_PROVIDER_NAMES = tuple(name for name, provider in MODEL_PROVIDERS.items() if provider.supports_embeddings and provider.local)
 
 
-def normalize_provider_name(
-    provider: str | None, *, model_id: str | None = None
-) -> str:
+def normalize_provider_name(provider: str | None, *, model_id: str | None = None) -> str:
     """Normalize provider identifiers and aliases to canonical app values."""
     raw = str(provider or "").strip()
 
@@ -373,17 +353,10 @@ def resolve_provider_base_url(
     if connection is None:
         return ""
 
-    base_url = str(
-        _read_setting(settings, connection.base_url_field, connection.default_base_url)
-        or ""
-    ).strip()
+    base_url = str(_read_setting(settings, connection.base_url_field, connection.default_base_url) or "").strip()
 
-    if connection.fallback_base_url_field and (
-        not base_url or base_url == connection.default_base_url
-    ):
-        fallback = str(
-            _read_setting(settings, connection.fallback_base_url_field, "") or ""
-        ).strip()
+    if connection.fallback_base_url_field and (not base_url or base_url == connection.default_base_url):
+        fallback = str(_read_setting(settings, connection.fallback_base_url_field, "") or "").strip()
         if fallback and fallback != (connection.fallback_default_base_url or ""):
             return fallback
 

@@ -38,8 +38,8 @@ from ragtime.core.api_accounting import (
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import (
     authenticate,
-    create_or_update_local_managed_user,
     create_access_token,
+    create_or_update_local_managed_user,
     create_session,
     discover_ldap_structure,
     get_auth_provider_config,
@@ -137,10 +137,7 @@ def _redirect_uri_allow_origin_step(origin: str) -> Optional[str]:
         return None
     if origin in build_allowed_origins(settings.allowed_origins):
         return None
-    return (
-        f"If this callback exchanges the authorization code from a browser on '{origin}', "
-        f"also add '{origin}' to ALLOWED_ORIGINS."
-    )
+    return f"If this callback exchanges the authorization code from a browser on '{origin}', also add '{origin}' to ALLOWED_ORIGINS."
 
 
 def validate_redirect_uri(redirect_uri: str) -> RedirectUriValidationResult:
@@ -169,9 +166,7 @@ def validate_redirect_uri(redirect_uri: str) -> RedirectUriValidationResult:
 
         if parsed.scheme in TRUSTED_NATIVE_REDIRECT_SCHEMES:
             if settings.debug_mode:
-                logger.debug(
-                    f"OAuth2 redirect_uri validated (native app scheme): {redirect_uri}"
-                )
+                logger.debug(f"OAuth2 redirect_uri validated (native app scheme): {redirect_uri}")
             return RedirectUriValidationResult(
                 is_valid=True,
                 normalized_uri=normalized_redirect_uri,
@@ -182,8 +177,7 @@ def validate_redirect_uri(redirect_uri: str) -> RedirectUriValidationResult:
             result = RedirectUriValidationResult(
                 is_valid=False,
                 summary=(
-                    "Invalid redirect_uri. Use a loopback http(s) callback, a trusted IDE "
-                    "callback domain, or a registered native-app scheme such as vscode://."
+                    "Invalid redirect_uri. Use a loopback http(s) callback, a trusted IDE callback domain, or a registered native-app scheme such as vscode://."
                 ),
                 log_message=(
                     "OAuth2 redirect_uri rejected: scheme must be http or https or a "
@@ -201,10 +195,7 @@ def validate_redirect_uri(redirect_uri: str) -> RedirectUriValidationResult:
             result = RedirectUriValidationResult(
                 is_valid=False,
                 summary="Invalid redirect_uri. The callback URL must include a hostname.",
-                log_message=(
-                    f"OAuth2 redirect_uri rejected: no hostname "
-                    f"(redirect_uri={redirect_uri!r})"
-                ),
+                log_message=(f"OAuth2 redirect_uri rejected: no hostname (redirect_uri={redirect_uri!r})"),
                 normalized_uri=normalized_redirect_uri,
                 callback_origin=callback_origin,
             )
@@ -229,9 +220,7 @@ def validate_redirect_uri(redirect_uri: str) -> RedirectUriValidationResult:
         is_trusted_uri = normalized_redirect_uri in trusted_redirect_uris
 
         if not is_loopback and not is_trusted and not is_trusted_uri:
-            next_steps = [
-                f"Add '{normalized_redirect_uri}' to OAUTH_TRUSTED_REDIRECT_URIS if this callback should be allowed."
-            ]
+            next_steps = [f"Add '{normalized_redirect_uri}' to OAUTH_TRUSTED_REDIRECT_URIS if this callback should be allowed."]
             allow_origin_step = _redirect_uri_allow_origin_step(callback_origin)
             if allow_origin_step:
                 next_steps.append(allow_origin_step)
@@ -244,8 +233,7 @@ def validate_redirect_uri(redirect_uri: str) -> RedirectUriValidationResult:
                 ),
                 log_message=(
                     "OAuth2 redirect_uri rejected: '%s' is not a loopback address, trusted "
-                    "domain, or trusted callback URI. %s"
-                    % (hostname, " ".join(next_steps))
+                    "domain, or trusted callback URI. %s" % (hostname, " ".join(next_steps))
                 ),
                 normalized_uri=normalized_redirect_uri,
                 callback_origin=callback_origin,
@@ -254,21 +242,11 @@ def validate_redirect_uri(redirect_uri: str) -> RedirectUriValidationResult:
             logger.warning(result.log_message)
             return result
 
-        if (
-            is_loopback
-            and parsed.port is not None
-            and (parsed.port < 1 or parsed.port > 65535)
-        ):
+        if is_loopback and parsed.port is not None and (parsed.port < 1 or parsed.port > 65535):
             result = RedirectUriValidationResult(
                 is_valid=False,
-                summary=(
-                    f"Invalid redirect_uri '{normalized_redirect_uri}'. Loopback callback ports "
-                    "must be between 1 and 65535."
-                ),
-                log_message=(
-                    f"OAuth2 redirect_uri rejected: invalid loopback port {parsed.port} "
-                    f"(redirect_uri={redirect_uri!r})"
-                ),
+                summary=(f"Invalid redirect_uri '{normalized_redirect_uri}'. Loopback callback ports must be between 1 and 65535."),
+                log_message=(f"OAuth2 redirect_uri rejected: invalid loopback port {parsed.port} (redirect_uri={redirect_uri!r})"),
                 normalized_uri=normalized_redirect_uri,
                 callback_origin=callback_origin,
             )
@@ -351,6 +329,7 @@ class UserListResponse(BaseModel):
     total: int
     skip: int
     take: int
+
 
 class UserDirectoryEntryResponse(BaseModel):
     """Minimal user info returned to all authenticated users for member-picker use."""
@@ -499,28 +478,14 @@ class LdapUserImportResponse(BaseModel):
 class LdapConfigRequest(BaseModel):
     """LDAP configuration update request."""
 
-    server_url: Optional[str] = Field(
-        None, description="LDAP server URL (ldap://host:389 or ldaps://host:636)"
-    )
-    bind_dn: Optional[str] = Field(
-        None, description="Bind DN or bind username for service account"
-    )
-    bind_password: Optional[str] = Field(
-        None, description="Bind password (leave empty to keep existing)"
-    )
-    allow_self_signed: Optional[bool] = Field(
-        None, description="Allow self-signed SSL certificates"
-    )
-    user_search_base: Optional[str] = Field(
-        None, description="User search base DN (auto-discovered if empty)"
-    )
-    user_search_filter: Optional[str] = Field(
-        None, description="User search filter (use {username} placeholder)"
-    )
+    server_url: Optional[str] = Field(None, description="LDAP server URL (ldap://host:389 or ldaps://host:636)")
+    bind_dn: Optional[str] = Field(None, description="Bind DN or bind username for service account")
+    bind_password: Optional[str] = Field(None, description="Bind password (leave empty to keep existing)")
+    allow_self_signed: Optional[bool] = Field(None, description="Allow self-signed SSL certificates")
+    user_search_base: Optional[str] = Field(None, description="User search base DN (auto-discovered if empty)")
+    user_search_filter: Optional[str] = Field(None, description="User search filter (use {username} placeholder)")
     admin_group_dns: Optional[list[str]] = Field(None, description="Admin group DNs")
-    user_group_dns: Optional[list[str]] = Field(
-        None, description="User group DNs that are allowed to log in"
-    )
+    user_group_dns: Optional[list[str]] = Field(None, description="User group DNs that are allowed to log in")
 
 
 class LdapConfigResponse(BaseModel):
@@ -544,9 +509,7 @@ class LdapDiscoverRequest(BaseModel):
     server_url: str = Field(..., description="LDAP server URL")
     bind_dn: str = Field(..., description="Bind DN or bind username")
     bind_password: str = Field(..., description="Bind password")
-    allow_self_signed: bool = Field(
-        False, description="Allow self-signed SSL certificates"
-    )
+    allow_self_signed: bool = Field(False, description="Allow self-signed SSL certificates")
 
 
 class LdapDiscoverResponse(BaseModel):
@@ -563,9 +526,7 @@ class LdapBindDnLookupRequest(BaseModel):
     """Request to look up bind DN from username."""
 
     server_url: str = Field(..., description="LDAP server URL (ldap:// or ldaps://)")
-    username: str = Field(
-        ..., description="Username (uid, email/UPN, cn, or sAMAccountName)"
-    )
+    username: str = Field(..., description="Username (uid, email/UPN, cn, or sAMAccountName)")
     password: str = Field(..., description="Password")
 
 
@@ -584,16 +545,12 @@ class AuthMethodStatus(BaseModel):
     key: str = Field(..., description="Stable auth method key (e.g. ldap, local, oidc)")
     label: str = Field(..., description="Human-readable auth method label")
     configured: bool = Field(..., description="Whether this auth method is configured")
-    available: bool = Field(
-        ..., description="Whether the method is currently available"
-    )
+    available: bool = Field(..., description="Whether the method is currently available")
     status: str = Field(
         ...,
         description="Availability status: available, unavailable, or not_configured",
     )
-    detail: Optional[str] = Field(
-        None, description="Short operator-facing detail for login status UI"
-    )
+    detail: Optional[str] = Field(None, description="Short operator-facing detail for login status UI")
 
 
 class AuthStatusResponse(BaseModel):
@@ -626,11 +583,7 @@ async def _user_response(user: User) -> UserResponse:
     db = await get_db()
     memberships = await db.authgroupmembership.find_many(where={"userId": user.id})
     group_ids = [membership.groupId for membership in memberships]
-    groups = (
-        await db.authgroup.find_many(where={"id": {"in": group_ids}})
-        if group_ids
-        else []
-    )
+    groups = await db.authgroup.find_many(where={"id": {"in": group_ids}}) if group_ids else []
     groups_by_id = {group.id: group for group in groups}
     manual_group_ids: list[str] = []
     ldap_group_ids: list[str] = []
@@ -697,9 +650,7 @@ def _normalize_dn_list(values: list[str] | None) -> list[str]:
     return normalized
 
 
-async def _sync_ldap_auth_group_assignments(
-    *, admin_group_dns: list[str], user_group_dns: list[str]
-) -> None:
+async def _sync_ldap_auth_group_assignments(*, admin_group_dns: list[str], user_group_dns: list[str]) -> None:
     db = await get_db()
     ldap_groups = await db.authgroup.find_many(where={"provider": AuthProvider.ldap})
     admin_dns = {dn.casefold() for dn in admin_group_dns}
@@ -715,9 +666,7 @@ async def _sync_ldap_auth_group_assignments(
         )
 
 
-async def _set_ldap_group_assignment(
-    group, *, role: UserRole | None, is_logon_group: bool
-) -> None:
+async def _set_ldap_group_assignment(group, *, role: UserRole | None, is_logon_group: bool) -> None:
     if _auth_provider_value(group.provider) != "ldap" or not group.sourceDn:
         return
 
@@ -728,16 +677,8 @@ async def _set_ldap_group_assignment(
 
     source_dn = group.sourceDn.strip()
     source_key = source_dn.casefold()
-    admin_group_dns = [
-        dn
-        for dn in _normalize_dn_list(getattr(config, "adminGroupDns", []))
-        if dn.casefold() != source_key
-    ]
-    user_group_dns = [
-        dn
-        for dn in _normalize_dn_list(getattr(config, "userGroupDns", []))
-        if dn.casefold() != source_key
-    ]
+    admin_group_dns = [dn for dn in _normalize_dn_list(getattr(config, "adminGroupDns", [])) if dn.casefold() != source_key]
+    user_group_dns = [dn for dn in _normalize_dn_list(getattr(config, "userGroupDns", [])) if dn.casefold() != source_key]
     if role == UserRole.admin:
         admin_group_dns.append(source_dn)
     if is_logon_group:
@@ -756,16 +697,8 @@ async def _auth_group_response(group) -> AuthGroupResponse:
     db = await get_db()
     memberships = await db.authgroupmembership.find_many(where={"groupId": group.id})
     member_count = len(memberships)
-    manual_member_count = sum(
-        1
-        for membership in memberships
-        if _auth_provider_value(membership.sourceProvider) == "local_managed"
-    )
-    ldap_member_count = sum(
-        1
-        for membership in memberships
-        if _auth_provider_value(membership.sourceProvider) == "ldap"
-    )
+    manual_member_count = sum(1 for membership in memberships if _auth_provider_value(membership.sourceProvider) == "local_managed")
+    ldap_member_count = sum(1 for membership in memberships if _auth_provider_value(membership.sourceProvider) == "ldap")
     user_ids = list({membership.userId for membership in memberships})
     users = await db.user.find_many(where={"id": {"in": user_ids}}) if user_ids else []
     users_by_id = {user.id: user for user in users}
@@ -848,8 +781,7 @@ def _detect_cookie_mismatch(request: Request) -> Optional[str]:
 
     if not settings.session_cookie_secure and is_https:
         return (
-            "Security notice: You are connecting over HTTPS but SESSION_COOKIE_SECURE=false. "
-            "Consider setting SESSION_COOKIE_SECURE=true for better security."
+            "Security notice: You are connecting over HTTPS but SESSION_COOKIE_SECURE=false. Consider setting SESSION_COOKIE_SECURE=true for better security."
         )
 
     return None
@@ -1021,9 +953,7 @@ async def get_auth_status(
         configured_server_name = str(app_settings.get("server_name") or "").strip()
         if configured_server_name:
             server_name = configured_server_name
-        authenticated_webgl_background_enabled = bool(
-            app_settings.get("authenticated_webgl_background_enabled", True)
-        )
+        authenticated_webgl_background_enabled = bool(app_settings.get("authenticated_webgl_background_enabled", True))
     except Exception as exc:
         logger.debug("Failed to load server branding for auth status: %s", exc)
 
@@ -1039,12 +969,8 @@ async def get_auth_status(
         debug_password=settings.local_admin_password if settings.debug_mode else None,
         cookie_warning=cookie_warning,
         api_key_configured=bool(settings.api_key) if is_authenticated else False,
-        session_cookie_secure=(
-            settings.session_cookie_secure if is_authenticated else False
-        ),
-        allowed_origins_open=(
-            (settings.allowed_origins == "*") if is_authenticated else False
-        ),
+        session_cookie_secure=(settings.session_cookie_secure if is_authenticated else False),
+        allowed_origins_open=((settings.allowed_origins == "*") if is_authenticated else False),
         auth_methods=auth_methods,
         server_name=server_name,
         authenticated_webgl_background_enabled=authenticated_webgl_background_enabled,
@@ -1103,9 +1029,7 @@ async def login(
         max_age=settings.jwt_expire_hours * 3600,
     )
 
-    logger.info(
-        f"User '{result.username}' logged in successfully (role: {result.role})"
-    )
+    logger.info(f"User '{result.username}' logged in successfully (role: {result.role})")
 
     return LoginResponse(
         success=True,
@@ -1179,9 +1103,7 @@ class OAuth2TokenRequest(BaseModel):
     grant_type: str = Field(..., description="Grant type (must be 'password')")
     username: str = Field(..., min_length=1, description="Username")
     password: str = Field(..., min_length=1, description="Password")
-    scope: Optional[str] = Field(
-        default=None, description="Requested scopes (optional)"
-    )
+    scope: Optional[str] = Field(default=None, description="Requested scopes (optional)")
 
 
 class OAuth2TokenResponse(BaseModel):
@@ -1212,30 +1134,14 @@ class OAuth2ErrorResponse(BaseModel):
 @limiter.limit(LOGIN_RATE_LIMIT)
 async def oauth2_token(
     request: Request,
-    grant_type: str = Form(
-        ..., description="Grant type ('password' or 'authorization_code')"
-    ),
-    username: Optional[str] = Form(
-        default=None, description="Username (for password grant)"
-    ),
-    password: Optional[str] = Form(
-        default=None, description="Password (for password grant)"
-    ),
-    code: Optional[str] = Form(
-        default=None, description="Authorization code (for authorization_code grant)"
-    ),
-    code_verifier: Optional[str] = Form(
-        default=None, description="PKCE code verifier (for authorization_code grant)"
-    ),
-    redirect_uri: Optional[str] = Form(
-        default=None, description="Redirect URI (for authorization_code grant)"
-    ),
-    client_id: Optional[str] = Form(
-        default=None, description="Client ID (for authorization_code grant)"
-    ),
-    scope: Optional[str] = Form(
-        default=None, description="Requested scopes (optional)"
-    ),
+    grant_type: str = Form(..., description="Grant type ('password' or 'authorization_code')"),
+    username: Optional[str] = Form(default=None, description="Username (for password grant)"),
+    password: Optional[str] = Form(default=None, description="Password (for password grant)"),
+    code: Optional[str] = Form(default=None, description="Authorization code (for authorization_code grant)"),
+    code_verifier: Optional[str] = Form(default=None, description="PKCE code verifier (for authorization_code grant)"),
+    redirect_uri: Optional[str] = Form(default=None, description="Redirect URI (for authorization_code grant)"),
+    client_id: Optional[str] = Form(default=None, description="Client ID (for authorization_code grant)"),
+    scope: Optional[str] = Form(default=None, description="Requested scopes (optional)"),
 ):
     """
     OAuth2 Token Endpoint.
@@ -1259,9 +1165,7 @@ async def oauth2_token(
     # OAuth2 error responses must be top-level JSON per RFC 6749 Section 5.2;
     # FastAPI's HTTPException wraps the body in {"detail": ...}, which breaks
     # strict OAuth2 clients (e.g. Claude MCP), so emit JSONResponse directly.
-    def _oauth_error(
-        error: str, description: str, status_code: int = 400
-    ) -> JSONResponse:
+    def _oauth_error(error: str, description: str, status_code: int = 400) -> JSONResponse:
         return JSONResponse(
             status_code=status_code,
             content={"error": error, "error_description": description},
@@ -1285,9 +1189,7 @@ async def oauth2_token(
         # Look up the authorization code
         auth_data = _auth_codes.get(code)
         if not auth_data:
-            return _oauth_error(
-                "invalid_grant", "Invalid or expired authorization code"
-            )
+            return _oauth_error("invalid_grant", "Invalid or expired authorization code")
 
         # Verify PKCE
         if not _verify_pkce(code_verifier, auth_data["code_challenge"]):
@@ -1298,9 +1200,7 @@ async def oauth2_token(
         # Verify client_id matches (if provided) - prevents code theft
         if client_id and client_id != auth_data["client_id"]:
             del _auth_codes[code]
-            logger.warning(
-                f"OAuth2 client_id mismatch: expected '{auth_data['client_id']}', got '{client_id}'"
-            )
+            logger.warning(f"OAuth2 client_id mismatch: expected '{auth_data['client_id']}', got '{client_id}'")
             return _oauth_error("invalid_grant", "client_id mismatch")
 
         # Verify redirect_uri matches (if provided)
@@ -1326,9 +1226,7 @@ async def oauth2_token(
             ip_address=request.client.host if request.client else None,
         )
 
-        logger.info(
-            f"OAuth2 token issued for '{auth_data['username']}' via authorization_code grant"
-        )
+        logger.info(f"OAuth2 token issued for '{auth_data['username']}' via authorization_code grant")
 
         return OAuth2TokenResponse(
             access_token=token,
@@ -1351,9 +1249,7 @@ async def oauth2_token(
         result = await authenticate(username, password)
 
         if not result.success:
-            logger.warning(
-                f"OAuth2 token request failed for '{username}': {result.error}"
-            )
+            logger.warning(f"OAuth2 token request failed for '{username}': {result.error}")
             return _oauth_error(
                 "invalid_grant",
                 result.error or "Authentication failed",
@@ -1512,12 +1408,8 @@ async def get_ldap_configuration(_user: User = Depends(require_admin)):
         user_search_filter=config.userSearchFilter,
         admin_group_dns=_normalize_dn_list(config.adminGroupDns),
         user_group_dns=_normalize_dn_list(config.userGroupDns),
-        discovered_ous=(
-            config.discoveredOus if isinstance(config.discoveredOus, list) else []
-        ),
-        discovered_groups=(
-            config.discoveredGroups if isinstance(config.discoveredGroups, list) else []
-        ),
+        discovered_ous=(config.discoveredOus if isinstance(config.discoveredOus, list) else []),
+        discovered_groups=(config.discoveredGroups if isinstance(config.discoveredGroups, list) else []),
     )
 
 
@@ -1542,41 +1434,17 @@ async def update_ldap_configuration(
     else:
         bind_password = existing.bindPassword
         bind_password_for_discovery = decrypt_secret(existing.bindPassword)
-    allow_self_signed = (
-        body.allow_self_signed
-        if body.allow_self_signed is not None
-        else existing.allowSelfSigned
-    )
-    user_search_filter = (
-        body.user_search_filter
-        if body.user_search_filter is not None
-        else existing.userSearchFilter
-    )
-    admin_group_dns = _normalize_dn_list(
-        body.admin_group_dns
-        if body.admin_group_dns is not None
-        else existing.adminGroupDns
-    )
-    user_group_dns = _normalize_dn_list(
-        body.user_group_dns
-        if body.user_group_dns is not None
-        else existing.userGroupDns
-    )
+    allow_self_signed = body.allow_self_signed if body.allow_self_signed is not None else existing.allowSelfSigned
+    user_search_filter = body.user_search_filter if body.user_search_filter is not None else existing.userSearchFilter
+    admin_group_dns = _normalize_dn_list(body.admin_group_dns if body.admin_group_dns is not None else existing.adminGroupDns)
+    user_group_dns = _normalize_dn_list(body.user_group_dns if body.user_group_dns is not None else existing.userGroupDns)
 
     # Discover structure if user_search_base not provided and we have connection details
     discovery = None
     base_dn = existing.baseDn or ""
-    user_search_base = (
-        body.user_search_base
-        if body.user_search_base is not None
-        else existing.userSearchBase
-    )
-    discovered_ous = (
-        existing.discoveredOus if isinstance(existing.discoveredOus, list) else []
-    )
-    discovered_groups = (
-        existing.discoveredGroups if isinstance(existing.discoveredGroups, list) else []
-    )
+    user_search_base = body.user_search_base if body.user_search_base is not None else existing.userSearchBase
+    discovered_ous = existing.discoveredOus if isinstance(existing.discoveredOus, list) else []
+    discovered_groups = existing.discoveredGroups if isinstance(existing.discoveredGroups, list) else []
 
     if server_url and bind_dn and bind_password and not user_search_base:
         discovery = await discover_ldap_structure(
@@ -1639,12 +1507,8 @@ async def update_ldap_configuration(
         user_search_filter=config.userSearchFilter,
         admin_group_dns=_normalize_dn_list(config.adminGroupDns),
         user_group_dns=_normalize_dn_list(config.userGroupDns),
-        discovered_ous=(
-            config.discoveredOus if isinstance(config.discoveredOus, list) else []
-        ),
-        discovered_groups=(
-            config.discoveredGroups if isinstance(config.discoveredGroups, list) else []
-        ),
+        discovered_ous=(config.discoveredOus if isinstance(config.discoveredOus, list) else []),
+        discovered_groups=(config.discoveredGroups if isinstance(config.discoveredGroups, list) else []),
     )
 
 
@@ -1784,9 +1648,7 @@ async def update_local_user(
     db = await get_db()
     existing = await db.user.find_unique(where={"id": user_id})
     if not existing:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     if _auth_provider_value(existing.authProvider) != "local_managed":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1800,11 +1662,7 @@ async def update_local_user(
             user_id=user_id,
             username=existing.username,
             password=body.password,
-            display_name=(
-                body.display_name
-                if body.display_name is not None
-                else existing.displayName
-            ),
+            display_name=(body.display_name if body.display_name is not None else existing.displayName),
             email=(body.email if body.email is not None else existing.email),
             role=role,
             role_manually_set=True if body.role is not None else None,
@@ -1816,9 +1674,7 @@ async def update_local_user(
 
 def _normalize_group_key(value: str) -> str:
     normalized = "-".join(value.strip().lower().split())
-    normalized = "".join(
-        ch for ch in normalized if ch.isalnum() or ch in {"-", "_", "."}
-    )
+    normalized = "".join(ch for ch in normalized if ch.isalnum() or ch in {"-", "_", "."})
     return normalized or "group"
 
 
@@ -1827,9 +1683,7 @@ async def list_auth_groups(_user: User = Depends(require_admin)):
     """List Group Memberships."""
     db = await get_db()
     groups = await db.authgroup.find_many(order={"displayName": "asc"})
-    return AuthGroupListResponse(
-        groups=[await _auth_group_response(group) for group in groups]
-    )
+    return AuthGroupListResponse(groups=[await _auth_group_response(group) for group in groups])
 
 
 @router.post("/groups", response_model=AuthGroupResponse)
@@ -1870,9 +1724,7 @@ async def update_auth_group(
     db = await get_db()
     group = await db.authgroup.find_unique(where={"id": group_id})
     if not group:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
     role = _role_from_form_value(body.role)
     group_provider = _auth_provider_value(group.provider)
     update_data = {
@@ -1906,16 +1758,11 @@ async def delete_auth_group(
     db = await get_db()
     group = await db.authgroup.find_unique(where={"id": group_id})
     if not group:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Group not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
     if _auth_provider_value(group.provider) != "local_managed":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "LDAP-synced groups cannot be deleted manually because they are "
-                "recreated from LDAP membership sync"
-            ),
+            detail=("LDAP-synced groups cannot be deleted manually because they are recreated from LDAP membership sync"),
         )
     memberships = await db.authgroupmembership.find_many(where={"groupId": group_id})
     affected_user_ids = sorted({membership.userId for membership in memberships})
@@ -1940,16 +1787,10 @@ async def set_user_groups(
     db = await get_db()
     user = await db.user.find_unique(where={"id": user_id})
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     desired = set(body.group_ids)
-    desired_groups = (
-        await db.authgroup.find_many(where={"id": {"in": list(desired)}})
-        if desired
-        else []
-    )
+    desired_groups = await db.authgroup.find_many(where={"id": {"in": list(desired)}}) if desired else []
     found_group_ids = {group.id for group in desired_groups}
     unknown_group_ids = sorted(desired - found_group_ids)
     if unknown_group_ids:
@@ -1964,9 +1805,7 @@ async def set_user_groups(
                 detail="Manual group assignment only supports internal groups",
             )
 
-    existing = await db.authgroupmembership.find_many(
-        where={"userId": user_id, "sourceProvider": AuthProvider.local_managed}
-    )
+    existing = await db.authgroupmembership.find_many(where={"userId": user_id, "sourceProvider": AuthProvider.local_managed})
     for membership in existing:
         if membership.groupId not in desired:
             await db.authgroupmembership.delete(where={"id": membership.id})
@@ -2058,9 +1897,7 @@ async def delete_user(
     user = await db.user.find_unique(where={"id": user_id})
 
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     await db.user.delete(where={"id": user_id})
     logger.info(f"User '{user.username}' deleted by admin '{current_user.username}'")
@@ -2093,13 +1930,9 @@ async def update_user_role(
     )
 
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    logger.info(
-        f"User '{user.username}' role changed to '{resolved_role}' by admin '{current_user.username}'"
-    )
+    logger.info(f"User '{user.username}' role changed to '{resolved_role}' by admin '{current_user.username}'")
 
     return {"success": True, "role": resolved_role}
 
@@ -2151,13 +1984,9 @@ async def reset_user_role_override(
         data={"role": resolved_role, "roleManuallySet": False},
     )
 
-    role_value: Literal["user", "admin"] = (
-        "admin" if updated_user.role == UserRole.admin else "user"
-    )
+    role_value: Literal["user", "admin"] = "admin" if updated_user.role == UserRole.admin else "user"
 
-    logger.info(
-        f"User '{updated_user.username}' role override reset by admin '{current_user.username}'"
-    )
+    logger.info(f"User '{updated_user.username}' role override reset by admin '{current_user.username}'")
 
     return ResetUserRoleResponse(
         success=True,

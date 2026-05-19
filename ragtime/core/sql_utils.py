@@ -451,9 +451,7 @@ def format_query_result(
     metadata_line = ""
     if include_metadata:
         # Serialize rows as list of lists (more compact than list of dicts)
-        serialized_rows = [
-            [_serialize_value(row.get(col)) for col in columns] for row in row_dicts
-        ]
+        serialized_rows = [[_serialize_value(row.get(col)) for col in columns] for row in row_dicts]
         table_metadata = {"columns": columns, "rows": serialized_rows}
 
         # Limit metadata size to avoid bloating output
@@ -494,9 +492,7 @@ def format_query_result(
 
     # Rows
     for row in row_dicts:
-        row_str = " | ".join(
-            str(row.get(col, "")).ljust(widths[col])[: widths[col]] for col in columns
-        )
+        row_str = " | ".join(str(row.get(col, "")).ljust(widths[col])[: widths[col]] for col in columns)
         lines.append(row_str)
 
     ascii_table = "\n".join(lines)
@@ -569,11 +565,7 @@ def format_psql_csv_output(
 
     columns = [str(column) for column in parsed_rows[0]]
     rows = [
-        {
-            column: _parse_psql_csv_value(raw_row[index] if index < len(raw_row) else "")
-            for index, column in enumerate(columns)
-        }
-        for raw_row in parsed_rows[1:]
+        {column: _parse_psql_csv_value(raw_row[index] if index < len(raw_row) else "") for index, column in enumerate(columns)} for raw_row in parsed_rows[1:]
     ]
 
     return format_query_result(
@@ -586,9 +578,7 @@ def format_psql_csv_output(
     )
 
 
-def add_table_metadata_to_psql_output(
-    psql_output: str, include_metadata: bool = True
-) -> str:
+def add_table_metadata_to_psql_output(psql_output: str, include_metadata: bool = True) -> str:
     """
     Parse psql ASCII table output and add table metadata for UI rendering.
 
@@ -800,10 +790,7 @@ def normalize_mssql_error_message(
         return f"Cannot open database '{database}'. Check database name and user permissions."
 
     if "adaptive server connection failed" in lower:
-        return (
-            "Connection to SQL Server failed after handshake. "
-            "Check host/port reachability, TLS/network policy, and SQL Server availability."
-        )
+        return "Connection to SQL Server failed after handshake. Check host/port reachability, TLS/network policy, and SQL Server availability."
 
     return f"Connection error: {msg}"
 
@@ -851,9 +838,7 @@ class MssqlConnection:
 
             return pymssql
         except ImportError as e:
-            raise MssqlConnectionError(
-                "pymssql package not installed. Install with: pip install pymssql"
-            ) from e
+            raise MssqlConnectionError("pymssql package not installed. Install with: pip install pymssql") from e
 
     def connect(self) -> Any:
         """Establish connection synchronously (for use in thread pool)."""
@@ -875,9 +860,7 @@ class MssqlConnection:
             return self._conn
         except Exception as e:
             error_str = str(e)
-            raise MssqlConnectionError(
-                normalize_mssql_error_message(error_str, database=self.database)
-            ) from e
+            raise MssqlConnectionError(normalize_mssql_error_message(error_str, database=self.database)) from e
 
     def close(self) -> None:
         """Close the connection if open."""
@@ -991,9 +974,7 @@ class MysqlConnection:
 
             return pymysql
         except ImportError as e:
-            raise MysqlConnectionError(
-                "pymysql package not installed. Install with: pip install pymysql"
-            ) from e
+            raise MysqlConnectionError("pymysql package not installed. Install with: pip install pymysql") from e
 
     def connect(self) -> Any:
         """Establish connection synchronously (for use in thread pool)."""
@@ -1026,17 +1007,11 @@ class MysqlConnection:
         except Exception as e:
             error_str = str(e)
             if "Access denied" in error_str:
-                raise MysqlConnectionError(
-                    "Access denied - check username and password"
-                ) from e
+                raise MysqlConnectionError("Access denied - check username and password") from e
             if "Unknown database" in error_str:
-                raise MysqlConnectionError(
-                    f"Unknown database '{self.database}' - check database name"
-                ) from e
+                raise MysqlConnectionError(f"Unknown database '{self.database}' - check database name") from e
             if "Can't connect" in error_str:
-                raise MysqlConnectionError(
-                    f"Cannot connect to MySQL server at {self.host}:{self.port}"
-                ) from e
+                raise MysqlConnectionError(f"Cannot connect to MySQL server at {self.host}:{self.port}") from e
             raise MysqlConnectionError(f"Connection error: {error_str}") from e
 
     def close(self) -> None:

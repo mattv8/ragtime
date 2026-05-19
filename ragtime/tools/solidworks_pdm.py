@@ -37,10 +37,7 @@ class PdmSearchInput(BaseModel):
     )
     document_type: Optional[str] = Field(
         default=None,
-        description=(
-            "Optional filter by document type: SLDPRT (parts), "
-            "SLDASM (assemblies), SLDDRW (drawings), or None for all types"
-        ),
+        description=("Optional filter by document type: SLDPRT (parts), SLDASM (assemblies), SLDDRW (drawings), or None for all types"),
     )
 
 

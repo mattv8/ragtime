@@ -38,10 +38,7 @@ def _filter_bad_exclusion_patterns(patterns: list[str]) -> list[str]:
         lower_pattern = pattern.lower()
 
         # Never exclude valuable file types (text files and parseable documents)
-        is_valuable = any(
-            lower_pattern.endswith(ext) or lower_pattern.endswith(f'{ext}"')
-            for ext in NEVER_SUGGEST_EXCLUDE_EXTENSIONS
-        )
+        is_valuable = any(lower_pattern.endswith(ext) or lower_pattern.endswith(f'{ext}"') for ext in NEVER_SUGGEST_EXCLUDE_EXTENSIONS)
         if is_valuable:
             logger.debug(f"Filtering out valuable file exclusion pattern: {pattern}")
             continue
@@ -54,24 +51,16 @@ def _filter_bad_exclusion_patterns(patterns: list[str]) -> list[str]:
 class ExclusionSuggestion(BaseModel):
     """A single exclusion pattern suggestion with reasoning."""
 
-    pattern: str = Field(
-        description="Glob pattern to exclude, e.g. '**/*.pyc' or '**/node_modules/**'"
-    )
+    pattern: str = Field(description="Glob pattern to exclude, e.g. '**/*.pyc' or '**/node_modules/**'")
     reason: str = Field(description="Brief explanation of why this should be excluded")
-    category: str = Field(
-        description="Category of exclusion: 'binary', 'documents', 'generated', 'dependencies', 'cache', 'build', 'media', 'other'"
-    )
+    category: str = Field(description="Category of exclusion: 'binary', 'documents', 'generated', 'dependencies', 'cache', 'build', 'media', 'other'")
 
 
 class ExclusionAnalysis(BaseModel):
     """Structured response from LLM analysis of file extensions."""
 
-    suggested_patterns: list[ExclusionSuggestion] = Field(
-        description="List of glob patterns to exclude from indexing"
-    )
-    reasoning_summary: str = Field(
-        description="Brief summary explaining the overall exclusion strategy"
-    )
+    suggested_patterns: list[ExclusionSuggestion] = Field(description="List of glob patterns to exclude from indexing")
+    reasoning_summary: str = Field(description="Brief summary explaining the overall exclusion strategy")
 
 
 def _format_file_stats_for_prompt(ext_stats: dict[str, dict]) -> str:
@@ -321,10 +310,7 @@ async def _get_llm_exclusions_anthropic(
                 input_data = dict(block.input)  # Explicit cast to dict
                 # Parse nested suggestion objects
                 raw_patterns = input_data.get("suggested_patterns", [])
-                patterns = [
-                    ExclusionSuggestion(**p)
-                    for p in (raw_patterns if isinstance(raw_patterns, list) else [])
-                ]
+                patterns = [ExclusionSuggestion(**p) for p in (raw_patterns if isinstance(raw_patterns, list) else [])]
                 return ExclusionAnalysis(
                     suggested_patterns=patterns,
                     reasoning_summary=str(input_data.get("reasoning_summary", "")),
@@ -351,9 +337,7 @@ def _get_heuristic_exclusions(ext_stats: dict[str, dict]) -> list[str]:
     extensions = set(ext_stats.keys())
 
     # Suggest excluding truly unparseable binary files
-    unparseable_found = [
-        ext for ext in extensions if ext in UNPARSEABLE_BINARY_EXTENSIONS
-    ]
+    unparseable_found = [ext for ext in extensions if ext in UNPARSEABLE_BINARY_EXTENSIONS]
     for ext in unparseable_found:
         suggested.append(f"**/*{ext}")
 
@@ -402,36 +386,24 @@ async def get_smart_exclusion_suggestions(
     if llm_provider == "openai" and openai_key:
         # Use a fast, capable model for this task
         analysis_model = llm_model if llm_model.startswith("gpt-4") else "gpt-4o-mini"
-        result = await _get_llm_exclusions_openai(
-            ext_stats, repo_name, openai_key, analysis_model
-        )
+        result = await _get_llm_exclusions_openai(ext_stats, repo_name, openai_key, analysis_model)
         if result:
             patterns = [s.pattern for s in result.suggested_patterns]
             # Filter out any bad suggestions the LLM might have made
             patterns = _filter_bad_exclusion_patterns(patterns)
-            logger.info(
-                f"LLM (OpenAI) suggested {len(patterns)} exclusion patterns: {result.reasoning_summary}"
-            )
+            logger.info(f"LLM (OpenAI) suggested {len(patterns)} exclusion patterns: {result.reasoning_summary}")
             return patterns, True
 
     # Try Anthropic if configured
     if llm_provider == "anthropic" and anthropic_key:
         # Use haiku for fast, cheap analysis
-        analysis_model = (
-            "claude-3-5-haiku-latest"
-            if "haiku" in llm_model.lower() or "sonnet" in llm_model.lower()
-            else llm_model
-        )
-        result = await _get_llm_exclusions_anthropic(
-            ext_stats, repo_name, anthropic_key, analysis_model
-        )
+        analysis_model = "claude-3-5-haiku-latest" if "haiku" in llm_model.lower() or "sonnet" in llm_model.lower() else llm_model
+        result = await _get_llm_exclusions_anthropic(ext_stats, repo_name, anthropic_key, analysis_model)
         if result:
             patterns = [s.pattern for s in result.suggested_patterns]
             # Filter out any bad suggestions the LLM might have made
             patterns = _filter_bad_exclusion_patterns(patterns)
-            logger.info(
-                f"LLM (Anthropic) suggested {len(patterns)} exclusion patterns: {result.reasoning_summary}"
-            )
+            logger.info(f"LLM (Anthropic) suggested {len(patterns)} exclusion patterns: {result.reasoning_summary}")
             return patterns, True
 
     # Fallback to heuristics

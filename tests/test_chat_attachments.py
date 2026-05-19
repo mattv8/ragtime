@@ -27,9 +27,7 @@ class ChatAttachmentTests(unittest.IsolatedAsyncioTestCase):
         upload = _make_upload_file("diagram.png", b"png-bytes", "image/png")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            with mock.patch.object(
-                chat_attachments, "CHAT_ATTACHMENT_DIR", Path(temp_dir)
-            ):
+            with mock.patch.object(chat_attachments, "CHAT_ATTACHMENT_DIR", Path(temp_dir)):
                 with self.assertRaises(HTTPException) as exc_info:
                     await chat_attachments.store_chat_attachment_upload(
                         upload,
@@ -49,9 +47,7 @@ class ChatAttachmentTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            with mock.patch.object(
-                chat_attachments, "CHAT_ATTACHMENT_DIR", Path(temp_dir)
-            ):
+            with mock.patch.object(chat_attachments, "CHAT_ATTACHMENT_DIR", Path(temp_dir)):
                 metadata = await chat_attachments.store_chat_attachment_upload(
                     upload,
                     conversation_id="conv-1",
@@ -92,14 +88,12 @@ class ChatAttachmentTests(unittest.IsolatedAsyncioTestCase):
                         new=mock.AsyncMock(return_value=8192),
                     ),
                 ):
-                    processed, stats = (
-                        await chat_attachments.preprocess_chat_attachment_content_parts(
-                            content,
-                            conversation_id="conv-1",
-                            user_id="user-1",
-                            workspace_id="workspace-1",
-                            model_id="openai/gpt-4.1",
-                        )
+                    processed, stats = await chat_attachments.preprocess_chat_attachment_content_parts(
+                        content,
+                        conversation_id="conv-1",
+                        user_id="user-1",
+                        workspace_id="workspace-1",
+                        model_id="openai/gpt-4.1",
                     )
 
         self.assertIsInstance(processed, list)
@@ -121,9 +115,7 @@ class ChatAttachmentTests(unittest.IsolatedAsyncioTestCase):
         upload = _make_upload_file("report.txt", b"body", "text/plain")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            with mock.patch.object(
-                chat_attachments, "CHAT_ATTACHMENT_DIR", Path(temp_dir)
-            ):
+            with mock.patch.object(chat_attachments, "CHAT_ATTACHMENT_DIR", Path(temp_dir)):
                 metadata = await chat_attachments.store_chat_attachment_upload(
                     upload,
                     conversation_id="conv-1",
@@ -133,21 +125,13 @@ class ChatAttachmentTests(unittest.IsolatedAsyncioTestCase):
                 attachment_id = str(metadata["attachment_id"])
                 metadata_path = chat_attachments._metadata_path(attachment_id)
                 expired_metadata = dict(metadata)
-                expired_metadata["expires_at"] = (
-                    datetime.now(timezone.utc) - timedelta(hours=1)
-                ).isoformat()
-                metadata_path.write_text(
-                    __import__("json").dumps(expired_metadata), "utf-8"
-                )
+                expired_metadata["expires_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+                metadata_path.write_text(__import__("json").dumps(expired_metadata), "utf-8")
 
-                removed = await chat_attachments.cleanup_expired_chat_attachments(
-                    now=datetime.now(timezone.utc)
-                )
+                removed = await chat_attachments.cleanup_expired_chat_attachments(now=datetime.now(timezone.utc))
 
                 self.assertEqual(removed, 1)
-                self.assertFalse(
-                    chat_attachments._attachment_dir(attachment_id).exists()
-                )
+                self.assertFalse(chat_attachments._attachment_dir(attachment_id).exists())
 
 
 if __name__ == "__main__":

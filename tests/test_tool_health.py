@@ -1,9 +1,9 @@
 import asyncio
+import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-import unittest
 
-from ragtime.indexer.tool_health import ToolHeartbeatStatus, ToolHealthMonitor
+from ragtime.indexer.tool_health import ToolHealthMonitor, ToolHeartbeatStatus
 from ragtime.rag.prompts import build_tool_system_prompt
 
 
@@ -44,9 +44,7 @@ class ToolHealthMonitorTests(unittest.TestCase):
         ]
         self.assertEqual(monitor.healthy_tool_ids_for_configs(configs), ["healthy"])
         self.assertEqual(
-            monitor.filter_healthy_tool_config_dicts(
-                [{"id": "healthy"}, {"id": "offline"}, {"id": "stale"}]
-            ),
+            monitor.filter_healthy_tool_config_dicts([{"id": "healthy"}, {"id": "offline"}, {"id": "stale"}]),
             [{"id": "healthy"}],
         )
         self.assertEqual(monitor.get_unavailable_reason("offline"), "Connection refused")

@@ -202,9 +202,7 @@ async def check_repo_visibility(
             # Not publicly accessible - check if we have a stored token
             if stored_token:
                 # Verify stored token still works
-                token_works = await _check_repo_access(
-                    client, parsed, token=stored_token
-                )
+                token_works = await _check_repo_access(client, parsed, token=stored_token)
                 if token_works:
                     return RepoCheckResult(
                         visibility=RepoVisibility.PRIVATE,
@@ -350,15 +348,11 @@ async def fetch_branches(
                 # 403 often means token lacks required scopes
                 error = "Access forbidden - token may lack required scopes"
                 if parsed.provider == GitProvider.GITLAB:
-                    error += (
-                        " (GitLab tokens need 'read_api' or 'read_repository' scope)"
-                    )
+                    error += " (GitLab tokens need 'read_api' or 'read_repository' scope)"
                 return [], error
 
             if response.status_code != 200:
-                logger.warning(
-                    f"Git API error {response.status_code}: {response.text[:200]}"
-                )
+                logger.warning(f"Git API error {response.status_code}: {response.text[:200]}")
                 return [], f"API error: {response.status_code}"
 
             data = response.json()
@@ -543,10 +537,7 @@ async def _create_github_repository(
     return RepoCreateResult(
         success=True,
         provider=parsed.provider,
-        git_url=str(
-            data.get("clone_url")
-            or f"https://{parsed.host}/{parsed.owner}/{parsed.repo}.git"
-        ),
+        git_url=str(data.get("clone_url") or f"https://{parsed.host}/{parsed.owner}/{parsed.repo}.git"),
         default_branch=str(data.get("default_branch") or "main"),
         visibility="private" if private else "public",
         message="Repository created",
@@ -603,10 +594,7 @@ async def _create_gitlab_repository(
     return RepoCreateResult(
         success=True,
         provider=parsed.provider,
-        git_url=str(
-            data.get("http_url_to_repo")
-            or f"https://{parsed.host}/{parsed.owner}/{parsed.repo}.git"
-        ),
+        git_url=str(data.get("http_url_to_repo") or f"https://{parsed.host}/{parsed.owner}/{parsed.repo}.git"),
         default_branch=str(data.get("default_branch") or "main"),
         visibility="private" if private else "public",
         message="Repository created",

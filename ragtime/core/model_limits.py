@@ -135,9 +135,7 @@ FAMILY_LABEL_OVERRIDES: dict[str, str] = {
 }
 
 
-HIGH_CONFIDENCE_TEXT_TAXONOMY_RULES: tuple[
-    tuple[re.Pattern[str], str | None, str | None], ...
-] = (
+HIGH_CONFIDENCE_TEXT_TAXONOMY_RULES: tuple[tuple[re.Pattern[str], str | None, str | None], ...] = (
     (re.compile(r"\bcodex\b"), "OpenAI", "Codex"),
     (re.compile(r"\bqianfan\b"), "Baidu", "Qianfan"),
     (
@@ -324,9 +322,7 @@ def _strip_model_label_prefix(value: str, label: str) -> str:
     colon_match = re.match(r"^([^:]{1,40}):\s*", cleaned)
     if colon_match and label_key:
         prefix_key = _compact_label_key(colon_match.group(1))
-        if prefix_key and (
-            label_key.startswith(prefix_key) or prefix_key.startswith(label_key)
-        ):
+        if prefix_key and (label_key.startswith(prefix_key) or prefix_key.startswith(label_key)):
             stripped = cleaned[colon_match.end() :].strip()
             return stripped or cleaned
 
@@ -345,10 +341,7 @@ def _family_slug_to_label(value: str | None) -> str | None:
         return "Gemini"
     if slug in FAMILY_LABEL_OVERRIDES:
         return FAMILY_LABEL_OVERRIDES[slug]
-    return " ".join(
-        part.upper() if part in {"gpt", "glm"} else part.capitalize()
-        for part in slug.split("-")
-    )
+    return " ".join(part.upper() if part in {"gpt", "glm"} else part.capitalize() for part in slug.split("-"))
 
 
 def _parse_date_rank(value: object) -> int | None:
@@ -485,9 +478,7 @@ def _metadata_text_values(
 ) -> list[str]:
     values = [model_id, name or ""]
     if metadata:
-        values.extend(
-            str(metadata.get(key) or "") for key in ("id", "name", "canonical_slug")
-        )
+        values.extend(str(metadata.get(key) or "") for key in ("id", "name", "canonical_slug"))
     return [value.strip() for value in values if value and str(value).strip()]
 
 
@@ -807,15 +798,11 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
 
                     supports_fc = model_info.get("tool_call")
                     supports_reasoning_flag = model_info.get("reasoning")
-                    supports_thinking_budget_flag = _infer_thinking_budget_support(
-                        model_info
-                    )
+                    supports_thinking_budget_flag = _infer_thinking_budget_support(model_info)
                     family_slug = str(model_info.get("family") or "").strip()
                     model_name = str(model_info.get("name") or "").strip()
                     provider_label = _provider_label_from_slug(str(provider))
-                    freshness_rank = _parse_date_rank(
-                        model_info.get("release_date")
-                    ) or _parse_date_rank(model_info.get("last_updated"))
+                    freshness_rank = _parse_date_rank(model_info.get("release_date")) or _parse_date_rank(model_info.get("last_updated"))
 
                     key_variants = _expand_model_keys(model_id, str(provider).lower())
                     key_variants.add(str(fallback_id or ""))
@@ -1068,9 +1055,7 @@ def _model_labels_match(existing: str | None, candidate: str | None) -> bool:
     candidate_key = _compact_label_key(candidate)
     if not existing_key or not candidate_key:
         return False
-    return existing_key == candidate_key or (
-        len(candidate_key) > 2 and existing_key.endswith(candidate_key)
-    )
+    return existing_key == candidate_key or (len(candidate_key) > 2 and existing_key.endswith(candidate_key))
 
 
 def _append_distinct_model_label(parts: list[str], value: str | None) -> None:
@@ -1102,11 +1087,7 @@ def compose_model_display_label(
     """Compose provider, family, and display metadata into one stable label."""
     provider = _normalize_model_label_part(provider_label)
     raw_family = _normalize_model_label_part(family_label)
-    raw_display = (
-        _normalize_model_label_part(display_name)
-        or _normalize_model_label_part(fallback_name)
-        or _model_slug_display_name(model_id)
-    )
+    raw_display = _normalize_model_label_part(display_name) or _normalize_model_label_part(fallback_name) or _model_slug_display_name(model_id)
 
     family = ""
     if raw_family:
@@ -1115,15 +1096,9 @@ def compose_model_display_label(
         family_key = _compact_label_key(family)
         display_key = _compact_label_key(raw_display)
         family_parts = [part for part in family.split() if part]
-        if provider_key and family_key and (
-            provider_key.startswith(family_key) or provider_key.endswith(family_key)
-        ):
+        if provider_key and family_key and (provider_key.startswith(family_key) or provider_key.endswith(family_key)):
             family = ""
-        elif (
-            len(family_parts) > 1
-            and display_key.startswith(_compact_label_key(family_parts[0]))
-            and not display_key.startswith(family_key)
-        ):
+        elif len(family_parts) > 1 and display_key.startswith(_compact_label_key(family_parts[0])) and not display_key.startswith(family_key):
             family = ""
 
     display = clean_model_display_name(
@@ -1225,9 +1200,7 @@ def clean_model_variant_label(
     if not variant:
         variant = str(model_id or name or "").strip()
 
-    return " ".join(
-        _format_model_variant_part(part) for part in re.split(r"[-_\s]+", variant) if part
-    )
+    return " ".join(_format_model_variant_part(part) for part in re.split(r"[-_\s]+", variant) if part)
 
 
 def _format_model_variant_part(value: str) -> str:
@@ -1303,25 +1276,17 @@ def update_model_output_limit(model_id: str, limit: int) -> None:
     _model_output_limits_cache[model_id] = limit
 
 
-def extract_openrouter_model_limits(
-    row: dict[str, object]
-) -> tuple[int | None, int | None]:
+def extract_openrouter_model_limits(row: dict[str, object]) -> tuple[int | None, int | None]:
     """Extract OpenRouter context/output limits from structured API fields."""
     top_provider = row.get("top_provider")
     top_provider = top_provider if isinstance(top_provider, dict) else {}
 
-    context_limit = _coerce_int(row.get("context_length")) or _coerce_int(
-        top_provider.get("context_length")
-    )
-    output_limit = _coerce_int(top_provider.get("max_completion_tokens")) or _coerce_int(
-        row.get("max_completion_tokens")
-    )
+    context_limit = _coerce_int(row.get("context_length")) or _coerce_int(top_provider.get("context_length"))
+    output_limit = _coerce_int(top_provider.get("max_completion_tokens")) or _coerce_int(row.get("max_completion_tokens"))
     return context_limit, output_limit
 
 
-def register_openrouter_model_limits(
-    row: dict[str, object]
-) -> tuple[int | None, int | None]:
+def register_openrouter_model_limits(row: dict[str, object]) -> tuple[int | None, int | None]:
     """Register OpenRouter model limits from the provider catalog response."""
     model_id = str(row.get("id") or "").strip()
     context_limit, output_limit = extract_openrouter_model_limits(row)
@@ -1374,14 +1339,8 @@ async def supports_function_calling(model_id: str) -> bool:
 
     # Default heuristics if not in LiteLLM data
     # OpenAI: gpt-* and o-series models support function calling (except whisper, dall-e, tts, embeddings)
-    if (
-        model_id.startswith("gpt-")
-        or model_id.startswith("o1")
-        or model_id.startswith("o3")
-    ):
-        return not any(
-            x in model_id.lower() for x in ["whisper", "dall-e", "tts", "embedding"]
-        )
+    if model_id.startswith("gpt-") or model_id.startswith("o1") or model_id.startswith("o3"):
+        return not any(x in model_id.lower() for x in ["whisper", "dall-e", "tts", "embedding"])
 
     # Anthropic: all claude models support function calling
     if "claude" in model_id.lower():
@@ -1437,19 +1396,14 @@ async def supports_thinking_budget(model_id: str) -> bool:
     return False
 
 
-def register_model_supported_endpoints(
-    model_id: str, supported_endpoints: list[str]
-) -> None:
+def register_model_supported_endpoints(model_id: str, supported_endpoints: list[str]) -> None:
     """Register supported API endpoints for a model from provider API responses.
 
     Called when model metadata is fetched from provider-specific APIs
     (e.g. Copilot ``/models`` endpoint) that report which endpoints each model
     supports.
     """
-    needs_responses = (
-        "/responses" in supported_endpoints
-        and "/chat/completions" not in supported_endpoints
-    )
+    needs_responses = "/responses" in supported_endpoints and "/chat/completions" not in supported_endpoints
     supports_responses = "/responses" in supported_endpoints
 
     key_variants = {str(model_id).strip()}
@@ -1475,11 +1429,7 @@ def register_model_reasoning_capabilities(
     This supplements models.dev-derived flags with provider-native capabilities
     (for example Copilot ``/models`` payloads).
     """
-    if (
-        not reasoning_supported
-        and not reasoning_effort_supported
-        and not thinking_budget_supported
-    ):
+    if not reasoning_supported and not reasoning_effort_supported and not thinking_budget_supported:
         return
 
     key_variants = {str(model_id).strip()}

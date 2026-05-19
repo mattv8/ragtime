@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import re
+import shutil
+import subprocess
 import sys
 import textwrap
 from collections import deque
@@ -11,100 +14,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
-# Attempt to get stdlib modules for the running python version
-try:
-    STDLIB_MODULES = sys.stdlib_module_names
-except AttributeError:
-    # Fallback for older python (though environment is 3.10+)
-    STDLIB_MODULES = frozenset(
-        {
-            "abc",
-            "argparse",
-            "ast",
-            "asyncio",
-            "base64",
-            "collections",
-            "concurrent",
-            "contextlib",
-            "copy",
-            "csv",
-            "dataclasses",
-            "datetime",
-            "decimal",
-            "difflib",
-            "email",
-            "enum",
-            "functools",
-            "hashlib",
-            "hmac",
-            "html",
-            "http",
-            "importlib",
-            "inspect",
-            "io",
-            "json",
-            "logging",
-            "math",
-            "mimetypes",
-            "multiprocessing",
-            "os",
-            "pathlib",
-            "pickle",
-            "pkgutil",
-            "platform",
-            "pprint",
-            "random",
-            "re",
-            "shlex",
-            "shutil",
-            "signal",
-            "socket",
-            "sqlite3",
-            "ssl",
-            "stat",
-            "string",
-            "subprocess",
-            "sys",
-            "tempfile",
-            "textwrap",
-            "threading",
-            "time",
-            "token",
-            "tokenize",
-            "traceback",
-            "types",
-            "typing",
-            "unittest",
-            "urllib",
-            "uuid",
-            "warnings",
-            "weakref",
-            "xml",
-            "zipfile",
-            "zoneinfo",
-        }
-    )
-
 
 @dataclass
 class FileReport:
     path: Path
     inline_count: int
-    promoted_count: int
+    hoisted_count: int
     inline_promoted_count: int
     inline_kept_count: int
     skipped_guarded: int
     tail_duplicates_removed: int
     rewritten: bool
-
-
-@dataclass
-class ImportItem:
-    node: ast.AST
-    category: int  # 0=Future, 1=StdLib, 2=ThirdParty, 3=Local
-    import_type: int  # 0=import, 1=from
-    source: str
-    module_name: str
 
 
 @dataclass
@@ -115,43 +35,39 @@ class ModuleIndex:
     local_import_graph: dict[str, set[str]]
 
 
-_DUPLICATE_TAIL_LINE_RE = re.compile(
-    r"(?P<line>[^\n]*\S[^\n]*)(?:\n(?P=line)){1,2}\n?\Z"
-)
+_DUPLICATE_TAIL_LINE_RE = re.compile(r"(?P<line>[^\n]*\S[^\n]*)(?:\n(?P=line)){1,2}\n?\Z")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Promote inline Python imports and organize top-level imports."
-    )
+    parser = argparse.ArgumentParser(description="Promote safe inline Python imports, then delegate import organization to Ruff.")
     parser.add_argument(
         "root",
         nargs="?",
         default="ragtime",
         help="Directory to scan (defaults to 'ragtime').",
     )
-    parser.add_argument(
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--apply",
         action="store_true",
         help="Rewrite files in-place. Defaults to a dry-run.",
+    )
+    mode_group.add_argument(
+        "--check",
+        action="store_true",
+        help="Fail if any safe-to-hoist inline imports are found.",
     )
     parser.add_argument(
         "--promote-inline",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help=(
-            "Promote inline imports by default, with safety checks. "
-            "Use --no-promote-inline to only normalize top-level imports."
-        ),
+        help=("Promote inline imports by default, with safety checks. Use --no-promote-inline to only report them."),
     )
     parser.add_argument(
         "--protect-local-cycles",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help=(
-            "Keep inline local imports when promoting them would create/activate a local module cycle. "
-            "Disable with --no-protect-local-cycles."
-        ),
+        help=("Keep inline local imports when promoting them would create/activate a local module cycle. Disable with --no-protect-local-cycles."),
     )
     args = parser.parse_args()
 
@@ -174,6 +90,9 @@ def main() -> None:
             )
             if report:
                 reports.append(report)
+        except (RuntimeError, subprocess.CalledProcessError) as e:
+            print(f"Error processing {path}: {e}")
+            raise SystemExit(1) from e
         except Exception as e:
             print(f"Error processing {path}: {e}")
 
@@ -182,7 +101,7 @@ def main() -> None:
         return
 
     total_inline = sum(r.inline_count for r in reports)
-    total_promoted = sum(r.promoted_count for r in reports)
+    total_hoisted = sum(r.hoisted_count for r in reports)
     total_inline_promoted = sum(r.inline_promoted_count for r in reports)
     total_inline_kept = sum(r.inline_kept_count for r in reports)
     total_skipped = sum(r.skipped_guarded for r in reports)
@@ -194,7 +113,7 @@ def main() -> None:
         print(
             f"[{status}] {report.path}: inline detected={report.inline_count}, "
             f"inline promoted={report.inline_promoted_count}, inline kept={report.inline_kept_count}, "
-            f"final import lines={report.promoted_count}, skipped guarded={report.skipped_guarded}, "
+            f"hoisted import lines={report.hoisted_count}, skipped guarded={report.skipped_guarded}, "
             f"tail duplicates removed={report.tail_duplicates_removed}."
         )
 
@@ -203,10 +122,20 @@ def main() -> None:
         f"\nSummary ({mode}): Processed {len(reports)} files ({rewritten} rewritten). "
         f"Detected {total_inline} inline imports. "
         f"Promoted {total_inline_promoted}, kept {total_inline_kept}, "
-        f"skipped guarded {total_skipped}, organized into {total_promoted} top-level import lines, "
+        f"skipped guarded {total_skipped}, hoisted {total_hoisted} import lines, "
         f"removed {total_tail_duplicates_removed} duplicate tail line(s)."
     )
-    if not args.apply:
+
+    if args.check:
+        if total_inline_promoted > 0:
+            print(
+                "\nInline import check failed: one or more files contain safe-to-hoist inline imports. "
+                "Run `python3 docker/scripts/fix_inline_imports.py <root> --apply` for each reported root, "
+                "then commit the resulting changes."
+            )
+            raise SystemExit(1)
+        print("Inline import check passed: no safe-to-hoist inline imports found.")
+    elif not args.apply:
         print("Run again with --apply to rewrite files.")
 
 
@@ -233,7 +162,7 @@ def process_file(
         return FileReport(
             path=path,
             inline_count=0,
-            promoted_count=0,
+            hoisted_count=0,
             inline_promoted_count=0,
             inline_kept_count=0,
             skipped_guarded=0,
@@ -245,9 +174,10 @@ def process_file(
     lines = text.splitlines(keepends=True)
     current_module = module_index.module_for_path.get(path)
 
-    # Identify imports to normalize. Top-level imports are always normalized.
-    # Inline imports are only promoted when explicitly enabled and safe.
-    movable_items: List[ImportItem] = []
+    # Identify inline imports to hoist. Ruff owns the final import ordering.
+    top_level_sources = {source for stmt in tree.body if isinstance(stmt, (ast.Import, ast.ImportFrom)) if (source := normalize_block(lines, stmt))}
+    hoisted_sources: list[str] = []
+    seen_hoisted_sources: set[str] = set()
     removal_spans: List[Tuple[int, int]] = []
     skipped_count = 0
     inline_found_count = 0
@@ -261,39 +191,30 @@ def process_file(
                 skipped_count += 1
                 continue
 
-            inside_def = is_inside_definition(node, parent_map)
-            if inside_def:
-                inline_found_count += 1
-                if not should_promote_inline(
-                    node,
-                    parent_map,
-                    promote_inline=promote_inline,
-                    protect_local_cycles=protect_local_cycles,
-                    current_module=current_module,
-                    module_index=module_index,
-                ):
-                    inline_kept_count += 1
-                    continue
-                inline_promoted_count += 1
-
-            # Prepare ImportItem
             source = normalize_block(lines, node)
             if not source:
                 continue
 
-            cat = categorize_import(node, module_index)
-            imp_type = 0 if isinstance(node, ast.Import) else 1
-            mod_name = get_module_name(node)
+            inside_def = is_inside_definition(node, parent_map)
+            if not inside_def:
+                continue
 
-            movable_items.append(
-                ImportItem(
-                    node=node,
-                    category=cat,
-                    import_type=imp_type,
-                    source=source,
-                    module_name=mod_name,
-                )
-            )
+            inline_found_count += 1
+            if not should_promote_inline(
+                node,
+                parent_map,
+                promote_inline=promote_inline,
+                protect_local_cycles=protect_local_cycles,
+                current_module=current_module,
+                module_index=module_index,
+            ):
+                inline_kept_count += 1
+                continue
+            inline_promoted_count += 1
+
+            if source not in top_level_sources and source not in seen_hoisted_sources:
+                hoisted_sources.append(source)
+                seen_hoisted_sources.add(source)
 
             start = getattr(node, "lineno", None)
             end = getattr(node, "end_lineno", None)
@@ -301,71 +222,35 @@ def process_file(
                 end = end if end is not None else start
                 removal_spans.append((start - 1, end))
 
-    if not movable_items and tail_duplicates_removed == 0:
+    if not removal_spans and tail_duplicates_removed == 0:
         return None
 
     new_text = text
-    unique_items: list[ImportItem] = []
-    if movable_items:
-        # Remove the old import lines
+    if removal_spans:
         updated_lines = remove_spans(lines, removal_spans)
 
-        # Deduplicate and sort by source string
-        seen_sources = set()
-        for item in movable_items:
-            if item.source not in seen_sources:
-                unique_items.append(item)
-                seen_sources.add(item.source)
-
-        # Sort: Category -> ImportType -> ModuleName -> Source (for stability)
-        unique_items.sort(
-            key=lambda x: (x.category, x.import_type, x.module_name, x.source)
-        )
-
-        # Build text blocks with spacing
-        new_import_block: list[str] = []
-        last_category = -1
-
-        for item in unique_items:
-            if last_category != -1 and item.category != last_category:
-                new_import_block.append("\n")  # Blank line between groups
-            new_import_block.append(f"{item.source}\n")
-            last_category = item.category
-
         real_insert_idx = find_insertion_idx_in_lines(updated_lines)
-
-        # If the insertion point points to blank lines, skip over them so they appear
-        # BEFORE the imports (preserving separation from docstring/header).
-        while (
-            real_insert_idx < len(updated_lines)
-            and not updated_lines[real_insert_idx].strip()
-        ):
+        while real_insert_idx < len(updated_lines) and not updated_lines[real_insert_idx].strip():
             real_insert_idx += 1
 
-        final_lines = (
-            updated_lines[:real_insert_idx]
-            + new_import_block
-            + updated_lines[real_insert_idx:]
-        )
+        new_import_block = [f"{source}\n" for source in hoisted_sources]
+        if new_import_block and real_insert_idx < len(updated_lines) and updated_lines[real_insert_idx].strip():
+            new_import_block.append("\n")
 
-        # Ensure reasonable blank lines around block
-        if (
-            real_insert_idx < len(updated_lines)
-            and updated_lines[real_insert_idx].strip()
-        ):
-            final_lines.insert(real_insert_idx + len(new_import_block), "\n")
-
+        final_lines = updated_lines[:real_insert_idx] + new_import_block + updated_lines[real_insert_idx:]
         new_text = "".join(final_lines)
 
     rewritten = False
     if apply_changes and new_text != original_text:
         path.write_text(new_text, encoding="utf-8")
-        rewritten = True
+        if removal_spans:
+            run_ruff_on_file(path)
+        rewritten = path.read_text(encoding="utf-8") != original_text
 
     return FileReport(
         path=path,
         inline_count=inline_found_count,
-        promoted_count=len(unique_items),
+        hoisted_count=len(hoisted_sources),
         inline_promoted_count=inline_promoted_count,
         inline_kept_count=inline_kept_count,
         skipped_guarded=skipped_count,
@@ -510,11 +395,7 @@ def resolve_local_targets(
         if base is None:
             return targets
         if module_part:
-            imported = (
-                module_part
-                if level == 0
-                else (f"{base}.{module_part}" if base else module_part)
-            )
+            imported = module_part if level == 0 else (f"{base}.{module_part}" if base else module_part)
             target = resolve_known_module(imported, names)
             if target:
                 targets.add(target)
@@ -569,42 +450,28 @@ def has_path(graph: dict[str, set[str]], start: str, target: str) -> bool:
     return False
 
 
-def categorize_import(node: ast.AST, module_index: ModuleIndex | None = None) -> int:
-    # 0=Future, 1=StdLib, 2=ThirdParty, 3=Local
-    name = get_module_name(node)
-
-    if name == "__future__":
-        return 0
-
-    if name.startswith("."):
-        return 3
-
-    base_module = name.split(".")[0]
-
-    if base_module in STDLIB_MODULES:
-        return 1
-
-    if module_index and resolve_known_module(name, module_index.module_names):
-        return 3
-
-    if base_module == "ragtime":
-        return 3
-
-    # Heuristic: if it's not stdlib and not ragged, it's 3rd party
-    return 2
+def run_ruff_on_file(path: Path) -> None:
+    ruff_command = get_ruff_command()
+    subprocess.run([*ruff_command, "check", "--select", "I", "--fix", str(path)], check=True)
+    subprocess.run([*ruff_command, "format", str(path)], check=True)
 
 
-def get_module_name(node: ast.AST) -> str:
-    if isinstance(node, ast.ImportFrom):
-        if node.module:
-            return node.module
-        # Relative import e.g. "from . import x"
-        return "." * node.level
-    elif isinstance(node, ast.Import):
-        # Sort by first alias
-        if node.names:
-            return node.names[0].name
-    return ""
+def get_ruff_command() -> list[str]:
+    if importlib.util.find_spec("ruff") is not None:
+        return [sys.executable, "-m", "ruff"]
+
+    ruff_executable = shutil.which("ruff")
+    if ruff_executable:
+        return [ruff_executable]
+
+    repo_root = Path(__file__).resolve().parents[2]
+    scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
+    for venv_name in (".venv", ".venv-py312"):
+        candidate = repo_root / venv_name / scripts_dir / "ruff"
+        if candidate.is_file():
+            return [str(candidate)]
+
+    raise RuntimeError("Ruff is required when inline imports are promoted. Install the test dependencies or put `ruff` on PATH.")
 
 
 def build_parent_map(tree: ast.AST) -> dict[ast.AST, ast.AST]:
@@ -624,9 +491,7 @@ def is_inside_definition(node: ast.AST, parent_map: dict[ast.AST, ast.AST]) -> b
     return False
 
 
-def is_inside_class_definition(
-    node: ast.AST, parent_map: dict[ast.AST, ast.AST]
-) -> bool:
+def is_inside_class_definition(node: ast.AST, parent_map: dict[ast.AST, ast.AST]) -> bool:
     current = parent_map.get(node)
     while current:
         if isinstance(current, ast.ClassDef):
@@ -714,11 +579,7 @@ def find_insertion_idx_in_lines(lines: List[str]) -> int:
             tree = ast.parse(header_text)
             if tree.body:
                 first = tree.body[0]
-                if (
-                    isinstance(first, ast.Expr)
-                    and isinstance(first.value, ast.Constant)
-                    and isinstance(first.value.value, str)
-                ):
+                if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
                     end_lineno = first.end_lineno if first.end_lineno else 0
                     return end_lineno
         except SyntaxError:

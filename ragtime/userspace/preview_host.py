@@ -1,31 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import json
 from collections import OrderedDict
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from itertools import count
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-import heapq
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import RedirectResponse
-from itertools import count
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import HTMLResponse, JSONResponse
 
-from ragtime.userspace.models import (ExecuteComponentRequest,
-                                      ExecuteComponentResponse)
-from ragtime.userspace.preview_probe import (PREVIEW_HOST_PROBE_HEADER,
-                                             PREVIEW_HOST_PROBE_PATH,
-                                             PREVIEW_HOST_PROBE_VALUE)
-from ragtime.userspace.runtime_routes import (_PROXY_METHODS,
-                                              _proxy_http_request,
-                                              _proxy_websocket_request,
-                                              _sanitize_preview_query,
-                                              _to_websocket_url)
+from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse
+from ragtime.userspace.preview_probe import PREVIEW_HOST_PROBE_HEADER, PREVIEW_HOST_PROBE_PATH, PREVIEW_HOST_PROBE_VALUE
+from ragtime.userspace.runtime_routes import _PROXY_METHODS, _proxy_http_request, _proxy_websocket_request, _sanitize_preview_query, _to_websocket_url
 
 _RUNTIME_PREVIEW_GRANT_KIND = "userspace_preview_grant"
 _RUNTIME_PREVIEW_SESSION_KIND = "userspace_preview_session"
@@ -70,14 +63,9 @@ async def _handle_preview_auth_error(request: StarletteRequest, exc: HTTPExcepti
     # /__ragtime/bootstrap?grant=... after an expired or already-consumed
     # grant. For that case we bounce back to the main-origin /shared/{token}
     # so it can mint a fresh grant and re-enter the subdomain bootstrap.
-    is_top_level_nav = (
-        str(request.headers.get("sec-fetch-dest", "")).lower() == "document"
-    )
+    is_top_level_nav = str(request.headers.get("sec-fetch-dest", "")).lower() == "document"
 
-    should_redirect_to_share = workspace_id and (
-        not request.url.path.startswith("/__ragtime/")
-        or (is_bootstrap and is_top_level_nav)
-    )
+    should_redirect_to_share = workspace_id and (not request.url.path.startswith("/__ragtime/") or (is_bootstrap and is_top_level_nav))
     if should_redirect_to_share:
         share_token = await _userspace_service().get_share_token(workspace_id)
         if share_token:
@@ -229,9 +217,7 @@ def _split_host(value: str | None) -> tuple[str, str | None]:
         end = raw.find("]")
         if end != -1:
             host = raw[: end + 1]
-            port = (
-                raw[end + 2 :] if len(raw) > end + 2 and raw[end + 1] == ":" else None
-            )
+            port = raw[end + 2 :] if len(raw) > end + 2 and raw[end + 1] == ":" else None
             return host.lower(), port or None
     if ":" not in raw:
         return raw.lower(), None
@@ -263,9 +249,7 @@ def _is_equivalent_preview_host(actual_host: str, expected_host: str) -> bool:
         return False
 
     base_domains = _runtime_service().get_preview_base_domains()
-    return any(
-        actual_hostname.endswith(f".{base_domain}") for base_domain in base_domains
-    ) and any(
+    return any(actual_hostname.endswith(f".{base_domain}") for base_domain in base_domains) and any(
         expected_hostname.endswith(f".{base_domain}") for base_domain in base_domains
     )
 
@@ -284,13 +268,9 @@ def _ensure_preview_host_matches_workspace(
 ) -> None:
     expected = str(expected_host or "").strip().lower()
     if not expected:
-        expected = urlsplit(
-            _runtime_service().get_preview_origin(workspace_id)
-        ).netloc.lower()
+        expected = urlsplit(_runtime_service().get_preview_origin(workspace_id)).netloc.lower()
     actual_host = str(host_header or "").strip().lower()
-    if actual_host != expected and not _is_equivalent_preview_host(
-        actual_host, expected
-    ):
+    if actual_host != expected and not _is_equivalent_preview_host(actual_host, expected):
         raise HTTPException(status_code=404, detail="Preview host mismatch")
 
 
@@ -466,9 +446,7 @@ async def preview_bootstrap(request: Request, grant: str):
         "share_slug": claims.get("share_slug"),
         "share_access_mode": claims.get("share_access_mode"),
     }
-    session_token, expires_at = _runtime_service().build_preview_session_token(
-        session_claims
-    )
+    session_token, expires_at = _runtime_service().build_preview_session_token(session_claims)
 
     # Register session in the in-memory host registry so the proxy handler
     # can authenticate subsequent requests even when the browser refuses to
@@ -538,9 +516,7 @@ async def preview_execute_component(
         user_id = str(claims.get("sub") or "").strip()
         if not user_id:
             raise HTTPException(status_code=401, detail="Preview session missing user")
-        return await _userspace_service().execute_component(
-            workspace_id, payload, user_id
-        )
+        return await _userspace_service().execute_component(workspace_id, payload, user_id)
 
     return await _userspace_service().execute_component_from_authorized_shared_preview(
         workspace_id,
@@ -581,12 +557,8 @@ class PreviewHostDispatchMiddleware:
     def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(
-        self, scope: MutableMapping[str, Any], receive: Any, send: Any
-    ) -> None:
-        if scope.get("type") in {"http", "websocket"} and is_preview_host(
-            _scope_host(scope)
-        ):
+    async def __call__(self, scope: MutableMapping[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") in {"http", "websocket"} and is_preview_host(_scope_host(scope)):
             await preview_host_app(scope, receive, send)
             return
         await self.app(scope, receive, send)

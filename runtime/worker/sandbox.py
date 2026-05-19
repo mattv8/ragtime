@@ -170,8 +170,7 @@ def detect_capabilities() -> SandboxCapabilities:
 
     _capabilities_cache["caps"] = caps
     logger.info(
-        "Sandbox capabilities detected: mode=%s, cap_sys_admin=%s, "
-        "user_ns=%s, mount=%s, pivot_root=%s",
+        "Sandbox capabilities detected: mode=%s, cap_sys_admin=%s, user_ns=%s, mount=%s, pivot_root=%s",
         caps.mode,
         caps.has_cap_sys_admin,
         caps.can_user_ns,
@@ -287,9 +286,7 @@ def materialize_mounts(
             return None
         return candidate
 
-    for target in clear_targets or [
-        str(mount.get("target_path") or "") for mount in mounts
-    ]:
+    for target in clear_targets or [str(mount.get("target_path") or "") for mount in mounts]:
         dest = resolve_target_path(str(target or ""))
         if dest is None:
             continue
@@ -312,9 +309,7 @@ def materialize_mounts(
             continue
         source_path = Path(source)
         if not source_path.is_dir():
-            logger.debug(
-                "materialize_mounts: source %s not a directory, skipping", source
-            )
+            logger.debug("materialize_mounts: source %s not a directory, skipping", source)
             continue
         dest = resolve_target_path(str(target))
         if dest is None:
@@ -346,8 +341,7 @@ def _provision_etc(rootfs: Path) -> None:
     passwd = etc / "passwd"
     if not passwd.exists():
         passwd.write_text(
-            "root:x:0:0:root:/root:/bin/bash\n"
-            "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n",
+            "root:x:0:0:root:/root:/bin/bash\nnobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n",
             encoding="utf-8",
         )
 
@@ -404,10 +398,7 @@ def _provision_etc(rootfs: Path) -> None:
     ld_so_conf = etc / "ld.so.conf"
     if not ld_so_conf.exists():
         ld_so_conf.write_text(
-            "/usr/local/lib\n"
-            "/usr/local/lib/x86_64-linux-gnu\n"
-            "/usr/lib/x86_64-linux-gnu\n"
-            "/lib/x86_64-linux-gnu\n",
+            "/usr/local/lib\n/usr/local/lib/x86_64-linux-gnu\n/usr/lib/x86_64-linux-gnu\n/lib/x86_64-linux-gnu\n",
             encoding="utf-8",
         )
 
@@ -486,9 +477,7 @@ def _syscall_mount(
     ret = _libc.mount(src, tgt, fs, flags, d)
     if ret != 0:
         err = ctypes.get_errno()
-        raise OSError(
-            err, f"mount({source}, {target}, {fstype}, {flags:#x}): {os.strerror(err)}"
-        )
+        raise OSError(err, f"mount({source}, {target}, {fstype}, {flags:#x}): {os.strerror(err)}")
     return ret
 
 
@@ -644,9 +633,7 @@ def _setup_user_namespace_mappings() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _sandbox_preexec(
-    spec: SandboxSpec, caps: SandboxCapabilities, target_cwd: str | None = None
-) -> None:
+def _sandbox_preexec(spec: SandboxSpec, caps: SandboxCapabilities, target_cwd: str | None = None) -> None:
     """Configure the sandbox inside the forked child, before exec.
 
     This function is called as the ``preexec_fn`` (or equivalent) in the
@@ -694,8 +681,7 @@ def _sandbox_preexec(
                 except OSError as exc:
                     # Mount failed but we can still chroot
                     logger.warning(
-                        "Sandbox mount setup failed in chroot mode, "
-                        "continuing with basic chroot: %s",
+                        "Sandbox mount setup failed in chroot mode, continuing with basic chroot: %s",
                         exc,
                     )
                     _sync_system_dirs_for_chroot(spec)
@@ -748,11 +734,7 @@ def _sync_system_dirs_for_chroot(spec: SandboxSpec) -> None:
             usr_stamp_value = usr_stamp.read_text(encoding="utf-8").strip()
         except Exception:
             usr_stamp_value = ""
-    usr_needs_sync = (
-        usr_stamp_value != _CHROOT_USR_SYNC_VERSION
-        or not usr_dst.exists()
-        or not any(usr_dst.iterdir())
-    )
+    usr_needs_sync = usr_stamp_value != _CHROOT_USR_SYNC_VERSION or not usr_dst.exists() or not any(usr_dst.iterdir())
 
     for d in _HOST_RO_BIND_DIRS:
         src = Path(d)
@@ -976,8 +958,7 @@ def sandbox_env(
     """Build the environment dict for a sandboxed process."""
     env: dict[str, str] = {
         "HOME": "/root",
-        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:"
-        "./node_modules/.bin",
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:./node_modules/.bin",
         "TERM": "xterm-256color",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
@@ -1032,9 +1013,7 @@ async def spawn_sandboxed(
     )
 
 
-def prepare_sandbox_pty_preexec(
-    spec: SandboxSpec, target_cwd: str | None = None
-) -> Any:
+def prepare_sandbox_pty_preexec(spec: SandboxSpec, target_cwd: str | None = None) -> Any:
     """Return a preexec_fn for PTY processes (same sandbox, but needs
     to set up the PTY slave fd before entering the sandbox).
 

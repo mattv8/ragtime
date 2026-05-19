@@ -42,9 +42,7 @@ from ragtime.rag import rag
 logger = get_logger(__name__)
 
 
-DEV_SERVER_INTERRUPT_MESSAGE = (
-    "Chat run interrupted by dev server reload or shutdown before it finished."
-)
+DEV_SERVER_INTERRUPT_MESSAGE = "Chat run interrupted by dev server reload or shutdown before it finished."
 WRAPPED_PROCESSING_ERROR_PREFIX = "I encountered an error processing your request:"
 
 
@@ -89,20 +87,14 @@ def _synthesize_incomplete_response(
     hit_max_iterations: bool,
 ) -> Optional[str]:
     """Build a visible fallback only when a run ended cleanly without final text."""
-    had_tool_activity = bool(tool_calls) or any(
-        ev.get("type") == "tool" for ev in events
-    )
+    had_tool_activity = bool(tool_calls) or any(ev.get("type") == "tool" for ev in events)
     had_reasoning_activity = any(ev.get("type") == "reasoning" for ev in events)
 
     if not (had_tool_activity or had_reasoning_activity):
         return None
 
     last_tool_name = next(
-        (
-            str(ev.get("tool"))
-            for ev in reversed(events)
-            if ev.get("type") == "tool" and ev.get("tool")
-        ),
+        (str(ev.get("tool")) for ev in reversed(events) if ev.get("type") == "tool" and ev.get("tool")),
         "tool",
     )
 
@@ -120,10 +112,7 @@ def _synthesize_incomplete_response(
             "Please send Continue and I will finalize the response."
         )
 
-    return (
-        "I emitted reasoning but no final answer text in this run. "
-        "Please send Continue and I will complete the response."
-    )
+    return "I emitted reasoning but no final answer text in this run. Please send Continue and I will complete the response."
 
 
 async def _persist_partial_assistant_message(
@@ -149,9 +138,7 @@ async def _persist_partial_assistant_message(
             getattr(persisted, "workspace_id", None) if persisted else None,
         )
     except Exception as link_err:
-        logger.warning(
-            f"Failed to link agent-created snapshot to assistant message: {link_err}"
-        )
+        logger.warning(f"Failed to link agent-created snapshot to assistant message: {link_err}")
     return True
 
 
@@ -210,10 +197,7 @@ def parse_message_content(content: str) -> Union[str, List[Dict[str, Any]]]:
     # Direct list of content parts
     if isinstance(parsed, list):
         if parsed and isinstance(parsed[0], dict) and "type" in parsed[0]:
-            logger.debug(
-                f"Parsed multimodal content: {len(parsed)} parts, "
-                f"types={[p.get('type') for p in parsed]}"
-            )
+            logger.debug(f"Parsed multimodal content: {len(parsed)} parts, types={[p.get('type') for p in parsed]}")
             return parsed
         return content
 
@@ -317,9 +301,7 @@ def rebuild_tool_messages_from_events(
             tool_seq += 1
             tool_name = ev.get("tool", "unknown")
             tool_args = ev.get("input") or {}
-            tool_output = _truncate_tool_output(
-                str(ev.get("output", "")), max_tool_output_chars
-            )
+            tool_output = _truncate_tool_output(str(ev.get("output", "")), max_tool_output_chars)
 
             messages.append(
                 AIMessage(
@@ -371,13 +353,9 @@ class BackgroundTaskService:
         # Start cleanup task
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         # Start filesystem re-indexing scheduler
-        self._filesystem_scheduler_task = asyncio.create_task(
-            self._filesystem_reindex_scheduler()
-        )
+        self._filesystem_scheduler_task = asyncio.create_task(self._filesystem_reindex_scheduler())
         # Start schema re-indexing scheduler
-        self._schema_scheduler_task = asyncio.create_task(
-            self._schema_reindex_scheduler()
-        )
+        self._schema_scheduler_task = asyncio.create_task(self._schema_reindex_scheduler())
         # Start git re-indexing scheduler
         self._git_scheduler_task = asyncio.create_task(self._git_reindex_scheduler())
 
@@ -395,10 +373,7 @@ class BackgroundTaskService:
                 pass
 
         # Cancel filesystem scheduler
-        if (
-            self._filesystem_scheduler_task
-            and not self._filesystem_scheduler_task.done()
-        ):
+        if self._filesystem_scheduler_task and not self._filesystem_scheduler_task.done():
             self._filesystem_scheduler_task.cancel()
             try:
                 await self._filesystem_scheduler_task
@@ -441,9 +416,7 @@ class BackgroundTaskService:
         """
         try:
             db = await repository._get_db()
-            stale_tasks = await db.chattask.find_many(
-                where={"status": {"in": ["pending", "running"]}}
-            )
+            stale_tasks = await db.chattask.find_many(where={"status": {"in": ["pending", "running"]}})
 
             if not stale_tasks:
                 return
@@ -540,25 +513,18 @@ class BackgroundTaskService:
                     # Check if re-indexing is due
                     last_indexed = fs_config.last_indexed_at
                     if last_indexed:
-                        next_reindex = last_indexed + timedelta(
-                            hours=fs_config.reindex_interval_hours
-                        )
+                        next_reindex = last_indexed + timedelta(hours=fs_config.reindex_interval_hours)
                         # Use timezone-aware comparison (handle both naive and aware)
                         now = datetime.now(timezone.utc)
                         # Make last_indexed tz-aware if needed
                         if last_indexed.tzinfo is None:
                             last_indexed = last_indexed.replace(tzinfo=timezone.utc)
-                            next_reindex = last_indexed + timedelta(
-                                hours=fs_config.reindex_interval_hours
-                            )
+                            next_reindex = last_indexed + timedelta(hours=fs_config.reindex_interval_hours)
                         if now < next_reindex:
                             continue  # Not due yet
 
                     # Trigger re-indexing
-                    logger.info(
-                        f"Triggering scheduled re-index for '{config.name}' "
-                        f"(last indexed: {last_indexed or 'never'})"
-                    )
+                    logger.info(f"Triggering scheduled re-index for '{config.name}' (last indexed: {last_indexed or 'never'})")
                     await filesystem_indexer.trigger_index(
                         tool_config_id=config.id,
                         config=fs_config,
@@ -566,9 +532,7 @@ class BackgroundTaskService:
                     )
 
                 except Exception as e:
-                    logger.warning(
-                        f"Error checking filesystem tool '{config.name}': {e}"
-                    )
+                    logger.warning(f"Error checking filesystem tool '{config.name}': {e}")
 
         except Exception as e:
             logger.error(f"Error in filesystem reindex check: {e}")
@@ -601,11 +565,7 @@ class BackgroundTaskService:
             all_tools = await repository.list_tool_configs(enabled_only=True)
 
             # Filter for schema-capable tools (postgres, mssql, mysql)
-            tool_configs = [
-                t
-                for t in all_tools
-                if t.tool_type.value in SCHEMA_INDEXER_CAPABLE_TYPES
-            ]
+            tool_configs = [t for t in all_tools if t.tool_type.value in SCHEMA_INDEXER_CAPABLE_TYPES]
 
             for config in tool_configs:
                 try:
@@ -633,17 +593,12 @@ class BackgroundTaskService:
                         if last_indexed.tzinfo is None:
                             last_indexed = last_indexed.replace(tzinfo=timezone.utc)
 
-                        next_reindex = last_indexed + timedelta(
-                            hours=schema_config.schema_index_interval_hours
-                        )
+                        next_reindex = last_indexed + timedelta(hours=schema_config.schema_index_interval_hours)
                         if datetime.now(timezone.utc) < next_reindex:
                             continue  # Not due yet
 
                     # Trigger schema re-indexing
-                    logger.info(
-                        f"Triggering scheduled schema re-index for '{config.name}' "
-                        f"(last indexed: {last_indexed or 'never'})"
-                    )
+                    logger.info(f"Triggering scheduled schema re-index for '{config.name}' (last indexed: {last_indexed or 'never'})")
                     await schema_indexer.trigger_index(
                         tool_config_id=config.id,
                         tool_type=config.tool_type.value,
@@ -653,9 +608,7 @@ class BackgroundTaskService:
                     )
 
                 except Exception as e:
-                    logger.warning(
-                        f"Error checking schema for tool '{config.name}': {e}"
-                    )
+                    logger.warning(f"Error checking schema for tool '{config.name}': {e}")
 
         except Exception as e:
             logger.error(f"Error in schema reindex check: {e}")
@@ -716,27 +669,20 @@ class BackgroundTaskService:
                         }
                     )
                     if running_job:
-                        logger.debug(
-                            f"Skipping scheduled git reindex for '{metadata.name}': "
-                            f"job {running_job.id} already running"
-                        )
+                        logger.debug(f"Skipping scheduled git reindex for '{metadata.name}': job {running_job.id} already running")
                         continue
 
                     # Get stored token (decrypt if needed)
                     from ragtime.core.encryption import decrypt_secret
 
-                    git_token = (
-                        decrypt_secret(metadata.gitToken) if metadata.gitToken else None
-                    )
+                    git_token = decrypt_secret(metadata.gitToken) if metadata.gitToken else None
 
                     # Build config from snapshot
                     from ragtime.indexer.models import IndexConfig, OcrMode, OcrProvider
 
                     # Handle legacy enable_ocr field and convert to ocr_mode
                     ocr_mode_str = config_snapshot.get("ocr_mode", "disabled")
-                    if ocr_mode_str == "disabled" and config_snapshot.get(
-                        "enable_ocr", False
-                    ):
+                    if ocr_mode_str == "disabled" and config_snapshot.get("enable_ocr", False):
                         ocr_mode_str = "tesseract"  # Legacy compatibility
 
                     config = IndexConfig(
@@ -751,24 +697,15 @@ class BackgroundTaskService:
                         chunk_overlap=config_snapshot.get("chunk_overlap", 200),
                         max_file_size_kb=config_snapshot.get("max_file_size_kb", 500),
                         ocr_mode=OcrMode(ocr_mode_str),
-                        ocr_provider=(
-                            OcrProvider(config_snapshot["ocr_provider"])
-                            if config_snapshot.get("ocr_provider")
-                            else None
-                        ),
+                        ocr_provider=(OcrProvider(config_snapshot["ocr_provider"]) if config_snapshot.get("ocr_provider") else None),
                         ocr_vision_model=config_snapshot.get("ocr_vision_model"),
-                        git_clone_timeout_minutes=config_snapshot.get(
-                            "git_clone_timeout_minutes", 5
-                        ),
+                        git_clone_timeout_minutes=config_snapshot.get("git_clone_timeout_minutes", 5),
                         git_history_depth=config_snapshot.get("git_history_depth", 1),
                         reindex_interval_hours=interval_hours,
                     )
 
                     # Trigger re-indexing
-                    logger.info(
-                        f"Triggering scheduled git pull & re-index for '{metadata.name}' "
-                        f"(last indexed: {last_modified or 'never'})"
-                    )
+                    logger.info(f"Triggering scheduled git pull & re-index for '{metadata.name}' (last indexed: {last_modified or 'never'})")
                     await indexer.create_index_from_git(
                         git_url=metadata.source or "",
                         branch=metadata.gitBranch or "main",
@@ -816,9 +753,7 @@ class BackgroundTaskService:
             try:
                 # Create or get the task
                 if not task_id:
-                    task = await repository.create_chat_task(
-                        conversation_id, user_message
-                    )
+                    task = await repository.create_chat_task(conversation_id, user_message)
                     task_id = task.id
                 else:
                     task = await repository.get_chat_task(task_id)
@@ -827,9 +762,7 @@ class BackgroundTaskService:
                         return
 
                 # Update status to running
-                await repository.update_chat_task_status(
-                    task_id, ChatTaskStatus.running
-                )
+                await repository.update_chat_task_status(task_id, ChatTaskStatus.running)
 
                 # Notify conversation subscribers (SSE) that a task has started.
                 # Both authenticated ChatPanel and PublicSharedChatView listen on
@@ -851,34 +784,26 @@ class BackgroundTaskService:
                 # Get conversation for chat history
                 conv = await repository.get_conversation(conversation_id)
                 if not conv:
-                    await repository.update_chat_task_status(
-                        task_id, ChatTaskStatus.failed, "Conversation not found"
-                    )
+                    await repository.update_chat_task_status(task_id, ChatTaskStatus.failed, "Conversation not found")
                     return
 
                 # Build chat history (exclude the user message we're about to process)
                 # Include tool call information so the LLM has full context
                 app_settings = await SettingsCache.get_instance().get_settings()
-                max_tool_output_chars = int(
-                    app_settings.get("max_tool_output_chars", 5000)
-                )
+                max_tool_output_chars = int(app_settings.get("max_tool_output_chars", 5000))
 
                 chat_history = []
-                for msg_idx, msg in enumerate(
-                    conv.messages[:-1]
-                ):  # Exclude last (current user) message
+                for msg_idx, msg in enumerate(conv.messages[:-1]):  # Exclude last (current user) message
                     if msg.role == "user":
                         # Parse content in case it's a JSON-encoded multimodal array
                         parsed_content = parse_message_content(msg.content)
                         if not isinstance(parsed_content, str):
-                            parsed_content, attachment_stats = (
-                                await rag.preprocess_message_content_async(
-                                    parsed_content,
-                                    conversation_id=conversation_id,
-                                    user_id=conv.user_id,
-                                    workspace_id=getattr(conv, "workspace_id", None),
-                                    model_id=conv.model,
-                                )
+                            parsed_content, attachment_stats = await rag.preprocess_message_content_async(
+                                parsed_content,
+                                conversation_id=conversation_id,
+                                user_id=conv.user_id,
+                                workspace_id=getattr(conv, "workspace_id", None),
+                                model_id=conv.model,
                             )
                             if attachment_stats:
                                 logger.debug(
@@ -893,18 +818,12 @@ class BackgroundTaskService:
                     elif msg.role == "assistant":
                         if msg.events:
                             # Reconstruct native AIMessage(tool_calls) + ToolMessage pairs
-                            chat_history.extend(
-                                rebuild_tool_messages_from_events(
-                                    msg.events, msg_idx, max_tool_output_chars
-                                )
-                            )
+                            chat_history.extend(rebuild_tool_messages_from_events(msg.events, msg_idx, max_tool_output_chars))
                         elif msg.content and msg.content.strip():
                             chat_history.append(AIMessage(content=msg.content))
 
                 if not rag.is_ready:
-                    await repository.update_chat_task_status(
-                        task_id, ChatTaskStatus.failed, "RAG service not ready"
-                    )
+                    await repository.update_chat_task_status(task_id, ChatTaskStatus.failed, "RAG service not ready")
                     await task_event_bus.publish(
                         task_id,
                         {
@@ -986,21 +905,12 @@ class BackgroundTaskService:
                                 # stored event log does not leave a perpetual
                                 # "running" tool bubble.
                                 for tool_idx in list(running_tool_indices.values()):
-                                    if (
-                                        0 <= tool_idx < len(events)
-                                        and events[tool_idx].get("type") == "tool"
-                                        and "output" not in events[tool_idx]
-                                    ):
-                                        events[tool_idx][
-                                            "output"
-                                        ] = "Tool completed or stream ended without a final tool_end event."
+                                    if 0 <= tool_idx < len(events) and events[tool_idx].get("type") == "tool" and "output" not in events[tool_idx]:
+                                        events[tool_idx]["output"] = "Tool completed or stream ended without a final tool_end event."
                                 running_tool_indices.clear()
                                 break
 
-                            raise TimeoutError(
-                                f"LLM/agent stream produced no output for "
-                                f"{_STREAM_INACTIVITY_TIMEOUT}s - possible hung API call"
-                            ) from exc
+                            raise TimeoutError(f"LLM/agent stream produced no output for {_STREAM_INACTIVITY_TIMEOUT}s - possible hung API call") from exc
 
                         if self._shutdown:
                             await repository.update_chat_task_status(
@@ -1033,9 +943,7 @@ class BackgroundTaskService:
                             full_response += token
 
                             if reasoning_block_started_at is not None:
-                                finalize_reasoning_block(
-                                    events, reasoning_block_started_at
-                                )
+                                finalize_reasoning_block(events, reasoning_block_started_at)
                                 reasoning_block_started_at = None
 
                             # Add to events
@@ -1054,24 +962,18 @@ class BackgroundTaskService:
                             # Tool events are still updated immediately above
                             now = datetime.utcnow()
                             if (now - last_update).total_seconds() > 0.4:
-                                result = (
-                                    await repository.update_chat_task_streaming_state(
-                                        task_id,
-                                        full_response,
-                                        events,
-                                        tool_calls,
-                                        hit_max_iterations,
-                                        current_version,
-                                    )
+                                result = await repository.update_chat_task_streaming_state(
+                                    task_id,
+                                    full_response,
+                                    events,
+                                    tool_calls,
+                                    hit_max_iterations,
+                                    current_version,
                                 )
                                 if result and result.streaming_state:
                                     current_version = result.streaming_state.version
-                                    await task_event_bus.publish(
-                                        task_id, result.streaming_state.dict()
-                                    )
-                                    await _notify_conversation_progress(
-                                        conversation_id, task_id
-                                    )
+                                    await task_event_bus.publish(task_id, result.streaming_state.dict())
+                                    await _notify_conversation_progress(conversation_id, task_id)
                                 last_update = now
                             continue
 
@@ -1086,25 +988,16 @@ class BackgroundTaskService:
                             ghost_idx = None
                             for gi in range(len(events) - 1, -1, -1):
                                 gev = events[gi]
-                                if (
-                                    gev.get("type") == "tool"
-                                    and gev.get("tool") == tool_name
-                                    and "output" not in gev
-                                    and "input" not in gev
-                                ):
+                                if gev.get("type") == "tool" and gev.get("tool") == tool_name and "output" not in gev and "input" not in gev:
                                     ghost_idx = gi
                                     break
 
                             if ghost_idx is not None:
                                 # Upgrade the ghost event with full tool_start data
                                 events[ghost_idx]["input"] = event.get("input")
-                                events[ghost_idx]["connection"] = event.get(
-                                    "connection"
-                                )
+                                events[ghost_idx]["connection"] = event.get("connection")
                                 if event.get("presentation") is not None:
-                                    events[ghost_idx]["presentation"] = event.get(
-                                        "presentation"
-                                    )
+                                    events[ghost_idx]["presentation"] = event.get("presentation")
                                 if run_id:
                                     running_tool_indices[run_id] = ghost_idx
                             else:
@@ -1119,9 +1012,7 @@ class BackgroundTaskService:
                                     # No "output" key = running state
                                 }
                                 if event.get("presentation") is not None:
-                                    tool_event["presentation"] = event.get(
-                                        "presentation"
-                                    )
+                                    tool_event["presentation"] = event.get("presentation")
                                 events.append(tool_event)
                                 # Track this tool's index by run_id
                                 if run_id:
@@ -1138,12 +1029,8 @@ class BackgroundTaskService:
                             )
                             if result and result.streaming_state:
                                 current_version = result.streaming_state.version
-                                await task_event_bus.publish(
-                                    task_id, result.streaming_state.dict()
-                                )
-                                await _notify_conversation_progress(
-                                    conversation_id, task_id
-                                )
+                                await task_event_bus.publish(task_id, result.streaming_state.dict())
+                                await _notify_conversation_progress(conversation_id, task_id)
                             last_update = datetime.utcnow()
 
                         elif event_type == "tool_end":
@@ -1154,42 +1041,30 @@ class BackgroundTaskService:
                                 # Update the existing tool event with output
                                 events[tool_idx]["output"] = event.get("output")
                                 if event.get("presentation") is not None:
-                                    events[tool_idx]["presentation"] = event.get(
-                                        "presentation"
-                                    )
+                                    events[tool_idx]["presentation"] = event.get("presentation")
                                 tool_calls.append(
                                     {
                                         "tool": events[tool_idx]["tool"],
                                         "input": events[tool_idx].get("input"),
                                         "output": events[tool_idx].get("output"),
-                                        "connection": events[tool_idx].get(
-                                            "connection"
-                                        ),
-                                        "presentation": events[tool_idx].get(
-                                            "presentation"
-                                        ),
+                                        "connection": events[tool_idx].get("connection"),
+                                        "presentation": events[tool_idx].get("presentation"),
                                     }
                                 )
 
                                 # Force immediate update so the UI shows the completed tool
-                                result = (
-                                    await repository.update_chat_task_streaming_state(
-                                        task_id,
-                                        full_response,
-                                        events,
-                                        tool_calls,
-                                        hit_max_iterations,
-                                        current_version,
-                                    )
+                                result = await repository.update_chat_task_streaming_state(
+                                    task_id,
+                                    full_response,
+                                    events,
+                                    tool_calls,
+                                    hit_max_iterations,
+                                    current_version,
                                 )
                                 if result and result.streaming_state:
                                     current_version = result.streaming_state.version
-                                    await task_event_bus.publish(
-                                        task_id, result.streaming_state.dict()
-                                    )
-                                    await _notify_conversation_progress(
-                                        conversation_id, task_id
-                                    )
+                                    await task_event_bus.publish(task_id, result.streaming_state.dict())
+                                    await _notify_conversation_progress(conversation_id, task_id)
                                 last_update = datetime.utcnow()
 
                         elif event_type == "max_iterations_reached":
@@ -1206,12 +1081,8 @@ class BackgroundTaskService:
                             )
                             if result and result.streaming_state:
                                 current_version = result.streaming_state.version
-                                await task_event_bus.publish(
-                                    task_id, result.streaming_state.dict()
-                                )
-                                await _notify_conversation_progress(
-                                    conversation_id, task_id
-                                )
+                                await task_event_bus.publish(task_id, result.streaming_state.dict())
+                                await _notify_conversation_progress(conversation_id, task_id)
                             last_update = datetime.utcnow()
 
                         elif event_type == "tool_generating":
@@ -1223,11 +1094,7 @@ class BackgroundTaskService:
                                 # Find the last running tool event matching this name
                                 for i in range(len(events) - 1, -1, -1):
                                     ev = events[i]
-                                    if (
-                                        ev.get("type") == "tool"
-                                        and ev.get("tool") == gen_tool
-                                        and "output" not in ev
-                                    ):
+                                    if ev.get("type") == "tool" and ev.get("tool") == gen_tool and "output" not in ev:
                                         ev["generating_lines"] = gen_lines
                                         break
                                 else:
@@ -1239,39 +1106,25 @@ class BackgroundTaskService:
                                             "channel": "commentary",
                                             "tool": gen_tool,
                                             "generating_lines": gen_lines,
-                                            **(
-                                                {
-                                                    "presentation": event.get(
-                                                        "presentation"
-                                                    )
-                                                }
-                                                if event.get("presentation") is not None
-                                                else {}
-                                            ),
+                                            **({"presentation": event.get("presentation")} if event.get("presentation") is not None else {}),
                                         }
                                     )
 
                             # Throttle updates to avoid flooding the SSE bus
                             now = datetime.utcnow()
                             if (now - last_update).total_seconds() > 0.6:
-                                result = (
-                                    await repository.update_chat_task_streaming_state(
-                                        task_id,
-                                        full_response,
-                                        events,
-                                        tool_calls,
-                                        hit_max_iterations,
-                                        current_version,
-                                    )
+                                result = await repository.update_chat_task_streaming_state(
+                                    task_id,
+                                    full_response,
+                                    events,
+                                    tool_calls,
+                                    hit_max_iterations,
+                                    current_version,
                                 )
                                 if result and result.streaming_state:
                                     current_version = result.streaming_state.version
-                                    await task_event_bus.publish(
-                                        task_id, result.streaming_state.dict()
-                                    )
-                                    await _notify_conversation_progress(
-                                        conversation_id, task_id
-                                    )
+                                    await task_event_bus.publish(task_id, result.streaming_state.dict())
+                                    await _notify_conversation_progress(conversation_id, task_id)
                                 last_update = now
 
                         elif event_type == "reasoning":
@@ -1289,28 +1142,19 @@ class BackgroundTaskService:
                                 # this, the UI only sees the thinking block after a later
                                 # final/commentary/tool update flushes task state.
                                 now = datetime.utcnow()
-                                if (
-                                    reasoning_was_inactive
-                                    or (now - last_update).total_seconds() > 0.4
-                                ):
-                                    result = (
-                                        await repository.update_chat_task_streaming_state(
-                                            task_id,
-                                            full_response,
-                                            events,
-                                            tool_calls,
-                                            hit_max_iterations,
-                                            current_version,
-                                        )
+                                if reasoning_was_inactive or (now - last_update).total_seconds() > 0.4:
+                                    result = await repository.update_chat_task_streaming_state(
+                                        task_id,
+                                        full_response,
+                                        events,
+                                        tool_calls,
+                                        hit_max_iterations,
+                                        current_version,
                                     )
                                     if result and result.streaming_state:
                                         current_version = result.streaming_state.version
-                                        await task_event_bus.publish(
-                                            task_id, result.streaming_state.dict()
-                                        )
-                                        await _notify_conversation_progress(
-                                            conversation_id, task_id
-                                        )
+                                        await task_event_bus.publish(task_id, result.streaming_state.dict())
+                                        await _notify_conversation_progress(conversation_id, task_id)
                                     last_update = now
                 finally:
                     await _close_stream_handles(_stream_iter, _stream, task_id)
@@ -1333,20 +1177,16 @@ class BackgroundTaskService:
                             }
                         )
                         logger.warning(
-                            "Background task %s ended without assistant text; "
-                            "synthesized fallback response (events=%d, tool_calls=%d, hit_max_iterations=%s)",
+                            "Background task %s ended without assistant text; synthesized fallback response (events=%d, tool_calls=%d, hit_max_iterations=%s)",
                             task_id,
                             len(events),
                             len(tool_calls),
                             hit_max_iterations,
                         )
                     else:
-                        error_message = (
-                            "Model stream ended without assistant text output"
-                        )
+                        error_message = "Model stream ended without assistant text output"
                         logger.warning(
-                            "Background task %s ended with no assistant text "
-                            "(events=%d, tool_calls=%d, hit_max_iterations=%s)",
+                            "Background task %s ended with no assistant text (events=%d, tool_calls=%d, hit_max_iterations=%s)",
                             task_id,
                             len(events),
                             len(tool_calls),
@@ -1370,9 +1210,7 @@ class BackgroundTaskService:
                                 usage_attempt_id,
                                 status="failed",
                                 failure_reason=error_message,
-                                output_tokens=_estimate_output_tokens(
-                                    full_response, events
-                                ),
+                                output_tokens=_estimate_output_tokens(full_response, events),
                             )
                         return
 
@@ -1381,13 +1219,10 @@ class BackgroundTaskService:
                     if reasoning_block_started_at is not None:
                         finalize_reasoning_block(events, reasoning_block_started_at)
                         reasoning_block_started_at = None
-                    if (
-                        not partial_message_persisted
-                        and await _persist_partial_assistant_message(
-                            conversation_id,
-                            full_response,
-                            events,
-                        )
+                    if not partial_message_persisted and await _persist_partial_assistant_message(
+                        conversation_id,
+                        full_response,
+                        events,
                     ):
                         partial_message_persisted = True
                     await repository.update_chat_task_status(
@@ -1415,8 +1250,7 @@ class BackgroundTaskService:
                         },
                     )
                     logger.warning(
-                        "Background task %s produced wrapped internal error; "
-                        "marking interrupted (%s)",
+                        "Background task %s produced wrapped internal error; marking interrupted (%s)",
                         task_id,
                         wrapped_error_detail,
                     )
@@ -1455,16 +1289,10 @@ class BackgroundTaskService:
                 try:
                     await repository.link_assistant_snapshot_tool_calls(
                         persisted_conv,
-                        (
-                            getattr(persisted_conv, "workspace_id", None)
-                            if persisted_conv
-                            else None
-                        ),
+                        (getattr(persisted_conv, "workspace_id", None) if persisted_conv else None),
                     )
                 except Exception as link_err:
-                    logger.warning(
-                        f"Failed to link agent-created snapshot to assistant message: {link_err}"
-                    )
+                    logger.warning(f"Failed to link agent-created snapshot to assistant message: {link_err}")
                 partial_message_persisted = True
 
                 # Notify completion
@@ -1502,13 +1330,10 @@ class BackgroundTaskService:
                     if reasoning_block_started_at is not None:
                         finalize_reasoning_block(events, reasoning_block_started_at)
                         reasoning_block_started_at = None
-                    if (
-                        not partial_message_persisted
-                        and await _persist_partial_assistant_message(
-                            conversation_id,
-                            full_response,
-                            events,
-                        )
+                    if not partial_message_persisted and await _persist_partial_assistant_message(
+                        conversation_id,
+                        full_response,
+                        events,
                     ):
                         partial_message_persisted = True
                         logger.info(
@@ -1539,27 +1364,19 @@ class BackgroundTaskService:
                                 usage_attempt_id,
                                 status="interrupted",
                                 failure_reason="Server shutdown",
-                                output_tokens=_estimate_output_tokens(
-                                    full_response, events
-                                ),
+                                output_tokens=_estimate_output_tokens(full_response, events),
                             )
                     else:
                         await repository.cancel_chat_task(task_id)
-                        await task_event_bus.publish(
-                            task_id, {"completed": True, "status": "cancelled"}
-                        )
+                        await task_event_bus.publish(task_id, {"completed": True, "status": "cancelled"})
                         if usage_attempt_id:
                             await finalize_usage_attempt(
                                 usage_attempt_id,
                                 status="cancelled",
-                                output_tokens=_estimate_output_tokens(
-                                    full_response, events
-                                ),
+                                output_tokens=_estimate_output_tokens(full_response, events),
                             )
                 except Exception as db_err:
-                    logger.warning(
-                        f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}"
-                    )
+                    logger.warning(f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}")
                 raise
             except Exception as e:
                 logger.exception(f"Background task {task_id} failed")
@@ -1567,13 +1384,10 @@ class BackgroundTaskService:
                     if reasoning_block_started_at is not None:
                         finalize_reasoning_block(events, reasoning_block_started_at)
                         reasoning_block_started_at = None
-                    if (
-                        not partial_message_persisted
-                        and await _persist_partial_assistant_message(
-                            conversation_id,
-                            full_response,
-                            events,
-                        )
+                    if not partial_message_persisted and await _persist_partial_assistant_message(
+                        conversation_id,
+                        full_response,
+                        events,
                     ):
                         partial_message_persisted = True
                         logger.info(
@@ -1581,9 +1395,7 @@ class BackgroundTaskService:
                             task_id,
                             "failed",
                         )
-                    await repository.update_chat_task_status(
-                        task_id, ChatTaskStatus.failed, str(e)
-                    )
+                    await repository.update_chat_task_status(task_id, ChatTaskStatus.failed, str(e))
                     await task_event_bus.publish(
                         task_id,
                         {"completed": True, "status": "failed", "error": str(e)},
@@ -1602,14 +1414,10 @@ class BackgroundTaskService:
                             usage_attempt_id,
                             status="failed",
                             failure_reason=str(e),
-                            output_tokens=_estimate_output_tokens(
-                                full_response, events
-                            ),
+                            output_tokens=_estimate_output_tokens(full_response, events),
                         )
                 except Exception as db_err:
-                    logger.warning(
-                        f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}"
-                    )
+                    logger.warning(f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}")
             finally:
                 self._running_tasks.pop(task_id, None)
 

@@ -88,23 +88,15 @@ class ColoredFormatter(logging.Formatter):
             if formatted_message[-1:] != "\n":
                 formatted_message += "\n"
             # Color each line individually so Docker log drivers preserve color
-            colored_lines = [
-                f"{level_color}{line}{RESET}" for line in record.exc_text.splitlines()
-            ]
+            colored_lines = [f"{level_color}{line}{RESET}" for line in record.exc_text.splitlines()]
             formatted_message += "\n".join(colored_lines)
 
         if record_stack_info:
             if formatted_message[-1:] != "\n":
                 formatted_message += "\n"
             # Color each line individually so Docker log drivers preserve color
-            stack_text = (
-                record_stack_info
-                if isinstance(record_stack_info, str)
-                else formatter.formatStack(record_stack_info)
-            )
-            colored_lines = [
-                f"{level_color}{line}{RESET}" for line in stack_text.splitlines()
-            ]
+            stack_text = record_stack_info if isinstance(record_stack_info, str) else formatter.formatStack(record_stack_info)
+            colored_lines = [f"{level_color}{line}{RESET}" for line in stack_text.splitlines()]
             formatted_message += "\n".join(colored_lines)
 
         return formatted_message

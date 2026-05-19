@@ -141,12 +141,10 @@ class FilesystemIndexerService:
         sortable_ids = sorted(
             self._analysis_jobs.keys(),
             key=lambda job_id: (
-                (
-                    getattr(self._analysis_jobs[job_id], "completed_at", None)
-                    or getattr(self._analysis_jobs[job_id], "created_at", None)
-                    or datetime.min.replace(tzinfo=timezone.utc)
-                ).timestamp()
-            ),
+                getattr(self._analysis_jobs[job_id], "completed_at", None)
+                or getattr(self._analysis_jobs[job_id], "created_at", None)
+                or datetime.min.replace(tzinfo=timezone.utc)
+            ).timestamp(),
         )
         overflow_count = len(self._analysis_jobs) - _ANALYSIS_MAX_RECORDS
         for job_id in sortable_ids[:overflow_count]:
@@ -163,10 +161,7 @@ class FilesystemIndexerService:
 
         model = settings.embedding_model
         # Use configured dimension if set, otherwise use tracked dimension
-        dimension = (
-            getattr(settings, "embedding_dimensions", None)
-            or settings.embedding_dimension
-        )
+        dimension = getattr(settings, "embedding_dimensions", None) or settings.embedding_dimension
 
         limit = 2000
         if dimension is not None and dimension > limit:
@@ -197,14 +192,10 @@ class FilesystemIndexerService:
             await asyncio.to_thread(lambda: list(mount_path.iterdir())[:1])
             return True
         except Exception as e:
-            logger.warning(
-                f"Mount health check failed for {mount_info.mount_point}: {e}"
-            )
+            logger.warning(f"Mount health check failed for {mount_info.mount_point}: {e}")
             return False
 
-    async def _do_mount_smb(
-        self, config: FilesystemConnectionConfig, mount_point: str
-    ) -> None:
+    async def _do_mount_smb(self, config: FilesystemConnectionConfig, mount_point: str) -> None:
         """Execute SMB mount command."""
         smb_path = f"//{config.smb_host}/{config.smb_share}"
         mount_opts = []
@@ -227,17 +218,13 @@ class FilesystemIndexerService:
         ]
 
         logger.info(f"Mounting SMB share {smb_path} to {mount_point}")
-        result = await asyncio.to_thread(
-            subprocess.run, cmd, capture_output=True, text=True, timeout=30
-        )
+        result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=30)
 
         if result.returncode != 0:
             error_msg = result.stderr.strip() or "Unknown mount error"
             raise RuntimeError(f"Failed to mount SMB share: {error_msg}")
 
-    async def _do_mount_nfs(
-        self, config: FilesystemConnectionConfig, mount_point: str
-    ) -> None:
+    async def _do_mount_nfs(self, config: FilesystemConnectionConfig, mount_point: str) -> None:
         """Execute NFS mount command."""
         nfs_path = f"{config.nfs_host}:{config.nfs_export}"
         mount_opts = config.nfs_options or "ro,soft,timeo=30"
@@ -245,9 +232,7 @@ class FilesystemIndexerService:
         cmd = ["mount", "-t", "nfs", nfs_path, mount_point, "-o", mount_opts]
 
         logger.info(f"Mounting NFS export {nfs_path} to {mount_point}")
-        result = await asyncio.to_thread(
-            subprocess.run, cmd, capture_output=True, text=True, timeout=30
-        )
+        result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=30)
 
         if result.returncode != 0:
             error_msg = result.stderr.strip() or "Unknown mount error"
@@ -271,9 +256,7 @@ class FilesystemIndexerService:
             logger.warning(f"Error cleaning up mount point {mount_point}: {e}")
 
     @asynccontextmanager
-    async def _mount_filesystem(
-        self, config: FilesystemConnectionConfig, tool_config_id: str | None = None
-    ) -> AsyncIterator[Path]:
+    async def _mount_filesystem(self, config: FilesystemConnectionConfig, tool_config_id: str | None = None) -> AsyncIterator[Path]:
         """
         Context manager for filesystem access with persistent mount reuse.
 
@@ -336,9 +319,7 @@ class FilesystemIndexerService:
 
             # Calculate effective path
             rel_path = config.base_path.lstrip("/")
-            effective_path = (
-                Path(mount_point) / rel_path if rel_path else Path(mount_point)
-            )
+            effective_path = Path(mount_point) / rel_path if rel_path else Path(mount_point)
 
             logger.info(f"Mount successful, effective path: {effective_path}")
 
@@ -366,9 +347,7 @@ class FilesystemIndexerService:
             await asyncio.to_thread(shutil.rmtree, mount_point, True)
             raise
 
-    def filesystem_access(
-        self, config: FilesystemConnectionConfig, tool_config_id: str | None = None
-    ) -> AsyncContextManager[Path]:
+    def filesystem_access(self, config: FilesystemConnectionConfig, tool_config_id: str | None = None) -> AsyncContextManager[Path]:
         return self._mount_filesystem(config, tool_config_id)
 
     async def unmount_tool(self, tool_config_id: str) -> bool:
@@ -387,9 +366,7 @@ class FilesystemIndexerService:
             for mount_key, mount_info in self._mounts.items():
                 if mount_info.tool_config_id == tool_config_id:
                     if mount_info.reference_count > 0:
-                        logger.warning(
-                            f"Cannot unmount {mount_key}: {mount_info.reference_count} active jobs"
-                        )
+                        logger.warning(f"Cannot unmount {mount_key}: {mount_info.reference_count} active jobs")
                         return False
                     mount_key_to_remove = mount_key
                     break
@@ -483,9 +460,7 @@ class FilesystemIndexerService:
         """
         return await ensure_pgvector_extension(logger_override=logger)
 
-    async def ensure_embedding_column(
-        self, embedding_dim: int = 1536, index_lists: int = 100
-    ) -> bool:
+    async def ensure_embedding_column(self, embedding_dim: int = 1536, index_lists: int = 100) -> bool:
         """
         Ensure the embedding column exists with the expected dimension.
 
@@ -507,9 +482,7 @@ class FilesystemIndexerService:
             logger_override=logger,
         )
 
-    async def validate_path_access(
-        self, config: FilesystemConnectionConfig
-    ) -> Dict[str, Any]:
+    async def validate_path_access(self, config: FilesystemConnectionConfig) -> Dict[str, Any]:
         """
         Validate that the configured path is accessible.
 
@@ -590,11 +563,7 @@ class FilesystemIndexerService:
         exclude_patterns = config.exclude_patterns
 
         # Use os.walk for better control and progress tracking
-        walker = (
-            os.walk(base_path, followlinks=False)
-            if config.recursive
-            else [(str(base_path), [], os.listdir(base_path))]
-        )
+        walker = os.walk(base_path, followlinks=False) if config.recursive else [(str(base_path), [], os.listdir(base_path))]
 
         for dirpath, dirnames, filenames in walker:
             dirs_scanned += 1
@@ -606,11 +575,7 @@ class FilesystemIndexerService:
 
             # Update progress every 10 directories or on first directory
             if progress_callback and (dirs_scanned == 1 or dirs_scanned % 10 == 0):
-                rel_dir = (
-                    str(current_dir.relative_to(base_path))
-                    if current_dir != base_path
-                    else "/"
-                )
+                rel_dir = str(current_dir.relative_to(base_path)) if current_dir != base_path else "/"
                 progress_callback(len(matching_files), rel_dir)
 
             # Check if we've hit the limit
@@ -650,9 +615,7 @@ class FilesystemIndexerService:
                     if matches_pattern(rel_path, exclude_patterns):
                         continue
 
-                    matches_include = matches_pattern(
-                        filename, config.file_patterns
-                    ) or matches_pattern(rel_path, config.file_patterns)
+                    matches_include = matches_pattern(filename, config.file_patterns) or matches_pattern(rel_path, config.file_patterns)
                     if not should_index_file_type(
                         file_path,
                         matches_include_pattern=matches_include,
@@ -664,9 +627,7 @@ class FilesystemIndexerService:
 
                     # Stop at max_total_files
                     if len(matching_files) >= config.max_total_files:
-                        logger.warning(
-                            f"Reached max_total_files limit ({config.max_total_files})"
-                        )
+                        logger.warning(f"Reached max_total_files limit ({config.max_total_files})")
                         return matching_files
 
                     if limit and len(matching_files) >= limit:
@@ -699,10 +660,7 @@ class FilesystemIndexerService:
         """
         # Validate pgvector is available
         if not await self.ensure_pgvector_extension():
-            raise RuntimeError(
-                "pgvector extension not available. Please install it: "
-                "CREATE EXTENSION IF NOT EXISTS vector;"
-            )
+            raise RuntimeError("pgvector extension not available. Please install it: CREATE EXTENSION IF NOT EXISTS vector;")
 
         job = FilesystemIndexJob(
             id=str(uuid.uuid4()),
@@ -785,9 +743,7 @@ class FilesystemIndexerService:
             completed_at=prisma_job.completedAt,
         )
 
-    async def list_jobs(
-        self, tool_config_id: Optional[str] = None
-    ) -> List[FilesystemIndexJob]:
+    async def list_jobs(self, tool_config_id: Optional[str] = None) -> List[FilesystemIndexJob]:
         """List filesystem index jobs, optionally filtered by tool config."""
         db = await get_db()
         where = {"toolConfigId": tool_config_id} if tool_config_id else {}
@@ -857,9 +813,7 @@ class FilesystemIndexerService:
         # Can only cancel pending/indexing jobs
         if prisma_job.status in ("pending", "indexing"):
             # Job is not running in memory but stuck in DB - directly mark as cancelled
-            logger.info(
-                f"Directly cancelling orphaned job {job_id} (not in active jobs)"
-            )
+            logger.info(f"Directly cancelling orphaned job {job_id} (not in active jobs)")
             await db.filesystemindexjob.update(
                 where={"id": job_id},
                 data={
@@ -925,9 +879,7 @@ class FilesystemIndexerService:
         # Get the tool config to start a new job
         tool_config = await repo.get_tool_config(failed_job.tool_config_id)
         if not tool_config:
-            logger.error(
-                f"Cannot retry job {job_id}: tool config {failed_job.tool_config_id} not found"
-            )
+            logger.error(f"Cannot retry job {job_id}: tool config {failed_job.tool_config_id} not found")
             return None
 
         # Parse the connection config
@@ -958,9 +910,7 @@ class FilesystemIndexerService:
     ) -> Optional[FilesystemFileMetadata]:
         """Get file metadata for incremental indexing."""
         db = await get_db()
-        result = await db.filesystemfilemetadata.find_first(
-            where={"indexName": index_name, "filePath": file_path}
-        )
+        result = await db.filesystemfilemetadata.find_first(where={"indexName": index_name, "filePath": file_path})
         if not result:
             return None
 
@@ -1042,9 +992,7 @@ class FilesystemIndexerService:
             },
         )
 
-    async def _upsert_file_metadata_batch(
-        self, metadata_list: List[FilesystemFileMetadata]
-    ) -> int:
+    async def _upsert_file_metadata_batch(self, metadata_list: List[FilesystemFileMetadata]) -> int:
         """Batch upsert file metadata for tracking.
 
         Uses raw SQL with ON CONFLICT for efficient batch upserts.
@@ -1066,17 +1014,11 @@ class FilesystemIndexerService:
                 escaped_index = meta.index_name.replace("'", "''")
                 escaped_path = meta.file_path.replace("'", "''")
                 escaped_hash = meta.file_hash.replace("'", "''")
-                mime_type = (
-                    f"'{meta.mime_type.replace(chr(39), chr(39)+chr(39))}'"
-                    if meta.mime_type
-                    else "NULL"
-                )
+                mime_type = f"'{meta.mime_type.replace(chr(39), chr(39) + chr(39))}'" if meta.mime_type else "NULL"
                 indexed_at = meta.last_indexed.strftime("%Y-%m-%d %H:%M:%S")
 
                 values_list.append(
-                    f"('{meta_id}', '{escaped_index}', '{escaped_path}', "
-                    f"'{escaped_hash}', {meta.file_size}, {mime_type}, "
-                    f"{meta.chunk_count}, '{indexed_at}')"
+                    f"('{meta_id}', '{escaped_index}', '{escaped_path}', '{escaped_hash}', {meta.file_size}, {mime_type}, {meta.chunk_count}, '{indexed_at}')"
                 )
 
             if values_list:
@@ -1114,9 +1056,7 @@ class FilesystemIndexerService:
         else:
             # Legacy pgvector path (backward compatibility)
             db = await get_db()
-            await db.filesystemembedding.delete_many(
-                where={"indexName": index_name, "filePath": file_path}
-            )
+            await db.filesystemembedding.delete_many(where={"indexName": index_name, "filePath": file_path})
 
     async def _embed_chunks_with_fallback(
         self,
@@ -1164,11 +1104,7 @@ class FilesystemIndexerService:
                     from ragtime.core.tokenization import count_tokens
 
                     tokens = count_tokens(chunk)
-                    logger.warning(
-                        f"Chunk exceeds embedding context limit at "
-                        f"{tokens} tiktoken tokens, {len(chunk)} chars "
-                        f"- truncating"
-                    )
+                    logger.warning(f"Chunk exceeds embedding context limit at {tokens} tiktoken tokens, {len(chunk)} chars - truncating")
 
                     # Progressive character truncation
                     embedded = False
@@ -1187,9 +1123,7 @@ class FilesystemIndexerService:
                     if not embedded:
                         # Embed placeholder to maintain alignment
                         try:
-                            emb = await asyncio.to_thread(
-                                embeddings.embed_documents, ["."]
-                            )
+                            emb = await asyncio.to_thread(embeddings.embed_documents, ["."])
                             all_embeddings.extend(emb)
                         except Exception:
                             dim = len(all_embeddings[0]) if all_embeddings else 768
@@ -1224,9 +1158,7 @@ class FilesystemIndexerService:
             Number of embeddings inserted
         """
         if backend:
-            return await backend.store_embeddings(
-                index_name, file_path, chunks, embeddings, metadata
-            )
+            return await backend.store_embeddings(index_name, file_path, chunks, embeddings, metadata)
 
         # Legacy pgvector path (backward compatibility)
         db = await get_db()
@@ -1241,9 +1173,7 @@ class FilesystemIndexerService:
             index_lists = app_settings.get("ivfflat_lists", 100)
             success = await self.ensure_embedding_column(embedding_dim, index_lists)
             if not success:
-                raise RuntimeError(
-                    f"Failed to ensure embedding column with dimension {embedding_dim}"
-                )
+                raise RuntimeError(f"Failed to ensure embedding column with dimension {embedding_dim}")
 
         # Serialize metadata to JSON string
         metadata_json = json.dumps(metadata).replace("'", "''")
@@ -1307,10 +1237,7 @@ class FilesystemIndexerService:
             settings = await repo.get_settings()
 
             current_config_hash = settings.get_embedding_config_hash()
-            tracking_needs_update = (
-                settings.embedding_dimension is None
-                or settings.embedding_config_hash is None
-            )
+            tracking_needs_update = settings.embedding_dimension is None or settings.embedding_config_hash is None
 
             if settings.embedding_config_hash is not None:
                 if settings.embedding_config_hash != current_config_hash:
@@ -1333,62 +1260,32 @@ class FilesystemIndexerService:
             embedding_context_limit = await get_embedding_model_context_limit(
                 model_name=app_settings.get("embedding_model", "nomic-embed-text"),
                 provider=app_settings.get("embedding_provider", "ollama"),
-                ollama_base_url=app_settings.get(
-                    "ollama_base_url", "http://localhost:11434"
-                ),
-                llama_cpp_base_url=app_settings.get(
-                    "llama_cpp_base_url", "http://host.docker.internal:8081"
-                ),
-                lmstudio_base_url=app_settings.get(
-                    "lmstudio_base_url", "http://host.docker.internal:1234"
-                ),
+                ollama_base_url=app_settings.get("ollama_base_url", "http://localhost:11434"),
+                llama_cpp_base_url=app_settings.get("llama_cpp_base_url", "http://host.docker.internal:8081"),
+                lmstudio_base_url=app_settings.get("lmstudio_base_url", "http://host.docker.internal:1234"),
             )
-            logger.debug(
-                f"Embedding model context limit: {embedding_context_limit} tokens"
-            )
+            logger.debug(f"Embedding model context limit: {embedding_context_limit} tokens")
 
             # Get the appropriate vector store backend based on config
-            vector_store_type = getattr(
-                config, "vector_store_type", VectorStoreType.PGVECTOR
-            )
+            vector_store_type = getattr(config, "vector_store_type", VectorStoreType.PGVECTOR)
             backend = get_backend(vector_store_type)
-            logger.info(
-                f"Using {vector_store_type.value} backend for index '{config.index_name}'"
-            )
+            logger.info(f"Using {vector_store_type.value} backend for index '{config.index_name}'")
 
             # Mount filesystem if needed (SMB/NFS) and process files
-            async with self._mount_filesystem(
-                config, job.tool_config_id
-            ) as effective_path:
+            async with self._mount_filesystem(config, job.tool_config_id) as effective_path:
                 # Resolve OCR vision model - use config value if set, otherwise global default
-                resolved_ocr_provider = (
-                    config.ocr_provider.value if config.ocr_provider else None
-                )
+                resolved_ocr_provider = config.ocr_provider.value if config.ocr_provider else None
                 resolved_ocr_vision_model = config.ocr_vision_model
                 if config.ocr_mode == OcrMode.VISION:
                     if not resolved_ocr_provider:
-                        resolved_ocr_provider = str(
-                            app_settings.get("default_ocr_provider") or "ollama"
-                        )
-                    resolved_ocr_provider = normalize_provider_name(
-                        resolved_ocr_provider
-                    )
-                if (
-                    not resolved_ocr_vision_model
-                    and config.ocr_mode == OcrMode.VISION
-                ):
-                    resolved_ocr_vision_model = app_settings.get(
-                        "default_ocr_vision_model"
-                    )
+                        resolved_ocr_provider = str(app_settings.get("default_ocr_provider") or "ollama")
+                    resolved_ocr_provider = normalize_provider_name(resolved_ocr_provider)
+                if not resolved_ocr_vision_model and config.ocr_mode == OcrMode.VISION:
+                    resolved_ocr_vision_model = app_settings.get("default_ocr_vision_model")
 
                 # Log OCR mode being used
-                if (
-                    config.ocr_mode == OcrMode.VISION
-                    and resolved_ocr_vision_model
-                ):
-                    logger.info(
-                        f"Using Vision OCR with {resolved_ocr_provider}/{resolved_ocr_vision_model}"
-                    )
+                if config.ocr_mode == OcrMode.VISION and resolved_ocr_vision_model:
+                    logger.info(f"Using Vision OCR with {resolved_ocr_provider}/{resolved_ocr_vision_model}")
                 elif config.ocr_mode == OcrMode.TESSERACT:
                     logger.info("Using Tesseract OCR")
                 else:
@@ -1478,9 +1375,7 @@ class FilesystemIndexerService:
                 logger.info(f"Found {len(files)} files to process")
 
                 if full_reindex:
-                    logger.info(
-                        f"Full re-index requested. Clearing existing data for index '{config.index_name}'"
-                    )
+                    logger.info(f"Full re-index requested. Clearing existing data for index '{config.index_name}'")
                     await self.delete_index(config.index_name)
 
                 base_path = effective_path
@@ -1498,21 +1393,15 @@ class FilesystemIndexerService:
                 file_semaphore = asyncio.Semaphore(max_concurrent)
                 batch_size = max_concurrent * 2  # 2x concurrency for good pipeline
 
-                logger.info(
-                    f"Processing {len(files)} files with {max_concurrent} concurrent workers"
-                )
+                logger.info(f"Processing {len(files)} files with {max_concurrent} concurrent workers")
 
                 # Track OCR files for progress (OCR_EXTENSIONS imported at module level)
                 ocr_file_count = 0
                 ocr_files_processed = 0
                 if config.ocr_mode != OcrMode.DISABLED:
-                    ocr_file_count = sum(
-                        1 for f in files if f.suffix.lower() in OCR_EXTENSIONS
-                    )
+                    ocr_file_count = sum(1 for f in files if f.suffix.lower() in OCR_EXTENSIONS)
                     if ocr_file_count > 0:
-                        logger.info(
-                            f"Found {ocr_file_count} image files for OCR processing"
-                        )
+                        logger.info(f"Found {ocr_file_count} image files for OCR processing")
 
                 # Track files loaded during parallel processing (for progress updates)
                 files_loaded_in_batch = 0
@@ -1534,17 +1423,12 @@ class FilesystemIndexerService:
                                 stat_result = await asyncio.to_thread(file_path.stat)
                                 last_indexed = existing_meta.last_indexed
                                 if last_indexed.tzinfo is None:
-                                    last_indexed = last_indexed.replace(
-                                        tzinfo=timezone.utc
-                                    )
+                                    last_indexed = last_indexed.replace(tzinfo=timezone.utc)
                                 modified_at = datetime.fromtimestamp(
                                     stat_result.st_mtime,
                                     tz=timezone.utc,
                                 )
-                                if (
-                                    stat_result.st_size == existing_meta.file_size
-                                    and modified_at <= last_indexed
-                                ):
+                                if stat_result.st_size == existing_meta.file_size and modified_at <= last_indexed:
                                     return (
                                         rel_path,
                                         [],
@@ -1553,24 +1437,15 @@ class FilesystemIndexerService:
                                     )
 
                             # Check if file changed (incremental indexing)
-                            current_hash = await asyncio.to_thread(
-                                compute_file_hash, file_path
-                            )
+                            current_hash = await asyncio.to_thread(compute_file_hash, file_path)
 
-                            if (
-                                not full_reindex
-                                and existing_meta
-                                and existing_meta.file_hash == current_hash
-                            ):
+                            if not full_reindex and existing_meta and existing_meta.file_hash == current_hash:
                                 # File unchanged, skip
                                 return (rel_path, [], current_hash, "unchanged")
 
                             # Update progress for OCR files
                             suffix = file_path.suffix.lower()
-                            is_ocr_file = (
-                                suffix in OCR_EXTENSIONS
-                                and working_config.ocr_mode != OcrMode.DISABLED
-                            )
+                            is_ocr_file = suffix in OCR_EXTENSIONS and working_config.ocr_mode != OcrMode.DISABLED
                             if is_ocr_file and ocr_file_count > 0:
                                 ocr_files_processed += 1
                                 # Update job status to show OCR progress
@@ -1578,12 +1453,8 @@ class FilesystemIndexerService:
                                 await self._update_job(job)
 
                             # Load and chunk the file
-                            use_token_chunking = app_settings.get(
-                                "chunking_use_tokens", True
-                            )
-                            chunks = await self._load_and_chunk_file(
-                                file_path, working_config, use_token_chunking
-                            )
+                            use_token_chunking = app_settings.get("chunking_use_tokens", True)
+                            chunks = await self._load_and_chunk_file(file_path, working_config, use_token_chunking)
 
                             # Track progress - increment counter after loading each file
                             async with files_loaded_lock:
@@ -1623,9 +1494,7 @@ class FilesystemIndexerService:
                     results = await asyncio.gather(*tasks, return_exceptions=True)
 
                     # Update progress after file loading phase completes for this batch
-                    job.current_directory = (
-                        f"Embedding batch {batch_start // batch_size + 1}"
-                    )
+                    job.current_directory = f"Embedding batch {batch_start // batch_size + 1}"
                     await self._update_job(job)
 
                     # Collect chunks for batch embedding
@@ -1655,9 +1524,7 @@ class FilesystemIndexerService:
 
                         # current_hash is guaranteed to be set when no error
                         assert current_hash is not None
-                        files_to_embed.append(
-                            (rel_path, chunks, current_hash, file_path)
-                        )
+                        files_to_embed.append((rel_path, chunks, current_hash, file_path))
 
                     # Update after categorizing results
                     await self._update_job(job)
@@ -1673,21 +1540,15 @@ class FilesystemIndexerService:
                         safe_token_limit = int(embedding_context_limit * safety_margin)
 
                         # Run re-chunking in thread to avoid blocking event loop
-                        all_chunks, chunk_file_map, rechunked_count = (
-                            await asyncio.to_thread(
-                                rechunk_texts_batch,
-                                files_to_embed,
-                                safe_token_limit,
-                                config.chunk_overlap,
-                            )
+                        all_chunks, chunk_file_map, rechunked_count = await asyncio.to_thread(
+                            rechunk_texts_batch,
+                            files_to_embed,
+                            safe_token_limit,
+                            config.chunk_overlap,
                         )
 
                         if rechunked_count > 0:
-                            logger.info(
-                                f"Re-chunked {rechunked_count} oversized chunks "
-                                f"(safe_limit: {safe_token_limit}, "
-                                f"safety_margin: {safety_margin:.0%})"
-                            )
+                            logger.info(f"Re-chunked {rechunked_count} oversized chunks (safe_limit: {safe_token_limit}, safety_margin: {safety_margin:.0%})")
 
                         # Generate embeddings in sub-batches to keep event loop responsive
                         # Progressive retry with increasingly aggressive re-chunking
@@ -1723,9 +1584,7 @@ class FilesystemIndexerService:
                                     rechunked = 0
                                     new_chunks: list[str] = []
                                     new_file_map: list[str] = []
-                                    for chunk_text, rel in zip(
-                                        all_chunks, chunk_file_map
-                                    ):
+                                    for chunk_text, rel in zip(all_chunks, chunk_file_map):
                                         tokens = count_tokens(chunk_text)
                                         if tokens > aggressive_limit:
                                             sub = rechunk_oversized_text(
@@ -1756,13 +1615,8 @@ class FilesystemIndexerService:
                                     continue  # Retry embedding
 
                                 # All retries exhausted - individual chunk fallback
-                                logger.warning(
-                                    "Context length retries exhausted, "
-                                    "falling back to per-chunk embedding"
-                                )
-                                all_embeddings = await self._embed_chunks_with_fallback(
-                                    embeddings, all_chunks
-                                )
+                                logger.warning("Context length retries exhausted, falling back to per-chunk embedding")
+                                all_embeddings = await self._embed_chunks_with_fallback(embeddings, all_chunks)
                                 break
 
                         if embedding_failed or all_embeddings is None:
@@ -1774,10 +1628,7 @@ class FilesystemIndexerService:
                         # Validate embedding dimension (first in batch)
                         if all_embeddings and tracking_needs_update:
                             current_dim = len(all_embeddings[0])
-                            if (
-                                settings.embedding_dimension is not None
-                                and settings.embedding_dimension != current_dim
-                            ):
+                            if settings.embedding_dimension is not None and settings.embedding_dimension != current_dim:
                                 if not full_reindex:
                                     job.status = FilesystemIndexStatus.FAILED
                                     job.error_message = "Embedding dimension changed. A full re-index is required."
@@ -1794,16 +1645,12 @@ class FilesystemIndexerService:
                         embed_idx = 0
                         for rel_path, chunks, current_hash, file_path in files_to_embed:
                             chunk_count = len(chunks)
-                            file_embeddings = all_embeddings[
-                                embed_idx : embed_idx + chunk_count
-                            ]
+                            file_embeddings = all_embeddings[embed_idx : embed_idx + chunk_count]
                             embed_idx += chunk_count
 
                             try:
                                 # Delete old embeddings for this file
-                                await self._delete_file_embeddings(
-                                    config.index_name, rel_path, backend=backend
-                                )
+                                await self._delete_file_embeddings(config.index_name, rel_path, backend=backend)
 
                                 # Insert new embeddings
                                 inserted = await self._insert_embeddings(
@@ -1822,9 +1669,7 @@ class FilesystemIndexerService:
                                         config_hash=current_config_hash,
                                     )
                                     tracking_needs_update = False
-                                    settings.embedding_dimension = len(
-                                        file_embeddings[0]
-                                    )
+                                    settings.embedding_dimension = len(file_embeddings[0])
                                     settings.embedding_config_hash = current_config_hash
 
                                 # Collect file metadata for batch upsert
@@ -1835,9 +1680,7 @@ class FilesystemIndexerService:
                                         file_path=rel_path,
                                         file_hash=current_hash,
                                         file_size=file_stat.st_size,
-                                        mime_type=mimetypes.guess_type(str(file_path))[
-                                            0
-                                        ],
+                                        mime_type=mimetypes.guess_type(str(file_path))[0],
                                         chunk_count=chunk_count,
                                         last_indexed=datetime.utcnow(),
                                     )
@@ -1848,17 +1691,13 @@ class FilesystemIndexerService:
                                 job.total_chunks += chunk_count
 
                             except Exception as e:
-                                logger.warning(
-                                    f"Error inserting embeddings for {rel_path}: {e}"
-                                )
+                                logger.warning(f"Error inserting embeddings for {rel_path}: {e}")
                                 job.processed_files += 1
 
                         # Batch upsert all file metadata for this batch
                         if metadata_to_upsert:
                             try:
-                                await self._upsert_file_metadata_batch(
-                                    metadata_to_upsert
-                                )
+                                await self._upsert_file_metadata_batch(metadata_to_upsert)
                             except Exception as e:
                                 logger.warning(f"Batch metadata upsert failed: {e}")
                                 # Fall back to individual upserts
@@ -1866,18 +1705,13 @@ class FilesystemIndexerService:
                                     try:
                                         await self._upsert_file_metadata(meta)
                                     except Exception as inner_e:
-                                        logger.warning(
-                                            f"Individual metadata upsert failed for {meta.file_path}: {inner_e}"
-                                        )
+                                        logger.warning(f"Individual metadata upsert failed for {meta.file_path}: {inner_e}")
 
                     # Update job progress after each batch
                     await self._update_job(job)
 
                     if job.processed_files > 0 and job.processed_files % 50 == 0:
-                        logger.info(
-                            f"Processed {job.processed_files}/{job.total_files} files, "
-                            f"skipped {job.skipped_files} unchanged"
-                        )
+                        logger.info(f"Processed {job.processed_files}/{job.total_files} files, skipped {job.skipped_files} unchanged")
 
             # Finalize the vector store (FAISS saves to disk here, pgvector is no-op)
             await backend.finalize_index(config.index_name)
@@ -1912,9 +1746,7 @@ class FilesystemIndexerService:
                     await self._update_job(job)
                 except RuntimeError as db_error:
                     if "Database is not connected" in str(db_error):
-                        logger.warning(
-                            f"Cannot update job {job.id} - DB disconnected during shutdown"
-                        )
+                        logger.warning(f"Cannot update job {job.id} - DB disconnected during shutdown")
                     else:
                         raise
             self._active_jobs.pop(job.id, None)
@@ -1935,17 +1767,11 @@ class FilesystemIndexerService:
                     # 2. Re-enable tool if it was auto-disabled
                     tool_config = await repository.get_tool_config(job.tool_config_id)
                     if tool_config and not tool_config.enabled:
-                        logger.info(
-                            f"Re-enabling filesystem tool {job.tool_config_id} after successful indexing"
-                        )
-                        await repository.update_tool_config(
-                            job.tool_config_id, {"enabled": True}
-                        )
+                        logger.info(f"Re-enabling filesystem tool {job.tool_config_id} after successful indexing")
+                        await repository.update_tool_config(job.tool_config_id, {"enabled": True})
 
                 except Exception as e:
-                    logger.error(
-                        f"Failed to post-process FAISS index after completion: {e}"
-                    )
+                    logger.error(f"Failed to post-process FAISS index after completion: {e}")
 
             self._active_jobs.pop(job.id, None)
             self._cancellation_flags.pop(job.id, None)
@@ -1958,12 +1784,8 @@ class FilesystemIndexerService:
             tool_config = await repository.get_tool_config(tool_config_id)
             if tool_config and tool_config.connection_config:
                 connection_config = dict(tool_config.connection_config)
-                connection_config["last_indexed_at"] = datetime.now(
-                    timezone.utc
-                ).isoformat()
-                await repository.update_tool_config(
-                    tool_config_id, {"connection_config": connection_config}
-                )
+                connection_config["last_indexed_at"] = datetime.now(timezone.utc).isoformat()
+                await repository.update_tool_config(tool_config_id, {"connection_config": connection_config})
         except Exception as e:
             logger.warning(f"Failed to update last_indexed_at: {e}")
 
@@ -2003,9 +1825,7 @@ class FilesystemIndexerService:
             if suffix in OCR_EXTENSIONS and config.ocr_mode in {
                 OcrMode.VISION,
             }:
-                docs = await self._load_image_with_semantic_chunks(
-                    file_path, config, metadata
-                )
+                docs = await self._load_image_with_semantic_chunks(file_path, config, metadata)
                 if docs:
                     return [doc.page_content for doc in docs]
                 # Fall through to standard processing if semantic extraction fails
@@ -2013,11 +1833,7 @@ class FilesystemIndexerService:
             # Read file content (handles PDF, DOCX, images with OCR, etc.)
             content = await self._read_file_content_async(
                 file_path,
-                ocr_mode=(
-                    config.ocr_mode.value
-                    if hasattr(config.ocr_mode, "value")
-                    else str(config.ocr_mode)
-                ),
+                ocr_mode=(config.ocr_mode.value if hasattr(config.ocr_mode, "value") else str(config.ocr_mode)),
                 ocr_provider=(config.ocr_provider.value if config.ocr_provider else None),
                 ocr_vision_model=config.ocr_vision_model,
             )
@@ -2038,15 +1854,8 @@ class FilesystemIndexerService:
             except (ValueError, RuntimeError, LookupError) as e:
                 # Language not supported by Chonkie - use recursive chunker
                 err_lower = str(e).lower()
-                if (
-                    "not supported" in err_lower
-                    or "detected language" in err_lower
-                    or "could not find language" in err_lower
-                ):
-                    logger.debug(
-                        f"Code chunking not available for {file_path.name}, "
-                        f"using recursive chunker"
-                    )
+                if "not supported" in err_lower or "detected language" in err_lower or "could not find language" in err_lower:
+                    logger.debug(f"Code chunking not available for {file_path.name}, using recursive chunker")
                     docs = await asyncio.to_thread(
                         _chunk_with_recursive,
                         content,
@@ -2138,10 +1947,7 @@ class FilesystemIndexerService:
             metadata,
         )
 
-        logger.debug(
-            f"Semantic chunking for {file_path.name}: "
-            f"{len(segments)} segments -> {len(docs)} chunks"
-        )
+        logger.debug(f"Semantic chunking for {file_path.name}: {len(segments)} segments -> {len(docs)} chunks")
         return docs
 
     async def _read_file_content_async(
@@ -2161,9 +1967,7 @@ class FilesystemIndexerService:
         if ocr_mode == "vision":
             app_settings = await get_app_settings()
             if not effective_provider:
-                effective_provider = str(
-                    app_settings.get("default_ocr_provider") or "ollama"
-                )
+                effective_provider = str(app_settings.get("default_ocr_provider") or "ollama")
             effective_provider = normalize_provider_name(effective_provider)
             vision_base_url = resolve_provider_base_url(
                 app_settings,
@@ -2216,15 +2020,11 @@ class FilesystemIndexerService:
         self._analysis_jobs[job.id] = job
 
         # Start analysis in background — hold strong reference to prevent GC
-        self._running_tasks[job.id] = asyncio.create_task(
-            self._run_analysis(job, config)
-        )
+        self._running_tasks[job.id] = asyncio.create_task(self._run_analysis(job, config))
 
         return job
 
-    async def get_analysis_job(
-        self, job_id: str
-    ) -> Optional[tuple[FilesystemAnalysisJob, Optional[FilesystemAnalysisResult]]]:
+    async def get_analysis_job(self, job_id: str) -> Optional[tuple[FilesystemAnalysisJob, Optional[FilesystemAnalysisResult]]]:
         """Get an analysis job and its result if completed."""
         self._prune_analysis_state()
         job = self._analysis_jobs.get(job_id)
@@ -2245,9 +2045,7 @@ class FilesystemIndexerService:
             job.status = FilesystemAnalysisStatus.SCANNING
 
             # Mount filesystem if needed (SMB/NFS)
-            async with self._mount_filesystem(
-                config, job.tool_config_id
-            ) as effective_path:
+            async with self._mount_filesystem(config, job.tool_config_id) as effective_path:
                 base_path = effective_path
 
                 if not base_path.exists():
@@ -2303,19 +2101,11 @@ class FilesystemIndexerService:
                     nonlocal total_files, total_size, skipped_size
                     nonlocal skipped_excluded, dirs_processed
 
-                    walker = (
-                        os.walk(base_path, followlinks=False)
-                        if config.recursive
-                        else [(str(base_path), [], os.listdir(base_path))]
-                    )
+                    walker = os.walk(base_path, followlinks=False) if config.recursive else [(str(base_path), [], os.listdir(base_path))]
 
                     for dirpath, dirnames, filenames in walker:
                         current_dir = Path(dirpath)
-                        dirnames[:] = [
-                            dirname
-                            for dirname in dirnames
-                            if not (current_dir / dirname).is_symlink()
-                        ]
+                        dirnames[:] = [dirname for dirname in dirnames if not (current_dir / dirname).is_symlink()]
                         dirnames[:] = [
                             dirname
                             for dirname in dirnames
@@ -2329,14 +2119,8 @@ class FilesystemIndexerService:
 
                         dirs_processed += 1
                         job.dirs_scanned = dirs_processed
-                        rel_dir = (
-                            str(current_dir.relative_to(base_path))
-                            if current_dir != base_path
-                            else "/"
-                        )
-                        job.current_directory = (
-                            rel_dir[:50] + "..." if len(rel_dir) > 50 else rel_dir
-                        )
+                        rel_dir = str(current_dir.relative_to(base_path)) if current_dir != base_path else "/"
+                        job.current_directory = rel_dir[:50] + "..." if len(rel_dir) > 50 else rel_dir
 
                         for filename in filenames:
                             file_path = current_dir / filename
@@ -2422,9 +2206,7 @@ class FilesystemIndexerService:
 
                         estimated_text_size = stats["total_size"] * density_factor
 
-                        stats["estimated_chunks"] = max(
-                            1, int(estimated_text_size // effective_chunk)
-                        )
+                        stats["estimated_chunks"] = max(1, int(estimated_text_size // effective_chunk))
                     else:
                         stats["estimated_chunks"] = stats["file_count"]
 
@@ -2441,68 +2223,41 @@ class FilesystemIndexerService:
 
                 # Generate warnings
                 if skipped_size > 0:
-                    warnings.append(
-                        f"Skipped {skipped_size} files exceeding the {config.max_file_size_mb}MB size limit."
-                    )
+                    warnings.append(f"Skipped {skipped_size} files exceeding the {config.max_file_size_mb}MB size limit.")
 
                 if skipped_excluded > 0:
-                    warnings.append(
-                        f"Skipped {skipped_excluded} files matching exclude patterns."
-                    )
+                    warnings.append(f"Skipped {skipped_excluded} files matching exclude patterns.")
 
                 if total_files >= config.max_total_files:
-                    warnings.append(
-                        f"Reached max_total_files limit ({config.max_total_files}). "
-                        "Consider adding more exclude patterns."
-                    )
+                    warnings.append(f"Reached max_total_files limit ({config.max_total_files}). Consider adding more exclude patterns.")
 
                 # Check for parseable documents that can be handled
-                parseable_found = [
-                    ext for ext in ext_stats if ext in PARSEABLE_DOCUMENT_EXTENSIONS
-                ]
+                parseable_found = [ext for ext in ext_stats if ext in PARSEABLE_DOCUMENT_EXTENSIONS]
                 if parseable_found:
-                    doc_count = sum(
-                        ext_stats[ext]["file_count"] for ext in parseable_found
-                    )
-                    warnings.append(
-                        f"Found {doc_count} document files ({', '.join(parseable_found)}) - "
-                        "these will be parsed using document extractors."
-                    )
+                    doc_count = sum(ext_stats[ext]["file_count"] for ext in parseable_found)
+                    warnings.append(f"Found {doc_count} document files ({', '.join(parseable_found)}) - these will be parsed using document extractors.")
 
                 # Check for OCR-eligible images
                 ocr_images_found = [ext for ext in ext_stats if ext in OCR_EXTENSIONS]
                 if ocr_images_found:
-                    img_count = sum(
-                        ext_stats[ext]["file_count"] for ext in ocr_images_found
-                    )
-                    ocr_mode_str = (
-                        config.ocr_mode.value
-                        if hasattr(config.ocr_mode, "value")
-                        else str(config.ocr_mode)
-                    )
+                    img_count = sum(ext_stats[ext]["file_count"] for ext in ocr_images_found)
+                    ocr_mode_str = config.ocr_mode.value if hasattr(config.ocr_mode, "value") else str(config.ocr_mode)
                     if ocr_mode_str != "disabled":
                         ocr_method = (
                             "Tesseract"
                             if ocr_mode_str == "tesseract"
-                            else (
-                                f"Vision ({config.ocr_provider or 'default provider'}/"
-                                f"{config.ocr_vision_model or 'not configured'})"
-                            )
+                            else (f"Vision ({config.ocr_provider or 'default provider'}/{config.ocr_vision_model or 'not configured'})")
                         )
                         warnings.append(
-                            f"Found {img_count} image files ({', '.join(ocr_images_found)}) - "
-                            f"these will be processed with {ocr_method} OCR to extract text."
+                            f"Found {img_count} image files ({', '.join(ocr_images_found)}) - these will be processed with {ocr_method} OCR to extract text."
                         )
                     else:
                         warnings.append(
-                            f"Found {img_count} image files ({', '.join(ocr_images_found)}) - "
-                            "these will be skipped. Enable OCR to extract text from images."
+                            f"Found {img_count} image files ({', '.join(ocr_images_found)}) - these will be skipped. Enable OCR to extract text from images."
                         )
 
                 # Calculate totals
-                total_estimated_chunks = sum(
-                    stats["estimated_chunks"] for stats in ext_stats.values()
-                )
+                total_estimated_chunks = sum(stats["estimated_chunks"] for stats in ext_stats.values())
 
                 # Estimate pgvector index size (embeddings + overhead)
                 # Each embedding: 4 bytes per dimension + metadata
@@ -2529,8 +2284,7 @@ class FilesystemIndexerService:
                 if estimated_index_size_mb > 500:
                     warnings.insert(
                         0,
-                        f"Estimated index size is {estimated_index_size_mb:.0f}MB. "
-                        "Consider adding more exclusion patterns to reduce size.",
+                        f"Estimated index size is {estimated_index_size_mb:.0f}MB. Consider adding more exclusion patterns to reduce size.",
                     )
 
                 # Warn if embedding dimension exceeds pgvector index limit
@@ -2557,10 +2311,7 @@ class FilesystemIndexerService:
                 job.status = FilesystemAnalysisStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
 
-                logger.info(
-                    f"Filesystem analysis completed: {total_files} files, "
-                    f"{total_estimated_chunks} chunks, {elapsed:.1f}s"
-                )
+                logger.info(f"Filesystem analysis completed: {total_files} files, {total_estimated_chunks} chunks, {elapsed:.1f}s")
 
         except Exception as e:
             logger.exception(f"Filesystem analysis failed: {e}")
@@ -2590,9 +2341,7 @@ class FilesystemIndexerService:
 
         # Delete from pgvector (always try, for backward compatibility)
         if vector_store_type in (None, VectorStoreType.PGVECTOR):
-            result = await db.filesystemembedding.delete_many(
-                where={"indexName": index_name}
-            )
+            result = await db.filesystemembedding.delete_many(where={"indexName": index_name})
             deleted_count += result
             logger.info(f"Deleted {result} pgvector embeddings for '{index_name}'")
 
@@ -2630,9 +2379,7 @@ class FilesystemIndexerService:
 
         if vector_store_type in (None, VectorStoreType.PGVECTOR):
             try:
-                pgvector_count = await db.filesystemembedding.count(
-                    where={"indexName": index_name}
-                )
+                pgvector_count = await db.filesystemembedding.count(where={"indexName": index_name})
             except TableNotFoundError:
                 # Table doesn't exist yet - no embeddings
                 pgvector_count = 0
@@ -2647,9 +2394,7 @@ class FilesystemIndexerService:
         file_count = 0
         latest_file = None
         try:
-            file_count = await db.filesystemfilemetadata.count(
-                where={"indexName": index_name}
-            )
+            file_count = await db.filesystemfilemetadata.count(where={"indexName": index_name})
 
             # Get latest indexed timestamp
             latest_file = await db.filesystemfilemetadata.find_first(
@@ -2671,9 +2416,7 @@ class FilesystemIndexerService:
             estimated_memory_mb = faiss_stats.get("size_mb") or 0.0
         elif pgvector_count > 0:
             # For pgvector, calculate actual storage size
-            pgvector_size_bytes = (
-                await get_pgvector_backend().get_pgvector_table_size_bytes(index_name)
-            )
+            pgvector_size_bytes = await get_pgvector_backend().get_pgvector_table_size_bytes(index_name)
             pgvector_size_mb = round(pgvector_size_bytes / (1024 * 1024), 2)
 
             # Also calculate memory estimate from embedding dimensions (for compatibility)
@@ -2681,9 +2424,7 @@ class FilesystemIndexerService:
             if embedding_dimension and embedding_count > 0:
                 # Memory formula: embeddings * dimensions * 4 bytes (float32) * overhead
                 bytes_per_embedding = embedding_dimension * 4 * 1.15
-                estimated_memory_mb = (embedding_count * bytes_per_embedding) / (
-                    1024 * 1024
-                )
+                estimated_memory_mb = (embedding_count * bytes_per_embedding) / (1024 * 1024)
 
         return {
             "index_name": index_name,
@@ -2693,9 +2434,7 @@ class FilesystemIndexerService:
             "last_indexed": latest_file.lastIndexed if latest_file else None,
             "estimated_memory_mb": estimated_memory_mb,
             "pgvector_size_mb": pgvector_size_mb,
-            "vector_store_type": (
-                vector_store_type.value if vector_store_type else "auto"
-            ),
+            "vector_store_type": (vector_store_type.value if vector_store_type else "auto"),
             "pgvector_count": pgvector_count,
             "faiss_count": faiss_count,
         }

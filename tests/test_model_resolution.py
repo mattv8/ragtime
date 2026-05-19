@@ -5,7 +5,13 @@ from unittest import mock
 
 import ragtime.core.model_limits as model_limits
 import ragtime.indexer.routes as indexer_routes
-
+from ragtime.api.routes import (
+    _build_openapi_model_entry,
+    _ensure_unique_openapi_model_ids,
+    _normalize_openapi_model_id,
+    _normalize_runtime_model,
+    _resolve_effective_model,
+)
 from ragtime.core.model_limits import (
     clean_model_display_name,
     clean_model_variant_label,
@@ -31,13 +37,6 @@ from ragtime.indexer.routes import (
     _merge_llm_model_results,
     _normalize_conversation_model_provider,
     _parse_model_identifier,
-)
-from ragtime.api.routes import (
-    _build_openapi_model_entry,
-    _ensure_unique_openapi_model_ids,
-    _normalize_openapi_model_id,
-    _normalize_runtime_model,
-    _resolve_effective_model,
 )
 from ragtime.rag.components import RAGComponents, _CopilotChatOpenAI
 
@@ -83,9 +82,7 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(_normalize_conversation_model_provider("omlx"), "omlx")
 
     def test_conversation_model_provider_accepts_registered_openrouter(self) -> None:
-        self.assertEqual(
-            _normalize_conversation_model_provider("openrouter"), "openrouter"
-        )
+        self.assertEqual(_normalize_conversation_model_provider("openrouter"), "openrouter")
 
     def test_shared_provider_metadata_resolves_api_aliases_and_labels(self) -> None:
         self.assertEqual(normalize_provider_name("llama.cpp"), "llama_cpp")
@@ -108,14 +105,8 @@ class ModelResolutionTests(unittest.TestCase):
                 "_ensure_cache_loaded",
                 new=mock.AsyncMock(),
             ):
-                self.assertTrue(
-                    asyncio.run(model_limits.supports_reasoning("claude-haiku-4.5"))
-                )
-                self.assertFalse(
-                    asyncio.run(
-                        model_limits.supports_reasoning_effort("claude-haiku-4.5")
-                    )
-                )
+                self.assertTrue(asyncio.run(model_limits.supports_reasoning("claude-haiku-4.5")))
+                self.assertFalse(asyncio.run(model_limits.supports_reasoning_effort("claude-haiku-4.5")))
         finally:
             model_limits.invalidate_cache()
 
@@ -183,9 +174,7 @@ class ModelResolutionTests(unittest.TestCase):
 
     def test_openapi_normalization_uses_pretty_openrouter_id(self) -> None:
         self.assertEqual(
-            _normalize_openapi_model_id(
-                "openrouter", "openrouter::anthropic/claude-sonnet-4.5"
-            ),
+            _normalize_openapi_model_id("openrouter", "openrouter::anthropic/claude-sonnet-4.5"),
             "OpenRouter Claude Sonnet 4.5",
         )
 
@@ -351,9 +340,7 @@ class ModelResolutionTests(unittest.TestCase):
             "ragtime.api.routes._get_openapi_model_entries",
             new=mock.AsyncMock(return_value=[entry]),
         ):
-            runtime_model, response_model = asyncio.run(
-                _resolve_effective_model(entry.id, {}, "openai")
-            )
+            runtime_model, response_model = asyncio.run(_resolve_effective_model(entry.id, {}, "openai"))
 
         self.assertEqual(runtime_model, "github_copilot::claude-haiku-4.5")
         self.assertEqual(response_model, "Anthropic Claude Haiku 4.5")
@@ -934,9 +921,7 @@ class ModelResolutionTests(unittest.TestCase):
     def test_group_models_dynamic_gemini_family(self) -> None:
         models = [
             LLMModel(id="google/gemini-3", name="Gemini 3", created=100),
-            LLMModel(
-                id="google/gemini-3.1-flash", name="Gemini 3.1 Flash", created=200
-            ),
+            LLMModel(id="google/gemini-3.1-flash", name="Gemini 3.1 Flash", created=200),
         ]
 
         grouped = _group_models(models, "github_copilot")
@@ -1019,9 +1004,7 @@ class ModelSendEligibilityTests(unittest.IsolatedAsyncioTestCase):
             ) as validate_live_model,
         ):
             with self.assertRaises(indexer_routes.HTTPException) as raised:
-                await indexer_routes._validate_conversation_model_before_send(
-                    "github_copilot::openai/gpt-5.3-codex"
-                )
+                await indexer_routes._validate_conversation_model_before_send("github_copilot::openai/gpt-5.3-codex")
 
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("Select another model", str(raised.exception.detail))
@@ -1045,9 +1028,7 @@ class ModelSendEligibilityTests(unittest.IsolatedAsyncioTestCase):
                 mock.AsyncMock(),
             ) as validate_live_model,
         ):
-            await indexer_routes._validate_conversation_model_before_send(
-                "github_copilot::openai/gpt-5.3-codex"
-            )
+            await indexer_routes._validate_conversation_model_before_send("github_copilot::openai/gpt-5.3-codex")
 
         validate_live_model.assert_awaited_once()
 
@@ -1060,9 +1041,7 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch(
                 "ragtime.rag.components.httpx.AsyncClient.get",
-                new=mock.AsyncMock(
-                    side_effect=RuntimeError("metadata fetch disabled in test")
-                ),
+                new=mock.AsyncMock(side_effect=RuntimeError("metadata fetch disabled in test")),
             ),
             mock.patch(
                 "ragtime.rag.components.supports_reasoning",
@@ -1284,9 +1263,7 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
                 new=mock.AsyncMock(return_value=4096),
             ),
         ):
-            resolution = await rag._get_request_scoped_llm(
-                "github_copilot::openai/gpt-5.4"
-            )
+            resolution = await rag._get_request_scoped_llm("github_copilot::openai/gpt-5.4")
 
         self.assertEqual(attempted, ["github_copilot"])
         self.assertIs(resolution.llm, copilot_llm)

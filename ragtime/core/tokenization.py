@@ -75,9 +75,7 @@ def get_token_length_function(model: str = "cl100k_base") -> Callable[[str], int
         return token_len
 
     # Fallback to character-based estimate
-    logger.warning(
-        "tiktoken not available, using character-based token estimation (4 chars/token)"
-    )
+    logger.warning("tiktoken not available, using character-based token estimation (4 chars/token)")
 
     def char_estimate(text: str) -> int:
         return len(text) // 4
@@ -121,9 +119,7 @@ def truncate_to_token_budget(
             needed = len(text) + (separator_chars if result_parts else 0)
             if total_chars + needed > char_budget:
                 # Try to fit partial text
-                remaining = (
-                    char_budget - total_chars - (separator_chars if result_parts else 0)
-                )
+                remaining = char_budget - total_chars - (separator_chars if result_parts else 0)
                 if remaining > 100:  # Only include if meaningful amount left
                     result_parts.append(text[:remaining] + "...")
                 break
@@ -144,9 +140,7 @@ def truncate_to_token_budget(
 
         if total_tokens + text_tokens + sep_cost > max_tokens:
             # Try to fit partial text
-            remaining_budget = (
-                max_tokens - total_tokens - sep_cost - 3
-            )  # reserve for "..."
+            remaining_budget = max_tokens - total_tokens - sep_cost - 3  # reserve for "..."
             if remaining_budget > 50:  # Only include if meaningful budget left
                 # Binary search for truncation point
                 tokens = encoder.encode(text)

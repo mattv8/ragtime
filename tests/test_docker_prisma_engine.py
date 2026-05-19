@@ -70,11 +70,7 @@ class DockerPrismaEngineTests(unittest.TestCase):
     def test_production_prisma_generate_does_not_hide_engine_in_buildkit_cache(self):
         dockerfile = self._read_dockerfile()
         stage_instructions = _stage_run_instructions(dockerfile)
-        generate_instructions = [
-            instruction
-            for instruction in stage_instructions["production"]
-            if "python -m prisma generate" in instruction
-        ]
+        generate_instructions = [instruction for instruction in stage_instructions["production"] if "python -m prisma generate" in instruction]
 
         self.assertEqual(len(generate_instructions), 1)
         for instruction in generate_instructions:
@@ -83,9 +79,7 @@ class DockerPrismaEngineTests(unittest.TestCase):
     def test_python_test_stage_installs_git_for_git_history_tests(self):
         dockerfile = self._read_dockerfile()
         apt_install_instructions = [
-            instruction
-            for instruction in _effective_stage_run_instructions(dockerfile, "python-test")
-            if "apt-get install" in instruction
+            instruction for instruction in _effective_stage_run_instructions(dockerfile, "python-test") if "apt-get install" in instruction
         ]
 
         self.assertTrue(any("git" in instruction.split() for instruction in apt_install_instructions))

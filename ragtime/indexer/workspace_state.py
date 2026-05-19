@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +12,7 @@ from ragtime.indexer.models import (
     WorkspaceChatStateResponse,
 )
 from ragtime.indexer.repository import repository
+
 
 def _to_conversation_response(conversation: Conversation) -> ConversationResponse:
     return ConversationResponse(
@@ -108,30 +108,17 @@ async def build_workspace_chat_state(
             selected_id = None
             active_task = None
         elif not active_task:
-            interrupted_task = (
-                await repository.get_last_interrupted_task_for_conversation(selected_id)
-            )
+            interrupted_task = await repository.get_last_interrupted_task_for_conversation(selected_id)
 
-    conversations = [
-        _summary_to_conversation_response(summary) for summary in conversation_summaries
-    ]
+    conversations = [_summary_to_conversation_response(summary) for summary in conversation_summaries]
     if selected_conversation is not None:
         selected_response = _to_conversation_response(selected_conversation)
-        conversations = [
-            (
-                selected_response
-                if conversation.id == selected_response.id
-                else conversation
-            )
-            for conversation in conversations
-        ]
+        conversations = [(selected_response if conversation.id == selected_response.id else conversation) for conversation in conversations]
 
     return WorkspaceChatStateResponse(
         conversations=conversations,
         interrupted_conversation_ids=interrupted_conversation_ids,
         selected_conversation_id=selected_id,
         active_task=_to_chat_task_response(active_task) if active_task else None,
-        interrupted_task=(
-            _to_chat_task_response(interrupted_task) if interrupted_task else None
-        ),
+        interrupted_task=(_to_chat_task_response(interrupted_task) if interrupted_task else None),
     )

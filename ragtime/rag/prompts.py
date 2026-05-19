@@ -209,13 +209,9 @@ def build_userspace_turn_reminder(
 ) -> str:
     """Build the per-turn userspace checklist with optional SQLite lane reminder."""
     return _USERSPACE_TURN_REMINDER_BASE.format(
-        sqlite_reminder_line=(
-            _SQLITE_TURN_REMINDER_LINE if include_sqlite_persistence else ""
-        ),
+        sqlite_reminder_line=(_SQLITE_TURN_REMINDER_LINE if include_sqlite_persistence else ""),
         env_var_reminder_line="",
-        runtime_status_reminder_line=_normalize_optional_turn_line(
-            runtime_status_reminder_line
-        ),
+        runtime_status_reminder_line=_normalize_optional_turn_line(runtime_status_reminder_line),
     )
 
 
@@ -228,13 +224,9 @@ def build_userspace_turn_reminder_with_env_vars(
     """Build turn reminder with optional workspace env-var inventory hint."""
 
     return _USERSPACE_TURN_REMINDER_BASE.format(
-        sqlite_reminder_line=(
-            _SQLITE_TURN_REMINDER_LINE if include_sqlite_persistence else ""
-        ),
+        sqlite_reminder_line=(_SQLITE_TURN_REMINDER_LINE if include_sqlite_persistence else ""),
         env_var_reminder_line=env_var_reminder_line,
-        runtime_status_reminder_line=_normalize_optional_turn_line(
-            runtime_status_reminder_line
-        ),
+        runtime_status_reminder_line=_normalize_optional_turn_line(runtime_status_reminder_line),
     )
 
 
@@ -256,9 +248,7 @@ def build_current_user_prompt_fragment(
         lines.append(f"- Username: {normalized_username}\n")
     if normalized_display_name:
         lines.append(f"- Display Name: {normalized_display_name}\n")
-    lines.append(
-        '- When the user refers to "I", "me", "my", or "mine", resolve that to this user identity whenever the request depends on who the user is.\n'
-    )
+    lines.append('- When the user refers to "I", "me", "my", or "mine", resolve that to this user identity whenever the request depends on who the user is.\n')
     return "".join(lines)
 
 
@@ -275,11 +265,7 @@ def build_current_user_turn_reminder_line(
     if not normalized_username and not normalized_display_name:
         return ""
 
-    if (
-        normalized_display_name
-        and normalized_username
-        and normalized_display_name != normalized_username
-    ):
+    if normalized_display_name and normalized_username and normalized_display_name != normalized_username:
         identity_label = f"{normalized_display_name} ({normalized_username})"
     else:
         identity_label = normalized_display_name or normalized_username
@@ -288,9 +274,7 @@ def build_current_user_turn_reminder_line(
 
 
 # Backward-compatible constant for non-workspace callers (exclude mode default).
-USERSPACE_TURN_REMINDER = build_userspace_turn_reminder(
-    include_sqlite_persistence=False
-)
+USERSPACE_TURN_REMINDER = build_userspace_turn_reminder(include_sqlite_persistence=False)
 
 
 def build_userspace_mounts_prompt_fragment(
@@ -313,11 +297,7 @@ def build_userspace_mounts_prompt_fragment(
             enabled = mount.get("enabled", "true") == "true"
             description_suffix = f" [description: {description}]" if description else ""
             if not enabled:
-                lines.append(
-                    "- `"
-                    + relative_path
-                    + "` — **UNMOUNTED** (files at this path are not available; do not read from or write to this directory)"
-                )
+                lines.append("- `" + relative_path + "` — **UNMOUNTED** (files at this path are not available; do not read from or write to this directory)")
             else:
                 lines.append(
                     "- `"
@@ -355,14 +335,7 @@ def build_userspace_object_storage_prompt_fragment(
             is_default = bucket.get("is_default", "false") == "true"
             default_suffix = " [default]" if is_default else ""
             description_suffix = f" [description: {description}]" if description else ""
-            lines.append(
-                "- Bucket `"
-                + name
-                + "`"
-                + default_suffix
-                + f": public root `{public_root}`, private root `{private_root}`"
-                + description_suffix
-            )
+            lines.append("- Bucket `" + name + "`" + default_suffix + f": public root `{public_root}`, private root `{private_root}`" + description_suffix)
         return "\n### Workspace object storage buckets\n\n" + "\n".join(lines) + "\n"
 
     if object_storage_enabled:
@@ -400,10 +373,7 @@ def build_workspace_scm_setup_prompt(
             "and adjust .ragtime/runtime-entrypoint.json if needed."
         )
     else:
-        parts.append(
-            "No entrypoint could be auto-detected. Repair or create "
-            ".ragtime/runtime-entrypoint.json based on the project structure."
-        )
+        parts.append("No entrypoint could be auto-detected. Repair or create .ragtime/runtime-entrypoint.json based on the project structure.")
 
     parts.append(
         "Verify .ragtime/runtime-bootstrap.json is still appropriate, "
@@ -434,9 +404,7 @@ def build_workspace_scm_setup_prompt(
         "migration. A runnable devserver takes priority over secondary compatibility work."
     )
 
-    normalized_actions = [
-        item.strip() for item in (normalization_actions or []) if item
-    ]
+    normalized_actions = [item.strip() for item in (normalization_actions or []) if item]
     if normalized_actions:
         parts.append(
             "Deterministic import normalization already ran: "
@@ -445,14 +413,10 @@ def build_workspace_scm_setup_prompt(
             "and do not reintroduce the disabled Replit runtime directives."
         )
 
-    replit_features = [
-        item.strip() for item in (detected_replit_features or []) if item
-    ]
+    replit_features = [item.strip() for item in (detected_replit_features or []) if item]
     if replit_features:
         parts.append(
-            "This import contains deterministic Replit markers: "
-            + ", ".join(replit_features)
-            + ". Treat those as migration work, not just historical trivia."
+            "This import contains deterministic Replit markers: " + ", ".join(replit_features) + ". Treat those as migration work, not just historical trivia."
         )
         parts.append(
             "Preserve the application's intended behavior, but replace any "
@@ -765,9 +729,7 @@ def build_userspace_mode_prompt_addition(
         data_wiring_block = ""
 
     return _USERSPACE_MODE_PROMPT_TEMPLATE.format(
-        sqlite_persistence_block=(
-            _USERSPACE_SQLITE_PERSISTENCE_BLOCK if include_sqlite_persistence else ""
-        ),
+        sqlite_persistence_block=(_USERSPACE_SQLITE_PERSISTENCE_BLOCK if include_sqlite_persistence else ""),
         data_wiring_block=data_wiring_block,
         workspace_continuity=workspace_continuity,
     )
@@ -824,12 +786,7 @@ def build_chat_diagnostics_prompt_addition(
         fragments.append(_CHAT_DIAGNOSTICS_WEB_BROWSE_PROMPT_ADDITION)
     if not fragments:
         return ""
-    return (
-        _CHAT_DIAGNOSTICS_PROMPT_HEADER
-        + "\n"
-        + "".join(fragments)
-        + _CHAT_DIAGNOSTICS_PROMPT_FOOTER
-    )
+    return _CHAT_DIAGNOSTICS_PROMPT_HEADER + "\n" + "".join(fragments) + _CHAT_DIAGNOSTICS_PROMPT_FOOTER
 
 
 _WORKSPACE_CONTINUITY_MAX_KEY_FILES = 15
@@ -857,44 +814,26 @@ def build_workspace_continuity_context(
     - Existing workspace: full continuity guidance with concrete state summary.
     """
     if file_count == 0:
-        return (
-            "### Workspace\n\n"
-            "- This is a fresh workspace with no existing files.\n"
-            "- Choose an architecture that fits the user's request and start building."
-        )
+        return "### Workspace\n\n- This is a fresh workspace with no existing files.\n- Choose an architecture that fits the user's request and start building."
 
     state_lines: list[str] = [f"- **{file_count} files** in workspace."]
 
     if framework and entrypoint_valid:
-        state_lines.append(
-            f"- Framework: **{framework}** (entrypoint configured and valid)."
-        )
+        state_lines.append(f"- Framework: **{framework}** (entrypoint configured and valid).")
     elif entrypoint_valid:
         state_lines.append("- Runtime entrypoint is configured and valid.")
 
     if key_files:
-        state_lines.append(
-            "- Key files: "
-            + ", ".join(
-                f"`{path}`" for path in key_files[:_WORKSPACE_CONTINUITY_MAX_KEY_FILES]
-            )
-            + "."
-        )
+        state_lines.append("- Key files: " + ", ".join(f"`{path}`" for path in key_files[:_WORKSPACE_CONTINUITY_MAX_KEY_FILES]) + ".")
 
     if last_snapshot_message:
-        state_lines.append(
-            f'- Last snapshot: "{last_snapshot_message[:_WORKSPACE_CONTINUITY_MAX_SNAPSHOT_CHARS].strip()}"'
-        )
+        state_lines.append(f'- Last snapshot: "{last_snapshot_message[:_WORKSPACE_CONTINUITY_MAX_SNAPSHOT_CHARS].strip()}"')
 
     failure_block = ""
     if recent_failure_summaries:
-        failure_lines = "\n".join(
-            f"- {item}" for item in recent_failure_summaries[:3] if str(item).strip()
-        )
+        failure_lines = "\n".join(f"- {item}" for item in recent_failure_summaries[:3] if str(item).strip())
         if failure_lines:
-            failure_block = (
-                "\n\n**Recent failed attempts to avoid repeating:**\n" + failure_lines
-            )
+            failure_block = "\n\n**Recent failed attempts to avoid repeating:**\n" + failure_lines
 
     rules_block = "\n".join(_WORKSPACE_CONTINUITY_EXISTING_RULES)
 
@@ -1042,10 +981,7 @@ def build_userspace_entrypoint_nudge(
         error_context = ""
         if status.error:
             error_context = f"\n- Current issue: {status.error}"
-        return (
-            f"\n\n### Runtime entrypoint (fix required){error_context}\n"
-            + USERSPACE_ENTRYPOINT_SETUP_PROMPT
-        )
+        return f"\n\n### Runtime entrypoint (fix required){error_context}\n" + USERSPACE_ENTRYPOINT_SETUP_PROMPT
 
     # Valid entrypoint with a real framework choice -> compact prompt.
     framework_label = status.framework or "custom"
@@ -1148,11 +1084,7 @@ No tools configured. Answer from indexed documentation only.
             if remaining > 0:
                 unavailable_lines.append(f"- ... and {remaining} more")
 
-            prompt += (
-                "\n\n## CONFIGURED BUT UNAVAILABLE IN THIS REQUEST\n\n"
-                + "\n".join(unavailable_lines)
-                + "\n"
-            )
+            prompt += "\n\n## CONFIGURED BUT UNAVAILABLE IN THIS REQUEST\n\n" + "\n".join(unavailable_lines) + "\n"
         return prompt
 
     type_labels = {
@@ -1195,10 +1127,6 @@ Each tool connects to a different system. Read the description to choose the cor
         if remaining > 0:
             unavailable_lines.append(f"- ... and {remaining} more")
 
-        prompt += (
-            "\n\n## CONFIGURED BUT UNAVAILABLE IN THIS REQUEST\n\n"
-            + "\n".join(unavailable_lines)
-            + "\n"
-        )
+        prompt += "\n\n## CONFIGURED BUT UNAVAILABLE IN THIS REQUEST\n\n" + "\n".join(unavailable_lines) + "\n"
 
     return prompt

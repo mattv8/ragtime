@@ -75,9 +75,7 @@ async def _get_repo_diagnostics(repo_path: Path) -> str:
         else:
             ago = "just now"
 
-        diagnostics.append(
-            f"Last fetch: {ago} ({last_fetch.strftime('%Y-%m-%d %H:%M:%S')})"
-        )
+        diagnostics.append(f"Last fetch: {ago} ({last_fetch.strftime('%Y-%m-%d %H:%M:%S')})")
     else:
         diagnostics.append("Last fetch: Never (fresh clone?)")
 
@@ -138,9 +136,7 @@ def _create_git_history_input_schema(available_repos: Optional[List[str]] = None
 GitHistorySearchInput = _create_git_history_input_schema()
 
 
-async def _run_git_command(
-    repo_path: Path, args: List[str], timeout: int = 30
-) -> tuple[int, str, str]:
+async def _run_git_command(repo_path: Path, args: List[str], timeout: int = 30) -> tuple[int, str, str]:
     """Run a git command and return (returncode, stdout, stderr)."""
     cmd = ["git", "-C", str(repo_path)] + args
 
@@ -164,9 +160,7 @@ async def _run_git_command(
 
 async def _get_commit_count(repo_path: Path) -> int:
     """Get the number of commits in the repository (reachable from HEAD)."""
-    returncode, stdout, _ = await _run_git_command(
-        repo_path, ["rev-list", "--count", "HEAD"], timeout=5
-    )
+    returncode, stdout, _ = await _run_git_command(repo_path, ["rev-list", "--count", "HEAD"], timeout=5)
     if returncode == 0 and stdout.strip().isdigit():
         return int(stdout.strip())
     return 0
@@ -180,9 +174,7 @@ async def _is_shallow(repo_path: Path) -> bool:
         return True
 
     # Also verify with git command for robustness
-    returncode, stdout, _ = await _run_git_command(
-        repo_path, ["rev-parse", "--is-shallow-repository"], timeout=5
-    )
+    returncode, stdout, _ = await _run_git_command(repo_path, ["rev-parse", "--is-shallow-repository"], timeout=5)
     if returncode == 0 and stdout.strip().lower() == "true":
         return True
 
@@ -237,9 +229,7 @@ async def _find_git_repos(index_name: Optional[str] = None) -> List[tuple[str, P
     for dir_name, git_repo in candidates:
         # Skip shallow clones - they have no meaningful history to search
         if await _is_shallow_repository(git_repo):
-            logger.debug(
-                f"Skipping shallow git repo for {dir_name}: no meaningful history available"
-            )
+            logger.debug(f"Skipping shallow git repo for {dir_name}: no meaningful history available")
             continue
 
         repos.append((dir_name, git_repo))
@@ -273,9 +263,7 @@ def _semantic_result_to_match(result: Dict[str, Any]) -> Optional[Dict[str, Any]
     }
 
 
-async def _search_commits_semantic(
-    index_name: Optional[str], query: str, k: int
-) -> List[Dict[str, Any]]:
+async def _search_commits_semantic(index_name: Optional[str], query: str, k: int) -> List[Dict[str, Any]]:
     """Search embedded git commit-history documents when the index has them."""
     if not index_name:
         return []
@@ -395,9 +383,7 @@ def _parse_git_log_candidates(stdout: str, record_sep: str, field_sep: str) -> L
     return candidates
 
 
-async def _load_fuzzy_commit_candidates(
-    repo_path: Path, query: str, k: int
-) -> tuple[Optional[str], List[Dict[str, Any]]]:
+async def _load_fuzzy_commit_candidates(repo_path: Path, query: str, k: int) -> tuple[Optional[str], List[Dict[str, Any]]]:
     tokens = _tokenize_query(query)
     record_sep = "\x1e"
     field_sep = "\x1f"
@@ -420,9 +406,7 @@ async def _load_fuzzy_commit_candidates(
             args.insert(4, f"--grep={grep_pattern}")
         return args
 
-    returncode, stdout, stderr = await _run_git_command(
-        repo_path, build_args(use_grep=True), timeout=60
-    )
+    returncode, stdout, stderr = await _run_git_command(repo_path, build_args(use_grep=True), timeout=60)
     if returncode != 0:
         return f"Error searching commits: {stderr}", []
 
@@ -430,9 +414,7 @@ async def _load_fuzzy_commit_candidates(
     if candidates:
         return None, candidates
 
-    returncode, stdout, stderr = await _run_git_command(
-        repo_path, build_args(use_grep=False), timeout=60
-    )
+    returncode, stdout, stderr = await _run_git_command(repo_path, build_args(use_grep=False), timeout=60)
     if returncode != 0:
         return f"Error searching commits: {stderr}", []
 
@@ -487,9 +469,7 @@ def _score_fuzzy_commit(candidate: Dict[str, Any], query: str) -> Dict[str, Any]
     }
 
 
-async def _search_commits_fuzzy(
-    repo_path: Path, query: str, k: int
-) -> tuple[Optional[str], List[Dict[str, Any]]]:
+async def _search_commits_fuzzy(repo_path: Path, query: str, k: int) -> tuple[Optional[str], List[Dict[str, Any]]]:
     error, candidates = await _load_fuzzy_commit_candidates(repo_path, query, k)
     if error:
         return error, []
@@ -501,9 +481,7 @@ async def _search_commits_fuzzy(
     return None, matches[:k]
 
 
-def _merge_commit_matches(
-    semantic_matches: List[Dict[str, Any]], fuzzy_matches: List[Dict[str, Any]], k: int
-) -> List[Dict[str, Any]]:
+def _merge_commit_matches(semantic_matches: List[Dict[str, Any]], fuzzy_matches: List[Dict[str, Any]], k: int) -> List[Dict[str, Any]]:
     merged: Dict[str, Dict[str, Any]] = {}
 
     for match in semantic_matches + fuzzy_matches:
@@ -548,9 +526,7 @@ def _format_commit_matches(
 
     search_modes = ["semantic"] if semantic_available else []
     search_modes.append("fuzzy")
-    lines = [
-        f"Found {len(matches)} commit(s) matching '{query}' ({' + '.join(search_modes)} search):"
-    ]
+    lines = [f"Found {len(matches)} commit(s) matching '{query}' ({' + '.join(search_modes)} search):"]
 
     for match in matches:
         commit_hash = str(match.get("commit_hash") or "")
@@ -617,23 +593,16 @@ async def _get_commit_details(repo_path: Path, commit_hash: str) -> str:
     ]
 
     # Run in parallel
-    (rc_msg, msg_stdout, msg_stderr), (rc_stat, stat_stdout, stat_stderr) = (
-        await asyncio.gather(
-            _run_git_command(repo_path, args_msg),
-            _run_git_command(repo_path, args_stat),
-        )
+    (rc_msg, msg_stdout, msg_stderr), (rc_stat, stat_stdout, stat_stderr) = await asyncio.gather(
+        _run_git_command(repo_path, args_msg),
+        _run_git_command(repo_path, args_stat),
     )
 
     if rc_msg != 0:
-        if any(
-            msg in msg_stderr
-            for msg in ["unknown revision", "bad revision", "bad object"]
-        ):
+        if any(msg in msg_stderr for msg in ["unknown revision", "bad revision", "bad object"]):
             diagnostics = await _get_repo_diagnostics(repo_path)
             return (
-                f"Commit '{commit_hash}' not found locally.\n"
-                f"Repo Status: {diagnostics}.\n"
-                "Try re-indexing to fetch latest commits, or verify the commit hash."
+                f"Commit '{commit_hash}' not found locally.\nRepo Status: {diagnostics}.\nTry re-indexing to fetch latest commits, or verify the commit hash."
             )
         return f"Error getting commit details: {msg_stderr}"
 
@@ -661,9 +630,7 @@ async def _get_commit_details(repo_path: Path, commit_hash: str) -> str:
     return f"{msg_stdout.strip()}\n\n{stat_output}"
 
 
-async def _get_commit_diff(
-    repo_path: Path, commit_hash: str, file_path: Optional[str] = None
-) -> str:
+async def _get_commit_diff(repo_path: Path, commit_hash: str, file_path: Optional[str] = None) -> str:
     """Get the diff for a specific commit, optionally filtered by file."""
     # args = ["show", commit_hash, "--format="] # This works but git show output is slightly different than diff
     # Use git show with patch
@@ -686,10 +653,7 @@ async def _get_commit_diff(
     lines = stdout.splitlines()
     if len(lines) > MAX_DIFF_LINES:
         truncated = "\n".join(lines[:MAX_DIFF_LINES])
-        return (
-            f"{truncated}\n"
-            f"\n... (Output truncated, showing {MAX_DIFF_LINES} of {len(lines)} lines) ..."
-        )
+        return f"{truncated}\n\n... (Output truncated, showing {MAX_DIFF_LINES} of {len(lines)} lines) ..."
 
     return stdout
 
@@ -712,9 +676,7 @@ async def _get_file_history(repo_path: Path, file_path: str, k: int) -> str:
         return f"Error getting file history: {stderr}"
 
     if not stdout.strip():
-        return (
-            f"No history found for '{file_path}' (file may not exist or has no commits)"
-        )
+        return f"No history found for '{file_path}' (file may not exist or has no commits)"
 
     lines = stdout.strip().split("\n")
     results = []
@@ -724,9 +686,7 @@ async def _get_file_history(repo_path: Path, file_path: str, k: int) -> str:
             commit_hash, author, date, subject = parts
             results.append(f"- [{commit_hash[:8]}] {date} {author}: {subject}")
 
-    return f"History for '{file_path}' ({len(results)} commit(s)):\n" + "\n".join(
-        results
-    )
+    return f"History for '{file_path}' ({len(results)} commit(s)):\n" + "\n".join(results)
 
 
 async def _git_blame(repo_path: Path, file_path: str, max_lines: int = 100) -> str:
@@ -771,9 +731,7 @@ async def _git_blame(repo_path: Path, file_path: str, max_lines: int = 100) -> s
                 if len(summary) > 40:
                     summary = summary[:37] + "..."
 
-                blame_entries.append(
-                    f"{line_num:4} {commit} ({author} {author_mail}) [{summary}]"
-                )
+                blame_entries.append(f"{line_num:4} {commit} ({author} {author_mail}) [{summary}]")
                 current_entry = {}
                 line_count += 1
 
@@ -788,11 +746,7 @@ async def _git_blame(repo_path: Path, file_path: str, max_lines: int = 100) -> s
                 # Strictly check if first token is a valid hex sha1
                 is_sha1 = True
                 for char in parts[0]:
-                    if not (
-                        (char >= "0" and char <= "9")
-                        or (char >= "a" and char <= "f")
-                        or (char >= "A" and char <= "F")
-                    ):
+                    if not ((char >= "0" and char <= "9") or (char >= "a" and char <= "f") or (char >= "A" and char <= "F")):
                         is_sha1 = False
                         break
 
@@ -851,15 +805,9 @@ async def _find_files(repo_path: Path, pattern: str, k: int = 20) -> str:
     # Limit results
     if len(files) > k:
         display_files = files[:k]
-        return (
-            f"Found {len(files)} files matching '{pattern}' "
-            f"(showing first {k}):\n"
-            + "\n".join(f"  {f}" for f in display_files)
-        )
+        return f"Found {len(files)} files matching '{pattern}' (showing first {k}):\n" + "\n".join(f"  {f}" for f in display_files)
 
-    return f"Found {len(files)} file(s) matching '{pattern}':\n" + "\n".join(
-        f"  {f}" for f in files
-    )
+    return f"Found {len(files)} file(s) matching '{pattern}':\n" + "\n".join(f"  {f}" for f in files)
 
 
 async def search_git_history(
@@ -894,10 +842,7 @@ async def search_git_history(
         if not file_path:
             return f"Error: 'file_path' parameter is required for {action} action"
     else:
-        return (
-            f"Unknown action: '{action}'. "
-            "Valid actions: search_commits, get_commit, show_changes, file_history, blame, find_files"
-        )
+        return f"Unknown action: '{action}'. Valid actions: search_commits, get_commit, show_changes, file_history, blame, find_files"
 
     # Execute action on each repo
     all_results = []
@@ -907,9 +852,7 @@ async def search_git_history(
             result: str
             if action == "search_commits":
                 assert query is not None  # Validated above
-                result = await _search_commits(
-                    repo_path, query, k, index_name=repo_name
-                )
+                result = await _search_commits(repo_path, query, k, index_name=repo_name)
             elif action == "get_commit":
                 assert commit_hash is not None  # Validated above
                 result = await _get_commit_details(repo_path, commit_hash)
@@ -961,10 +904,7 @@ def create_aggregate_git_history_tool(
     )
     if available_repos:
         description += f"Available repos: {', '.join(available_repos)}. "
-    description += (
-        "Use this to understand code evolution, find when bugs were introduced, "
-        "or identify who worked on specific features."
-    )
+    description += "Use this to understand code evolution, find when bugs were introduced, or identify who worked on specific features."
 
     # Create schema with available repos in field description
     input_schema = _create_git_history_input_schema(available_repos)
@@ -981,9 +921,7 @@ def create_aggregate_git_history_tool(
 git_history_tool = create_aggregate_git_history_tool()
 
 
-def create_per_index_git_history_tool(
-    index_name: str, repo_path: Path, description: str = ""
-) -> StructuredTool:
+def create_per_index_git_history_tool(index_name: str, repo_path: Path, description: str = "") -> StructuredTool:
     """Create a git history search tool for a specific index.
 
     This is used when aggregate_search is disabled.
@@ -1039,9 +977,7 @@ def create_per_index_git_history_tool(
         if action == "search_commits":
             if not query:
                 return "Error: 'query' parameter is required for search_commits"
-            return await _search_commits(
-                repo_path, query, k, index_name=index_name
-            )
+            return await _search_commits(repo_path, query, k, index_name=index_name)
         elif action == "get_commit":
             if not commit_hash:
                 return "Error: 'commit_hash' parameter is required for get_commit"
@@ -1059,10 +995,7 @@ def create_per_index_git_history_tool(
                 return "Error: 'file_path' parameter is required for blame"
             return await _git_blame(repo_path, file_path)
         else:
-            return (
-                f"Unknown action: '{action}'. "
-                "Valid actions: search_commits, get_commit, show_changes, file_history, blame"
-            )
+            return f"Unknown action: '{action}'. Valid actions: search_commits, get_commit, show_changes, file_history, blame"
 
     # Sanitize index name for tool name
     safe_name = index_name.replace("-", "_").replace(" ", "_").lower()

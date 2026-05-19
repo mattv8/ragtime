@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -22,6 +21,7 @@ def with_event_channel(event: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(event)
     normalized.setdefault("channel", channel_for_event_type(normalized.get("type")))
     return normalized
+
 
 def append_reasoning_event(
     events: list[dict[str, Any]],
@@ -51,11 +51,7 @@ def finalize_reasoning_block(
         return
 
     latest_reasoning_event = next(
-        (
-            event
-            for event in reversed(events)
-            if isinstance(event, dict) and event.get("type") == "reasoning"
-        ),
+        (event for event in reversed(events) if isinstance(event, dict) and event.get("type") == "reasoning"),
         None,
     )
     if latest_reasoning_event is None:

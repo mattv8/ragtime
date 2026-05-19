@@ -14,8 +14,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_MYSQL, enforce_max_results,
-                                    format_query_result, validate_sql_query)
+from ragtime.core.sql_utils import DB_TYPE_MYSQL, enforce_max_results, format_query_result, validate_sql_query
 from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 
 logger = get_logger(__name__)
@@ -35,9 +34,7 @@ def resolve_effective_timeout(requested_timeout: int, timeout_max_seconds: int) 
     return min(requested, max_timeout)
 
 
-def create_mysql_query_input(
-    default_timeout: int, timeout_max_seconds: int
-) -> type[BaseModel]:
+def create_mysql_query_input(default_timeout: int, timeout_max_seconds: int) -> type[BaseModel]:
     """Create MysqlQueryInput with dynamic default timeout."""
 
     class MysqlQueryInput(BaseModel):
@@ -178,18 +175,13 @@ async def execute_mysql_query_async(
         try:
             # Set up SSH tunnel if configured
             if ssh_tunnel_config:
-                tunnel_cfg = ssh_tunnel_config_from_dict(
-                    ssh_tunnel_config, default_remote_port=3306
-                )
+                tunnel_cfg = ssh_tunnel_config_from_dict(ssh_tunnel_config, default_remote_port=3306)
                 if tunnel_cfg:
                     tunnel = SSHTunnel(tunnel_cfg)
                     local_port = tunnel.start()
                     actual_host = "127.0.0.1"
                     actual_port = local_port
-                    logger.debug(
-                        f"SSH tunnel established: localhost:{local_port} -> "
-                        f"{tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}"
-                    )
+                    logger.debug(f"SSH tunnel established: localhost:{local_port} -> {tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}")
 
             conn = pymysql.connect(
                 host=actual_host,
@@ -210,9 +202,7 @@ async def execute_mysql_query_async(
             rows = cursor.fetchall()
 
             # Get column names from cursor description
-            columns = (
-                [col[0] for col in cursor.description] if cursor.description else None
-            )
+            columns = [col[0] for col in cursor.description] if cursor.description else None
 
             if not rows and not columns:
                 return "Query executed successfully (no results)"
@@ -318,14 +308,10 @@ def create_mysql_tool(
     # Create input schema with this tool's default timeout
     QueryInput = create_mysql_query_input(timeout, timeout_max_seconds)
 
-    async def execute_query(
-        query: str = "", description: str = "", timeout: int = timeout, **_: Any
-    ) -> str:
+    async def execute_query(query: str = "", description: str = "", timeout: int = timeout, **_: Any) -> str:
         """Execute MySQL query using configured connection."""
         if not query or not query.strip():
-            return (
-                "Error: 'query' parameter is required. Provide a SQL query to execute."
-            )
+            return "Error: 'query' parameter is required. Provide a SQL query to execute."
         if not description:
             description = "SQL query"
 
@@ -349,10 +335,7 @@ def create_mysql_tool(
     tool_description = f"Query the {name} MySQL/MariaDB database using SQL."
     if description:
         tool_description += f" This database contains: {description}"
-    tool_description += (
-        " Include LIMIT clause to limit results (e.g., SELECT ... LIMIT 100). "
-        "SELECT queries only unless writes are enabled."
-    )
+    tool_description += " Include LIMIT clause to limit results (e.g., SELECT ... LIMIT 100). SELECT queries only unless writes are enabled."
 
     return StructuredTool.from_function(
         coroutine=execute_query,
@@ -480,18 +463,13 @@ async def test_mysql_connection(
         try:
             # Set up SSH tunnel if configured
             if ssh_tunnel_config:
-                tunnel_cfg = ssh_tunnel_config_from_dict(
-                    ssh_tunnel_config, default_remote_port=3306
-                )
+                tunnel_cfg = ssh_tunnel_config_from_dict(ssh_tunnel_config, default_remote_port=3306)
                 if tunnel_cfg:
                     tunnel = SSHTunnel(tunnel_cfg)
                     local_port = tunnel.start()
                     actual_host = "127.0.0.1"
                     actual_port = local_port
-                    logger.debug(
-                        f"SSH tunnel established: localhost:{local_port} -> "
-                        f"{tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}"
-                    )
+                    logger.debug(f"SSH tunnel established: localhost:{local_port} -> {tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}")
 
             conn = pymysql.connect(
                 host=actual_host,
@@ -521,11 +499,7 @@ async def test_mysql_connection(
 
             if tunnel:
                 details["mode"] = "ssh_tunnel"
-                details["ssh_host"] = (
-                    ssh_tunnel_config.get("ssh_tunnel_host", "")
-                    if ssh_tunnel_config
-                    else ""
-                )
+                details["ssh_host"] = ssh_tunnel_config.get("ssh_tunnel_host", "") if ssh_tunnel_config else ""
             else:
                 details["host"] = host
                 details["port"] = port

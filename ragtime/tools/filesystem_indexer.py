@@ -23,9 +23,7 @@ logger = get_logger(__name__)
 class FilesystemSearchInput(BaseModel):
     """Input schema for filesystem search tool."""
 
-    query: str = Field(
-        description="Natural language search query to find relevant documents/files"
-    )
+    query: str = Field(description="Natural language search query to find relevant documents/files")
     index_name: Optional[str] = Field(
         default=None,
         description="Optional: specific index name to search (searches all if not specified)",
@@ -162,9 +160,7 @@ def create_filesystem_search_tool(
         index_name: Optional index name to restrict searches to
     """
 
-    async def _search(
-        query: str, max_results: int = 10, max_chars_per_result: int = 500
-    ) -> str:
+    async def _search(query: str, max_results: int = 10, max_chars_per_result: int = 500) -> str:
         return await search_filesystem_index(
             query=query,
             index_name=index_name,
@@ -174,9 +170,7 @@ def create_filesystem_search_tool(
 
     # Create a specific input schema for this instance
     class SearchInput(BaseModel):
-        query: str = Field(
-            description="Natural language search query to find relevant documents/files"
-        )
+        query: str = Field(description="Natural language search query to find relevant documents/files")
         max_results: int = Field(
             default=10,
             ge=1,

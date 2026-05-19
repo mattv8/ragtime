@@ -69,6 +69,11 @@ jobs:
             cache-scope: ruff
             local-command: python -m ruff check --select E9,F821,F822,F823 ragtime runtime tests
             explanation: Catches syntax errors, undefined names, and other high-signal Python failures.
+          - name: Ruff Format and Imports
+            target: python-ruff-style-check
+            cache-scope: ruff-style
+            local-command: python -m ruff format --check docker/scripts ragtime runtime tests && python -m ruff check --select I docker/scripts ragtime runtime tests
+            explanation: Ensures Python files are formatted by Ruff and imports match Ruff's configured section ordering.
           - name: Duplicate Code
             target: python-duplicate-check
             cache-scope: duplicate
@@ -139,23 +144,10 @@ jobs:
           set -euo pipefail
           PYTHON_BIN="$(command -v python3 || command -v python)"
 
-          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py ragtime --apply
-          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py runtime --apply
-          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py tests --apply
-
-          if ! git diff --exit-code -- ragtime runtime tests; then
-            cat <<'MSG'
-          Inline import organization check failed.
-
-          CI ran docker/scripts/fix_inline_imports.py and it changed one or more Python files.
-          Run these commands locally, commit the resulting changes, and push again:
-
-            python3 docker/scripts/fix_inline_imports.py ragtime --apply
-            python3 docker/scripts/fix_inline_imports.py runtime --apply
-            python3 docker/scripts/fix_inline_imports.py tests --apply
-          MSG
-            exit 1
-          fi
+          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py docker --check
+          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py ragtime --check
+          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py runtime --check
+          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py tests --check
 
       - name: Summarize inline import organization
         if: always()
@@ -163,15 +155,24 @@ jobs:
           cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
           ### Inline Import Organization
 
-          Runs `docker/scripts/fix_inline_imports.py` against `ragtime`, `runtime`, and `tests`, then fails if the script produced a diff.
+          Runs `docker/scripts/fix_inline_imports.py --check` against `docker`, `ragtime`, `runtime`, and `tests`, then fails if any safe-to-hoist inline imports remain.
 
           Local equivalent:
 
           ```bash
+          python3 docker/scripts/fix_inline_imports.py docker --check
+          python3 docker/scripts/fix_inline_imports.py ragtime --check
+          python3 docker/scripts/fix_inline_imports.py runtime --check
+          python3 docker/scripts/fix_inline_imports.py tests --check
+          ```
+
+          To resolve failures, run:
+
+          ```bash
+          python3 docker/scripts/fix_inline_imports.py docker --apply
           python3 docker/scripts/fix_inline_imports.py ragtime --apply
           python3 docker/scripts/fix_inline_imports.py runtime --apply
           python3 docker/scripts/fix_inline_imports.py tests --apply
-          git diff --exit-code -- ragtime runtime tests
           ```
           MD
 

@@ -1,9 +1,10 @@
-from ragtime.chat_runtime.payloads import build_chat_diagnostic_command_payload
-from ragtime.chat_runtime.payloads import build_chat_diagnostic_rejection_payload
-from ragtime.chat_runtime.payloads import normalize_chat_diagnostic_timeout_seconds
-from ragtime.chat_runtime.payloads import resolve_chat_diagnostic_conversation_id
-from ragtime.indexer.tool_presentation import CHAT_DIAGNOSTIC_RERUN_KIND
-from ragtime.indexer.tool_presentation import normalize_tool_presentation
+from ragtime.chat_runtime.payloads import (
+    build_chat_diagnostic_command_payload,
+    build_chat_diagnostic_rejection_payload,
+    normalize_chat_diagnostic_timeout_seconds,
+    resolve_chat_diagnostic_conversation_id,
+)
+from ragtime.indexer.tool_presentation import CHAT_DIAGNOSTIC_RERUN_KIND, normalize_tool_presentation
 
 
 def test_chat_diagnostic_payload_marks_failed_commands_consistently() -> None:

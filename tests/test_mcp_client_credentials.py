@@ -73,14 +73,10 @@ def _admin_login(client: httpx.Client) -> None:
         f"{BASE_URL}/auth/login",
         json={"username": ADMIN_USER, "password": ADMIN_PASSWORD},
     )
-    _require(
-        resp.status_code == 200, f"Admin login failed: {resp.status_code} {resp.text}"
-    )
+    _require(resp.status_code == 200, f"Admin login failed: {resp.status_code} {resp.text}")
 
 
-def _create_route(
-    client: httpx.Client, *, route_path: str, client_id: str, client_secret: str
-) -> str:
+def _create_route(client: httpx.Client, *, route_path: str, client_id: str, client_secret: str) -> str:
     payload = {
         "name": f"Smoke Test {route_path}",
         "route_path": route_path,
@@ -112,9 +108,7 @@ def _delete_route(client: httpx.Client, route_id: str) -> None:
         pass
 
 
-def _mcp_init(
-    client: httpx.Client, route_path: str, *, auth: str | None
-) -> httpx.Response:
+def _mcp_init(client: httpx.Client, route_path: str, *, auth: str | None) -> httpx.Response:
     headers = {
         "content-type": "application/json",
         "accept": "application/json, text/event-stream",
@@ -277,9 +271,7 @@ def run() -> int:
             )
 
             # 9. AS metadata discovery
-            r = client.get(
-                f"{BASE_URL}/mcp/{route_a}/.well-known/oauth-authorization-server"
-            )
+            r = client.get(f"{BASE_URL}/mcp/{route_a}/.well-known/oauth-authorization-server")
             md: dict[str, Any] = {}
             try:
                 md = r.json()
@@ -287,9 +279,7 @@ def run() -> int:
                 pass
             record(
                 "authorization-server metadata reachable",
-                r.status_code == 200
-                and "client_credentials" in (md.get("grant_types_supported") or [])
-                and route_a in (md.get("token_endpoint") or ""),
+                r.status_code == 200 and "client_credentials" in (md.get("grant_types_supported") or []) and route_a in (md.get("token_endpoint") or ""),
                 f"status={r.status_code} token_endpoint={md.get('token_endpoint')}",
             )
         finally:

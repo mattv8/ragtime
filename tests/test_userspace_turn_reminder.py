@@ -40,9 +40,7 @@ finally:
             sys.modules[name] = module
 
 build_userspace_turn_reminder = _prompts.build_userspace_turn_reminder
-build_userspace_turn_reminder_with_env_vars = (
-    _prompts.build_userspace_turn_reminder_with_env_vars
-)
+build_userspace_turn_reminder_with_env_vars = _prompts.build_userspace_turn_reminder_with_env_vars
 
 
 class UserSpaceTurnReminderTests(unittest.TestCase):
@@ -67,10 +65,7 @@ class UserSpaceTurnReminderTests(unittest.TestCase):
 
     def test_runtime_status_line_combines_with_env_var_hint(self) -> None:
         env_line = "- Workspace env vars (keys only): API_KEY(set).\n"
-        runtime_line = (
-            "- Current runtime blocker: session_state=running, "
-            "devserver_running=false. Last runtime error: boom.\n"
-        )
+        runtime_line = "- Current runtime blocker: session_state=running, devserver_running=false. Last runtime error: boom.\n"
 
         reminder = build_userspace_turn_reminder_with_env_vars(
             include_sqlite_persistence=False,

@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, patch
 
 from ragtime.indexer.models import IndexStatus
 from ragtime.indexer.service import IndexerService
-from ragtime.rag.components import RAGComponents, rag as global_rag
+from ragtime.rag.components import RAGComponents
+from ragtime.rag.components import rag as global_rag
 
 
 class FakeEmbeddings:

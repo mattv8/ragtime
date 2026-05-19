@@ -160,9 +160,7 @@ async def handle_filtered_request(
     # Run the server and handle the request
     async with anyio.create_task_group() as tg:
 
-        async def run_stateless_server(
-            *, task_status: TaskStatus[None] = anyio.TASK_STATUS_IGNORED
-        ) -> None:
+        async def run_stateless_server(*, task_status: TaskStatus[None] = anyio.TASK_STATUS_IGNORED) -> None:
             async with http_transport.connect() as streams:
                 read_stream, write_stream = streams
                 task_status.started()
@@ -191,10 +189,7 @@ async def handle_filtered_request(
 
 async def get_custom_route_server_cached(
     route_path: str,
-) -> (
-    tuple[MCPServer[Any, Any], bool, str | None, str | None, str | None, str | None]
-    | None
-):
+) -> tuple[MCPServer[Any, Any], bool, str | None, str | None, str | None, str | None] | None:
     """
     Get or create an MCP server for a custom route.
 
@@ -281,9 +276,7 @@ async def _validate_bearer_token(scope: Scope) -> bool:
         return False
 
 
-async def _validate_oauth2_token(
-    scope: Scope, allowed_group_dn: str | None = None
-) -> bool:
+async def _validate_oauth2_token(scope: Scope, allowed_group_dn: str | None = None) -> bool:
     """
     Validate OAuth2 Bearer token and optionally check LDAP group membership.
 
@@ -323,9 +316,7 @@ async def _validate_oauth2_token(
         if matched:
             logger.debug(f"User {user.username} matches group {allowed_group_dn}")
         else:
-            logger.debug(
-                f"User {user.username} does not match group {allowed_group_dn}"
-            )
+            logger.debug(f"User {user.username} does not match group {allowed_group_dn}")
         return matched
 
     except Exception as e:
@@ -367,18 +358,11 @@ async def _get_user_matching_filter(scope: Scope) -> str | None:
 
         db = await get_db()
 
-        logger.debug(
-            f"_get_user_matching_filter: User={user.username}, provider={user.authProvider}, role={user.role}"
-        )
+        logger.debug(f"_get_user_matching_filter: User={user.username}, provider={user.authProvider}, role={user.role}")
 
         # Local admin users bypass filtering - see all tools
-        if (
-            str(getattr(user.authProvider, "value", user.authProvider)) == "local"
-            and user.role == "admin"
-        ):
-            logger.debug(
-                f"Local admin '{user.username}' bypasses default route filtering"
-            )
+        if str(getattr(user.authProvider, "value", user.authProvider)) == "local" and user.role == "admin":
+            logger.debug(f"Local admin '{user.username}' bypasses default route filtering")
             return None
 
         # Get all enabled default route filters, ordered by priority descending
@@ -394,9 +378,7 @@ async def _get_user_matching_filter(scope: Scope) -> str | None:
             return None
         for f in filters:
             if await user_matches_group_identifier(user, f.ldapGroupDn):
-                logger.debug(
-                    f"User {user.username} matches filter '{f.name}' via group {f.ldapGroupDn}"
-                )
+                logger.debug(f"User {user.username} matches filter '{f.name}' via group {f.ldapGroupDn}")
                 return f.id
 
         logger.debug(f"User {user.username} has no matching default route filter")
@@ -448,9 +430,7 @@ async def _validate_route_password(scope: Scope, encrypted_password: str) -> boo
     return hmac.compare_digest(provided_password, stored_password)
 
 
-async def _check_default_route_auth() -> (
-    tuple[bool, str, str | None, str | None, str | None]
-):
+async def _check_default_route_auth() -> tuple[bool, str, str | None, str | None, str | None]:
     """
     Check if default /mcp route requires authentication and get auth configuration.
 
@@ -541,9 +521,7 @@ class MCPTransportEndpoint:
             return
 
         # Check if default route requires auth and get auth config
-        require_auth, auth_method, encrypted_password, allowed_group, client_id = (
-            await _check_default_route_auth()
-        )
+        require_auth, auth_method, encrypted_password, allowed_group, client_id = await _check_default_route_auth()
 
         resolved_auth_method = "none"
         if require_auth:
@@ -559,9 +537,7 @@ class MCPTransportEndpoint:
                 # the client_credentials token endpoint for the default route.
                 is_valid = validate_client_credentials_bearer(scope, None)
                 if not is_valid:
-                    is_valid = await validate_client_credentials_basic(
-                        scope, client_id, encrypted_password
-                    )
+                    is_valid = await validate_client_credentials_basic(scope, client_id, encrypted_password)
             elif encrypted_password:
                 resolved_auth_method = "password"
                 # Password-based auth
@@ -695,15 +671,11 @@ class MCPCustomRouteEndpoint:
             return
         if route_path.endswith("/.well-known/oauth-authorization-server"):
             base_route = route_path[: -len("/.well-known/oauth-authorization-server")]
-            await handle_authorization_server_metadata(
-                scope, receive, send, base_route or None
-            )
+            await handle_authorization_server_metadata(scope, receive, send, base_route or None)
             return
         if route_path.endswith("/.well-known/oauth-protected-resource"):
             base_route = route_path[: -len("/.well-known/oauth-protected-resource")]
-            await handle_protected_resource_metadata(
-                scope, receive, send, base_route or None
-            )
+            await handle_protected_resource_metadata(scope, receive, send, base_route or None)
             return
 
         if not route_path:
@@ -767,9 +739,7 @@ class MCPCustomRouteEndpoint:
                 # the client_credentials token endpoint for this route.
                 is_valid = validate_client_credentials_bearer(scope, route_path)
                 if not is_valid:
-                    is_valid = await validate_client_credentials_basic(
-                        scope, auth_client_id, auth_password
-                    )
+                    is_valid = await validate_client_credentials_basic(scope, auth_client_id, auth_password)
             elif auth_password:
                 resolved_auth_method = "password"
                 # Password-based auth
@@ -874,9 +844,7 @@ class _OAuthTokenEndpoint:
         self._default = default
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        route_path = (
-            None if self._default else scope.get("path_params", {}).get("route_path")
-        )
+        route_path = None if self._default else scope.get("path_params", {}).get("route_path")
         await handle_token_request(scope, receive, send, route_path)
 
 
@@ -887,9 +855,7 @@ class _OAuthASMetadataEndpoint:
         self._default = default
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        route_path = _normalize_well_known_route_path(
-            None if self._default else scope.get("path_params", {}).get("route_path")
-        )
+        route_path = _normalize_well_known_route_path(None if self._default else scope.get("path_params", {}).get("route_path"))
         await handle_authorization_server_metadata(scope, receive, send, route_path)
 
 
@@ -900,9 +866,7 @@ class _OAuthPRMetadataEndpoint:
         self._default = default
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        route_path = (
-            None if self._default else scope.get("path_params", {}).get("route_path")
-        )
+        route_path = None if self._default else scope.get("path_params", {}).get("route_path")
         await handle_protected_resource_metadata(scope, receive, send, route_path)
 
 
@@ -974,9 +938,7 @@ def get_mcp_routes() -> list[Route]:
 
 
 @router.get("/tools")
-async def list_mcp_tools(
-    include_unhealthy: bool = False, _user: User = Depends(require_admin)
-):
+async def list_mcp_tools(include_unhealthy: bool = False, _user: User = Depends(require_admin)):
     """
     List available MCP tools (debug endpoint).
 
@@ -986,9 +948,7 @@ async def list_mcp_tools(
     Args:
         include_unhealthy: If True, include tools that failed heartbeat check
     """
-    tools = await mcp_tool_adapter.get_available_tools(
-        include_unhealthy=include_unhealthy
-    )
+    tools = await mcp_tool_adapter.get_available_tools(include_unhealthy=include_unhealthy)
 
     return {
         "tools": [
@@ -1005,9 +965,7 @@ async def list_mcp_tools(
 
 
 @router.post("/tools/{tool_name}/call")
-async def call_mcp_tool(
-    tool_name: str, request: Request, _user: User = Depends(require_admin)
-):
+async def call_mcp_tool(tool_name: str, request: Request, _user: User = Depends(require_admin)):
     """
     Call an MCP tool directly (debug endpoint).
 
@@ -1046,9 +1004,7 @@ async def mcp_health(_user: User = Depends(require_admin)):
     """
     try:
         all_tools = await mcp_tool_adapter.get_available_tools(include_unhealthy=True)
-        healthy_tools = await mcp_tool_adapter.get_available_tools(
-            include_unhealthy=False
-        )
+        healthy_tools = await mcp_tool_adapter.get_available_tools(include_unhealthy=False)
 
         return {
             "status": "healthy",

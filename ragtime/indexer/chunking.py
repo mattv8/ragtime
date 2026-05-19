@@ -73,10 +73,7 @@ def _get_process_pool() -> ProcessPoolExecutor:
             max_workers=_pool_max_workers,
             mp_context=multiprocessing.get_context("spawn"),
         )
-        logger.info(
-            f"Created process pool for chunking: {_pool_max_workers} workers "
-            f"(capped to keep API/UI/MCP responsive, {cpu_count} cores available)"
-        )
+        logger.info(f"Created process pool for chunking: {_pool_max_workers} workers (capped to keep API/UI/MCP responsive, {cpu_count} cores available)")
 
     return _process_pool
 
@@ -202,9 +199,7 @@ def _estimate_max_header_tokens(
         Size to reserve for headers (tokens or characters)
     """
     # Generate worst-case header (first chunk with imports, assuming multi-chunk)
-    sample_header = _create_chunk_header(
-        file_path, imports, chunk_index=0, total_chunks=99
-    )
+    sample_header = _create_chunk_header(file_path, imports, chunk_index=0, total_chunks=99)
 
     if use_tokens:
         from ragtime.core.tokenization import count_tokens
@@ -244,10 +239,7 @@ def _get_treesitter_langs() -> set[str]:
                 # 1. LANG_MAPPING covers common extensions
                 # 2. Magika auto-detects code languages
                 # 3. We fall back to RecursiveChunker if CodeChunker fails
-                logger.debug(
-                    "Could not determine SupportedLanguage set; "
-                    "relying on LANG_MAPPING and recursive fallback"
-                )
+                logger.debug("Could not determine SupportedLanguage set; relying on LANG_MAPPING and recursive fallback")
                 _treesitter_langs_cache = set()
         except ImportError:
             _treesitter_langs_cache = set()
@@ -413,10 +405,7 @@ def _chunk_with_chonkie_code(
                     raise
                 else:
                     # Valid mapping found (manual or auto)
-                    logger.debug(
-                        f"Mapping detected language '{detected_lang}' to "
-                        f"'{mapped_lang}' for {source_path}"
-                    )
+                    logger.debug(f"Mapping detected language '{detected_lang}' to '{mapped_lang}' for {source_path}")
                     chunker = CodeChunker(
                         tokenizer=tokenizer,
                         chunk_size=effective_chunk_size,
@@ -448,9 +437,7 @@ def _chunk_with_chonkie_code(
     # This helps retrieval find the right file before drilling into details
     if total_chunks > 2 and source_path and file_ext:
         if definitions:  # Only add summary if we found definitions
-            summary = _create_file_summary(
-                source_path, imports, definitions, total_chunks
-            )
+            summary = _create_file_summary(source_path, imports, definitions, total_chunks)
             # Truncate summary if it exceeds chunk_size
             if use_tokens:
                 from ragtime.core.tokenization import count_tokens
@@ -579,9 +566,7 @@ def chunk_semantic_segments(
             chunk_index += 1
         else:
             # Large segment - use RecursiveChunker but only within this segment
-            segment_docs = _chunk_with_recursive(
-                content, chunk_size, chunk_overlap, seg_meta
-            )
+            segment_docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, seg_meta)
             for doc in segment_docs:
                 doc.metadata["chunk_index"] = chunk_index
                 doc.metadata["chunker"] = "semantic_recursive"
@@ -623,12 +608,8 @@ def _chunk_document_batch_sync(
         try:
             # Try Chonkie CodeChunker with auto language detection
             try:
-                docs = _chunk_with_chonkie_code(
-                    content, chunk_size, chunk_overlap, metadata, use_tokens
-                )
-                splitter_counts["chonkie_code"] = (
-                    splitter_counts.get("chonkie_code", 0) + 1
-                )
+                docs = _chunk_with_chonkie_code(content, chunk_size, chunk_overlap, metadata, use_tokens)
+                splitter_counts["chonkie_code"] = splitter_counts.get("chonkie_code", 0) + 1
             except (ValueError, RuntimeError, LookupError) as e:
                 # Expected cases for falling back to RecursiveChunker:
                 # - Extension explicitly mapped to plain text (e.g., .txt, .csv)
@@ -642,28 +623,17 @@ def _chunk_document_batch_sync(
                     or "mapped to plain text" in err_lower
                     or "should use recursivechunker" in err_lower
                 ):
-                    logger.debug(
-                        f"Code chunking not available for {file_path}, "
-                        f"using recursive: {e}"
-                    )
-                    docs = _chunk_with_recursive(
-                        content, chunk_size, chunk_overlap, metadata, use_tokens
-                    )
-                    splitter_counts["chonkie_recursive"] = (
-                        splitter_counts.get("chonkie_recursive", 0) + 1
-                    )
+                    logger.debug(f"Code chunking not available for {file_path}, using recursive: {e}")
+                    docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, metadata, use_tokens)
+                    splitter_counts["chonkie_recursive"] = splitter_counts.get("chonkie_recursive", 0) + 1
                 else:
                     raise
 
         except Exception as e:
             logger.error(f"Chunking failed for {file_path or 'unknown'}: {e}")
             # Last resort: simple recursive text splitting
-            docs = _chunk_with_recursive(
-                content, chunk_size, chunk_overlap, metadata, use_tokens
-            )
-            splitter_counts["chonkie_recursive_error"] = (
-                splitter_counts.get("chonkie_recursive_error", 0) + 1
-            )
+            docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, metadata, use_tokens)
+            splitter_counts["chonkie_recursive_error"] = splitter_counts.get("chonkie_recursive_error", 0) + 1
 
         for doc in docs:
             all_chunks.append((doc.page_content, doc.metadata))
@@ -698,10 +668,7 @@ async def chunk_documents_parallel(
     all_chunks: List[Document] = []
     all_splitter_counts: Dict[str, int] = {}
 
-    logger.debug(
-        f"Starting parallel chunking: {total_docs} docs, batch_size={batch_size}, "
-        f"workers={_pool_max_workers}"
-    )
+    logger.debug(f"Starting parallel chunking: {total_docs} docs, batch_size={batch_size}, workers={_pool_max_workers}")
 
     loop = asyncio.get_event_loop()
 
@@ -950,14 +917,10 @@ def rechunk_texts_batch(
         for chunk in chunks:
             tokens = count_tokens(chunk)
             if tokens > safe_token_limit:
-                sub_chunks = rechunk_oversized_text(
-                    chunk, safe_token_limit, chunk_overlap=chunk_overlap
-                )
+                sub_chunks = rechunk_oversized_text(chunk, safe_token_limit, chunk_overlap=chunk_overlap)
                 if rc_count < max_warnings:
                     logger.warning(
-                        f"Re-chunked oversized content from {tokens} "
-                        f"tokens into {len(sub_chunks)} chunks "
-                        f"(source: {rel_path}, safe_limit: {safe_token_limit})"
+                        f"Re-chunked oversized content from {tokens} tokens into {len(sub_chunks)} chunks (source: {rel_path}, safe_limit: {safe_token_limit})"
                     )
                 rc_count += 1
                 for sub_chunk in sub_chunks:
@@ -972,9 +935,4 @@ def rechunk_texts_batch(
 def is_context_length_error(exc: Exception) -> bool:
     """Detect embedding context length errors from Ollama and other providers."""
     text = str(exc).lower()
-    return (
-        "input length exceeds" in text
-        or "context length" in text
-        or "maximum context length" in text
-        or "token limit" in text
-    )
+    return "input length exceeds" in text or "context length" in text or "maximum context length" in text or "token limit" in text

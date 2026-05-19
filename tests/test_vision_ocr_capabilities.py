@@ -64,9 +64,7 @@ class VisionOcrCapabilityTests(unittest.IsolatedAsyncioTestCase):
                 fail_probe,
             ),
         ):
-            models = await vision_models.list_provider_vision_models(
-                "lmstudio", base_url="http://example.test"
-            )
+            models = await vision_models.list_provider_vision_models("lmstudio", base_url="http://example.test")
 
         self.assertEqual([model.name for model in models], ["native-vlm"])
         self.assertEqual(models[0].provider, "lmstudio")
@@ -91,9 +89,7 @@ class VisionOcrCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
         async def fail_probe(*args, **kwargs):
             _ = (args, kwargs)
-            raise AssertionError(
-                "llama.cpp vision discovery should not warm models with live probes"
-            )
+            raise AssertionError("llama.cpp vision discovery should not warm models with live probes")
 
         with (
             patch.object(llama_cpp, "list_chat_models", fake_list_chat_models),
@@ -103,9 +99,7 @@ class VisionOcrCapabilityTests(unittest.IsolatedAsyncioTestCase):
                 fail_probe,
             ),
         ):
-            models = await vision_models.list_provider_vision_models(
-                "llama_cpp", base_url="http://example.test"
-            )
+            models = await vision_models.list_provider_vision_models("llama_cpp", base_url="http://example.test")
 
         self.assertEqual([model.name for model in models], ["metadata-vlm"])
         self.assertEqual(models[0].provider, "llama_cpp")
@@ -134,9 +128,7 @@ class VisionOcrCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
         async def fail_probe(*args, **kwargs):
             _ = (args, kwargs)
-            raise AssertionError(
-                "oMLX vision discovery should not warm models with live probes"
-            )
+            raise AssertionError("oMLX vision discovery should not warm models with live probes")
 
         with (
             patch.object(omlx, "list_status_models", fake_list_status_models),
@@ -147,9 +139,7 @@ class VisionOcrCapabilityTests(unittest.IsolatedAsyncioTestCase):
                 fail_probe,
             ),
         ):
-            models = await vision_models.list_provider_vision_models(
-                "omlx", base_url="http://example.test"
-            )
+            models = await vision_models.list_provider_vision_models("omlx", base_url="http://example.test")
 
         self.assertEqual([model.name for model in models], ["metadata-vlm"])
         self.assertEqual(models[0].provider, "omlx")
@@ -157,9 +147,7 @@ class VisionOcrCapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(models[0].loaded)
 
     async def test_openai_vision_discovery_uses_metadata_catalog_without_live_probe(self) -> None:
-        async def fake_list_models_dev_vision_models(
-            provider: str, available_model_ids: set[str] | None = None
-        ):
+        async def fake_list_models_dev_vision_models(provider: str, available_model_ids: set[str] | None = None):
             self.assertEqual(provider, "openai")
             self.assertEqual(available_model_ids, {"gpt-4o", "gpt-4.1"})
             return [
@@ -181,9 +169,7 @@ class VisionOcrCapabilityTests(unittest.IsolatedAsyncioTestCase):
 
         async def fail_probe(*args, **kwargs):
             _ = (args, kwargs)
-            raise AssertionError(
-                "OpenAI vision discovery should not issue image requests"
-            )
+            raise AssertionError("OpenAI vision discovery should not issue image requests")
 
         with (
             patch.object(
@@ -202,9 +188,7 @@ class VisionOcrCapabilityTests(unittest.IsolatedAsyncioTestCase):
                 fail_probe,
             ),
         ):
-            models = await vision_models.list_provider_vision_models(
-                "openai", api_key="sk-test"
-            )
+            models = await vision_models.list_provider_vision_models("openai", api_key="sk-test")
 
         self.assertEqual([model.name for model in models], ["gpt-4.1", "gpt-4o"])
 

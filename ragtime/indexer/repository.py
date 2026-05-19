@@ -143,9 +143,7 @@ def _identifier_in_allowed_models(
     allowed_models: list[str],
 ) -> bool:
     normalized_identifier = identifier.strip()
-    return bool(normalized_identifier) and normalized_identifier in {
-        value.strip() for value in allowed_models if value.strip()
-    }
+    return bool(normalized_identifier) and normalized_identifier in {value.strip() for value in allowed_models if value.strip()}
 
 
 def _resolve_default_conversation_model(app_settings: Optional[AppSettings]) -> str:
@@ -155,20 +153,12 @@ def _resolve_default_conversation_model(app_settings: Optional[AppSettings]) -> 
 
     manual_default = str(getattr(app_settings, "default_chat_model", "") or "").strip()
     configured_model = str(app_settings.llm_model or "").strip()
-    allowed_models = [
-        str(value).strip()
-        for value in (app_settings.allowed_chat_models or [])
-        if str(value).strip()
-    ]
+    allowed_models = [str(value).strip() for value in (app_settings.allowed_chat_models or []) if str(value).strip()]
 
     if allowed_models:
-        if manual_default and _identifier_in_allowed_models(
-            manual_default, allowed_models
-        ):
+        if manual_default and _identifier_in_allowed_models(manual_default, allowed_models):
             return manual_default
-        if configured_model and _identifier_in_allowed_models(
-            configured_model, allowed_models
-        ):
+        if configured_model and _identifier_in_allowed_models(configured_model, allowed_models):
             return configured_model
         return allowed_models[0]
 
@@ -486,9 +476,7 @@ class IndexerRepository:
         """Get a job by ID."""
         db = await self._get_db()
 
-        prisma_job = await db.indexjob.find_unique(
-            where={"id": job_id}, include={"config": True}
-        )
+        prisma_job = await db.indexjob.find_unique(where={"id": job_id}, include={"config": True})
 
         if prisma_job is None:
             return None
@@ -499,9 +487,7 @@ class IndexerRepository:
         """List all jobs."""
         db = await self._get_db()
 
-        prisma_jobs = await db.indexjob.find_many(
-            include={"config": True}, order={"createdAt": "desc"}
-        )
+        prisma_jobs = await db.indexjob.find_many(include={"config": True}, order={"createdAt": "desc"})
 
         return [self._prisma_job_to_model(j) for j in prisma_jobs]
 
@@ -583,11 +569,7 @@ class IndexerRepository:
             source_path=prisma_job.sourcePath,
             git_url=prisma_job.gitUrl,
             git_branch=prisma_job.gitBranch,
-            git_token=(
-                decrypt_secret(prisma_job.gitToken)
-                if getattr(prisma_job, "gitToken", None)
-                else None
-            ),
+            git_token=(decrypt_secret(prisma_job.gitToken) if getattr(prisma_job, "gitToken", None) else None),
             total_files=prisma_job.totalFiles,
             processed_files=prisma_job.processedFiles,
             total_chunks=prisma_job.totalChunks,
@@ -630,9 +612,7 @@ class IndexerRepository:
         ocr_vision_model = None
         normalized_config_snapshot = _normalize_ocr_snapshot(config_snapshot)
         if isinstance(normalized_config_snapshot, dict):
-            ocr_mode = _normalize_ocr_mode_value(
-                normalized_config_snapshot.get("ocr_mode")
-            )
+            ocr_mode = _normalize_ocr_mode_value(normalized_config_snapshot.get("ocr_mode"))
             raw_ocr_provider = normalized_config_snapshot.get("ocr_provider")
             ocr_provider = getattr(raw_ocr_provider, "value", raw_ocr_provider)
             if not ocr_provider and ocr_mode == "vision":
@@ -724,9 +704,7 @@ class IndexerRepository:
                 "lastModified": datetime.utcnow(),
             },
         )
-        logger.debug(
-            f"Updated counts for index {name}: {document_count} docs, {chunk_count} chunks"
-        )
+        logger.debug(f"Updated counts for index {name}: {document_count} docs, {chunk_count} chunks")
 
     async def list_index_metadata(self) -> list[PrismaIndexMetadata]:
         """List all index metadata."""
@@ -750,9 +728,7 @@ class IndexerRepository:
         db = await self._get_db()
 
         try:
-            await db.indexmetadata.update(
-                where={"name": name}, data={"enabled": enabled}
-            )
+            await db.indexmetadata.update(where={"name": name}, data={"enabled": enabled})
             logger.debug(f"Set index {name} enabled={enabled}")
             return True
         except Exception as e:
@@ -764,9 +740,7 @@ class IndexerRepository:
         db = await self._get_db()
 
         try:
-            await db.indexmetadata.update(
-                where={"name": name}, data={"description": description}
-            )
+            await db.indexmetadata.update(where={"name": name}, data={"description": description})
             logger.debug(f"Updated description for index {name}")
             return True
         except Exception as e:
@@ -781,9 +755,7 @@ class IndexerRepository:
         weight = max(0.0, min(10.0, weight))
 
         try:
-            await db.indexmetadata.update(
-                where={"name": name}, data=cast(Any, {"searchWeight": weight})
-            )
+            await db.indexmetadata.update(where={"name": name}, data=cast(Any, {"searchWeight": weight}))
             logger.debug(f"Updated search weight for index {name} to {weight}")
             return True
         except Exception as e:
@@ -820,9 +792,7 @@ class IndexerRepository:
             return True  # Nothing to update
 
         try:
-            await db.indexmetadata.update(
-                where={"name": name}, data=cast(Any, update_data)
-            )
+            await db.indexmetadata.update(where={"name": name}, data=cast(Any, update_data))
             logger.debug(f"Updated memory stats for index {name}")
             return True
         except Exception as e:
@@ -842,26 +812,20 @@ class IndexerRepository:
         if git_branch is not None:
             update_data["gitBranch"] = git_branch
         if config_snapshot is not None:
-            update_data["configSnapshot"] = Json(
-                _normalize_ocr_snapshot(config_snapshot)
-            )
+            update_data["configSnapshot"] = Json(_normalize_ocr_snapshot(config_snapshot))
 
         if not update_data:
             return True  # Nothing to update
 
         try:
-            await db.indexmetadata.update(
-                where={"name": name}, data=cast(Any, update_data)
-            )
+            await db.indexmetadata.update(where={"name": name}, data=cast(Any, update_data))
             logger.debug(f"Updated config for index {name}")
             return True
         except Exception as e:
             logger.warning(f"Failed to update config for index {name}: {e}")
             return False
 
-    async def rename_index(
-        self, old_name: str, new_name: str, display_name: Optional[str] = None
-    ) -> bool:
+    async def rename_index(self, old_name: str, new_name: str, display_name: Optional[str] = None) -> bool:
         """
         Rename an index in the database.
 
@@ -901,11 +865,7 @@ class IndexerRepository:
             metadata_any = cast(Any, metadata)
             create_data: dict[str, Any] = {
                 "name": new_name,
-                "displayName": (
-                    display_name
-                    if display_name is not None
-                    else getattr(metadata_any, "displayName", None)
-                ),
+                "displayName": (display_name if display_name is not None else getattr(metadata_any, "displayName", None)),
                 "description": metadata.description,
                 "path": new_path,
                 "documentCount": metadata.documentCount,
@@ -930,18 +890,14 @@ class IndexerRepository:
             # Also update index_jobs that reference this index name
             async with db.tx() as tx:
                 # Update index_jobs.name to new name
-                await tx.indexjob.update_many(
-                    where={"name": old_name}, data={"name": new_name}
-                )
+                await tx.indexjob.update_many(where={"name": old_name}, data={"name": new_name})
                 await tx.indexmetadata.delete(where={"name": old_name})
                 await tx.indexmetadata.create(data=cast(Any, create_data))
 
             logger.info(f"Renamed index '{old_name}' to '{new_name}' in database")
             return True
         except Exception as e:
-            logger.exception(
-                f"Failed to rename index '{old_name}' to '{new_name}': {e}"
-            )
+            logger.exception(f"Failed to rename index '{old_name}' to '{new_name}': {e}")
             return False
 
     # -------------------------------------------------------------------------
@@ -952,15 +908,11 @@ class IndexerRepository:
         """Get application settings, creating defaults if needed."""
         db = await self._get_db()
 
-        prisma_settings = cast(
-            Any, await db.appsettings.find_unique(where={"id": "default"})
-        )
+        prisma_settings = cast(Any, await db.appsettings.find_unique(where={"id": "default"}))
 
         if prisma_settings is None:
             # Create default settings
-            prisma_settings = cast(
-                Any, await db.appsettings.create(data={"id": "default"})
-            )
+            prisma_settings = cast(Any, await db.appsettings.create(data={"id": "default"}))
             logger.info("Created default application settings")
 
         settings: Any = prisma_settings
@@ -970,15 +922,9 @@ class IndexerRepository:
         anthropic_key = settings.anthropicApiKey or ""
         openrouter_key = getattr(settings, "openrouterApiKey", "") or ""
         github_models_api_token = getattr(settings, "githubModelsApiToken", "") or ""
-        github_copilot_access_token = (
-            getattr(settings, "githubCopilotAccessToken", "") or ""
-        )
-        github_copilot_refresh_token = (
-            getattr(settings, "githubCopilotRefreshToken", "") or ""
-        )
-        github_copilot_oauth_refresh_token = (
-            getattr(settings, "githubCopilotOauthRefreshToken", "") or ""
-        )
+        github_copilot_access_token = getattr(settings, "githubCopilotAccessToken", "") or ""
+        github_copilot_refresh_token = getattr(settings, "githubCopilotRefreshToken", "") or ""
+        github_copilot_oauth_refresh_token = getattr(settings, "githubCopilotOauthRefreshToken", "") or ""
         mcp_password = getattr(settings, "mcpDefaultRoutePassword", None)
 
         # Decrypt if encrypted (starts with 'enc::')
@@ -995,34 +941,25 @@ class IndexerRepository:
         if github_copilot_refresh_token:
             github_copilot_refresh_token = decrypt_secret(github_copilot_refresh_token)
         if github_copilot_oauth_refresh_token:
-            github_copilot_oauth_refresh_token = decrypt_secret(
-                github_copilot_oauth_refresh_token
-            )
+            github_copilot_oauth_refresh_token = decrypt_secret(github_copilot_oauth_refresh_token)
         if mcp_password:
             mcp_password = decrypt_secret(mcp_password)
         omlx_api_key = decrypt_secret(getattr(settings, "omlxApiKey", None) or "")
 
         try:
-            userspace_preview_sandbox_flags = normalize_userspace_preview_sandbox_flags(
-                getattr(settings, "userspacePreviewSandboxFlags", None)
-            )
+            userspace_preview_sandbox_flags = normalize_userspace_preview_sandbox_flags(getattr(settings, "userspacePreviewSandboxFlags", None))
         except ValueError as exc:
             logger.warning(
-                "Invalid userspace preview sandbox flags in app settings; "
-                "falling back to defaults: %s",
+                "Invalid userspace preview sandbox flags in app settings; falling back to defaults: %s",
                 exc,
             )
-            userspace_preview_sandbox_flags = list(
-                USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS
-            )
+            userspace_preview_sandbox_flags = list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS)
 
         return AppSettings(
             id=settings.id,
             # Server branding
             server_name=getattr(settings, "serverName", "Ragtime"),
-            authenticated_webgl_background_enabled=getattr(
-                settings, "authenticatedWebglBackgroundEnabled", True
-            ),
+            authenticated_webgl_background_enabled=getattr(settings, "authenticatedWebglBackgroundEnabled", True),
             # Embedding settings
             embedding_provider=settings.embeddingProvider,
             embedding_model=settings.embeddingModel,
@@ -1047,9 +984,7 @@ class IndexerRepository:
                 "lmstudioBaseUrl",
                 "http://host.docker.internal:1234",
             ),
-            lmstudio_api_key=decrypt_secret(
-                getattr(settings, "lmstudioApiKey", None) or ""
-            ),
+            lmstudio_api_key=decrypt_secret(getattr(settings, "lmstudioApiKey", None) or ""),
             omlx_protocol=getattr(settings, "omlxProtocol", "http"),
             omlx_host=getattr(settings, "omlxHost", "host.docker.internal"),
             omlx_port=getattr(settings, "omlxPort", 8000),
@@ -1076,9 +1011,7 @@ class IndexerRepository:
                 "http://localhost:11434",
             ),
             llm_llama_cpp_protocol=getattr(settings, "llmLlamaCppProtocol", "http"),
-            llm_llama_cpp_host=getattr(
-                settings, "llmLlamaCppHost", "host.docker.internal"
-            ),
+            llm_llama_cpp_host=getattr(settings, "llmLlamaCppHost", "host.docker.internal"),
             llm_llama_cpp_port=getattr(settings, "llmLlamaCppPort", 8080),
             llm_llama_cpp_base_url=getattr(
                 settings,
@@ -1086,9 +1019,7 @@ class IndexerRepository:
                 "http://host.docker.internal:8080",
             ),
             llm_lmstudio_protocol=getattr(settings, "llmLmstudioProtocol", "http"),
-            llm_lmstudio_host=getattr(
-                settings, "llmLmstudioHost", "host.docker.internal"
-            ),
+            llm_lmstudio_host=getattr(settings, "llmLmstudioHost", "host.docker.internal"),
             llm_lmstudio_port=getattr(settings, "llmLmstudioPort", 1234),
             llm_lmstudio_base_url=getattr(
                 settings,
@@ -1110,26 +1041,19 @@ class IndexerRepository:
             github_copilot_access_token=github_copilot_access_token,
             github_copilot_refresh_token=github_copilot_refresh_token,
             github_copilot_oauth_refresh_token=github_copilot_oauth_refresh_token,
-            github_copilot_token_expires_at=getattr(
-                settings, "githubCopilotTokenExpiresAt", None
-            ),
-            github_copilot_enterprise_url=getattr(
-                settings, "githubCopilotEnterpriseUrl", None
-            ),
+            github_copilot_token_expires_at=getattr(settings, "githubCopilotTokenExpiresAt", None),
+            github_copilot_enterprise_url=getattr(settings, "githubCopilotEnterpriseUrl", None),
             github_copilot_base_url=getattr(
                 settings,
                 "githubCopilotBaseUrl",
                 "https://api.githubcopilot.com",
             ),
-            include_copilot_third_party_models=getattr(
-                settings, "includeCopilotThirdPartyModels", False
-            ),
+            include_copilot_third_party_models=getattr(settings, "includeCopilotThirdPartyModels", False),
             has_github_copilot_auth=bool(github_copilot_access_token),
             allowed_chat_models=settings.allowedChatModels or [],
             default_chat_model=getattr(settings, "defaultChatModel", None),
             # OpenAPI model configuration
-            allowed_openapi_models=getattr(settings, "allowedOpenapiModels", None)
-            or [],
+            allowed_openapi_models=getattr(settings, "allowedOpenapiModels", None) or [],
             openapi_sync_chat_models=getattr(settings, "openapiSyncChatModels", True),
             max_iterations=settings.maxIterations,
             # Tool settings
@@ -1139,11 +1063,7 @@ class IndexerRepository:
             postgres_host=settings.postgresHost,
             postgres_port=settings.postgresPort,
             postgres_user=settings.postgresUser,
-            postgres_password=(
-                decrypt_secret(settings.postgresPassword)
-                if settings.postgresPassword
-                else ""
-            ),
+            postgres_password=(decrypt_secret(settings.postgresPassword) if settings.postgresPassword else ""),
             postgres_database=settings.postgresDb,
             max_query_results=settings.maxQueryResults,
             query_timeout=settings.queryTimeout,
@@ -1167,36 +1087,23 @@ class IndexerRepository:
             # MCP configuration
             mcp_enabled=getattr(settings, "mcpEnabled", False),
             mcp_default_route_auth=getattr(settings, "mcpDefaultRouteAuth", False),
-            mcp_default_route_auth_method=getattr(
-                settings, "mcpDefaultRouteAuthMethod", "password"
-            ),
+            mcp_default_route_auth_method=getattr(settings, "mcpDefaultRouteAuthMethod", "password"),
             mcp_default_route_password=mcp_password,
-            mcp_default_route_client_id=getattr(
-                settings, "mcpDefaultRouteClientId", None
-            ),
-            mcp_default_route_allowed_group=getattr(
-                settings, "mcpDefaultRouteAllowedGroup", None
-            ),
-            has_mcp_default_password=getattr(settings, "mcpDefaultRoutePassword", None)
-            is not None,
+            mcp_default_route_client_id=getattr(settings, "mcpDefaultRouteClientId", None),
+            mcp_default_route_allowed_group=getattr(settings, "mcpDefaultRouteAllowedGroup", None),
+            has_mcp_default_password=getattr(settings, "mcpDefaultRoutePassword", None) is not None,
             # Embedding dimension tracking
             embedding_dimension=getattr(settings, "embeddingDimension", None),
             embedding_config_hash=getattr(settings, "embeddingConfigHash", None),
             # OCR configuration
-            default_ocr_mode=_normalize_ocr_mode_value(
-                getattr(settings, "defaultOcrMode", "disabled")
-            ),
+            default_ocr_mode=_normalize_ocr_mode_value(getattr(settings, "defaultOcrMode", "disabled")),
             default_ocr_provider=getattr(settings, "defaultOcrProvider", "ollama"),
             default_ocr_vision_model=getattr(settings, "defaultOcrVisionModel", None),
             ocr_concurrency_limit=getattr(settings, "ocrConcurrencyLimit", 1),
-            ollama_embedding_timeout_seconds=getattr(
-                settings, "ollamaEmbeddingTimeoutSeconds", 180
-            ),
+            ollama_embedding_timeout_seconds=getattr(settings, "ollamaEmbeddingTimeoutSeconds", 180),
             # User Space configuration
             snapshot_retention_days=getattr(settings, "snapshotRetentionDays", 0),
-            snapshot_stale_branch_threshold=getattr(
-                settings, "snapshotStaleBranchThreshold", 50
-            ),
+            snapshot_stale_branch_threshold=getattr(settings, "snapshotStaleBranchThreshold", 50),
             userspace_preview_sandbox_flags=userspace_preview_sandbox_flags,
             userspace_duplicate_copy_files_default=getattr(
                 settings,
@@ -1223,9 +1130,7 @@ class IndexerRepository:
                 "userspaceMountSyncIntervalSeconds",
                 30,
             ),
-            userspace_sqlite_import_max_bytes=clamp_userspace_sqlite_import_max_bytes(
-                getattr(settings, "userspaceSqliteImportMaxBytes", None)
-            ),
+            userspace_sqlite_import_max_bytes=clamp_userspace_sqlite_import_max_bytes(getattr(settings, "userspaceSqliteImportMaxBytes", None)),
             updated_at=settings.updatedAt,
         )
 
@@ -1422,24 +1327,16 @@ class IndexerRepository:
                 update_data["defaultChatModel"] = normalized_default_chat_model or None
 
         # Fields that the UI may intentionally clear with an explicit null.
-        if (
-            "embedding_dimensions" in updates
-            and updates["embedding_dimensions"] is None
-        ):
+        if "embedding_dimensions" in updates and updates["embedding_dimensions"] is None:
             update_data["embeddingDimensions"] = None
 
-        if (
-            "default_ocr_vision_model" in updates
-            and updates["default_ocr_vision_model"] is None
-        ):
+        if "default_ocr_vision_model" in updates and updates["default_ocr_vision_model"] is None:
             update_data["defaultOcrVisionModel"] = None
 
         # Special handling for GitHub Copilot nullable fields.
         # These may need explicit clearing to NULL.
         if "github_copilot_token_expires_at" in updates:
-            update_data["githubCopilotTokenExpiresAt"] = updates[
-                "github_copilot_token_expires_at"
-            ]
+            update_data["githubCopilotTokenExpiresAt"] = updates["github_copilot_token_expires_at"]
 
         if "github_copilot_enterprise_url" in updates:
             enterprise_value = updates["github_copilot_enterprise_url"]
@@ -1455,15 +1352,14 @@ class IndexerRepository:
         await self.get_settings()
 
         await db.appsettings.update(
-            where={"id": "default"}, data=update_data  # type: ignore[arg-type]
+            where={"id": "default"},
+            data=update_data,  # type: ignore[arg-type]
         )
 
         logger.info(f"Updated settings: {list(update_data.keys())}")
         return await self.get_settings()
 
-    async def update_embedding_tracking(
-        self, dimension: int, config_hash: str
-    ) -> AppSettings:
+    async def update_embedding_tracking(self, dimension: int, config_hash: str) -> AppSettings:
         """
         Update embedding dimension and config hash after successful indexing.
         Called by filesystem_service after first batch of embeddings is inserted.
@@ -1481,9 +1377,7 @@ class IndexerRepository:
                 },
             ),
         )  # type: ignore[arg-type]
-        logger.info(
-            f"Updated embedding tracking: dimension={dimension}, hash={config_hash}"
-        )
+        logger.info(f"Updated embedding tracking: dimension={dimension}, hash={config_hash}")
         return await self.get_settings()
 
     async def clear_embedding_tracking(self) -> AppSettings:
@@ -1516,9 +1410,7 @@ class IndexerRepository:
         db = await self._get_db()
 
         # Encrypt password fields in connection_config
-        encrypted_config = encrypt_json_passwords(
-            config.connection_config, CONNECTION_CONFIG_PASSWORD_FIELDS
-        )
+        encrypted_config = encrypt_json_passwords(config.connection_config, CONNECTION_CONFIG_PASSWORD_FIELDS)
 
         create_data: dict[str, Any] = {
             "name": config.name,
@@ -1546,9 +1438,7 @@ class IndexerRepository:
         """Get a tool configuration by ID."""
         db = await self._get_db()
 
-        prisma_config = await db.toolconfig.find_unique(
-            where={"id": config_id}, include={"group": True}
-        )
+        prisma_config = await db.toolconfig.find_unique(where={"id": config_id}, include={"group": True})
         if prisma_config is None:
             return None
 
@@ -1585,9 +1475,7 @@ class IndexerRepository:
                             config.disabled_reason = reason
 
                             if config.enabled:
-                                logger.warning(
-                                    f"Auto-disabling filesystem index '{config.name}': {reason}"
-                                )
+                                logger.warning(f"Auto-disabling filesystem index '{config.name}': {reason}")
                                 # Update DB
                                 await db.toolconfig.update(
                                     where={"id": config.id},
@@ -1601,9 +1489,7 @@ class IndexerRepository:
 
         return configs
 
-    async def update_tool_config(
-        self, config_id: str, updates: dict[str, Any]
-    ) -> Optional[ToolConfig]:
+    async def update_tool_config(self, config_id: str, updates: dict[str, Any]) -> Optional[ToolConfig]:
         """Update a tool configuration."""
         db = await self._get_db()
 
@@ -1630,9 +1516,7 @@ class IndexerRepository:
                 if snake_key == "connection_config":
                     # Preserve non-password fields from existing config
                     # This ensures metadata like last_schema_indexed_at is not lost
-                    existing_config = await db.toolconfig.find_unique(
-                        where={"id": config_id}
-                    )
+                    existing_config = await db.toolconfig.find_unique(where={"id": config_id})
                     if existing_config and existing_config.connectionConfig:
                         merged_config = dict(existing_config.connectionConfig)
                         # Update only the fields provided in the request
@@ -1640,9 +1524,7 @@ class IndexerRepository:
                         value = merged_config
 
                     # Encrypt password fields
-                    value = encrypt_json_passwords(
-                        value, CONNECTION_CONFIG_PASSWORD_FIELDS
-                    )
+                    value = encrypt_json_passwords(value, CONNECTION_CONFIG_PASSWORD_FIELDS)
                     value = Json(value)
                 update_data[camel_key] = value
 
@@ -1656,7 +1538,8 @@ class IndexerRepository:
 
         try:
             await db.toolconfig.update(
-                where={"id": config_id}, data=update_data  # type: ignore[arg-type]
+                where={"id": config_id},
+                data=update_data,  # type: ignore[arg-type]
             )
             logger.info(f"Updated tool config {config_id}: {list(update_data.keys())}")
             return await self.get_tool_config(config_id)
@@ -1680,12 +1563,7 @@ class IndexerRepository:
         if missing_ids:
             raise ValueError(f"Unknown tool IDs: {', '.join(missing_ids)}")
 
-        updates_json = json.dumps(
-            [
-                {"id": tool_id, "sort_order": idx * 100}
-                for idx, tool_id in enumerate(tool_ids)
-            ]
-        ).replace("'", "''")
+        updates_json = json.dumps([{"id": tool_id, "sort_order": idx * 100} for idx, tool_id in enumerate(tool_ids)]).replace("'", "''")
 
         await db.execute_raw(f"""
             UPDATE tool_configs AS t
@@ -1706,9 +1584,7 @@ class IndexerRepository:
             logger.warning(f"Failed to delete tool config {config_id}: {e}")
             return False
 
-    async def rename_tool_config(
-        self, config_id: str, new_name: str
-    ) -> tuple[Optional[ToolConfig], dict[str, int]]:
+    async def rename_tool_config(self, config_id: str, new_name: str) -> tuple[Optional[ToolConfig], dict[str, int]]:
         """
         Rename a tool configuration and update all associated index names.
 
@@ -1762,101 +1638,59 @@ class IndexerRepository:
                 old_index_name = f"schema_{old_safe_name}"
                 new_index_name = f"schema_{new_safe_name}"
 
-                result = await db.execute_raw(
-                    f"UPDATE schema_embeddings SET index_name = '{new_index_name}' "
-                    f"WHERE index_name = '{old_index_name}'"
-                )
-                update_counts["schema_embeddings"] = (
-                    result if isinstance(result, int) else 0
-                )
+                result = await db.execute_raw(f"UPDATE schema_embeddings SET index_name = '{new_index_name}' WHERE index_name = '{old_index_name}'")
+                update_counts["schema_embeddings"] = result if isinstance(result, int) else 0
 
                 # Also update schema_index_jobs.index_name
-                result = await db.execute_raw(
-                    f"UPDATE schema_index_jobs SET index_name = '{new_index_name}' "
-                    f"WHERE tool_config_id = '{config_id}'"
-                )
-                update_counts["schema_index_jobs"] = (
-                    result if isinstance(result, int) else 0
-                )
+                result = await db.execute_raw(f"UPDATE schema_index_jobs SET index_name = '{new_index_name}' WHERE tool_config_id = '{config_id}'")
+                update_counts["schema_index_jobs"] = result if isinstance(result, int) else 0
 
             elif tool.tool_type == ToolType.SOLIDWORKS_PDM:
                 # PDM embeddings: pdm_{old_safe_name} -> pdm_{new_safe_name}
                 old_index_name = f"pdm_{old_safe_name}"
                 new_index_name = f"pdm_{new_safe_name}"
 
-                result = await db.execute_raw(
-                    f"UPDATE pdm_embeddings SET index_name = '{new_index_name}' "
-                    f"WHERE index_name = '{old_index_name}'"
-                )
-                update_counts["pdm_embeddings"] = (
-                    result if isinstance(result, int) else 0
-                )
+                result = await db.execute_raw(f"UPDATE pdm_embeddings SET index_name = '{new_index_name}' WHERE index_name = '{old_index_name}'")
+                update_counts["pdm_embeddings"] = result if isinstance(result, int) else 0
 
-                result = await db.execute_raw(
-                    f"UPDATE pdm_document_metadata SET index_name = '{new_index_name}' "
-                    f"WHERE index_name = '{old_index_name}'"
-                )
-                update_counts["pdm_document_metadata"] = (
-                    result if isinstance(result, int) else 0
-                )
+                result = await db.execute_raw(f"UPDATE pdm_document_metadata SET index_name = '{new_index_name}' WHERE index_name = '{old_index_name}'")
+                update_counts["pdm_document_metadata"] = result if isinstance(result, int) else 0
 
                 # Also update pdm_index_jobs.index_name
-                result = await db.execute_raw(
-                    f"UPDATE pdm_index_jobs SET index_name = '{new_index_name}' "
-                    f"WHERE tool_config_id = '{config_id}'"
-                )
-                update_counts["pdm_index_jobs"] = (
-                    result if isinstance(result, int) else 0
-                )
+                result = await db.execute_raw(f"UPDATE pdm_index_jobs SET index_name = '{new_index_name}' WHERE tool_config_id = '{config_id}'")
+                update_counts["pdm_index_jobs"] = result if isinstance(result, int) else 0
 
             elif tool.tool_type == ToolType.FILESYSTEM_INDEXER:
                 # Filesystem embeddings use connection_config.index_name
-                fs_old_index_name = (
-                    tool.connection_config.get("index_name")
-                    if tool.connection_config
-                    else None
-                )
+                fs_old_index_name = tool.connection_config.get("index_name") if tool.connection_config else None
                 fs_new_index_name = new_safe_name
 
                 if fs_old_index_name and fs_old_index_name != fs_new_index_name:
                     # Update embeddings table
                     result = await db.execute_raw(
-                        f"UPDATE filesystem_embeddings SET index_name = '{fs_new_index_name}' "
-                        f"WHERE index_name = '{fs_old_index_name}'"
+                        f"UPDATE filesystem_embeddings SET index_name = '{fs_new_index_name}' WHERE index_name = '{fs_old_index_name}'"
                     )
-                    update_counts["filesystem_embeddings"] = (
-                        result if isinstance(result, int) else 0
-                    )
+                    update_counts["filesystem_embeddings"] = result if isinstance(result, int) else 0
 
                     # Update file metadata table
                     result = await db.execute_raw(
-                        f"UPDATE filesystem_file_metadata SET index_name = '{fs_new_index_name}' "
-                        f"WHERE index_name = '{fs_old_index_name}'"
+                        f"UPDATE filesystem_file_metadata SET index_name = '{fs_new_index_name}' WHERE index_name = '{fs_old_index_name}'"
                     )
-                    update_counts["filesystem_file_metadata"] = (
-                        result if isinstance(result, int) else 0
-                    )
+                    update_counts["filesystem_file_metadata"] = result if isinstance(result, int) else 0
 
                     # Update connection_config.index_name
                     updated_config = dict(tool.connection_config)
                     updated_config["index_name"] = fs_new_index_name
-                    await self.update_tool_config(
-                        config_id, {"connection_config": updated_config}
-                    )
+                    await self.update_tool_config(config_id, {"connection_config": updated_config})
 
             # Update the tool name
             updated = await self.update_tool_config(config_id, {"name": new_name})
 
             total_updates = sum(update_counts.values())
             if total_updates > 0:
-                logger.info(
-                    f"Renamed tool '{tool.name}' to '{new_name}' "
-                    f"(safe: '{old_safe_name}' -> '{new_safe_name}'): {update_counts}"
-                )
+                logger.info(f"Renamed tool '{tool.name}' to '{new_name}' (safe: '{old_safe_name}' -> '{new_safe_name}'): {update_counts}")
             else:
-                logger.info(
-                    f"Renamed tool '{tool.name}' to '{new_name}' (no embeddings)"
-                )
+                logger.info(f"Renamed tool '{tool.name}' to '{new_name}' (no embeddings)")
 
             return updated, update_counts
 
@@ -1864,9 +1698,7 @@ class IndexerRepository:
             logger.error(f"Failed to rename tool config {config_id}: {e}")
             return None, update_counts
 
-    async def update_tool_test_result(
-        self, config_id: str, success: bool, error: Optional[str] = None
-    ) -> None:
+    async def update_tool_test_result(self, config_id: str, success: bool, error: Optional[str] = None) -> None:
         """Update the test result for a tool configuration."""
         db = await self._get_db()
 
@@ -1885,9 +1717,7 @@ class IndexerRepository:
     def _prisma_tool_config_to_model(self, prisma_config: Any) -> ToolConfig:
         """Convert Prisma ToolConfig to Pydantic model."""
         # Decrypt password fields in connection_config
-        decrypted_config = decrypt_json_passwords(
-            prisma_config.connectionConfig, CONNECTION_CONFIG_PASSWORD_FIELDS
-        )
+        decrypted_config = decrypt_json_passwords(prisma_config.connectionConfig, CONNECTION_CONFIG_PASSWORD_FIELDS)
 
         # Resolve group fields if relation or raw field present
         group_id = getattr(prisma_config, "groupId", None)
@@ -1924,9 +1754,7 @@ class IndexerRepository:
     async def list_tool_groups(self) -> list["ToolGroup"]:
         """List all tool groups ordered by sort_order then name."""
         db = await self._get_db()
-        rows = await db.toolgroup.find_many(
-            order=[{"sortOrder": "asc"}, {"name": "asc"}]
-        )
+        rows = await db.toolgroup.find_many(order=[{"sortOrder": "asc"}, {"name": "asc"}])
         return [
             ToolGroup(
                 id=r.id,
@@ -1953,9 +1781,7 @@ class IndexerRepository:
             updated_at=r.updatedAt,
         )
 
-    async def create_tool_group(
-        self, name: str, description: str = "", sort_order: int = 0
-    ) -> "ToolGroup":
+    async def create_tool_group(self, name: str, description: str = "", sort_order: int = 0) -> "ToolGroup":
         db = await self._get_db()
         r = await db.toolgroup.create(
             data={
@@ -1974,9 +1800,7 @@ class IndexerRepository:
             updated_at=r.updatedAt,
         )
 
-    async def update_tool_group(
-        self, group_id: str, updates: dict[str, Any]
-    ) -> "ToolGroup | None":
+    async def update_tool_group(self, group_id: str, updates: dict[str, Any]) -> "ToolGroup | None":
         db = await self._get_db()
         data: dict[str, Any] = {}
         if "name" in updates and updates["name"] is not None:
@@ -2076,9 +1900,7 @@ class IndexerRepository:
         """Get a conversation by ID."""
         db = await self._get_db()
 
-        prisma_conv = await db.conversation.find_unique(
-            where={"id": conversation_id}, include={"user": True}
-        )
+        prisma_conv = await db.conversation.find_unique(where={"id": conversation_id}, include={"user": True})
 
         if prisma_conv is None:
             return None
@@ -2126,10 +1948,7 @@ class IndexerRepository:
 
                 has_workspace_access = bool(
                     workspace.ownerUserId == user_id
-                    or any(
-                        getattr(member, "userId", None) == user_id
-                        for member in list(getattr(workspace, "members", []) or [])
-                    )
+                    or any(getattr(member, "userId", None) == user_id for member in list(getattr(workspace, "members", []) or []))
                 )
                 if not has_workspace_access:
                     return []
@@ -2151,23 +1970,13 @@ class IndexerRepository:
             )
 
         if since is not None:
-            where_parts.append(
-                f"c.updated_at >= {_sql_quote_literal(since.isoformat())}::timestamp"
-            )
+            where_parts.append(f"c.updated_at >= {_sql_quote_literal(since.isoformat())}::timestamp")
         if until is not None:
-            where_parts.append(
-                f"c.updated_at < {_sql_quote_literal(until.isoformat())}::timestamp"
-            )
+            where_parts.append(f"c.updated_at < {_sql_quote_literal(until.isoformat())}::timestamp")
         if cursor_updated_at is not None:
-            cursor_updated_at_sql = (
-                f"{_sql_quote_literal(cursor_updated_at.isoformat())}::timestamp"
-            )
+            cursor_updated_at_sql = f"{_sql_quote_literal(cursor_updated_at.isoformat())}::timestamp"
             cursor_id_sql = _sql_quote_literal(cursor_id or "")
-            where_parts.append(
-                "(c.updated_at < "
-                f"{cursor_updated_at_sql} OR (c.updated_at = {cursor_updated_at_sql} "
-                f"AND c.id < {cursor_id_sql}))"
-            )
+            where_parts.append(f"(c.updated_at < {cursor_updated_at_sql} OR (c.updated_at = {cursor_updated_at_sql} AND c.id < {cursor_id_sql}))")
 
         where_clause = " AND ".join(where_parts) if where_parts else "TRUE"
         limit_clause = f"LIMIT {int(limit)}" if limit is not None else ""
@@ -2179,9 +1988,7 @@ class IndexerRepository:
             {limit_clause}
             """)
 
-        conversation_ids = [
-            str(row.get("id") or "") for row in id_rows if row.get("id")
-        ]
+        conversation_ids = [str(row.get("id") or "") for row in id_rows if row.get("id")]
         if not conversation_ids:
             return []
 
@@ -2190,15 +1997,9 @@ class IndexerRepository:
             include={"user": True},
         )
         prisma_convs_by_id = {str(conv.id): conv for conv in prisma_convs}
-        ordered_conversations = [
-            prisma_convs_by_id[conversation_id]
-            for conversation_id in conversation_ids
-            if conversation_id in prisma_convs_by_id
-        ]
+        ordered_conversations = [prisma_convs_by_id[conversation_id] for conversation_id in conversation_ids if conversation_id in prisma_convs_by_id]
 
-        conversations = [
-            self._prisma_conversation_to_model(c) for c in ordered_conversations
-        ]
+        conversations = [self._prisma_conversation_to_model(c) for c in ordered_conversations]
         return await self.attach_message_snapshot_links_many(conversations)
 
     async def list_conversation_summaries(
@@ -2231,13 +2032,9 @@ class IndexerRepository:
             )
 
         if since is not None:
-            where_parts.append(
-                f"c.updated_at >= {_sql_quote_literal(since.isoformat())}::timestamp"
-            )
+            where_parts.append(f"c.updated_at >= {_sql_quote_literal(since.isoformat())}::timestamp")
         if until is not None:
-            where_parts.append(
-                f"c.updated_at < {_sql_quote_literal(until.isoformat())}::timestamp"
-            )
+            where_parts.append(f"c.updated_at < {_sql_quote_literal(until.isoformat())}::timestamp")
 
         where_clause = " AND ".join(where_parts)
         rows = await db.query_raw(f"""
@@ -2313,13 +2110,9 @@ class IndexerRepository:
             )
 
         if since is not None:
-            where_parts.append(
-                f"c.updated_at >= {_sql_quote_literal(since.isoformat())}::timestamp"
-            )
+            where_parts.append(f"c.updated_at >= {_sql_quote_literal(since.isoformat())}::timestamp")
         if until is not None:
-            where_parts.append(
-                f"c.updated_at < {_sql_quote_literal(until.isoformat())}::timestamp"
-            )
+            where_parts.append(f"c.updated_at < {_sql_quote_literal(until.isoformat())}::timestamp")
 
         where_clause = " AND ".join(where_parts)
         rows = await db.query_raw(f"""
@@ -2331,9 +2124,7 @@ class IndexerRepository:
             return 0
         return int(rows[0].get("conversation_count") or 0)
 
-    async def list_conversations_by_ids(
-        self, conversation_ids: list[str]
-    ) -> list[Conversation]:
+    async def list_conversations_by_ids(self, conversation_ids: list[str]) -> list[Conversation]:
         """List conversations by explicit IDs, newest first."""
         if not conversation_ids:
             return []
@@ -2374,9 +2165,7 @@ class IndexerRepository:
             return None
 
         # Add new message
-        messages: List[dict[str, Any]] = _normalize_message_payloads(
-            prisma_conv.messages
-        )
+        messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
         new_message: dict[str, Any] = {
             "role": role,
             "content": content,
@@ -2430,26 +2219,18 @@ class IndexerRepository:
         if not message_id and message_index is None:
             return False
         db = await self._get_db()
-        prisma_conv = await db.conversation.find_unique(
-            where={"id": conversation_id}
-        )
+        prisma_conv = await db.conversation.find_unique(where={"id": conversation_id})
         if not prisma_conv:
             return False
 
-        messages: List[dict[str, Any]] = _normalize_message_payloads(
-            prisma_conv.messages
-        )
+        messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
         target_msg: Optional[dict[str, Any]] = None
         if message_id:
             for m in messages:
                 if m.get("message_id") == message_id:
                     target_msg = m
                     break
-        if (
-            target_msg is None
-            and message_index is not None
-            and 0 <= message_index < len(messages)
-        ):
+        if target_msg is None and message_index is not None and 0 <= message_index < len(messages):
             target_msg = messages[message_index]
         if target_msg is None:
             return False
@@ -2484,9 +2265,7 @@ class IndexerRepository:
             )
             return False
 
-    async def update_conversation_title(
-        self, conversation_id: str, title: str
-    ) -> Optional[Conversation]:
+    async def update_conversation_title(self, conversation_id: str, title: str) -> Optional[Conversation]:
         """Update a conversation's title."""
         db = await self._get_db()
 
@@ -2501,9 +2280,7 @@ class IndexerRepository:
             logger.warning(f"Failed to update conversation title: {e}")
             return None
 
-    async def update_conversation_model(
-        self, conversation_id: str, model: str
-    ) -> Optional[Conversation]:
+    async def update_conversation_model(self, conversation_id: str, model: str) -> Optional[Conversation]:
         """Update a conversation's model."""
         db = await self._get_db()
 
@@ -2518,9 +2295,7 @@ class IndexerRepository:
             logger.warning(f"Failed to update conversation model: {e}")
             return None
 
-    async def update_conversation_tool_output_mode(
-        self, conversation_id: str, tool_output_mode: str
-    ) -> Optional[Conversation]:
+    async def update_conversation_tool_output_mode(self, conversation_id: str, tool_output_mode: str) -> Optional[Conversation]:
         """Update a conversation's tool output mode."""
         db = await self._get_db()
 
@@ -2538,22 +2313,16 @@ class IndexerRepository:
             logger.warning(f"Failed to update conversation tool output mode: {e}")
             return None
 
-    async def truncate_messages(
-        self, conversation_id: str, keep_count: int
-    ) -> Optional[Conversation]:
+    async def truncate_messages(self, conversation_id: str, keep_count: int) -> Optional[Conversation]:
         """Truncate messages to keep only the first N messages."""
         db = await self._get_db()
 
         try:
-            prisma_conv = await db.conversation.find_unique(
-                where={"id": conversation_id}
-            )
+            prisma_conv = await db.conversation.find_unique(where={"id": conversation_id})
             if not prisma_conv:
                 return None
 
-            messages: List[dict[str, Any]] = _normalize_message_payloads(
-                prisma_conv.messages
-            )
+            messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
             truncated = messages[:keep_count]
 
             # Recalculate tokens, including tool calls and events
@@ -2596,22 +2365,16 @@ class IndexerRepository:
         try:
             async with self._get_conversation_branch_lock(conversation_id):
                 async with db.tx() as tx:
-                    prisma_conv = await tx.conversation.find_unique(
-                        where={"id": conversation_id}
-                    )
+                    prisma_conv = await tx.conversation.find_unique(where={"id": conversation_id})
                     if not prisma_conv:
                         return None
 
-                    messages: List[dict[str, Any]] = _normalize_message_payloads(
-                        prisma_conv.messages
-                    )
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
 
                     if branch_point_index < 0 or branch_point_index > len(messages):
                         return None
 
-                    preserved: list[dict[str, Any]] = list(
-                        messages[branch_point_index:]
-                    )
+                    preserved: list[dict[str, Any]] = list(messages[branch_point_index:])
 
                     branch_id = str(uuid.uuid4())
                     await tx.conversationbranch.create(
@@ -2676,18 +2439,11 @@ class IndexerRepository:
                     if current_branch_id == branch_id:
                         return self._prisma_conversation_to_model(prisma_conv)
 
-                    target_branch = await tx.conversationbranch.find_unique(
-                        where={"id": branch_id}
-                    )
-                    if (
-                        not target_branch
-                        or target_branch.conversationId != conversation_id
-                    ):
+                    target_branch = await tx.conversationbranch.find_unique(where={"id": branch_id})
+                    if not target_branch or target_branch.conversationId != conversation_id:
                         return None
 
-                    messages: List[dict[str, Any]] = _normalize_message_payloads(
-                        prisma_conv.messages
-                    )
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
 
                     branch_point = target_branch.branchPointIndex
                     current_downstream = messages[branch_point:]
@@ -2701,12 +2457,8 @@ class IndexerRepository:
                                 },
                             )
                         else:
-                            user_id = (
-                                str(prisma_conv.userId) if prisma_conv.userId else None
-                            )
-                            parent_branch_id = getattr(
-                                target_branch, "parentBranchId", None
-                            )
+                            user_id = str(prisma_conv.userId) if prisma_conv.userId else None
+                            parent_branch_id = getattr(target_branch, "parentBranchId", None)
                             live_branch = await tx.conversationbranch.find_first(
                                 where={
                                     "conversationId": conversation_id,
@@ -2720,9 +2472,7 @@ class IndexerRepository:
                                 await tx.conversationbranch.update(
                                     where={"id": live_branch.id},
                                     data={
-                                        "preservedMessages": Json(
-                                            current_downstream
-                                        ),
+                                        "preservedMessages": Json(current_downstream),
                                         "updatedAt": datetime.utcnow(),
                                     },
                                 )
@@ -2734,17 +2484,13 @@ class IndexerRepository:
                                         "parentBranchId": parent_branch_id,
                                         "branchPointIndex": branch_point,
                                         "branchKind": None,
-                                        "preservedMessages": Json(
-                                            current_downstream
-                                        ),
+                                        "preservedMessages": Json(current_downstream),
                                         "createdByUserId": user_id,
                                     }
                                 )
 
                     base_messages = messages[:branch_point]
-                    target_preserved: List[dict[str, Any]] = (
-                        _normalize_message_payloads(target_branch.preservedMessages)
-                    )
+                    target_preserved: List[dict[str, Any]] = _normalize_message_payloads(target_branch.preservedMessages)
                     new_messages = base_messages + target_preserved
                     total_tokens = _estimate_conversation_tokens(new_messages)
 
@@ -2845,17 +2591,13 @@ class IndexerRepository:
                     if not prisma_conv:
                         return None, None
 
-                    messages: List[dict[str, Any]] = _normalize_message_payloads(
-                        prisma_conv.messages
-                    )
-                    target_index, target_message, target_event = (
-                        self._locate_visualization_event_in_messages(
-                            messages,
-                            message_id=message_id,
-                            message_index=message_index,
-                            event_index=event_index,
-                            expected_tool=expected_tool,
-                        )
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                    target_index, target_message, target_event = self._locate_visualization_event_in_messages(
+                        messages,
+                        message_id=message_id,
+                        message_index=message_index,
+                        event_index=event_index,
+                        expected_tool=expected_tool,
                     )
                     if target_index is None or not target_message or not target_event:
                         return None, [], None
@@ -2877,10 +2619,7 @@ class IndexerRepository:
                         order=[{"sequence": "asc"}],
                         include={"createdByUser": True},
                     )
-                    next_sequence = (
-                        max((int(getattr(branch, "sequence", 0) or 0) for branch in existing_branches), default=0)
-                        + 1
-                    )
+                    next_sequence = max((int(getattr(branch, "sequence", 0) or 0) for branch in existing_branches), default=0) + 1
 
                     if not existing_branches:
                         await tx.conversationvisualizationbranch.create(
@@ -3027,17 +2766,13 @@ class IndexerRepository:
                     if not prisma_conv:
                         return None, [], None, None
 
-                    messages: List[dict[str, Any]] = _normalize_message_payloads(
-                        prisma_conv.messages
-                    )
-                    target_index, _target_message, target_event = (
-                        self._locate_visualization_event_in_messages(
-                            messages,
-                            message_id=getattr(branch, "messageId", None),
-                            message_index=getattr(branch, "messageIndex", None),
-                            event_index=int(getattr(branch, "eventIndex", -1)),
-                            expected_tool=getattr(branch, "toolName", None),
-                        )
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                    target_index, _target_message, target_event = self._locate_visualization_event_in_messages(
+                        messages,
+                        message_id=getattr(branch, "messageId", None),
+                        message_index=getattr(branch, "messageIndex", None),
+                        event_index=int(getattr(branch, "eventIndex", -1)),
+                        expected_tool=getattr(branch, "toolName", None),
                     )
                     if target_index is None or not target_event:
                         return None, [], None, None
@@ -3140,13 +2875,8 @@ class IndexerRepository:
                     if not active_branch_id:
                         return self._prisma_conversation_to_model(prisma_conv)
 
-                    active_branch = await tx.conversationbranch.find_unique(
-                        where={"id": active_branch_id}
-                    )
-                    if (
-                        not active_branch
-                        or active_branch.conversationId != conversation_id
-                    ):
+                    active_branch = await tx.conversationbranch.find_unique(where={"id": active_branch_id})
+                    if not active_branch or active_branch.conversationId != conversation_id:
                         # Active branch pointer is stale; just clear it.
                         updated = await tx.conversation.update(
                             where={"id": conversation_id},
@@ -3158,9 +2888,7 @@ class IndexerRepository:
                         )
                         return self._prisma_conversation_to_model(updated)
 
-                    messages: List[dict[str, Any]] = _normalize_message_payloads(
-                        prisma_conv.messages
-                    )
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
                     branch_point = active_branch.branchPointIndex
                     downstream = messages[branch_point:]
 
@@ -3179,26 +2907,18 @@ class IndexerRepository:
                     live_branches = await tx.conversationbranch.find_many(
                         where={
                             "conversationId": conversation_id,
-                            "parentBranchId": getattr(
-                                active_branch, "parentBranchId", None
-                            ),
+                            "parentBranchId": getattr(active_branch, "parentBranchId", None),
                             "branchPointIndex": branch_point,
                             "branchKind": None,
                         },
                         order=[{"createdAt": "desc"}],
                     )
                     live_branch = next(
-                        (
-                            branch
-                            for branch in live_branches
-                            if branch.id != active_branch_id
-                        ),
+                        (branch for branch in live_branches if branch.id != active_branch_id),
                         None,
                     )
                     if live_branch:
-                        target_preserved = _normalize_message_payloads(
-                            live_branch.preservedMessages
-                        )
+                        target_preserved = _normalize_message_payloads(live_branch.preservedMessages)
                         new_messages = messages[:branch_point] + target_preserved
                         total_tokens = _estimate_conversation_tokens(new_messages)
                         updated = await tx.conversation.update(
@@ -3241,15 +2961,11 @@ class IndexerRepository:
         try:
             async with self._get_conversation_branch_lock(conversation_id):
                 async with db.tx() as tx:
-                    branch = await tx.conversationbranch.find_unique(
-                        where={"id": branch_id}
-                    )
+                    branch = await tx.conversationbranch.find_unique(where={"id": branch_id})
                     if not branch or branch.conversationId != conversation_id:
                         return False
 
-                    conv = await tx.conversation.find_unique(
-                        where={"id": conversation_id}
-                    )
+                    conv = await tx.conversation.find_unique(where={"id": conversation_id})
                     if conv and getattr(conv, "activeBranchId", None) == branch_id:
                         await tx.conversation.update(
                             where={"id": conversation_id},
@@ -3319,9 +3035,7 @@ class IndexerRepository:
             logger.warning(f"Failed to upsert message snapshot link: {e}")
             return False
 
-    async def get_message_snapshot_link(
-        self, conversation_id: str, message_id: str
-    ) -> Optional[dict[str, Any]]:
+    async def get_message_snapshot_link(self, conversation_id: str, message_id: str) -> Optional[dict[str, Any]]:
         """Look up a single link by (conversation_id, message_id)."""
         if not message_id:
             return None
@@ -3349,15 +3063,11 @@ class IndexerRepository:
             "updated_at": link.updatedAt,
         }
 
-    async def get_message_snapshot_links_for_conversation(
-        self, conversation_id: str
-    ) -> dict[str, MessageSnapshotRestore]:
+    async def get_message_snapshot_links_for_conversation(self, conversation_id: str) -> dict[str, MessageSnapshotRestore]:
         """Return links keyed by message_id for one conversation."""
         db = await self._get_db()
         try:
-            links = await db.conversationmessagesnapshotlink.find_many(
-                where={"conversationId": conversation_id}
-            )
+            links = await db.conversationmessagesnapshotlink.find_many(where={"conversationId": conversation_id})
         except Exception as e:
             logger.warning(f"Failed to list message snapshot links: {e}")
             return {}
@@ -3370,16 +3080,12 @@ class IndexerRepository:
             )
         return out
 
-    async def attach_message_snapshot_links(
-        self, conversation: Optional[Conversation]
-    ) -> Optional[Conversation]:
+    async def attach_message_snapshot_links(self, conversation: Optional[Conversation]) -> Optional[Conversation]:
         """Decorate each message with its snapshot_restore metadata when present."""
         if conversation is None or not conversation.messages:
             return conversation
         try:
-            links = await self.get_message_snapshot_links_for_conversation(
-                conversation.id
-            )
+            links = await self.get_message_snapshot_links_for_conversation(conversation.id)
         except Exception:
             return conversation
         if not links:
@@ -3389,15 +3095,11 @@ class IndexerRepository:
                 msg.snapshot_restore = links[msg.message_id]
         return conversation
 
-    async def attach_message_snapshot_links_many(
-        self, conversations: list[Conversation]
-    ) -> list[Conversation]:
+    async def attach_message_snapshot_links_many(self, conversations: list[Conversation]) -> list[Conversation]:
         """Decorate a list of conversations with snapshot link metadata."""
         decorated: list[Conversation] = []
         for conversation in conversations:
-            decorated.append(
-                await self.attach_message_snapshot_links(conversation) or conversation
-            )
+            decorated.append(await self.attach_message_snapshot_links(conversation) or conversation)
         return decorated
 
     async def link_assistant_snapshot_tool_calls(
@@ -3415,11 +3117,7 @@ class IndexerRepository:
         if not conversation or not workspace_id or not conversation.messages:
             return
         last_msg = conversation.messages[-1]
-        if (
-            last_msg.role != "assistant"
-            or not last_msg.message_id
-            or not last_msg.events
-        ):
+        if last_msg.role != "assistant" or not last_msg.message_id or not last_msg.events:
             return
         snapshot_ids: list[str] = []
         for event in last_msg.events:
@@ -3454,15 +3152,11 @@ class IndexerRepository:
             restore_message_count=keep_count,
         )
 
-    def _prisma_branch_to_model(
-        self, prisma_branch: Any
-    ) -> Optional[ConversationBranch]:
+    def _prisma_branch_to_model(self, prisma_branch: Any) -> Optional[ConversationBranch]:
         """Convert Prisma ConversationBranch to Pydantic model."""
         if not prisma_branch:
             return None
-        preserved_raw = (
-            prisma_branch.preservedMessages if prisma_branch.preservedMessages else []
-        )
+        preserved_raw = prisma_branch.preservedMessages if prisma_branch.preservedMessages else []
         preserved_messages = self._parse_messages_json(preserved_raw)
         return ConversationBranch(
             id=prisma_branch.id,
@@ -3477,13 +3171,9 @@ class IndexerRepository:
             updated_at=prisma_branch.updatedAt,
         )
 
-    def _prisma_branch_to_summary(
-        self, prisma_branch: Any
-    ) -> ConversationBranchSummary:
+    def _prisma_branch_to_summary(self, prisma_branch: Any) -> ConversationBranchSummary:
         """Convert Prisma ConversationBranch to lightweight summary."""
-        preserved_raw = (
-            prisma_branch.preservedMessages if prisma_branch.preservedMessages else []
-        )
+        preserved_raw = prisma_branch.preservedMessages if prisma_branch.preservedMessages else []
         message_count = len(preserved_raw) if isinstance(preserved_raw, list) else 0
         user = getattr(prisma_branch, "createdByUser", None)
         return ConversationBranchSummary(
@@ -3499,9 +3189,7 @@ class IndexerRepository:
             created_at=prisma_branch.createdAt,
         )
 
-    def _prisma_visualization_branch_to_summary(
-        self, prisma_branch: Any
-    ) -> VisualizationBranchSummary:
+    def _prisma_visualization_branch_to_summary(self, prisma_branch: Any) -> VisualizationBranchSummary:
         """Convert Prisma ConversationVisualizationBranch to lightweight summary."""
         user = getattr(prisma_branch, "createdByUser", None)
         return VisualizationBranchSummary(
@@ -3524,7 +3212,6 @@ class IndexerRepository:
             return []
         result: List[ChatMessage] = []
         for m in _normalize_message_payloads(messages_data):
-
             events = None
             if "events" in m and m["events"]:
                 events = _normalize_message_events(m["events"])
@@ -3551,11 +3238,7 @@ class IndexerRepository:
                 ChatMessage(
                     role=m.get("role", "user"),
                     content=m.get("content", ""),
-                    timestamp=(
-                        datetime.fromisoformat(m["timestamp"])
-                        if "timestamp" in m
-                        else datetime.utcnow()
-                    ),
+                    timestamp=(datetime.fromisoformat(m["timestamp"]) if "timestamp" in m else datetime.utcnow()),
                     message_id=m.get("message_id"),
                     tool_calls=tool_calls,
                     events=events,
@@ -3582,9 +3265,7 @@ class IndexerRepository:
             True if user has access, False otherwise
         """
         db = await self._get_db()
-        conv = await db.conversation.find_unique(
-            where={"id": conversation_id}, include={"members": True}
-        )
+        conv = await db.conversation.find_unique(where={"id": conversation_id}, include={"members": True})
 
         if not conv:
             return False
@@ -3613,19 +3294,13 @@ class IndexerRepository:
             if workspace.ownerUserId == user_id:
                 return True
 
-            return any(
-                getattr(member, "userId", None) == user_id
-                for member in list(getattr(workspace, "members", []) or [])
-            )
+            return any(getattr(member, "userId", None) == user_id for member in list(getattr(workspace, "members", []) or []))
 
         # Allow access if conversation has no owner (legacy) or matches user
         if conv.userId is None or conv.userId == user_id:
             return True
 
-        return any(
-            getattr(member, "userId", None) == user_id
-            for member in list(getattr(conv, "members", []) or [])
-        )
+        return any(getattr(member, "userId", None) == user_id for member in list(getattr(conv, "members", []) or []))
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         """Delete a conversation."""
@@ -3644,13 +3319,9 @@ class IndexerRepository:
         db = await self._get_db()
 
         try:
-            deleted = await db.conversation.delete_many(
-                where={"workspaceId": workspace_id}
-            )
+            deleted = await db.conversation.delete_many(where={"workspaceId": workspace_id})
             count = getattr(deleted, "count", 0)
-            logger.info(
-                "Deleted %s conversations for workspace %s", count, workspace_id
-            )
+            logger.info("Deleted %s conversations for workspace %s", count, workspace_id)
             return int(count)
         except Exception as e:
             logger.warning(
@@ -3666,7 +3337,6 @@ class IndexerRepository:
         messages_data = _normalize_message_payloads(prisma_conv.messages)
         messages: List[ChatMessage] = []
         for m in messages_data:
-
             # Parse events if present; synthesize them for legacy tool_calls-only messages.
             events = None
             if "events" in m and m["events"]:
@@ -3697,11 +3367,7 @@ class IndexerRepository:
                 ChatMessage(
                     role=m.get("role", "user"),
                     content=m.get("content", ""),
-                    timestamp=(
-                        datetime.fromisoformat(m["timestamp"])
-                        if "timestamp" in m
-                        else datetime.utcnow()
-                    ),
+                    timestamp=(datetime.fromisoformat(m["timestamp"]) if "timestamp" in m else datetime.utcnow()),
                     message_id=m.get("message_id"),
                     tool_calls=tool_calls,
                     events=events,
@@ -3727,9 +3393,7 @@ class IndexerRepository:
             display_name=getattr(user, "displayName", None) if user else None,
             messages=messages,
             total_tokens=prisma_conv.totalTokens,
-            disabled_builtin_tool_ids=_normalize_string_list(
-                getattr(prisma_conv, "disabledBuiltinToolIds", [])
-            ),
+            disabled_builtin_tool_ids=_normalize_string_list(getattr(prisma_conv, "disabledBuiltinToolIds", [])),
             created_at=prisma_conv.createdAt,
             updated_at=prisma_conv.updatedAt,
             active_task_id=getattr(prisma_conv, "activeTaskId", None),
@@ -3741,9 +3405,7 @@ class IndexerRepository:
     # Background Chat Task Operations
     # -------------------------------------------------------------------------
 
-    async def create_chat_task(
-        self, conversation_id: str, user_message: str
-    ) -> ChatTask:
+    async def create_chat_task(self, conversation_id: str, user_message: str) -> ChatTask:
         """Create a new background chat task."""
         db = await self._get_db()
 
@@ -3760,9 +3422,7 @@ class IndexerRepository:
         )
 
         # Update conversation to track active task
-        await db.conversation.update(
-            where={"id": conversation_id}, data={"activeTaskId": prisma_task.id}
-        )
+        await db.conversation.update(where={"id": conversation_id}, data={"activeTaskId": prisma_task.id})
 
         return self._prisma_task_to_model(prisma_task)
 
@@ -3777,9 +3437,7 @@ class IndexerRepository:
 
         return self._prisma_task_to_model(prisma_task)
 
-    async def get_active_task_for_conversation(
-        self, conversation_id: str
-    ) -> Optional[ChatTask]:
+    async def get_active_task_for_conversation(self, conversation_id: str) -> Optional[ChatTask]:
         """Get the active (pending/running) task for a conversation."""
         db = await self._get_db()
 
@@ -3804,9 +3462,7 @@ class IndexerRepository:
 
         return self._prisma_task_to_model(prisma_task)
 
-    async def get_last_interrupted_task_for_conversation(
-        self, conversation_id: str
-    ) -> Optional[ChatTask]:
+    async def get_last_interrupted_task_for_conversation(self, conversation_id: str) -> Optional[ChatTask]:
         """Get an interrupted task only when it is the latest task for a conversation."""
         db = await self._get_db()
 
@@ -3830,9 +3486,7 @@ class IndexerRepository:
 
         return await self.get_chat_task(latest_task_id)
 
-    async def get_interrupted_conversation_ids_for_workspace(
-        self, workspace_id: str
-    ) -> list[str]:
+    async def get_interrupted_conversation_ids_for_workspace(self, workspace_id: str) -> list[str]:
         """Return conversation IDs whose latest task is interrupted in a workspace."""
         db = await self._get_db()
 
@@ -3850,19 +3504,11 @@ class IndexerRepository:
             WHERE latest.status = {_sql_quote_literal(ChatTaskStatus.interrupted.value)}
             """)
 
-        return [
-            str(row.get("conversation_id") or "").strip()
-            for row in rows
-            if str(row.get("conversation_id") or "").strip()
-        ]
+        return [str(row.get("conversation_id") or "").strip() for row in rows if str(row.get("conversation_id") or "").strip()]
 
-    async def get_workspace_task_state_summary(
-        self, workspace_ids: list[str]
-    ) -> tuple[set[str], set[str]]:
+    async def get_workspace_task_state_summary(self, workspace_ids: list[str]) -> tuple[set[str], set[str]]:
         """Return workspace IDs with live tasks and interrupted tasks."""
-        deduped_workspace_ids = [
-            wid.strip() for wid in dict.fromkeys(workspace_ids) if wid and wid.strip()
-        ]
+        deduped_workspace_ids = [wid.strip() for wid in dict.fromkeys(workspace_ids) if wid and wid.strip()]
         if not deduped_workspace_ids:
             return set(), set()
 
@@ -3879,9 +3525,7 @@ class IndexerRepository:
             distinct=["workspaceId"],
         )  # type: ignore[arg-type]
 
-        workspace_id_clause = ", ".join(
-            _sql_quote_literal(workspace_id) for workspace_id in deduped_workspace_ids
-        )
+        workspace_id_clause = ", ".join(_sql_quote_literal(workspace_id) for workspace_id in deduped_workspace_ids)
         interrupted_rows = await db.query_raw(f"""
             SELECT DISTINCT latest.workspace_id
             FROM (
@@ -3897,11 +3541,7 @@ class IndexerRepository:
             WHERE latest.status = {_sql_quote_literal(ChatTaskStatus.interrupted.value)}
             """)
 
-        live_workspace_ids = {
-            str(getattr(row, "workspaceId", "") or "")
-            for row in live_rows
-            if getattr(row, "workspaceId", None)
-        }
+        live_workspace_ids = {str(getattr(row, "workspaceId", "") or "") for row in live_rows if getattr(row, "workspaceId", None)}
         interrupted_workspace_ids = {
             str((row.get("workspace_id") if isinstance(row, dict) else None) or "")
             for row in interrupted_rows
@@ -3910,9 +3550,7 @@ class IndexerRepository:
 
         return live_workspace_ids, interrupted_workspace_ids
 
-    async def update_chat_task_status(
-        self, task_id: str, status: ChatTaskStatus, error_message: Optional[str] = None
-    ) -> Optional[ChatTask]:
+    async def update_chat_task_status(self, task_id: str, status: ChatTaskStatus, error_message: Optional[str] = None) -> Optional[ChatTask]:
         """Update a chat task's status."""
         db = await self._get_db()
 
@@ -3935,7 +3573,8 @@ class IndexerRepository:
 
         try:
             prisma_task = await db.chattask.update(
-                where={"id": task_id}, data=update_data  # type: ignore[arg-type]
+                where={"id": task_id},
+                data=update_data,  # type: ignore[arg-type]
             )
 
             # Clear active task from conversation for terminal states
@@ -3975,9 +3614,7 @@ class IndexerRepository:
         # Sanitize content for PostgreSQL storage (remove null bytes)
         content = _sanitize_for_postgres(content)
         normalized_events = _normalize_message_events(events) or []
-        sanitized_events = cast(
-            List[dict], _sanitize_json_for_postgres(normalized_events)
-        )
+        sanitized_events = cast(List[dict], _sanitize_json_for_postgres(normalized_events))
         sanitized_tool_calls = cast(List[dict], _sanitize_json_for_postgres(tool_calls))
 
         # Increment version for change detection
@@ -4020,9 +3657,7 @@ class IndexerRepository:
         # Sanitize content for PostgreSQL storage (remove null bytes)
         response_content = _sanitize_for_postgres(response_content)
         normalized_final_events = _normalize_message_events(final_events) or []
-        sanitized_final_events = cast(
-            List[dict], _sanitize_json_for_postgres(normalized_final_events)
-        )
+        sanitized_final_events = cast(List[dict], _sanitize_json_for_postgres(normalized_final_events))
         sanitized_tool_calls = cast(List[dict], _sanitize_json_for_postgres(tool_calls))
 
         # Final version increment to signal completion
@@ -4121,9 +3756,7 @@ class IndexerRepository:
                 )
                 # Clear from conversation
                 if task.conversationId:
-                    await db.conversation.update(
-                        where={"id": task.conversationId}, data={"activeTaskId": None}
-                    )
+                    await db.conversation.update(where={"id": task.conversationId}, data={"activeTaskId": None})
                 count += 1
 
             if count > 0:
@@ -4167,11 +3800,7 @@ class IndexerRepository:
             )
             sanitized_debug_metadata = cast(
                 Optional[dict[str, Any]],
-                (
-                    _sanitize_json_for_postgres(debug_metadata)
-                    if debug_metadata is not None
-                    else None
-                ),
+                (_sanitize_json_for_postgres(debug_metadata) if debug_metadata is not None else None),
             )
 
             create_data: dict[str, Any] = {
@@ -4188,11 +3817,7 @@ class IndexerRepository:
                 "toolScopePrompt": _sanitize_for_postgres(tool_scope_prompt),
                 "promptAdditions": _sanitize_for_postgres(prompt_additions),
                 "turnReminders": _sanitize_for_postgres(turn_reminders),
-                "debugMetadata": (
-                    Json(sanitized_debug_metadata)
-                    if sanitized_debug_metadata is not None
-                    else None
-                ),
+                "debugMetadata": (Json(sanitized_debug_metadata) if sanitized_debug_metadata is not None else None),
                 "messageIndex": message_index,
             }
             if chat_task_id:
@@ -4200,9 +3825,7 @@ class IndexerRepository:
             if user_id:
                 create_data["userId"] = user_id
 
-            prisma_record = await db.providerpromptdebugrecord.create(
-                data=cast(Any, create_data)
-            )
+            prisma_record = await db.providerpromptdebugrecord.create(data=cast(Any, create_data))
             return self._prisma_provider_prompt_debug_to_model(prisma_record)
         except Exception as e:
             logger.warning("Failed to persist provider prompt debug record: %s", e)
@@ -4230,10 +3853,7 @@ class IndexerRepository:
             order={"createdAt": "desc"},
             take=max(1, min(limit, 200)),
         )
-        return [
-            self._prisma_provider_prompt_debug_to_model(record)
-            for record in prisma_records
-        ]
+        return [self._prisma_provider_prompt_debug_to_model(record) for record in prisma_records]
 
     def _prisma_task_to_model(self, prisma_task: Any) -> ChatTask:
         """Convert Prisma ChatTask to Pydantic model."""
@@ -4263,9 +3883,7 @@ class IndexerRepository:
             last_update_at=prisma_task.lastUpdateAt,
         )
 
-    def _prisma_provider_prompt_debug_to_model(
-        self, prisma_record: Any
-    ) -> ProviderPromptDebugRecord:
+    def _prisma_provider_prompt_debug_to_model(self, prisma_record: Any) -> ProviderPromptDebugRecord:
         """Convert Prisma ProviderPromptDebugRecord to Pydantic model."""
         rendered_provider_messages = list(prisma_record.renderedProviderMessages or [])
         rendered_chat_history = list(prisma_record.renderedChatHistory or [])
@@ -4346,36 +3964,22 @@ class IndexerRepository:
             # Clean up orphaned filesystem embeddings
             if valid_filesystem_indexes:
                 valid_list = ", ".join(f"'{n}'" for n in valid_filesystem_indexes)
-                result = await db.execute_raw(
-                    f"DELETE FROM filesystem_embeddings WHERE index_name NOT IN ({valid_list})"
-                )
-                deleted["filesystem_embeddings"] = (
-                    result if isinstance(result, int) else 0
-                )
+                result = await db.execute_raw(f"DELETE FROM filesystem_embeddings WHERE index_name NOT IN ({valid_list})")
+                deleted["filesystem_embeddings"] = result if isinstance(result, int) else 0
 
-                result = await db.execute_raw(
-                    f"DELETE FROM filesystem_file_metadata WHERE index_name NOT IN ({valid_list})"
-                )
-                deleted["filesystem_file_metadata"] = (
-                    result if isinstance(result, int) else 0
-                )
+                result = await db.execute_raw(f"DELETE FROM filesystem_file_metadata WHERE index_name NOT IN ({valid_list})")
+                deleted["filesystem_file_metadata"] = result if isinstance(result, int) else 0
             else:
                 # No valid indexes - delete all orphans (only if tables have data)
                 result = await db.execute_raw("DELETE FROM filesystem_embeddings")
-                deleted["filesystem_embeddings"] = (
-                    result if isinstance(result, int) else 0
-                )
+                deleted["filesystem_embeddings"] = result if isinstance(result, int) else 0
                 result = await db.execute_raw("DELETE FROM filesystem_file_metadata")
-                deleted["filesystem_file_metadata"] = (
-                    result if isinstance(result, int) else 0
-                )
+                deleted["filesystem_file_metadata"] = result if isinstance(result, int) else 0
 
             # Clean up orphaned schema embeddings
             if valid_schema_indexes:
                 valid_list = ", ".join(f"'{n}'" for n in valid_schema_indexes)
-                result = await db.execute_raw(
-                    f"DELETE FROM schema_embeddings WHERE index_name NOT IN ({valid_list})"
-                )
+                result = await db.execute_raw(f"DELETE FROM schema_embeddings WHERE index_name NOT IN ({valid_list})")
                 deleted["schema_embeddings"] = result if isinstance(result, int) else 0
             else:
                 result = await db.execute_raw("DELETE FROM schema_embeddings")
@@ -4384,30 +3988,20 @@ class IndexerRepository:
             # Clean up orphaned PDM embeddings
             if valid_pdm_indexes:
                 valid_list = ", ".join(f"'{n}'" for n in valid_pdm_indexes)
-                result = await db.execute_raw(
-                    f"DELETE FROM pdm_embeddings WHERE index_name NOT IN ({valid_list})"
-                )
+                result = await db.execute_raw(f"DELETE FROM pdm_embeddings WHERE index_name NOT IN ({valid_list})")
                 deleted["pdm_embeddings"] = result if isinstance(result, int) else 0
 
-                result = await db.execute_raw(
-                    f"DELETE FROM pdm_document_metadata WHERE index_name NOT IN ({valid_list})"
-                )
-                deleted["pdm_document_metadata"] = (
-                    result if isinstance(result, int) else 0
-                )
+                result = await db.execute_raw(f"DELETE FROM pdm_document_metadata WHERE index_name NOT IN ({valid_list})")
+                deleted["pdm_document_metadata"] = result if isinstance(result, int) else 0
             else:
                 result = await db.execute_raw("DELETE FROM pdm_embeddings")
                 deleted["pdm_embeddings"] = result if isinstance(result, int) else 0
                 result = await db.execute_raw("DELETE FROM pdm_document_metadata")
-                deleted["pdm_document_metadata"] = (
-                    result if isinstance(result, int) else 0
-                )
+                deleted["pdm_document_metadata"] = result if isinstance(result, int) else 0
 
             total = sum(deleted.values())
             if total > 0:
-                logger.info(
-                    f"Garbage collection: removed {total} orphaned embedding(s): {deleted}"
-                )
+                logger.info(f"Garbage collection: removed {total} orphaned embedding(s): {deleted}")
             return deleted
 
         except Exception as e:

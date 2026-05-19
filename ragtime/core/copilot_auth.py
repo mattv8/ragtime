@@ -28,12 +28,8 @@ def _extract_copilot_token_state(
 ) -> tuple[str, str, str, Optional[datetime]]:
     """Extract normalized Copilot token state from settings."""
     access_token = (getattr(settings, "github_copilot_access_token", "") or "").strip()
-    refresh_token = (
-        getattr(settings, "github_copilot_refresh_token", "") or ""
-    ).strip()
-    oauth_refresh_token = (
-        getattr(settings, "github_copilot_oauth_refresh_token", "") or ""
-    ).strip()
+    refresh_token = (getattr(settings, "github_copilot_refresh_token", "") or "").strip()
+    oauth_refresh_token = (getattr(settings, "github_copilot_oauth_refresh_token", "") or "").strip()
     expires_at = getattr(settings, "github_copilot_token_expires_at", None)
     return access_token, refresh_token, oauth_refresh_token, expires_at
 
@@ -164,9 +160,7 @@ async def _refresh_oauth_access_token(
 
     error = data.get("error")
     if error:
-        raise ValueError(
-            f"OAuth refresh failed: {error} - {data.get('error_description', '')}"
-        )
+        raise ValueError(f"OAuth refresh failed: {error} - {data.get('error_description', '')}")
 
     new_access_token = str(data.get("access_token", "")).strip()
     if not new_access_token:
@@ -192,9 +186,7 @@ async def _try_oauth_refresh_and_exchange(
     Settings/cache are updated on success.
     """
     try:
-        new_ghu, rotated_refresh, _oauth_expires = await _refresh_oauth_access_token(
-            oauth_refresh_token
-        )
+        new_ghu, rotated_refresh, _oauth_expires = await _refresh_oauth_access_token(oauth_refresh_token)
     except Exception as exc:
         logger.warning("OAuth refresh_token grant failed: %s", exc)
         return None
@@ -237,9 +229,7 @@ async def ensure_copilot_token_fresh(
     `mode="background"` schedules refresh asynchronously and returns quickly.
     """
     settings = await repository.get_settings()
-    access_token, refresh_token, oauth_refresh_token, expires_at = (
-        _extract_copilot_token_state(settings)
-    )
+    access_token, refresh_token, oauth_refresh_token, expires_at = _extract_copilot_token_state(settings)
 
     if mode == "background":
         if _should_refresh_in_background(
@@ -255,9 +245,7 @@ async def ensure_copilot_token_fresh(
         # Recover when only the long-lived GitHub OAuth token is present.
         if refresh_token:
             try:
-                new_token, new_expires = await exchange_github_token_for_copilot_token(
-                    refresh_token
-                )
+                new_token, new_expires = await exchange_github_token_for_copilot_token(refresh_token)
                 await _persist_copilot_token_state(
                     access_token=new_token,
                     expires_at=new_expires,
@@ -288,17 +276,13 @@ async def ensure_copilot_token_fresh(
         # Re-read settings after acquiring the lock; another caller may have
         # already completed the refresh while we were waiting.
         settings = await repository.get_settings()
-        access_token, refresh_token, oauth_refresh_token, expires_at = (
-            _extract_copilot_token_state(settings)
-        )
+        access_token, refresh_token, oauth_refresh_token, expires_at = _extract_copilot_token_state(settings)
 
         if _is_token_fresh(expires_at):
             return access_token  # Refreshed by another caller.
 
         try:
-            new_token, new_expires = await exchange_github_token_for_copilot_token(
-                refresh_token
-            )
+            new_token, new_expires = await exchange_github_token_for_copilot_token(refresh_token)
             await _persist_copilot_token_state(
                 access_token=new_token,
                 expires_at=new_expires,

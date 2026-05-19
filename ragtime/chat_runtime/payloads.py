@@ -1,12 +1,11 @@
 """Shared payload helpers for chat diagnostics tool results."""
 
-
 from __future__ import annotations
 
 from typing import Any, Mapping
 
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID, CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS
+
 
 def resolve_chat_diagnostic_conversation_id(
     conversation_id: str | None,
@@ -63,11 +62,7 @@ def build_chat_diagnostic_command_payload(
 
     payload: dict[str, Any] = {
         "tool": CHAT_DIAGNOSTIC_COMMAND_TOOL_ID,
-        "status": (
-            "command_timed_out"
-            if timed_out
-            else "command_failed" if command_failed else "completed"
-        ),
+        "status": ("command_timed_out" if timed_out else "command_failed" if command_failed else "completed"),
         "command": (command or "").strip(),
         "cwd": ".",
         "timeout_seconds": int(timeout_seconds),
@@ -82,9 +77,5 @@ def build_chat_diagnostic_command_payload(
     if reason:
         payload["reason"] = reason
     if command_failed:
-        payload["error"] = (
-            "Diagnostic command timed out."
-            if timed_out
-            else "Diagnostic command finished with an error."
-        )
+        payload["error"] = "Diagnostic command timed out." if timed_out else "Diagnostic command finished with an error."
     return payload

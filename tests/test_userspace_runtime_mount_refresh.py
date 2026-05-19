@@ -9,6 +9,10 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
+from ragtime.userspace.models import UpdateUserspaceMountSourceRequest
+from ragtime.userspace.runtime_service import UserSpaceRuntimeService
+from ragtime.userspace.service import UserSpaceService
+
 if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package = types.ModuleType("ragtime.rag")
     fake_prompts_module = types.ModuleType("ragtime.rag.prompts")
@@ -16,10 +20,6 @@ if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package.prompts = fake_prompts_module
     sys.modules.setdefault("ragtime.rag", fake_rag_package)
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
-
-from ragtime.userspace.runtime_service import UserSpaceRuntimeService
-from ragtime.userspace.models import UpdateUserspaceMountSourceRequest
-from ragtime.userspace.service import UserSpaceService
 
 _NOW = datetime(2026, 5, 8, tzinfo=timezone.utc)
 
@@ -151,11 +151,7 @@ class _FakeMountSourceDisableDb:
 
     async def query_raw(self, query: str, mount_source_id: str) -> list[dict[str, Any]]:
         if "SELECT id FROM workspace_mounts" in query:
-            return [
-                {"id": str(getattr(row, "id", ""))}
-                for row in self.workspacemount.rows
-                if str(getattr(row, "mountSourceId", "")) == str(mount_source_id)
-            ]
+            return [{"id": str(getattr(row, "id", ""))} for row in self.workspacemount.rows if str(getattr(row, "mountSourceId", "")) == str(mount_source_id)]
         return []
 
 
@@ -254,9 +250,7 @@ class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
                 user_id="admin-1",
             )
 
-        updated_mount_ids = {
-            str(call["where"].get("id") or "") for call in db.workspacemount.update_calls
-        }
+        updated_mount_ids = {str(call["where"].get("id") or "") for call in db.workspacemount.update_calls}
         self.assertEqual(updated_mount_ids, {"mount-enabled-1", "mount-enabled-2"})
         self.assertEqual(len(db.workspace.update_calls), 2)
         self.assertEqual(
@@ -296,11 +290,7 @@ class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch(
                 "ragtime.userspace.runtime_service.userspace_service.resolve_workspace_mounts_for_runtime",
-                AsyncMock(
-                    return_value=[
-                        {"target_path": "mnt", "source_local_path": "/tmp/mnt"}
-                    ]
-                ),
+                AsyncMock(return_value=[{"target_path": "mnt", "source_local_path": "/tmp/mnt"}]),
             ),
         ):
             notice = await service.refresh_workspace_mount_after_sync(
@@ -406,9 +396,7 @@ class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
 
         with patch(
             "ragtime.userspace.service.get_db",
-            AsyncMock(
-                return_value=_FakeMountWatchDb([syncing_mount, pending_mount])
-            ),
+            AsyncMock(return_value=_FakeMountWatchDb([syncing_mount, pending_mount])),
         ):
             mounts = await service.list_workspace_mounts("workspace-1", "user-1")
 

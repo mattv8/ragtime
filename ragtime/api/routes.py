@@ -66,16 +66,8 @@ _models_cache: dict[tuple, tuple[float, list[_OpenAPIModelEntry]]] = {}
 def _models_cache_key(app_settings: dict, default_provider: str) -> tuple:
     """Build a stable cache key for /v1/models responses."""
     sync_chat = bool(app_settings.get("openapi_sync_chat_models", True))
-    allowed_openapi = tuple(
-        str(v).strip()
-        for v in (app_settings.get("allowed_openapi_models") or [])
-        if str(v).strip()
-    )
-    allowed_chat = tuple(
-        str(v).strip()
-        for v in (app_settings.get("allowed_chat_models") or [])
-        if str(v).strip()
-    )
+    allowed_openapi = tuple(str(v).strip() for v in (app_settings.get("allowed_openapi_models") or []) if str(v).strip())
+    allowed_chat = tuple(str(v).strip() for v in (app_settings.get("allowed_chat_models") or []) if str(v).strip())
     llm_model = str(app_settings.get("llm_model", "") or "").strip()
     default_chat_model = str(app_settings.get("default_chat_model", "") or "").strip()
     return (
@@ -122,11 +114,7 @@ def _configured_openapi_model(app_settings: dict) -> str:
 def _configured_openapi_models(app_settings: dict) -> list[str]:
     """Return OpenAPI-visible model IDs in stable order."""
     configured = _configured_openapi_model(app_settings)
-    allowed = [
-        str(value).strip()
-        for value in (app_settings.get("allowed_chat_models") or [])
-        if str(value).strip()
-    ]
+    allowed = [str(value).strip() for value in (app_settings.get("allowed_chat_models") or []) if str(value).strip()]
 
     ordered: list[str] = []
     seen: set[str] = set()
@@ -156,9 +144,7 @@ def _normalize_runtime_model(provider: str, model: str) -> str:
         scoped_model = scoped_model.strip()
         if not scoped_provider or not scoped_model:
             return model_id
-        normalized_scoped_model = _normalize_runtime_model(
-            scoped_provider, scoped_model
-        )
+        normalized_scoped_model = _normalize_runtime_model(scoped_provider, scoped_model)
         return f"{scoped_provider}::{normalized_scoped_model}"
 
     provider_name = normalize_provider_name(provider)
@@ -196,8 +182,7 @@ def _openapi_display_id_for_parts(
 ) -> str:
     return compose_model_display_label(
         model_id=model_id,
-        provider_label=_normalize_label_part(model_provider_label)
-        or get_provider_label(provider),
+        provider_label=_normalize_label_part(model_provider_label) or get_provider_label(provider),
         family_label=family_label,
         display_name=display_name,
     )
@@ -239,9 +224,7 @@ def _build_openapi_model_entry(model: AvailableModel, default_provider: str) -> 
     runtime_model = _normalize_runtime_model(provider, f"{provider}::{base_model_id}")
     _runtime_provider, runtime_model_id = _split_runtime_model(provider, runtime_model)
     display_id = _openapi_display_id_from_available_model(model, provider)
-    owned_by = _normalize_label_part(model.model_provider_label) or get_provider_label(
-        provider
-    )
+    owned_by = _normalize_label_part(model.model_provider_label) or get_provider_label(provider)
     provider_scoped_model_id = f"{provider}::{base_model_id}"
     return _OpenAPIModelEntry(
         id=display_id,
@@ -368,11 +351,7 @@ async def _get_openapi_model_entries(
             return cached_model_entries
 
         sync_chat = app_settings.get("openapi_sync_chat_models", True)
-        allowed_openapi = {
-            str(value).strip()
-            for value in (app_settings.get("allowed_openapi_models") or [])
-            if str(value).strip()
-        } if not sync_chat else set()
+        allowed_openapi = {str(value).strip() for value in (app_settings.get("allowed_openapi_models") or []) if str(value).strip()} if not sync_chat else set()
 
         entries: list[_OpenAPIModelEntry] = []
         collapse_cross_provider_duplicates = not allowed_openapi
@@ -410,9 +389,7 @@ async def _get_openapi_model_entries(
 
                 _append_or_select(entry)
         except Exception as exc:
-            logger.warning(
-                "Failed to load available chat models for /v1/models: %s", exc
-            )
+            logger.warning("Failed to load available chat models for /v1/models: %s", exc)
 
         if collapse_cross_provider_duplicates and selected_slug_order:
             entries = [selected_by_slug[slug] for slug in selected_slug_order]
@@ -474,9 +451,7 @@ async def _resolve_effective_model(
         for entry in entries:
             if entry.runtime_model.casefold() == configured_runtime_model.casefold():
                 return entry.runtime_model, entry.id
-            if configured_openapi_model.casefold() in (
-                key.casefold() for key in entry.selection_keys
-            ):
+            if configured_openapi_model.casefold() in (key.casefold() for key in entry.selection_keys):
                 return entry.runtime_model, entry.id
         advertised_model = _normalize_openapi_model_id(
             default_provider,
@@ -589,13 +564,9 @@ async def list_models():
     """List available models (OpenAI-compatible)."""
     now = int(time.time())
     app_settings = await get_app_settings()
-    default_provider = normalize_provider_name(
-        str(app_settings.get("llm_provider", "openai") or "openai")
-    )
+    default_provider = normalize_provider_name(str(app_settings.get("llm_provider", "openai") or "openai"))
     model_entries = await _get_openapi_model_entries(app_settings, default_provider)
-    return ModelsResponse(
-        data=[_model_entry_to_info(entry, now) for entry in model_entries]
-    )
+    return ModelsResponse(data=[_model_entry_to_info(entry, now) for entry in model_entries])
 
 
 @router.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
@@ -612,14 +583,10 @@ async def chat_completions(request: ChatCompletionRequest):
                 status_code=503,
             )
         )
-        raise HTTPException(
-            status_code=503, detail="Service initializing, please retry"
-        )
+        raise HTTPException(status_code=503, detail="Service initializing, please retry")
 
     app_settings = await get_app_settings()
-    default_provider = normalize_provider_name(
-        str(app_settings.get("llm_provider", "openai") or "openai")
-    )
+    default_provider = normalize_provider_name(str(app_settings.get("llm_provider", "openai") or "openai"))
     effective_model, response_model = await _resolve_effective_model(
         request.model,
         app_settings,
@@ -669,15 +636,11 @@ async def chat_completions(request: ChatCompletionRequest):
     chat_history = []
     for msg in request.messages[:-1]:  # Exclude the current message
         if msg.role == "user":
-            chat_history.append(
-                HumanMessage(content=await rag._convert_message_to_langchain_async(msg))
-            )
+            chat_history.append(HumanMessage(content=await rag._convert_message_to_langchain_async(msg)))
         elif msg.role == "assistant":
             message_events = getattr(msg, "events", None)
             if message_events:
-                chat_history.extend(
-                    rebuild_tool_messages_from_events(message_events, 0)
-                )
+                chat_history.extend(rebuild_tool_messages_from_events(message_events, 0))
             elif msg.tool_calls:
                 # Reconstruct native AIMessage with tool_calls
                 chat_history.append(
@@ -825,9 +788,7 @@ async def _stream_response_tokens(
         return output
 
     # Stream tokens from the RAG agent
-    async for event in rag.process_query_stream(
-        user_message, chat_history, conversation_model=model
-    ):
+    async for event in rag.process_query_stream(user_message, chat_history, conversation_model=model):
         # Handle structured events (tool calls)
         if isinstance(event, dict):
             event_type = event.get("type")
@@ -854,12 +815,7 @@ async def _stream_response_tokens(
                 lang = _detect_code_language(tool_name, tool_input)
 
                 # Emit collapsible tool call block
-                block = (
-                    f'\n\n<details type="tool_call">\n'
-                    f"<summary>Calling {tool_name}...</summary>\n\n"
-                    f"```{lang}\n{input_display}\n```\n\n"
-                    f"</details>\n"
-                )
+                block = f'\n\n<details type="tool_call">\n<summary>Calling {tool_name}...</summary>\n\n```{lang}\n{input_display}\n```\n\n</details>\n'
                 yield make_chunk(block)
 
             elif event_type == "tool_end":
@@ -874,12 +830,7 @@ async def _stream_response_tokens(
                 output_display = _format_tool_output(str(tool_output))
 
                 # Emit result in a collapsible details block
-                block = (
-                    f'\n<details type="tool_result">\n'
-                    f"<summary>Result</summary>\n\n"
-                    f"```\n{output_display}\n```\n\n"
-                    f"</details>\n\n"
-                )
+                block = f'\n<details type="tool_result">\n<summary>Result</summary>\n\n```\n{output_display}\n```\n\n</details>\n\n'
                 yield make_chunk(block)
 
             elif event_type == "max_iterations_reached":
@@ -889,12 +840,7 @@ async def _stream_response_tokens(
                 # Reasoning/thinking content - emit as collapsible details block
                 reasoning_text = event.get("content", "")
                 if reasoning_text:
-                    block = (
-                        f'\n<details type="reasoning">\n'
-                        f"<summary>Thinking...</summary>\n\n"
-                        f"{reasoning_text}\n\n"
-                        f"</details>\n"
-                    )
+                    block = f'\n<details type="reasoning">\n<summary>Thinking...</summary>\n\n{reasoning_text}\n\n</details>\n'
                     yield make_chunk(block)
 
         else:

@@ -77,9 +77,7 @@ async def ensure_pgvector_extension(logger_override=None) -> bool:
 
     try:
         db = await get_db()
-        result = await db.query_raw(
-            "SELECT 1 FROM pg_extension WHERE extname = 'vector'"
-        )
+        result = await db.query_raw("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
 
         if not result:
             log.info("pgvector extension not found, attempting to create...")
@@ -131,23 +129,14 @@ async def ensure_embedding_column(
         dimension_changed = current_dim is not None and current_dim != embedding_dim
 
         if not result:
-            log.info(
-                f"Adding embedding column to {table_name} (vector({embedding_dim}))"
-            )
-            await db.execute_raw(
-                f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS embedding vector({embedding_dim})"
-            )
+            log.info(f"Adding embedding column to {table_name} (vector({embedding_dim}))")
+            await db.execute_raw(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS embedding vector({embedding_dim})")
         elif dimension_changed:
-            log.warning(
-                f"Embedding dimension changed for {table_name}: {current_dim} -> {embedding_dim}. "
-                "Clearing existing embeddings and updating column."
-            )
+            log.warning(f"Embedding dimension changed for {table_name}: {current_dim} -> {embedding_dim}. Clearing existing embeddings and updating column.")
             # Must clear existing embeddings before changing dimension - vectors can't be cast
             await db.execute_raw(f"UPDATE {table_name} SET embedding = NULL")
             await db.execute_raw(f"DROP INDEX IF EXISTS {index_name}")
-            await db.execute_raw(
-                f"ALTER TABLE {table_name} ALTER COLUMN embedding TYPE vector({embedding_dim})"
-            )
+            await db.execute_raw(f"ALTER TABLE {table_name} ALTER COLUMN embedding TYPE vector({embedding_dim})")
 
         if embedding_dim > max_index_dim:
             log.warning(
@@ -166,9 +155,7 @@ async def ensure_embedding_column(
 
         if dimension_changed or not index_info:
             await db.execute_raw(f"DROP INDEX IF EXISTS {index_name}")
-            log.info(
-                f"Creating IVFFlat index for {table_name} embeddings with dimension {embedding_dim}"
-            )
+            log.info(f"Creating IVFFlat index for {table_name} embeddings with dimension {embedding_dim}")
             await db.execute_raw(f"""
                 CREATE INDEX {index_name}
                 ON {table_name}
@@ -289,11 +276,7 @@ async def embed_documents_subbatched(
 
         # Log progress for large batches
         if total > sub_batch_size * 2:
-            log.debug(
-                f"Embedded sub-batch {batch_start // sub_batch_size + 1}/"
-                f"{(total + sub_batch_size - 1) // sub_batch_size} "
-                f"({batch_end}/{total} chunks)"
-            )
+            log.debug(f"Embedded sub-batch {batch_start // sub_batch_size + 1}/{(total + sub_batch_size - 1) // sub_batch_size} ({batch_end}/{total} chunks)")
 
     return all_embeddings
 
@@ -323,8 +306,7 @@ async def _embed_documents_guarded(
                 return await asyncio.wait_for(embed_call, timeout=timeout_seconds)
             except asyncio.TimeoutError as exc:
                 raise EmbeddingBatchTimeoutError(
-                    "Embedding provider timed out after "
-                    f"{timeout_seconds:.0f} seconds while processing {len(texts)} chunks"
+                    f"Embedding provider timed out after {timeout_seconds:.0f} seconds while processing {len(texts)} chunks"
                 ) from exc
         return await embed_call
 
@@ -358,9 +340,7 @@ async def get_embeddings_model(
         from ragtime.core.ollama import KEEP_ALIVE, NUM_GPU
 
         base_url = _get_setting(settings, "ollama_base_url", "http://localhost:11434")
-        return OllamaEmbeddings(
-            model=model, base_url=base_url, num_gpu=NUM_GPU, keep_alive=KEEP_ALIVE
-        )
+        return OllamaEmbeddings(model=model, base_url=base_url, num_gpu=NUM_GPU, keep_alive=KEEP_ALIVE)
 
     if provider == "openai":
         from langchain_openai import OpenAIEmbeddings
@@ -382,12 +362,7 @@ async def get_embeddings_model(
     if provider == "llama_cpp":
         from langchain_openai import OpenAIEmbeddings
 
-        base_url = str(
-            _get_setting(
-                settings, "llama_cpp_base_url", "http://host.docker.internal:8081"
-            )
-            or "http://host.docker.internal:8081"
-        ).rstrip("/")
+        base_url = str(_get_setting(settings, "llama_cpp_base_url", "http://host.docker.internal:8081") or "http://host.docker.internal:8081").rstrip("/")
         return OpenAIEmbeddings(
             model=model,
             api_key="llama-cpp-local",
@@ -398,15 +373,8 @@ async def get_embeddings_model(
     if provider == "lmstudio":
         from langchain_openai import OpenAIEmbeddings
 
-        base_url = str(
-            _get_setting(
-                settings, "lmstudio_base_url", "http://host.docker.internal:1234"
-            )
-            or "http://host.docker.internal:1234"
-        ).rstrip("/")
-        api_key = str(
-            _get_setting(settings, "lmstudio_api_key", "") or "lmstudio-local"
-        )
+        base_url = str(_get_setting(settings, "lmstudio_base_url", "http://host.docker.internal:1234") or "http://host.docker.internal:1234").rstrip("/")
+        api_key = str(_get_setting(settings, "lmstudio_api_key", "") or "lmstudio-local")
         return OpenAIEmbeddings(
             model=model,
             api_key=api_key,
@@ -417,10 +385,7 @@ async def get_embeddings_model(
     if provider == "omlx":
         from langchain_openai import OpenAIEmbeddings
 
-        base_url = str(
-            _get_setting(settings, "omlx_base_url", "http://host.docker.internal:8000")
-            or "http://host.docker.internal:8000"
-        ).rstrip("/")
+        base_url = str(_get_setting(settings, "omlx_base_url", "http://host.docker.internal:8000") or "http://host.docker.internal:8000").rstrip("/")
         api_key = str(_get_setting(settings, "omlx_api_key", "") or "omlx-local")
         return OpenAIEmbeddings(
             model=model,
@@ -522,9 +487,7 @@ async def search_pgvector_embeddings(
         log.error(f"Error searching {table_name}: {e}")
         # Check if it's a pgvector not installed error
         if "vector" in str(e).lower() and "type" in str(e).lower():
-            raise RuntimeError(
-                "pgvector extension not installed. Run: CREATE EXTENSION IF NOT EXISTS vector;"
-            ) from e
+            raise RuntimeError("pgvector extension not installed. Run: CREATE EXTENSION IF NOT EXISTS vector;") from e
         raise
 
 

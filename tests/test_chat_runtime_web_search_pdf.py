@@ -1,12 +1,10 @@
 import unittest
-from datetime import datetime
-from datetime import timezone
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from ragtime.chat_runtime.service import ChatRuntimeService
-from ragtime.chat_runtime.service import _ChatDiagSession
+from ragtime.chat_runtime.service import ChatRuntimeService, _ChatDiagSession
 
 
 class ChatRuntimeWebSearchPdfTests(unittest.IsolatedAsyncioTestCase):
@@ -80,10 +78,7 @@ class ChatRuntimeWebSearchPdfTests(unittest.IsolatedAsyncioTestCase):
             if path == "/sessions/old-session/external-browse":
                 raise HTTPException(
                     status_code=502,
-                    detail=(
-                        "Chat diagnostics runtime manager request failed (404): "
-                        '{"detail":"Runtime session not found"}'
-                    ),
+                    detail=('Chat diagnostics runtime manager request failed (404): {"detail":"Runtime session not found"}'),
                 )
             if path == "/sessions/start":
                 return {"provider_session_id": "new-session"}
@@ -123,10 +118,7 @@ class ChatRuntimeWebSearchPdfTests(unittest.IsolatedAsyncioTestCase):
             if path == "/sessions/old-session/pdf-read":
                 raise HTTPException(
                     status_code=502,
-                    detail=(
-                        "Chat diagnostics runtime manager request failed (404): "
-                        '{"detail":"Runtime session not found"}'
-                    ),
+                    detail=('Chat diagnostics runtime manager request failed (404): {"detail":"Runtime session not found"}'),
                 )
             if path == "/sessions/start":
                 return {"provider_session_id": "new-session"}

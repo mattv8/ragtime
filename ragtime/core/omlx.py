@@ -87,9 +87,7 @@ def _clone_model_info(model: OmlxModelInfo) -> OmlxModelInfo:
         context_limit=model.context_limit,
         dimensions=model.dimensions,
         capabilities=list(model.capabilities) if model.capabilities else None,
-        supported_endpoints=(
-            list(model.supported_endpoints) if model.supported_endpoints else None
-        ),
+        supported_endpoints=(list(model.supported_endpoints) if model.supported_endpoints else None),
         model_type=model.model_type,
         engine_type=model.engine_type,
         loaded=model.loaded,
@@ -108,11 +106,7 @@ def _as_chat_model(model: OmlxModelInfo) -> OmlxModelInfo:
 
 
 def _model_type_tokens(model: OmlxModelInfo) -> set[str]:
-    return {
-        str(value or "").strip().lower()
-        for value in (model.model_type, model.engine_type)
-        if str(value or "").strip()
-    }
+    return {str(value or "").strip().lower() for value in (model.model_type, model.engine_type) if str(value or "").strip()}
 
 
 def _is_embedding_model(model: OmlxModelInfo) -> bool:
@@ -152,9 +146,7 @@ def _parse_status_model_row(row: dict[str, Any]) -> OmlxModelInfo | None:
     model = _parse_model_row(row)
     if model is None:
         return None
-    model.context_limit = _coerce_positive_int(
-        row.get("max_context_window") or row.get("max_tokens")
-    )
+    model.context_limit = _coerce_positive_int(row.get("max_context_window") or row.get("max_tokens"))
     return model
 
 
@@ -223,16 +215,12 @@ def _is_invalid_request_error(response: httpx.Response, text: str) -> bool:
     return error_type == "invalid_request_error" and text in error_message
 
 
-async def is_reachable(
-    base_url: str, api_key: str | None = None, timeout: float = 5.0
-) -> tuple[bool, Optional[str]]:
+async def is_reachable(base_url: str, api_key: str | None = None, timeout: float = 5.0) -> tuple[bool, Optional[str]]:
     """Check oMLX reachability using the standard OpenAI models endpoint."""
     normalized_base = normalize_base_url(base_url)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(
-                f"{normalized_base}/v1/models", headers=_auth_headers(api_key)
-            )
+            response = await client.get(f"{normalized_base}/v1/models", headers=_auth_headers(api_key))
             if response.is_success:
                 return True, None
             return (
@@ -258,27 +246,17 @@ async def list_models(base_url: str, api_key: str | None = None) -> list[OmlxMod
         raise ConnectionError(error or f"Cannot connect to oMLX at {normalized_base}")
 
     async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(
-            f"{normalized_base}/v1/models", headers=_auth_headers(api_key)
-        )
+        response = await client.get(f"{normalized_base}/v1/models", headers=_auth_headers(api_key))
         if not response.is_success:
             raise RuntimeError(_extract_error_message(response))
-        return [
-            info
-            for row in _extract_rows(response.json())
-            if (info := _parse_model_row(row)) is not None
-        ]
+        return [info for row in _extract_rows(response.json()) if (info := _parse_model_row(row)) is not None]
 
 
-async def list_status_models(
-    base_url: str, api_key: str | None = None
-) -> list[OmlxModelInfo]:
+async def list_status_models(base_url: str, api_key: str | None = None) -> list[OmlxModelInfo]:
     """List models with oMLX status metadata, including model_type."""
     normalized_base = normalize_base_url(base_url)
     async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(
-            f"{normalized_base}/v1/models/status", headers=_auth_headers(api_key)
-        )
+        response = await client.get(f"{normalized_base}/v1/models/status", headers=_auth_headers(api_key))
         if response.status_code == 404:
             return []
         response.raise_for_status()
@@ -288,22 +266,16 @@ async def list_status_models(
             models = payload.get("models")
             if isinstance(models, list):
                 rows = [row for row in models if isinstance(row, dict)]
-        return [
-            info for row in rows if (info := _parse_status_model_row(row)) is not None
-        ]
+        return [info for row in rows if (info := _parse_status_model_row(row)) is not None]
 
 
-async def list_chat_models(
-    base_url: str, api_key: str | None = None
-) -> list[OmlxModelInfo]:
+async def list_chat_models(base_url: str, api_key: str | None = None) -> list[OmlxModelInfo]:
     """List oMLX chat-capable models using endpoint capability probes."""
     chat_models, _embedding_models = await classify_models(base_url, api_key=api_key)
     return chat_models
 
 
-async def probe_chat_capability(
-    base_url: str, model: str, api_key: str | None = None
-) -> bool:
+async def probe_chat_capability(base_url: str, model: str, api_key: str | None = None) -> bool:
     """Probe /v1/chat/completions and return whether the model can chat."""
     normalized_base = normalize_base_url(base_url)
     model_id = str(model or "").strip()
@@ -327,9 +299,7 @@ async def probe_chat_capability(
         return response.is_success
 
 
-async def probe_embedding_dimension(
-    base_url: str, model: str, api_key: str | None = None
-) -> int | None:
+async def probe_embedding_dimension(base_url: str, model: str, api_key: str | None = None) -> int | None:
     """Probe /v1/embeddings and return the output vector length."""
     normalized_base = normalize_base_url(base_url)
     model_id = str(model or "").strip()
@@ -364,9 +334,7 @@ async def _classify_one_model(
 ) -> tuple[OmlxModelInfo | None, OmlxModelInfo | None]:
     async with semaphore:
         try:
-            dimensions = await probe_embedding_dimension(
-                base_url, model.id, api_key=api_key
-            )
+            dimensions = await probe_embedding_dimension(base_url, model.id, api_key=api_key)
         except Exception as exc:
             logger.debug(
                 "Failed to probe oMLX embedding dimensions for %s: %s",
@@ -381,21 +349,15 @@ async def _classify_one_model(
         embedding_model = _clone_model_info(model)
         embedding_model.dimensions = dimensions
         embedding_model.capabilities = ["embeddings"]
-        embedding_model.supported_endpoints = list(
-            OPENAI_COMPATIBLE_EMBEDDING_ENDPOINTS
-        )
+        embedding_model.supported_endpoints = list(OPENAI_COMPATIBLE_EMBEDDING_ENDPOINTS)
 
         if assume_embedding:
             return None, embedding_model
 
         try:
-            chat_capable = await probe_chat_capability(
-                base_url, model.id, api_key=api_key
-            )
+            chat_capable = await probe_chat_capability(base_url, model.id, api_key=api_key)
         except Exception as exc:
-            logger.debug(
-                "Failed to probe oMLX chat capability for %s: %s", model.id, exc
-            )
+            logger.debug("Failed to probe oMLX chat capability for %s: %s", model.id, exc)
             chat_capable = False
 
         if not chat_capable:
@@ -403,9 +365,7 @@ async def _classify_one_model(
 
         chat_model = _clone_model_info(embedding_model)
         chat_model.capabilities = ["chat", "embeddings"]
-        chat_model.supported_endpoints = list(
-            OPENAI_COMPATIBLE_CHAT_ENDPOINTS + OPENAI_COMPATIBLE_EMBEDDING_ENDPOINTS
-        )
+        chat_model.supported_endpoints = list(OPENAI_COMPATIBLE_CHAT_ENDPOINTS + OPENAI_COMPATIBLE_EMBEDDING_ENDPOINTS)
         return chat_model, embedding_model
 
 
@@ -436,15 +396,10 @@ async def classify_models(
         embedding_candidates = typed_embedding_models
         if extra_candidates:
             embedding_candidates = [
-                model
-                for model in models
-                if model.id in {candidate.id for candidate in typed_embedding_models}
-                or model.id in extra_candidates
+                model for model in models if model.id in {candidate.id for candidate in typed_embedding_models} or model.id in extra_candidates
             ]
     else:
-        embedding_candidates = [
-            model for model in models if model.id in extra_candidates
-        ]
+        embedding_candidates = [model for model in models if model.id in extra_candidates]
 
     semaphore = asyncio.Semaphore(CAPABILITY_PROBE_CONCURRENCY)
     results = await asyncio.gather(
@@ -459,17 +414,9 @@ async def classify_models(
             for model in embedding_candidates
         ]
     )
-    chat_models_by_id = {
-        chat.id: chat for chat, _embedding in results if chat is not None
-    }
-    embedding_models = [
-        embedding for _chat, embedding in results if embedding is not None
-    ]
-    embedding_only_ids = {
-        embedding.id
-        for chat, embedding in results
-        if embedding is not None and chat is None
-    }
+    chat_models_by_id = {chat.id: chat for chat, _embedding in results if chat is not None}
+    embedding_models = [embedding for _chat, embedding in results if embedding is not None]
+    embedding_only_ids = {embedding.id for chat, embedding in results if embedding is not None and chat is None}
     chat_models = []
     source_chat_models = typed_chat_models if typed_chat_models else models
     for model in source_chat_models:
@@ -502,9 +449,7 @@ async def list_embedding_models(
     return embedding_models
 
 
-async def get_model_context_length(
-    model: str, base_url: str, api_key: str | None = None
-) -> int | None:
+async def get_model_context_length(model: str, base_url: str, api_key: str | None = None) -> int | None:
     """Return context metadata for an oMLX model if discoverable."""
     _ = (model, base_url, api_key)
     return None

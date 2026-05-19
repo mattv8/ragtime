@@ -110,9 +110,7 @@ _WORKSPACE_BOOTSTRAP_GUIDANCE = (
     "(for example a package manager install step) or update "
     ".ragtime/runtime-entrypoint.json to use executables available in this runtime image."
 )
-_NPM_DEBUG_LOG_PATH_RE = re.compile(
-    r"A complete log of this run can be found in:\s*(?P<path>/[^\s]+)"
-)
+_NPM_DEBUG_LOG_PATH_RE = re.compile(r"A complete log of this run can be found in:\s*(?P<path>/[^\s]+)")
 _PDF_CONTENT_TYPES = {
     "application/pdf",
     "application/x-pdf",
@@ -182,9 +180,7 @@ class PlaywrightBrokerSlot:
     slot_id: int
     process: asyncio.subprocess.Process | None = None
     stderr_task: asyncio.Task[None] | None = None
-    stderr_lines: deque[str] = field(
-        default_factory=lambda: deque(maxlen=_PLAYWRIGHT_BROKER_STDERR_MAX_LINES)
-    )
+    stderr_lines: deque[str] = field(default_factory=lambda: deque(maxlen=_PLAYWRIGHT_BROKER_STDERR_MAX_LINES))
 
 
 @dataclass
@@ -220,32 +216,20 @@ class WorkerService:
         self._provider_to_session: dict[str, str] = {}
         self._lock = asyncio.Lock()
         self._worker_name = os.getenv("RUNTIME_WORKER_NAME", "runtime-worker").strip()
-        self._base_url = (
-            os.getenv("RUNTIME_WORKER_BASE_URL", "http://runtime:8090")
-            .strip()
-            .rstrip("/")
-        )
-        self._root = Path(
-            os.getenv("RUNTIME_WORKSPACE_ROOT", "/data/_userspace")
-        ).resolve()
+        self._base_url = os.getenv("RUNTIME_WORKER_BASE_URL", "http://runtime:8090").strip().rstrip("/")
+        self._root = Path(os.getenv("RUNTIME_WORKSPACE_ROOT", "/data/_userspace")).resolve()
         self._devserver_processes: dict[str, asyncio.subprocess.Process] = {}
         self._devserver_log_paths: dict[str, Path] = {}
         self._devserver_log_handles: dict[str, Any] = {}
         self._object_storage_processes: dict[str, asyncio.subprocess.Process] = {}
         self._object_storage_env_overrides: dict[str, dict[str, str]] = {}
         self._bootstrap_retry_flags: dict[str, bool] = {}
-        self._devserver_start_timeout_seconds = int(
-            os.getenv("RUNTIME_DEVSERVER_START_TIMEOUT_SECONDS", "90")
-        )
-        self._runtime_bootstrap_timeout_seconds = int(
-            os.getenv("RUNTIME_BOOTSTRAP_TIMEOUT_SECONDS", "180")
-        )
+        self._devserver_start_timeout_seconds = int(os.getenv("RUNTIME_DEVSERVER_START_TIMEOUT_SECONDS", "90"))
+        self._runtime_bootstrap_timeout_seconds = int(os.getenv("RUNTIME_BOOTSTRAP_TIMEOUT_SECONDS", "180"))
         self._runtime_config_file = ".ragtime/runtime-entrypoint.json"
         self._startup_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_startup_locks: dict[str, asyncio.Lock] = {}
-        self._startup_semaphore = asyncio.Semaphore(
-            get_positive_int_env("RUNTIME_STARTUP_CONCURRENCY", 2)
-        )
+        self._startup_semaphore = asyncio.Semaphore(get_positive_int_env("RUNTIME_STARTUP_CONCURRENCY", 2))
         self._mount_materialization_semaphore = asyncio.Semaphore(
             get_positive_int_env(
                 "RUNTIME_MOUNT_MATERIALIZATION_CONCURRENCY",
@@ -256,13 +240,8 @@ class WorkerService:
             "RUNTIME_PLAYWRIGHT_BROKER_POOL_SIZE",
             _PLAYWRIGHT_BROKER_POOL_SIZE,
         )
-        self._playwright_slots = [
-            PlaywrightBrokerSlot(slot_id=index)
-            for index in range(self._playwright_pool_size)
-        ]
-        self._playwright_available_slots: asyncio.Queue[int] = asyncio.Queue(
-            maxsize=self._playwright_pool_size
-        )
+        self._playwright_slots = [PlaywrightBrokerSlot(slot_id=index) for index in range(self._playwright_pool_size)]
+        self._playwright_available_slots: asyncio.Queue[int] = asyncio.Queue(maxsize=self._playwright_pool_size)
         for index in range(self._playwright_pool_size):
             self._playwright_available_slots.put_nowait(index)
         self._playwright_request_counter = 0
@@ -278,9 +257,7 @@ class WorkerService:
             enforce_sqlite_managed=enforce_sqlite_managed,
         )
 
-    def _resolve_workspace_root(
-        self, workspace_id: str
-    ) -> tuple[Path, Path, SandboxSpec]:
+    def _resolve_workspace_root(self, workspace_id: str) -> tuple[Path, Path, SandboxSpec]:
         """Resolve workspace paths and build a SandboxSpec.
 
         Returns (workspace_root, workspace_files_path, sandbox_spec).
@@ -350,25 +327,10 @@ class WorkerService:
             include_dirs=include_dirs,
         )
         mount_prefixes = deduplicate_ancestor_paths(
-            [
-                repo_rel
-                for spec in mount_specs
-                if (
-                    repo_rel := workspace_mount_target_repo_relative_path(
-                        str(spec.get("target_path", "") or "")
-                    )
-                )
-            ]
+            [repo_rel for spec in mount_specs if (repo_rel := workspace_mount_target_repo_relative_path(str(spec.get("target_path", "") or "")))]
         )
         if mount_prefixes and active_workspace_path is None:
-            base_entries = [
-                entry
-                for entry in base_entries
-                if not any(
-                    workspace_path_matches_mount_prefix(entry.path, prefix)
-                    for prefix in mount_prefixes
-                )
-            ]
+            base_entries = [entry for entry in base_entries if not any(workspace_path_matches_mount_prefix(entry.path, prefix) for prefix in mount_prefixes)]
 
         mount_entries = await asyncio.to_thread(
             list_mount_source_tree_entries,
@@ -380,29 +342,18 @@ class WorkerService:
             entries_by_path.setdefault(entry.path, entry)
 
         return RuntimeWorkspaceFileListResponse(
-            files=[
-                self._workspace_file_info(entry)
-                for entry in sorted(
-                    entries_by_path.values(), key=lambda item: item.path
-                )
-            ]
+            files=[self._workspace_file_info(entry) for entry in sorted(entries_by_path.values(), key=lambda item: item.path)]
         )
 
     async def _active_runtime_workspace_path(self, workspace_id: str) -> Path | None:
         async with self._lock:
             active_sessions = [
-                session
-                for session in self._sessions.values()
-                if session.workspace_id == workspace_id
-                and session.state in {"running", "starting"}
+                session for session in self._sessions.values() if session.workspace_id == workspace_id and session.state in {"running", "starting"}
             ]
         if not active_sessions:
             return None
         session = max(active_sessions, key=lambda item: item.updated_at)
-        workspace_path = (
-            session.sandbox_spec.rootfs_path
-            / session.sandbox_spec.sandbox_workspace.lstrip("/")
-        )
+        workspace_path = session.sandbox_spec.rootfs_path / session.sandbox_spec.sandbox_workspace.lstrip("/")
         return workspace_path if workspace_path.is_dir() else None
 
     async def run_workspace_git_command(
@@ -441,16 +392,10 @@ class WorkerService:
             workspace_id,
             args=["status", "--porcelain", "--untracked-files=all"],
         )
-        current_commit_hash = (
-            commit_result[1].decode("utf-8", errors="replace").strip()
-            if commit_result[0] == 0
-            else ""
-        )
+        current_commit_hash = commit_result[1].decode("utf-8", errors="replace").strip() if commit_result[0] == 0 else ""
         return RuntimeWorkspaceScmStatusResponse(
             has_sync_scope_files=bool(sync_scope_paths),
-            has_uncommitted_changes=bool(
-                status_result[1].decode("utf-8", errors="replace").strip()
-            ),
+            has_uncommitted_changes=bool(status_result[1].decode("utf-8", errors="replace").strip()),
             current_commit_hash=current_commit_hash or None,
         )
 
@@ -476,11 +421,7 @@ class WorkerService:
 
     @staticmethod
     def _normalize_workspace_env(raw_env: dict[str, Any] | None) -> dict[str, str]:
-        return {
-            str(key): str(value)
-            for key, value in (raw_env or {}).items()
-            if str(key).strip()
-        }
+        return {str(key): str(value) for key, value in (raw_env or {}).items() if str(key).strip()}
 
     @staticmethod
     def _normalize_workspace_env_visibility(
@@ -507,9 +448,7 @@ class WorkerService:
 
     @staticmethod
     def _agent_shell_host_metadata_path(spec: SandboxSpec) -> Path:
-        return (
-            WorkerService._agent_shell_host_root(spec) / _AGENT_SHELL_ENV_METADATA_NAME
-        )
+        return WorkerService._agent_shell_host_root(spec) / _AGENT_SHELL_ENV_METADATA_NAME
 
     @staticmethod
     def _agent_shell_host_viewer_path(spec: SandboxSpec) -> Path:
@@ -522,11 +461,7 @@ class WorkerService:
                 {
                     "key": key,
                     "has_value": has_value,
-                    "sentinel": (
-                        _RAGTIME_REDACTED_ENV_SENTINEL_SET
-                        if has_value
-                        else _RAGTIME_REDACTED_ENV_SENTINEL_MISSING
-                    ),
+                    "sentinel": (_RAGTIME_REDACTED_ENV_SENTINEL_SET if has_value else _RAGTIME_REDACTED_ENV_SENTINEL_MISSING),
                 }
             )
         return {"items": items}
@@ -555,7 +490,7 @@ class WorkerService:
         for wrapper_name in ("printenv", "env"):
             wrapper_path = bin_dir / wrapper_name
             wrapper_path.write_text(
-                "#!/bin/sh\n" f'exec /usr/bin/python3 {wrapper_target} "$@"\n',
+                f'#!/bin/sh\nexec /usr/bin/python3 {wrapper_target} "$@"\n',
                 encoding="utf-8",
             )
             wrapper_path.chmod(0o755)
@@ -563,13 +498,8 @@ class WorkerService:
     def build_agent_shell_environment(self, session: WorkerSession) -> dict[str, str]:
         self._write_agent_shell_artifacts(session)
         return {
-            "PATH": (
-                f"{_AGENT_SHELL_BIN_DIR}:"
-                f"{os.getenv('PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin')}"
-            ),
-            _RAGTIME_REDACTED_ENV_FILE_VAR: str(
-                _AGENT_SHELL_ROOT / _AGENT_SHELL_ENV_METADATA_NAME
-            ),
+            "PATH": (f"{_AGENT_SHELL_BIN_DIR}:{os.getenv('PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin')}"),
+            _RAGTIME_REDACTED_ENV_FILE_VAR: str(_AGENT_SHELL_ROOT / _AGENT_SHELL_ENV_METADATA_NAME),
         }
 
     def build_agent_process_environment(self, session: WorkerSession) -> dict[str, str]:
@@ -609,11 +539,7 @@ class WorkerService:
         redacted = text
         for pattern in patterns:
             redacted = pattern.sub(
-                lambda match: (
-                    f"{match.group(1)}{sentinel}{match.group(3)}"
-                    if (match.lastindex or 0) >= 3
-                    else f"{match.group(1)}{sentinel}"
-                ),
+                lambda match: f"{match.group(1)}{sentinel}{match.group(3)}" if (match.lastindex or 0) >= 3 else f"{match.group(1)}{sentinel}",
                 redacted,
             )
         return redacted
@@ -626,9 +552,7 @@ class WorkerService:
         if not text:
             return text
         redacted_text = text
-        for key, secret_value, sentinel in self._workspace_secret_redaction_items(
-            session
-        ):
+        for key, secret_value, sentinel in self._workspace_secret_redaction_items(session):
             redacted_text = self._redact_secret_key_value(
                 redacted_text,
                 key,
@@ -666,11 +590,7 @@ class WorkerService:
 
     @staticmethod
     def _workspace_object_storage_config_path(workspace_root: Path) -> Path:
-        return (
-            workspace_root
-            / _OBJECT_STORAGE_CONFIG_DIRNAME
-            / _OBJECT_STORAGE_CONFIG_NAME
-        )
+        return workspace_root / _OBJECT_STORAGE_CONFIG_DIRNAME / _OBJECT_STORAGE_CONFIG_NAME
 
     @staticmethod
     def _workspace_screenshot_dir(workspace_root: Path) -> Path:
@@ -746,11 +666,7 @@ class WorkerService:
 
         data_dir = session.workspace_root / _OBJECT_STORAGE_CONFIG_DIRNAME / "buckets"
         data_dir.mkdir(parents=True, exist_ok=True)
-        bucket_names = [
-            str(bucket.get("name") or "").strip()
-            for bucket in buckets
-            if str(bucket.get("name") or "").strip()
-        ]
+        bucket_names = [str(bucket.get("name") or "").strip() for bucket in buckets if str(bucket.get("name") or "").strip()]
         if not bucket_names:
             self._object_storage_env_overrides[session.id] = {}
             return None
@@ -789,11 +705,7 @@ class WorkerService:
                 pass
             stderr_tail = ""
             try:
-                stderr_tail = (
-                    (await asyncio.wait_for(stderr.read(), timeout=1))
-                    .decode("utf-8", errors="replace")
-                    .strip()
-                )
+                stderr_tail = (await asyncio.wait_for(stderr.read(), timeout=1)).decode("utf-8", errors="replace").strip()
             except Exception:
                 stderr_tail = ""
             detail = "Workspace object storage timed out during startup."
@@ -804,11 +716,7 @@ class WorkerService:
         if not ready_line:
             stderr_tail = ""
             try:
-                stderr_tail = (
-                    (await asyncio.wait_for(stderr.read(), timeout=1))
-                    .decode("utf-8", errors="replace")
-                    .strip()
-                )
+                stderr_tail = (await asyncio.wait_for(stderr.read(), timeout=1)).decode("utf-8", errors="replace").strip()
             except Exception:
                 stderr_tail = ""
             detail = "Workspace object storage exited before becoming ready."
@@ -821,9 +729,7 @@ class WorkerService:
         except Exception:
             ready_payload = {}
         if ready_payload.get("type") != "ready":
-            error = str(
-                ready_payload.get("error") or "Invalid object storage handshake"
-            )
+            error = str(ready_payload.get("error") or "Invalid object storage handshake")
             return f"Workspace object storage failed to start: {error}"
 
         endpoint = f"http://127.0.0.1:{port}"
@@ -863,11 +769,7 @@ class WorkerService:
             state=session.state,
             preview_internal_url=f"{self._base_url}/worker/sessions/{session.id}/preview",
             launch_framework=session.launch_framework,
-            launch_command=(
-                " ".join(session.devserver_command)
-                if session.devserver_command
-                else None
-            ),
+            launch_command=(" ".join(session.devserver_command) if session.devserver_command else None),
             launch_cwd=session.launch_cwd,
             launch_port=session.devserver_port,
             runtime_capabilities=sandbox_diagnostics(),
@@ -932,9 +834,7 @@ class WorkerService:
         """Return canonical entrypoint status for a workspace."""
         return parse_entrypoint_config(workspace_root)
 
-    def _read_runtime_bootstrap_config_sync(
-        self, workspace_root: Path
-    ) -> list[dict[str, str]]:
+    def _read_runtime_bootstrap_config_sync(self, workspace_root: Path) -> list[dict[str, str]]:
         config_path = workspace_root / RUNTIME_BOOTSTRAP_CONFIG_PATH
         if not config_path.exists() or not config_path.is_file():
             return []
@@ -965,9 +865,7 @@ class WorkerService:
             )
         return normalized
 
-    async def _read_runtime_bootstrap_config(
-        self, workspace_root: Path
-    ) -> list[dict[str, str]]:
+    async def _read_runtime_bootstrap_config(self, workspace_root: Path) -> list[dict[str, str]]:
         return await asyncio.to_thread(
             self._read_runtime_bootstrap_config_sync,
             workspace_root,
@@ -1016,20 +914,14 @@ class WorkerService:
 
             if resolved.is_dir():
                 digest.update(b"::dir")
-                for child in sorted(
-                    path for path in resolved.rglob("*") if path.is_file()
-                ):
-                    rel_child = str(child.relative_to(workspace_root)).replace(
-                        "\\", "/"
-                    )
+                for child in sorted(path for path in resolved.rglob("*") if path.is_file()):
+                    rel_child = str(child.relative_to(workspace_root)).replace("\\", "/")
                     digest.update(rel_child.encode("utf-8", errors="ignore"))
                     digest.update(child.read_bytes())
 
         return digest.hexdigest()
 
-    async def _runtime_bootstrap_config_digest(
-        self, workspace_root: Path
-    ) -> str | None:
+    async def _runtime_bootstrap_config_digest(self, workspace_root: Path) -> str | None:
         return await asyncio.to_thread(
             self._runtime_bootstrap_config_digest_sync,
             workspace_root,
@@ -1056,17 +948,13 @@ class WorkerService:
         cwd_value: str,
         artifact_relative_path: str,
     ) -> bool:
-        normalized_artifact = (
-            str(artifact_relative_path or "").strip().replace("\\", "/")
-        )
+        normalized_artifact = str(artifact_relative_path or "").strip().replace("\\", "/")
         if not normalized_artifact:
             return False
         if (cwd_path / normalized_artifact).exists():
             return True
 
-        rootfs_workspace = (
-            session.sandbox_spec.rootfs_path / SANDBOX_WORKSPACE_MOUNT.lstrip("/")
-        )
+        rootfs_workspace = session.sandbox_spec.rootfs_path / SANDBOX_WORKSPACE_MOUNT.lstrip("/")
         rootfs_cwd = self._resolve_bootstrap_relative_path(rootfs_workspace, cwd_value)
         if rootfs_cwd is None:
             return False
@@ -1095,15 +983,9 @@ class WorkerService:
         name = (command_name or "").strip().lower()
         expected_artifact: str | None = None
 
-        if (
-            name in {"npm_ci", "npm_install", "node_dependencies"}
-            or cmd.startswith("npm ci")
-            or cmd.startswith("npm install")
-        ):
+        if name in {"npm_ci", "npm_install", "node_dependencies"} or cmd.startswith("npm ci") or cmd.startswith("npm install"):
             expected_artifact = "node_modules"
-        elif name == "node_tailwind_tooling" or (
-            "npm install" in cmd and "tailwindcss" in cmd
-        ):
+        elif name == "node_tailwind_tooling" or ("npm install" in cmd and "tailwindcss" in cmd):
             expected_artifact = "node_modules/.bin/tailwindcss"
 
         if not expected_artifact:
@@ -1222,9 +1104,7 @@ class WorkerService:
             command_name = command_cfg.get("name") or "bootstrap"
             run = command_cfg.get("run", "")
 
-            when_path = self._resolve_bootstrap_relative_path(
-                workspace_root, when_exists
-            )
+            when_path = self._resolve_bootstrap_relative_path(workspace_root, when_exists)
             unless_path = self._resolve_bootstrap_relative_path(
                 workspace_root,
                 unless_exists,
@@ -1232,10 +1112,7 @@ class WorkerService:
             cwd_path = self._resolve_bootstrap_relative_path(workspace_root, cwd_value)
 
             if cwd_path is None:
-                return (
-                    "Runtime bootstrap config has invalid cwd path. "
-                    "Use workspace-relative paths only."
-                )
+                return "Runtime bootstrap config has invalid cwd path. Use workspace-relative paths only."
             if when_exists and (when_path is None or not when_path.exists()):
                 continue
             if unless_exists and unless_path is not None and unless_path.exists():
@@ -1244,13 +1121,8 @@ class WorkerService:
             # have the artifact (e.g. node_modules) from a prior session's
             # copytree even though the canonical ``files/`` tree lacks it.
             if unless_exists:
-                rootfs_ws = (
-                    session.sandbox_spec.rootfs_path
-                    / SANDBOX_WORKSPACE_MOUNT.lstrip("/")
-                )
-                rootfs_unless = self._resolve_bootstrap_relative_path(
-                    rootfs_ws, unless_exists
-                )
+                rootfs_ws = session.sandbox_spec.rootfs_path / SANDBOX_WORKSPACE_MOUNT.lstrip("/")
+                rootfs_unless = self._resolve_bootstrap_relative_path(rootfs_ws, unless_exists)
                 if rootfs_unless is not None and rootfs_unless.exists():
                     continue
 
@@ -1274,10 +1146,7 @@ class WorkerService:
                     timeout=self._runtime_bootstrap_timeout_seconds,
                 )
             except asyncio.TimeoutError:
-                return (
-                    f"Runtime bootstrap command '{command_name}' timed out after "
-                    f"{self._runtime_bootstrap_timeout_seconds}s."
-                )
+                return f"Runtime bootstrap command '{command_name}' timed out after {self._runtime_bootstrap_timeout_seconds}s."
             except Exception as exc:
                 return f"Runtime bootstrap command '{command_name}' failed to launch: {exc}"
 
@@ -1305,10 +1174,7 @@ class WorkerService:
                     # even after bootstrap installs the requested artifact.
                     continue
 
-                return (
-                    f"Runtime bootstrap command '{command_name}' failed with code {returncode}: "
-                    f"{(detail or output)[:300]}. {_WORKSPACE_BOOTSTRAP_GUIDANCE}"
-                )
+                return f"Runtime bootstrap command '{command_name}' failed with code {returncode}: {(detail or output)[:300]}. {_WORKSPACE_BOOTSTRAP_GUIDANCE}"
 
         stamp_path.parent.mkdir(parents=True, exist_ok=True)
         stamp_value = config_digest or utc_now().isoformat()
@@ -1354,10 +1220,7 @@ class WorkerService:
                 timeout=self._runtime_bootstrap_timeout_seconds,
             )
         except asyncio.TimeoutError:
-            return (
-                f"Auto-install of {framework} dependencies timed out after "
-                f"{self._runtime_bootstrap_timeout_seconds}s."
-            )
+            return f"Auto-install of {framework} dependencies timed out after {self._runtime_bootstrap_timeout_seconds}s."
         except Exception as exc:
             return f"Auto-install of {framework} dependencies failed to launch: {exc}"
 
@@ -1366,10 +1229,7 @@ class WorkerService:
             stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
             stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
             output = stderr_text or stdout_text or "unknown error"
-            return (
-                f"Auto-install of {framework} dependencies failed with code {returncode}: "
-                f"{output[:300]}"
-            )
+            return f"Auto-install of {framework} dependencies failed with code {returncode}: {output[:300]}"
         return None
 
     def _extract_explicit_port(self, command: str) -> int | None:
@@ -1392,15 +1252,10 @@ class WorkerService:
         return bool(pattern.search(command))
 
     def _missing_tool_error(self, tool: str) -> str:
-        return (
-            f"Runtime entrypoint uses '{tool}' but it is not installed in this isolated runtime container. "
-            f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
-        )
+        return f"Runtime entrypoint uses '{tool}' but it is not installed in this isolated runtime container. {_WORKSPACE_BOOTSTRAP_GUIDANCE}"
 
     def _resolve_devserver_log_path(self, session_id: str) -> Path:
-        log_dir = Path(
-            os.getenv("RUNTIME_DEVSERVER_LOG_DIR", _RUNTIME_DEVSERVER_LOG_DIR)
-        )
+        log_dir = Path(os.getenv("RUNTIME_DEVSERVER_LOG_DIR", _RUNTIME_DEVSERVER_LOG_DIR))
         log_dir.mkdir(parents=True, exist_ok=True)
         return log_dir / f"{session_id}.log"
 
@@ -1424,11 +1279,7 @@ class WorkerService:
         return compact
 
     def _playwright_broker_error_tail(self, slot: PlaywrightBrokerSlot) -> str:
-        compact = " ".join(
-            line.replace("\x00", "").strip()
-            for line in slot.stderr_lines
-            if line and line.strip()
-        )
+        compact = " ".join(line.replace("\x00", "").strip() for line in slot.stderr_lines if line and line.strip())
         compact = " ".join(compact.split())
         if len(compact) > _RUNTIME_DEVSERVER_LOG_TAIL_CHARS:
             return compact[-_RUNTIME_DEVSERVER_LOG_TAIL_CHARS:]
@@ -1497,12 +1348,7 @@ class WorkerService:
         slot: PlaywrightBrokerSlot,
     ) -> asyncio.subprocess.Process:
         process = slot.process
-        if (
-            process is not None
-            and process.returncode is None
-            and process.stdin is not None
-            and process.stdout is not None
-        ):
+        if process is not None and process.returncode is None and process.stdin is not None and process.stdout is not None:
             return process
 
         if process is not None:
@@ -1512,10 +1358,7 @@ class WorkerService:
         if not node_binary:
             raise HTTPException(
                 status_code=503,
-                detail=(
-                    "Runtime screenshot/content probe requires Node.js in runtime container "
-                    "but it is not installed."
-                ),
+                detail=("Runtime screenshot/content probe requires Node.js in runtime container but it is not installed."),
             )
 
         slot.stderr_lines.clear()
@@ -1529,9 +1372,7 @@ class WorkerService:
             env=node_env,
         )
         slot.process = process
-        slot.stderr_task = asyncio.create_task(
-            self._drain_playwright_stderr(slot, process.stderr)
-        )
+        slot.stderr_task = asyncio.create_task(self._drain_playwright_stderr(slot, process.stderr))
         stdout = process.stdout
         if stdout is None:
             await self._terminate_playwright_broker_slot(slot)
@@ -1568,9 +1409,7 @@ class WorkerService:
 
         if ready_payload.get("type") != "ready":
             await self._terminate_playwright_broker_slot(slot)
-            detail = str(
-                ready_payload.get("error") or "Invalid Playwright broker handshake"
-            )
+            detail = str(ready_payload.get("error") or "Invalid Playwright broker handshake")
             stderr_tail = self._playwright_broker_error_tail(slot)
             if stderr_tail:
                 detail = f"{detail}. {stderr_tail}"
@@ -1596,11 +1435,7 @@ class WorkerService:
                     self._playwright_request_counter += 1
                     request_id = f"pw-{slot.slot_id}-{self._playwright_request_counter}"
                     payload = {"id": request_id, **request}
-                    process.stdin.write(
-                        (json.dumps(payload, separators=(",", ":")) + "\n").encode(
-                            "utf-8"
-                        )
-                    )
+                    process.stdin.write((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
                     await process.stdin.drain()
                     response_line = await asyncio.wait_for(
                         process.stdout.readline(),
@@ -1608,17 +1443,11 @@ class WorkerService:
                     )
 
                     if not response_line:
-                        raise RuntimeError(
-                            "Playwright broker closed the response stream"
-                        )
+                        raise RuntimeError("Playwright broker closed the response stream")
 
-                    response = json.loads(
-                        response_line.decode("utf-8", errors="replace")
-                    )
+                    response = json.loads(response_line.decode("utf-8", errors="replace"))
                     if response.get("id") != request_id:
-                        raise RuntimeError(
-                            "Playwright broker returned a mismatched response"
-                        )
+                        raise RuntimeError("Playwright broker returned a mismatched response")
                     if response.get("ok"):
                         result = response.get("result")
                         return result if isinstance(result, dict) else {}
@@ -1628,9 +1457,7 @@ class WorkerService:
                     stderr_tail = self._playwright_broker_error_tail(slot)
                     if stderr_tail:
                         detail = f"{detail}. {stderr_tail}"
-                    status_code = (
-                        503 if code in {"node_missing", "playwright_missing"} else 502
-                    )
+                    status_code = 503 if code in {"node_missing", "playwright_missing"} else 502
                     raise HTTPException(status_code=status_code, detail=detail)
                 except HTTPException:
                     raise
@@ -1644,9 +1471,7 @@ class WorkerService:
                         detail = f"{detail}. {stderr_tail}"
                     raise HTTPException(status_code=502, detail=detail) from exc
 
-            raise HTTPException(
-                status_code=502, detail="Playwright broker request failed"
-            )
+            raise HTTPException(status_code=502, detail="Playwright broker request failed")
         finally:
             try:
                 self._playwright_available_slots.put_nowait(slot_index)
@@ -1679,13 +1504,7 @@ class WorkerService:
         console_errors = probe.get("console_errors")
 
         # Keep this intentionally conservative to avoid masking real regressions.
-        return (
-            status_code == 200
-            and html_length <= 64
-            and not title
-            and element_visible_count == 0
-            and not console_errors
-        )
+        return status_code == 200 and html_length <= 64 and not title and element_visible_count == 0 and not console_errors
 
     def _should_retry_bootstrap_after_exit(
         self,
@@ -1724,9 +1543,7 @@ class WorkerService:
             if not match:
                 continue
             replacement = template.format(port=port).replace("\\1", match.group(1))
-            rewritten = (
-                f"{rewritten[:match.start()]}{replacement}{rewritten[match.end():]}"
-            )
+            rewritten = f"{rewritten[: match.start()]}{replacement}{rewritten[match.end() :]}"
             if replacement:
                 return rewritten
         return rewritten
@@ -1746,9 +1563,7 @@ class WorkerService:
             final_command = self._rewrite_command_port(config_command, effective_port)
 
             for tool in _ENTRYPOINT_REQUIRED_TOOLS:
-                if self._command_uses_tool(config_command, tool) and not shutil.which(
-                    tool
-                ):
+                if self._command_uses_tool(config_command, tool) and not shutil.which(tool):
                     return DevserverResolution(
                         error=self._missing_tool_error(tool),
                         framework=config_framework,
@@ -1781,9 +1596,7 @@ class WorkerService:
         )
 
     async def _wait_devserver_ready(self, port: int) -> bool:
-        deadline = (
-            asyncio.get_event_loop().time() + self._devserver_start_timeout_seconds
-        )
+        deadline = asyncio.get_event_loop().time() + self._devserver_start_timeout_seconds
         probe_url = f"http://127.0.0.1:{port}/"
         timeout = httpx.Timeout(connect=0.5, read=1.0, write=1.0, pool=0.5)
         sleep_seconds = 0.1
@@ -1871,23 +1684,17 @@ class WorkerService:
         if process.returncode != 0:
             log_tail = self._read_devserver_log_tail(session.id)
             if log_tail:
-                session.last_error = (
-                    f"Dev server exited with code {process.returncode}: {log_tail}"
-                )
+                session.last_error = f"Dev server exited with code {process.returncode}: {log_tail}"
             else:
                 session.last_error = f"Dev server exited with code {process.returncode}"
 
-            if not self._bootstrap_retry_flags.get(
-                session.id, False
-            ) and self._should_retry_bootstrap_after_exit(
+            if not self._bootstrap_retry_flags.get(session.id, False) and self._should_retry_bootstrap_after_exit(
                 process.returncode,
                 log_tail,
             ):
                 self._bootstrap_retry_flags[session.id] = True
                 self._invalidate_bootstrap_stamp(session)
-                session.last_error = (
-                    f"{session.last_error} Retrying workspace bootstrap on next start."
-                )
+                session.last_error = f"{session.last_error} Retrying workspace bootstrap on next start."
             session.runtime_operation_phase = "failed"
             session.runtime_operation_updated_at = utc_now()
         session.updated_at = utc_now()
@@ -1987,9 +1794,7 @@ class WorkerService:
                     session = self._sessions.get(session_id)
                     if not session or session.runtime_operation_id != operation_id:
                         return
-                    object_storage_error = await self._start_object_storage_locked(
-                        session
-                    )
+                    object_storage_error = await self._start_object_storage_locked(session)
                     if object_storage_error:
                         session.state = "running"
                         session.devserver_running = False
@@ -2012,9 +1817,7 @@ class WorkerService:
                     self._set_operation_phase(session, "launching")
                     session.updated_at = utc_now()
                     port = session.devserver_port or self._pick_free_port()
-                    resolution = self._resolve_devserver_command(
-                        session.workspace_files_path, port
-                    )
+                    resolution = self._resolve_devserver_command(session.workspace_files_path, port)
                     session.launch_framework = resolution.framework
                     session.launch_cwd = resolution.cwd
                     if not resolution.command:
@@ -2037,9 +1840,7 @@ class WorkerService:
                     except Exception as exc:
                         session.state = "running"
                         session.devserver_running = False
-                        session.last_error = (
-                            f"Failed to initialize devserver log file: {exc}"
-                        )
+                        session.last_error = f"Failed to initialize devserver log file: {exc}"
                         self._set_operation_phase(session, "failed")
                         session.updated_at = utc_now()
                         return
@@ -2098,9 +1899,7 @@ class WorkerService:
                             # Session was invalidated while we were spawning.
                             if _process is not None:
                                 await self._terminate_devserver_process(_process)
-                            tracked_log_handle = self._devserver_log_handles.get(
-                                session_id
-                            )
+                            tracked_log_handle = self._devserver_log_handles.get(session_id)
                             if tracked_log_handle is log_handle:
                                 self._devserver_log_handles.pop(session_id, None)
                                 try:
@@ -2113,9 +1912,7 @@ class WorkerService:
                             self._devserver_log_handles.pop(session.id, None)
                             session.state = "running"
                             session.devserver_running = False
-                            session.last_error = (
-                                _spawn_error or "Failed to launch dev server"
-                            )
+                            session.last_error = _spawn_error or "Failed to launch dev server"
                             self._set_operation_phase(session, "failed")
                             session.updated_at = utc_now()
                             return
@@ -2131,9 +1928,7 @@ class WorkerService:
                         tracked_process = self._devserver_processes.get(session_id)
                         if tracked_process is _process:
                             self._devserver_processes.pop(session_id, None)
-                        tracked_log_handle = self._devserver_log_handles.get(
-                            session_id
-                        )
+                        tracked_log_handle = self._devserver_log_handles.get(session_id)
                         if tracked_log_handle is log_handle:
                             self._devserver_log_handles.pop(session_id, None)
                         else:
@@ -2203,35 +1998,24 @@ class WorkerService:
         request: WorkerStartSessionRequest,
     ) -> WorkerSessionResponse:
         async with self._lock:
-            existing_session_id = self._provider_to_session.get(
-                request.provider_session_id
-            )
+            existing_session_id = self._provider_to_session.get(request.provider_session_id)
             if existing_session_id and existing_session_id in self._sessions:
                 session = self._sessions[existing_session_id]
                 session.pty_access_token = request.pty_access_token
-                session.workspace_env = self._normalize_workspace_env(
-                    request.workspace_env
-                )
-                session.workspace_env_visibility = (
-                    self._normalize_workspace_env_visibility(
-                        request.workspace_env_visibility,
-                        session.workspace_env,
-                    )
+                session.workspace_env = self._normalize_workspace_env(request.workspace_env)
+                session.workspace_env_visibility = self._normalize_workspace_env_visibility(
+                    request.workspace_env_visibility,
+                    session.workspace_env,
                 )
                 previous_targets = self._mount_target_paths(session.workspace_mounts)
                 session.workspace_mounts = list(request.workspace_mounts or [])
-                session.mount_targets_to_clear = (
-                    previous_targets
-                    | self._mount_target_paths(session.workspace_mounts)
-                )
+                session.mount_targets_to_clear = previous_targets | self._mount_target_paths(session.workspace_mounts)
                 self._schedule_startup_locked(session)
                 session.updated_at = utc_now()
                 return self._session_response(session)
 
             session_id = f"wkr-{request.workspace_id[:8]}-{os.urandom(4).hex()}"
-            workspace_root, workspace_files, sandbox_spec = (
-                self._resolve_workspace_root(request.workspace_id)
-            )
+            workspace_root, workspace_files, sandbox_spec = self._resolve_workspace_root(request.workspace_id)
             workspace_env = self._normalize_workspace_env(request.workspace_env)
             session = WorkerSession(
                 id=session_id,
@@ -2247,9 +2031,7 @@ class WorkerService:
                     workspace_env,
                 ),
                 workspace_mounts=list(request.workspace_mounts or []),
-                mount_targets_to_clear=self._mount_target_paths(
-                    list(request.workspace_mounts or [])
-                ),
+                mount_targets_to_clear=self._mount_target_paths(list(request.workspace_mounts or [])),
                 state="running",
                 devserver_running=False,
                 devserver_port=None,
@@ -2309,19 +2091,15 @@ class WorkerService:
             if workspace_env is not None:
                 session.workspace_env = self._normalize_workspace_env(workspace_env)
             if workspace_env is not None or workspace_env_visibility is not None:
-                session.workspace_env_visibility = (
-                    self._normalize_workspace_env_visibility(
-                        workspace_env_visibility,
-                        session.workspace_env,
-                    )
+                session.workspace_env_visibility = self._normalize_workspace_env_visibility(
+                    workspace_env_visibility,
+                    session.workspace_env,
                 )
             await self._terminate_object_storage_locked(session.id)
             previous_targets = self._mount_target_paths(session.workspace_mounts)
             if workspace_mounts is not None:
                 session.workspace_mounts = list(workspace_mounts)
-            session.mount_targets_to_clear = (
-                previous_targets | self._mount_target_paths(session.workspace_mounts)
-            )
+            session.mount_targets_to_clear = previous_targets | self._mount_target_paths(session.workspace_mounts)
             # Pick a fresh port to avoid TIME_WAIT "address already in use"
             session.devserver_port = self._pick_free_port()
             self._schedule_startup_locked(session)
@@ -2373,9 +2151,7 @@ class WorkerService:
             async with self._lock:
                 session = self._sessions.get(worker_session_id)
                 if not session:
-                    raise HTTPException(
-                        status_code=404, detail="Worker session not found"
-                    )
+                    raise HTTPException(status_code=404, detail="Worker session not found")
             try:
                 await self._materialize_workspace_mounts(session)
             except Exception as exc:
@@ -2390,9 +2166,7 @@ class WorkerService:
             async with self._lock:
                 current = self._sessions.get(worker_session_id)
                 if not current:
-                    raise HTTPException(
-                        status_code=404, detail="Worker session not found"
-                    )
+                    raise HTTPException(status_code=404, detail="Worker session not found")
                 current.mount_targets_to_clear.difference_update(target_paths)
                 current.last_error = None
                 current.updated_at = utc_now()
@@ -2438,9 +2212,7 @@ class WorkerService:
             session.updated_at = utc_now()
             return self._runtime_file_response(session, rel_path, content, True)
 
-    async def delete_file(
-        self, worker_session_id: str, file_path: str
-    ) -> dict[str, str | bool]:
+    async def delete_file(self, worker_session_id: str, file_path: str) -> dict[str, str | bool]:
         async with self._lock:
             session = self._sessions.get(worker_session_id)
             if not session:
@@ -2476,9 +2248,7 @@ class WorkerService:
             if cwd:
                 # Validate cwd doesn't escape workspace
                 normalized_cwd = Path(cwd.replace("\\", "/"))
-                if normalized_cwd.is_absolute() or any(
-                    part == ".." for part in normalized_cwd.parts
-                ):
+                if normalized_cwd.is_absolute() or any(part == ".." for part in normalized_cwd.parts):
                     raise HTTPException(
                         status_code=400,
                         detail="cwd must be within the workspace root",
@@ -2568,8 +2338,7 @@ class WorkerService:
             if not session.devserver_running or not session.devserver_port:
                 raise HTTPException(
                     status_code=503,
-                    detail=session.last_error
-                    or "Dev server is starting. Retry screenshot when runtime operation is ready.",
+                    detail=session.last_error or "Dev server is starting. Retry screenshot when runtime operation is ready.",
                 )
 
             requested_width = max(320, int(payload.width))
@@ -2581,10 +2350,7 @@ class WorkerService:
             if capture_element and not wait_selector:
                 raise HTTPException(
                     status_code=400,
-                    detail=(
-                        "capture_element=true requires wait_for_selector to target "
-                        "a unique visible element"
-                    ),
+                    detail=("capture_element=true requires wait_for_selector to target a unique visible element"),
                 )
             width = min(requested_width, MAX_USERSPACE_SCREENSHOT_WIDTH)
             height = min(requested_height, MAX_USERSPACE_SCREENSHOT_HEIGHT)
@@ -2596,19 +2362,10 @@ class WorkerService:
 
             normalized_preview_path = (payload.path or "").strip().lstrip("/")
             if normalized_preview_path:
-                normalized_preview_path = self._normalize_file_path(
-                    normalized_preview_path
-                )
+                normalized_preview_path = self._normalize_file_path(normalized_preview_path)
             upstream_base = f"http://127.0.0.1:{session.devserver_port}"
-            upstream_url = (
-                f"{upstream_base}/{normalized_preview_path}"
-                if normalized_preview_path
-                else f"{upstream_base}/"
-            )
-            cache_busted_url = (
-                f"{upstream_url}{'&' if '?' in upstream_url else '?'}"
-                f"_ragtime_screenshot_ts={int(time.time() * 1000)}"
-            )
+            upstream_url = f"{upstream_base}/{normalized_preview_path}" if normalized_preview_path else f"{upstream_base}/"
+            cache_busted_url = f"{upstream_url}{'&' if '?' in upstream_url else '?'}_ragtime_screenshot_ts={int(time.time() * 1000)}"
 
             output_dir = self._workspace_screenshot_dir(session.workspace_root)
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -2648,10 +2405,7 @@ class WorkerService:
                 max(requested_wait_after_load_ms + 2000, 1500),
                 12000,
             )
-            retry_url = (
-                f"{upstream_url}{'&' if '?' in upstream_url else '?'}"
-                f"_ragtime_screenshot_ts={int(time.time() * 1000)}"
-            )
+            retry_url = f"{upstream_url}{'&' if '?' in upstream_url else '?'}_ragtime_screenshot_ts={int(time.time() * 1000)}"
             retry_probe = await self._invoke_playwright_broker(
                 {
                     "type": "screenshot",
@@ -2680,9 +2434,7 @@ class WorkerService:
         if not output_path.exists() or not output_path.is_file():
             raise HTTPException(
                 status_code=502,
-                detail=(
-                    "Runtime screenshot capture reported success but no file was written"
-                ),
+                detail=("Runtime screenshot capture reported success but no file was written"),
             )
 
         return RuntimeScreenshotResponse(
@@ -2702,12 +2454,7 @@ class WorkerService:
                 "capture_element": capture_element,
                 "clip_padding_px": requested_clip_padding_px,
                 "wait_after_load_ms": requested_wait_after_load_ms,
-                "effective_wait_after_load_ms": int(
-                    (
-                        probe.get("effective_wait_after_load_ms")
-                        or requested_wait_after_load_ms
-                    )
-                ),
+                "effective_wait_after_load_ms": int((probe.get("effective_wait_after_load_ms") or requested_wait_after_load_ms)),
                 "refresh_before_capture": bool(payload.refresh_before_capture),
             },
             probe=probe if isinstance(probe, dict) else {},
@@ -2731,21 +2478,14 @@ class WorkerService:
             if not session.devserver_running or not session.devserver_port:
                 raise HTTPException(
                     status_code=503,
-                    detail=session.last_error
-                    or "Dev server is starting. Retry when runtime is ready.",
+                    detail=session.last_error or "Dev server is starting. Retry when runtime is ready.",
                 )
 
             normalized_preview_path = (payload.path or "").strip().lstrip("/")
             if normalized_preview_path:
-                normalized_preview_path = self._normalize_file_path(
-                    normalized_preview_path
-                )
+                normalized_preview_path = self._normalize_file_path(normalized_preview_path)
             upstream_base = f"http://127.0.0.1:{session.devserver_port}"
-            upstream_url = (
-                f"{upstream_base}/{normalized_preview_path}"
-                if normalized_preview_path
-                else f"{upstream_base}/"
-            )
+            upstream_url = f"{upstream_base}/{normalized_preview_path}" if normalized_preview_path else f"{upstream_base}/"
 
         probe = await self._invoke_playwright_broker(
             {
@@ -2753,9 +2493,7 @@ class WorkerService:
                 "url": upstream_url,
                 "timeout_ms": int(payload.timeout_ms),
                 "wait_after_load_ms": int(payload.wait_after_load_ms),
-                "inject_mock_context": bool(
-                    getattr(payload, "inject_mock_context", False)
-                ),
+                "inject_mock_context": bool(getattr(payload, "inject_mock_context", False)),
             },
             timeout_ms=int(payload.timeout_ms),
         )
@@ -2789,13 +2527,9 @@ class WorkerService:
                 if not url_value:
                     continue
                 text_value = str(entry.get("text") or "").strip()
-                link_models.append(
-                    RuntimeExternalBrowseLink(url=url_value, text=text_value)
-                )
+                link_models.append(RuntimeExternalBrowseLink(url=url_value, text=text_value))
 
-        console_errors_raw = (
-            probe.get("console_errors") if isinstance(probe, dict) else None
-        )
+        console_errors_raw = probe.get("console_errors") if isinstance(probe, dict) else None
         console_errors: list[str] = []
         if isinstance(console_errors_raw, list):
             console_errors = [str(item) for item in console_errors_raw[:5]]
@@ -2828,13 +2562,9 @@ class WorkerService:
             async with self._lock:
                 session = self._sessions.get(worker_session_id)
                 if not session:
-                    raise HTTPException(
-                        status_code=404, detail="Worker session not found"
-                    )
+                    raise HTTPException(status_code=404, detail="Worker session not found")
                 if session.state not in {"running", "starting"}:
-                    raise HTTPException(
-                        status_code=409, detail="Worker session not active"
-                    )
+                    raise HTTPException(status_code=409, detail="Worker session not active")
                 session.updated_at = utc_now()
 
         probe = await self._invoke_playwright_broker(
@@ -2944,9 +2674,7 @@ class WorkerService:
         patterns = [re.compile(re.escape(cleaned_query), re.IGNORECASE)]
         terms = [term for term in re.split(r"\W+", cleaned_query) if len(term) >= 3]
         if len(terms) > 1:
-            patterns.append(
-                re.compile("|".join(re.escape(term) for term in terms), re.IGNORECASE)
-            )
+            patterns.append(re.compile("|".join(re.escape(term) for term in terms), re.IGNORECASE))
 
         found: list[re.Match[str]] = []
         seen_starts: set[int] = set()
@@ -3004,13 +2732,9 @@ class WorkerService:
             async with self._lock:
                 session = self._sessions.get(worker_session_id)
                 if not session:
-                    raise HTTPException(
-                        status_code=404, detail="Worker session not found"
-                    )
+                    raise HTTPException(status_code=404, detail="Worker session not found")
                 if session.state not in {"running", "starting"}:
-                    raise HTTPException(
-                        status_code=409, detail="Worker session not active"
-                    )
+                    raise HTTPException(status_code=409, detail="Worker session not active")
                 session.updated_at = utc_now()
 
         requested_user_agent = str(payload.user_agent or "").strip()
@@ -3054,10 +2778,7 @@ class WorkerService:
                                     body_preview,
                                 ),
                             )
-                            if (
-                                response.status_code in _PDF_READ_RETRY_STATUS_CODES
-                                and index < len(user_agent_candidates) - 1
-                            ):
+                            if response.status_code in _PDF_READ_RETRY_STATUS_CODES and index < len(user_agent_candidates) - 1:
                                 continue
                             return error_response
 
@@ -3136,9 +2857,7 @@ class WorkerService:
             )
 
         try:
-            text = self._compact_pdf_text(
-                await asyncio.to_thread(self._extract_pdf_text, content_bytes)
-            )
+            text = self._compact_pdf_text(await asyncio.to_thread(self._extract_pdf_text, content_bytes))
         except Exception as exc:
             return RuntimePdfReadResponse(
                 status="error",
@@ -3247,16 +2966,12 @@ class WorkerService:
 
             normalized = self._normalize_file_path(path) if path else ""
             upstream_base = f"http://127.0.0.1:{session.devserver_port}"
-            upstream_url = (
-                f"{upstream_base}/{normalized}" if normalized else f"{upstream_base}/"
-            )
+            upstream_url = f"{upstream_base}/{normalized}" if normalized else f"{upstream_base}/"
             if query:
                 upstream_url = f"{upstream_url}?{query}"
         return upstream_url
 
-    async def verify_pty_token(
-        self, worker_session_id: str, token: str
-    ) -> WorkerSession:
+    async def verify_pty_token(self, worker_session_id: str, token: str) -> WorkerSession:
         async with self._lock:
             session = self._sessions.get(worker_session_id)
             if not session:
@@ -3281,11 +2996,7 @@ class WorkerService:
         async with self._lock:
             for session in self._sessions.values():
                 await self._sync_devserver_state_locked(session)
-            active_sessions = sum(
-                1
-                for session in self._sessions.values()
-                if session.state in {"running", "starting"}
-            )
+            active_sessions = sum(1 for session in self._sessions.values() if session.state in {"running", "starting"})
             return WorkerHealthResponse(
                 status="ok",
                 service_mode="worker",

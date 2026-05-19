@@ -177,9 +177,7 @@ def _iter_candidate_sources(request: RetryVisualizationRequest) -> Iterable[tupl
     if isinstance(request.failed_tool_input, dict) and request.failed_tool_input:
         yield "failed_tool_input", request.failed_tool_input
 
-    failed_output_payload = _extract_table_metadata(request.failed_tool_output) or _extract_visualization_payload(
-        request.failed_tool_output
-    )
+    failed_output_payload = _extract_table_metadata(request.failed_tool_output) or _extract_visualization_payload(request.failed_tool_output)
     if failed_output_payload:
         yield "failed_tool_output", failed_output_payload
 
@@ -354,9 +352,7 @@ def _table_to_chart_source(table_source: dict[str, Any], strategy: str) -> _Vali
     )
 
 
-def _validate_payload_for_tool(
-    tool_type: str, source: dict[str, Any], strategy: str
-) -> _ValidatedPayload:
+def _validate_payload_for_tool(tool_type: str, source: dict[str, Any], strategy: str) -> _ValidatedPayload:
     if tool_type == "datatable":
         return _validate_datatable_source(source, strategy)
     try:
@@ -486,17 +482,12 @@ def _build_repair_prompt(
     system_prompt = (
         "You repair failed UI visualization tool calls. Return one JSON object only. "
         "Do not invent data. Use only the supplied tool input, tool output, previous tool outputs, "
-        "or source rerun output. If the data cannot be recovered, return {\"error\": \"...\"}."
+        'or source rerun output. If the data cannot be recovered, return {"error": "..."}.'
     )
     if request.tool_type == "datatable":
-        target_schema = (
-            '{"source_data":{"columns":["Column"],"rows":[["value"]]},"title":"optional"}'
-        )
+        target_schema = '{"source_data":{"columns":["Column"],"rows":[["value"]]},"title":"optional"}'
     else:
-        target_schema = (
-            '{"source_data":{"chart_type":"bar","labels":["label"],'
-            '"datasets":[{"label":"Series","data":[1]}]},"title":"optional"}'
-        )
+        target_schema = '{"source_data":{"chart_type":"bar","labels":["label"],"datasets":[{"label":"Series","data":[1]}]},"title":"optional"}'
     context_events = []
     for event in request.context_events[-MAX_CONTEXT_EVENTS:]:
         if not isinstance(event, dict):
@@ -581,9 +572,7 @@ async def _repair_with_ai(
         raise RuntimeError(error_message or "No LLM is available for visualization repair")
 
     system_prompt, user_prompt = _build_repair_prompt(request, rerun_output)
-    response = await request_llm.ainvoke(
-        [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
-    )
+    response = await request_llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
     response_text = _message_content_to_text(getattr(response, "content", response))
     await _persist_repair_debug_record(
         context,
@@ -622,9 +611,7 @@ async def _persist_repaired_event(
         return
     if request.event_index is None:
         return
-    expected_tool = (
-        "create_chart" if request.tool_type == "chart" else "create_datatable"
-    )
+    expected_tool = "create_chart" if request.tool_type == "chart" else "create_datatable"
     try:
         ok = await repository.update_message_event_output(
             context.conversation.id,
@@ -636,8 +623,7 @@ async def _persist_repaired_event(
         )
     except Exception:
         logger.exception(
-            "Error persisting repaired visualization output for "
-            "conversation=%s message_id=%s message_index=%s event_index=%s",
+            "Error persisting repaired visualization output for conversation=%s message_id=%s message_index=%s event_index=%s",
             context.conversation.id,
             request.message_id,
             request.message_index,
@@ -646,9 +632,7 @@ async def _persist_repaired_event(
         return
     if not ok:
         logger.warning(
-            "Repaired visualization output not persisted: target event not "
-            "found (conversation=%s message_id=%s message_index=%s "
-            "event_index=%s tool=%s)",
+            "Repaired visualization output not persisted: target event not found (conversation=%s message_id=%s message_index=%s event_index=%s tool=%s)",
             context.conversation.id,
             request.message_id,
             request.message_index,
@@ -683,9 +667,7 @@ async def retry_visualization_with_repair(
         rerun_output, rerun_payload = await _rerun_source_query(request, context)
         if rerun_payload:
             try:
-                validated = _validate_payload_for_tool(
-                    request.tool_type, rerun_payload, "source_rerun"
-                )
+                validated = _validate_payload_for_tool(request.tool_type, rerun_payload, "source_rerun")
                 output = await _render_visualization(
                     request.tool_type,
                     request.title,

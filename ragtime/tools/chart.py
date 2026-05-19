@@ -56,24 +56,18 @@ class ChartDataset(BaseModel):
         default=None,
         description="Background color(s) - single color or array for each data point",
     )
-    borderColor: str | None = Field(
-        default=None, description="Border color for line/bar charts"
-    )
+    borderColor: str | None = Field(default=None, description="Border color for line/bar charts")
     borderWidth: int | None = Field(default=None, description="Border width in pixels")
 
 
 class CreateChartInput(BaseModel):
     """Input schema for creating a chart visualization."""
 
-    chart_type: Literal[
-        "bar", "line", "pie", "doughnut", "scatter", "radar", "polarArea"
-    ] = Field(
+    chart_type: Literal["bar", "line", "pie", "doughnut", "scatter", "radar", "polarArea"] = Field(
         description="Type of chart to create: 'bar', 'line', 'pie', 'doughnut', 'scatter', 'radar', or 'polarArea'"
     )
     title: str = Field(description="Chart title displayed above the chart")
-    labels: list[str] = Field(
-        description="Labels for the X-axis (bar/line) or segments (pie/doughnut)"
-    )
+    labels: list[str] = Field(description="Labels for the X-axis (bar/line) or segments (pie/doughnut)")
     datasets: list[dict[str, Any]] = Field(
         description=(
             "Array of datasets. Each dataset should have: "
@@ -191,12 +185,7 @@ def _source_data_to_rows(source_data: Any) -> tuple[list[str], list[dict[str, An
             rows.append(dict(raw_row))
         elif isinstance(raw_row, (list, tuple)):
             values = list(raw_row)
-            rows.append(
-                {
-                    column: values[index] if index < len(values) else None
-                    for index, column in enumerate(columns)
-                }
-            )
+            rows.append({column: values[index] if index < len(values) else None for index, column in enumerate(columns)})
         else:
             raise ValueError("source_data.rows must contain objects or arrays")
 
@@ -238,9 +227,7 @@ def _normalize_dataset_mappings(mapping: dict[str, Any]) -> list[dict[str, str]]
                 or ""
             ).strip()
             if field:
-                normalized.append(
-                    {"field": field, "label": str(entry.get("label") or field)}
-                )
+                normalized.append({"field": field, "label": str(entry.get("label") or field)})
     raw_fields = mapping.get("dataset_fields") or mapping.get("datasetFields")
     if isinstance(raw_fields, dict):
         for label, field_value in raw_fields.items():
@@ -256,11 +243,7 @@ def _normalize_dataset_mappings(mapping: dict[str, Any]) -> list[dict[str, str]]
         normalized.append(
             {
                 "field": root_field,
-                "label": str(
-                    mapping.get("dataset_label")
-                    or mapping.get("label")
-                    or root_field
-                ),
+                "label": str(mapping.get("dataset_label") or mapping.get("label") or root_field),
             }
         )
     return normalized
@@ -274,19 +257,12 @@ def _build_chart_data_from_source(
         data_connection,
         require_result_mapping=True,
     )
-    mapping = normalized_connection.get("result_mapping") or normalized_connection.get(
-        "visualization_mapping"
-    )
+    mapping = normalized_connection.get("result_mapping") or normalized_connection.get("visualization_mapping")
     if not isinstance(mapping, dict):
         raise ValueError("data_connection.result_mapping is required for live charts")
 
     label_field = str(
-        mapping.get("label_field")
-        or mapping.get("labelField")
-        or mapping.get("x_field")
-        or mapping.get("xField")
-        or mapping.get("label")
-        or ""
+        mapping.get("label_field") or mapping.get("labelField") or mapping.get("x_field") or mapping.get("xField") or mapping.get("label") or ""
     ).strip()
     if not label_field:
         raise ValueError("data_connection.result_mapping is missing label_field")
@@ -319,16 +295,13 @@ class CreateLiveChartInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    chart_type: Literal[
-        "bar", "line", "pie", "doughnut", "scatter", "radar", "polarArea"
-    ] = Field(
+    chart_type: Literal["bar", "line", "pie", "doughnut", "scatter", "radar", "polarArea"] = Field(
         description="Type of chart to create: 'bar', 'line', 'pie', 'doughnut', 'scatter', 'radar', or 'polarArea'"
     )
     title: str = Field(description="Chart title displayed above the chart")
     source_data: dict[str, Any] = Field(
         description=(
-            "Raw successful query result payload with columns and rows. Use the query "
-            "tool's returned table data directly; do not pre-build labels or datasets."
+            "Raw successful query result payload with columns and rows. Use the query tool's returned table data directly; do not pre-build labels or datasets."
         ),
     )
     description: str = Field(
@@ -396,9 +369,7 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
             base[key] = value
 
 
-def _apply_default_colors(
-    datasets: list[dict[str, Any]], chart_type: str
-) -> list[dict[str, Any]]:
+def _apply_default_colors(datasets: list[dict[str, Any]], chart_type: str) -> list[dict[str, Any]]:
     """Apply default colors to datasets that don't have colors specified."""
     result = []
     for i, dataset in enumerate(datasets):
@@ -408,9 +379,7 @@ def _apply_default_colors(
             # Pie/doughnut charts need an array of colors for segments
             if not ds.get("backgroundColor"):
                 num_segments = len(ds.get("data", []))
-                ds["backgroundColor"] = [
-                    CHART_COLORS[j % len(CHART_COLORS)] for j in range(num_segments)
-                ]
+                ds["backgroundColor"] = [CHART_COLORS[j % len(CHART_COLORS)] for j in range(num_segments)]
             if not ds.get("borderColor"):
                 ds["borderColor"] = "rgba(255, 255, 255, 1)"
             if ds.get("borderWidth") is None:
@@ -512,8 +481,7 @@ async def create_chart(
                     "font": {"size": 16, "weight": "bold"},
                 },
                 "legend": {
-                    "display": len(colored_datasets) > 1
-                    or chart_type in ("pie", "doughnut", "polarArea"),
+                    "display": len(colored_datasets) > 1 or chart_type in ("pie", "doughnut", "polarArea"),
                     "position": "bottom",
                 },
             },

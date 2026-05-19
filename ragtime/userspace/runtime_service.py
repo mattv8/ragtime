@@ -134,9 +134,7 @@ class UserSpaceRuntimeService:
         self._preview_host_unreachable_log_ts: dict[str, float] = {}
         self._runtime_watch_task: asyncio.Task[None] | None = None
         self._runtime_watch_task_lock = asyncio.Lock()
-        self._runtime_watch_interval_seconds = float(
-            getattr(settings, "userspace_runtime_watch_interval_seconds", 1.0)
-        )
+        self._runtime_watch_interval_seconds = float(getattr(settings, "userspace_runtime_watch_interval_seconds", 1.0))
         # Consumed preview bootstrap grant JTIs with monotonic expiry.
         # Enforces single-use semantics for grants presented to
         # /__ragtime/bootstrap so a leaked URL cannot be replayed inside
@@ -164,9 +162,7 @@ class UserSpaceRuntimeService:
         scheme = "https" if bool(getattr(settings, "enable_https", False)) else "http"
         port = int(getattr(settings, "port", 8000) or 8000)
         host = "localhost"
-        default_port = (scheme == "https" and port == 443) or (
-            scheme == "http" and port == 80
-        )
+        default_port = (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
         netloc = host if default_port else f"{host}:{port}"
         return f"{scheme}://{netloc}"
 
@@ -175,20 +171,14 @@ class UserSpaceRuntimeService:
         normalized = re.sub(r"[^a-z0-9-]", "-", str(workspace_id or "").strip().lower())
         normalized = re.sub(r"-{2,}", "-", normalized).strip("-")
         if not normalized:
-            digest = hashlib.sha256(
-                f"userspace-preview:{workspace_id}:{settings.encryption_key}".encode(
-                    "utf-8"
-                )
-            ).hexdigest()
+            digest = hashlib.sha256(f"userspace-preview:{workspace_id}:{settings.encryption_key}".encode("utf-8")).hexdigest()
             normalized = digest[:20]
         return normalized[:63].rstrip("-")
 
     @staticmethod
     def _is_localhost_like_host(hostname: str | None) -> bool:
         normalized = str(hostname or "").strip().strip(".").lower().strip("[]")
-        return normalized in {"localhost", "127.0.0.1", "::1"} or normalized.endswith(
-            ".localhost"
-        )
+        return normalized in {"localhost", "127.0.0.1", "::1"} or normalized.endswith(".localhost")
 
     @staticmethod
     def _normalize_preview_base_domain_candidate(value: str | None) -> str | None:
@@ -204,9 +194,7 @@ class UserSpaceRuntimeService:
         return candidate
 
     def _configured_preview_base_domain(self) -> str | None:
-        return self._normalize_preview_base_domain_candidate(
-            getattr(settings, "userspace_preview_base_domain", "")
-        )
+        return self._normalize_preview_base_domain_candidate(getattr(settings, "userspace_preview_base_domain", ""))
 
     def _resolve_preview_base_domain(
         self,
@@ -224,9 +212,7 @@ class UserSpaceRuntimeService:
                 detail="Unable to derive userspace preview domain from the current origin",
             )
 
-        if bool(
-            getattr(settings, "debug_mode", False)
-        ) and self._is_localhost_like_host(hostname):
+        if bool(getattr(settings, "debug_mode", False)) and self._is_localhost_like_host(hostname):
             return _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN, "debug_default"
         if self._is_localhost_like_host(hostname):
             return "localhost", "derived"
@@ -238,11 +224,7 @@ class UserSpaceRuntimeService:
             self._preview_base_domains.add(normalized)
 
     def get_preview_base_domains(self) -> set[str]:
-        domains = {
-            domain
-            for domain in self._preview_base_domains
-            if self._normalize_preview_base_domain_candidate(domain)
-        }
+        domains = {domain for domain in self._preview_base_domains if self._normalize_preview_base_domain_candidate(domain)}
         configured = self._configured_preview_base_domain()
         if configured:
             domains.add(configured)
@@ -264,9 +246,7 @@ class UserSpaceRuntimeService:
 
         if source == "debug_default":
             return None
-        if self._is_localhost_like_host(
-            resolved_base_domain
-        ) or resolved_base_domain.endswith(".localhost"):
+        if self._is_localhost_like_host(resolved_base_domain) or resolved_base_domain.endswith(".localhost"):
             return None
         if resolved_base_domain == _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN:
             return UserSpacePreviewWarning(
@@ -318,18 +298,12 @@ class UserSpaceRuntimeService:
         *,
         control_plane_origin: str | None = None,
     ) -> str:
-        parsed = urlsplit(
-            control_plane_origin or self._default_public_control_plane_origin()
-        )
-        base_domain, _ = self._resolve_preview_base_domain(
-            control_plane_origin or self._default_public_control_plane_origin()
-        )
+        parsed = urlsplit(control_plane_origin or self._default_public_control_plane_origin())
+        base_domain, _ = self._resolve_preview_base_domain(control_plane_origin or self._default_public_control_plane_origin())
         self._remember_preview_base_domain(base_domain)
         host = f"{self._preview_host_label(workspace_id)}.{base_domain}"
         port = parsed.port
-        use_default_port = (parsed.scheme == "https" and port in {None, 443}) or (
-            parsed.scheme == "http" and port in {None, 80}
-        )
+        use_default_port = (parsed.scheme == "https" and port in {None, 443}) or (parsed.scheme == "http" and port in {None, 80})
         netloc = host if use_default_port else f"{host}:{port}"
         return urlunsplit((parsed.scheme or "http", netloc, "", "", "")).rstrip("/")
 
@@ -351,9 +325,7 @@ class UserSpaceRuntimeService:
         ttl_seconds: int,
     ) -> tuple[str, datetime]:
         now = self._utc_now()
-        expires_at = now + timedelta(
-            seconds=self._clamp_preview_token_ttl_seconds(ttl_seconds)
-        )
+        expires_at = now + timedelta(seconds=self._clamp_preview_token_ttl_seconds(ttl_seconds))
         payload = {key: value for key, value in claims.items() if value is not None}
         payload.update(
             {
@@ -362,9 +334,7 @@ class UserSpaceRuntimeService:
                 "jti": str(uuid4()),
             }
         )
-        token = jwt.encode(
-            payload, settings.encryption_key, algorithm=settings.jwt_algorithm
-        )
+        token = jwt.encode(payload, settings.encryption_key, algorithm=settings.jwt_algorithm)
         return token, expires_at
 
     @staticmethod
@@ -384,11 +354,7 @@ class UserSpaceRuntimeService:
         *,
         session_expires_at: datetime | None = None,
     ) -> datetime:
-        expires_at = self._utc_now() + timedelta(
-            seconds=self._clamp_preview_token_ttl_seconds(
-                _RUNTIME_PREVIEW_SESSION_TTL_SECONDS
-            )
-        )
+        expires_at = self._utc_now() + timedelta(seconds=self._clamp_preview_token_ttl_seconds(_RUNTIME_PREVIEW_SESSION_TTL_SECONDS))
         if session_expires_at is None:
             return expires_at
         if session_expires_at.tzinfo is None:
@@ -401,9 +367,7 @@ class UserSpaceRuntimeService:
         workspace_id: str,
         control_plane_origin: str,
     ) -> tuple[str, UserSpacePreviewWarning | None]:
-        resolved_base_domain, source = self._resolve_preview_base_domain(
-            control_plane_origin
-        )
+        resolved_base_domain, source = self._resolve_preview_base_domain(control_plane_origin)
         self._remember_preview_base_domain(resolved_base_domain)
         preview_origin = self._build_preview_origin(
             workspace_id,
@@ -480,9 +444,7 @@ class UserSpaceRuntimeService:
         )
         return preview_origin, expires_at, preview_warning
 
-    def build_preview_session_token(
-        self, claims: dict[str, Any]
-    ) -> tuple[str, datetime]:
+    def build_preview_session_token(self, claims: dict[str, Any]) -> tuple[str, datetime]:
         payload = dict(claims)
         payload["kind"] = _RUNTIME_PREVIEW_SESSION_KIND
         return self._build_preview_token(
@@ -501,9 +463,7 @@ class UserSpaceRuntimeService:
                 ),
             )
         except JWTError as exc:
-            raise HTTPException(
-                status_code=401, detail="Invalid preview token"
-            ) from exc
+            raise HTTPException(status_code=401, detail="Invalid preview token") from exc
 
         if str(claims.get("kind") or "").strip() != expected_kind:
             raise HTTPException(status_code=401, detail="Invalid preview token")
@@ -531,11 +491,7 @@ class UserSpaceRuntimeService:
         now_ts = _time.time()
         async with self._consumed_preview_grant_lock:
             # Opportunistically drop expired entries so the cache stays bounded.
-            expired = [
-                key
-                for key, expiry in self._consumed_preview_grant_jtis.items()
-                if expiry <= now_ts
-            ]
+            expired = [key for key, expiry in self._consumed_preview_grant_jtis.items() if expiry <= now_ts]
             for key in expired:
                 self._consumed_preview_grant_jtis.pop(key, None)
 
@@ -644,9 +600,7 @@ class UserSpaceRuntimeService:
         row_id: str,
         data: dict[str, Any],
     ) -> Any:
-        return await self._prisma_write_with_field_fallback(
-            model, "update", data, where={"id": row_id}
-        )
+        return await self._prisma_write_with_field_fallback(model, "update", data, where={"id": row_id})
 
     async def _runtime_session_create_row(
         self,
@@ -666,11 +620,7 @@ class UserSpaceRuntimeService:
 
     def _to_runtime_session(self, row: Any) -> UserSpaceRuntimeSession:
         state_value = getattr(row, "state", "stopped")
-        state_text = (
-            state_value
-            if isinstance(state_value, str)
-            else str(getattr(state_value, "value", state_value))
-        )
+        state_text = state_value if isinstance(state_value, str) else str(getattr(state_value, "value", state_value))
         if state_text not in {"starting", "running", "stopping", "stopped", "error"}:
             state_text = "stopped"
         state = cast(RuntimeSessionState, state_text)
@@ -708,27 +658,12 @@ class UserSpaceRuntimeService:
         state_raw = str(provider_status.get("state") or "").strip()
         state = state_raw if state_raw in _valid else session.state
 
-        preview = (
-            str(provider_status.get("preview_internal_url") or "").strip()
-            or session.preview_internal_url
-            or _RUNTIME_PREVIEW_DEFAULT_BASE
-        )
-        framework = (
-            str(provider_status.get("launch_framework") or "").strip()
-            or session.launch_framework
-        )
-        command = (
-            str(provider_status.get("launch_command") or "").strip()
-            or session.launch_command
-        )
+        preview = str(provider_status.get("preview_internal_url") or "").strip() or session.preview_internal_url or _RUNTIME_PREVIEW_DEFAULT_BASE
+        framework = str(provider_status.get("launch_framework") or "").strip() or session.launch_framework
+        command = str(provider_status.get("launch_command") or "").strip() or session.launch_command
         cwd = str(provider_status.get("launch_cwd") or "").strip() or session.launch_cwd
-        port = (
-            self._optional_int(provider_status.get("launch_port"))
-            or session.launch_port
-        )
-        last_error = self._resolve_provider_last_error(
-            provider_status, fallback=session.last_error
-        )
+        port = self._optional_int(provider_status.get("launch_port")) or session.launch_port
+        last_error = self._resolve_provider_last_error(provider_status, fallback=session.last_error)
 
         update: dict[str, Any] = {}
         if state != session.state:
@@ -781,9 +716,7 @@ class UserSpaceRuntimeService:
 
     @staticmethod
     def _cache_entry_is_fresh(cached_at: datetime, max_age_seconds: float) -> bool:
-        return (datetime.now(timezone.utc) - cached_at).total_seconds() <= max(
-            0.0, max_age_seconds
-        )
+        return (datetime.now(timezone.utc) - cached_at).total_seconds() <= max(0.0, max_age_seconds)
 
     async def _cache_preview_upstream_session(
         self,
@@ -791,14 +724,11 @@ class UserSpaceRuntimeService:
     ) -> None:
         now = self._utc_now()
         async with self._runtime_cache_lock:
-            self._preview_upstream_cache[session.workspace_id] = (
-                _PreviewUpstreamCacheEntry(
-                    provider_session_id=session.provider_session_id,
-                    base_url=self._resolve_preview_base_url(session),
-                    cached_at=now,
-                    expires_at=now
-                    + timedelta(seconds=_RUNTIME_PREVIEW_UPSTREAM_CACHE_TTL_SECONDS),
-                )
+            self._preview_upstream_cache[session.workspace_id] = _PreviewUpstreamCacheEntry(
+                provider_session_id=session.provider_session_id,
+                base_url=self._resolve_preview_base_url(session),
+                cached_at=now,
+                expires_at=now + timedelta(seconds=_RUNTIME_PREVIEW_UPSTREAM_CACHE_TTL_SECONDS),
             )
 
     async def _get_cached_preview_upstream_base_url(
@@ -822,11 +752,9 @@ class UserSpaceRuntimeService:
         if not provider_session_id:
             return
         async with self._runtime_cache_lock:
-            self._provider_status_cache[provider_session_id] = (
-                _ProviderStatusCacheEntry(
-                    payload=dict(payload),
-                    cached_at=self._utc_now(),
-                )
+            self._provider_status_cache[provider_session_id] = _ProviderStatusCacheEntry(
+                payload=dict(payload),
+                cached_at=self._utc_now(),
             )
 
     async def _get_cached_provider_status(
@@ -1029,8 +957,7 @@ class UserSpaceRuntimeService:
             return
         self._preview_host_unreachable_log_ts[probe_url] = now
         logger.warning(
-            "Preview host unreachable: %s did not respond to public probe %s. "
-            "Check that the reverse proxy forwards *.<base_domain> to Ragtime.",
+            "Preview host unreachable: %s did not respond to public probe %s. Check that the reverse proxy forwards *.<base_domain> to Ragtime.",
             preview_origin,
             probe_url,
         )
@@ -1073,10 +1000,7 @@ class UserSpaceRuntimeService:
                             pass
 
                         if attempt < _RUNTIME_PUBLIC_PREVIEW_PROBE_ATTEMPTS:
-                            await asyncio.sleep(
-                                _RUNTIME_PUBLIC_PREVIEW_PROBE_RETRY_DELAY_SECONDS
-                                * attempt
-                            )
+                            await asyncio.sleep(_RUNTIME_PUBLIC_PREVIEW_PROBE_RETRY_DELAY_SECONDS * attempt)
             return False
 
         try:
@@ -1100,9 +1024,7 @@ class UserSpaceRuntimeService:
 
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             # Check all health candidates in parallel using asyncio.gather
-            results = await asyncio.gather(
-                *(check_candidate(client, c) for c in health_candidates)
-            )
+            results = await asyncio.gather(*(check_candidate(client, c) for c in health_candidates))
             return any(results)
 
     def _build_capability_token_response(
@@ -1125,9 +1047,7 @@ class UserSpaceRuntimeService:
             "exp": int(expires_at.timestamp()),
             "jti": str(uuid4()),
         }
-        token = jwt.encode(
-            claims, settings.encryption_key, algorithm=settings.jwt_algorithm
-        )
+        token = jwt.encode(claims, settings.encryption_key, algorithm=settings.jwt_algorithm)
         return UserSpaceCapabilityTokenResponse(
             token=token,
             expires_at=expires_at,
@@ -1174,14 +1094,10 @@ class UserSpaceRuntimeService:
     ) -> dict[str, Any]:
         self._require_runtime_manager()
 
-        workspace_env, workspace_env_visibility, workspace_mounts = (
-            await asyncio.gather(
-                userspace_service.get_workspace_runtime_environment(workspace_id),
-                userspace_service.get_workspace_runtime_environment_visibility(
-                    workspace_id
-                ),
-                userspace_service.resolve_workspace_mounts_for_runtime(workspace_id),
-            )
+        workspace_env, workspace_env_visibility, workspace_mounts = await asyncio.gather(
+            userspace_service.get_workspace_runtime_environment(workspace_id),
+            userspace_service.get_workspace_runtime_environment_visibility(workspace_id),
+            userspace_service.resolve_workspace_mounts_for_runtime(workspace_id),
         )
         payload: dict[str, Any] = {
             "workspace_id": workspace_id,
@@ -1259,11 +1175,7 @@ class UserSpaceRuntimeService:
             return None
         self._require_runtime_manager()
         json_payload: dict[str, Any] | None = None
-        if (
-            workspace_env is not None
-            or workspace_env_visibility is not None
-            or workspace_mounts is not None
-        ):
+        if workspace_env is not None or workspace_env_visibility is not None or workspace_mounts is not None:
             json_payload = {}
             if workspace_env is not None:
                 json_payload["workspace_env"] = workspace_env
@@ -1304,9 +1216,7 @@ class UserSpaceRuntimeService:
         )
         ws_url = str(response.get("ws_url") or "").strip()
         if not ws_url.startswith("ws://") and not ws_url.startswith("wss://"):
-            raise HTTPException(
-                status_code=502, detail="Runtime PTY upstream unavailable"
-            )
+            raise HTTPException(status_code=502, detail="Runtime PTY upstream unavailable")
         return ws_url
 
     async def _runtime_provider_read_file(
@@ -1474,10 +1384,7 @@ class UserSpaceRuntimeService:
             session = self._to_runtime_session(current)
             target_provider_name = self._runtime_provider_name()
             provider_status: dict[str, Any] | None = None
-            if (
-                session.state == "running"
-                and session.runtime_provider == target_provider_name
-            ):
+            if session.state == "running" and session.runtime_provider == target_provider_name:
                 provider_status = await self._runtime_provider_get_status(
                     session.provider_session_id,
                     max_age_seconds=_RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS,
@@ -1506,24 +1413,14 @@ class UserSpaceRuntimeService:
             provider_data = await self._runtime_provider_start_session(
                 workspace_id,
                 session.leased_by_user_id or leased_by_user_id,
-                existing_provider_session_id=(
-                    session.provider_session_id
-                    if session.runtime_provider == target_provider_name
-                    else None
-                ),
+                existing_provider_session_id=(session.provider_session_id if session.runtime_provider == target_provider_name else None),
             )
             delta = self._merge_provider_status(session, provider_data)
             delta.update(
                 {
-                    "state": delta.get(
-                        "state", str(provider_data.get("state") or "running")
-                    ),
+                    "state": delta.get("state", str(provider_data.get("state") or "running")),
                     "runtimeProvider": self._runtime_provider_name(),
-                    "providerSessionId": str(
-                        provider_data.get("provider_session_id")
-                        or session.provider_session_id
-                        or ""
-                    ),
+                    "providerSessionId": str(provider_data.get("provider_session_id") or session.provider_session_id or ""),
                     "lastHeartbeatAt": self._utc_now(),
                 }
             )
@@ -1547,9 +1444,7 @@ class UserSpaceRuntimeService:
                 if latest_session.state in {"stopped", "stopping", "error"}:
                     raise HTTPException(
                         status_code=409,
-                        detail=(
-                            "Runtime session is stopped. Start it from the workspace runtime controls."
-                        ),
+                        detail=("Runtime session is stopped. Start it from the workspace runtime controls."),
                     )
                 raise HTTPException(
                     status_code=503,
@@ -1574,18 +1469,10 @@ class UserSpaceRuntimeService:
                     "leasedByUserId": leased_by_user_id,
                     "state": str(provider_data.get("state") or "running"),
                     "runtimeProvider": self._runtime_provider_name(),
-                    "providerSessionId": str(
-                        provider_data.get("provider_session_id")
-                        or f"runtime-{workspace_id[:8]}-{uuid4().hex[:8]}"
-                    ),
-                    "previewInternalUrl": str(
-                        provider_data.get("preview_internal_url")
-                        or _RUNTIME_PREVIEW_DEFAULT_BASE
-                    ),
-                    "launchFramework": str(provider_data.get("launch_framework") or "")
-                    or None,
-                    "launchCommand": str(provider_data.get("launch_command") or "")
-                    or None,
+                    "providerSessionId": str(provider_data.get("provider_session_id") or f"runtime-{workspace_id[:8]}-{uuid4().hex[:8]}"),
+                    "previewInternalUrl": str(provider_data.get("preview_internal_url") or _RUNTIME_PREVIEW_DEFAULT_BASE),
+                    "launchFramework": str(provider_data.get("launch_framework") or "") or None,
+                    "launchCommand": str(provider_data.get("launch_command") or "") or None,
                     "launchCwd": str(provider_data.get("launch_cwd") or "") or None,
                     "launchPort": self._optional_int(provider_data.get("launch_port")),
                     "createdAt": now,
@@ -1603,9 +1490,7 @@ class UserSpaceRuntimeService:
             )
             raise HTTPException(status_code=404, detail="Workspace not found") from exc
         session = self._to_runtime_session(row)
-        await self._cache_provider_status(
-            session.provider_session_id or "", provider_data
-        )
+        await self._cache_provider_status(session.provider_session_id or "", provider_data)
         await self._cache_preview_upstream_session(session)
         return session
 
@@ -1640,9 +1525,7 @@ class UserSpaceRuntimeService:
         *,
         include_dirs: bool = False,
     ) -> list[UserSpaceFileInfo]:
-        mount_specs = await userspace_service.resolve_workspace_mounts_for_runtime(
-            workspace_id
-        )
+        mount_specs = await userspace_service.resolve_workspace_mounts_for_runtime(workspace_id)
         payload = await self._runtime_workspace_file_list(
             workspace_id,
             include_dirs=include_dirs,
@@ -1766,9 +1649,7 @@ class UserSpaceRuntimeService:
             session = await self.ensure_workspace_preview_session(workspace_id, user_id)
             base_url = self._resolve_preview_base_url(session)
         normalized_path = quote((path or "").lstrip("/"), safe="/@._-~")
-        upstream = (
-            f"{base_url}/{normalized_path}" if normalized_path else f"{base_url}/"
-        )
+        upstream = f"{base_url}/{normalized_path}" if normalized_path else f"{base_url}/"
         if query:
             upstream = f"{upstream}?{query}"
         return upstream
@@ -1793,9 +1674,7 @@ class UserSpaceRuntimeService:
             session = await self.ensure_shared_preview_session(workspace_id)
             base_url = self._resolve_preview_base_url(session)
         normalized_path = quote((path or "").lstrip("/"), safe="/@._-~")
-        upstream = (
-            f"{base_url}/{normalized_path}" if normalized_path else f"{base_url}/"
-        )
+        upstream = f"{base_url}/{normalized_path}" if normalized_path else f"{base_url}/"
         if query:
             upstream = f"{upstream}?{query}"
         return upstream
@@ -1944,9 +1823,7 @@ class UserSpaceRuntimeService:
         active_session = self._to_runtime_session(active)
         provider_stop_error: str | None = None
         try:
-            await self._runtime_provider_stop_session(
-                active_session.provider_session_id
-            )
+            await self._runtime_provider_stop_session(active_session.provider_session_id)
         except HTTPException as exc:
             provider_stop_error = str(exc.detail)
             logger.warning(
@@ -1990,9 +1867,7 @@ class UserSpaceRuntimeService:
         user_id: str,
     ) -> UserSpaceRuntimeStatusResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
-        live_data_warning = userspace_service.get_live_data_execution_warning(
-            workspace_id
-        )
+        live_data_warning = userspace_service.get_live_data_execution_warning(workspace_id)
         active = await self._get_active_session_row(workspace_id)
         if not active:
             return UserSpaceRuntimeStatusResponse(
@@ -2014,11 +1889,7 @@ class UserSpaceRuntimeService:
             allow_stale_on_error=True,
         )
 
-        if (
-            provider_status is None
-            and session.runtime_provider == self._runtime_provider_name()
-            and session.state in {"starting", "running"}
-        ):
+        if provider_status is None and session.runtime_provider == self._runtime_provider_name() and session.state in {"starting", "running"}:
             # Re-read the DB row to guard against a concurrent stop_runtime_session
             # that set the state to "stopped" after our initial read.
             fresh_row = await self._get_active_session_row(workspace_id)
@@ -2114,23 +1985,14 @@ class UserSpaceRuntimeService:
                 cap_value = raw_runtime_capabilities.get("has_cap_sys_admin")
                 if isinstance(cap_value, bool):
                     runtime_has_cap_sys_admin = cap_value
-            runtime_operation_id = (
-                str(provider_status.get("runtime_operation_id") or "").strip() or None
-            )
-            phase_value = (
-                str(provider_status.get("runtime_operation_phase") or "").strip()
-                or None
-            )
+            runtime_operation_id = str(provider_status.get("runtime_operation_id") or "").strip() or None
+            phase_value = str(provider_status.get("runtime_operation_phase") or "").strip() or None
             if phase_value in allowed_runtime_phases:
                 runtime_operation_phase = cast(RuntimeOperationPhase, phase_value)
             else:
                 runtime_operation_phase = None
-            runtime_operation_started_at = provider_status.get(
-                "runtime_operation_started_at"
-            )
-            runtime_operation_updated_at = provider_status.get(
-                "runtime_operation_updated_at"
-            )
+            runtime_operation_started_at = provider_status.get("runtime_operation_started_at")
+            runtime_operation_updated_at = provider_status.get("runtime_operation_updated_at")
 
         return UserSpaceRuntimeStatusResponse(
             workspace_id=workspace_id,
@@ -2193,12 +2055,8 @@ class UserSpaceRuntimeService:
             active_session = self._to_runtime_session(active)
             provider_stop_error: str | None = None
             try:
-                await self._runtime_provider_stop_session(
-                    active_session.provider_session_id
-                )
-                await self._drop_provider_status_cache(
-                    active_session.provider_session_id
-                )
+                await self._runtime_provider_stop_session(active_session.provider_session_id)
+                await self._drop_provider_status_cache(active_session.provider_session_id)
             except HTTPException as exc:
                 provider_stop_error = str(exc.detail)
                 logger.warning(
@@ -2260,9 +2118,7 @@ class UserSpaceRuntimeService:
         )
         workspace_env, workspace_env_visibility = await asyncio.gather(
             userspace_service.get_workspace_runtime_environment(workspace_id),
-            userspace_service.get_workspace_runtime_environment_visibility(
-                workspace_id
-            ),
+            userspace_service.get_workspace_runtime_environment_visibility(workspace_id),
         )
         await self._runtime_provider_restart_devserver(
             session.provider_session_id,
@@ -2318,16 +2174,8 @@ class UserSpaceRuntimeService:
             where={"id": {"in": workspace_ids}},
             order={"name": "asc"},
         )
-        names_by_id = {
-            str(getattr(row, "id", "") or "")
-            .strip(): str(getattr(row, "name", "") or "")
-            .strip()
-            for row in workspace_rows
-        }
-        return [
-            (workspace_id, names_by_id.get(workspace_id) or workspace_id)
-            for workspace_id in workspace_ids
-        ]
+        names_by_id = {str(getattr(row, "id", "") or "").strip(): str(getattr(row, "name", "") or "").strip() for row in workspace_rows}
+        return [(workspace_id, names_by_id.get(workspace_id) or workspace_id) for workspace_id in workspace_ids]
 
     async def restart_runtime_env_vars_and_wait(
         self,
@@ -2344,10 +2192,7 @@ class UserSpaceRuntimeService:
             )
 
         session = self._to_runtime_session(active)
-        if (
-            session.state not in {"running", "starting"}
-            or not session.provider_session_id
-        ):
+        if session.state not in {"running", "starting"} or not session.provider_session_id:
             raise HTTPException(
                 status_code=404,
                 detail="Runtime session is no longer active",
@@ -2380,9 +2225,7 @@ class UserSpaceRuntimeService:
                     detail="Runtime session is no longer active",
                 )
 
-            phase_value = str(
-                provider_status.get("runtime_operation_phase") or ""
-            ).strip()
+            phase_value = str(provider_status.get("runtime_operation_phase") or "").strip()
             runtime_operation_phase: RuntimeOperationPhase | None = None
             if phase_value in allowed_runtime_phases:
                 runtime_operation_phase = cast(RuntimeOperationPhase, phase_value)
@@ -2394,27 +2237,19 @@ class UserSpaceRuntimeService:
             last_error = str(provider_status.get("last_error") or "").strip() or None
             devserver_running = bool(provider_status.get("devserver_running"))
 
-            if state == "running" and (
-                runtime_operation_phase in {None, "ready"} or devserver_running
-            ):
+            if state == "running" and (runtime_operation_phase in {None, "ready"} or devserver_running):
                 return
 
             if state in {"error", "stopped"} or runtime_operation_phase == "failed":
                 raise HTTPException(
                     status_code=502,
-                    detail=(
-                        last_error
-                        or f"Runtime entered {runtime_operation_phase or state} during restart"
-                    ),
+                    detail=(last_error or f"Runtime entered {runtime_operation_phase or state} during restart"),
                 )
 
             if _time.monotonic() >= deadline:
                 raise HTTPException(
                     status_code=504,
-                    detail=(
-                        "Timed out waiting for runtime restart after "
-                        f"{int(timeout_seconds)} seconds"
-                    ),
+                    detail=(f"Timed out waiting for runtime restart after {int(timeout_seconds)} seconds"),
                 )
 
             await asyncio.sleep(1.0)
@@ -2518,10 +2353,7 @@ class UserSpaceRuntimeService:
                     workspace_id,
                     active_session.id,
                 )
-                return (
-                    "Sync completed, but the previous runtime session is no longer active. "
-                    "Start the runtime again to use the refreshed mount."
-                )
+                return "Sync completed, but the previous runtime session is no longer active. Start the runtime again to use the refreshed mount."
         except Exception as exc:
             detail = str(exc).strip() or "runtime mount refresh failed"
 
@@ -2531,10 +2363,7 @@ class UserSpaceRuntimeService:
             mount_id,
             detail,
         )
-        return (
-            "Sync completed, but the active runtime was not refreshed automatically: "
-            f"{detail[:240]}"
-        )
+        return f"Sync completed, but the active runtime was not refreshed automatically: {detail[:240]}"
 
     async def refresh_workspace_mount(
         self,
@@ -2660,9 +2489,7 @@ class UserSpaceRuntimeService:
             ) from exc
 
         if str(claims.get("workspace_id") or "") != workspace_id:
-            raise HTTPException(
-                status_code=403, detail="Capability token scope mismatch"
-            )
+            raise HTTPException(status_code=403, detail="Capability token scope mismatch")
 
         capabilities = set(claims.get("capabilities") or [])
         if capability not in capabilities:
@@ -2676,11 +2503,9 @@ class UserSpaceRuntimeService:
         normalized_path: str,
         user_id: str,
     ) -> str:
-        normalized_path = (
-            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
-                workspace_id,
-                normalized_path,
-            )
+        normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_path,
         )
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         payload = await self._runtime_provider_read_file(
@@ -2696,11 +2521,9 @@ class UserSpaceRuntimeService:
         content: str,
         user_id: str,
     ) -> None:
-        normalized_path = (
-            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
-                workspace_id,
-                normalized_path,
-            )
+        normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_path,
         )
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         await self._runtime_provider_write_file(
@@ -2722,11 +2545,9 @@ class UserSpaceRuntimeService:
     ) -> UserSpaceFileResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
         normalized_path = self._normalize_file_path(file_path)
-        normalized_path = (
-            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
-                workspace_id,
-                normalized_path,
-            )
+        normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_path,
         )
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         payload = await self._runtime_provider_read_file(
@@ -2751,11 +2572,9 @@ class UserSpaceRuntimeService:
     ) -> UserSpaceFileResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_path = self._normalize_file_path(file_path)
-        normalized_path = (
-            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
-                workspace_id,
-                normalized_path,
-            )
+        normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_path,
         )
         await self._persist_file_content(
             workspace_id,
@@ -2786,16 +2605,12 @@ class UserSpaceRuntimeService:
     ) -> dict[str, Any]:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_path = self._normalize_file_path(file_path)
-        normalized_path = (
-            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
-                workspace_id,
-                normalized_path,
-            )
+        normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_path,
         )
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
-        await self._runtime_provider_delete_file(
-            session.provider_session_id, normalized_path
-        )
+        await self._runtime_provider_delete_file(session.provider_session_id, normalized_path)
         await userspace_service.touch_workspace(workspace_id)
         await self._audit(
             workspace_id,
@@ -2814,18 +2629,14 @@ class UserSpaceRuntimeService:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
         can_edit = True
         try:
-            await userspace_service.enforce_workspace_role(
-                workspace_id, user_id, "editor"
-            )
+            await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         except HTTPException:
             can_edit = False
 
         normalized_path = self._normalize_file_path(file_path)
-        normalized_path = (
-            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
-                workspace_id,
-                normalized_path,
-            )
+        normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_path,
         )
         key = (workspace_id, normalized_path)
 
@@ -2864,11 +2675,9 @@ class UserSpaceRuntimeService:
         user_id: str,
     ) -> UserSpaceCollabSnapshotResponse:
         normalized_path = self._normalize_file_path(file_path)
-        normalized_path = (
-            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
-                workspace_id,
-                normalized_path,
-            )
+        normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_path,
         )
         key = (workspace_id, normalized_path)
         async with self._collab_lock:
@@ -2894,9 +2703,7 @@ class UserSpaceRuntimeService:
             async with self._collab_lock:
                 state = self._collab_docs.get(key)
                 if state is None:
-                    raise HTTPException(
-                        status_code=409, detail="Collaboration state unavailable"
-                    )
+                    raise HTTPException(status_code=409, detail="Collaboration state unavailable")
                 state.clients.add(websocket)
 
         return UserSpaceCollabSnapshotResponse(
@@ -2973,9 +2780,7 @@ class UserSpaceRuntimeService:
                     if existing is None:
                         aggregated[user_id] = dict(entry)
                         continue
-                    if str(entry.get("updated_at") or "") > str(
-                        existing.get("updated_at") or ""
-                    ):
+                    if str(entry.get("updated_at") or "") > str(existing.get("updated_at") or ""):
                         aggregated[user_id] = dict(entry)
             return list(aggregated.values())
 
@@ -3017,11 +2822,9 @@ class UserSpaceRuntimeService:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
 
         normalized_path = self._normalize_file_path(file_path)
-        normalized_path = (
-            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
-                workspace_id,
-                normalized_path,
-            )
+        normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_path,
         )
         key = (workspace_id, normalized_path)
 
@@ -3047,9 +2850,7 @@ class UserSpaceRuntimeService:
         async with self._collab_lock:
             state = self._collab_docs.get(key)
             if state is None:
-                raise HTTPException(
-                    status_code=409, detail="Collaboration state unavailable"
-                )
+                raise HTTPException(status_code=409, detail="Collaboration state unavailable")
             if expected_version is not None and expected_version != state.version:
                 raise RuntimeVersionConflictError(
                     expected_version=expected_version,
@@ -3067,9 +2868,7 @@ class UserSpaceRuntimeService:
             content,
             user_id,
         )
-        await self._store_collab_checkpoint(
-            workspace_id, normalized_path, content, version
-        )
+        await self._store_collab_checkpoint(workspace_id, normalized_path, content, version)
         await self.bump_workspace_generation(workspace_id)
         await self._audit(
             workspace_id,
@@ -3118,11 +2917,9 @@ class UserSpaceRuntimeService:
     ) -> UserSpaceCollabSnapshotResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_path = self._normalize_file_path(file_path)
-        normalized_path = (
-            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
-                workspace_id,
-                normalized_path,
-            )
+        normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_path,
         )
         await self._persist_file_content(
             workspace_id,
@@ -3165,17 +2962,13 @@ class UserSpaceRuntimeService:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_old = self._normalize_file_path(old_path)
         normalized_new = self._normalize_file_path(new_path)
-        normalized_old = (
-            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
-                workspace_id,
-                normalized_old,
-            )
+        normalized_old = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_old,
         )
-        normalized_new = (
-            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
-                workspace_id,
-                normalized_new,
-            )
+        normalized_new = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_new,
         )
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         source_payload = await self._runtime_provider_read_file(
@@ -3218,9 +3011,7 @@ class UserSpaceRuntimeService:
 
         db = await get_db()
         model = self._collab_doc_model(db)
-        row = await model.find_first(
-            where={"workspaceId": workspace_id, "filePath": normalized_old}
-        )
+        row = await model.find_first(where={"workspaceId": workspace_id, "filePath": normalized_old})
         if row:
             await model.update(
                 where={"id": row.id},
@@ -3244,11 +3035,9 @@ class UserSpaceRuntimeService:
     ) -> dict[str, Any]:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_path = self._normalize_file_path(file_path)
-        normalized_path = (
-            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
-                workspace_id,
-                normalized_path,
-            )
+        normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+            workspace_id,
+            normalized_path,
         )
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         source_payload = await self._runtime_provider_read_file(
@@ -3270,9 +3059,7 @@ class UserSpaceRuntimeService:
 
         db = await get_db()
         model = self._collab_doc_model(db)
-        await model.delete_many(
-            where={"workspaceId": workspace_id, "filePath": normalized_path}
-        )
+        await model.delete_many(where={"workspaceId": workspace_id, "filePath": normalized_path})
         await userspace_service.touch_workspace(workspace_id)
         await self._audit(
             workspace_id,
@@ -3403,9 +3190,7 @@ class UserSpaceRuntimeService:
         model = self._collab_doc_model(db)
         encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
         now = self._utc_now()
-        row = await model.find_first(
-            where={"workspaceId": workspace_id, "filePath": file_path}
-        )
+        row = await model.find_first(where={"workspaceId": workspace_id, "filePath": file_path})
         payload = {
             "checkpointVersion": version,
             "docStateBase64": encoded,
@@ -3428,9 +3213,7 @@ class UserSpaceRuntimeService:
 
     async def invalidate_workspace_runtime_state(self, workspace_id: str) -> None:
         async with self._collab_lock:
-            keys_to_drop = [
-                key for key in self._collab_docs.keys() if key[0] == workspace_id
-            ]
+            keys_to_drop = [key for key in self._collab_docs.keys() if key[0] == workspace_id]
             for key in keys_to_drop:
                 self._collab_docs.pop(key, None)
                 self._collab_presence.pop(key, None)
@@ -3453,11 +3236,7 @@ class UserSpaceRuntimeService:
         provider_stop_errors: dict[str, str | None] = {}
         for session in sessions:
             raw_provider_session_id = getattr(session, "providerSessionId", None)
-            provider_session_id: str = (
-                str(raw_provider_session_id).strip()
-                if raw_provider_session_id is not None
-                else ""
-            )
+            provider_session_id: str = str(raw_provider_session_id).strip() if raw_provider_session_id is not None else ""
             provider_stop_error = provider_stop_errors.get(provider_session_id)
             if provider_session_id and provider_session_id not in provider_stop_errors:
                 provider_stop_error = None
@@ -3475,9 +3254,7 @@ class UserSpaceRuntimeService:
 
             last_error = "Workspace snapshot restore invalidated active runtime state"
             if provider_stop_error:
-                last_error = (
-                    f"{last_error}. Provider stop failed: {provider_stop_error}"
-                )
+                last_error = f"{last_error}. Provider stop failed: {provider_stop_error}"
             await model.update(
                 where={"id": session.id},
                 data={
@@ -3553,9 +3330,7 @@ class UserSpaceRuntimeService:
         provider_status: dict[str, Any] | None = None
         last_error: str | None = session.last_error
         try:
-            provider_status = await self._runtime_provider_get_status(
-                session.provider_session_id
-            )
+            provider_status = await self._runtime_provider_get_status(session.provider_session_id)
         except HTTPException as exc:
             last_error = str(exc.detail)
 
@@ -3570,13 +3345,8 @@ class UserSpaceRuntimeService:
                 state = cast(RuntimeSessionState, raw_state)
             if "devserver_running" in provider_status:
                 devserver_running = bool(provider_status.get("devserver_running"))
-            operation_id = (
-                str(provider_status.get("runtime_operation_id") or "").strip() or None
-            )
-            raw_phase = (
-                str(provider_status.get("runtime_operation_phase") or "").strip()
-                or None
-            )
+            operation_id = str(provider_status.get("runtime_operation_id") or "").strip() or None
+            raw_phase = str(provider_status.get("runtime_operation_phase") or "").strip() or None
             if raw_phase in {
                 "queued",
                 "provisioning",
@@ -3611,16 +3381,10 @@ class UserSpaceRuntimeService:
                 exc_info=True,
             )
 
-        mount_target_paths = [
-            str(getattr(row, "targetPath", "") or "").strip()
-            for row in mount_rows
-            if str(getattr(row, "targetPath", "") or "").strip()
-        ]
-        mount_content_signature = (
-            await userspace_service.get_runtime_mount_content_signature(
-                workspace_id,
-                mount_target_paths,
-            )
+        mount_target_paths = [str(getattr(row, "targetPath", "") or "").strip() for row in mount_rows if str(getattr(row, "targetPath", "") or "").strip()]
+        mount_content_signature = await userspace_service.get_runtime_mount_content_signature(
+            workspace_id,
+            mount_target_paths,
         )
 
         payload = {
@@ -3657,11 +3421,7 @@ class UserSpaceRuntimeService:
         if mount_contents_changed:
             await userspace_service.stage_runtime_mounts_into_sync_cache(workspace_id)
             userspace_service.invalidate_file_list_cache(workspace_id)
-        event_type = (
-            "runtime_mount_contents"
-            if previous and previous[:-1] == signature[:-1]
-            else "runtime_phase"
-        )
+        event_type = "runtime_mount_contents" if previous and previous[:-1] == signature[:-1] else "runtime_phase"
         await self.bump_workspace_generation(
             workspace_id,
             event_type=event_type,
@@ -3716,10 +3476,7 @@ class UserSpaceRuntimeService:
         try:
             async with cond:
                 await asyncio.wait_for(
-                    cond.wait_for(
-                        lambda: self._workspace_generation.get(workspace_id, 0)
-                        > after_generation
-                    ),
+                    cond.wait_for(lambda: self._workspace_generation.get(workspace_id, 0) > after_generation),
                     timeout=timeout,
                 )
         except asyncio.TimeoutError:

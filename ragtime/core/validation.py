@@ -95,23 +95,16 @@ async def _validate_ollama_embeddings(settings: object, model: str) -> Validatio
             return ValidationResult(
                 valid=False,
                 error="Cannot reach Ollama server",
-                details=error_msg
-                or f"Failed to connect to Ollama at {base_url}. "
-                "Make sure Ollama is running and the URL is correct in Settings.",
+                details=error_msg or f"Failed to connect to Ollama at {base_url}. Make sure Ollama is running and the URL is correct in Settings.",
             )
 
         # Get available models
-        models = await list_models(
-            base_url, embeddings_only=False, include_dimensions=False
-        )
+        models = await list_models(base_url, embeddings_only=False, include_dimensions=False)
         available_model_names = [m.name.split(":")[0] for m in models]
 
         # Check both exact match and base model name
         model_base = model.split(":")[0]
-        if (
-            model not in [m.name for m in models]
-            and model_base not in available_model_names
-        ):
+        if model not in [m.name for m in models] and model_base not in available_model_names:
             return ValidationResult(
                 valid=False,
                 error=f"Embedding model '{model}' not found in Ollama",
@@ -133,11 +126,7 @@ async def _validate_ollama_embeddings(settings: object, model: str) -> Validatio
                     timeout=30.0,
                 )
                 if embed_response.status_code != 200:
-                    error_detail = (
-                        embed_response.text[:200]
-                        if embed_response.text
-                        else "Unknown error"
-                    )
+                    error_detail = embed_response.text[:200] if embed_response.text else "Unknown error"
                     return ValidationResult(
                         valid=False,
                         error="Failed to generate test embedding",
@@ -199,9 +188,7 @@ async def _validate_openai_embeddings(settings: object, model: str) -> Validatio
                     details=f"The embedding model '{model}' does not exist. Check model name in Settings.",
                 )
             elif response.status_code != 200:
-                error_msg = (
-                    response.json().get("error", {}).get("message", response.text[:200])
-                )
+                error_msg = response.json().get("error", {}).get("message", response.text[:200])
                 return ValidationResult(
                     valid=False,
                     error="OpenAI API error",
@@ -257,8 +244,7 @@ async def _validate_local_openai_compatible_embeddings(
         return ValidationResult(
             valid=False,
             error=f"Cannot reach {label} embedding server",
-            details=error_msg
-            or f"Failed to connect to {label} at {base_url}. {startup_hint}",
+            details=error_msg or f"Failed to connect to {label} at {base_url}. {startup_hint}",
         )
 
     try:
@@ -269,10 +255,7 @@ async def _validate_local_openai_compatible_embeddings(
                 return ValidationResult(
                     valid=False,
                     error=f"{label} embedding model '{model}' not found",
-                    details=(
-                        f"Available embedding models: {', '.join(available_ids) or 'none'}. "
-                        "Load or select an embedding-capable model."
-                    ),
+                    details=(f"Available embedding models: {', '.join(available_ids) or 'none'}. Load or select an embedding-capable model."),
                 )
 
         dimension = await dimension_probe(base_url, model)
@@ -313,9 +296,7 @@ async def _validate_local_openai_compatible_embeddings(
     return ValidationResult(valid=True)
 
 
-async def _validate_llama_cpp_embeddings(
-    settings: object, model: str
-) -> ValidationResult:
+async def _validate_llama_cpp_embeddings(settings: object, model: str) -> ValidationResult:
     """Validate llama.cpp embedding provider reachability and model probe."""
     return await _validate_local_openai_compatible_embeddings(
         "llama_cpp",
@@ -326,9 +307,7 @@ async def _validate_llama_cpp_embeddings(
     )
 
 
-async def _validate_lmstudio_embeddings(
-    settings: object, model: str
-) -> ValidationResult:
+async def _validate_lmstudio_embeddings(settings: object, model: str) -> ValidationResult:
     """Validate LM Studio embedding provider reachability and model probe."""
     return await _validate_local_openai_compatible_embeddings(
         "lmstudio",

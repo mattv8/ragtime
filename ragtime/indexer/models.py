@@ -2,7 +2,6 @@
 Indexer data models and schemas.
 """
 
-
 import hashlib
 import json
 from datetime import datetime
@@ -25,6 +24,7 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
     normalize_userspace_preview_sandbox_flags,
 )
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -148,9 +148,7 @@ class IndexJob(BaseModel):
     source_path: Optional[str] = None
     git_url: Optional[str] = None
     git_branch: str = "main"
-    git_token: Optional[str] = Field(
-        default=None, exclude=True
-    )  # Never persisted/returned
+    git_token: Optional[str] = Field(default=None, exclude=True)  # Never persisted/returned
 
     # Progress tracking
     total_files: int = 0
@@ -167,16 +165,8 @@ class IndexJob(BaseModel):
     @property
     def progress_percent(self) -> float:
         """Calculate overall progress: 30% for file loading, 70% for embedding."""
-        file_progress = (
-            (self.processed_files / self.total_files) * 30
-            if self.total_files > 0
-            else 0.0
-        )
-        chunk_progress = (
-            (self.processed_chunks / self.total_chunks) * 70
-            if self.total_chunks > 0
-            else 0.0
-        )
+        file_progress = (self.processed_files / self.total_files) * 30 if self.total_files > 0 else 0.0
+        chunk_progress = (self.processed_chunks / self.total_chunks) * 70 if self.total_chunks > 0 else 0.0
         return min(file_progress + chunk_progress, 99.0)  # Cap at 99 until completed
 
 
@@ -217,9 +207,7 @@ class IndexInfo(BaseModel):
     source: Optional[str] = None  # git URL or original filename
     git_branch: Optional[str] = None  # branch for git sources
     has_stored_token: bool = False  # True if a git token is stored for re-indexing
-    config_snapshot: Optional[IndexConfigSnapshot] = (
-        None  # Configuration used for indexing
-    )
+    config_snapshot: Optional[IndexConfigSnapshot] = None  # Configuration used for indexing
     created_at: Optional[datetime] = None
     last_modified: Optional[datetime] = None
     # Git history info (for git-sourced indexes)
@@ -233,17 +221,13 @@ class CreateIndexRequest(BaseModel):
     """Request to create a new index."""
 
     name: str = Field(description="Name for the index")
-    git_url: Optional[str] = Field(
-        default=None, description="Git repository URL to clone"
-    )
+    git_url: Optional[str] = Field(default=None, description="Git repository URL to clone")
     git_branch: str = Field(default="main", description="Git branch to use")
     git_token: Optional[str] = Field(
         default=None,
         description="GitHub Personal Access Token for private repos (stored encrypted for re-indexing)",
     )
-    config: Optional[IndexConfig] = Field(
-        default=None, description="Indexing configuration"
-    )
+    config: Optional[IndexConfig] = Field(default=None, description="Indexing configuration")
 
 
 class FileTypeStats(BaseModel):
@@ -252,12 +236,8 @@ class FileTypeStats(BaseModel):
     extension: str = Field(description="File extension (e.g., '.py', '.js')")
     file_count: int = Field(description="Number of files with this extension")
     total_size_bytes: int = Field(description="Total size of files in bytes")
-    estimated_chunks: int = Field(
-        description="Estimated number of chunks after splitting"
-    )
-    sample_files: List[str] = Field(
-        default_factory=list, description="Sample file paths (up to 5)"
-    )
+    estimated_chunks: int = Field(description="Estimated number of chunks after splitting")
+    sample_files: List[str] = Field(default_factory=list, description="Sample file paths (up to 5)")
 
 
 class CommitHistorySample(BaseModel):
@@ -276,21 +256,15 @@ class CommitHistoryInfo(BaseModel):
         default_factory=list,
         description="Sample commits at various depths for interpolation",
     )
-    oldest_date: Optional[str] = Field(
-        default=None, description="Date of the oldest commit"
-    )
-    newest_date: Optional[str] = Field(
-        default=None, description="Date of the newest commit"
-    )
+    oldest_date: Optional[str] = Field(default=None, description="Date of the oldest commit")
+    newest_date: Optional[str] = Field(default=None, description="Date of the newest commit")
 
 
 class MemoryEstimate(BaseModel):
     """Memory estimates for an index."""
 
     embedding_dimension: int = Field(description="Embedding vector dimension")
-    steady_memory_mb: float = Field(
-        description="Estimated RAM after loading (steady-state)"
-    )
+    steady_memory_mb: float = Field(description="Estimated RAM after loading (steady-state)")
     peak_memory_mb: float = Field(description="Estimated peak RAM during loading")
     # Per-index estimates for comparison table
     dimension_breakdown: Optional[List[dict]] = Field(
@@ -306,12 +280,8 @@ class IndexAnalysisResult(BaseModel):
     total_files: int = Field(description="Total number of files found")
     total_size_bytes: int = Field(description="Total size in bytes")
     total_size_mb: float = Field(description="Total size in megabytes")
-    estimated_chunks: int = Field(
-        description="Estimated total chunks (based on chunk_size)"
-    )
-    estimated_index_size_mb: float = Field(
-        description="Estimated FAISS index size in MB"
-    )
+    estimated_chunks: int = Field(description="Estimated total chunks (based on chunk_size)")
+    estimated_index_size_mb: float = Field(description="Estimated FAISS index size in MB")
 
     # Memory estimates
     memory_estimate: Optional[MemoryEstimate] = Field(
@@ -324,9 +294,7 @@ class IndexAnalysisResult(BaseModel):
     )
 
     # Breakdown by file type
-    file_type_stats: List[FileTypeStats] = Field(
-        default_factory=list, description="Stats broken down by file extension"
-    )
+    file_type_stats: List[FileTypeStats] = Field(default_factory=list, description="Stats broken down by file extension")
 
     # Suggested exclusions (patterns that would significantly reduce size)
     suggested_exclusions: List[str] = Field(
@@ -335,14 +303,10 @@ class IndexAnalysisResult(BaseModel):
     )
 
     # Currently matched files (using current patterns)
-    matched_file_patterns: List[str] = Field(
-        default_factory=list, description="File patterns that matched files"
-    )
+    matched_file_patterns: List[str] = Field(default_factory=list, description="File patterns that matched files")
 
     # Warnings/recommendations
-    warnings: List[str] = Field(
-        default_factory=list, description="Warnings about potential issues"
-    )
+    warnings: List[str] = Field(default_factory=list, description="Warnings about potential issues")
 
     # Config used for analysis
     chunk_size: int = Field(description="Chunk size used for estimation")
@@ -360,9 +324,7 @@ class AnalyzeIndexRequest(BaseModel):
 
     git_url: str = Field(description="Git repository URL to analyze")
     git_branch: str = Field(default="main", description="Git branch to analyze")
-    git_token: Optional[str] = Field(
-        default=None, description="Token for private repos"
-    )
+    git_token: Optional[str] = Field(default=None, description="Token for private repos")
     file_patterns: List[str] = Field(
         default=["**/*"],
         description="Glob patterns for files to include (default: **/* matches all files)",
@@ -430,9 +392,7 @@ class RepoVisibilityResponse(BaseModel):
     """Response for repository visibility check."""
 
     visibility: str = Field(description="'public', 'private', 'not_found', or 'error'")
-    has_stored_token: bool = Field(
-        default=False, description="Whether a valid token is stored for this repo"
-    )
+    has_stored_token: bool = Field(default=False, description="Whether a valid token is stored for this repo")
     needs_token: bool = Field(
         default=False,
         description="Whether user needs to provide a token for access",
@@ -444,9 +404,7 @@ class FetchBranchesRequest(BaseModel):
     """Request to fetch branches from a Git repository."""
 
     git_url: str = Field(description="Git repository URL")
-    git_token: Optional[str] = Field(
-        default=None, description="Token for private repos (optional)"
-    )
+    git_token: Optional[str] = Field(default=None, description="Token for private repos (optional)")
     index_name: Optional[str] = Field(
         default=None,
         description="Index name to use stored token from (optional)",
@@ -456,13 +414,9 @@ class FetchBranchesRequest(BaseModel):
 class FetchBranchesResponse(BaseModel):
     """Response for branch listing."""
 
-    branches: List[str] = Field(
-        default_factory=list, description="List of branch names"
-    )
+    branches: List[str] = Field(default_factory=list, description="List of branch names")
     error: Optional[str] = Field(default=None, description="Error message if failed")
-    needs_token: bool = Field(
-        default=False, description="Whether authentication is required"
-    )
+    needs_token: bool = Field(default=False, description="Whether authentication is required")
 
 
 # -----------------------------------------------------------------------------
@@ -501,15 +455,9 @@ class AppSettings(BaseModel):
         description="Target embedding dimensions for OpenAI text-embedding-3-* models (256-3072). Leave empty for model default. Use <=2000 for pgvector indexed search.",
     )
     # Ollama connection settings (separate fields for UI)
-    ollama_protocol: str = Field(
-        default="http", description="Ollama server protocol: 'http' or 'https'"
-    )
-    ollama_host: str = Field(
-        default="localhost", description="Ollama server hostname or IP address"
-    )
-    ollama_port: int = Field(
-        default=11434, ge=1, le=65535, description="Ollama server port"
-    )
+    ollama_protocol: str = Field(default="http", description="Ollama server protocol: 'http' or 'https'")
+    ollama_host: str = Field(default="localhost", description="Ollama server hostname or IP address")
+    ollama_port: int = Field(default=11434, ge=1, le=65535, description="Ollama server port")
     ollama_base_url: str = Field(
         default="http://localhost:11434",
         description="Ollama server URL for embeddings (computed from protocol/host/port)",
@@ -522,9 +470,7 @@ class AppSettings(BaseModel):
         default="host.docker.internal",
         description="llama.cpp embedding server hostname or IP address",
     )
-    llama_cpp_port: int = Field(
-        default=8081, ge=1, le=65535, description="llama.cpp embedding server port"
-    )
+    llama_cpp_port: int = Field(default=8081, ge=1, le=65535, description="llama.cpp embedding server port")
     llama_cpp_base_url: str = Field(
         default="http://host.docker.internal:8081",
         description="llama.cpp embedding server URL (computed from protocol/host/port)",
@@ -537,9 +483,7 @@ class AppSettings(BaseModel):
         default="host.docker.internal",
         description="LM Studio embedding server hostname or IP address",
     )
-    lmstudio_port: int = Field(
-        default=1234, ge=1, le=65535, description="LM Studio embedding server port"
-    )
+    lmstudio_port: int = Field(default=1234, ge=1, le=65535, description="LM Studio embedding server port")
     lmstudio_base_url: str = Field(
         default="http://host.docker.internal:1234",
         description="LM Studio embedding server URL (computed from protocol/host/port)",
@@ -556,9 +500,7 @@ class AppSettings(BaseModel):
         default="host.docker.internal",
         description="oMLX embedding server hostname or IP address",
     )
-    omlx_port: int = Field(
-        default=8000, ge=1, le=65535, description="oMLX embedding server port"
-    )
+    omlx_port: int = Field(default=8000, ge=1, le=65535, description="oMLX embedding server port")
     omlx_base_url: str = Field(
         default="http://host.docker.internal:8000",
         description="oMLX embedding server URL (computed from protocol/host/port)",
@@ -607,58 +549,42 @@ class AppSettings(BaseModel):
         description="Target max compressed bytes for multimodal image attachments.",
     )
     # LLM Ollama connection settings (separate from embedding Ollama)
-    llm_ollama_protocol: str = Field(
-        default="http", description="Ollama LLM server protocol: 'http' or 'https'"
-    )
+    llm_ollama_protocol: str = Field(default="http", description="Ollama LLM server protocol: 'http' or 'https'")
     llm_ollama_host: str = Field(
         default="localhost",
         description="Ollama LLM server hostname or IP address",
     )
-    llm_ollama_port: int = Field(
-        default=11434, ge=1, le=65535, description="Ollama LLM server port"
-    )
+    llm_ollama_port: int = Field(default=11434, ge=1, le=65535, description="Ollama LLM server port")
     llm_ollama_base_url: str = Field(
         default="http://localhost:11434",
         description="Ollama LLM server URL (computed from protocol/host/port)",
     )
-    llm_llama_cpp_protocol: str = Field(
-        default="http", description="llama.cpp LLM server protocol: 'http' or 'https'"
-    )
+    llm_llama_cpp_protocol: str = Field(default="http", description="llama.cpp LLM server protocol: 'http' or 'https'")
     llm_llama_cpp_host: str = Field(
         default="host.docker.internal",
         description="llama.cpp LLM server hostname or IP address",
     )
-    llm_llama_cpp_port: int = Field(
-        default=8080, ge=1, le=65535, description="llama.cpp LLM server port"
-    )
+    llm_llama_cpp_port: int = Field(default=8080, ge=1, le=65535, description="llama.cpp LLM server port")
     llm_llama_cpp_base_url: str = Field(
         default="http://host.docker.internal:8080",
         description="llama.cpp LLM server URL (computed from protocol/host/port)",
     )
-    llm_lmstudio_protocol: str = Field(
-        default="http", description="LM Studio LLM server protocol: 'http' or 'https'"
-    )
+    llm_lmstudio_protocol: str = Field(default="http", description="LM Studio LLM server protocol: 'http' or 'https'")
     llm_lmstudio_host: str = Field(
         default="host.docker.internal",
         description="LM Studio LLM server hostname or IP address",
     )
-    llm_lmstudio_port: int = Field(
-        default=1234, ge=1, le=65535, description="LM Studio LLM server port"
-    )
+    llm_lmstudio_port: int = Field(default=1234, ge=1, le=65535, description="LM Studio LLM server port")
     llm_lmstudio_base_url: str = Field(
         default="http://host.docker.internal:1234",
         description="LM Studio LLM server URL (computed from protocol/host/port)",
     )
-    llm_omlx_protocol: str = Field(
-        default="http", description="oMLX LLM server protocol: 'http' or 'https'"
-    )
+    llm_omlx_protocol: str = Field(default="http", description="oMLX LLM server protocol: 'http' or 'https'")
     llm_omlx_host: str = Field(
         default="host.docker.internal",
         description="oMLX LLM server hostname or IP address",
     )
-    llm_omlx_port: int = Field(
-        default=8000, ge=1, le=65535, description="oMLX LLM server port"
-    )
+    llm_omlx_port: int = Field(default=8000, ge=1, le=65535, description="oMLX LLM server port")
     llm_omlx_base_url: str = Field(
         default="http://host.docker.internal:8000",
         description="oMLX LLM server URL (computed from protocol/host/port)",
@@ -835,9 +761,7 @@ class AppSettings(BaseModel):
     )
 
     # Legacy tool configuration (deprecated - use ToolConfig)
-    enabled_tools: List[str] = Field(
-        default=[], description="Legacy: List of enabled tool names (deprecated)"
-    )
+    enabled_tools: List[str] = Field(default=[], description="Legacy: List of enabled tool names (deprecated)")
 
     # Legacy Odoo tool settings
     odoo_container: str = Field(
@@ -850,34 +774,18 @@ class AppSettings(BaseModel):
         default="odoo-postgres",
         description="Legacy: Docker container name for target PostgreSQL",
     )
-    postgres_host: str = Field(
-        default="localhost", description="Legacy: PostgreSQL host for tool queries"
-    )
-    postgres_port: int = Field(
-        default=5432, description="Legacy: PostgreSQL port for tool queries"
-    )
-    postgres_user: str = Field(
-        default="odoo", description="Legacy: PostgreSQL user for tool queries"
-    )
-    postgres_password: str = Field(
-        default="", description="Legacy: PostgreSQL password for tool queries"
-    )
-    postgres_database: str = Field(
-        default="odoo", description="Legacy: PostgreSQL database for tool queries"
-    )
+    postgres_host: str = Field(default="localhost", description="Legacy: PostgreSQL host for tool queries")
+    postgres_port: int = Field(default=5432, description="Legacy: PostgreSQL port for tool queries")
+    postgres_user: str = Field(default="odoo", description="Legacy: PostgreSQL user for tool queries")
+    postgres_password: str = Field(default="", description="Legacy: PostgreSQL password for tool queries")
+    postgres_database: str = Field(default="odoo", description="Legacy: PostgreSQL database for tool queries")
 
     # Query limits
-    max_query_results: int = Field(
-        default=100, ge=1, le=1000, description="Maximum rows returned by queries"
-    )
-    query_timeout: int = Field(
-        default=30, ge=1, le=300, description="Query timeout in seconds"
-    )
+    max_query_results: int = Field(default=100, ge=1, le=1000, description="Maximum rows returned by queries")
+    query_timeout: int = Field(default=30, ge=1, le=300, description="Query timeout in seconds")
 
     # Security
-    enable_write_ops: bool = Field(
-        default=False, description="Allow write operations (INSERT/UPDATE/DELETE)"
-    )
+    enable_write_ops: bool = Field(default=False, description="Allow write operations (INSERT/UPDATE/DELETE)")
 
     # Embedding dimension tracking
     embedding_dimension: Optional[int] = Field(
@@ -931,10 +839,7 @@ class AppSettings(BaseModel):
     )
     userspace_preview_sandbox_flags: List[str] = Field(
         default_factory=lambda: list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
-        description=(
-            "Allowed iframe sandbox flags for User Space previews. "
-            "Defaults to the current preview capability set."
-        ),
+        description=("Allowed iframe sandbox flags for User Space previews. Defaults to the current preview capability set."),
     )
     userspace_duplicate_copy_files_default: bool = Field(
         default=True,
@@ -973,9 +878,7 @@ class AppSettings(BaseModel):
 
     @field_validator("userspace_preview_sandbox_flags", mode="before")
     @classmethod
-    def _normalize_userspace_preview_sandbox_flags(
-        cls, value: list[str] | tuple[str, ...] | None
-    ) -> list[str]:
+    def _normalize_userspace_preview_sandbox_flags(cls, value: list[str] | tuple[str, ...] | None) -> list[str]:
         return normalize_userspace_preview_sandbox_flags(value)
 
     def get_embedding_config_hash(self) -> str:
@@ -989,9 +892,7 @@ class AppSettings(BaseModel):
             return False  # No previous config, nothing has changed
         return self.get_embedding_config_hash() != self.embedding_config_hash
 
-    async def get_configuration_warnings(
-        self, chunk_count: int = 0
-    ) -> List["ConfigurationWarning"]:
+    async def get_configuration_warnings(self, chunk_count: int = 0) -> List["ConfigurationWarning"]:
         """
         Generate warnings about potentially suboptimal configuration.
 
@@ -1013,10 +914,7 @@ class AppSettings(BaseModel):
 
         # Check actual embedding dimension vs pgvector index limit
         # This is the authoritative check - we know the actual dimension in use
-        if (
-            self.embedding_dimension
-            and self.embedding_dimension > PGVECTOR_IVFFLAT_MAX_DIM
-        ):
+        if self.embedding_dimension and self.embedding_dimension > PGVECTOR_IVFFLAT_MAX_DIM:
             warnings.append(
                 ConfigurationWarning(
                     level="warning",
@@ -1030,17 +928,14 @@ class AppSettings(BaseModel):
         elif not self.embedding_dimension:
             # No embeddings yet - check if the selected model will exceed the limit
             # This provides a heads-up before they start indexing
-            model_dims = get_model_dimensions_sync(
-                self.embedding_model or "", embedding_models
-            )
+            model_dims = get_model_dimensions_sync(self.embedding_model or "", embedding_models)
             if model_dims and model_dims > PGVECTOR_IVFFLAT_MAX_DIM:
                 warnings.append(
                     ConfigurationWarning(
                         level="info",
                         category="embedding",
                         message=f"{self.embedding_model} uses {model_dims} dimensions.",
-                        recommendation=f"This exceeds pgvector's {PGVECTOR_IVFFLAT_MAX_DIM}-dim "
-                        f"IVFFlat limit. Consider a smaller model for large datasets.",
+                        recommendation=f"This exceeds pgvector's {PGVECTOR_IVFFLAT_MAX_DIM}-dim IVFFlat limit. Consider a smaller model for large datasets.",
                     )
                 )
 
@@ -1054,10 +949,8 @@ class AppSettings(BaseModel):
                     ConfigurationWarning(
                         level="info",
                         category="performance",
-                        message=f"ivfflat_lists ({self.ivfflat_lists}) may be suboptimal "
-                        f"for {chunk_count} chunks.",
-                        recommendation=f"Consider increasing to ~{optimal_lists} for "
-                        f"faster queries on large datasets.",
+                        message=f"ivfflat_lists ({self.ivfflat_lists}) may be suboptimal for {chunk_count} chunks.",
+                        recommendation=f"Consider increasing to ~{optimal_lists} for faster queries on large datasets.",
                     )
                 )
             elif self.ivfflat_lists > optimal_lists * 3 and chunk_count < 10000:
@@ -1065,10 +958,8 @@ class AppSettings(BaseModel):
                     ConfigurationWarning(
                         level="info",
                         category="performance",
-                        message=f"ivfflat_lists ({self.ivfflat_lists}) is high for "
-                        f"{chunk_count} chunks.",
-                        recommendation=f"Consider reducing to ~{optimal_lists} for faster "
-                        f"index building.",
+                        message=f"ivfflat_lists ({self.ivfflat_lists}) is high for {chunk_count} chunks.",
+                        recommendation=f"Consider reducing to ~{optimal_lists} for faster index building.",
                     )
                 )
 
@@ -1079,8 +970,7 @@ class AppSettings(BaseModel):
                     level="info",
                     category="retrieval",
                     message="MMR (Max Marginal Relevance) is disabled.",
-                    recommendation="Enable MMR (search_use_mmr=true) for more diverse "
-                    "search results and better answer quality.",
+                    recommendation="Enable MMR (search_use_mmr=true) for more diverse search results and better answer quality.",
                 )
             )
 
@@ -1103,14 +993,10 @@ class EmbeddingStatus(BaseModel):
 class ConfigurationWarning(BaseModel):
     """A warning about potentially suboptimal configuration."""
 
-    level: Literal["info", "warning", "error"] = Field(
-        description="Severity level of the warning"
-    )
+    level: Literal["info", "warning", "error"] = Field(description="Severity level of the warning")
     category: str = Field(description="Category: embedding, indexing, performance")
     message: str = Field(description="Human-readable warning message")
-    recommendation: Optional[str] = Field(
-        default=None, description="Suggested action to resolve"
-    )
+    recommendation: Optional[str] = Field(default=None, description="Suggested action to resolve")
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -1306,10 +1192,7 @@ class UpdateSettingsRequest(BaseModel):
     )
     userspace_preview_sandbox_flags: Optional[List[str]] = Field(
         default=None,
-        description=(
-            "Allowed iframe sandbox flags for User Space previews. "
-            "Omit to keep the current setting."
-        ),
+        description=("Allowed iframe sandbox flags for User Space previews. Omit to keep the current setting."),
     )
     userspace_sqlite_import_max_bytes: Optional[int] = Field(
         default=None,
@@ -1342,9 +1225,7 @@ class UpdateSettingsRequest(BaseModel):
 
     @field_validator("userspace_preview_sandbox_flags", mode="before")
     @classmethod
-    def _validate_userspace_preview_sandbox_flags(
-        cls, value: list[str] | tuple[str, ...] | None
-    ) -> list[str] | None:
+    def _validate_userspace_preview_sandbox_flags(cls, value: list[str] | tuple[str, ...] | None) -> list[str] | None:
         if value is None:
             return None
         return normalize_userspace_preview_sandbox_flags(value)
@@ -1369,13 +1250,8 @@ class UserSpacePreviewSettingsResponse(BaseModel):
         default_factory=lambda: list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
         description="Default iframe sandbox flags for User Space previews.",
     )
-    userspace_preview_sandbox_flag_options: List[
-        UserSpacePreviewSandboxFlagOptionResponse
-    ] = Field(
-        default_factory=lambda: [
-            UserSpacePreviewSandboxFlagOptionResponse(**option)
-            for option in USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS
-        ],
+    userspace_preview_sandbox_flag_options: List[UserSpacePreviewSandboxFlagOptionResponse] = Field(
+        default_factory=lambda: [UserSpacePreviewSandboxFlagOptionResponse(**option) for option in USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS],
         description="Canonical UI metadata for supported iframe sandbox flags.",
     )
     userspace_sqlite_import_max_bytes: int = Field(
@@ -1405,9 +1281,7 @@ class ToolType(str, Enum):
 
 
 # Tool types that support schema indexing (use for ToolType enum comparisons)
-SCHEMA_INDEXER_CAPABLE_TOOL_TYPES = frozenset(
-    {ToolType.POSTGRES, ToolType.MSSQL, ToolType.MYSQL}
-)
+SCHEMA_INDEXER_CAPABLE_TOOL_TYPES = frozenset({ToolType.POSTGRES, ToolType.MSSQL, ToolType.MYSQL})
 
 
 class FilesystemMountType(str, Enum):
@@ -1422,44 +1296,26 @@ class FilesystemMountType(str, Enum):
 class PostgresConnectionConfig(BaseModel):
     """Connection configuration for PostgreSQL tool."""
 
-    host: str = Field(
-        default="", description="PostgreSQL host (leave empty for Docker)"
-    )
+    host: str = Field(default="", description="PostgreSQL host (leave empty for Docker)")
     port: int = Field(default=5432, ge=1, le=65535, description="PostgreSQL port")
     user: str = Field(default="", description="PostgreSQL username")
     password: str = Field(default="", description="PostgreSQL password")
     database: str = Field(default="", description="Database name")
-    container: str = Field(
-        default="", description="Docker container name (alternative to host)"
-    )
+    container: str = Field(default="", description="Docker container name (alternative to host)")
     docker_network: str = Field(
         default="",
         description="Docker network to connect ragtime to the PostgreSQL container's network",
     )
     # SSH tunnel configuration
-    ssh_tunnel_enabled: bool = Field(
-        default=False, description="Use SSH tunnel for database connection"
-    )
-    ssh_tunnel_host: str = Field(
-        default="", description="SSH server hostname for tunnel"
-    )
-    ssh_tunnel_port: int = Field(
-        default=22, ge=1, le=65535, description="SSH server port"
-    )
+    ssh_tunnel_enabled: bool = Field(default=False, description="Use SSH tunnel for database connection")
+    ssh_tunnel_host: str = Field(default="", description="SSH server hostname for tunnel")
+    ssh_tunnel_port: int = Field(default=22, ge=1, le=65535, description="SSH server port")
     ssh_tunnel_user: str = Field(default="", description="SSH username")
-    ssh_tunnel_password: str = Field(
-        default="", description="SSH password (if not using key)"
-    )
+    ssh_tunnel_password: str = Field(default="", description="SSH password (if not using key)")
     ssh_tunnel_key_path: str = Field(default="", description="Path to SSH private key")
-    ssh_tunnel_key_content: str = Field(
-        default="", description="SSH private key content (preferred over path)"
-    )
-    ssh_tunnel_key_passphrase: str = Field(
-        default="", description="Passphrase for encrypted SSH key"
-    )
-    ssh_tunnel_public_key: str = Field(
-        default="", description="SSH public key for generated keypairs"
-    )
+    ssh_tunnel_key_content: str = Field(default="", description="SSH private key content (preferred over path)")
+    ssh_tunnel_key_passphrase: str = Field(default="", description="Passphrase for encrypted SSH key")
+    ssh_tunnel_public_key: str = Field(default="", description="SSH public key for generated keypairs")
 
 
 class MssqlConnectionConfig(BaseModel):
@@ -1471,86 +1327,46 @@ class MssqlConnectionConfig(BaseModel):
     password: str = Field(description="MSSQL password")
     database: str = Field(description="Database name to connect to")
     # SSH tunnel configuration
-    ssh_tunnel_enabled: bool = Field(
-        default=False, description="Use SSH tunnel for database connection"
-    )
-    ssh_tunnel_host: str = Field(
-        default="", description="SSH server hostname for tunnel"
-    )
-    ssh_tunnel_port: int = Field(
-        default=22, ge=1, le=65535, description="SSH server port"
-    )
+    ssh_tunnel_enabled: bool = Field(default=False, description="Use SSH tunnel for database connection")
+    ssh_tunnel_host: str = Field(default="", description="SSH server hostname for tunnel")
+    ssh_tunnel_port: int = Field(default=22, ge=1, le=65535, description="SSH server port")
     ssh_tunnel_user: str = Field(default="", description="SSH username")
-    ssh_tunnel_password: str = Field(
-        default="", description="SSH password (if not using key)"
-    )
+    ssh_tunnel_password: str = Field(default="", description="SSH password (if not using key)")
     ssh_tunnel_key_path: str = Field(default="", description="Path to SSH private key")
-    ssh_tunnel_key_content: str = Field(
-        default="", description="SSH private key content (preferred over path)"
-    )
-    ssh_tunnel_key_passphrase: str = Field(
-        default="", description="Passphrase for encrypted SSH key"
-    )
-    ssh_tunnel_public_key: str = Field(
-        default="", description="SSH public key for generated keypairs"
-    )
+    ssh_tunnel_key_content: str = Field(default="", description="SSH private key content (preferred over path)")
+    ssh_tunnel_key_passphrase: str = Field(default="", description="Passphrase for encrypted SSH key")
+    ssh_tunnel_public_key: str = Field(default="", description="SSH public key for generated keypairs")
 
 
 class MysqlConnectionConfig(BaseModel):
     """Connection configuration for MySQL/MariaDB tool."""
 
-    host: str = Field(
-        default="", description="MySQL/MariaDB server hostname or IP address"
-    )
+    host: str = Field(default="", description="MySQL/MariaDB server hostname or IP address")
     port: int = Field(default=3306, ge=1, le=65535, description="MySQL port")
     user: str = Field(default="", description="MySQL username")
     password: str = Field(default="", description="MySQL password")
     database: str = Field(default="", description="Database name to connect to")
     # Docker container mode (alternative to direct connection)
-    container: str = Field(
-        default="", description="Docker container name (alternative to host)"
-    )
+    container: str = Field(default="", description="Docker container name (alternative to host)")
     docker_network: str = Field(
         default="",
         description="Docker network to connect ragtime to the MySQL container's network",
     )
     # SSH tunnel configuration
-    ssh_tunnel_enabled: bool = Field(
-        default=False, description="Use SSH tunnel for database connection"
-    )
-    ssh_tunnel_host: str = Field(
-        default="", description="SSH server hostname for tunnel"
-    )
-    ssh_tunnel_port: int = Field(
-        default=22, ge=1, le=65535, description="SSH server port"
-    )
+    ssh_tunnel_enabled: bool = Field(default=False, description="Use SSH tunnel for database connection")
+    ssh_tunnel_host: str = Field(default="", description="SSH server hostname for tunnel")
+    ssh_tunnel_port: int = Field(default=22, ge=1, le=65535, description="SSH server port")
     ssh_tunnel_user: str = Field(default="", description="SSH username")
-    ssh_tunnel_password: str = Field(
-        default="", description="SSH password (if not using key)"
-    )
+    ssh_tunnel_password: str = Field(default="", description="SSH password (if not using key)")
     ssh_tunnel_key_path: str = Field(default="", description="Path to SSH private key")
-    ssh_tunnel_key_content: str = Field(
-        default="", description="SSH private key content (preferred over path)"
-    )
-    ssh_tunnel_key_passphrase: str = Field(
-        default="", description="Passphrase for encrypted SSH key"
-    )
-    ssh_tunnel_public_key: str = Field(
-        default="", description="SSH public key for generated keypairs"
-    )
+    ssh_tunnel_key_content: str = Field(default="", description="SSH private key content (preferred over path)")
+    ssh_tunnel_key_passphrase: str = Field(default="", description="Passphrase for encrypted SSH key")
+    ssh_tunnel_public_key: str = Field(default="", description="SSH public key for generated keypairs")
     # Schema indexing options
-    schema_index_enabled: bool = Field(
-        default=False, description="Enable automatic schema indexing"
-    )
-    schema_index_interval_hours: int = Field(
-        default=24, ge=1, le=168, description="Re-index schema every N hours"
-    )
-    last_schema_indexed_at: Optional[str] = Field(
-        default=None, description="Timestamp of last schema indexing"
-    )
-    schema_hash: Optional[str] = Field(
-        default=None, description="Hash of last indexed schema"
-    )
+    schema_index_enabled: bool = Field(default=False, description="Enable automatic schema indexing")
+    schema_index_interval_hours: int = Field(default=24, ge=1, le=168, description="Re-index schema every N hours")
+    last_schema_indexed_at: Optional[str] = Field(default=None, description="Timestamp of last schema indexing")
+    schema_hash: Optional[str] = Field(default=None, description="Hash of last indexed schema")
 
 
 class InfluxdbConnectionConfig(BaseModel):
@@ -1566,29 +1382,15 @@ class InfluxdbConnectionConfig(BaseModel):
     org: str = Field(default="", description="InfluxDB organization name or ID")
     bucket: str = Field(default="", description="Default bucket name")
     # SSH tunnel configuration
-    ssh_tunnel_enabled: bool = Field(
-        default=False, description="Use SSH tunnel for InfluxDB connection"
-    )
-    ssh_tunnel_host: str = Field(
-        default="", description="SSH server hostname for tunnel"
-    )
-    ssh_tunnel_port: int = Field(
-        default=22, ge=1, le=65535, description="SSH server port"
-    )
+    ssh_tunnel_enabled: bool = Field(default=False, description="Use SSH tunnel for InfluxDB connection")
+    ssh_tunnel_host: str = Field(default="", description="SSH server hostname for tunnel")
+    ssh_tunnel_port: int = Field(default=22, ge=1, le=65535, description="SSH server port")
     ssh_tunnel_user: str = Field(default="", description="SSH username")
-    ssh_tunnel_password: str = Field(
-        default="", description="SSH password (if not using key)"
-    )
+    ssh_tunnel_password: str = Field(default="", description="SSH password (if not using key)")
     ssh_tunnel_key_path: str = Field(default="", description="Path to SSH private key")
-    ssh_tunnel_key_content: str = Field(
-        default="", description="SSH private key content (preferred over path)"
-    )
-    ssh_tunnel_key_passphrase: str = Field(
-        default="", description="Passphrase for encrypted SSH key"
-    )
-    ssh_tunnel_public_key: str = Field(
-        default="", description="SSH public key for generated keypairs"
-    )
+    ssh_tunnel_key_content: str = Field(default="", description="SSH private key content (preferred over path)")
+    ssh_tunnel_key_passphrase: str = Field(default="", description="Passphrase for encrypted SSH key")
+    ssh_tunnel_public_key: str = Field(default="", description="SSH public key for generated keypairs")
 
 
 class OdooShellConnectionConfig(BaseModel):
@@ -1609,18 +1411,10 @@ class OdooShellConnectionConfig(BaseModel):
     ssh_host: str = Field(default="", description="SSH host for remote Odoo server")
     ssh_port: int = Field(default=22, ge=1, le=65535, description="SSH port")
     ssh_user: str = Field(default="", description="SSH username")
-    ssh_key_path: str = Field(
-        default="", description="Path to SSH private key (legacy)"
-    )
-    ssh_key_content: str = Field(
-        default="", description="SSH private key content (preferred)"
-    )
-    ssh_public_key: str = Field(
-        default="", description="SSH public key (for reference/copying)"
-    )
-    ssh_key_passphrase: str = Field(
-        default="", description="Passphrase for encrypted SSH key"
-    )
+    ssh_key_path: str = Field(default="", description="Path to SSH private key (legacy)")
+    ssh_key_content: str = Field(default="", description="SSH private key content (preferred)")
+    ssh_public_key: str = Field(default="", description="SSH public key (for reference/copying)")
+    ssh_key_passphrase: str = Field(default="", description="Passphrase for encrypted SSH key")
     ssh_password: str = Field(default="", description="SSH password (if not using key)")
     # Odoo-specific fields (used in both modes)
     database: str = Field(default="odoo", description="Odoo database name")
@@ -1628,12 +1422,8 @@ class OdooShellConnectionConfig(BaseModel):
         default="",
         description="Path to odoo-bin or odoo command (e.g., '/var/odoo/venv/bin/python3 /var/odoo/src/odoo-bin')",
     )
-    config_path: str = Field(
-        default="", description="Path to odoo.conf (leave empty for defaults)"
-    )
-    working_directory: str = Field(
-        default="", description="Working directory to cd into before running Odoo shell"
-    )
+    config_path: str = Field(default="", description="Path to odoo.conf (leave empty for defaults)")
+    working_directory: str = Field(default="", description="Working directory to cd into before running Odoo shell")
     run_as_user: str = Field(
         default="",
         description="User to run Odoo shell as (e.g., 'odoo' for sudo -u odoo)",
@@ -1646,21 +1436,11 @@ class SSHShellConnectionConfig(BaseModel):
     host: str = Field(description="SSH host")
     port: int = Field(default=22, ge=1, le=65535, description="SSH port")
     user: str = Field(description="SSH username")
-    key_path: Optional[str] = Field(
-        default=None, description="Path to SSH private key (legacy)"
-    )
-    key_content: Optional[str] = Field(
-        default=None, description="SSH private key content (preferred)"
-    )
-    public_key: Optional[str] = Field(
-        default=None, description="SSH public key (for reference/copying)"
-    )
-    key_passphrase: Optional[str] = Field(
-        default=None, description="Passphrase for encrypted SSH key"
-    )
-    password: Optional[str] = Field(
-        default=None, description="SSH password (if not using key)"
-    )
+    key_path: Optional[str] = Field(default=None, description="Path to SSH private key (legacy)")
+    key_content: Optional[str] = Field(default=None, description="SSH private key content (preferred)")
+    public_key: Optional[str] = Field(default=None, description="SSH public key (for reference/copying)")
+    key_passphrase: Optional[str] = Field(default=None, description="Passphrase for encrypted SSH key")
+    password: Optional[str] = Field(default=None, description="SSH password (if not using key)")
     command_prefix: str = Field(
         default="",
         description="Command prefix (e.g., 'cd /app && ' or 'source venv/bin/activate && ')",
@@ -1675,9 +1455,7 @@ class FilesystemConnectionConfig(BaseModel):
         default=FilesystemMountType.DOCKER_VOLUME,
         description="How to access the filesystem (docker_volume recommended)",
     )
-    base_path: str = Field(
-        description="Base path to index (e.g., /mnt/data for docker volume, //server/share for SMB)"
-    )
+    base_path: str = Field(description="Base path to index (e.g., /mnt/data for docker volume, //server/share for SMB)")
 
     # Docker volume settings (when mount_type is docker_volume)
     volume_name: str = Field(
@@ -1698,9 +1476,7 @@ class FilesystemConnectionConfig(BaseModel):
     nfs_options: str = Field(default="ro,noatime", description="NFS mount options")
 
     # Indexing configuration
-    index_name: str = Field(
-        description="Name for this index (used in embeddings table)"
-    )
+    index_name: str = Field(description="Name for this index (used in embeddings table)")
     file_patterns: List[str] = Field(
         default=["**/*"],
         description="Glob patterns for files to include (default: **/* matches all files)",
@@ -1714,15 +1490,9 @@ class FilesystemConnectionConfig(BaseModel):
         ],
         description="Glob patterns for files/dirs to exclude",
     )
-    recursive: bool = Field(
-        default=True, description="Recursively index subdirectories"
-    )
-    chunk_size: int = Field(
-        default=1000, ge=100, le=4000, description="Chunk size for text splitting"
-    )
-    chunk_overlap: int = Field(
-        default=200, ge=0, le=1000, description="Overlap between chunks"
-    )
+    recursive: bool = Field(default=True, description="Recursively index subdirectories")
+    chunk_size: int = Field(default=1000, ge=100, le=4000, description="Chunk size for text splitting")
+    chunk_overlap: int = Field(default=200, ge=0, le=1000, description="Overlap between chunks")
 
     # Vector store backend selection
     vector_store_type: VectorStoreType = Field(
@@ -1731,12 +1501,8 @@ class FilesystemConnectionConfig(BaseModel):
     )
 
     # Safety limits
-    max_file_size_mb: int = Field(
-        default=10, ge=1, le=100, description="Maximum file size to index (MB)"
-    )
-    max_total_files: int = Field(
-        default=10000, ge=1, le=100000, description="Maximum total files to index"
-    )
+    max_file_size_mb: int = Field(default=10, ge=1, le=100, description="Maximum file size to index (MB)")
+    max_total_files: int = Field(default=10000, ge=1, le=100000, description="Maximum total files to index")
     ocr_mode: OcrMode = Field(
         default=OcrMode.DISABLED,
         description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'vision' (semantic OCR with multimodal model)",
@@ -1757,9 +1523,7 @@ class FilesystemConnectionConfig(BaseModel):
         le=8760,  # Max 1 year
         description="Hours between automatic re-indexing (0 = manual only)",
     )
-    last_indexed_at: Optional[datetime] = Field(
-        default=None, description="Timestamp of last completed index"
-    )
+    last_indexed_at: Optional[datetime] = Field(default=None, description="Timestamp of last completed index")
 
 
 class FilesystemIndexStatus(str, Enum):
@@ -1895,17 +1659,11 @@ class FilesystemAnalysisResult(BaseModel):
     total_files: int = Field(description="Total number of files found")
     total_size_bytes: int = Field(description="Total size in bytes")
     total_size_mb: float = Field(description="Total size in megabytes")
-    estimated_chunks: int = Field(
-        description="Estimated total chunks (based on chunk_size)"
-    )
-    estimated_index_size_mb: float = Field(
-        description="Estimated pgvector index size in MB"
-    )
+    estimated_chunks: int = Field(description="Estimated total chunks (based on chunk_size)")
+    estimated_index_size_mb: float = Field(description="Estimated pgvector index size in MB")
 
     # Breakdown by file type
-    file_type_stats: List[FileTypeStats] = Field(
-        default_factory=list, description="Stats broken down by file extension"
-    )
+    file_type_stats: List[FileTypeStats] = Field(default_factory=list, description="Stats broken down by file extension")
 
     # Suggested exclusions
     suggested_exclusions: List[str] = Field(
@@ -1914,21 +1672,15 @@ class FilesystemAnalysisResult(BaseModel):
     )
 
     # Warnings/recommendations
-    warnings: List[str] = Field(
-        default_factory=list, description="Warnings about potential issues"
-    )
+    warnings: List[str] = Field(default_factory=list, description="Warnings about potential issues")
 
     # Config used for analysis
     chunk_size: int = Field(description="Chunk size used for estimation")
     chunk_overlap: int = Field(description="Chunk overlap used for estimation")
 
     # Analysis metadata
-    analysis_duration_seconds: float = Field(
-        default=0.0, description="Time taken to complete analysis"
-    )
-    directories_scanned: int = Field(
-        default=0, description="Number of directories scanned"
-    )
+    analysis_duration_seconds: float = Field(default=0.0, description="Time taken to complete analysis")
+    directories_scanned: int = Field(default=0, description="Number of directories scanned")
 
 
 class FilesystemAnalysisJobResponse(BaseModel):
@@ -1966,20 +1718,14 @@ class ToolConfig(BaseModel):
     name: str = Field(description="User-friendly name for this tool instance")
     tool_type: ToolType = Field(description="Type of tool")
     group_id: Optional[str] = Field(default=None, description="Tool group ID")
-    group_name: Optional[str] = Field(
-        default=None, description="Tool group name (read-only)"
-    )
+    group_name: Optional[str] = Field(default=None, description="Tool group name (read-only)")
     enabled: bool = Field(default=True, description="Whether this tool is enabled")
     description: str = Field(
         default="",
         description="Description for RAG context - this is presented to the model to explain what this tool is for",
     )
-    connection_config: dict = Field(
-        description="Connection configuration (structure depends on tool_type)"
-    )
-    max_results: int = Field(
-        default=100, ge=1, le=1000, description="Maximum results per query"
-    )
+    connection_config: dict = Field(description="Connection configuration (structure depends on tool_type)")
+    max_results: int = Field(default=100, ge=1, le=1000, description="Maximum results per query")
     timeout: int = Field(
         default=30,
         ge=0,
@@ -1993,14 +1739,10 @@ class ToolConfig(BaseModel):
         description="Maximum timeout user/agent can choose (0 = unlimited)",
     )
     allow_write: bool = Field(default=False, description="Allow write operations")
-    sort_order: int = Field(
-        default=0, description="Display order within group or ungrouped list"
-    )
+    sort_order: int = Field(default=0, description="Display order within group or ungrouped list")
 
     # Transient runtime status (not persisted)
-    disabled_reason: Optional[str] = Field(
-        default=None, description="Reason why the tool is disabled (runtime check)"
-    )
+    disabled_reason: Optional[str] = Field(default=None, description="Reason why the tool is disabled (runtime check)")
 
     # Test results
     last_test_at: Optional[datetime] = None
@@ -2040,20 +1782,14 @@ class UpdateToolConfigRequest(BaseModel):
     timeout: Optional[int] = Field(default=None, ge=0, le=86400)
     timeout_max_seconds: Optional[int] = Field(default=None, ge=0, le=86400)
     allow_write: Optional[bool] = None
-    sort_order: Optional[int] = Field(
-        default=None, description="Display order within group or ungrouped list"
-    )
-    group_id: Optional[str] = Field(
-        default=None, description="Tool group ID (use empty string to ungroup)"
-    )
+    sort_order: Optional[int] = Field(default=None, description="Display order within group or ungrouped list")
+    group_id: Optional[str] = Field(default=None, description="Tool group ID (use empty string to ungroup)")
 
 
 class ReorderToolsRequest(BaseModel):
     """Request to bulk-reorder tool configs."""
 
-    tool_ids: list[str] = Field(
-        description="Tool IDs in the desired display order; sort_order is assigned as index * 100"
-    )
+    tool_ids: list[str] = Field(description="Tool IDs in the desired display order; sort_order is assigned as index * 100")
 
 
 class CreateToolGroupRequest(BaseModel):
@@ -2087,24 +1823,14 @@ class PostgresDiscoverRequest(BaseModel):
     user: str = Field(description="PostgreSQL username")
     password: str = Field(description="PostgreSQL password")
     # SSH tunnel configuration
-    ssh_tunnel_enabled: bool = Field(
-        default=False, description="Whether to use SSH tunnel"
-    )
-    ssh_tunnel_host: Optional[str] = Field(
-        default=None, description="SSH server hostname"
-    )
+    ssh_tunnel_enabled: bool = Field(default=False, description="Whether to use SSH tunnel")
+    ssh_tunnel_host: Optional[str] = Field(default=None, description="SSH server hostname")
     ssh_tunnel_port: int = Field(default=22, description="SSH server port")
     ssh_tunnel_user: Optional[str] = Field(default=None, description="SSH username")
     ssh_tunnel_password: Optional[str] = Field(default=None, description="SSH password")
-    ssh_tunnel_key_path: Optional[str] = Field(
-        default=None, description="Path to SSH private key"
-    )
-    ssh_tunnel_key_content: Optional[str] = Field(
-        default=None, description="SSH private key content"
-    )
-    ssh_tunnel_key_passphrase: Optional[str] = Field(
-        default=None, description="SSH key passphrase"
-    )
+    ssh_tunnel_key_path: Optional[str] = Field(default=None, description="Path to SSH private key")
+    ssh_tunnel_key_content: Optional[str] = Field(default=None, description="SSH private key content")
+    ssh_tunnel_key_passphrase: Optional[str] = Field(default=None, description="SSH key passphrase")
 
 
 class DatabaseDiscoverOption(BaseModel):
@@ -2125,19 +1851,12 @@ class PostgresDiscoverResponse(BaseModel):
     """Response from PostgreSQL database discovery."""
 
     success: bool = Field(description="Whether discovery succeeded")
-    databases: List[str] = Field(
-        default_factory=list, description="List of discovered database names"
-    )
+    databases: List[str] = Field(default_factory=list, description="List of discovered database names")
     database_options: List[DatabaseDiscoverOption] = Field(
         default_factory=list,
-        description=(
-            "Discovered databases with per-database access metadata. "
-            "`databases` remains the list of accessible names for backwards compatibility."
-        ),
+        description=("Discovered databases with per-database access metadata. `databases` remains the list of accessible names for backwards compatibility."),
     )
-    error: Optional[str] = Field(
-        default=None, description="Error message if discovery failed"
-    )
+    error: Optional[str] = Field(default=None, description="Error message if discovery failed")
 
 
 class MssqlDiscoverRequest(BaseModel):
@@ -2148,105 +1867,59 @@ class MssqlDiscoverRequest(BaseModel):
     user: str = Field(description="SQL Server username")
     password: str = Field(description="SQL Server password")
     # SSH tunnel configuration
-    ssh_tunnel_enabled: bool = Field(
-        default=False, description="Whether to use SSH tunnel"
-    )
-    ssh_tunnel_host: Optional[str] = Field(
-        default=None, description="SSH server hostname"
-    )
+    ssh_tunnel_enabled: bool = Field(default=False, description="Whether to use SSH tunnel")
+    ssh_tunnel_host: Optional[str] = Field(default=None, description="SSH server hostname")
     ssh_tunnel_port: int = Field(default=22, description="SSH server port")
     ssh_tunnel_user: Optional[str] = Field(default=None, description="SSH username")
     ssh_tunnel_password: Optional[str] = Field(default=None, description="SSH password")
-    ssh_tunnel_key_path: Optional[str] = Field(
-        default=None, description="Path to SSH private key"
-    )
-    ssh_tunnel_key_content: Optional[str] = Field(
-        default=None, description="SSH private key content"
-    )
-    ssh_tunnel_key_passphrase: Optional[str] = Field(
-        default=None, description="SSH key passphrase"
-    )
+    ssh_tunnel_key_path: Optional[str] = Field(default=None, description="Path to SSH private key")
+    ssh_tunnel_key_content: Optional[str] = Field(default=None, description="SSH private key content")
+    ssh_tunnel_key_passphrase: Optional[str] = Field(default=None, description="SSH key passphrase")
 
 
 class MssqlDiscoverResponse(BaseModel):
     """Response from MSSQL database discovery."""
 
     success: bool = Field(description="Whether discovery succeeded")
-    databases: List[str] = Field(
-        default_factory=list, description="List of discovered database names"
-    )
+    databases: List[str] = Field(default_factory=list, description="List of discovered database names")
     database_options: List[DatabaseDiscoverOption] = Field(
         default_factory=list,
-        description=(
-            "Discovered databases with per-database access metadata. "
-            "`databases` remains the list of accessible names for backwards compatibility."
-        ),
+        description=("Discovered databases with per-database access metadata. `databases` remains the list of accessible names for backwards compatibility."),
     )
-    error: Optional[str] = Field(
-        default=None, description="Error message if discovery failed"
-    )
+    error: Optional[str] = Field(default=None, description="Error message if discovery failed")
 
 
 class MysqlDiscoverRequest(BaseModel):
     """Request to discover databases on a MySQL/MariaDB server."""
 
-    host: Optional[str] = Field(
-        default=None, description="MySQL/MariaDB hostname or IP (for direct mode)"
-    )
+    host: Optional[str] = Field(default=None, description="MySQL/MariaDB hostname or IP (for direct mode)")
     port: int = Field(default=3306, description="MySQL/MariaDB port")
-    user: Optional[str] = Field(
-        default=None, description="MySQL username (for direct mode)"
-    )
-    password: Optional[str] = Field(
-        default=None, description="MySQL password (for direct mode)"
-    )
-    database: Optional[str] = Field(
-        default=None, description="Default database to check if discovery fails"
-    )
-    container: Optional[str] = Field(
-        default=None, description="Docker container name (for container mode)"
-    )
-    docker_network: Optional[str] = Field(
-        default=None, description="Docker network name (for container mode)"
-    )
+    user: Optional[str] = Field(default=None, description="MySQL username (for direct mode)")
+    password: Optional[str] = Field(default=None, description="MySQL password (for direct mode)")
+    database: Optional[str] = Field(default=None, description="Default database to check if discovery fails")
+    container: Optional[str] = Field(default=None, description="Docker container name (for container mode)")
+    docker_network: Optional[str] = Field(default=None, description="Docker network name (for container mode)")
     # SSH tunnel configuration
-    ssh_tunnel_enabled: bool = Field(
-        default=False, description="Whether to use SSH tunnel"
-    )
-    ssh_tunnel_host: Optional[str] = Field(
-        default=None, description="SSH server hostname"
-    )
+    ssh_tunnel_enabled: bool = Field(default=False, description="Whether to use SSH tunnel")
+    ssh_tunnel_host: Optional[str] = Field(default=None, description="SSH server hostname")
     ssh_tunnel_port: int = Field(default=22, description="SSH server port")
     ssh_tunnel_user: Optional[str] = Field(default=None, description="SSH username")
     ssh_tunnel_password: Optional[str] = Field(default=None, description="SSH password")
-    ssh_tunnel_key_path: Optional[str] = Field(
-        default=None, description="Path to SSH private key"
-    )
-    ssh_tunnel_key_content: Optional[str] = Field(
-        default=None, description="SSH private key content"
-    )
-    ssh_tunnel_key_passphrase: Optional[str] = Field(
-        default=None, description="SSH key passphrase"
-    )
+    ssh_tunnel_key_path: Optional[str] = Field(default=None, description="Path to SSH private key")
+    ssh_tunnel_key_content: Optional[str] = Field(default=None, description="SSH private key content")
+    ssh_tunnel_key_passphrase: Optional[str] = Field(default=None, description="SSH key passphrase")
 
 
 class MysqlDiscoverResponse(BaseModel):
     """Response from MySQL database discovery."""
 
     success: bool = Field(description="Whether discovery succeeded")
-    databases: List[str] = Field(
-        default_factory=list, description="List of discovered database names"
-    )
+    databases: List[str] = Field(default_factory=list, description="List of discovered database names")
     database_options: List[DatabaseDiscoverOption] = Field(
         default_factory=list,
-        description=(
-            "Discovered databases with per-database access metadata. "
-            "`databases` remains the list of accessible names for backwards compatibility."
-        ),
+        description=("Discovered databases with per-database access metadata. `databases` remains the list of accessible names for backwards compatibility."),
     )
-    error: Optional[str] = Field(
-        default=None, description="Error message if discovery failed"
-    )
+    error: Optional[str] = Field(default=None, description="Error message if discovery failed")
 
 
 class InfluxdbDiscoverRequest(BaseModel):
@@ -2254,49 +1927,30 @@ class InfluxdbDiscoverRequest(BaseModel):
 
     host: str = Field(description="InfluxDB server hostname or IP")
     port: int = Field(default=8086, description="InfluxDB server port")
-    use_https: bool = Field(
-        default=False, description="Use HTTPS instead of HTTP for InfluxDB API"
-    )
+    use_https: bool = Field(default=False, description="Use HTTPS instead of HTTP for InfluxDB API")
     token: str = Field(description="InfluxDB API token")
     org: str = Field(description="InfluxDB organization name or ID")
     # SSH tunnel configuration
-    ssh_tunnel_enabled: bool = Field(
-        default=False, description="Whether to use SSH tunnel"
-    )
-    ssh_tunnel_host: Optional[str] = Field(
-        default=None, description="SSH server hostname"
-    )
+    ssh_tunnel_enabled: bool = Field(default=False, description="Whether to use SSH tunnel")
+    ssh_tunnel_host: Optional[str] = Field(default=None, description="SSH server hostname")
     ssh_tunnel_port: int = Field(default=22, description="SSH server port")
     ssh_tunnel_user: Optional[str] = Field(default=None, description="SSH username")
     ssh_tunnel_password: Optional[str] = Field(default=None, description="SSH password")
-    ssh_tunnel_key_path: Optional[str] = Field(
-        default=None, description="Path to SSH private key"
-    )
-    ssh_tunnel_key_content: Optional[str] = Field(
-        default=None, description="SSH private key content"
-    )
-    ssh_tunnel_key_passphrase: Optional[str] = Field(
-        default=None, description="SSH key passphrase"
-    )
+    ssh_tunnel_key_path: Optional[str] = Field(default=None, description="Path to SSH private key")
+    ssh_tunnel_key_content: Optional[str] = Field(default=None, description="SSH private key content")
+    ssh_tunnel_key_passphrase: Optional[str] = Field(default=None, description="SSH key passphrase")
 
 
 class InfluxdbDiscoverResponse(BaseModel):
     """Response from InfluxDB bucket discovery."""
 
     success: bool = Field(description="Whether discovery succeeded")
-    buckets: List[str] = Field(
-        default_factory=list, description="List of discovered bucket names"
-    )
+    buckets: List[str] = Field(default_factory=list, description="List of discovered bucket names")
     database_options: List[DatabaseDiscoverOption] = Field(
         default_factory=list,
-        description=(
-            "Discovered buckets with per-bucket access metadata. "
-            "`buckets` remains the list of accessible names for backwards compatibility."
-        ),
+        description=("Discovered buckets with per-bucket access metadata. `buckets` remains the list of accessible names for backwards compatibility."),
     )
-    error: Optional[str] = Field(
-        default=None, description="Error message if discovery failed"
-    )
+    error: Optional[str] = Field(default=None, description="Error message if discovery failed")
 
 
 class PdmDiscoverRequest(BaseModel):
@@ -2308,24 +1962,14 @@ class PdmDiscoverRequest(BaseModel):
     password: str = Field(description="SQL Server password")
     database: str = Field(description="PDM database name")
     # SSH tunnel configuration
-    ssh_tunnel_enabled: bool = Field(
-        default=False, description="Whether to use SSH tunnel"
-    )
-    ssh_tunnel_host: Optional[str] = Field(
-        default=None, description="SSH server hostname"
-    )
+    ssh_tunnel_enabled: bool = Field(default=False, description="Whether to use SSH tunnel")
+    ssh_tunnel_host: Optional[str] = Field(default=None, description="SSH server hostname")
     ssh_tunnel_port: int = Field(default=22, description="SSH server port")
     ssh_tunnel_user: Optional[str] = Field(default=None, description="SSH username")
     ssh_tunnel_password: Optional[str] = Field(default=None, description="SSH password")
-    ssh_tunnel_key_path: Optional[str] = Field(
-        default=None, description="Path to SSH private key"
-    )
-    ssh_tunnel_key_content: Optional[str] = Field(
-        default=None, description="SSH private key content"
-    )
-    ssh_tunnel_key_passphrase: Optional[str] = Field(
-        default=None, description="SSH key passphrase"
-    )
+    ssh_tunnel_key_path: Optional[str] = Field(default=None, description="Path to SSH private key")
+    ssh_tunnel_key_content: Optional[str] = Field(default=None, description="SSH private key content")
+    ssh_tunnel_key_passphrase: Optional[str] = Field(default=None, description="SSH key passphrase")
 
 
 class PdmDiscoverResponse(BaseModel):
@@ -2340,12 +1984,8 @@ class PdmDiscoverResponse(BaseModel):
         default_factory=list,
         description="List of variable names from the Variable table",
     )
-    document_count: int = Field(
-        default=0, description="Total number of documents in the vault"
-    )
-    error: Optional[str] = Field(
-        default=None, description="Error message if discovery failed"
-    )
+    document_count: int = Field(default=0, description="Total number of documents in the vault")
+    error: Optional[str] = Field(default=None, description="Error message if discovery failed")
 
 
 # -----------------------------------------------------------------------------
@@ -2397,12 +2037,8 @@ class MessageSnapshotRestore(BaseModel):
     """Per-message snapshot link metadata for combined workspace + chat restore."""
 
     snapshot_id: str = Field(description="UserSpace snapshot anchored to this message")
-    restore_message_count: int = Field(
-        description="Conversation message count to keep when restoring (rewinds chat)"
-    )
-    created_at: datetime = Field(
-        description="When the link was created/last updated (latest-wins per message)"
-    )
+    restore_message_count: int = Field(description="Conversation message count to keep when restoring (rewinds chat)")
+    created_at: datetime = Field(description="When the link was created/last updated (latest-wins per message)")
 
 
 class ChatMessage(BaseModel):
@@ -2435,23 +2071,13 @@ class Conversation(BaseModel):
     id: str
     title: str = Field(default="Untitled Chat")
     model: str = Field(default="gpt-4-turbo")
-    user_id: Optional[str] = Field(
-        default=None, description="ID of the conversation owner"
-    )
-    workspace_id: Optional[str] = Field(
-        default=None, description="Optional User Space workspace ID"
-    )
-    username: Optional[str] = Field(
-        default=None, description="Username of the conversation owner"
-    )
-    display_name: Optional[str] = Field(
-        default=None, description="Display name of the conversation owner"
-    )
+    user_id: Optional[str] = Field(default=None, description="ID of the conversation owner")
+    workspace_id: Optional[str] = Field(default=None, description="Optional User Space workspace ID")
+    username: Optional[str] = Field(default=None, description="Username of the conversation owner")
+    display_name: Optional[str] = Field(default=None, description="Display name of the conversation owner")
     messages: List[ChatMessage] = Field(default_factory=list)
     total_tokens: int = Field(default=0)
-    active_task_id: Optional[str] = Field(
-        default=None, description="ID of currently running background task"
-    )
+    active_task_id: Optional[str] = Field(default=None, description="ID of currently running background task")
     disabled_builtin_tool_ids: List[str] = Field(default_factory=list)
     tool_output_mode: ToolOutputMode = Field(
         default=ToolOutputMode.DEFAULT,
@@ -2471,9 +2097,7 @@ class ConversationBranch(BaseModel):
     id: str
     conversation_id: str
     parent_branch_id: Optional[str] = None
-    branch_point_index: int = Field(
-        description="0-based message index where the branch begins"
-    )
+    branch_point_index: int = Field(description="0-based message index where the branch begins")
     branch_kind: Optional[ConversationBranchKind] = Field(
         default=None,
         description="Operation that created this branch",
@@ -2499,9 +2123,7 @@ class ConversationBranchSummary(BaseModel):
     parent_branch_id: Optional[str] = None
     branch_point_index: int
     branch_kind: Optional[ConversationBranchKind] = None
-    message_count: int = Field(
-        description="Number of preserved messages in this branch"
-    )
+    message_count: int = Field(description="Number of preserved messages in this branch")
     associated_snapshot_id: Optional[str] = None
     created_by_user_id: Optional[str] = None
     created_by_username: Optional[str] = None
@@ -2685,9 +2307,7 @@ class MessageSnapshotRestoreResponse(BaseModel):
 class CreateConversationRequest(BaseModel):
     """Request to create a new conversation."""
 
-    title: Optional[str] = Field(
-        default=None, description="Optional title for the conversation"
-    )
+    title: Optional[str] = Field(default=None, description="Optional title for the conversation")
     model: Optional[str] = Field(default=None, description="Optional model override")
     workspace_id: Optional[str] = Field(
         default=None,
@@ -2700,41 +2320,29 @@ class SendMessageRequest(BaseModel):
 
     message: str = Field(description="The message content to send")
     stream: bool = Field(default=False, description="Whether to stream the response")
-    background: bool = Field(
-        default=False, description="Whether to run in background mode"
-    )
+    background: bool = Field(default=False, description="Whether to run in background mode")
 
 
 class ChatAttachmentUploadResponse(BaseModel):
     """Descriptor returned after uploading a chat attachment."""
 
-    attachment_id: str = Field(
-        description="Opaque ID used to reference the stored attachment"
-    )
-    attachment_source: str = Field(
-        default="chat_upload", description="Attachment storage source"
-    )
+    attachment_id: str = Field(description="Opaque ID used to reference the stored attachment")
+    attachment_source: str = Field(default="chat_upload", description="Attachment storage source")
     filename: str = Field(description="Original filename")
     mime_type: str = Field(description="Detected MIME type")
     size_bytes: int = Field(description="Uploaded file size in bytes")
-    expires_at: datetime = Field(
-        description="When the attachment becomes eligible for cleanup"
-    )
+    expires_at: datetime = Field(description="When the attachment becomes eligible for cleanup")
 
 
 class RetryVisualizationRequest(BaseModel):
     """Request to retry a failed visualization tool call."""
 
-    tool_type: Literal["datatable", "chart"] = Field(
-        description="Type of visualization to create: 'datatable' or 'chart'"
-    )
+    tool_type: Literal["datatable", "chart"] = Field(description="Type of visualization to create: 'datatable' or 'chart'")
     source_data: dict[str, Any] | None = Field(
         default=None,
         description="Optional structured source data. For datatable: {columns: [], rows: []}. For chart: raw data.",
     )
-    title: str | None = Field(
-        default=None, description="Optional title override for the visualization"
-    )
+    title: str | None = Field(default=None, description="Optional title override for the visualization")
     allow_ai_repair: bool = Field(
         default=True,
         description="Whether to use the configured LLM to repair source data when deterministic retry fails.",
@@ -2773,19 +2381,11 @@ class RetryVisualizationResponse(BaseModel):
     """Response from a retry visualization request."""
 
     success: bool = Field(description="Whether the retry was successful")
-    output: str | None = Field(
-        default=None, description="The visualization output JSON on success"
-    )
+    output: str | None = Field(default=None, description="The visualization output JSON on success")
     error: str | None = Field(default=None, description="Error message on failure")
-    repair_used: bool = Field(
-        default=False, description="Whether AI repair was used to recover source data"
-    )
-    repair_strategy: str | None = Field(
-        default=None, description="Strategy that produced the retry payload"
-    )
-    source_rerun_used: bool = Field(
-        default=False, description="Whether a captured source query was rerun"
-    )
+    repair_used: bool = Field(default=False, description="Whether AI repair was used to recover source data")
+    repair_strategy: str | None = Field(default=None, description="Strategy that produced the retry payload")
+    source_rerun_used: bool = Field(default=False, description="Whether a captured source query was rerun")
 
 
 class VisualizationBranchSummary(BaseModel):
@@ -2807,9 +2407,7 @@ class VisualizationBranchSummary(BaseModel):
 class RefreshLiveVisualizationRequest(BaseModel):
     """Request to rerun a live component-backed chat visualization."""
 
-    tool_type: Literal["datatable", "chart"] = Field(
-        description="Type of visualization to refresh: 'datatable' or 'chart'"
-    )
+    tool_type: Literal["datatable", "chart"] = Field(description="Type of visualization to refresh: 'datatable' or 'chart'")
     message_id: Optional[str] = Field(
         default=None,
         description="Stable identifier of the assistant message containing the visualization event.",
@@ -2828,20 +2426,14 @@ class RefreshLiveVisualizationResponse(BaseModel):
     """Response from live data refresh for a chat visualization."""
 
     success: bool = Field(description="Whether live data refresh succeeded")
-    output: Optional[str] = Field(
-        default=None, description="The refreshed visualization output JSON on success"
-    )
+    output: Optional[str] = Field(default=None, description="The refreshed visualization output JSON on success")
     error: Optional[str] = Field(default=None, description="Error message on failure")
-    conversation: Optional[ConversationResponse] = Field(
-        default=None, description="Updated conversation after live-data refresh"
-    )
+    conversation: Optional[ConversationResponse] = Field(default=None, description="Updated conversation after live-data refresh")
     branches: List[VisualizationBranchSummary] = Field(
         default_factory=list,
         description="Visualization-local versions available for this chart/table",
     )
-    active_branch_id: Optional[str] = Field(
-        default=None, description="Active visualization version ID after refresh"
-    )
+    active_branch_id: Optional[str] = Field(default=None, description="Active visualization version ID after refresh")
 
 
 class ListVisualizationBranchesResponse(BaseModel):
@@ -2863,16 +2455,12 @@ class SwitchVisualizationBranchResponse(BaseModel):
     success: bool = Field(description="Whether the visualization branch switch succeeded")
     output: Optional[str] = Field(default=None, description="Activated visualization output JSON")
     error: Optional[str] = Field(default=None, description="Error message on failure")
-    conversation: Optional[ConversationResponse] = Field(
-        default=None, description="Updated conversation after visualization branch switch"
-    )
+    conversation: Optional[ConversationResponse] = Field(default=None, description="Updated conversation after visualization branch switch")
     branches: List[VisualizationBranchSummary] = Field(
         default_factory=list,
         description="Visualization-local versions available for this chart/table",
     )
-    active_branch_id: Optional[str] = Field(
-        default=None, description="Active visualization version ID after switch"
-    )
+    active_branch_id: Optional[str] = Field(default=None, description="Active visualization version ID after switch")
 
 
 # =============================================================================
@@ -2897,15 +2485,9 @@ class ChatTaskStreamingState(BaseModel):
     content: str = Field(default="", description="Accumulated response content")
     events: List[dict] = Field(default_factory=list, description="Chronological events")
     tool_calls: List[dict] = Field(default_factory=list, description="Tool calls made")
-    hit_max_iterations: bool = Field(
-        default=False, description="Whether max iterations was reached"
-    )
-    version: int = Field(
-        default=0, description="Increments on each update for efficient polling"
-    )
-    content_length: int = Field(
-        default=0, description="Length of content for quick change detection"
-    )
+    hit_max_iterations: bool = Field(default=False, description="Whether max iterations was reached")
+    version: int = Field(default=0, description="Increments on each update for efficient polling")
+    content_length: int = Field(default=0, description="Length of content for quick change detection")
 
 
 class ChatTask(BaseModel):
@@ -2978,9 +2560,7 @@ class ProviderPromptDebugRecord(BaseModel):
     provider: str
     model: str
     mode: str = Field(description="Prompt mode: chat or userspace")
-    request_kind: str = Field(
-        description="Provider request path: agent_executor or direct_llm"
-    )
+    request_kind: str = Field(description="Provider request path: agent_executor or direct_llm")
     rendered_system_prompt: str
     rendered_user_input: str
     rendered_provider_messages: List[dict] = Field(default_factory=list)
@@ -3031,9 +2611,7 @@ class SchemaIndexConfig(BaseModel):
         le=8760,  # Max 1 year
         description="Hours between automatic schema re-indexing (0 = manual only)",
     )
-    last_schema_indexed_at: Optional[datetime] = Field(
-        default=None, description="Timestamp of last completed schema index"
-    )
+    last_schema_indexed_at: Optional[datetime] = Field(default=None, description="Timestamp of last completed schema index")
     schema_hash: Optional[str] = Field(
         default=None,
         description="Hash of schema content for change detection",
@@ -3104,36 +2682,26 @@ class TriggerSchemaIndexRequest(BaseModel):
 class TableSchemaInfo(BaseModel):
     """Information about a single table's schema."""
 
-    table_schema: str = Field(
-        description="Database schema name (e.g., 'public', 'dbo')"
-    )
+    table_schema: str = Field(description="Database schema name (e.g., 'public', 'dbo')")
     table_name: str = Field(description="Table name")
     full_name: str = Field(description="Fully qualified name (schema.table)")
     table_type: str = Field(default="TABLE", description="TABLE or VIEW")
-    table_comment: Optional[str] = Field(
-        default=None, description="Table/view description or comment"
-    )
+    table_comment: Optional[str] = Field(default=None, description="Table/view description or comment")
     columns: List[dict] = Field(
         default_factory=list,
         description="List of column definitions with name, type, nullable, default, comment",
     )
-    primary_key: List[str] = Field(
-        default_factory=list, description="List of primary key column names"
-    )
+    primary_key: List[str] = Field(default_factory=list, description="List of primary key column names")
     foreign_keys: List[dict] = Field(
         default_factory=list,
         description="List of foreign key relationships",
     )
-    indexes: List[dict] = Field(
-        default_factory=list, description="List of index definitions"
-    )
+    indexes: List[dict] = Field(default_factory=list, description="List of index definitions")
     check_constraints: List[dict] = Field(
         default_factory=list,
         description="List of check constraints with name and definition",
     )
-    row_count_estimate: Optional[int] = Field(
-        default=None, description="Estimated row count (if available)"
-    )
+    row_count_estimate: Optional[int] = Field(default=None, description="Estimated row count (if available)")
 
     def to_embedding_text(self) -> str:
         """Convert table schema to text suitable for embedding.
@@ -3188,10 +2756,7 @@ class TableSchemaInfo(BaseModel):
                 fk_columns = fk.get("columns", [])
                 ref_table = fk.get("references_table", "")
                 ref_columns = fk.get("references_columns", [])
-                lines.append(
-                    f"  - {fk_name}: ({', '.join(fk_columns)}) -> "
-                    f"{ref_table}({', '.join(ref_columns)})"
-                )
+                lines.append(f"  - {fk_name}: ({', '.join(fk_columns)}) -> {ref_table}({', '.join(ref_columns)})")
 
         # Check constraints section
         if self.check_constraints:
@@ -3256,9 +2821,7 @@ class PdmIndexJob(BaseModel):
     def progress_percent(self) -> float:
         if self.total_documents == 0:
             return 0.0
-        return (
-            (self.processed_documents + self.skipped_documents) / self.total_documents
-        ) * 100
+        return ((self.processed_documents + self.skipped_documents) / self.total_documents) * 100
 
 
 class PdmIndexJobResponse(BaseModel):
@@ -3298,12 +2861,8 @@ class PdmDocumentInfo(BaseModel):
 
     document_id: int = Field(description="PDM DocumentID from SQL Server")
     filename: str = Field(description="Document filename (e.g., SW-24779.SLDPRT)")
-    document_type: str = Field(
-        description="File extension type (SLDPRT, SLDASM, SLDDRW)"
-    )
-    folder_path: Optional[str] = Field(
-        default=None, description="Folder path in PDM vault"
-    )
+    document_type: str = Field(description="File extension type (SLDPRT, SLDASM, SLDDRW)")
+    folder_path: Optional[str] = Field(default=None, description="Folder path in PDM vault")
     revision_no: int = Field(default=1, description="Current revision number")
 
     # Variables from PDM
@@ -3311,19 +2870,13 @@ class PdmDocumentInfo(BaseModel):
     description: Optional[str] = Field(default=None, description="Description variable")
     material: Optional[str] = Field(default=None, description="Material variable")
     author: Optional[str] = Field(default=None, description="Author/creator")
-    stocked_status: Optional[str] = Field(
-        default=None, description="Stocked status (STOCKED, BUILT, etc.)"
-    )
+    stocked_status: Optional[str] = Field(default=None, description="Stocked status (STOCKED, BUILT, etc.)")
 
     # Additional variables as dict
-    variables: dict = Field(
-        default_factory=dict, description="All extracted PDM variables"
-    )
+    variables: dict = Field(default_factory=dict, description="All extracted PDM variables")
 
     # BOM data (for assemblies)
-    bom_components: List[dict] = Field(
-        default_factory=list, description="List of BOM child components"
-    )
+    bom_components: List[dict] = Field(default_factory=list, description="List of BOM child components")
 
     # Configurations
     configurations: List[dict] = Field(
@@ -3451,29 +3004,15 @@ class SolidworksPdmConnectionConfig(BaseModel):
     password: str = Field(default="", description="SQL Server password")
     database: str = Field(description="PDM database name (e.g., 'HAM-PDM')")
     # SSH tunnel configuration
-    ssh_tunnel_enabled: bool = Field(
-        default=False, description="Use SSH tunnel for database connection"
-    )
-    ssh_tunnel_host: str = Field(
-        default="", description="SSH server hostname for tunnel"
-    )
-    ssh_tunnel_port: int = Field(
-        default=22, ge=1, le=65535, description="SSH server port"
-    )
+    ssh_tunnel_enabled: bool = Field(default=False, description="Use SSH tunnel for database connection")
+    ssh_tunnel_host: str = Field(default="", description="SSH server hostname for tunnel")
+    ssh_tunnel_port: int = Field(default=22, ge=1, le=65535, description="SSH server port")
     ssh_tunnel_user: str = Field(default="", description="SSH username")
-    ssh_tunnel_password: str = Field(
-        default="", description="SSH password (if not using key)"
-    )
+    ssh_tunnel_password: str = Field(default="", description="SSH password (if not using key)")
     ssh_tunnel_key_path: str = Field(default="", description="Path to SSH private key")
-    ssh_tunnel_key_content: str = Field(
-        default="", description="SSH private key content (preferred over path)"
-    )
-    ssh_tunnel_key_passphrase: str = Field(
-        default="", description="Passphrase for encrypted SSH key"
-    )
-    ssh_tunnel_public_key: str = Field(
-        default="", description="SSH public key for generated keypairs"
-    )
+    ssh_tunnel_key_content: str = Field(default="", description="SSH private key content (preferred over path)")
+    ssh_tunnel_key_passphrase: str = Field(default="", description="Passphrase for encrypted SSH key")
+    ssh_tunnel_public_key: str = Field(default="", description="SSH public key for generated keypairs")
 
     # Document filtering
     file_extensions: List[str] = Field(
@@ -3496,15 +3035,9 @@ class SolidworksPdmConnectionConfig(BaseModel):
         ],
         description="PDM variable names to extract and index",
     )
-    include_bom: bool = Field(
-        default=True, description="Include BOM relationships for assemblies"
-    )
-    include_folder_path: bool = Field(
-        default=True, description="Include folder path in indexed content"
-    )
-    include_configurations: bool = Field(
-        default=True, description="Include configuration data"
-    )
+    include_bom: bool = Field(default=True, description="Include BOM relationships for assemblies")
+    include_folder_path: bool = Field(default=True, description="Include folder path in indexed content")
+    include_configurations: bool = Field(default=True, description="Include configuration data")
 
     # Indexing options
     max_documents: Optional[int] = Field(
@@ -3518,11 +3051,7 @@ class PdmIndexStatusResponse(BaseModel):
     """Response for PDM index status."""
 
     enabled: bool = Field(description="Whether PDM indexing is configured")
-    last_indexed: Optional[str] = Field(
-        default=None, description="Timestamp of last successful index"
-    )
+    last_indexed: Optional[str] = Field(default=None, description="Timestamp of last successful index")
     document_count: int = Field(default=0, description="Number of indexed documents")
     embedding_count: int = Field(default=0, description="Number of embeddings stored")
-    current_job: Optional[PdmIndexJobResponse] = Field(
-        default=None, description="Currently active indexing job"
-    )
+    current_job: Optional[PdmIndexJobResponse] = Field(default=None, description="Currently active indexing job")

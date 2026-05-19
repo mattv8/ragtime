@@ -88,10 +88,13 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
     python /tmp/install_deps_from_pyproject.py /tmp/pyproject.toml test /tmp/requirements.test.txt && \
     pip install -r /tmp/requirements.test.txt
 
+RUN command -v ruff >/dev/null && python -m ruff --version
+
 WORKDIR /ragtime
 COPY pyproject.toml /ragtime/pyproject.toml
 COPY .jscpd.json /ragtime/.jscpd.json
 COPY docker/Dockerfile /ragtime/docker/Dockerfile
+COPY docker/scripts/ /ragtime/docker/scripts/
 COPY prisma/ /ragtime/prisma/
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     --mount=type=cache,id=ragtime-prisma-cache,target=/root/.cache/prisma-python,sharing=locked \
@@ -108,6 +111,15 @@ RUN mkdir -p "$INDEX_DATA_PATH" && \
 FROM python-ci-base AS python-ruff-check
 
 RUN python -m ruff check --select E9,F821,F822,F823 ragtime runtime tests
+
+FROM python-ci-base AS python-ruff-style-check
+
+RUN python -m ruff format --check docker/scripts ragtime runtime tests && \
+    python -m ruff check --select I docker/scripts ragtime runtime tests && \
+    python docker/scripts/fix_inline_imports.py docker --check && \
+    python docker/scripts/fix_inline_imports.py ragtime --check && \
+    python docker/scripts/fix_inline_imports.py runtime --check && \
+    python docker/scripts/fix_inline_imports.py tests --check
 
 FROM python-ci-base AS python-duplicate-check
 
@@ -126,6 +138,12 @@ FROM python-ci-base AS python-test
 RUN mkdir -p "$INDEX_DATA_PATH" && \
     python -m compileall ragtime/userspace/runtime_service.py runtime/manager runtime/main.py && \
     python -m ruff check --select E9,F821,F822,F823 ragtime runtime tests && \
+    python -m ruff format --check docker/scripts ragtime runtime tests && \
+    python -m ruff check --select I docker/scripts ragtime runtime tests && \
+    python docker/scripts/fix_inline_imports.py docker --check && \
+    python docker/scripts/fix_inline_imports.py ragtime --check && \
+    python docker/scripts/fix_inline_imports.py runtime --check && \
+    python docker/scripts/fix_inline_imports.py tests --check && \
     npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests && \
     python -m pytest tests
 

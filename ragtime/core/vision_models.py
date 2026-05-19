@@ -49,10 +49,7 @@ MODELS_DEV_API_URL = "https://models.dev/api.json"
 MODELS_DEV_VISION_CACHE_TTL_SECONDS = 3600.0
 VISION_CAPABILITY_TOKENS = {"vision", "image", "images", "image_input", "multimodal"}
 VISION_MODEL_TYPE_TOKENS = {"vlm"}
-TINY_PNG_DATA_URL = (
-    "data:image/png;base64,"
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
-)
+TINY_PNG_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
 
 
 # =============================================================================
@@ -327,15 +324,8 @@ def _provider_metadata_reports_vision(
 ) -> bool:
     """Return True only when provider metadata explicitly reports vision support."""
     capability_tokens = _normalize_capability_tokens(capabilities)
-    type_tokens = {
-        str(value or "").strip().lower()
-        for value in (model_type, engine_type)
-        if str(value or "").strip()
-    }
-    return bool(
-        capability_tokens & VISION_CAPABILITY_TOKENS
-        or type_tokens & VISION_MODEL_TYPE_TOKENS
-    )
+    type_tokens = {str(value or "").strip().lower() for value in (model_type, engine_type) if str(value or "").strip()}
+    return bool(capability_tokens & VISION_CAPABILITY_TOKENS or type_tokens & VISION_MODEL_TYPE_TOKENS)
 
 
 def _vision_model_info_from_provider_metadata(
@@ -399,14 +389,8 @@ def _metadata_capabilities(row: dict[str, Any]) -> list[str]:
         if isinstance(supports_obj, list):
             capabilities.extend(str(item).strip().lower() for item in supports_obj if item)
         elif isinstance(supports_obj, dict):
-            capabilities.extend(
-                str(flag).strip().lower() for flag, enabled in supports_obj.items() if enabled
-            )
-        capabilities.extend(
-            str(flag).strip().lower()
-            for flag, enabled in capabilities_obj.items()
-            if enabled is True and flag != "supports"
-        )
+            capabilities.extend(str(flag).strip().lower() for flag, enabled in supports_obj.items() if enabled)
+        capabilities.extend(str(flag).strip().lower() for flag, enabled in capabilities_obj.items() if enabled is True and flag != "supports")
 
     if _metadata_input_modalities(row) & {"image", "images", "vision"}:
         capabilities.append("image_input")
@@ -460,11 +444,7 @@ def _models_dev_vision_models_from_payload(
                 name=model_id,
                 provider=normalize_provider_name(provider),
                 capabilities=capabilities or None,
-                context_limit=_coerce_positive_int(
-                    row.get("limit", {}).get("context")
-                    if isinstance(row.get("limit"), dict)
-                    else None
-                ),
+                context_limit=_coerce_positive_int(row.get("limit", {}).get("context") if isinstance(row.get("limit"), dict) else None),
             )
         )
 
@@ -472,9 +452,7 @@ def _models_dev_vision_models_from_payload(
     return models
 
 
-async def _list_models_dev_vision_models(
-    provider: str, available_model_ids: set[str] | None = None
-) -> list[VisionModelInfo]:
+async def _list_models_dev_vision_models(provider: str, available_model_ids: set[str] | None = None) -> list[VisionModelInfo]:
     global _MODELS_DEV_VISION_CACHE
 
     now = time.monotonic()
@@ -532,12 +510,7 @@ async def _fetch_openai_available_model_ids(api_key: str | None) -> set[str] | N
     rows = payload.get("data")
     if not isinstance(rows, list):
         return set()
-    return {
-        model_id
-        for row in rows
-        if isinstance(row, dict)
-        if (model_id := str(row.get("id") or "").strip())
-    }
+    return {model_id for row in rows if isinstance(row, dict) if (model_id := str(row.get("id") or "").strip())}
 
 
 def _auth_headers(api_key: str | None) -> dict[str, str]:
@@ -766,12 +739,7 @@ async def list_provider_vision_models(
         if not base_url:
             return []
         lmstudio_models = await lmstudio.list_chat_models(base_url, api_key=api_key)
-        return [
-            info
-            for model in lmstudio_models
-            if (info := _vision_model_info_from_provider_metadata(model, normalized_provider))
-            is not None
-        ]
+        return [info for model in lmstudio_models if (info := _vision_model_info_from_provider_metadata(model, normalized_provider)) is not None]
 
     if normalized_provider == "omlx":
         if not base_url:
@@ -779,23 +747,13 @@ async def list_provider_vision_models(
         omlx_models = await omlx.list_status_models(base_url, api_key=api_key)
         if not omlx_models:
             omlx_models = await omlx.list_models(base_url, api_key=api_key)
-        return [
-            info
-            for model in omlx_models
-            if (info := _vision_model_info_from_provider_metadata(model, normalized_provider))
-            is not None
-        ]
+        return [info for model in omlx_models if (info := _vision_model_info_from_provider_metadata(model, normalized_provider)) is not None]
 
     if normalized_provider == "llama_cpp":
         if not base_url:
             return []
         llama_cpp_models = await llama_cpp.list_chat_models(base_url)
-        return [
-            info
-            for model in llama_cpp_models
-            if (info := _vision_model_info_from_provider_metadata(model, normalized_provider))
-            is not None
-        ]
+        return [info for model in llama_cpp_models if (info := _vision_model_info_from_provider_metadata(model, normalized_provider)) is not None]
 
     if normalized_provider == "openai":
         _ = (base_url, candidate_models)
@@ -828,10 +786,7 @@ def _load_image(image_content: bytes, source_format: str | None) -> tuple[Any, s
     try:
         import rawpy
     except ImportError:
-        logger.warning(
-            f"rawpy not installed, cannot process {source_format}. "
-            "Install with: pip install rawpy"
-        )
+        logger.warning(f"rawpy not installed, cannot process {source_format}. Install with: pip install rawpy")
         return None, "unsupported_raw"
 
     try:
@@ -848,9 +803,7 @@ def _load_image(image_content: bytes, source_format: str | None) -> tuple[Any, s
         return None, "raw_error"
 
 
-def _process_image_content(
-    img: Any, max_dimension: int, quality: int
-) -> tuple[bytes, str]:
+def _process_image_content(img: Any, max_dimension: int, quality: int) -> tuple[bytes, str]:
     """
     Helper to resize and compress image.
 
@@ -868,9 +821,7 @@ def _process_image_content(
         background = Image.new("RGB", img.size, (255, 255, 255))
         if img.mode == "P":
             img = img.convert("RGBA")
-        background.paste(
-            img, mask=img.split()[-1] if img.mode in ("RGBA", "LA") else None
-        )
+        background.paste(img, mask=img.split()[-1] if img.mode in ("RGBA", "LA") else None)
         img = background
     elif img.mode != "RGB":
         img = img.convert("RGB")
@@ -933,14 +884,9 @@ def preprocess_image(
         new_size = len(processed_bytes)
         if new_size < original_size:
             reduction = ((original_size - new_size) / original_size) * 100
-            logger.debug(
-                f"Image preprocessing: {original_size:,} -> {new_size:,} bytes "
-                f"({reduction:.1f}% reduction)"
-            )
+            logger.debug(f"Image preprocessing: {original_size:,} -> {new_size:,} bytes ({reduction:.1f}% reduction)")
         else:
-            logger.debug(
-                f"Image preprocessing: {original_size:,} -> {new_size:,} bytes"
-            )
+            logger.debug(f"Image preprocessing: {original_size:,} -> {new_size:,} bytes")
 
         return processed_bytes, fmt
 
@@ -1262,9 +1208,7 @@ async def extract_text_with_vision(
         return "\n".join(lines)
 
     except httpx.ConnectError:
-        logger.warning(
-            f"Cannot connect to {normalized_provider} at {base_url} for vision OCR"
-        )
+        logger.warning(f"Cannot connect to {normalized_provider} at {base_url} for vision OCR")
         raise
     except httpx.TimeoutException:
         logger.warning(f"Vision OCR timeout ({timeout}s) for model {model}")

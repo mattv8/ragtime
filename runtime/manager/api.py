@@ -13,12 +13,12 @@ from runtime.manager.models import (
     RuntimeExecResponse,
     RuntimeExternalBrowseRequest,
     RuntimeExternalBrowseResponse,
-    RuntimePdfReadRequest,
-    RuntimePdfReadResponse,
     RuntimeFileReadResponse,
     RuntimeFileWriteRequest,
     RuntimeManagerHealthResponse,
     RuntimeMountRefreshRequest,
+    RuntimePdfReadRequest,
+    RuntimePdfReadResponse,
     RuntimePtyUrlResponse,
     RuntimeRestartRequest,
     RuntimeScreenshotRequest,
@@ -92,27 +92,21 @@ def create_app() -> FastAPI:
     ) -> RuntimeSessionResponse:
         return await manager.start_session(request)
 
-    @application.get(
-        "/sessions/{provider_session_id}", response_model=RuntimeSessionResponse
-    )
+    @application.get("/sessions/{provider_session_id}", response_model=RuntimeSessionResponse)
     async def get_session(
         provider_session_id: str,
         _auth: None = ManagerAuth,
     ) -> RuntimeSessionResponse:
         return await manager.get_session(provider_session_id)
 
-    @application.post(
-        "/sessions/{provider_session_id}/stop", response_model=RuntimeSessionResponse
-    )
+    @application.post("/sessions/{provider_session_id}/stop", response_model=RuntimeSessionResponse)
     async def stop_session(
         provider_session_id: str,
         _auth: None = ManagerAuth,
     ) -> RuntimeSessionResponse:
         return await manager.stop_session(provider_session_id)
 
-    @application.post(
-        "/sessions/{provider_session_id}/restart", response_model=RuntimeSessionResponse
-    )
+    @application.post("/sessions/{provider_session_id}/restart", response_model=RuntimeSessionResponse)
     async def restart_session(
         provider_session_id: str,
         payload: RuntimeRestartRequest | None = None,
@@ -121,9 +115,7 @@ def create_app() -> FastAPI:
         return await manager.restart_devserver(
             provider_session_id,
             workspace_env=payload.workspace_env if payload else None,
-            workspace_env_visibility=(
-                payload.workspace_env_visibility if payload else None
-            ),
+            workspace_env_visibility=(payload.workspace_env_visibility if payload else None),
             workspace_mounts=payload.workspace_mounts if payload else None,
         )
 

@@ -125,10 +125,7 @@ def extract_text_from_file(
             return _extract_image_ocr(content)
         elif suffix in OCR_EXTENSIONS and effective_ocr_mode == "vision":
             # Vision OCR requires async - log warning and fall back to tesseract
-            logger.warning(
-                f"Vision OCR requires async. Use extract_text_from_file_async() "
-                f"for {file_path.name}. Falling back to tesseract."
-            )
+            logger.warning(f"Vision OCR requires async. Use extract_text_from_file_async() for {file_path.name}. Falling back to tesseract.")
             return _extract_image_ocr(content)
         elif suffix in OCR_EXTENSIONS:
             # OCR disabled, skip image files
@@ -254,10 +251,7 @@ async def extract_text_from_file_async(
                 effective_provider = ocr_provider or "ollama"
                 effective_base_url = vision_base_url
                 if not ocr_vision_model or not effective_base_url:
-                    logger.warning(
-                        f"Vision OCR requires model and base_url. "
-                        f"Falling back to tesseract for {file_path.name}"
-                    )
+                    logger.warning(f"Vision OCR requires model and base_url. Falling back to tesseract for {file_path.name}")
                     return await asyncio.to_thread(_extract_image_ocr, content)
                 return await _extract_image_vision_ocr(
                     content,
@@ -352,9 +346,7 @@ def _extract_docx(content: bytes) -> str:
         # Extract tables
         for table in doc.tables:
             for row in table.rows:
-                row_text = " | ".join(
-                    cell.text.strip() for cell in row.cells if cell.text.strip()
-                )
+                row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
                 if row_text:
                     text_parts.append(row_text)
 
@@ -369,9 +361,7 @@ def _extract_doc_legacy(file_path: Path, content: bytes) -> str:
     # Legacy .doc files are more complex
     # Try antiword if available, otherwise skip
     try:
-        result = subprocess.run(
-            ["antiword", str(file_path)], capture_output=True, text=True, timeout=30
-        )
+        result = subprocess.run(["antiword", str(file_path)], capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
             return result.stdout
     except FileNotFoundError:
@@ -668,9 +658,7 @@ def _extract_eml(content: bytes) -> str:
                             from bs4 import BeautifulSoup
 
                             charset = part.get_content_charset() or "utf-8"
-                            soup = BeautifulSoup(
-                                payload.decode(charset, errors="replace"), "html.parser"
-                            )
+                            soup = BeautifulSoup(payload.decode(charset, errors="replace"), "html.parser")
                             text_parts.append(soup.get_text(separator="\n", strip=True))
                         except ImportError:
                             # Fallback: just decode and append
@@ -755,10 +743,7 @@ def _extract_image_ocr(content: bytes) -> str:
         import pytesseract
         from PIL import Image
     except ImportError:
-        logger.warning(
-            "pytesseract/Pillow not installed, cannot perform OCR. "
-            "Install with: pip install pytesseract Pillow"
-        )
+        logger.warning("pytesseract/Pillow not installed, cannot perform OCR. Install with: pip install pytesseract Pillow")
         return ""
 
     try:
@@ -794,10 +779,7 @@ def _extract_image_ocr(content: bytes) -> str:
     except Exception as e:
         # Check if Tesseract is not installed
         if "tesseract is not installed" in str(e).lower():
-            logger.warning(
-                "Tesseract OCR not installed on system. "
-                "Install with: apt-get install tesseract-ocr"
-            )
+            logger.warning("Tesseract OCR not installed on system. Install with: apt-get install tesseract-ocr")
         else:
             logger.warning(f"OCR extraction error: {e}")
         return ""
@@ -849,10 +831,7 @@ async def _extract_image_vision_ocr(
             include_classification=True,  # Include image classification for search
         )
         elapsed = time.time() - start_time
-        logger.debug(
-            f"Vision OCR ({provider}/{vision_model}) completed in {elapsed:.2f}s, "
-            f"extracted {len(text)} chars"
-        )
+        logger.debug(f"Vision OCR ({provider}/{vision_model}) completed in {elapsed:.2f}s, extracted {len(text)} chars")
         return text
     except Exception as e:
         logger.warning(f"Vision OCR error with {vision_model}: {e}")

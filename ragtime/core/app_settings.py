@@ -19,10 +19,10 @@ from ragtime.core.model_providers import (
     LLAMA_CPP_LLM_CONNECTION,
     LMSTUDIO_CONNECTION,
     LMSTUDIO_LLM_CONNECTION,
-    OMLX_CONNECTION,
-    OMLX_LLM_CONNECTION,
     OLLAMA_EMBEDDING_CONNECTION,
     OLLAMA_LLM_CONNECTION,
+    OMLX_CONNECTION,
+    OMLX_LLM_CONNECTION,
     ProviderConnection,
 )
 from ragtime.core.userspace_preview_sandbox import (
@@ -40,9 +40,7 @@ def _normalize_default_ocr_mode(value: str | None) -> str:
     return mode or "disabled"
 
 
-PROVIDER_CONNECTION_PRISMA_FIELDS: tuple[
-    tuple[ProviderConnection, dict[str, str]], ...
-] = (
+PROVIDER_CONNECTION_PRISMA_FIELDS: tuple[tuple[ProviderConnection, dict[str, str]], ...] = (
     (
         OLLAMA_EMBEDDING_CONNECTION,
         {
@@ -198,18 +196,10 @@ class SettingsCache:
             openai_key = prisma_settings.openaiApiKey or ""
             anthropic_key = prisma_settings.anthropicApiKey or ""
             openrouter_key = getattr(prisma_settings, "openrouterApiKey", "") or ""
-            github_models_api_token = (
-                getattr(prisma_settings, "githubModelsApiToken", "") or ""
-            )
-            github_copilot_access_token = (
-                getattr(prisma_settings, "githubCopilotAccessToken", "") or ""
-            )
-            github_copilot_refresh_token = (
-                getattr(prisma_settings, "githubCopilotRefreshToken", "") or ""
-            )
-            github_copilot_oauth_refresh_token = (
-                getattr(prisma_settings, "githubCopilotOauthRefreshToken", "") or ""
-            )
+            github_models_api_token = getattr(prisma_settings, "githubModelsApiToken", "") or ""
+            github_copilot_access_token = getattr(prisma_settings, "githubCopilotAccessToken", "") or ""
+            github_copilot_refresh_token = getattr(prisma_settings, "githubCopilotRefreshToken", "") or ""
+            github_copilot_oauth_refresh_token = getattr(prisma_settings, "githubCopilotOauthRefreshToken", "") or ""
             postgres_password = prisma_settings.postgresPassword or ""
             mcp_password = prisma_settings.mcpDefaultRoutePassword
             lmstudio_api_key = getattr(prisma_settings, "lmstudioApiKey", None) or ""
@@ -221,9 +211,7 @@ class SettingsCache:
             github_models_api_token = decrypt_secret(github_models_api_token)
             github_copilot_access_token = decrypt_secret(github_copilot_access_token)
             github_copilot_refresh_token = decrypt_secret(github_copilot_refresh_token)
-            github_copilot_oauth_refresh_token = decrypt_secret(
-                github_copilot_oauth_refresh_token
-            )
+            github_copilot_oauth_refresh_token = decrypt_secret(github_copilot_oauth_refresh_token)
             postgres_password = decrypt_secret(postgres_password)
             lmstudio_api_key = decrypt_secret(lmstudio_api_key)
             omlx_api_key = decrypt_secret(omlx_api_key)
@@ -231,26 +219,17 @@ class SettingsCache:
             # It's decrypted in the verification function
 
             try:
-                userspace_preview_sandbox_flags = (
-                    normalize_userspace_preview_sandbox_flags(
-                        getattr(prisma_settings, "userspacePreviewSandboxFlags", None)
-                    )
-                )
+                userspace_preview_sandbox_flags = normalize_userspace_preview_sandbox_flags(getattr(prisma_settings, "userspacePreviewSandboxFlags", None))
             except ValueError as exc:
                 logger.warning(
-                    "Invalid userspace preview sandbox flags in app settings cache; "
-                    "falling back to defaults: %s",
+                    "Invalid userspace preview sandbox flags in app settings cache; falling back to defaults: %s",
                     exc,
                 )
-                userspace_preview_sandbox_flags = list(
-                    USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS
-                )
+                userspace_preview_sandbox_flags = list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS)
 
             self._settings = {
                 "server_name": prisma_settings.serverName,
-                "authenticated_webgl_background_enabled": getattr(
-                    prisma_settings, "authenticatedWebglBackgroundEnabled", True
-                ),
+                "authenticated_webgl_background_enabled": getattr(prisma_settings, "authenticatedWebglBackgroundEnabled", True),
                 "enabled_tools": prisma_settings.enabledTools,
                 "odoo_container": prisma_settings.odooContainer,
                 "postgres_container": prisma_settings.postgresContainer,
@@ -263,12 +242,8 @@ class SettingsCache:
                 "query_timeout": prisma_settings.queryTimeout,
                 "enable_write_ops": prisma_settings.enableWriteOps,
                 # Token optimization settings
-                "max_tool_output_chars": getattr(
-                    prisma_settings, "maxToolOutputChars", 5000
-                ),
-                "scratchpad_window_size": getattr(
-                    prisma_settings, "scratchpadWindowSize", 6
-                ),
+                "max_tool_output_chars": getattr(prisma_settings, "maxToolOutputChars", 5000),
+                "scratchpad_window_size": getattr(prisma_settings, "scratchpadWindowSize", 6),
                 # Search configuration
                 "search_results_k": prisma_settings.searchResultsK,
                 "aggregate_search": prisma_settings.aggregateSearch,
@@ -281,25 +256,15 @@ class SettingsCache:
                 # Performance / Memory configuration
                 "sequential_index_loading": prisma_settings.sequentialIndexLoading,
                 # API Tool Output configuration
-                "tool_output_mode": getattr(
-                    prisma_settings, "toolOutputMode", "default"
-                ),
+                "tool_output_mode": getattr(prisma_settings, "toolOutputMode", "default"),
                 # LLM settings
                 "llm_provider": prisma_settings.llmProvider,
                 "llm_model": prisma_settings.llmModel,
                 "llm_max_tokens": getattr(prisma_settings, "llmMaxTokens", 4096),
-                "image_payload_max_width": getattr(
-                    prisma_settings, "imagePayloadMaxWidth", 1024
-                ),
-                "image_payload_max_height": getattr(
-                    prisma_settings, "imagePayloadMaxHeight", 1024
-                ),
-                "image_payload_max_pixels": getattr(
-                    prisma_settings, "imagePayloadMaxPixels", 786432
-                ),
-                "image_payload_max_bytes": getattr(
-                    prisma_settings, "imagePayloadMaxBytes", 350000
-                ),
+                "image_payload_max_width": getattr(prisma_settings, "imagePayloadMaxWidth", 1024),
+                "image_payload_max_height": getattr(prisma_settings, "imagePayloadMaxHeight", 1024),
+                "image_payload_max_pixels": getattr(prisma_settings, "imagePayloadMaxPixels", 786432),
+                "image_payload_max_bytes": getattr(prisma_settings, "imagePayloadMaxBytes", 350000),
                 "openai_api_key": openai_key,
                 "anthropic_api_key": anthropic_key,
                 "openrouter_api_key": openrouter_key,
@@ -309,31 +274,18 @@ class SettingsCache:
                 "github_copilot_access_token": github_copilot_access_token,
                 "github_copilot_refresh_token": github_copilot_refresh_token,
                 "github_copilot_oauth_refresh_token": github_copilot_oauth_refresh_token,
-                "github_copilot_token_expires_at": getattr(
-                    prisma_settings, "githubCopilotTokenExpiresAt", None
-                ),
-                "github_copilot_enterprise_url": getattr(
-                    prisma_settings, "githubCopilotEnterpriseUrl", None
-                ),
+                "github_copilot_token_expires_at": getattr(prisma_settings, "githubCopilotTokenExpiresAt", None),
+                "github_copilot_enterprise_url": getattr(prisma_settings, "githubCopilotEnterpriseUrl", None),
                 "github_copilot_base_url": getattr(
                     prisma_settings,
                     "githubCopilotBaseUrl",
                     "https://api.githubcopilot.com",
                 ),
-                "include_copilot_third_party_models": getattr(
-                    prisma_settings, "includeCopilotThirdPartyModels", False
-                ),
+                "include_copilot_third_party_models": getattr(prisma_settings, "includeCopilotThirdPartyModels", False),
                 "allowed_chat_models": prisma_settings.allowedChatModels or [],
-                "default_chat_model": getattr(
-                    prisma_settings, "defaultChatModel", None
-                ),
-                "allowed_openapi_models": getattr(
-                    prisma_settings, "allowedOpenapiModels", None
-                )
-                or [],
-                "openapi_sync_chat_models": getattr(
-                    prisma_settings, "openapiSyncChatModels", True
-                ),
+                "default_chat_model": getattr(prisma_settings, "defaultChatModel", None),
+                "allowed_openapi_models": getattr(prisma_settings, "allowedOpenapiModels", None) or [],
+                "openapi_sync_chat_models": getattr(prisma_settings, "openapiSyncChatModels", True),
                 "max_iterations": prisma_settings.maxIterations,
                 # Embedding settings
                 "embedding_provider": prisma_settings.embeddingProvider,
@@ -345,32 +297,16 @@ class SettingsCache:
                 "mcp_default_route_auth": prisma_settings.mcpDefaultRouteAuth,
                 "mcp_default_route_auth_method": prisma_settings.mcpDefaultRouteAuthMethod,
                 "mcp_default_route_password": mcp_password,  # Kept encrypted
-                "mcp_default_route_client_id": getattr(
-                    prisma_settings, "mcpDefaultRouteClientId", None
-                ),
+                "mcp_default_route_client_id": getattr(prisma_settings, "mcpDefaultRouteClientId", None),
                 "mcp_default_route_allowed_group": prisma_settings.mcpDefaultRouteAllowedGroup,
                 # OCR settings
-                "default_ocr_mode": _normalize_default_ocr_mode(
-                    getattr(prisma_settings, "defaultOcrMode", "disabled")
-                ),
-                "default_ocr_provider": getattr(
-                    prisma_settings, "defaultOcrProvider", "ollama"
-                ),
-                "default_ocr_vision_model": getattr(
-                    prisma_settings, "defaultOcrVisionModel", None
-                ),
-                "ocr_concurrency_limit": getattr(
-                    prisma_settings, "ocrConcurrencyLimit", 1
-                ),
-                "ollama_embedding_timeout_seconds": getattr(
-                    prisma_settings, "ollamaEmbeddingTimeoutSeconds", 180
-                ),
-                "snapshot_retention_days": getattr(
-                    prisma_settings, "snapshotRetentionDays", 0
-                ),
-                "snapshot_stale_branch_threshold": getattr(
-                    prisma_settings, "snapshotStaleBranchThreshold", 50
-                ),
+                "default_ocr_mode": _normalize_default_ocr_mode(getattr(prisma_settings, "defaultOcrMode", "disabled")),
+                "default_ocr_provider": getattr(prisma_settings, "defaultOcrProvider", "ollama"),
+                "default_ocr_vision_model": getattr(prisma_settings, "defaultOcrVisionModel", None),
+                "ocr_concurrency_limit": getattr(prisma_settings, "ocrConcurrencyLimit", 1),
+                "ollama_embedding_timeout_seconds": getattr(prisma_settings, "ollamaEmbeddingTimeoutSeconds", 180),
+                "snapshot_retention_days": getattr(prisma_settings, "snapshotRetentionDays", 0),
+                "snapshot_stale_branch_threshold": getattr(prisma_settings, "snapshotStaleBranchThreshold", 50),
                 # User Space configuration
                 "userspace_preview_sandbox_flags": userspace_preview_sandbox_flags,
                 "userspace_mount_sync_interval_seconds": getattr(
@@ -382,9 +318,7 @@ class SettingsCache:
             return self._settings
 
         except Exception as e:
-            logger.warning(
-                f"Failed to load settings from database: {e}. Using defaults."
-            )
+            logger.warning(f"Failed to load settings from database: {e}. Using defaults.")
             return {
                 "server_name": "Ragtime",
                 "authenticated_webgl_background_enabled": True,
@@ -462,9 +396,7 @@ class SettingsCache:
                 "snapshot_retention_days": 0,
                 "snapshot_stale_branch_threshold": 20,
                 # User Space configuration
-                "userspace_preview_sandbox_flags": list(
-                    USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS
-                ),
+                "userspace_preview_sandbox_flags": list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
                 "userspace_mount_sync_interval_seconds": 30,
             }
 
@@ -475,9 +407,7 @@ class SettingsCache:
 
         try:
             db = await get_db()
-            prisma_configs = await db.toolconfig.find_many(
-                where={"enabled": True}, order={"createdAt": "desc"}
-            )
+            prisma_configs = await db.toolconfig.find_many(where={"enabled": True}, order={"createdAt": "desc"})
 
             enabled_tool_configs = [
                 {
@@ -485,9 +415,7 @@ class SettingsCache:
                     "name": cfg.name,
                     "tool_type": cfg.toolType,
                     "description": cfg.description,
-                    "connection_config": decrypt_json_passwords(
-                        dict(cfg.connectionConfig), CONNECTION_CONFIG_PASSWORD_FIELDS
-                    ),
+                    "connection_config": decrypt_json_passwords(dict(cfg.connectionConfig), CONNECTION_CONFIG_PASSWORD_FIELDS),
                     "max_results": cfg.maxResults,
                     "timeout": cfg.timeout,
                     "timeout_max_seconds": getattr(cfg, "timeoutMaxSeconds", 300),
@@ -497,9 +425,7 @@ class SettingsCache:
             ]
             from ragtime.indexer.tool_health import tool_health_monitor
 
-            self._tool_configs = tool_health_monitor.filter_healthy_tool_config_dicts(
-                enabled_tool_configs
-            )
+            self._tool_configs = tool_health_monitor.filter_healthy_tool_config_dicts(enabled_tool_configs)
             unavailable_count = len(enabled_tool_configs) - len(self._tool_configs)
             if unavailable_count > 0:
                 logger.info(

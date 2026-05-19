@@ -8,13 +8,13 @@ The enable_write_ops parameter should be passed from the database settings.
 from __future__ import annotations
 
 import ast
+import ipaddress
+import posixpath
 import re
 import shlex
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 from urllib.parse import urlsplit
 
-import ipaddress
-import posixpath
 from fastapi import Cookie, Depends, HTTPException, Request, status
 
 from ragtime.core.auth import (
@@ -171,9 +171,7 @@ _DANGEROUS_SQL_PATTERN_STRINGS = [
     r"COPY\s+.*\s+FROM",
 ]
 # Precompile with IGNORECASE since SQL is case-insensitive
-DANGEROUS_SQL_PATTERNS = [
-    re.compile(p, re.IGNORECASE) for p in _DANGEROUS_SQL_PATTERN_STRINGS
-]
+DANGEROUS_SQL_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _DANGEROUS_SQL_PATTERN_STRINGS]
 
 # SQL comment stripping patterns (precompiled)
 _SQL_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
@@ -268,16 +266,12 @@ _DANGEROUS_ODOO_PATTERN_STRINGS = [
     r"__mro__",
     r"__subclasses__",
 ]
-DANGEROUS_ODOO_PATTERNS = [
-    re.compile(p, re.IGNORECASE) for p in _DANGEROUS_ODOO_PATTERN_STRINGS
-]
+DANGEROUS_ODOO_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _DANGEROUS_ODOO_PATTERN_STRINGS]
 
 # Odoo-specific patterns (precompiled)
 _ODOO_GETATTR_RE = re.compile(r"getattr\s*\(", re.IGNORECASE)
 _ODOO_SAFE_GETATTR_RE = re.compile(r"getattr\s*\(\s*\w+\s*,\s*field_name")
-_ODOO_OPEN_WRITE_RE = re.compile(
-    r"open\s*\([^)]*,\s*['\"][^'\"]*[wa\+][^'\"]*['\"]", re.IGNORECASE
-)
+_ODOO_OPEN_WRITE_RE = re.compile(r"open\s*\([^)]*,\s*['\"][^'\"]*[wa\+][^'\"]*['\"]", re.IGNORECASE)
 # Extract SQL from env.cr.execute() - matches triple-quoted and single-quoted strings
 _ODOO_CR_EXECUTE_RE = re.compile(
     r"env\.cr\.execute\s*\(\s*"
@@ -380,16 +374,12 @@ _SSH_DANGEROUS_SHELL_PATTERN_STRINGS = [
     r"\bpsql\b.*-c\s*['\"].*\b(UPDATE|INSERT|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b",
     r"\bmysql\b.*-e\s*['\"].*\b(UPDATE|INSERT|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b",
 ]
-SSH_DANGEROUS_SHELL_PATTERNS = [
-    re.compile(p, re.IGNORECASE) for p in _SSH_DANGEROUS_SHELL_PATTERN_STRINGS
-]
+SSH_DANGEROUS_SHELL_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _SSH_DANGEROUS_SHELL_PATTERN_STRINGS]
 
 # SSH directory constraint patterns (precompiled)
 _SSH_DIR_TRAVERSAL_RE = re.compile(r"(?:^|[\s/])\.\.(?:/|[\s]|$)")
 _SSH_HOME_EXPANSION_RE = re.compile(r"(?:^|[\s=:])~(?:\/|[\s]|$)")
-_SSH_ENV_VAR_RE = re.compile(
-    r"\$(?!\?|\$|\d)(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})"
-)
+_SSH_ENV_VAR_RE = re.compile(r"\$(?!\?|\$|\d)(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})")
 
 # Write target extraction patterns - find paths that are destinations for writes
 # These patterns extract the path argument from write commands
@@ -585,9 +575,7 @@ def validate_odoo_code(code: str, enable_write_ops: bool = False) -> Tuple[bool,
     for pattern in DANGEROUS_ODOO_PATTERNS:
         if pattern.search(code):
             if enable_write_ops:
-                logger.warning(
-                    f"Write operation detected but allowed: {pattern.pattern}"
-                )
+                logger.warning(f"Write operation detected but allowed: {pattern.pattern}")
             else:
                 logger.warning(f"Dangerous Odoo pattern detected: {pattern.pattern}")
                 return False, "Code contains forbidden pattern"
@@ -756,9 +744,7 @@ def validate_ssh_command(
                 # Check for exact match (e.g. /bin) or subpath (/bin/ls)
                 # We strip trailing slash from prefix for exact match check
                 clean_prefix = safe_prefix.rstrip("/")
-                if normalized_path == clean_prefix or normalized_path.startswith(
-                    safe_prefix
-                ):
+                if normalized_path == clean_prefix or normalized_path.startswith(safe_prefix):
                     is_safe_system = True
                     break
 
@@ -766,10 +752,7 @@ def validate_ssh_command(
                 continue
 
             # If not a safe system path, it must be within allowed_directory
-            if (
-                not normalized_path.startswith(allowed_prefix)
-                and normalized_path != base_allowed
-            ):
+            if not normalized_path.startswith(allowed_prefix) and normalized_path != base_allowed:
                 return (
                     False,
                     f"Access forbidden: Path '{path}' is outside the allowed directory '{allowed_directory}'",
@@ -791,10 +774,7 @@ def validate_ssh_command(
                     continue
 
                 # Write targets must be within allowed_directory
-                if (
-                    not normalized_target.startswith(allowed_prefix)
-                    and normalized_target != base_allowed
-                ):
+                if not normalized_target.startswith(allowed_prefix) and normalized_target != base_allowed:
                     return (
                         False,
                         f"Write forbidden: Path '{target}' is outside the allowed directory '{allowed_directory}'",
@@ -808,9 +788,7 @@ def validate_ssh_command(
     # Check for embedded SQL write operations (using precompiled patterns)
     for pattern in DANGEROUS_SQL_PATTERNS:
         if pattern.search(command):
-            logger.warning(
-                f"SSH command blocked - SQL write pattern detected: {pattern.pattern}"
-            )
+            logger.warning(f"SSH command blocked - SQL write pattern detected: {pattern.pattern}")
             return (
                 False,
                 "Command contains SQL write operation. Enable 'Allow Write Operations' to permit this.",
@@ -819,9 +797,7 @@ def validate_ssh_command(
     # Check for dangerous shell patterns (using precompiled patterns)
     for pattern in SSH_DANGEROUS_SHELL_PATTERNS:
         if pattern.search(command):
-            logger.warning(
-                f"SSH command blocked - dangerous pattern detected: {pattern.pattern}"
-            )
+            logger.warning(f"SSH command blocked - dangerous pattern detected: {pattern.pattern}")
             return (
                 False,
                 "Command contains write/modify operation. Enable 'Allow Write Operations' to permit this.",
@@ -848,10 +824,7 @@ def sanitize_output(output: str, max_length: int = 50000) -> str:
     output = output.replace("\x00", "")
 
     if len(output) > max_length:
-        return (
-            output[:max_length]
-            + f"\n\n... (truncated, {len(output) - max_length} chars omitted)"
-        )
+        return output[:max_length] + f"\n\n... (truncated, {len(output) - max_length} chars omitted)"
     return output
 
 
@@ -1026,9 +999,7 @@ _CHAT_DIAG_DENY_PATTERN_STRINGS: list[str] = [
     # Git mutating ops
     r"\bgit\s+(?:push|pull|fetch|clone|commit|reset|checkout|merge|rebase|am|apply)\b",
 ]
-CHAT_DIAGNOSTIC_DENY_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(p, re.IGNORECASE) for p in _CHAT_DIAG_DENY_PATTERN_STRINGS
-]
+CHAT_DIAGNOSTIC_DENY_PATTERNS: list[re.Pattern[str]] = [re.compile(p, re.IGNORECASE) for p in _CHAT_DIAG_DENY_PATTERN_STRINGS]
 
 _CHAT_DIAG_PYTHON_BINARY_RE = re.compile(r"python(?:3(?:\.\d+)?)?$")
 _CHAT_DIAG_PYTHON_SAFE_FLAGS = frozenset({"-B", "-E", "-I", "-S", "-s", "-u", "-q"})
@@ -1180,9 +1151,7 @@ def _validate_chat_diagnostic_python_code(code: str) -> Tuple[bool, str]:
         elif isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Attribute) and func.attr == "urlopen":
-                if len(node.args) > 1 or any(
-                    keyword.arg in {"data", "method"} for keyword in node.keywords
-                ):
+                if len(node.args) > 1 or any(keyword.arg in {"data", "method"} for keyword in node.keywords):
                     return False, "Python urlopen writes are not allowed"
 
     return True, "Python snippet is safe"
@@ -1227,9 +1196,7 @@ def validate_chat_diagnostic_command(command: str) -> Tuple[bool, str]:
 
     for pattern in CHAT_DIAGNOSTIC_DENY_PATTERNS:
         if pattern.search(raw):
-            logger.warning(
-                "Chat diagnostic command blocked by pattern %s", pattern.pattern
-            )
+            logger.warning("Chat diagnostic command blocked by pattern %s", pattern.pattern)
             return False, "Command contains a forbidden pattern for chat diagnostics"
 
     # Split into pipeline / sequence segments and check the first token of each.
@@ -1292,14 +1259,7 @@ def _is_private_or_loopback_host(host: str) -> bool:
         addr = ipaddress.ip_address(host_clean)
     except ValueError:
         return False
-    return (
-        addr.is_private
-        or addr.is_loopback
-        or addr.is_link_local
-        or addr.is_multicast
-        or addr.is_reserved
-        or addr.is_unspecified
-    )
+    return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast or addr.is_reserved or addr.is_unspecified
 
 
 def validate_external_url(

@@ -112,11 +112,7 @@ class VisualizationRetryTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 visualization_retry.rag,
                 "_get_request_scoped_llm",
-                new=mock.AsyncMock(
-                    return_value=SimpleNamespace(
-                        llm=_FakeLLM(repaired), provider="test", model="test/model"
-                    )
-                ),
+                new=mock.AsyncMock(return_value=SimpleNamespace(llm=_FakeLLM(repaired), provider="test", model="test/model")),
             ),
             mock.patch.object(visualization_retry.settings, "debug_mode", False),
         ):

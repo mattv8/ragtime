@@ -57,13 +57,8 @@ def _emit_progress(
         progress_callback(payload)
 
 
-def _should_report_byte_progress(
-    processed_bytes: int, total_bytes: int, last_chunk_bytes: int
-) -> bool:
-    return (
-        processed_bytes == total_bytes
-        or processed_bytes % _PROGRESS_REPORT_INTERVAL_BYTES < last_chunk_bytes
-    )
+def _should_report_byte_progress(processed_bytes: int, total_bytes: int, last_chunk_bytes: int) -> bool:
+    return processed_bytes == total_bytes or processed_bytes % _PROGRESS_REPORT_INTERVAL_BYTES < last_chunk_bytes
 
 
 def _byte_progress(
@@ -73,9 +68,7 @@ def _byte_progress(
     base_progress: float = _IMPORTING_SQL_BASE_PROGRESS,
     progress_span: float = _IMPORTING_SQL_PROGRESS_SPAN,
 ) -> float:
-    return base_progress + progress_span * min(
-        1.0, processed_bytes / max(1, total_bytes)
-    )
+    return base_progress + progress_span * min(1.0, processed_bytes / max(1, total_bytes))
 
 
 @dataclass
@@ -137,19 +130,14 @@ def convert_binary_pg_dump_to_sql(
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
-                "Binary PostgreSQL dump detected, but pg_restore is not installed. "
-                "Install PostgreSQL client tools or re-export using: pg_dump --format=plain"
+                "Binary PostgreSQL dump detected, but pg_restore is not installed. Install PostgreSQL client tools or re-export using: pg_dump --format=plain"
             ) from exc
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(
-                "pg_restore timed out while converting binary PostgreSQL dump"
-            ) from exc
+            raise RuntimeError("pg_restore timed out while converting binary PostgreSQL dump") from exc
 
     if completed.returncode != 0:
         stderr = completed.stderr.strip() or "unknown pg_restore error"
-        raise RuntimeError(
-            f"pg_restore failed while converting binary PostgreSQL dump: {stderr}"
-        )
+        raise RuntimeError(f"pg_restore failed while converting binary PostgreSQL dump: {stderr}")
 
     _emit_progress(
         progress_callback,
@@ -222,19 +210,14 @@ def _restore_binary_pg_dump_section_to_file(
         )
     except FileNotFoundError as exc:
         raise RuntimeError(
-            "Binary PostgreSQL dump detected, but pg_restore is not installed. "
-            "Install PostgreSQL client tools or re-export using: pg_dump --format=plain"
+            "Binary PostgreSQL dump detected, but pg_restore is not installed. Install PostgreSQL client tools or re-export using: pg_dump --format=plain"
         ) from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            "pg_restore timed out while converting binary PostgreSQL dump"
-        ) from exc
+        raise RuntimeError("pg_restore timed out while converting binary PostgreSQL dump") from exc
 
     if completed.returncode != 0:
         stderr = completed.stderr.strip() or "unknown pg_restore error"
-        raise RuntimeError(
-            f"pg_restore failed while converting binary PostgreSQL dump: {stderr}"
-        )
+        raise RuntimeError(f"pg_restore failed while converting binary PostgreSQL dump: {stderr}")
 
 
 def decode_sql_dump_bytes(content: bytes) -> str:
@@ -398,11 +381,7 @@ def _split_identifier_parts(identifier: str) -> list[str]:
         char = identifier[index]
         if char == '"':
             current.append(char)
-            if (
-                in_double_quote
-                and index + 1 < len(identifier)
-                and identifier[index + 1] == '"'
-            ):
+            if in_double_quote and index + 1 < len(identifier) and identifier[index + 1] == '"':
                 current.append(identifier[index + 1])
                 index += 2
                 continue
@@ -460,10 +439,7 @@ def _split_identifier_list(text: str) -> list[str]:
 
 
 def _sqlite_column_list(columns: str) -> str:
-    return ", ".join(
-        _quote_sqlite_identifier(_strip_identifier_quotes(column))
-        for column in _split_identifier_list(columns)
-    )
+    return ", ".join(_quote_sqlite_identifier(_strip_identifier_quotes(column)) for column in _split_identifier_list(columns))
 
 
 def _ensure_copy_target_table(
@@ -471,10 +447,7 @@ def _ensure_copy_target_table(
     table_name: str,
     columns: list[str],
 ) -> None:
-    column_defs = ", ".join(
-        f"{_quote_sqlite_identifier(_strip_identifier_quotes(column))} TEXT"
-        for column in columns
-    )
+    column_defs = ", ".join(f"{_quote_sqlite_identifier(_strip_identifier_quotes(column))} TEXT" for column in columns)
     if column_defs:
         cursor.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({column_defs})")
 
@@ -521,11 +494,7 @@ def _decode_pg_copy_text_value(value: str) -> str | None:
             continue
         if next_char == "x":
             end = index + 2
-            while (
-                end < len(value)
-                and end < index + 4
-                and value[end] in "0123456789abcdefABCDEF"
-            ):
+            while end < len(value) and end < index + 4 and value[end] in "0123456789abcdefABCDEF":
                 end += 1
             if end > index + 2:
                 result.append(chr(int(value[index + 2 : end], 16)))
@@ -595,13 +564,9 @@ def _convert_pg_copy_blocks(sql: str, warnings: list[str]) -> str:
                 values = next(csv.reader([line]))
                 parsed_values = [None if value == r"\N" else value for value in values]
             else:
-                parsed_values = [
-                    _decode_pg_copy_text_value(value) for value in line.split("\t")
-                ]
+                parsed_values = [_decode_pg_copy_text_value(value) for value in line.split("\t")]
             escaped = [_sqlite_literal(value) for value in parsed_values]
-            result_parts.append(
-                f"INSERT INTO {table_name} ({columns}) VALUES ({', '.join(escaped)});\n"
-            )
+            result_parts.append(f"INSERT INTO {table_name} ({columns}) VALUES ({', '.join(escaped)});\n")
             row_count += 1
 
         if row_count:
@@ -872,16 +837,12 @@ def _split_sql_statements(sql: str) -> list[str]:
     return statements
 
 
-def _strip_schema_qualifiers(
-    expression: exp.Expression, warnings: list[str]
-) -> exp.Expression:
+def _strip_schema_qualifiers(expression: exp.Expression, warnings: list[str]) -> exp.Expression:
     stripped_any = False
 
     def _transform(node: exp.Expression) -> exp.Expression:
         nonlocal stripped_any
-        if isinstance(node, exp.Table) and (
-            node.args.get("db") or node.args.get("catalog")
-        ):
+        if isinstance(node, exp.Table) and (node.args.get("db") or node.args.get("catalog")):
             node.set("db", None)
             node.set("catalog", None)
             stripped_any = True
@@ -897,9 +858,7 @@ def _strip_schema_qualifiers(
     return transformed
 
 
-def _transpile_statements(
-    sql: str, dialect: SqlImportDialect, warnings: list[str]
-) -> list[str]:
+def _transpile_statements(sql: str, dialect: SqlImportDialect, warnings: list[str]) -> list[str]:
     """Transpile SQL text from source dialect to SQLite using sqlglot.
 
     Returns a list of SQLite-compatible SQL strings.
@@ -919,9 +878,7 @@ def _transpile_statements(
             continue
 
         try:
-            parsed = sqlglot.parse(
-                raw_stmt, read=read_dialect, error_level=ErrorLevel.WARN
-            )
+            parsed = sqlglot.parse(raw_stmt, read=read_dialect, error_level=ErrorLevel.WARN)
             transpiled = [
                 _strip_schema_qualifiers(expression, warnings).sql(
                     dialect="sqlite",
@@ -997,13 +954,7 @@ def import_sql_to_sqlite(
         cursor = conn.cursor()
         cursor.execute("BEGIN")
 
-        tables_before = {
-            row[0]
-            for row in cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-            if not row[0].startswith("sqlite_")
-        }
+        tables_before = {row[0] for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall() if not row[0].startswith("sqlite_")}
 
         for stmt in statements:
             # Final safety check -- never execute ATTACH.
@@ -1022,10 +973,7 @@ def import_sql_to_sqlite(
                 lower = stmt.lower().lstrip()
                 if lower.startswith(("insert", "replace")):
                     result.rows_inserted += max(cursor.rowcount, 0)
-                if progress_callback and (
-                    result.statements_executed == len(statements)
-                    or result.statements_executed % 100 == 0
-                ):
+                if progress_callback and (result.statements_executed == len(statements) or result.statements_executed % 100 == 0):
                     _emit_progress(
                         progress_callback,
                         {
@@ -1055,11 +1003,7 @@ def import_sql_to_sqlite(
             result.success = False
         else:
             tables_after = {
-                row[0]
-                for row in cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-                if not row[0].startswith("sqlite_")
+                row[0] for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall() if not row[0].startswith("sqlite_")
             }
             result.tables_created = len(tables_after - tables_before)
             _emit_progress(
@@ -1092,9 +1036,7 @@ def import_sql_to_sqlite(
         )
 
     except Exception as exc:
-        _add_limited_message(
-            result.errors, f"Fatal import error: {exc}", _MAX_REPORTED_ERRORS
-        )
+        _add_limited_message(result.errors, f"Fatal import error: {exc}", _MAX_REPORTED_ERRORS)
         result.success = False
         if conn:
             try:
@@ -1111,9 +1053,7 @@ def import_sql_to_sqlite(
     return result
 
 
-def _flush_copy_batch(
-    cursor: sqlite3.Cursor, insert_sql: str, batch: list[list[Any]]
-) -> int:
+def _flush_copy_batch(cursor: sqlite3.Cursor, insert_sql: str, batch: list[list[Any]]) -> int:
     if not batch:
         return 0
     cursor.executemany(insert_sql, batch)
@@ -1154,9 +1094,7 @@ def _stream_postgres_data_file_to_sqlite(
 
                 if current_insert_sql:
                     if line == r"\.":
-                        rows_inserted += _flush_copy_batch(
-                            cursor, current_insert_sql, current_batch
-                        )
+                        rows_inserted += _flush_copy_batch(cursor, current_insert_sql, current_batch)
                         current_insert_sql = None
                         current_csv_mode = False
                         current_table = ""
@@ -1164,26 +1102,15 @@ def _stream_postgres_data_file_to_sqlite(
                     elif line:
                         if current_csv_mode:
                             values = next(csv.reader([line]))
-                            parsed_values = [
-                                None if value == r"\N" else value for value in values
-                            ]
+                            parsed_values = [None if value == r"\N" else value for value in values]
                         else:
-                            parsed_values = [
-                                _decode_pg_copy_text_value(value)
-                                for value in line.split("\t")
-                            ]
+                            parsed_values = [_decode_pg_copy_text_value(value) for value in line.split("\t")]
                         if len(parsed_values) != expected_columns:
-                            raise RuntimeError(
-                                f"COPY row for {current_table} had {len(parsed_values)} value(s); expected {expected_columns}"
-                            )
+                            raise RuntimeError(f"COPY row for {current_table} had {len(parsed_values)} value(s); expected {expected_columns}")
                         current_batch.append(parsed_values)
                         if len(current_batch) >= _SQLITE_INSERT_BATCH_ROWS:
-                            rows_inserted += _flush_copy_batch(
-                                cursor, current_insert_sql, current_batch
-                            )
-                    if progress_callback and _should_report_byte_progress(
-                        processed_bytes, total_bytes, len(raw_line)
-                    ):
+                            rows_inserted += _flush_copy_batch(cursor, current_insert_sql, current_batch)
+                    if progress_callback and _should_report_byte_progress(processed_bytes, total_bytes, len(raw_line)):
                         _emit_progress(
                             progress_callback,
                             {
@@ -1263,9 +1190,7 @@ def _stream_restored_postgres_sql_file_to_sqlite(
         schema_sql = "".join(ddl_lines)
         if not schema_sql.strip():
             return True
-        schema_result = import_sql_to_sqlite(
-            sqlite_path, schema_sql, "postgresql", rollback_on_error=False
-        )
+        schema_result = import_sql_to_sqlite(sqlite_path, schema_sql, "postgresql", rollback_on_error=False)
         result.tables_created = schema_result.tables_created
         result.statements_executed = schema_result.statements_executed
         result.warnings.extend(schema_result.warnings)
@@ -1304,9 +1229,7 @@ def _stream_restored_postgres_sql_file_to_sqlite(
 
                 if current_insert_sql:
                     if line == r"\.":
-                        result.rows_inserted += _flush_copy_batch(
-                            cursor, current_insert_sql, current_batch
-                        )
+                        result.rows_inserted += _flush_copy_batch(cursor, current_insert_sql, current_batch)
                         current_insert_sql = None
                         current_csv_mode = False
                         current_table = ""
@@ -1314,27 +1237,16 @@ def _stream_restored_postgres_sql_file_to_sqlite(
                     elif line:
                         if current_csv_mode:
                             values = next(csv.reader([line]))
-                            parsed_values = [
-                                None if value == r"\N" else value for value in values
-                            ]
+                            parsed_values = [None if value == r"\N" else value for value in values]
                         else:
-                            parsed_values = [
-                                _decode_pg_copy_text_value(value)
-                                for value in line.split("\t")
-                            ]
+                            parsed_values = [_decode_pg_copy_text_value(value) for value in line.split("\t")]
                         if len(parsed_values) != expected_columns:
-                            raise RuntimeError(
-                                f"COPY row for {current_table} had {len(parsed_values)} value(s); expected {expected_columns}"
-                            )
+                            raise RuntimeError(f"COPY row for {current_table} had {len(parsed_values)} value(s); expected {expected_columns}")
                         current_batch.append(parsed_values)
                         if len(current_batch) >= _SQLITE_INSERT_BATCH_ROWS:
-                            result.rows_inserted += _flush_copy_batch(
-                                cursor, current_insert_sql, current_batch
-                            )
+                            result.rows_inserted += _flush_copy_batch(cursor, current_insert_sql, current_batch)
                 elif copy_match:
-                    table_name = _sqlite_table_name(
-                        copy_match.group(1), result.warnings
-                    )
+                    table_name = _sqlite_table_name(copy_match.group(1), result.warnings)
                     columns = _split_identifier_list(copy_match.group(2).strip())
                     expected_columns = len(columns)
                     sqlite_columns = _sqlite_column_list(copy_match.group(2).strip())
@@ -1345,9 +1257,7 @@ def _stream_restored_postgres_sql_file_to_sqlite(
                     current_table = table_name
                     current_batch = []
 
-                if progress_callback and _should_report_byte_progress(
-                    processed_bytes, total_bytes, len(raw_line)
-                ):
+                if progress_callback and _should_report_byte_progress(processed_bytes, total_bytes, len(raw_line)):
                     _emit_progress(
                         progress_callback,
                         {
@@ -1390,9 +1300,7 @@ def _stream_restored_postgres_sql_file_to_sqlite(
                 conn.rollback()
             except Exception:
                 pass
-        _add_limited_message(
-            result.errors, f"Fatal import error: {exc}", _MAX_REPORTED_ERRORS
-        )
+        _add_limited_message(result.errors, f"Fatal import error: {exc}", _MAX_REPORTED_ERRORS)
         result.success = False
         return result
     finally:
@@ -1413,9 +1321,7 @@ def import_postgres_custom_dump_to_sqlite(
     try:
         restored_sql_path.unlink(missing_ok=True)
         temp_sqlite_path.unlink(missing_ok=True)
-        restore_binary_pg_dump_to_sql_file(
-            dump_path, restored_sql_path, progress_callback
-        )
+        restore_binary_pg_dump_to_sql_file(dump_path, restored_sql_path, progress_callback)
         _emit_progress(
             progress_callback,
             {
@@ -1426,9 +1332,7 @@ def import_postgres_custom_dump_to_sqlite(
                 "progress": _IMPORTING_SQL_BASE_PROGRESS,
             },
         )
-        streamed_result = _stream_restored_postgres_sql_file_to_sqlite(
-            temp_sqlite_path, restored_sql_path, progress_callback
-        )
+        streamed_result = _stream_restored_postgres_sql_file_to_sqlite(temp_sqlite_path, restored_sql_path, progress_callback)
         result.tables_created = streamed_result.tables_created
         result.rows_inserted = streamed_result.rows_inserted
         result.statements_executed = streamed_result.statements_executed
@@ -1473,9 +1377,7 @@ def import_postgres_custom_dump_to_sqlite(
         )
         return result
     except Exception as exc:
-        _add_limited_message(
-            result.errors, f"Fatal import error: {exc}", _MAX_REPORTED_ERRORS
-        )
+        _add_limited_message(result.errors, f"Fatal import error: {exc}", _MAX_REPORTED_ERRORS)
         result.success = False
         return result
     finally:
@@ -1521,9 +1423,7 @@ def import_dump_file_to_sqlite(
     try:
         _progress({"phase": "staging_upload", "processed_bytes": total_bytes})
         if detect_binary_pg_dump_file(dump_path):
-            result = import_postgres_custom_dump_to_sqlite(
-                sqlite_path, dump_path, _progress
-            )
+            result = import_postgres_custom_dump_to_sqlite(sqlite_path, dump_path, _progress)
         else:
             content = dump_path.read_bytes()
             sql_text = decode_sql_dump_bytes(content)

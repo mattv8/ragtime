@@ -51,9 +51,7 @@ from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
 
-_SANDBOX_BASHRC_TEMPLATE_PATH = (
-    Path(__file__).parent / "templates" / "sandbox_bashrc.sh"
-)
+_SANDBOX_BASHRC_TEMPLATE_PATH = Path(__file__).parent / "templates" / "sandbox_bashrc.sh"
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 logger = logging.getLogger(__name__)
 
@@ -85,11 +83,7 @@ def _preview_request_headers(request: Request) -> dict[str, str]:
         "authorization",
         "cookie",
     }
-    forwarded_headers = {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower() not in blocked
-    }
+    forwarded_headers = {key: value for key, value in request.headers.items() if key.lower() not in blocked}
     forwarded_headers.setdefault("x-forwarded-proto", request.url.scheme)
     forwarded_headers.setdefault("x-forwarded-host", request.headers.get("host", ""))
     client_host = request.client.host if request.client else ""
@@ -142,9 +136,7 @@ async def _proxy_preview_request(request: Request, upstream_url: str) -> Respons
             detail=f"Runtime dev server unavailable: {exc}",
         ) from exc
 
-    media_type = (
-        upstream_response.headers.get("content-type") or "application/octet-stream"
-    )
+    media_type = upstream_response.headers.get("content-type") or "application/octet-stream"
     response_headers = _preview_response_headers(upstream_response.headers)
 
     if _is_html_media_type(media_type):
@@ -220,9 +212,7 @@ async def start_session(
     return await get_worker_service().start_session(payload)
 
 
-@router.get(
-    "/worker/sessions/{worker_session_id}", response_model=WorkerSessionResponse
-)
+@router.get("/worker/sessions/{worker_session_id}", response_model=WorkerSessionResponse)
 async def get_session(
     worker_session_id: str,
     _auth: None = WorkerAuth,
@@ -230,9 +220,7 @@ async def get_session(
     return await get_worker_service().get_session(worker_session_id)
 
 
-@router.post(
-    "/worker/sessions/{worker_session_id}/stop", response_model=WorkerSessionResponse
-)
+@router.post("/worker/sessions/{worker_session_id}/stop", response_model=WorkerSessionResponse)
 async def stop_session(
     worker_session_id: str,
     _auth: None = WorkerAuth,
@@ -240,9 +228,7 @@ async def stop_session(
     return await get_worker_service().stop_session(worker_session_id)
 
 
-@router.post(
-    "/worker/sessions/{worker_session_id}/restart", response_model=WorkerSessionResponse
-)
+@router.post("/worker/sessions/{worker_session_id}/restart", response_model=WorkerSessionResponse)
 async def restart_session(
     worker_session_id: str,
     _auth: None = WorkerAuth,
@@ -316,9 +302,7 @@ async def content_probe(
     service = get_worker_service()
     probe_method = getattr(service, "content_probe", None)
     if probe_method is None:
-        raise HTTPException(
-            status_code=503, detail="Runtime content probe not available"
-        )
+        raise HTTPException(status_code=503, detail="Runtime content probe not available")
     return await probe_method(worker_session_id, payload)
 
 
@@ -370,9 +354,7 @@ async def external_browse(
     service = get_worker_service()
     method = getattr(service, "external_browse", None)
     if method is None:
-        raise HTTPException(
-            status_code=503, detail="Runtime external browse not available"
-        )
+        raise HTTPException(status_code=503, detail="Runtime external browse not available")
     return await method(payload)
 
 
@@ -400,12 +382,8 @@ async def read_pdf(
     return await get_worker_service().read_pdf(payload)
 
 
-@router.api_route(
-    "/worker/sessions/{worker_session_id}/preview", methods=_PROXY_METHODS
-)
-@router.api_route(
-    "/worker/sessions/{worker_session_id}/preview/{path:path}", methods=_PROXY_METHODS
-)
+@router.api_route("/worker/sessions/{worker_session_id}/preview", methods=_PROXY_METHODS)
+@router.api_route("/worker/sessions/{worker_session_id}/preview/{path:path}", methods=_PROXY_METHODS)
 async def preview(
     worker_session_id: str,
     request: Request,
@@ -443,9 +421,7 @@ async def preview_websocket(
     try:
         _verify_worker_auth_from_websocket(websocket)
     except HTTPException as exc:
-        logger.warning(
-            "WS preview auth rejected for %s: %s", worker_session_id, exc.detail
-        )
+        logger.warning("WS preview auth rejected for %s: %s", worker_session_id, exc.detail)
         await websocket.close(code=4403 if exc.status_code == 403 else 4404)
         return
 
@@ -466,15 +442,9 @@ async def preview_websocket(
         return
 
     # Convert http:// to ws://
-    ws_url = upstream_url.replace("http://", "ws://", 1).replace(
-        "https://", "wss://", 1
-    )
+    ws_url = upstream_url.replace("http://", "ws://", 1).replace("https://", "wss://", 1)
 
-    requested_subprotocols = [
-        str(p).strip()
-        for p in (websocket.scope.get("subprotocols") or [])
-        if str(p).strip()
-    ]
+    requested_subprotocols = [str(p).strip() for p in (websocket.scope.get("subprotocols") or []) if str(p).strip()]
 
     try:
         import websockets as _ws_mod
@@ -522,9 +492,7 @@ async def preview_websocket(
     except WebSocketDisconnect:
         return
     except Exception as exc:
-        logger.debug(
-            "WS preview proxy error for %s/%s: %s", worker_session_id, path, exc
-        )
+        logger.debug("WS preview proxy error for %s/%s: %s", worker_session_id, path, exc)
         with contextlib.suppress(Exception):
             await websocket.close(code=1011)
         return
@@ -558,9 +526,7 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     # Prefer the X-PTY-Token header so the per-session token never appears
     # in URL-based access logs. The query-string fallback is retained for
     # backward compatibility with callers that still embed it in the URL.
-    token = websocket.headers.get("x-pty-token", "") or websocket.query_params.get(
-        "token", ""
-    )
+    token = websocket.headers.get("x-pty-token", "") or websocket.query_params.get("token", "")
     try:
         session = await get_worker_service().verify_pty_token(worker_session_id, token)
     except HTTPException as exc:
@@ -698,9 +664,7 @@ async def pty(worker_session_id: str, websocket: WebSocket):
         if startup_reads > 0:
             startup_reads -= 1
             lines = text.splitlines(keepends=True)
-            lines = [
-                ln for ln in lines if not any(noise in ln for noise in _STARTUP_NOISE)
-            ]
+            lines = [ln for ln in lines if not any(noise in ln for noise in _STARTUP_NOISE)]
             text = "".join(lines)
             if not text:
                 return
@@ -709,12 +673,7 @@ async def pty(worker_session_id: str, websocket: WebSocket):
             text,
             carry=redaction_carry,
         )
-        if (
-            text
-            and not output_text
-            and redaction_carry
-            and not buffered_for_redaction_logged
-        ):
+        if text and not output_text and redaction_carry and not buffered_for_redaction_logged:
             buffered_for_redaction_logged = True
             logger.debug(
                 "PTY output buffered for redaction overlap: worker_session_id=%s chunk_len=%s carry_len=%s",
@@ -723,9 +682,7 @@ async def pty(worker_session_id: str, websocket: WebSocket):
                 len(redaction_carry),
             )
         if output_text:
-            await websocket.send_text(
-                json.dumps({"type": "output", "data": output_text})
-            )
+            await websocket.send_text(json.dumps({"type": "output", "data": output_text}))
 
     loop.add_reader(master_fd, _queue_pty_output)
     output_task = asyncio.create_task(pty_output_queue.get())
@@ -809,9 +766,7 @@ async def pty(worker_session_id: str, websocket: WebSocket):
             )
             if output_text:
                 with contextlib.suppress(Exception):
-                    await websocket.send_text(
-                        json.dumps({"type": "output", "data": output_text})
-                    )
+                    await websocket.send_text(json.dumps({"type": "output", "data": output_text}))
         if process.returncode is None:
             process.terminate()
             with contextlib.suppress(Exception):

@@ -1,7 +1,7 @@
 """Shared User Space preview iframe sandbox configuration helpers."""
 
-
 from typing import TypedDict
+
 
 class UserSpacePreviewSandboxFlagOption(TypedDict):
     """Canonical metadata for a single iframe sandbox capability."""
@@ -84,9 +84,7 @@ USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS: tuple[UserSpacePreviewSandboxFlagOption,
     },
 )
 
-USERSPACE_PREVIEW_SANDBOX_ALL_FLAGS: tuple[str, ...] = tuple(
-    option["value"] for option in USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS
-)
+USERSPACE_PREVIEW_SANDBOX_ALL_FLAGS: tuple[str, ...] = tuple(option["value"] for option in USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS)
 
 USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS: tuple[str, ...] = (
     "allow-scripts",
@@ -123,9 +121,6 @@ def normalize_userspace_preview_sandbox_flags(
     if invalid:
         invalid_values = ", ".join(sorted(invalid))
         allowed_values = ", ".join(USERSPACE_PREVIEW_SANDBOX_ALL_FLAGS)
-        raise ValueError(
-            "Invalid User Space preview sandbox flags: "
-            f"{invalid_values}. Allowed values: {allowed_values}"
-        )
+        raise ValueError(f"Invalid User Space preview sandbox flags: {invalid_values}. Allowed values: {allowed_values}")
 
     return [flag for flag in USERSPACE_PREVIEW_SANDBOX_ALL_FLAGS if flag in selected]

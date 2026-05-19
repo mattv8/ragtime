@@ -109,9 +109,7 @@ class PdmIndexerService:
         self._cancellation_flags[job_id] = False
 
         # Start background processing
-        task = asyncio.create_task(
-            self._process_index(job, connection_config, full_reindex)
-        )
+        task = asyncio.create_task(self._process_index(job, connection_config, full_reindex))
         self._running_tasks[job_id] = task
 
         logger.info(f"Started PDM indexing job {job_id} for tool {tool_config_id}")
@@ -169,9 +167,7 @@ class PdmIndexerService:
 
         return None
 
-    async def get_latest_job(
-        self, tool_config_id: str
-    ) -> Optional[PdmIndexJobResponse]:
+    async def get_latest_job(self, tool_config_id: str) -> Optional[PdmIndexJobResponse]:
         """Get the most recent job for a tool config."""
         try:
             db: Any = await get_db()
@@ -224,9 +220,7 @@ class PdmIndexerService:
         # Can only cancel pending/indexing jobs
         if prisma_job.status in ("pending", "indexing"):
             # Job is not running in memory but stuck in DB - directly mark as cancelled
-            logger.info(
-                f"Directly cancelling orphaned PDM job {job_id} (not in active jobs)"
-            )
+            logger.info(f"Directly cancelling orphaned PDM job {job_id} (not in active jobs)")
             await db.pdmindexjob.update(
                 where={"id": job_id},
                 data={
@@ -392,9 +386,7 @@ class PdmIndexerService:
             # Get the tool config to get connection details
             tool_config = await repository.get_tool_config(db_job.toolConfigId)
             if not tool_config or not tool_config.id:
-                logger.warning(
-                    f"Cannot retry: tool config {db_job.toolConfigId} not found"
-                )
+                logger.warning(f"Cannot retry: tool config {db_job.toolConfigId} not found")
                 return None
 
             # Trigger a new indexing job
@@ -425,35 +417,26 @@ class PdmIndexerService:
 
             for index_name in index_names:
                 # Delete embeddings
-                result = await db.execute_raw(
-                    f"DELETE FROM pdm_embeddings WHERE index_name = '{index_name}'"
-                )
+                result = await db.execute_raw(f"DELETE FROM pdm_embeddings WHERE index_name = '{index_name}'")
                 if isinstance(result, int):
                     deleted_embeddings += result
 
                 # Delete document metadata
-                result = await db.execute_raw(
-                    f"DELETE FROM pdm_document_metadata WHERE index_name = '{index_name}'"
-                )
+                result = await db.execute_raw(f"DELETE FROM pdm_document_metadata WHERE index_name = '{index_name}'")
                 if isinstance(result, int):
                     deleted_metadata += result
 
             # Delete jobs
             await db.pdmindexjob.delete_many(where={"toolConfigId": tool_config_id})
 
-            logger.info(
-                f"Deleted PDM index for tool {tool_config_id}: "
-                f"{deleted_embeddings} embeddings, {deleted_metadata} metadata records"
-            )
+            logger.info(f"Deleted PDM index for tool {tool_config_id}: {deleted_embeddings} embeddings, {deleted_metadata} metadata records")
             return True, f"Deleted {deleted_embeddings} PDM embeddings"
 
         except Exception as e:
             logger.error(f"Error deleting PDM index: {e}")
             return False, str(e)
 
-    async def get_embedding_count(
-        self, tool_config_id: str, tool_name: str | None = None
-    ) -> int:
+    async def get_embedding_count(self, tool_config_id: str, tool_name: str | None = None) -> int:
         """Get the number of PDM embeddings for a tool."""
         names_to_check = []
         if tool_name:
@@ -463,19 +446,14 @@ class PdmIndexerService:
         try:
             db: Any = await get_db()
             for index_name in names_to_check:
-                result = await db.query_raw(
-                    f"SELECT COUNT(*) as count FROM pdm_embeddings "
-                    f"WHERE index_name = '{index_name}'"
-                )
+                result = await db.query_raw(f"SELECT COUNT(*) as count FROM pdm_embeddings WHERE index_name = '{index_name}'")
                 if result and int(result[0].get("count", 0)) > 0:
                     return int(result[0].get("count", 0))
         except Exception as e:
             logger.warning(f"Error getting PDM embedding count: {e}")
         return 0
 
-    async def get_document_count(
-        self, tool_config_id: str, tool_name: str | None = None
-    ) -> int:
+    async def get_document_count(self, tool_config_id: str, tool_name: str | None = None) -> int:
         """Get the number of indexed PDM documents for a tool."""
         names_to_check = []
         if tool_name:
@@ -485,10 +463,7 @@ class PdmIndexerService:
         try:
             db: Any = await get_db()
             for index_name in names_to_check:
-                result = await db.query_raw(
-                    f"SELECT COUNT(*) as count FROM pdm_document_metadata "
-                    f"WHERE index_name = '{index_name}'"
-                )
+                result = await db.query_raw(f"SELECT COUNT(*) as count FROM pdm_document_metadata WHERE index_name = '{index_name}'")
                 if result and int(result[0].get("count", 0)) > 0:
                     return int(result[0].get("count", 0))
         except Exception as e:
@@ -537,18 +512,12 @@ class PdmIndexerService:
             raise RuntimeError("pymssql not installed for PDM database access") from exc
 
         # Build file extension filter
-        ext_filter = " OR ".join(
-            [f"d.Filename LIKE '%{ext}'" for ext in (config.file_extensions or [])]
-        )
+        ext_filter = " OR ".join([f"d.Filename LIKE '%{ext}'" for ext in (config.file_extensions or [])])
         if not ext_filter:
             ext_filter = "1=1"
 
         deleted_filter = "AND d.Deleted = 0" if config.exclude_deleted else ""
-        dip_deleted_filter = (
-            "AND (dip.Deleted IS NULL OR dip.Deleted = 0)"
-            if config.exclude_deleted
-            else ""
-        )
+        dip_deleted_filter = "AND (dip.Deleted IS NULL OR dip.Deleted = 0)" if config.exclude_deleted else ""
 
         # Get total count first
         total_count = await self._count_documents(config)
@@ -597,14 +566,10 @@ class PdmIndexerService:
             # Build document ID list and revision map
             doc_ids = [row["DocumentID"] for row in doc_rows]
             doc_ids_str = ",".join(str(d) for d in doc_ids)
-            revision_map = {
-                row["DocumentID"]: row["LatestRevisionNo"] or 1 for row in doc_rows
-            }
+            revision_map = {row["DocumentID"]: row["LatestRevisionNo"] or 1 for row in doc_rows}
 
             # Step 2: Bulk fetch all variables for this batch
-            variables_by_doc: Dict[int, Dict[str, str]] = {
-                doc_id: {} for doc_id in doc_ids
-            }
+            variables_by_doc: Dict[int, Dict[str, str]] = {doc_id: {} for doc_id in doc_ids}
             if var_ids:
                 cursor.execute(
                     f"""
@@ -669,12 +634,7 @@ class PdmIndexerService:
             bom_by_doc: Dict[int, List[dict]] = {doc_id: [] for doc_id in doc_ids}
             if config.include_bom:
                 # Find assembly doc IDs
-                assembly_ids = [
-                    row["DocumentID"]
-                    for row in doc_rows
-                    if "." in row["Filename"]
-                    and row["Filename"].rsplit(".", 1)[-1].upper() == "SLDASM"
-                ]
+                assembly_ids = [row["DocumentID"] for row in doc_rows if "." in row["Filename"] and row["Filename"].rsplit(".", 1)[-1].upper() == "SLDASM"]
                 if assembly_ids:
                     assembly_ids_str = ",".join(str(d) for d in assembly_ids)
                     cursor.execute(
@@ -747,9 +707,7 @@ class PdmIndexerService:
             current_batch_size = min(batch_size, effective_limit - offset)
 
             # Run extraction in thread to avoid blocking
-            batch_docs = await asyncio.to_thread(
-                extract_batch, offset, current_batch_size
-            )
+            batch_docs = await asyncio.to_thread(extract_batch, offset, current_batch_size)
 
             if not batch_docs:
                 break
@@ -788,9 +746,7 @@ class PdmIndexerService:
             for doc in batch:
                 yield doc
 
-    async def _get_variable_map(
-        self, config: SolidworksPdmConnectionConfig
-    ) -> Dict[int, str]:
+    async def _get_variable_map(self, config: SolidworksPdmConnectionConfig) -> Dict[int, str]:
         """Get a mapping of variable ID to variable name."""
         try:
             import pymssql  # type: ignore[import-untyped]
@@ -865,10 +821,7 @@ class PdmIndexerService:
             # Check for embedding configuration mismatch
             # Auto-correct by forcing full re-index when config changes
             current_config_hash = settings.get_embedding_config_hash()
-            tracking_needs_update = (
-                settings.embedding_dimension is None
-                or settings.embedding_config_hash is None
-            )
+            tracking_needs_update = settings.embedding_dimension is None or settings.embedding_config_hash is None
 
             if settings.embedding_config_hash is not None:
                 if settings.embedding_config_hash != current_config_hash:
@@ -886,14 +839,10 @@ class PdmIndexerService:
 
             embeddings = await self._get_embeddings(app_settings)
             if embeddings is None:
-                raise RuntimeError(
-                    "No embedding provider configured. Configure an embedding provider in Settings."
-                )
+                raise RuntimeError("No embedding provider configured. Configure an embedding provider in Settings.")
 
             # Check embedding dimension and ensure column matches
-            test_embedding = await asyncio.to_thread(
-                embeddings.embed_documents, ["test"]
-            )
+            test_embedding = await asyncio.to_thread(embeddings.embed_documents, ["test"])
             embedding_dim = len(test_embedding[0])
             index_lists = app_settings.get("ivfflat_lists", 100)
             # This will raise RuntimeError with detailed message if it fails
@@ -907,9 +856,7 @@ class PdmIndexerService:
                         "embedding_config_hash": current_config_hash,
                     }
                 )
-                logger.info(
-                    f"Updated embedding tracking: dim={embedding_dim}, hash={current_config_hash}"
-                )
+                logger.info(f"Updated embedding tracking: dim={embedding_dim}, hash={current_config_hash}")
 
             # Parse connection config
             config = SolidworksPdmConnectionConfig(**connection_config)
@@ -979,9 +926,7 @@ class PdmIndexerService:
 
                 extracted += len(doc_batch)
                 job.extracted_documents = extracted
-                job.current_step = (
-                    f"Extracting documents from PDM ({extracted}/{doc_count})"
-                )
+                job.current_step = f"Extracting documents from PDM ({extracted}/{doc_count})"
                 await self._update_job(job)
 
                 # Process each document in the extraction batch
@@ -989,9 +934,7 @@ class PdmIndexerService:
                     # Check if document has changed (skip if unchanged and not full reindex)
                     if not full_reindex:
                         current_hash = doc.compute_metadata_hash()
-                        stored_hash = await self._get_stored_hash(
-                            job.index_name, doc.document_id
-                        )
+                        stored_hash = await self._get_stored_hash(job.index_name, doc.document_id)
                         if stored_hash == current_hash:
                             skipped += 1
                             job.skipped_documents = skipped
@@ -1001,9 +944,7 @@ class PdmIndexerService:
 
                     # Process embedding batch when full
                     if len(embedding_batch) >= EMBEDDING_SUB_BATCH_SIZE:
-                        job.current_step = (
-                            f"Generating embeddings ({processed}/{doc_count - skipped})"
-                        )
+                        job.current_step = f"Generating embeddings ({processed}/{doc_count - skipped})"
                         await self._update_job(job)
 
                         await self._process_batch(job, embedding_batch, embeddings)
@@ -1014,9 +955,7 @@ class PdmIndexerService:
 
             # Process remaining embedding batch
             if embedding_batch:
-                job.current_step = (
-                    f"Generating embeddings ({processed}/{doc_count - skipped})"
-                )
+                job.current_step = f"Generating embeddings ({processed}/{doc_count - skipped})"
                 await self._update_job(job)
 
                 await self._process_batch(job, embedding_batch, embeddings)
@@ -1034,10 +973,7 @@ class PdmIndexerService:
             self._cancellation_flags.pop(job.id, None)
             self._running_tasks.pop(job.id, None)
 
-            logger.info(
-                f"PDM indexing completed for job {job.id}: "
-                f"{processed} processed, {skipped} skipped"
-            )
+            logger.info(f"PDM indexing completed for job {job.id}: {processed} processed, {skipped} skipped")
 
         except asyncio.CancelledError:
             # Task was cancelled during shutdown - don't try to update DB
@@ -1059,9 +995,7 @@ class PdmIndexerService:
                     await self._update_job(job)
                 except RuntimeError as db_error:
                     if "Database is not connected" in str(db_error):
-                        logger.warning(
-                            f"Cannot update job {job.id} - DB disconnected during shutdown"
-                        )
+                        logger.warning(f"Cannot update job {job.id} - DB disconnected during shutdown")
                     else:
                         raise
 
@@ -1085,9 +1019,7 @@ class PdmIndexerService:
         texts = [doc.to_embedding_text() for doc in documents]
 
         # Generate embeddings in sub-batches to keep event loop responsive
-        doc_embeddings = await embed_documents_subbatched(
-            embeddings, texts, logger_override=logger
-        )
+        doc_embeddings = await embed_documents_subbatched(embeddings, texts, logger_override=logger)
 
         # Store embeddings and metadata
         for doc, text, embedding in zip(documents, texts, doc_embeddings):
@@ -1170,9 +1102,7 @@ class PdmIndexerService:
             cursor: Any = conn.cursor()
 
             # Extensions may already include the dot (e.g., '.SLDPRT'), so use them as-is
-            ext_filter = " OR ".join(
-                [f"Filename LIKE '%{ext}'" for ext in (config.file_extensions or [])]
-            )
+            ext_filter = " OR ".join([f"Filename LIKE '%{ext}'" for ext in (config.file_extensions or [])])
             if not ext_filter:
                 ext_filter = "1=1"
 
@@ -1190,9 +1120,7 @@ class PdmIndexerService:
 
         return await asyncio.to_thread(run_count)
 
-    async def _get_stored_hash(
-        self, index_name: str, document_id: int
-    ) -> Optional[str]:
+    async def _get_stored_hash(self, index_name: str, document_id: int) -> Optional[str]:
         """Get the stored metadata hash for a document."""
         try:
             db: Any = await get_db()
@@ -1211,12 +1139,8 @@ class PdmIndexerService:
     async def _clear_embeddings(self, index_name: str):
         """Clear all embeddings for an index."""
         db: Any = await get_db()
-        await db.execute_raw(
-            f"DELETE FROM pdm_embeddings WHERE index_name = '{index_name}'"
-        )
-        await db.execute_raw(
-            f"DELETE FROM pdm_document_metadata WHERE index_name = '{index_name}'"
-        )
+        await db.execute_raw(f"DELETE FROM pdm_embeddings WHERE index_name = '{index_name}'")
+        await db.execute_raw(f"DELETE FROM pdm_document_metadata WHERE index_name = '{index_name}'")
         logger.info(f"Cleared PDM embeddings for index {index_name}")
 
     # =========================================================================
@@ -1226,9 +1150,7 @@ class PdmIndexerService:
     async def _ensure_pgvector(self) -> bool:
         return await ensure_pgvector_extension(logger_override=logger)
 
-    async def _ensure_embedding_column(
-        self, dimension: int, index_lists: int = 100
-    ) -> bool:
+    async def _ensure_embedding_column(self, dimension: int, index_lists: int = 100) -> bool:
         """
         Ensure the embedding column exists with the correct dimension.
 

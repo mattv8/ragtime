@@ -36,9 +36,7 @@ class LlamaCppModelInfo:
     supported_endpoints: list[str] | None = None
 
 
-def normalize_base_url(
-    base_url: str | None, default: str = DEFAULT_CHAT_BASE_URL
-) -> str:
+def normalize_base_url(base_url: str | None, default: str = DEFAULT_CHAT_BASE_URL) -> str:
     """Normalize a llama.cpp base URL for endpoint joins."""
     value = str(base_url or "").strip() or default
     return value.rstrip("/")
@@ -115,9 +113,7 @@ def extract_model_capabilities(row: dict[str, Any]) -> list[str]:
     if isinstance(capabilities_obj, list):
         capabilities.extend(str(item).strip().lower() for item in capabilities_obj if item)
     elif isinstance(capabilities_obj, dict):
-        capabilities.extend(
-            str(flag).strip().lower() for flag, enabled in capabilities_obj.items() if enabled
-        )
+        capabilities.extend(str(flag).strip().lower() for flag, enabled in capabilities_obj.items() if enabled)
 
     input_modalities = None
     modalities_obj = row.get("modalities")
@@ -157,9 +153,7 @@ def extract_embedding_dimension(payload: dict[str, Any]) -> int | None:
     return None
 
 
-async def is_reachable(
-    base_url: str, timeout: float = 5.0
-) -> tuple[bool, Optional[str]]:
+async def is_reachable(base_url: str, timeout: float = 5.0) -> tuple[bool, Optional[str]]:
     """Check llama.cpp reachability using tolerant endpoint fallbacks."""
     normalized_base = normalize_base_url(base_url)
     endpoints = ["/health", "/v1/health", "/v1/models", "/models"]
@@ -194,9 +188,7 @@ async def is_reachable(
     )
 
 
-async def fetch_props(
-    base_url: str, client: httpx.AsyncClient | None = None
-) -> dict[str, Any]:
+async def fetch_props(base_url: str, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
     """Fetch /props when supported, returning an empty dict on failure."""
     normalized_base = normalize_base_url(base_url)
     try:
@@ -209,9 +201,7 @@ async def fetch_props(
             payload = response.json()
             return payload if isinstance(payload, dict) else {}
     except Exception as exc:
-        logger.debug(
-            "Failed to fetch llama.cpp props from %s: %s", normalized_base, exc
-        )
+        logger.debug("Failed to fetch llama.cpp props from %s: %s", normalized_base, exc)
     return {}
 
 
@@ -220,9 +210,7 @@ async def list_chat_models(base_url: str) -> list[LlamaCppModelInfo]:
     normalized_base = normalize_base_url(base_url)
     reachable, error = await is_reachable(normalized_base)
     if not reachable:
-        raise ConnectionError(
-            error or f"Cannot connect to llama.cpp at {normalized_base}"
-        )
+        raise ConnectionError(error or f"Cannot connect to llama.cpp at {normalized_base}")
 
     last_error: str | None = None
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -247,9 +235,7 @@ async def list_chat_models(base_url: str) -> list[LlamaCppModelInfo]:
 
     models: list[LlamaCppModelInfo] = []
     for row in rows:
-        model_id = str(
-            row.get("id") or row.get("name") or row.get("model") or ""
-        ).strip()
+        model_id = str(row.get("id") or row.get("name") or row.get("model") or "").strip()
         if not model_id:
             continue
         context_limit = active_context or extract_model_context(row)
@@ -286,16 +272,12 @@ async def probe_embedding_dimension(base_url: str, model: str) -> int | None:
     return None
 
 
-async def list_embedding_models(
-    base_url: str, selected_model: str | None = None
-) -> list[LlamaCppModelInfo]:
+async def list_embedding_models(base_url: str, selected_model: str | None = None) -> list[LlamaCppModelInfo]:
     """List/probe embedding model records from a llama.cpp embedding server."""
     normalized_base = normalize_base_url(base_url, DEFAULT_EMBEDDING_BASE_URL)
     reachable, error = await is_reachable(normalized_base)
     if not reachable:
-        raise ConnectionError(
-            error or f"Cannot connect to llama.cpp at {normalized_base}"
-        )
+        raise ConnectionError(error or f"Cannot connect to llama.cpp at {normalized_base}")
 
     rows: list[dict[str, Any]] = []
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -315,9 +297,7 @@ async def list_embedding_models(
     if selected_model:
         candidates.append(selected_model.strip())
     for row in rows:
-        model_id = str(
-            row.get("id") or row.get("name") or row.get("model") or ""
-        ).strip()
+        model_id = str(row.get("id") or row.get("name") or row.get("model") or "").strip()
         if model_id and model_id not in candidates:
             candidates.append(model_id)
 

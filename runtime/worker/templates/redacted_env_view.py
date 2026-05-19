@@ -51,11 +51,7 @@ def load_redacted_items():
 
 def actual_env_items(redacted):
     """Return real env vars, excluding internal keys and redacted secret keys."""
-    return {
-        key: value
-        for key, value in os.environ.items()
-        if key not in INTERNAL_KEYS and key not in redacted
-    }
+    return {key: value for key, value in os.environ.items() if key not in INTERNAL_KEYS and key not in redacted}
 
 
 def emit_listing(entries, null_sep=False):

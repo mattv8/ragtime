@@ -1,14 +1,9 @@
-import unittest
 import sys
 import types
+import unittest
 from types import SimpleNamespace
 
 from fastapi import HTTPException
-
-if "ragtime.indexer.service" not in sys.modules:
-    fake_indexer_service = types.ModuleType("ragtime.indexer.service")
-    fake_indexer_service.IndexerService = object
-    sys.modules["ragtime.indexer.service"] = fake_indexer_service
 
 from ragtime.rag.components import (
     RAGComponents,
@@ -16,6 +11,11 @@ from ragtime.rag.components import (
     _is_userspace_workspace_not_found,
 )
 from ragtime.userspace.service import UserSpaceService
+
+if "ragtime.indexer.service" not in sys.modules:
+    fake_indexer_service = types.ModuleType("ragtime.indexer.service")
+    fake_indexer_service.IndexerService = object
+    sys.modules["ragtime.indexer.service"] = fake_indexer_service
 
 
 class ChatRuntimeErrorClassificationTests(unittest.TestCase):

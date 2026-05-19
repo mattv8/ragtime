@@ -55,9 +55,7 @@ _EXTRA_KNOWN_FRAMEWORKS: frozenset[str] = frozenset({"custom", "node", "static"}
 
 # All recognised framework names.  Derived from FRAMEWORK_REQUIRED_PACKAGES
 # keys + platform-level extras. Keep runtime/core/shared.py copy in sync.
-KNOWN_FRAMEWORKS: frozenset[str] = (
-    frozenset(FRAMEWORK_REQUIRED_PACKAGES) | _EXTRA_KNOWN_FRAMEWORKS
-)
+KNOWN_FRAMEWORKS: frozenset[str] = frozenset(FRAMEWORK_REQUIRED_PACKAGES) | _EXTRA_KNOWN_FRAMEWORKS
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,10 +95,7 @@ def parse_entrypoint_config(workspace_files_path: Path) -> EntrypointStatus:
     if not config_path.exists() or not config_path.is_file():
         return EntrypointStatus(
             state="missing",
-            error=(
-                "No .ragtime/runtime-entrypoint.json found. "
-                "Create one with a command, cwd, and framework to enable preview."
-            ),
+            error=("No .ragtime/runtime-entrypoint.json found. Create one with a command, cwd, and framework to enable preview."),
         )
 
     try:
@@ -132,10 +127,7 @@ def parse_entrypoint_config(workspace_files_path: Path) -> EntrypointStatus:
             framework_known=framework_known,
             command=command,
             cwd=cwd,
-            error=(
-                ".ragtime/runtime-entrypoint.json exists but has no command. "
-                "Add a command field to define how the workspace starts."
-            ),
+            error=(".ragtime/runtime-entrypoint.json exists but has no command. Add a command field to define how the workspace starts."),
             raw=parsed_raw,
         )
 

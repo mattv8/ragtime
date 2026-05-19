@@ -5,6 +5,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import posixpath
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -13,7 +14,6 @@ from typing import Any, Awaitable, Callable, Literal
 from urllib.parse import urlencode
 
 import httpx
-import posixpath
 
 from ragtime.config import settings
 from ragtime.core.logging import get_logger
@@ -426,9 +426,7 @@ class CloudMountProvider:
 
     async def upload_file(self, source_path: str, local_path: Path) -> None:
         if self.is_mock:
-            content, mtime = await asyncio.to_thread(
-                lambda: (local_path.read_bytes(), int(local_path.stat().st_mtime))
-            )
+            content, mtime = await asyncio.to_thread(lambda: (local_path.read_bytes(), int(local_path.stat().st_mtime)))
             self._write_mock_file(source_path, content, mtime)
             return
         if self.provider == "microsoft_drive":
@@ -678,11 +676,11 @@ class CloudMountProvider:
         errors.extend(remote_errors)
         errors.extend(local_errors)
         await asyncio.to_thread(local_path.mkdir, parents=True, exist_ok=True)
-        files_total = sum(
-            1
-            for relative_path in local_files
-            if remote_files.get(relative_path) != local_files[relative_path]
-        ) + len(set(remote_files) - set(local_files)) + len([path for path in remote_dirs - local_dirs if path])
+        files_total = (
+            sum(1 for relative_path in local_files if remote_files.get(relative_path) != local_files[relative_path])
+            + len(set(remote_files) - set(local_files))
+            + len([path for path in remote_dirs - local_dirs if path])
+        )
         if progress_callback is not None:
             await progress_callback(0, files_total, "Uploading cloud files")
 
@@ -766,7 +764,14 @@ class CloudMountProvider:
                 item["modified_at"] = _epoch_seconds_to_rfc3339(mtime_seconds)
                 item.pop("is_dir", None)
                 return
-        tree.append({"path": source, "content": content.decode("utf-8", errors="replace"), "size": len(content), "modified_at": _epoch_seconds_to_rfc3339(mtime_seconds)})
+        tree.append(
+            {
+                "path": source,
+                "content": content.decode("utf-8", errors="replace"),
+                "size": len(content),
+                "modified_at": _epoch_seconds_to_rfc3339(mtime_seconds),
+            }
+        )
 
     def _create_mock_dir(self, source_path: str) -> None:
         source = normalize_cloud_path(source_path)
@@ -786,13 +791,11 @@ class CloudMountProvider:
             return
         prefix = f"{source}/"
         self.config["mock_tree"] = [
-            item for item in tree
+            item
+            for item in tree
             if not (
                 isinstance(item, dict)
-                and (
-                    normalize_cloud_path(str(item.get("path") or "")) == source
-                    or normalize_cloud_path(str(item.get("path") or "")).startswith(prefix)
-                )
+                and (normalize_cloud_path(str(item.get("path") or "")) == source or normalize_cloud_path(str(item.get("path") or "")).startswith(prefix))
             )
         ]
 
@@ -1147,8 +1150,7 @@ class CloudMountProvider:
             return folder_id
         for part in normalized.split("/"):
             query = (
-                f"'{folder_id}' in parents and name = '{_google_query_string(part)}' "
-                "and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+                f"'{folder_id}' in parents and name = '{_google_query_string(part)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
             )
             data = await self._request_json(
                 "GET",
@@ -1179,8 +1181,7 @@ class CloudMountProvider:
             return
         for part in relative.split("/"):
             query = (
-                f"'{folder_id}' in parents and name = '{_google_query_string(part)}' "
-                "and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+                f"'{folder_id}' in parents and name = '{_google_query_string(part)}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
             )
             data = await self._request_json(
                 "GET",
@@ -1286,18 +1287,20 @@ class CloudMountProvider:
         if existing_file_id is None:
             metadata["parents"] = [parent_id]
         boundary = f"ragtime_{hashlib.sha256(f'{source_path}:{local_path.stat().st_mtime}'.encode()).hexdigest()[:24]}"
-        body = b"\r\n".join([
-            f"--{boundary}".encode("ascii"),
-            b"Content-Type: application/json; charset=UTF-8",
-            b"",
-            json.dumps(metadata).encode("utf-8"),
-            f"--{boundary}".encode("ascii"),
-            f"Content-Type: {content_type}".encode("ascii"),
-            b"",
-            local_path.read_bytes(),
-            f"--{boundary}--".encode("ascii"),
-            b"",
-        ])
+        body = b"\r\n".join(
+            [
+                f"--{boundary}".encode("ascii"),
+                b"Content-Type: application/json; charset=UTF-8",
+                b"",
+                json.dumps(metadata).encode("utf-8"),
+                f"--{boundary}".encode("ascii"),
+                f"Content-Type: {content_type}".encode("ascii"),
+                b"",
+                local_path.read_bytes(),
+                f"--{boundary}--".encode("ascii"),
+                b"",
+            ]
+        )
         if existing_file_id:
             url = f"https://www.googleapis.com/upload/drive/v3/files/{existing_file_id}"
             method = "PATCH"

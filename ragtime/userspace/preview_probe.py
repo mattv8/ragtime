@@ -17,9 +17,7 @@ def build_preview_probe_url(preview_origin: str) -> str:
     else:
         probe_host = hostname
     port = parsed.port
-    use_default_port = (parsed.scheme == "https" and port in {None, 443}) or (
-        parsed.scheme == "http" and port in {None, 80}
-    )
+    use_default_port = (parsed.scheme == "https" and port in {None, 443}) or (parsed.scheme == "http" and port in {None, 80})
     netloc = probe_host if use_default_port else f"{probe_host}:{port}"
     return urlunsplit(
         (
@@ -36,9 +34,5 @@ def is_preview_probe_response(
     status_code: int,
     headers: Mapping[str, str],
 ) -> bool:
-    header_value = str(
-        headers.get(PREVIEW_HOST_PROBE_HEADER)
-        or headers.get(PREVIEW_HOST_PROBE_HEADER.lower())
-        or ""
-    ).strip()
+    header_value = str(headers.get(PREVIEW_HOST_PROBE_HEADER) or headers.get(PREVIEW_HOST_PROBE_HEADER.lower()) or "").strip()
     return status_code == 204 and header_value.lower() == PREVIEW_HOST_PROBE_VALUE

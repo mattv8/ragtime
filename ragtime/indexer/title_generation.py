@@ -128,10 +128,7 @@ async def _generate_title(question_text: str) -> Optional[str]:
             response = await title_llm.ainvoke(messages)
             content = response.content
             if isinstance(content, list):
-                content = "".join(
-                    block.get("text", "") if isinstance(block, dict) else str(block)
-                    for block in content
-                )
+                content = "".join(block.get("text", "") if isinstance(block, dict) else str(block) for block in content)
             parsed_title = _extract_json_title(str(content))
             if parsed_title:
                 title = _clean_title(parsed_title)
@@ -161,10 +158,7 @@ async def _generate_title(question_text: str) -> Optional[str]:
 
     content = response.content
     if isinstance(content, list):
-        content = "".join(
-            block.get("text", "") if isinstance(block, dict) else str(block)
-            for block in content
-        )
+        content = "".join(block.get("text", "") if isinstance(block, dict) else str(block) for block in content)
 
     # Attempt to parse JSON output (handling code fences)
     parsed_title = _extract_json_title(str(content))
@@ -173,9 +167,7 @@ async def _generate_title(question_text: str) -> Optional[str]:
     return title or None
 
 
-async def update_conversation_title_from_question(
-    conversation_id: str, user_message: str
-) -> None:
+async def update_conversation_title_from_question(conversation_id: str, user_message: str) -> None:
     """Update the conversation title if it is still the default."""
     conv = await repository.get_conversation(conversation_id)
     if not conv or conv.title != "Untitled Chat":
@@ -192,9 +184,7 @@ async def update_conversation_title_from_question(
 
     try:
         await repository.update_conversation_title(conversation_id, title)
-        await task_event_bus.publish(
-            f"conversation:{conversation_id}", {"type": "title_update", "title": title}
-        )
+        await task_event_bus.publish(f"conversation:{conversation_id}", {"type": "title_update", "title": title})
     except Exception as exc:
         logger.warning("Could not update conversation title: %s", exc)
 
@@ -210,9 +200,7 @@ def schedule_title_generation(conversation_id: str, user_message: str) -> None:
         try:
             await update_conversation_title_from_question(conversation_id, user_message)
         except Exception as exc:  # pragma: no cover - best effort
-            logger.warning(
-                "Title generation task failed for %s: %s", conversation_id, exc
-            )
+            logger.warning("Title generation task failed for %s: %s", conversation_id, exc)
 
     task = asyncio.create_task(_runner())
     _background_tasks.add(task)

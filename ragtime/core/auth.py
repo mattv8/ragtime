@@ -14,16 +14,23 @@ import base64
 import hashlib
 import hmac
 import re
+import secrets
 import ssl
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-import secrets
 from fastapi import Request
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from ldap3 import ALL, AUTO_BIND_TLS_BEFORE_BIND, SUBTREE, Connection, Server, Tls
-from ldap3 import AUTO_BIND_NO_TLS  # type: ignore[import-untyped]
+from ldap3 import (
+    ALL,
+    AUTO_BIND_NO_TLS,  # type: ignore[import-untyped]
+    AUTO_BIND_TLS_BEFORE_BIND,
+    SUBTREE,
+    Connection,
+    Server,
+    Tls,
+)
 from ldap3.core.exceptions import (  # type: ignore[import-untyped]
     LDAPBindError,
     LDAPException,
@@ -138,11 +145,7 @@ def _host_matches_family(
         return True
     if _is_loopback_hostname(candidate) and _is_loopback_hostname(request_bare):
         return True
-    preview_base = (
-        str(getattr(settings, "userspace_preview_base_domain", "") or "")
-        .strip()
-        .lower()
-    )
+    preview_base = str(getattr(settings, "userspace_preview_base_domain", "") or "").strip().lower()
     if preview_base:
         if candidate == preview_base or candidate.endswith("." + preview_base):
             return True
@@ -169,9 +172,7 @@ def get_external_origin(request: Request) -> str:
     forwarded_host = request.headers.get("x-forwarded-host", "").strip()
     forwarded_proto = request.headers.get("x-forwarded-proto", "").lower().strip()
     if forwarded_host:
-        forwarded_host_only = urlsplit(
-            f"{forwarded_proto or request_scheme}://{forwarded_host}"
-        ).hostname
+        forwarded_host_only = urlsplit(f"{forwarded_proto or request_scheme}://{forwarded_host}").hostname
         if _host_matches_family(forwarded_host_only, request_host_only):
             return f"{forwarded_proto or request_scheme}://{forwarded_host}"
 
@@ -202,9 +203,7 @@ def _format_origin_host(hostname: str, port: int | None, scheme: str) -> str:
     normalized_host = hostname
     if ":" in normalized_host and not normalized_host.startswith("["):
         normalized_host = f"[{normalized_host}]"
-    default_port = (scheme == "https" and port in {None, 443}) or (
-        scheme == "http" and port in {None, 80}
-    )
+    default_port = (scheme == "https" and port in {None, 443}) or (scheme == "http" and port in {None, 80})
     return normalized_host if default_port else f"{normalized_host}:{port}"
 
 
@@ -240,9 +239,7 @@ def get_browser_matched_origin(
     # the server-derived origin. This prevents attacker-controlled
     # Origin/Referer/x-ragtime-browser-origin headers from steering
     # minted preview/share URLs onto unrelated hostnames.
-    request_host_only = urlsplit(
-        f"{request.url.scheme}://{request.headers.get('host', '')}"
-    ).hostname
+    request_host_only = urlsplit(f"{request.url.scheme}://{request.headers.get('host', '')}").hostname
     if not _host_matches_family(browser_parts.hostname, request_host_only):
         return server_origin
     scheme = browser_parts.scheme or server_parts.scheme or request.url.scheme or "http"
@@ -267,14 +264,10 @@ def create_access_token(user_id: str, username: str, role: str) -> str:
 
 def encode_jwt_payload(payload: dict[str, Any]) -> str:
     """Encode a JWT payload with Ragtime's configured signing settings."""
-    return jwt.encode(
-        payload, settings.encryption_key, algorithm=settings.jwt_algorithm
-    )
+    return jwt.encode(payload, settings.encryption_key, algorithm=settings.jwt_algorithm)
 
 
-def decode_jwt_payload(
-    token: str, *, audience: str | None = None
-) -> Optional[dict[str, Any]]:
+def decode_jwt_payload(token: str, *, audience: str | None = None) -> Optional[dict[str, Any]]:
     """Decode a JWT payload with Ragtime's configured verification settings."""
     try:
         decode_kwargs: dict[str, Any] = {
@@ -579,9 +572,7 @@ def _get_ldap_connection(
         except LDAPException as e:
             last_error = e
             if attempt < max_retries - 1:
-                logger.warning(
-                    f"LDAP connection attempt {attempt + 1} failed: {e}, retrying..."
-                )
+                logger.warning(f"LDAP connection attempt {attempt + 1} failed: {e}, retrying...")
             continue
 
     logger.error(f"LDAP connection failed after {max_retries} attempts: {last_error}")
@@ -591,10 +582,7 @@ def _get_ldap_connection(
 def _is_invalid_attribute_error(error: LDAPException) -> bool:
     """Return True when an LDAP error indicates an unsupported attribute."""
     error_text = str(error).lower()
-    return (
-        "invalid attribute type" in error_text
-        or "undefined attribute type" in error_text
-    )
+    return "invalid attribute type" in error_text or "undefined attribute type" in error_text
 
 
 def _split_username_variants(username: str) -> tuple[str, str]:
@@ -655,9 +643,7 @@ def _build_ldap_typeahead_filters(query: str) -> list[str]:
         if not value:
             return
         escaped = escape_filter_chars(value)
-        rendered = (
-            f"({attr_name}=*{escaped}*)" if contains else f"({attr_name}={escaped}*)"
-        )
+        rendered = f"({attr_name}=*{escaped}*)" if contains else f"({attr_name}={escaped}*)"
         if rendered not in filters:
             filters.append(rendered)
 
@@ -696,15 +682,11 @@ def _build_user_search_filters(configured_filter: str, username: str) -> list[st
 
     if configured_filter:
         full_username, short_username = _split_username_variants(username)
-        rendered_full = configured_filter.replace(
-            "{username}", escape_filter_chars(full_username)
-        )
+        rendered_full = configured_filter.replace("{username}", escape_filter_chars(full_username))
         filters.append(rendered_full)
 
         if "{username}" in configured_filter and short_username != full_username:
-            rendered_short = configured_filter.replace(
-                "{username}", escape_filter_chars(short_username)
-            )
+            rendered_short = configured_filter.replace("{username}", escape_filter_chars(short_username))
             if rendered_short not in filters:
                 filters.append(rendered_short)
 
@@ -735,15 +717,10 @@ def _search_first_matching_entry(
                 return conn.entries[0]
         except LDAPException as e:
             if _is_invalid_attribute_error(e):
-                logger.debug(
-                    f"LDAP filter skipped in {context} due to unsupported attribute: "
-                    f"{search_filter} ({e})"
-                )
+                logger.debug(f"LDAP filter skipped in {context} due to unsupported attribute: {search_filter} ({e})")
                 continue
 
-            logger.debug(
-                f"LDAP search failed in {context} for filter {search_filter}: {e}"
-            )
+            logger.debug(f"LDAP search failed in {context} for filter {search_filter}: {e}")
 
     return None
 
@@ -804,33 +781,21 @@ async def _sync_user_auth_groups(
             "displayName": _display_name_from_group_identifier(normalized_identifier),
             "provider": source_provider,
             "sourceId": normalized_identifier,
-            "sourceDn": (
-                normalized_identifier if source_provider_value == "ldap" else None
-            ),
+            "sourceDn": (normalized_identifier if source_provider_value == "ldap" else None),
         }
         update_data: dict[str, Any] = {
             "displayName": _display_name_from_group_identifier(normalized_identifier),
             "sourceId": normalized_identifier,
-            "sourceDn": (
-                normalized_identifier if source_provider_value == "ldap" else None
-            ),
+            "sourceDn": (normalized_identifier if source_provider_value == "ldap" else None),
         }
         if source_provider_value == "ldap":
             ldap_config = await get_ldap_config()
             normalized_dn = normalized_identifier.casefold()
-            admin_group_dns = _normalized_group_dns(
-                getattr(ldap_config, "adminGroupDns", [])
-            )
-            user_group_dns = _normalized_group_dns(
-                getattr(ldap_config, "userGroupDns", [])
-            )
-            create_data["role"] = (
-                UserRole.admin if normalized_dn in admin_group_dns else None
-            )
+            admin_group_dns = _normalized_group_dns(getattr(ldap_config, "adminGroupDns", []))
+            user_group_dns = _normalized_group_dns(getattr(ldap_config, "userGroupDns", []))
+            create_data["role"] = UserRole.admin if normalized_dn in admin_group_dns else None
             create_data["isLogonGroup"] = normalized_dn in user_group_dns
-            update_data["role"] = (
-                UserRole.admin if normalized_dn in admin_group_dns else None
-            )
+            update_data["role"] = UserRole.admin if normalized_dn in admin_group_dns else None
             update_data["isLogonGroup"] = normalized_dn in user_group_dns
         group = await db.authgroup.upsert(
             where={"key": key},
@@ -858,9 +823,7 @@ async def _sync_user_auth_groups(
             },
         )
 
-    existing = await db.authgroupmembership.find_many(
-        where={"userId": user_id, "sourceProvider": source_provider}
-    )
+    existing = await db.authgroupmembership.find_many(where={"userId": user_id, "sourceProvider": source_provider})
     keep_group_ids = set(group_ids)
     for membership in existing:
         if membership.groupId not in keep_group_ids:
@@ -870,19 +833,13 @@ async def _sync_user_auth_groups(
 async def _apply_local_group_role(user: Any, base_role: UserRole) -> UserRole:
     """Apply local managed group role grants to a user's provider-derived role."""
     db = await get_db()
-    memberships = await db.authgroupmembership.find_many(
-        where={"userId": user.id, "sourceProvider": AuthProvider.local_managed}
-    )
+    memberships = await db.authgroupmembership.find_many(where={"userId": user.id, "sourceProvider": AuthProvider.local_managed})
     if not memberships:
         return base_role
 
     for membership in memberships:
         group = await db.authgroup.find_unique(where={"id": membership.groupId})
-        if (
-            group
-            and _provider_value(group.provider) == "local_managed"
-            and group.role == UserRole.admin
-        ):
+        if group and _provider_value(group.provider) == "local_managed" and group.role == UserRole.admin:
             return UserRole.admin
     return base_role
 
@@ -937,23 +894,17 @@ async def recompute_auth_group_member_roles(group_id: str) -> None:
 async def _passes_local_logon_gate(user: Any) -> bool:
     """Return whether a local managed user is in a required logon gate group."""
     db = await get_db()
-    gate_groups = await db.authgroup.find_many(
-        where={"provider": AuthProvider.local_managed, "isLogonGroup": True}
-    )
+    gate_groups = await db.authgroup.find_many(where={"provider": AuthProvider.local_managed, "isLogonGroup": True})
     if not gate_groups:
         return True
 
-    memberships = await db.authgroupmembership.find_many(
-        where={"userId": user.id, "sourceProvider": AuthProvider.local_managed}
-    )
+    memberships = await db.authgroupmembership.find_many(where={"userId": user.id, "sourceProvider": AuthProvider.local_managed})
     gate_group_ids = {group.id for group in gate_groups}
     return any(membership.groupId in gate_group_ids for membership in memberships)
 
 
 def _normalized_group_dns(values: list[str] | None) -> set[str]:
-    return {
-        str(value).strip().casefold() for value in (values or []) if str(value).strip()
-    }
+    return {str(value).strip().casefold() for value in (values or []) if str(value).strip()}
 
 
 async def _upsert_provider_user_profile(
@@ -988,9 +939,7 @@ async def _upsert_provider_user_profile(
         update_data["passwordHash"] = password_hash
 
     if existing_user:
-        if not (
-            auth_config.manual_role_override_wins and existing_user.roleManuallySet
-        ):
+        if not (auth_config.manual_role_override_wins and existing_user.roleManuallySet):
             update_data["role"] = await _apply_local_group_role(existing_user, role)
         user = await db.user.update(where={"id": existing_user.id}, data=update_data)
     else:
@@ -1039,9 +988,7 @@ def _discover_ldap_structure_sync(
     """
     conn = _get_ldap_connection(server_url, bind_dn, bind_password, allow_self_signed)
     if not conn:
-        return LdapDiscoveryResult(
-            success=False, error="Failed to connect to LDAP server"
-        )
+        return LdapDiscoveryResult(success=False, error="Failed to connect to LDAP server")
 
     try:
         # Get base DN from server info
@@ -1056,9 +1003,7 @@ def _discover_ldap_structure_sync(
                 base_dn = str(root_nc[0])
 
         if not base_dn:
-            return LdapDiscoveryResult(
-                success=False, error="Could not determine base DN"
-            )
+            return LdapDiscoveryResult(success=False, error="Could not determine base DN")
 
         # Discover user OUs and containers
         ous_and_containers: list[str] = []
@@ -1135,11 +1080,7 @@ def _discover_ldap_structure_sync(
                     dn = str(entry.entry_dn)
                     if dn not in seen_dns:
                         seen_dns.add(dn)
-                        cn = (
-                            str(entry.cn)
-                            if hasattr(entry, "cn")
-                            else dn.split(",")[0].replace("CN=", "")
-                        )
+                        cn = str(entry.cn) if hasattr(entry, "cn") else dn.split(",")[0].replace("CN=", "")
                         groups.append({"dn": dn, "name": cn})
             except LDAPException as e:
                 # This objectClass doesn't exist on this server - expected
@@ -1187,23 +1128,15 @@ async def discover_ldap_structure(
 
     # Quick socket check to fail fast if server is unreachable
     try:
-        _reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=5.0
-        )
+        _reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=5.0)
         writer.close()
         await writer.wait_closed()
     except asyncio.TimeoutError:
-        return LdapDiscoveryResult(
-            success=False, error=f"Connection timeout to {host}:{port}"
-        )
+        return LdapDiscoveryResult(success=False, error=f"Connection timeout to {host}:{port}")
     except ConnectionRefusedError:
-        return LdapDiscoveryResult(
-            success=False, error=f"Connection refused: {host}:{port}"
-        )
+        return LdapDiscoveryResult(success=False, error=f"Connection refused: {host}:{port}")
     except OSError as e:
-        return LdapDiscoveryResult(
-            success=False, error=f"Cannot reach {host}:{port}: {e}"
-        )
+        return LdapDiscoveryResult(success=False, error=f"Cannot reach {host}:{port}: {e}")
 
     # Run blocking LDAP discovery in executor with timeout
     try:
@@ -1211,17 +1144,13 @@ async def discover_ldap_structure(
         result = await asyncio.wait_for(
             loop.run_in_executor(
                 None,
-                lambda: _discover_ldap_structure_sync(
-                    server_url, bind_dn, bind_password, allow_self_signed
-                ),
+                lambda: _discover_ldap_structure_sync(server_url, bind_dn, bind_password, allow_self_signed),
             ),
             timeout=15.0,  # 15 second timeout for full discovery
         )
         return result
     except asyncio.TimeoutError:
-        return LdapDiscoveryResult(
-            success=False, error="LDAP discovery timed out (15s)"
-        )
+        return LdapDiscoveryResult(success=False, error="LDAP discovery timed out (15s)")
 
 
 class BindDnLookupResult(BaseModel):
@@ -1282,15 +1211,9 @@ async def lookup_bind_dn(
             )
             if entry:
                 bind_dn = str(entry.entry_dn)
-                display_name = (
-                    str(entry.displayName)
-                    if hasattr(entry, "displayName") and entry.displayName
-                    else None
-                )
+                display_name = str(entry.displayName) if hasattr(entry, "displayName") and entry.displayName else None
                 conn.unbind()
-                return BindDnLookupResult(
-                    success=True, bind_dn=bind_dn, display_name=display_name
-                )
+                return BindDnLookupResult(success=True, bind_dn=bind_dn, display_name=display_name)
 
             conn.unbind()
         except LDAPBindError:
@@ -1318,15 +1241,9 @@ async def lookup_bind_dn(
                 )
                 if entry:
                     bind_dn = str(entry.entry_dn)
-                    display_name = (
-                        str(entry.displayName)
-                        if hasattr(entry, "displayName") and entry.displayName
-                        else None
-                    )
+                    display_name = str(entry.displayName) if hasattr(entry, "displayName") and entry.displayName else None
                     conn.unbind()
-                    return BindDnLookupResult(
-                        success=True, bind_dn=bind_dn, display_name=display_name
-                    )
+                    return BindDnLookupResult(success=True, bind_dn=bind_dn, display_name=display_name)
             conn.unbind()
         except LDAPException as e:
             logger.debug(f"Base DN search attempt failed: {e}")
@@ -1396,9 +1313,7 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
         conn.unbind()
 
         # Verify user's password by binding as the user
-        user_conn = _get_ldap_connection(
-            ldap_config.serverUrl, user_dn, password, ldap_config.allowSelfSigned
-        )
+        user_conn = _get_ldap_connection(ldap_config.serverUrl, user_dn, password, ldap_config.allowSelfSigned)
         if not user_conn:
             return AuthResult(success=False, error="Invalid credentials")
         user_conn.unbind()
@@ -1412,10 +1327,7 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
                 ldap_username=username,
             )
         except ValueError:
-            logger.warning(
-                f"User {username} not in authorized group. "
-                f"required userGroupDns={ldap_config.userGroupDns}"
-            )
+            logger.warning(f"User {username} not in authorized group. required userGroupDns={ldap_config.userGroupDns}")
             return AuthResult(success=False, error="User not in authorized group")
 
         profile = _ldap_profile_from_entry(
@@ -1434,9 +1346,7 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
             )
         else:
             db = await get_db()
-            existing_user = await db.user.find_unique(
-                where={"username": profile.username}
-            )
+            existing_user = await db.user.find_unique(where={"username": profile.username})
             if existing_user:
                 user = await db.user.update(
                     where={"id": existing_user.id},
@@ -1521,9 +1431,7 @@ async def search_ldap_user_profile(username: str) -> AuthUserProfile | None:
             conn.unbind()
 
 
-async def search_ldap_user_profiles(
-    query: str, *, limit: int = 8
-) -> list[AuthUserProfile]:
+async def search_ldap_user_profiles(query: str, *, limit: int = 8) -> list[AuthUserProfile]:
     """Search LDAP for multiple user profiles for admin typeahead workflows."""
     ldap_config = await get_ldap_config()
     if not ldap_config.serverUrl or not ldap_config.bindDn:
@@ -1558,14 +1466,9 @@ async def search_ldap_user_profiles(
                 )
             except LDAPException as e:
                 if _is_invalid_attribute_error(e):
-                    logger.debug(
-                        "LDAP typeahead filter skipped due to unsupported attribute: "
-                        f"{search_filter} ({e})"
-                    )
+                    logger.debug(f"LDAP typeahead filter skipped due to unsupported attribute: {search_filter} ({e})")
                     continue
-                logger.debug(
-                    f"LDAP typeahead search failed for filter {search_filter}: {e}"
-                )
+                logger.debug(f"LDAP typeahead search failed for filter {search_filter}: {e}")
                 continue
 
             for entry in conn.entries:
@@ -1628,14 +1531,8 @@ def _determine_ldap_role_for_entry(
 ) -> UserRole:
     """Resolve LDAP role for a user entry using configured group mappings."""
     role: UserRole = UserRole.user
-    admin_group_dns = [
-        dn
-        for dn in (getattr(ldap_config, "adminGroupDns", []) or [])
-        if str(dn).strip()
-    ]
-    user_group_dns = [
-        dn for dn in (getattr(ldap_config, "userGroupDns", []) or []) if str(dn).strip()
-    ]
+    admin_group_dns = [dn for dn in (getattr(ldap_config, "adminGroupDns", []) or []) if str(dn).strip()]
+    user_group_dns = [dn for dn in (getattr(ldap_config, "userGroupDns", []) or []) if str(dn).strip()]
 
     def is_member_of_group(group_dn: str) -> bool:
         return _ldap_entry_has_group_dn(
@@ -1654,9 +1551,7 @@ def _determine_ldap_role_for_entry(
         f"adminGroupDns={admin_group_dns}, userGroupDns={user_group_dns}"
     )
 
-    if user_group_dns and not any(
-        is_member_of_group(group_dn) for group_dn in user_group_dns
-    ):
+    if user_group_dns and not any(is_member_of_group(group_dn) for group_dn in user_group_dns):
         raise ValueError("User not in authorized group")
 
     if any(is_member_of_group(group_dn) for group_dn in admin_group_dns):
@@ -1779,10 +1674,7 @@ async def authenticate_local(username: str, password: str) -> AuthResult:
         return AuthResult(success=False, error="Local admin not configured")
 
     # Verify credentials
-    if (
-        username != settings.local_admin_user
-        or password != settings.local_admin_password
-    ):
+    if username != settings.local_admin_user or password != settings.local_admin_password:
         return AuthResult(success=False, error="Invalid credentials")
 
     # Internal username has "local:" prefix
@@ -1925,9 +1817,7 @@ async def user_matches_group_identifier(user: Any, group_identifier: str) -> boo
 
     identifier_lower = normalized_identifier.lower()
     cached_groups = getattr(user, "cachedGroups", None)
-    if isinstance(cached_groups, list) and _expires_at_is_active(
-        getattr(user, "sourceExpiresAt", None)
-    ):
+    if isinstance(cached_groups, list) and _expires_at_is_active(getattr(user, "sourceExpiresAt", None)):
         if identifier_lower in {str(group).lower() for group in cached_groups}:
             return True
 
@@ -1942,9 +1832,7 @@ async def user_matches_group_identifier(user: Any, group_identifier: str) -> boo
         }
     )
     for group in candidate_groups:
-        membership = await db.authgroupmembership.find_unique(
-            where={"userId_groupId": {"userId": user.id, "groupId": group.id}}
-        )
+        membership = await db.authgroupmembership.find_unique(where={"userId_groupId": {"userId": user.id, "groupId": group.id}})
         if membership and _expires_at_is_active(getattr(membership, "expiresAt", None)):
             return True
 
@@ -2077,8 +1965,6 @@ async def invalidate_all_sessions(user_id: str):
 async def cleanup_expired_sessions():
     """Remove expired sessions from the database."""
     db = await get_db()
-    result = await db.session.delete_many(
-        where={"expiresAt": {"lt": datetime.now(timezone.utc)}}
-    )
+    result = await db.session.delete_many(where={"expiresAt": {"lt": datetime.now(timezone.utc)}})
     if result:
         logger.info(f"Cleaned up {result} expired sessions")

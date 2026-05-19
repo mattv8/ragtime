@@ -4,12 +4,15 @@ RAG Components - FAISS Vector Store and LangChain Agent setup.
 
 import asyncio
 import base64
+import fnmatch
 import hashlib
 import io
 import json
 import math
 import os
+import posixpath
 import re
+import resource
 import shlex
 import shutil
 import subprocess
@@ -19,11 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, List, Literal, Optional, Union, cast
 from urllib.parse import quote
 
-import fnmatch
 import httpx
-import posixpath
-import resource
-from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -46,22 +45,27 @@ from langchain_openai.chat_models.base import (
     _construct_responses_api_payload,
     _get_last_messages,
 )
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from ragtime.chat_runtime import chat_runtime_service
-from ragtime.chat_runtime.payloads import build_chat_diagnostic_command_payload
-from ragtime.chat_runtime.payloads import build_chat_diagnostic_rejection_payload
-from ragtime.chat_runtime.payloads import normalize_chat_diagnostic_timeout_seconds
-from ragtime.chat_runtime.payloads import resolve_chat_diagnostic_conversation_id
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_BLOCK_PRIVATE_NETWORKS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_ENABLED
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SEARCH_MAX_RESULTS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID
-from ragtime.chat_runtime.presets import CHAT_WEB_BROWSE_TOOL_ID
-from ragtime.chat_runtime.presets import CHAT_WEB_READ_PDF_TOOL_ID
-from ragtime.chat_runtime.presets import CHAT_WEB_SEARCH_TOOL_ID
+from ragtime.chat_runtime.payloads import (
+    build_chat_diagnostic_command_payload,
+    build_chat_diagnostic_rejection_payload,
+    normalize_chat_diagnostic_timeout_seconds,
+    resolve_chat_diagnostic_conversation_id,
+)
+from ragtime.chat_runtime.presets import (
+    CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS,
+    CHAT_DIAGNOSTIC_COMMAND_TOOL_ID,
+    CHAT_DIAGNOSTICS_BLOCK_PRIVATE_NETWORKS,
+    CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS,
+    CHAT_DIAGNOSTICS_ENABLED,
+    CHAT_DIAGNOSTICS_SEARCH_MAX_RESULTS,
+    CHAT_WEB_BROWSE_TOOL_ID,
+    CHAT_WEB_READ_PDF_TOOL_ID,
+    CHAT_WEB_SEARCH_TOOL_ID,
+)
 from ragtime.config import settings
 from ragtime.core import llama_cpp, lmstudio, omlx
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
@@ -143,9 +147,9 @@ from ragtime.rag.prompts import (
     UI_VISUALIZATION_CHAT_PROMPT,
     UI_VISUALIZATION_COMMON_PROMPT,
     UI_VISUALIZATION_USERSPACE_PROMPT,
+    build_chat_diagnostics_prompt_addition,
     build_current_user_prompt_fragment,
     build_current_user_turn_reminder_line,
-    build_chat_diagnostics_prompt_addition,
     build_index_system_prompt,
     build_tool_system_prompt,
     build_userspace_entrypoint_nudge,
@@ -160,14 +164,14 @@ from ragtime.rag.userspace_window_validator import find_cross_origin_window_acce
 from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.chart import (
     CHAT_CHART_DESCRIPTION_SUFFIX,
-    CreateLiveChartInput,
     USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    CreateLiveChartInput,
     create_chart_tool,
 )
 from ragtime.tools.datatable import (
     CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    CreateLiveDataTableInput,
     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    CreateLiveDataTableInput,
     create_datatable_tool,
 )
 from ragtime.tools.filesystem_indexer import search_filesystem_index
@@ -237,11 +241,7 @@ def _exception_status_code(exc: BaseException) -> int | None:
 
 
 def _is_userspace_workspace_not_found(exc: BaseException) -> bool:
-    return (
-        isinstance(exc, HTTPException)
-        and _exception_status_code(exc) == 404
-        and "workspace not found" in _exception_detail_text(exc).lower()
-    )
+    return isinstance(exc, HTTPException) and _exception_status_code(exc) == 404 and "workspace not found" in _exception_detail_text(exc).lower()
 
 
 async def _terminate_subprocess_after_timeout(
@@ -303,12 +303,8 @@ INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT = (
 )
 MAX_INTERNAL_AGENT_CONTINUATIONS = 2
 
-_USERSPACE_LIVE_DATA_BINDING_VALIDATOR_JS_PATH = Path(__file__).with_name(
-    "userspace_live_data_binding_validator.js"
-)
-_USERSPACE_TYPESCRIPT_VALIDATOR_JS_PATH = Path(__file__).with_name(
-    "userspace_typescript_validator.js"
-)
+_USERSPACE_LIVE_DATA_BINDING_VALIDATOR_JS_PATH = Path(__file__).with_name("userspace_live_data_binding_validator.js")
+_USERSPACE_TYPESCRIPT_VALIDATOR_JS_PATH = Path(__file__).with_name("userspace_typescript_validator.js")
 
 USERSPACE_RECENT_FAILURE_LIMIT = 6
 USERSPACE_RECENT_FAILURE_PROMPT_LIMIT = 3
@@ -378,11 +374,7 @@ def truncate_tool_output(output: str, max_chars: int) -> str:
     tail_chars = int(max_chars * 0.3)
     omitted = len(output) - head_chars - tail_chars
 
-    return (
-        output[:head_chars]
-        + f"\n\n... [{omitted:,} characters omitted] ...\n\n"
-        + output[-tail_chars:]
-    )
+    return output[:head_chars] + f"\n\n... [{omitted:,} characters omitted] ...\n\n" + output[-tail_chars:]
 
 
 def _truncate_structured_tool_output(value: Any, max_chars: int) -> str | None:
@@ -433,11 +425,7 @@ def _truncate_structured_tool_output(value: Any, max_chars: int) -> str | None:
         head_chars = max(10, int(target_length * 0.6))
         tail_chars = max(0, int(target_length * 0.25))
         omitted = max(0, len(text) - head_chars - tail_chars)
-        parent[key] = (
-            text[:head_chars]
-            + f"\n\n... [{omitted:,} characters omitted] ...\n\n"
-            + (text[-tail_chars:] if tail_chars else "")
-        )
+        parent[key] = text[:head_chars] + f"\n\n... [{omitted:,} characters omitted] ...\n\n" + (text[-tail_chars:] if tail_chars else "")
 
     serialized = compact_json()
     return serialized if len(serialized) <= max_chars else None
@@ -499,9 +487,7 @@ def wrap_tool_with_truncation(tool: StructuredTool, max_chars: int) -> Structure
         return StructuredTool(**tool_kwargs)
 
 
-def compress_intermediate_step(
-    action: Any, observation: str, max_summary_chars: int = 200
-) -> str:
+def compress_intermediate_step(action: Any, observation: str, max_summary_chars: int = 200) -> str:
     """
     Compress a single intermediate step into a brief summary.
 
@@ -542,10 +528,7 @@ def compress_intermediate_step(
     else:
         obs_summary = obs_str
 
-    return (
-        f'<tool_use name="{tool_name}">{input_summary}</tool_use>'
-        f"<tool_result>{obs_summary}</tool_result>"
-    )
+    return f'<tool_use name="{tool_name}">{input_summary}</tool_use><tool_result>{obs_summary}</tool_result>'
 
 
 def format_scratchpad_with_window(
@@ -582,10 +565,7 @@ def format_scratchpad_with_window(
         summaries = []
         for action, observation in old_steps:
             summaries.append(compress_intermediate_step(action, observation))
-        summary_text = (
-            f"[Prior tool calls ({len(old_steps)} steps, summarized for brevity)]\n"
-            + "\n".join(summaries)
-        )
+        summary_text = f"[Prior tool calls ({len(old_steps)} steps, summarized for brevity)]\n" + "\n".join(summaries)
         # Add as a system-like message in the scratchpad
         messages.append(AIMessage(content=summary_text))
 
@@ -729,9 +709,7 @@ def _resolve_entrypoint_source_file(runtime_config: dict[str, Any]) -> str | Non
     return env_source_file
 
 
-_HEX_COLOR_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_])#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})(?![A-Za-z0-9_])"
-)
+_HEX_COLOR_PATTERN = re.compile(r"(?<![A-Za-z0-9_])#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})(?![A-Za-z0-9_])")
 _IMPORT_SPECIFIER_PATTERN = re.compile(
     r"^\s*import(?:\s+type)?(?:[\s\w{},*]+from\s*)?[\"']([^\"']+)[\"']",
     re.MULTILINE,
@@ -830,15 +808,12 @@ def validate_userspace_runtime_contract(content: str, file_path: str) -> list[st
     # so Node server files (server.mjs, etc.) are not incorrectly flagged.
     normalized_file_path = (file_path or "").lower().replace("\\", "/")
     if normalized_file_path.endswith(USERSPACE_TYPESCRIPT_EXTENSIONS) and (
-        normalized_file_path.startswith("dashboard/")
-        or normalized_file_path == "dashboard/main.ts"
+        normalized_file_path.startswith("dashboard/") or normalized_file_path == "dashboard/main.ts"
     ):
         cross_origin_hits = find_cross_origin_window_access(content)
         if cross_origin_hits:
             violations.append(
-                "Cross-origin window access detected: "
-                + ", ".join(cross_origin_hits)
-                + ". The preview iframe is served on a dedicated subdomain and is "
+                "Cross-origin window access detected: " + ", ".join(cross_origin_hits) + ". The preview iframe is served on a dedicated subdomain and is "
                 "always cross-origin with the parent UI, so reading properties on "
                 "window.parent / window.top / window.opener throws SecurityError "
                 "at runtime. Use window.__ragtime_context (set by the bridge on "
@@ -900,10 +875,7 @@ def explain_runtime_console_error(message: str) -> str:
             "not on the container div."
         )
     if "cannot read properties" in lowered and "null" in lowered:
-        return (
-            "This usually means a selector lookup returned null. Verify the "
-            "target element exists before using it and keep IDs/selectors in sync."
-        )
+        return "This usually means a selector lookup returned null. Verify the target element exists before using it and keep IDs/selectors in sync."
     if "failed to resolve module specifier" in lowered:
         return (
             "Ensure browser-served modules are bundled or rewritten so their "
@@ -912,10 +884,7 @@ def explain_runtime_console_error(message: str) -> str:
             "modules still need runtime-supported specifiers."
         )
     if "does not provide an export named" in lowered:
-        return (
-            "The imported module/export shape does not match the code. Verify the "
-            "export name and the bundle format served by the runtime."
-        )
+        return "The imported module/export shape does not match the code. Verify the export name and the bundle format served by the runtime."
     return ""
 
 
@@ -1061,10 +1030,7 @@ async def validate_userspace_typescript_content(
         return {
             "ok": False,
             "validator_available": False,
-            "message": (
-                stderr.decode("utf-8", errors="replace")
-                or "TypeScript validation failed"
-            ).strip(),
+            "message": (stderr.decode("utf-8", errors="replace") or "TypeScript validation failed").strip(),
             "errors": contract_violations,
             "contract_errors": contract_violations,
             "contract_error_count": len(contract_violations),
@@ -1137,12 +1103,8 @@ class _CopilotChatOpenAI(ChatOpenAI):
          safer reasoning settings instead of failing the whole request.
     """
 
-    def _convert_chunk_to_generation_chunk(
-        self, chunk, default_chunk_class, base_generation_info
-    ):
-        result = super()._convert_chunk_to_generation_chunk(
-            chunk, default_chunk_class, base_generation_info
-        )
+    def _convert_chunk_to_generation_chunk(self, chunk, default_chunk_class, base_generation_info):
+        result = super()._convert_chunk_to_generation_chunk(chunk, default_chunk_class, base_generation_info)
         if result is None or result.message is None:
             return result
 
@@ -1227,27 +1189,16 @@ class _CopilotChatOpenAI(ChatOpenAI):
             leading_system_messages.append(remaining_messages.pop(0))
 
         if leading_system_messages:
-            instructions_text = "\n\n".join(
-                text
-                for text in (
-                    self._message_content_to_text(message.content)
-                    for message in leading_system_messages
-                )
-                if text
-            )
+            instructions_text = "\n\n".join(text for text in (self._message_content_to_text(message.content) for message in leading_system_messages) if text)
             if instructions_text:
                 existing_instructions = payload.get("instructions")
                 if existing_instructions:
-                    instructions_text = (
-                        f"{existing_instructions}\n\n{instructions_text}"
-                    )
+                    instructions_text = f"{existing_instructions}\n\n{instructions_text}"
                 payload["instructions"] = instructions_text
 
         if self.use_previous_response_id:
             last_messages, previous_response_id = _get_last_messages(remaining_messages)
-            payload_to_use = (
-                last_messages if previous_response_id else remaining_messages
-            )
+            payload_to_use = last_messages if previous_response_id else remaining_messages
             if previous_response_id:
                 payload["previous_response_id"] = previous_response_id
             return _construct_responses_api_payload(payload_to_use, payload)
@@ -1379,9 +1330,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
         if _CopilotChatOpenAI._looks_like_responses_api_rejection(message):
             return True
         lowered_message = message.lower()
-        return (
-            "/chat/completions" in lowered_message and "/responses" in lowered_message
-        )
+        return "/chat/completions" in lowered_message and "/responses" in lowered_message
 
     @staticmethod
     def _looks_like_summary_error(exc: Exception) -> bool:
@@ -1423,11 +1372,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
             if isinstance(error_obj, dict):
                 body_message = str(error_obj.get("message", "") or "")
         error_text = f"{body_message} {exc}".lower()
-        return (
-            "reasoning_effort" in error_text
-            and "/responses" in error_text
-            and ("function tools" in error_text or "/chat/completions" in error_text)
-        )
+        return "reasoning_effort" in error_text and "/responses" in error_text and ("function tools" in error_text or "/chat/completions" in error_text)
 
     @staticmethod
     def _is_token_expired_auth_error(exc: Exception) -> bool:
@@ -1468,22 +1413,16 @@ class _CopilotChatOpenAI(ChatOpenAI):
             try:
                 root_client.api_key = fresh_token
             except Exception:
-                logger.debug(
-                    "Failed to update Copilot sync client API key", exc_info=True
-                )
+                logger.debug("Failed to update Copilot sync client API key", exc_info=True)
 
         root_async_client = getattr(self, "root_async_client", None)
         if root_async_client is not None:
             try:
                 root_async_client.api_key = fresh_token
             except Exception:
-                logger.debug(
-                    "Failed to update Copilot async client API key", exc_info=True
-                )
+                logger.debug("Failed to update Copilot async client API key", exc_info=True)
 
-        logger.info(
-            "Recovered from expired Copilot IDE token by refreshing credentials and retrying request"
-        )
+        logger.info("Recovered from expired Copilot IDE token by refreshing credentials and retrying request")
         return True
 
     def _request_uses_reasoning_controls(self) -> bool:
@@ -1529,9 +1468,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
 
         if isinstance(body, dict):
             error_obj = body.get("error", {})
-            return (
-                str(error_obj.get("code", "") or "").lower() == "invalid_request_body"
-            )
+            return str(error_obj.get("code", "") or "").lower() == "invalid_request_body"
 
         return False
 
@@ -1548,8 +1485,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
         if cache_result:
             register_model_supported_endpoints(self.model_name, ["/responses"])
         logger.info(
-            "Model %s does not support /chat/completions — "
-            "switched to Responses API for this and future requests",
+            "Model %s does not support /chat/completions — switched to Responses API for this and future requests",
             self.model_name,
         )
 
@@ -1576,19 +1512,13 @@ class _CopilotChatOpenAI(ChatOpenAI):
         attempted.
         """
         reasoning = getattr(self, "reasoning", None)
-        reasoning_payload: dict[str, Any] | None = (
-            reasoning if isinstance(reasoning, dict) else None
-        )
+        reasoning_payload: dict[str, Any] | None = reasoning if isinstance(reasoning, dict) else None
 
         changed = False
         if self._looks_like_chat_reasoning_tools_require_responses(exc):
             return False
 
-        if (
-            reasoning_payload is not None
-            and self._looks_like_summary_error(exc)
-            and "summary" in reasoning_payload
-        ):
+        if reasoning_payload is not None and self._looks_like_summary_error(exc) and "summary" in reasoning_payload:
             reasoning_payload.pop("summary", None)
             changed = True
             logger.info(
@@ -1617,11 +1547,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
                     self.model_name,
                 )
 
-            effort = (
-                str(reasoning_payload.get("effort", "")).lower()
-                if reasoning_payload is not None
-                else ""
-            )
+            effort = str(reasoning_payload.get("effort", "")).lower() if reasoning_payload is not None else ""
             if reasoning_payload is not None and effort and remove_effort:
                 reasoning_payload.pop("effort", None)
                 changed = True
@@ -1728,9 +1654,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
                     async for chunk in super()._astream(*args, **kwargs):
                         yield chunk
                 except Exception as retry_exc:
-                    if self.use_responses_api and self._downgrade_reasoning_parameters(
-                        retry_exc
-                    ):
+                    if self.use_responses_api and self._downgrade_reasoning_parameters(retry_exc):
                         async for chunk in super()._astream(*args, **kwargs):
                             yield chunk
                     else:
@@ -1761,13 +1685,9 @@ class RAGComponents:
 
     def __init__(self):
         self.retrievers: dict[str, Any] = {}
-        self.faiss_dbs: dict[str, Any] = (
-            {}
-        )  # Raw FAISS vectorstores for dynamic k searches
+        self.faiss_dbs: dict[str, Any] = {}  # Raw FAISS vectorstores for dynamic k searches
         self.agent_executor: Optional[AgentExecutor] = None
-        self.agent_executor_ui: Optional[AgentExecutor] = (
-            None  # UI-only agent with chart tool
-        )
+        self.agent_executor_ui: Optional[AgentExecutor] = None  # UI-only agent with chart tool
         self.llm: Optional[Any] = None  # ChatOpenAI, ChatAnthropic, or ChatOllama
         self._core_ready: bool = False  # LLM/settings ready
         self._indexes_ready: bool = False  # All FAISS indexes loaded
@@ -1783,9 +1703,7 @@ class RAGComponents:
         self._init_in_progress: bool = False
         self._embedding_model: Optional[Any] = None  # Cached for background loading
         # Detailed index loading tracking
-        self._index_details: dict[str, dict] = (
-            {}
-        )  # name -> {status, size_mb, chunk_count, load_time, error}
+        self._index_details: dict[str, dict] = {}  # name -> {status, size_mb, chunk_count, load_time, error}
         self._loading_index: Optional[str] = None  # Currently loading index name
         self._faiss_loading_task: Optional[asyncio.Task] = None  # prevent GC
         self._ollama_warmup_task: Optional[asyncio.Task] = None  # prevent GC
@@ -1797,15 +1715,11 @@ class RAGComponents:
         # detect when it changes (expiry refresh or re-authorization) and
         # rebuild the LLM transparently.
         self._copilot_llm_token: Optional[str] = None
-        self._image_downsample_semaphore = asyncio.Semaphore(
-            IMAGE_DOWNSAMPLE_MAX_CONCURRENCY
-        )
+        self._image_downsample_semaphore = asyncio.Semaphore(IMAGE_DOWNSAMPLE_MAX_CONCURRENCY)
         self._userspace_recent_failures: dict[str, list[dict[str, Any]]] = {}
 
     @staticmethod
-    def _stable_tool_signature(
-        tool_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]
-    ) -> str:
+    def _stable_tool_signature(tool_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
         payload = {
             "tool": tool_name,
             "args": args,
@@ -1836,21 +1750,11 @@ class RAGComponents:
             return "validation_failed"
         if "repeated identical tool call" in combined or "strategy failure" in combined:
             return "repeated_tool_call"
-        if (
-            "no server-verified execution proof" in combined
-            or "execution proof" in combined
-        ):
+        if "no server-verified execution proof" in combined or "execution proof" in combined:
             return "execution_proof_missing"
-        if (
-            "no runnable web entrypoint found" in combined
-            or "missing runtime entrypoint" in combined
-        ):
+        if "no runnable web entrypoint found" in combined or "missing runtime entrypoint" in combined:
             return "entrypoint_missing"
-        if ".ragtime/runtime-entrypoint.json" in combined and (
-            "invalid" in combined
-            or "parsing failed" in combined
-            or "invalid json" in combined
-        ):
+        if ".ragtime/runtime-entrypoint.json" in combined and ("invalid" in combined or "parsing failed" in combined or "invalid json" in combined):
             return "entrypoint_invalid"
         if "entry-point wiring required" in combined:
             return "entrypoint_wiring_required"
@@ -1862,10 +1766,7 @@ class RAGComponents:
             return "live_binding_missing"
         if "hardcoded data" in combined or "mock data" in combined:
             return "hardcoded_data_detected"
-        if (
-            "unable to resolve local import" in combined
-            or "unsupported bare imports" in combined
-        ):
+        if "unable to resolve local import" in combined or "unsupported bare imports" in combined:
             return "import_contract_error"
         if "typescript" in combined or "contract violation" in combined:
             return "typescript_error"
@@ -1877,19 +1778,14 @@ class RAGComponents:
             return "runtime_entrypoint_misconfigured"
         if "devserver is not running" in combined:
             return "runtime_unavailable"
-        if (
-            "invalid live_data_connections component_id" in combined
-            or "invalid live_data_checks component_id" in combined
-        ):
+        if "invalid live_data_connections component_id" in combined or "invalid live_data_checks component_id" in combined:
             return "invalid_component_id"
         if "invalid file path" in combined or "does not exist" in combined:
             return "path_invalid"
         return "validation_failed"
 
     @staticmethod
-    def _next_best_tool_for_failure(
-        failure_class: str, fallback_tool: str = "patch_userspace_file"
-    ) -> str:
+    def _next_best_tool_for_failure(failure_class: str, fallback_tool: str = "patch_userspace_file") -> str:
         if failure_class in {"repeated_tool_call", "path_invalid"}:
             return "read_userspace_file"
         if failure_class in {
@@ -1934,11 +1830,7 @@ class RAGComponents:
         entries = self._userspace_recent_failures.setdefault(workspace_id, [])
         normalized_summary = summary.strip()
         for entry in reversed(entries):
-            if (
-                entry.get("failure_class") == failure_class
-                and entry.get("summary") == normalized_summary
-                and entry.get("tool_name") == tool_name
-            ):
+            if entry.get("failure_class") == failure_class and entry.get("summary") == normalized_summary and entry.get("tool_name") == tool_name:
                 entry["resolved"] = resolved
                 entry["updated_at"] = time.time()
                 return
@@ -2040,12 +1932,7 @@ class RAGComponents:
 
         for message in contract_errors:
             add(
-                (
-                    "live_data"
-                    if "live_data" in message.lower()
-                    or "context.components" in message.lower()
-                    else "typescript"
-                ),
+                ("live_data" if "live_data" in message.lower() or "context.components" in message.lower() else "typescript"),
                 message,
             )
         for message in runtime_errors:
@@ -2091,9 +1978,7 @@ class RAGComponents:
                 **kwargs: Any,
             ) -> Any:
                 signature = self._stable_tool_signature(_tool_name, args, kwargs)
-                signature_counts = cast(
-                    dict[str, int], request_state["signature_counts"]
-                )
+                signature_counts = cast(dict[str, int], request_state["signature_counts"])
                 call_count = int(signature_counts.get(signature, 0)) + 1
                 signature_counts[signature] = call_count
 
@@ -2106,13 +1991,8 @@ class RAGComponents:
                         "persisted": False,
                         "retryable": False,
                         "failure_class": failure_class,
-                        "message": (
-                            f"Repeated identical tool call blocked for {_tool_name}. "
-                            "Read the latest tool output and change strategy before retrying."
-                        ),
-                        "action_required": (
-                            "Use the latest diagnostics or file contents to choose a different next step before calling this tool again."
-                        ),
+                        "message": (f"Repeated identical tool call blocked for {_tool_name}. Read the latest tool output and change strategy before retrying."),
+                        "action_required": ("Use the latest diagnostics or file contents to choose a different next step before calling this tool again."),
                         "next_best_tool": self._next_best_tool_for_failure(
                             failure_class,
                             fallback_tool="assay_userspace_code",
@@ -2146,11 +2026,7 @@ class RAGComponents:
                 try:
                     result = await _orig(*args, **kwargs)
                 except (ToolException, ValueError, HTTPException) as exc:
-                    detail = (
-                        str(exc.detail).strip()
-                        if isinstance(exc, HTTPException) and exc.detail
-                        else _format_exception_message(exc)
-                    )
+                    detail = str(exc.detail).strip() if isinstance(exc, HTTPException) and exc.detail else _format_exception_message(exc)
                     payload = {
                         "tool": _tool_name,
                         "status": "rejected_not_persisted",
@@ -2160,10 +2036,7 @@ class RAGComponents:
                         "failure_class": "tool_error",
                         "message": detail,
                         "error": detail,
-                        "action_required": (
-                            "Use only the primary workspace or a granted workspace_id "
-                            "listed in the current workspace context."
-                        ),
+                        "action_required": ("Use only the primary workspace or a granted workspace_id listed in the current workspace context."),
                         "next_best_tool": self._next_best_tool_for_failure(
                             "tool_error",
                             fallback_tool="assay_userspace_code",
@@ -2192,13 +2065,8 @@ class RAGComponents:
                 failure_class: str | None = None
                 if parsed:
                     status = str(parsed.get("status") or status)
-                    failure_class = (
-                        str(parsed.get("failure_class") or "").strip() or None
-                    )
-                    if not failure_class and (
-                        parsed.get("rejected")
-                        or parsed.get("persisted_with_violations")
-                    ):
+                    failure_class = str(parsed.get("failure_class") or "").strip() or None
+                    if not failure_class and (parsed.get("rejected") or parsed.get("persisted_with_violations")):
                         failure_class = self._classify_userspace_failure(
                             parsed.get("message"),
                             parsed.get("error"),
@@ -2216,18 +2084,8 @@ class RAGComponents:
                     }
                 )
 
-                if (
-                    workspace_id
-                    and failure_class
-                    and parsed
-                    and (
-                        parsed.get("rejected")
-                        or parsed.get("persisted_with_violations")
-                    )
-                ):
-                    summary = str(
-                        parsed.get("message") or parsed.get("error") or failure_class
-                    )
+                if workspace_id and failure_class and parsed and (parsed.get("rejected") or parsed.get("persisted_with_violations")):
+                    summary = str(parsed.get("message") or parsed.get("error") or failure_class)
                     self._record_userspace_failure(
                         workspace_id,
                         failure_class=failure_class,
@@ -2262,27 +2120,15 @@ class RAGComponents:
             tool_calls = list(state.get("tool_calls") or [])
             metadata["tool_rounds"] = tool_calls[-USERSPACE_TOOL_ROUND_SUMMARY_LIMIT:]
             metadata["blocked_repeat_calls"] = int(state.get("blocked_repeat_calls", 0))
-            metadata["max_iterations_reached"] = bool(
-                state.get("max_iterations_reached", False)
-            )
-            metadata["internal_continue_attempts"] = int(
-                state.get("internal_continue_attempts", 0)
-            )
-            metadata["internal_continue_stop_reason"] = str(
-                state.get("internal_continue_stop_reason", "")
-            )
-            metadata["tool_free_synthesis_used"] = bool(
-                state.get("tool_free_synthesis_used", False)
-            )
+            metadata["max_iterations_reached"] = bool(state.get("max_iterations_reached", False))
+            metadata["internal_continue_attempts"] = int(state.get("internal_continue_attempts", 0))
+            metadata["internal_continue_stop_reason"] = str(state.get("internal_continue_stop_reason", ""))
+            metadata["tool_free_synthesis_used"] = bool(state.get("tool_free_synthesis_used", False))
 
         if mode == "userspace":
             metadata["userspace_agent"] = {
                 "tool_repeat_threshold": USERSPACE_TOOL_REPEAT_THRESHOLD,
-                "recent_failures": (
-                    self._get_userspace_recent_failure_summaries(workspace_id or "")
-                    if workspace_id
-                    else []
-                ),
+                "recent_failures": (self._get_userspace_recent_failure_summaries(workspace_id or "") if workspace_id else []),
             }
         return metadata
 
@@ -2290,9 +2136,7 @@ class RAGComponents:
         """Resolve image payload limits from settings with sane bounds."""
         app_settings = self._app_settings or {}
 
-        def _get_int(
-            settings_key: str, limit_key: str, minimum: int, maximum: int
-        ) -> int:
+        def _get_int(settings_key: str, limit_key: str, minimum: int, maximum: int) -> int:
             raw = app_settings.get(settings_key, IMAGE_PAYLOAD_LIMITS[limit_key])
             try:
                 value = int(raw)
@@ -2303,12 +2147,8 @@ class RAGComponents:
         return {
             "max_width": _get_int("image_payload_max_width", "max_width", 320, 4096),
             "max_height": _get_int("image_payload_max_height", "max_height", 240, 4096),
-            "max_pixels": _get_int(
-                "image_payload_max_pixels", "max_pixels", 76_800, 8_000_000
-            ),
-            "max_bytes": _get_int(
-                "image_payload_max_bytes", "max_bytes", 50_000, 5_000_000
-            ),
+            "max_pixels": _get_int("image_payload_max_pixels", "max_pixels", 76_800, 8_000_000),
+            "max_bytes": _get_int("image_payload_max_bytes", "max_bytes", 50_000, 5_000_000),
         }
 
     def _schedule_ollama_warmup(self) -> None:
@@ -2323,9 +2163,7 @@ class RAGComponents:
             return
 
         llm_provider = self._app_settings.get("llm_provider", "openai").lower()
-        embedding_provider = self._app_settings.get(
-            "embedding_provider", "ollama"
-        ).lower()
+        embedding_provider = self._app_settings.get("embedding_provider", "ollama").lower()
 
         tasks: list[Any] = []
 
@@ -2344,12 +2182,8 @@ class RAGComponents:
             )
 
         if embedding_provider == "ollama":
-            embedding_model = self._app_settings.get(
-                "embedding_model", "nomic-embed-text"
-            )
-            embedding_base_url = self._app_settings.get(
-                "ollama_base_url", "http://localhost:11434"
-            )
+            embedding_model = self._app_settings.get("embedding_model", "nomic-embed-text")
+            embedding_base_url = self._app_settings.get("ollama_base_url", "http://localhost:11434")
             tasks.append(
                 warmup_embedding_model(
                     embedding_model,
@@ -2394,11 +2228,7 @@ class RAGComponents:
             "retrievers_available": list(self.retrievers.keys()),
             "index_details": list(self._index_details.values()),
             "loading_index": self._loading_index,
-            "sequential_loading": (
-                self._app_settings.get("sequential_index_loading", False)
-                if self._app_settings
-                else False
-            ),
+            "sequential_loading": (self._app_settings.get("sequential_index_loading", False) if self._app_settings else False),
         }
 
     def unload_index(self, name: str) -> bool:
@@ -2462,15 +2292,8 @@ class RAGComponents:
         tool_prompt_section = build_tool_system_prompt(self._tool_configs or [])
         index_prompt_section = build_index_system_prompt(self._index_metadata or [])
 
-        self._system_prompt = (
-            BASE_CHAT_SYSTEM_PROMPT + index_prompt_section + tool_prompt_section
-        )
-        self._system_prompt_ui = (
-            BASE_CHAT_SYSTEM_PROMPT
-            + index_prompt_section
-            + tool_prompt_section
-            + UI_VISUALIZATION_COMMON_PROMPT
-        )
+        self._system_prompt = BASE_CHAT_SYSTEM_PROMPT + index_prompt_section + tool_prompt_section
+        self._system_prompt_ui = BASE_CHAT_SYSTEM_PROMPT + index_prompt_section + tool_prompt_section + UI_VISUALIZATION_COMMON_PROMPT
         if self._app_settings.get("tool_output_mode", "default") == "auto":
             self._system_prompt_ui += TOOL_OUTPUT_VISIBILITY_PROMPT
 
@@ -2493,49 +2316,35 @@ class RAGComponents:
                 self._embedding_model = await self._get_embedding_model()
 
             if self._embedding_model is None:
-                logger.warning(
-                    f"Cannot hot-load FAISS index '{index_name}': no embedding model available"
-                )
+                logger.warning(f"Cannot hot-load FAISS index '{index_name}': no embedding model available")
                 await self._create_agent()
                 return False
 
             metadata = next(
-                (
-                    idx
-                    for idx in self._index_metadata or []
-                    if idx.get("name") == index_name
-                ),
+                (idx for idx in self._index_metadata or [] if idx.get("name") == index_name),
                 None,
             )
             if metadata is None:
-                logger.warning(
-                    f"Cannot hot-load FAISS index '{index_name}': metadata not found"
-                )
+                logger.warning(f"Cannot hot-load FAISS index '{index_name}': metadata not found")
                 self.unload_index(index_name)
                 await self._create_agent()
                 return False
 
             if not metadata.get("enabled", True) or metadata.get("chunk_count", 0) <= 0:
-                logger.info(
-                    f"Skipping hot-load for FAISS index '{index_name}': disabled or empty"
-                )
+                logger.info(f"Skipping hot-load for FAISS index '{index_name}': disabled or empty")
                 self.unload_index(index_name)
                 await self._create_agent()
                 return False
 
             index_path_str = metadata.get("path")
             if not index_path_str:
-                logger.warning(
-                    f"Cannot hot-load FAISS index '{index_name}': no path in metadata"
-                )
+                logger.warning(f"Cannot hot-load FAISS index '{index_name}': no path in metadata")
                 await self._create_agent()
                 return False
 
             index_path = Path(index_path_str)
             if not index_path.exists():
-                logger.warning(
-                    f"Cannot hot-load FAISS index '{index_name}': path not found: {index_path}"
-                )
+                logger.warning(f"Cannot hot-load FAISS index '{index_name}': path not found: {index_path}")
                 await self._create_agent()
                 return False
 
@@ -2543,11 +2352,7 @@ class RAGComponents:
                 "name": index_name,
                 "status": "loading",
                 "type": "document",
-                "size_mb": (
-                    metadata.get("size_bytes", 0) / (1024 * 1024)
-                    if metadata.get("size_bytes")
-                    else None
-                ),
+                "size_mb": (metadata.get("size_bytes", 0) / (1024 * 1024) if metadata.get("size_bytes") else None),
                 "chunk_count": metadata.get("chunk_count"),
                 "load_time_seconds": None,
                 "error": None,
@@ -2555,16 +2360,11 @@ class RAGComponents:
 
             current_embedding_dim = None
             try:
-                test_embedding = await asyncio.to_thread(
-                    self._embedding_model.embed_query, "test"
-                )
+                test_embedding = await asyncio.to_thread(self._embedding_model.embed_query, "test")
                 current_embedding_dim = len(test_embedding)
             except Exception as e:
                 current_embedding_dim = self._app_settings.get("embedding_dimension")
-                logger.warning(
-                    f"Could not probe embedding dimension before hot-loading '{index_name}': {e}. "
-                    f"Using tracked dimension: {current_embedding_dim}"
-                )
+                logger.warning(f"Could not probe embedding dimension before hot-loading '{index_name}': {e}. Using tracked dimension: {current_embedding_dim}")
 
             try:
                 start = time.time()
@@ -2579,11 +2379,7 @@ class RAGComponents:
                 mem_after = get_process_memory_bytes()
                 embedding_dim = db.index.d if hasattr(db, "index") else None
 
-                if (
-                    current_embedding_dim
-                    and embedding_dim
-                    and embedding_dim != current_embedding_dim
-                ):
+                if current_embedding_dim and embedding_dim and embedding_dim != current_embedding_dim:
                     mismatch_msg = (
                         f"Embedding dimension mismatch: index has {embedding_dim} dims, "
                         f"but current model produces {current_embedding_dim} dims. "
@@ -2614,9 +2410,7 @@ class RAGComponents:
                     logger.debug(f"Failed to update memory stats for {index_name}: {e}")
 
                 await self._create_agent()
-                logger.info(
-                    f"Hot-loaded FAISS index '{index_name}' from {index_path} ({elapsed:.1f}s)"
-                )
+                logger.info(f"Hot-loaded FAISS index '{index_name}' from {index_path} ({elapsed:.1f}s)")
                 return True
             except Exception as e:
                 logger.warning(f"Failed to hot-load FAISS index '{index_name}': {e}")
@@ -2692,17 +2486,13 @@ class RAGComponents:
         # Mark core as ready - API can now serve requests
         self._core_ready = True
         core_time = time.time() - start_time
-        logger.info(
-            f"RAG core initialized in {core_time:.1f}s - API ready (indexes loading in background)"
-        )
+        logger.info(f"RAG core initialized in {core_time:.1f}s - API ready (indexes loading in background)")
 
         # Warmup is a best-effort optimization and should never block startup.
         self._schedule_ollama_warmup()
 
         # Start background FAISS loading — hold strong reference to prevent GC
-        self._faiss_loading_task = asyncio.create_task(
-            self._load_faiss_indexes_background()
-        )
+        self._faiss_loading_task = asyncio.create_task(self._load_faiss_indexes_background())
 
     async def _load_faiss_indexes_background(self):
         """Load FAISS indexes in background.
@@ -2738,10 +2528,7 @@ class RAGComponents:
                 logger.error(f"Failed to rebuild agent after index loading: {e}")
 
             elapsed = time.time() - start_time
-            logger.info(
-                f"FAISS indexes loaded in background ({elapsed:.1f}s): "
-                f"{len(self.retrievers)} document index(es) ready"
-            )
+            logger.info(f"FAISS indexes loaded in background ({elapsed:.1f}s): {len(self.retrievers)} document index(es) ready")
 
             # Also load any FAISS-based filesystem indexes
             await self._load_filesystem_faiss_indexes()
@@ -2769,14 +2556,10 @@ class RAGComponents:
             # Filter out document indexes (those in index_metadata)
             document_index_names = set()
             if self._index_metadata:
-                document_index_names = {
-                    idx.get("name") for idx in self._index_metadata if idx.get("name")
-                }
+                document_index_names = {idx.get("name") for idx in self._index_metadata if idx.get("name")}
 
             # Filesystem indexes are those not in document index metadata
-            disk_indexes = [
-                name for name in all_disk_indexes if name not in document_index_names
-            ]
+            disk_indexes = [name for name in all_disk_indexes if name not in document_index_names]
 
             if not disk_indexes:
                 logger.debug("No FAISS filesystem indexes to load")
@@ -2787,9 +2570,7 @@ class RAGComponents:
             for index_name in disk_indexes:
                 try:
                     start_time = time.time()
-                    success = await faiss_backend.load_index(
-                        index_name, self._embedding_model
-                    )
+                    success = await faiss_backend.load_index(index_name, self._embedding_model)
                     if success:
                         loaded += 1
                         load_time = time.time() - start_time
@@ -2807,9 +2588,7 @@ class RAGComponents:
                             "error": None,
                         }
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to load FAISS filesystem index {index_name}: {e}"
-                    )
+                    logger.warning(f"Failed to load FAISS filesystem index {index_name}: {e}")
                     # Track failed load
                     self._index_details[index_name] = {
                         "name": index_name,
@@ -2831,17 +2610,13 @@ class RAGComponents:
     async def _init_llm(self):
         """Initialize LLM based on database settings."""
         assert self._app_settings is not None  # Set by initialize()
-        provider = normalize_provider_name(
-            self._app_settings.get("llm_provider", "openai")
-        )
+        provider = normalize_provider_name(self._app_settings.get("llm_provider", "openai"))
         model = self._app_settings.get("llm_model", "gpt-4-turbo")
         max_tokens = await self._resolve_llm_max_tokens(provider, model)
         self.llm = await self._build_llm(provider, model, max_tokens)
 
         if self.llm is None:
-            logger.warning(
-                "No usable LLM configured - chat features will be disabled until provider credentials and model settings are valid"
-            )
+            logger.warning("No usable LLM configured - chat features will be disabled until provider credentials and model settings are valid")
             return
 
         if provider == "openai" and hasattr(self.llm, "model_name"):
@@ -2881,17 +2656,13 @@ class RAGComponents:
     ) -> OpenAIEmbeddings:
         assert self._app_settings is not None
         normalized_provider = normalize_provider_name(provider)
-        base_url = self._resolve_provider_base_url(
-            normalized_provider, "embedding"
-        ).rstrip("/")
+        base_url = self._resolve_provider_base_url(normalized_provider, "embedding").rstrip("/")
         api_keys = {
             "llama_cpp": "llama-cpp-local",
             "lmstudio": self._app_settings.get("lmstudio_api_key") or "lmstudio-local",
             "omlx": self._app_settings.get("omlx_api_key") or "omlx-local",
         }
-        logger.info(
-            f"Using {self._provider_label(normalized_provider)} embeddings: {model} at {base_url}"
-        )
+        logger.info(f"Using {self._provider_label(normalized_provider)} embeddings: {model} at {base_url}")
         return OpenAIEmbeddings(
             model=model,
             api_key=api_keys[normalized_provider],
@@ -2909,18 +2680,12 @@ class RAGComponents:
 
         normalized_provider = normalize_provider_name(provider)
         if normalized_provider in LOCAL_LLM_PROVIDER_NAMES:
-            detected_limit = await self._resolve_local_context_limit(
-                normalized_provider, model
-            )
+            detected_limit = await self._resolve_local_context_limit(normalized_provider, model)
             if detected_limit:
-                logger.info(
-                    f"Using detected context limit for {self._provider_label(normalized_provider)} model {model}: {detected_limit}"
-                )
+                logger.info(f"Using detected context limit for {self._provider_label(normalized_provider)} model {model}: {detected_limit}")
                 return detected_limit
 
-            logger.warning(
-                f"Could not detect limits for {self._provider_label(normalized_provider)} model {model}, using default 4096"
-            )
+            logger.warning(f"Could not detect limits for {self._provider_label(normalized_provider)} model {model}, using default 4096")
             return 4096
 
         detected_limit = await get_output_limit(model)
@@ -2940,11 +2705,7 @@ class RAGComponents:
         """Build an LLM client for a provider/model pair, or return None when unavailable."""
         assert self._app_settings is not None
         raw_provider = str(provider or "").lower().strip()
-        provider_normalized = (
-            "github_models"
-            if raw_provider == "github_models"
-            else normalize_provider_name(provider)
-        )
+        provider_normalized = "github_models" if raw_provider == "github_models" else normalize_provider_name(provider)
 
         async def _hydrate_openai_compatible_capabilities(
             *,
@@ -3004,43 +2765,25 @@ class RAGComponents:
 
                             supported_endpoints = row.get("supportedEndpoints")
                             if isinstance(supported_endpoints, list):
-                                register_model_supported_endpoints(
-                                    normalized_row_id, supported_endpoints
-                                )
+                                register_model_supported_endpoints(normalized_row_id, supported_endpoints)
 
                             capabilities = row.get("capabilities")
                             supports_flags: list[str] = []
                             if isinstance(capabilities, list):
-                                supports_flags = [
-                                    str(flag).lower() for flag in capabilities if flag
-                                ]
+                                supports_flags = [str(flag).lower() for flag in capabilities if flag]
                             elif isinstance(capabilities, dict):
                                 supports_obj = capabilities.get("supports")
                                 if isinstance(supports_obj, list):
-                                    supports_flags = [
-                                        str(flag).lower() for flag in supports_obj
-                                    ]
+                                    supports_flags = [str(flag).lower() for flag in supports_obj]
                                 elif isinstance(supports_obj, dict):
-                                    supports_flags = [
-                                        str(flag).lower()
-                                        for flag, enabled in supports_obj.items()
-                                        if enabled
-                                    ]
+                                    supports_flags = [str(flag).lower() for flag, enabled in supports_obj.items() if enabled]
 
                             if supports_flags:
                                 register_model_reasoning_capabilities(
                                     normalized_row_id,
-                                    reasoning_supported=(
-                                        "reasoning_effort" in supports_flags
-                                        or "reasoning" in supports_flags
-                                    ),
-                                    reasoning_effort_supported=(
-                                        "reasoning_effort" in supports_flags
-                                    ),
-                                    thinking_budget_supported=(
-                                        "thinking_budget" in supports_flags
-                                        or "max_thinking_budget" in supports_flags
-                                    ),
+                                    reasoning_supported=("reasoning_effort" in supports_flags or "reasoning" in supports_flags),
+                                    reasoning_effort_supported=("reasoning_effort" in supports_flags),
+                                    thinking_budget_supported=("thinking_budget" in supports_flags or "max_thinking_budget" in supports_flags),
                                 )
 
                             return
@@ -3064,9 +2807,7 @@ class RAGComponents:
                     details = await get_model_details(model, base_url)
                     if has_capability(details, "thinking"):
                         reasoning = True
-                        logger.info(
-                            f"Ollama model '{model}' supports thinking; enabling reasoning mode"
-                        )
+                        logger.info(f"Ollama model '{model}' supports thinking; enabling reasoning mode")
                 except Exception:
                     pass  # Non-critical; default (None) lets model decide
                 return ChatOllama(
@@ -3083,9 +2824,7 @@ class RAGComponents:
                 return None
 
         if provider_normalized in {"llama_cpp", "lmstudio", "omlx"}:
-            base_url = self._resolve_provider_base_url(
-                provider_normalized, "llm"
-            ).rstrip("/")
+            base_url = self._resolve_provider_base_url(provider_normalized, "llm").rstrip("/")
             if provider_normalized == "llama_cpp":
                 metadata_urls = [f"{base_url}/v1/models", f"{base_url}/models"]
             elif provider_normalized == "lmstudio":
@@ -3097,8 +2836,7 @@ class RAGComponents:
                 metadata_urls = [f"{base_url}/v1/models"]
             metadata_headers = (
                 {"Authorization": f"Bearer {self._app_settings.get('omlx_api_key')}"}
-                if provider_normalized == "omlx"
-                and self._app_settings.get("omlx_api_key")
+                if provider_normalized == "omlx" and self._app_settings.get("omlx_api_key")
                 else {}
             )
             await _hydrate_openai_compatible_capabilities(
@@ -3113,8 +2851,7 @@ class RAGComponents:
                 api_key=(
                     {
                         "llama_cpp": "llama-cpp-local",
-                        "lmstudio": self._app_settings.get("lmstudio_api_key")
-                        or "lmstudio-local",
+                        "lmstudio": self._app_settings.get("lmstudio_api_key") or "lmstudio-local",
                         "omlx": self._app_settings.get("omlx_api_key") or "omlx-local",
                     }[provider_normalized]
                 ),
@@ -3180,19 +2917,14 @@ class RAGComponents:
             # short-lived HMAC token if near expiry.
             token = await ensure_copilot_token_fresh()
             if not token:
-                logger.warning(
-                    "GitHub Copilot selected but OAuth token is missing/expired. "
-                    "Reconnect GitHub Copilot in Settings."
-                )
+                logger.warning("GitHub Copilot selected but OAuth token is missing/expired. Reconnect GitHub Copilot in Settings.")
                 return None
 
             # Track the token baked into this LLM instance so
             # _ensure_copilot_llm_fresh can detect when it changes.
             self._copilot_llm_token = token
 
-            base_url = self._app_settings.get(
-                "github_copilot_base_url", COPILOT_DEFAULT_BASE_URL
-            )
+            base_url = self._app_settings.get("github_copilot_base_url", COPILOT_DEFAULT_BASE_URL)
             base_url = str(base_url or COPILOT_DEFAULT_BASE_URL).rstrip("/")
 
             copilot_headers = build_copilot_headers(intent="conversation-panel")
@@ -3247,11 +2979,7 @@ class RAGComponents:
                     logger.info(
                         "Model %s is reasoning-capable; preferring Responses API%s",
                         model,
-                        (
-                            " (endpoint metadata unavailable)"
-                            if not model_supports_responses
-                            else ""
-                        ),
+                        (" (endpoint metadata unavailable)" if not model_supports_responses else ""),
                     )
             else:
                 if model_supports_reasoning_effort:
@@ -3346,11 +3074,7 @@ class RAGComponents:
                 logger.info(
                     "Model %s is reasoning-capable; preferring Responses API%s",
                     model,
-                    (
-                        " (endpoint metadata unavailable)"
-                        if not model_supports_responses
-                        else ""
-                    ),
+                    (" (endpoint metadata unavailable)" if not model_supports_responses else ""),
                 )
         elif model_supports_reasoning_effort:
             openai_kwargs["reasoning_effort"] = "high"
@@ -3362,17 +3086,13 @@ class RAGComponents:
     async def _get_embedding_model(self):
         """Get embedding model based on database settings."""
         assert self._app_settings is not None  # Set by initialize()
-        provider = normalize_provider_name(
-            self._app_settings.get("embedding_provider", "ollama")
-        )
+        provider = normalize_provider_name(self._app_settings.get("embedding_provider", "ollama"))
         model = self._app_settings.get("embedding_model", "nomic-embed-text")
 
         if provider == "ollama":
             base_url = self._resolve_provider_base_url(provider, "embedding")
             logger.info(f"Using Ollama embeddings: {model} at {base_url}")
-            return OllamaEmbeddings(
-                model=model, base_url=base_url, num_gpu=NUM_GPU, keep_alive=KEEP_ALIVE
-            )
+            return OllamaEmbeddings(model=model, base_url=base_url, num_gpu=NUM_GPU, keep_alive=KEEP_ALIVE)
         elif provider == "openai":
             api_key = self._app_settings.get("openai_api_key", "")
             if not api_key:
@@ -3417,16 +3137,11 @@ class RAGComponents:
                     "lambda_mult": mmr_lambda,  # 0=max diversity, 1=max relevance
                 },
             )
-            logger.debug(
-                f"Created MMR retriever for {index_name} "
-                f"(k={search_k}, fetch_k={fetch_k}, lambda={mmr_lambda})"
-            )
+            logger.debug(f"Created MMR retriever for {index_name} (k={search_k}, fetch_k={fetch_k}, lambda={mmr_lambda})")
         else:
             # Standard similarity retriever
             retriever = db.as_retriever(search_kwargs={"k": search_k})
-            logger.debug(
-                f"Created similarity retriever for {index_name} (k={search_k})"
-            )
+            logger.debug(f"Created similarity retriever for {index_name} (k={search_k})")
 
         return retriever
 
@@ -3472,9 +3187,7 @@ class RAGComponents:
 
         for name, db in dbs_to_search.items():
             try:
-                logger.debug(
-                    f"Searching index '{name}' with query: {query[:50]}..., k={k}"
-                )
+                logger.debug(f"Searching index '{name}' with query: {query[:50]}..., k={k}")
                 if use_mmr:
                     fetch_k = max(k * MMR_FETCH_K_MULTIPLIER, MMR_MIN_FETCH_K)
                     docs = db.max_marginal_relevance_search(
@@ -3499,10 +3212,7 @@ class RAGComponents:
             except Exception as e:
                 error_msg = str(e)
                 logger.warning(f"Error searching {name}: {e}", exc_info=True)
-                if (
-                    "ollama" in error_msg.lower()
-                    or "failed to connect" in error_msg.lower()
-                ):
+                if "ollama" in error_msg.lower() or "failed to connect" in error_msg.lower():
                     if include_index_name_in_errors:
                         errors.append(f"[{name}] {ollama_error_message}")
                     else:
@@ -3527,11 +3237,7 @@ class RAGComponents:
         assert self._app_settings is not None  # Set by initialize()
         # Try to load from database metadata (preferred)
         if self._index_metadata:
-            enabled_indexes = [
-                idx
-                for idx in self._index_metadata
-                if idx.get("enabled", True) and idx.get("chunk_count", 0) > 0
-            ]
+            enabled_indexes = [idx for idx in self._index_metadata if idx.get("enabled", True) and idx.get("chunk_count", 0) > 0]
 
             if enabled_indexes:
                 for idx in enabled_indexes:
@@ -3542,9 +3248,7 @@ class RAGComponents:
                     # Use the path stored in the database by the indexer
                     index_path_str = idx.get("path")
                     if not index_path_str:
-                        logger.warning(
-                            f"Index {index_name} has no path in metadata, skipping"
-                        )
+                        logger.warning(f"Index {index_name} has no path in metadata, skipping")
                         continue
 
                     index_path = Path(index_path_str)
@@ -3556,26 +3260,16 @@ class RAGComponents:
                                 allow_dangerous_deserialization=True,
                             )
                             # Create retriever with MMR support if enabled
-                            self.retrievers[index_name] = (
-                                self._create_retriever_from_faiss(db, index_name)
-                            )
-                            self.faiss_dbs[index_name] = (
-                                db  # Store for dynamic k searches
-                            )
-                            logger.info(
-                                f"Loaded FAISS index: {index_name} from {index_path}"
-                            )
+                            self.retrievers[index_name] = self._create_retriever_from_faiss(db, index_name)
+                            self.faiss_dbs[index_name] = db  # Store for dynamic k searches
+                            logger.info(f"Loaded FAISS index: {index_name} from {index_path}")
                         except Exception as e:
-                            logger.warning(
-                                f"Failed to load FAISS index {index_name}: {e}"
-                            )
+                            logger.warning(f"Failed to load FAISS index {index_name}: {e}")
                     else:
                         logger.warning(f"FAISS index path not found: {index_path}")
 
                 if self.retrievers:
-                    logger.info(
-                        f"Loaded {len(self.retrievers)} FAISS index(es) from database metadata"
-                    )
+                    logger.info(f"Loaded {len(self.retrievers)} FAISS index(es) from database metadata")
                 else:
                     logger.info("No enabled FAISS indexes found in database metadata")
             else:
@@ -3594,11 +3288,7 @@ class RAGComponents:
             logger.info("No index metadata available for parallel loading")
             return
 
-        enabled_indexes = [
-            idx
-            for idx in self._index_metadata
-            if idx.get("enabled", True) and idx.get("chunk_count", 0) > 0
-        ]
+        enabled_indexes = [idx for idx in self._index_metadata if idx.get("enabled", True) and idx.get("chunk_count", 0) > 0]
 
         if not enabled_indexes:
             logger.info("No enabled indexes to load")
@@ -3611,21 +3301,13 @@ class RAGComponents:
         # This is more reliable than tracked app_settings when provider changes
         current_embedding_dim = None
         try:
-            test_embedding = await asyncio.to_thread(
-                embedding_model.embed_query, "test"
-            )
+            test_embedding = await asyncio.to_thread(embedding_model.embed_query, "test")
             current_embedding_dim = len(test_embedding)
-            logger.info(
-                f"Detected embedding dimension: {current_embedding_dim} "
-                f"(will check indexes for mismatch)"
-            )
+            logger.info(f"Detected embedding dimension: {current_embedding_dim} (will check indexes for mismatch)")
         except Exception as e:
             # Fall back to tracked dimension if probe fails
             current_embedding_dim = self._app_settings.get("embedding_dimension")
-            logger.warning(
-                f"Could not probe embedding dimension: {e}. "
-                f"Using tracked dimension: {current_embedding_dim}"
-            )
+            logger.warning(f"Could not probe embedding dimension: {e}. Using tracked dimension: {current_embedding_dim}")
 
         # Initialize index details for all indexes
         for idx in enabled_indexes:
@@ -3635,11 +3317,7 @@ class RAGComponents:
                     "name": index_name,
                     "status": "pending",
                     "type": "document",  # Distinguish from filesystem_faiss
-                    "size_mb": (
-                        idx.get("size_bytes", 0) / (1024 * 1024)
-                        if idx.get("size_bytes")
-                        else None
-                    ),
+                    "size_mb": (idx.get("size_bytes", 0) / (1024 * 1024) if idx.get("size_bytes") else None),
                     "chunk_count": idx.get("chunk_count"),
                     "load_time_seconds": None,
                     "error": None,
@@ -3670,9 +3348,7 @@ class RAGComponents:
                 logger.warning(f"FAISS index path not found: {index_path}")
                 if index_name in self._index_details:
                     self._index_details[index_name]["status"] = "error"
-                    self._index_details[index_name][
-                        "error"
-                    ] = f"Index files missing: {index_path} - re-index required"
+                    self._index_details[index_name]["error"] = f"Index files missing: {index_path} - re-index required"
                 return None
 
             try:
@@ -3694,11 +3370,7 @@ class RAGComponents:
                 embedding_dim = db.index.d if hasattr(db, "index") else None
 
                 # Check for dimension mismatch before creating retriever
-                if (
-                    current_embedding_dim
-                    and embedding_dim
-                    and embedding_dim != current_embedding_dim
-                ):
+                if current_embedding_dim and embedding_dim and embedding_dim != current_embedding_dim:
                     mismatch_msg = (
                         f"Embedding dimension mismatch: index has {embedding_dim} dims, "
                         f"but current model produces {current_embedding_dim} dims. "
@@ -3708,9 +3380,7 @@ class RAGComponents:
                     if index_name in self._index_details:
                         self._index_details[index_name]["status"] = "error"
                         self._index_details[index_name]["error"] = mismatch_msg
-                        self._index_details[index_name][
-                            "embedding_dimension"
-                        ] = embedding_dim
+                        self._index_details[index_name]["embedding_dimension"] = embedding_dim
                     # Return None to skip adding this retriever
                     return None
 
@@ -3719,10 +3389,7 @@ class RAGComponents:
 
                 # Create retriever with MMR support if enabled
                 retriever = self._create_retriever_from_faiss(db, index_name)
-                logger.info(
-                    f"Loaded FAISS index: {index_name} from {index_path} "
-                    f"({elapsed:.1f}s, ~{steady_mem / 1024**3:.2f}GB)"
-                )
+                logger.info(f"Loaded FAISS index: {index_name} from {index_path} ({elapsed:.1f}s, ~{steady_mem / 1024**3:.2f}GB)")
 
                 # Update index detail
                 if index_name in self._index_details:
@@ -3767,9 +3434,7 @@ class RAGComponents:
                     logger.debug(f"Failed to update memory stats for {index_name}: {e}")
 
         if self.retrievers:
-            logger.info(
-                f"Loaded {len(self.retrievers)} FAISS index(es) from database metadata"
-            )
+            logger.info(f"Loaded {len(self.retrievers)} FAISS index(es) from database metadata")
 
     async def _load_faiss_indexes_sequential(self, embedding_model):
         """Load FAISS indexes sequentially, smallest first.
@@ -3783,11 +3448,7 @@ class RAGComponents:
             logger.info("No index metadata available for sequential loading")
             return
 
-        enabled_indexes = [
-            idx
-            for idx in self._index_metadata
-            if idx.get("enabled", True) and idx.get("chunk_count", 0) > 0
-        ]
+        enabled_indexes = [idx for idx in self._index_metadata if idx.get("enabled", True) and idx.get("chunk_count", 0) > 0]
 
         if not enabled_indexes:
             logger.info("No enabled indexes to load")
@@ -3804,21 +3465,13 @@ class RAGComponents:
         # This is more reliable than tracked app_settings when provider changes
         current_embedding_dim = None
         try:
-            test_embedding = await asyncio.to_thread(
-                embedding_model.embed_query, "test"
-            )
+            test_embedding = await asyncio.to_thread(embedding_model.embed_query, "test")
             current_embedding_dim = len(test_embedding)
-            logger.info(
-                f"Detected embedding dimension: {current_embedding_dim} "
-                f"(will check indexes for mismatch)"
-            )
+            logger.info(f"Detected embedding dimension: {current_embedding_dim} (will check indexes for mismatch)")
         except Exception as e:
             # Fall back to tracked dimension if probe fails
             current_embedding_dim = self._app_settings.get("embedding_dimension")
-            logger.warning(
-                f"Could not probe embedding dimension: {e}. "
-                f"Using tracked dimension: {current_embedding_dim}"
-            )
+            logger.warning(f"Could not probe embedding dimension: {e}. Using tracked dimension: {current_embedding_dim}")
 
         # Initialize index details for all indexes
         for idx in enabled_indexes:
@@ -3828,20 +3481,13 @@ class RAGComponents:
                     "name": index_name,
                     "status": "pending",
                     "type": "document",  # Distinguish from filesystem_faiss
-                    "size_mb": (
-                        idx.get("size_bytes", 0) / (1024 * 1024)
-                        if idx.get("size_bytes")
-                        else None
-                    ),
+                    "size_mb": (idx.get("size_bytes", 0) / (1024 * 1024) if idx.get("size_bytes") else None),
                     "chunk_count": idx.get("chunk_count"),
                     "load_time_seconds": None,
                     "error": None,
                 }
 
-        logger.info(
-            f"Loading {len(enabled_indexes)} FAISS index(es) sequentially "
-            "(smallest first)..."
-        )
+        logger.info(f"Loading {len(enabled_indexes)} FAISS index(es) sequentially (smallest first)...")
 
         for idx in enabled_indexes:
             index_name = idx.get("name")
@@ -3866,9 +3512,7 @@ class RAGComponents:
                 logger.warning(f"FAISS index path not found: {index_path}")
                 if index_name in self._index_details:
                     self._index_details[index_name]["status"] = "error"
-                    self._index_details[index_name][
-                        "error"
-                    ] = f"Index files missing: {index_path} - re-index required"
+                    self._index_details[index_name]["error"] = f"Index files missing: {index_path} - re-index required"
                 continue
 
             try:
@@ -3899,11 +3543,7 @@ class RAGComponents:
                 embedding_dim = db.index.d if hasattr(db, "index") else None
 
                 # Check for dimension mismatch before creating retriever
-                if (
-                    current_embedding_dim
-                    and embedding_dim
-                    and embedding_dim != current_embedding_dim
-                ):
+                if current_embedding_dim and embedding_dim and embedding_dim != current_embedding_dim:
                     mismatch_msg = (
                         f"Embedding dimension mismatch: index has {embedding_dim} dims, "
                         f"but current model produces {current_embedding_dim} dims. "
@@ -3913,9 +3553,7 @@ class RAGComponents:
                     if index_name in self._index_details:
                         self._index_details[index_name]["status"] = "error"
                         self._index_details[index_name]["error"] = mismatch_msg
-                        self._index_details[index_name][
-                            "embedding_dimension"
-                        ] = embedding_dim
+                        self._index_details[index_name]["embedding_dimension"] = embedding_dim
                     continue  # Skip this index
 
                 # Calculate memory stats
@@ -3933,10 +3571,7 @@ class RAGComponents:
                     self._index_details[index_name]["status"] = "loaded"
                     self._index_details[index_name]["load_time_seconds"] = elapsed
 
-                logger.info(
-                    f"Loaded FAISS index: {index_name} from {index_path} "
-                    f"(k={search_k}, {elapsed:.1f}s, ~{steady_mem / 1024**3:.2f}GB)"
-                )
+                logger.info(f"Loaded FAISS index: {index_name} from {index_path} (k={search_k}, {elapsed:.1f}s, ~{steady_mem / 1024**3:.2f}GB)")
 
                 # Update memory stats in database
                 try:
@@ -3962,9 +3597,7 @@ class RAGComponents:
         self._loading_index = None
 
         if self.retrievers:
-            logger.info(
-                f"Loaded {len(self.retrievers)} FAISS index(es) from database metadata"
-            )
+            logger.info(f"Loaded {len(self.retrievers)} FAISS index(es) from database metadata")
 
     async def _load_index_metadata(self) -> list[dict]:
         """Load index metadata from database for system prompt."""
@@ -4015,9 +3648,7 @@ class RAGComponents:
             if aggregate_search:
                 # Single aggregated search_knowledge tool
                 tools.append(self._create_knowledge_search_tool())
-                logger.info(
-                    f"Added search_knowledge tool for {len(self.retrievers)} index(es)"
-                )
+                logger.info(f"Added search_knowledge tool for {len(self.retrievers)} index(es)")
             else:
                 # Separate search_<index_name> tools for each index
                 knowledge_tools = self._create_per_index_search_tools()
@@ -4037,9 +3668,7 @@ class RAGComponents:
 
         # Get tools from the new ToolConfig system
         if self._tool_configs:
-            config_tools = await self._build_tools_from_configs(
-                skip_knowledge_tool=True
-            )
+            config_tools = await self._build_tools_from_configs(skip_knowledge_tool=True)
             tools.extend(config_tools)
             logger.info(f"Built {len(config_tools)} tools from configurations")
         else:
@@ -4053,10 +3682,7 @@ class RAGComponents:
 
         if not tools:
             available = list(get_all_tools().keys())
-            logger.warning(
-                f"No tools configured. Available tool types: {available}. "
-                f"Configure via Tools tab at /indexes/ui?view=tools"
-            )
+            logger.warning(f"No tools configured. Available tool types: {available}. Configure via Tools tab at /indexes/ui?view=tools")
 
         # Respect admin-configured iteration limit; fall back to 15 if invalid
         try:
@@ -4067,21 +3693,14 @@ class RAGComponents:
             max_iterations = 15
 
         # Get token optimization settings
-        max_tool_output_chars = int(
-            self._app_settings.get("max_tool_output_chars", 5000)
-        )
-        scratchpad_window_size = int(
-            self._app_settings.get("scratchpad_window_size", 6)
-        )
+        max_tool_output_chars = int(self._app_settings.get("max_tool_output_chars", 5000))
+        scratchpad_window_size = int(self._app_settings.get("scratchpad_window_size", 6))
 
         # Wrap all tools with output truncation (if enabled)
         # This reduces token consumption in the agent's scratchpad
         if max_tool_output_chars > 0:
             tools = [wrap_tool_with_truncation(t, max_tool_output_chars) for t in tools]
-            logger.info(
-                f"Wrapped {len(tools)} tools with output truncation "
-                f"(max {max_tool_output_chars:,} chars)"
-            )
+            logger.info(f"Wrapped {len(tools)} tools with output truncation (max {max_tool_output_chars:,} chars)")
 
         # Store window size for scratchpad compression
         self._scratchpad_window_size = scratchpad_window_size
@@ -4098,30 +3717,18 @@ class RAGComponents:
             """
 
             def windowed_format(intermediate_steps):
-                grouped_steps = self._group_intermediate_steps_by_message(
-                    intermediate_steps
-                )
+                grouped_steps = self._group_intermediate_steps_by_message(intermediate_steps)
                 num_steps = len(intermediate_steps)
                 num_groups = len(grouped_steps)
 
                 if window_size <= 0 or num_groups <= window_size:
-                    result = self._format_intermediate_steps_for_agent(
-                        intermediate_steps
-                    )
+                    result = self._format_intermediate_steps_for_agent(intermediate_steps)
                     if num_steps > 0:
                         total_chars = sum(len(str(m.content)) for m in result)
-                        logger.debug(
-                            f"Scratchpad: {num_steps} steps, {len(result)} messages, "
-                            f"{total_chars:,} chars (no compression needed)"
-                        )
+                        logger.debug(f"Scratchpad: {num_steps} steps, {len(result)} messages, {total_chars:,} chars (no compression needed)")
                     return result
 
-                full_chars = sum(
-                    len(str(m.content))
-                    for m in self._format_intermediate_steps_for_agent(
-                        intermediate_steps
-                    )
-                )
+                full_chars = sum(len(str(m.content)) for m in self._format_intermediate_steps_for_agent(intermediate_steps))
 
                 old_groups = grouped_steps[:-window_size]
                 recent_groups = grouped_steps[-window_size:]
@@ -4138,24 +3745,16 @@ class RAGComponents:
                             ToolMessage(
                                 content=content,
                                 tool_call_id=msg.tool_call_id,
-                                additional_kwargs=(
-                                    dict(msg.additional_kwargs)
-                                    if getattr(msg, "additional_kwargs", None)
-                                    else None
-                                ),
+                                additional_kwargs=(dict(msg.additional_kwargs) if getattr(msg, "additional_kwargs", None) else None),
                             )
                         )
                     else:
                         compressed_msgs.append(msg)
 
-                all_msgs = compressed_msgs + self._format_intermediate_steps_for_agent(
-                    recent_steps
-                )
+                all_msgs = compressed_msgs + self._format_intermediate_steps_for_agent(recent_steps)
 
                 compressed_chars = sum(len(str(m.content)) for m in all_msgs)
-                reduction = (
-                    100 * (1 - compressed_chars / full_chars) if full_chars > 0 else 0
-                )
+                reduction = 100 * (1 - compressed_chars / full_chars) if full_chars > 0 else 0
 
                 if old_steps:
                     logger.info(
@@ -4169,16 +3768,10 @@ class RAGComponents:
             return windowed_format
 
         # Create the message formatter (or None for default behavior)
-        message_formatter = (
-            create_windowed_formatter(scratchpad_window_size)
-            if scratchpad_window_size > 0
-            else self._format_intermediate_steps_for_agent
-        )
+        message_formatter = create_windowed_formatter(scratchpad_window_size) if scratchpad_window_size > 0 else self._format_intermediate_steps_for_agent
 
         if scratchpad_window_size > 0:
-            logger.info(
-                f"Using windowed scratchpad formatter (window={scratchpad_window_size})"
-            )
+            logger.info(f"Using windowed scratchpad formatter (window={scratchpad_window_size})")
 
         # Create standard agent (for API/MCP)
         prompt = ChatPromptTemplate.from_messages(
@@ -4278,9 +3871,7 @@ class RAGComponents:
         tool_id = config.get("id") or ""
         result_tools = []
 
-        builder, sql_tool_types, normalized_tool_type = self._get_runtime_tool_builder(
-            tool_type
-        )
+        builder, sql_tool_types, normalized_tool_type = self._get_runtime_tool_builder(tool_type)
         if not builder:
             logger.warning(f"Unknown tool type: {tool_type}")
             return []
@@ -4305,9 +3896,7 @@ class RAGComponents:
         tools = await self.build_tools_from_runtime_config(config)
         return tools[0] if tools else None
 
-    async def _build_tools_from_configs(
-        self, skip_knowledge_tool: bool = False
-    ) -> List[Any]:
+    async def _build_tools_from_configs(self, skip_knowledge_tool: bool = False) -> List[Any]:
         """
         Build LangChain tools from ToolConfig entries.
 
@@ -4346,18 +3935,13 @@ class RAGComponents:
             for i, result in enumerate(results):
                 config = self._tool_configs[i]
                 if isinstance(result, BaseException):
-                    logger.warning(
-                        f"Tool '{config.get('name', '?')}' ({config.get('tool_type')}) "
-                        f"build failed: {result}"
-                    )
+                    logger.warning(f"Tool '{config.get('name', '?')}' ({config.get('tool_type')}) build failed: {result}")
                 elif isinstance(result, list) and result:
                     tools.extend(result)
 
         return tools
 
-    async def _create_schema_search_tool(
-        self, config: dict, tool_name: str, tool_id: str
-    ):
+    async def _create_schema_search_tool(self, config: dict, tool_name: str, tool_id: str):
         """Create a schema search tool for SQL database tools.
 
         This tool allows the agent to search the indexed database schema
@@ -4367,18 +3951,14 @@ class RAGComponents:
 
         # Check if schema indexing is enabled
         schema_index_enabled = conn_config.get("schema_index_enabled", False)
-        logger.debug(
-            f"Schema tool check for {tool_name}: enabled={schema_index_enabled}"
-        )
+        logger.debug(f"Schema tool check for {tool_name}: enabled={schema_index_enabled}")
         if not schema_index_enabled:
             return None
 
         # Check if there are any schema embeddings for this tool
         embedding_count = await schema_indexer.get_embedding_count(tool_id, tool_name)
         if embedding_count == 0:
-            logger.debug(
-                f"Schema indexing enabled but no embeddings found for {tool_name}"
-            )
+            logger.debug(f"Schema indexing enabled but no embeddings found for {tool_name}")
             # Still create the tool - it will just return "no results" until indexed
             # This is better than no tool at all
 
@@ -4387,9 +3967,7 @@ class RAGComponents:
         description = config.get("description", "")
 
         class SchemaSearchInput(BaseModel):
-            query: str = Field(
-                description="Search query to find relevant tables, columns, or relationships in the database schema"
-            )
+            query: str = Field(description="Search query to find relevant tables, columns, or relationships in the database schema")
 
         async def search_schema(query: str) -> str:
             """Search the database schema for relevant table information."""
@@ -4431,31 +4009,17 @@ class RAGComponents:
         """
         # Build index_name description with available indexes
         index_names = list(self.retrievers.keys())
-        index_name_desc = (
-            "Optional: specific index to search (leave empty to search all indexes)"
-        )
+        index_name_desc = "Optional: specific index to search (leave empty to search all indexes)"
         if index_names:
             index_name_desc += f". Available indexes: {', '.join(index_names)}"
 
         # Get default k from settings
-        default_k = (
-            self._app_settings.get("search_results_k", 5) if self._app_settings else 5
-        )
-        use_mmr = (
-            self._app_settings.get("search_use_mmr", True)
-            if self._app_settings
-            else True
-        )
-        mmr_lambda = (
-            self._app_settings.get("search_mmr_lambda", 0.5)
-            if self._app_settings
-            else 0.5
-        )
+        default_k = self._app_settings.get("search_results_k", 5) if self._app_settings else 5
+        use_mmr = self._app_settings.get("search_use_mmr", True) if self._app_settings else True
+        mmr_lambda = self._app_settings.get("search_mmr_lambda", 0.5) if self._app_settings else 0.5
 
         class KnowledgeSearchInput(BaseModel):
-            query: str = Field(
-                description="Search query to find relevant documentation, code, or technical information"
-            )
+            query: str = Field(description="Search query to find relevant documentation, code, or technical information")
             index_name: str = Field(
                 default="",
                 description=index_name_desc,
@@ -4483,9 +4047,7 @@ class RAGComponents:
             k, max_chars_per_result = clamp_search_parameters(k, max_chars_per_result)
 
             # Log the search attempt for debugging
-            logger.debug(
-                f"search_knowledge called with query='{query[:50]}...', index_name='{index_name}', k={k}, max_chars={max_chars_per_result}"
-            )
+            logger.debug(f"search_knowledge called with query='{query[:50]}...', index_name='{index_name}', k={k}, max_chars={max_chars_per_result}")
             logger.debug(f"Available FAISS dbs: {list(self.faiss_dbs.keys())}")
 
             # Determine which indexes to search
@@ -4523,10 +4085,7 @@ class RAGComponents:
 
             if results:
                 logger.debug(f"search_knowledge found {len(results)} results")
-                return (
-                    f"Found {len(results)} relevant documents:\n\n"
-                    + "\n\n---\n\n".join(results)
-                )
+                return f"Found {len(results)} relevant documents:\n\n" + "\n\n---\n\n".join(results)
 
             # Return errors if we had any, otherwise generic no results message
             if errors:
@@ -4553,9 +4112,7 @@ class RAGComponents:
             k: int = default_k,
             max_chars_per_result: int = 500,
         ) -> str:
-            return await asyncio.to_thread(
-                search_knowledge, query, index_name, k, max_chars_per_result
-            )
+            return await asyncio.to_thread(search_knowledge, query, index_name, k, max_chars_per_result)
 
         return StructuredTool.from_function(
             func=search_knowledge,
@@ -4583,9 +4140,7 @@ class RAGComponents:
 
         # Tool 1: Read file by path
         class ReadFileInput(BaseModel):
-            file_path: str = Field(
-                description="Relative path to the file (e.g., 'src/utils/helper.py' or 'ragtime/rag/components.py')"
-            )
+            file_path: str = Field(description="Relative path to the file (e.g., 'src/utils/helper.py' or 'ragtime/rag/components.py')")
             index_name: str = Field(
                 default="",
                 description=f"Index to read from. Available: {', '.join(index_names)}. Leave empty to search all.",
@@ -4624,18 +4179,12 @@ class RAGComponents:
                         matching_chunks.sort(key=lambda x: x[0] if x[0] != -1 else -999)
 
                         # Build result
-                        result_parts = [
-                            f"[{idx_name}] {file_path} ({len(matching_chunks)} chunks):"
-                        ]
+                        result_parts = [f"[{idx_name}] {file_path} ({len(matching_chunks)} chunks):"]
                         for chunk_idx, content in matching_chunks:
                             if chunk_idx == -1:
-                                result_parts.append(
-                                    f"\n--- File Summary ---\n{content}"
-                                )
+                                result_parts.append(f"\n--- File Summary ---\n{content}")
                             else:
-                                result_parts.append(
-                                    f"\n--- Chunk {chunk_idx} ---\n{content}"
-                                )
+                                result_parts.append(f"\n--- Chunk {chunk_idx} ---\n{content}")
 
                         results.append("\n".join(result_parts))
 
@@ -4651,9 +4200,7 @@ class RAGComponents:
                 return f"File '{file_path}' not found.\nErrors: " + "; ".join(errors)
             return f"File '{file_path}' not found in indexed repositories. Use list_files_in_index to see available files, or search_knowledge to find relevant files."
 
-        async def _read_file_from_index_async(
-            file_path: str, index_name: str = ""
-        ) -> str:
+        async def _read_file_from_index_async(file_path: str, index_name: str = "") -> str:
             return await asyncio.to_thread(read_file_from_index, file_path, index_name)
 
         read_file_tool = StructuredTool.from_function(
@@ -4687,9 +4234,7 @@ class RAGComponents:
                 description="Maximum number of files to return (default: 50)",
             )
 
-        def list_files_in_index(
-            index_name: str = "", pattern: str = "", limit: int = 50
-        ) -> str:
+        def list_files_in_index(index_name: str = "", pattern: str = "", limit: int = 50) -> str:
             """List all indexed files in a repository."""
             results = []
             target_indexes = [index_name] if index_name else index_names
@@ -4732,20 +4277,12 @@ class RAGComponents:
                     if sorted_files:
                         results.append(
                             f"[{idx_name}] {len(sorted_files)} files"
-                            + (
-                                f" (of {len(file_paths)} matching)"
-                                if len(file_paths) > limit
-                                else ""
-                            )
+                            + (f" (of {len(file_paths)} matching)" if len(file_paths) > limit else "")
                             + ":\n"
                             + "\n".join(f"  {fp}" for fp in sorted_files)
                         )
                     else:
-                        results.append(
-                            f"[{idx_name}] No files found matching '{pattern}'"
-                            if pattern
-                            else f"[{idx_name}] No files indexed"
-                        )
+                        results.append(f"[{idx_name}] No files found matching '{pattern}'" if pattern else f"[{idx_name}] No files indexed")
 
                 except Exception as e:
                     logger.warning(f"Error listing files from {idx_name}: {e}")
@@ -4753,12 +4290,8 @@ class RAGComponents:
 
             return "\n\n".join(results) if results else "No indexes available."
 
-        async def _list_files_in_index_async(
-            index_name: str = "", pattern: str = "", limit: int = 50
-        ) -> str:
-            return await asyncio.to_thread(
-                list_files_in_index, index_name, pattern, limit
-            )
+        async def _list_files_in_index_async(index_name: str = "", pattern: str = "", limit: int = 50) -> str:
+            return await asyncio.to_thread(list_files_in_index, index_name, pattern, limit)
 
         list_files_tool = StructuredTool.from_function(
             func=list_files_in_index,
@@ -4818,10 +4351,7 @@ class RAGComponents:
             # depth=0 means full history, depth>1 means we have commits to search
             # depth=1 is a shallow clone with only the latest commit (not useful)
             if git_history_depth == 1:
-                logger.debug(
-                    f"Skipping git history tool for {repo_name}: "
-                    "shallow clone (depth=1 in config)"
-                )
+                logger.debug(f"Skipping git history tool for {repo_name}: shallow clone (depth=1 in config)")
                 continue
 
             # Also check actual repo state - it may have minimal history
@@ -4829,10 +4359,7 @@ class RAGComponents:
             # Note: _is_shallow_repository checks commit count, not just
             # whether it's technically shallow - depth > 1 is still useful
             if await _is_shallow_repository(git_repo):
-                logger.debug(
-                    f"Skipping git history tool for {repo_name}: "
-                    "minimal commit history (1-2 commits)"
-                )
+                logger.debug(f"Skipping git history tool for {repo_name}: minimal commit history (1-2 commits)")
                 continue
 
             git_repos.append((repo_name, git_repo, description))
@@ -4846,9 +4373,7 @@ class RAGComponents:
             # Single tool for all git repos - include available repos in description
             repo_names = [name for name, _, _ in git_repos]
             tools.append(create_aggregate_git_history_tool(repo_names))
-            logger.info(
-                f"Added search_git_history tool for {len(git_repos)} repo(s): {repo_names}"
-            )
+            logger.info(f"Added search_git_history tool for {len(git_repos)} repo(s): {repo_names}")
         else:
             # Separate tool per repo
             for name, repo_path, description in git_repos:
@@ -4869,19 +4394,9 @@ class RAGComponents:
         tools = []
 
         # Get settings
-        default_k = (
-            self._app_settings.get("search_results_k", 5) if self._app_settings else 5
-        )
-        use_mmr = (
-            self._app_settings.get("search_use_mmr", True)
-            if self._app_settings
-            else True
-        )
-        mmr_lambda = (
-            self._app_settings.get("search_mmr_lambda", 0.5)
-            if self._app_settings
-            else 0.5
-        )
+        default_k = self._app_settings.get("search_results_k", 5) if self._app_settings else 5
+        use_mmr = self._app_settings.get("search_use_mmr", True) if self._app_settings else True
+        mmr_lambda = self._app_settings.get("search_mmr_lambda", 0.5) if self._app_settings else 0.5
 
         # Get index metadata for descriptions and weights
         index_weights = {}
@@ -4912,9 +4427,7 @@ class RAGComponents:
                         max_chars_per_result,
                     )
 
-                    logger.debug(
-                        f"search_{idx_name} called with query='{query[:50]}...', k={k}, max_chars={max_chars_per_result}"
-                    )
+                    logger.debug(f"search_{idx_name} called with query='{query[:50]}...', k={k}, max_chars={max_chars_per_result}")
 
                     results, errors = self._search_faiss_databases(
                         query=query,
@@ -4925,32 +4438,22 @@ class RAGComponents:
                         mmr_lambda=mmr_lambda_,
                         include_index_name=False,
                         include_index_name_in_errors=False,
-                        ollama_error_message=(
-                            "Embedding service unavailable - Cannot connect to Ollama. "
-                            "Check that Ollama is running and accessible."
-                        ),
+                        ollama_error_message=("Embedding service unavailable - Cannot connect to Ollama. Check that Ollama is running and accessible."),
                     )
 
                     if errors:
                         return errors[0]
 
                     if results:
-                        return (
-                            f"Found {len(results)} relevant documents:\n\n"
-                            + "\n\n---\n\n".join(results)
-                        )
+                        return f"Found {len(results)} relevant documents:\n\n" + "\n\n---\n\n".join(results)
 
-                    return (
-                        f"No relevant documents found in {idx_name} for query: {query}"
-                    )
+                    return f"No relevant documents found in {idx_name} for query: {query}"
 
                 return search_index
 
             # Create input schema for this tool with k and max_chars_per_result
             class IndexSearchInput(BaseModel):
-                query: str = Field(
-                    description="Search query to find relevant documentation or code"
-                )
+                query: str = Field(description="Search query to find relevant documentation or code")
                 k: int = Field(
                     default=default_k,
                     ge=1,
@@ -4969,8 +4472,7 @@ class RAGComponents:
             idx_desc = index_descriptions.get(index_name, "")
 
             tool_description = (
-                f"Search the '{index_name}' index for relevant information. "
-                "Use 'k' for result count, 'max_chars_per_result' for content length (0=full)."
+                f"Search the '{index_name}' index for relevant information. Use 'k' for result count, 'max_chars_per_result' for content length (0=full)."
             )
             if idx_desc:
                 tool_description += f" {idx_desc}"
@@ -4984,9 +4486,7 @@ class RAGComponents:
             safe_name = index_name.replace("-", "_").replace(" ", "_").lower()
             tool_name = f"search_{safe_name}"
 
-            _sync_func = make_search_func(
-                index_name, db, use_mmr, mmr_lambda, default_k
-            )
+            _sync_func = make_search_func(index_name, db, use_mmr, mmr_lambda, default_k)
 
             async def _async_search_index(
                 query: str,
@@ -5017,9 +4517,7 @@ class RAGComponents:
         """Create a PostgreSQL query tool from config."""
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
-        timeout_max_seconds = int(
-            config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0
-        )
+        timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
 
@@ -5037,9 +4535,7 @@ class RAGComponents:
                 default="",
                 description="SQL query to execute. Must include LIMIT clause.",
             )
-            reason: str = Field(
-                default="", description="Brief description of what this query retrieves"
-            )
+            reason: str = Field(default="", description="Brief description of what this query retrieves")
 
         self._add_timeout_field_to_schema(
             PostgresInput,
@@ -5048,9 +4544,7 @@ class RAGComponents:
             timeout_label="Query",
         )
 
-        async def execute_query(
-            query: str = "", reason: str = "", timeout: int = _default_timeout, **_: Any
-        ) -> str:
+        async def execute_query(query: str = "", reason: str = "", timeout: int = _default_timeout, **_: Any) -> str:
             """Execute PostgreSQL query using this tool's configuration."""
             # Validate required fields
             if not query or not query.strip():
@@ -5064,9 +4558,7 @@ class RAGComponents:
             db_connect_timeout = effective_timeout if effective_timeout > 0 else 30
 
             # Validate query
-            is_safe, validation_reason = validate_sql_query(
-                query, enable_write=allow_write
-            )
+            is_safe, validation_reason = validate_sql_query(query, enable_write=allow_write)
             if not is_safe:
                 return f"Error: {validation_reason}"
 
@@ -5091,9 +4583,7 @@ class RAGComponents:
                     try:
                         if ssh_tunnel_config is None:
                             return "Error: SSH tunnel configuration is missing"
-                        tunnel_cfg = ssh_tunnel_config_from_dict(
-                            ssh_tunnel_config, default_remote_port=5432
-                        )
+                        tunnel_cfg = ssh_tunnel_config_from_dict(ssh_tunnel_config, default_remote_port=5432)
                         if not tunnel_cfg:
                             return "Error: Invalid SSH tunnel configuration"
 
@@ -5108,9 +4598,7 @@ class RAGComponents:
                             dbname=database,
                             connect_timeout=db_connect_timeout,
                         )
-                        cursor = conn.cursor(
-                            cursor_factory=psycopg2.extras.RealDictCursor
-                        )
+                        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
                         cursor.execute(query)
 
                         if cursor.description:
@@ -5124,16 +4612,10 @@ class RAGComponents:
                             lines.append(" | ".join(columns))
                             lines.append("-+-".join(["-" * len(c) for c in columns]))
                             for row in rows:
-                                lines.append(
-                                    " | ".join(str(row.get(c, "")) for c in columns)
-                                )
-                            lines.append(
-                                f"({len(rows)} row{'s' if len(rows) != 1 else ''})"
-                            )
+                                lines.append(" | ".join(str(row.get(c, "")) for c in columns))
+                            lines.append(f"({len(rows)} row{'s' if len(rows) != 1 else ''})")
                             output = "\n".join(lines)
-                            output = add_table_metadata_to_psql_output(
-                                output, include_metadata=include_metadata
-                            )
+                            output = add_table_metadata_to_psql_output(output, include_metadata=include_metadata)
                             return sanitize_output(output)
                         else:
                             return "Query executed successfully (no results)"
@@ -5155,14 +4637,10 @@ class RAGComponents:
                 try:
                     if effective_timeout > 0:
                         return await asyncio.wait_for(
-                            asyncio.get_event_loop().run_in_executor(
-                                None, run_tunnel_query
-                            ),
+                            asyncio.get_event_loop().run_in_executor(None, run_tunnel_query),
                             timeout=effective_timeout + 5,
                         )
-                    return await asyncio.get_event_loop().run_in_executor(
-                        None, run_tunnel_query
-                    )
+                    return await asyncio.get_event_loop().run_in_executor(None, run_tunnel_query)
                 except asyncio.TimeoutError:
                     return f"Error: Query timed out after {effective_timeout}s"
 
@@ -5229,9 +4707,7 @@ class RAGComponents:
 
                 # Add table metadata for UI rendering BEFORE sanitizing
                 # so metadata is extracted from complete data
-                output = add_table_metadata_to_psql_output(
-                    output, include_metadata=include_metadata
-                )
+                output = add_table_metadata_to_psql_output(output, include_metadata=include_metadata)
 
                 # Now sanitize the combined output
                 output = sanitize_output(output)
@@ -5242,9 +4718,7 @@ class RAGComponents:
             except Exception as e:
                 return f"Error: {str(e)}"
 
-        tool_description = (
-            f"Query the {config.get('name', 'PostgreSQL')} database using SQL."
-        )
+        tool_description = f"Query the {config.get('name', 'PostgreSQL')} database using SQL."
         if description:
             tool_description += f" This database contains: {description}"
         tool_description += " Include LIMIT clause to restrict results. SELECT queries only unless writes are enabled."
@@ -5267,9 +4741,7 @@ class RAGComponents:
 
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
-        timeout_max_seconds = int(
-            config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0
-        )
+        timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         max_results = config.get("max_results", 100)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
@@ -5313,9 +4785,7 @@ class RAGComponents:
 
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
-        timeout_max_seconds = int(
-            config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0
-        )
+        timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         max_results = config.get("max_results", 100)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
@@ -5359,9 +4829,7 @@ class RAGComponents:
 
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
-        timeout_max_seconds = int(
-            config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0
-        )
+        timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         max_results = config.get("max_results", 100)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
@@ -5399,9 +4867,7 @@ class RAGComponents:
         """Create an Odoo shell tool from config (Docker or SSH mode)."""
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 60)  # Odoo shell needs more time to initialize
-        timeout_max_seconds = int(
-            config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0
-        )
+        timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
         mode = conn_config.get("mode", "docker")  # docker or ssh
@@ -5414,9 +4880,7 @@ class RAGComponents:
                 default="",
                 description="Python code to execute in Odoo shell using ORM methods",
             )
-            reason: str = Field(
-                default="", description="Brief description of what this code does"
-            )
+            reason: str = Field(default="", description="Brief description of what this code does")
 
         self._add_timeout_field_to_schema(
             OdooInput,
@@ -5425,9 +4889,7 @@ class RAGComponents:
             timeout_label="Execution",
         )
 
-        def _build_docker_command(
-            container: str, database: str, config_path: str
-        ) -> list:
+        def _build_docker_command(container: str, database: str, config_path: str) -> list:
             """Build Docker exec command for Odoo shell."""
             cmd = [
                 "docker",
@@ -5444,9 +4906,7 @@ class RAGComponents:
                 cmd.extend(["-c", config_path])
             return cmd
 
-        async def execute_odoo(
-            code: str = "", reason: str = "", timeout: int = _default_timeout, **_: Any
-        ) -> str:
+        async def execute_odoo(code: str = "", reason: str = "", timeout: int = _default_timeout, **_: Any) -> str:
             """Execute Odoo shell command using this tool's configuration."""
             # Validate required fields
             if not code or not code.strip():
@@ -5459,9 +4919,7 @@ class RAGComponents:
             effective_timeout = resolve_effective_timeout(timeout, timeout_max_seconds)
 
             # Validate code
-            is_safe, validation_reason = validate_odoo_code(
-                code, enable_write_ops=allow_write
-            )
+            is_safe, validation_reason = validate_odoo_code(code, enable_write_ops=allow_write)
             if not is_safe:
                 return f"Error: {validation_reason}"
 
@@ -5503,11 +4961,7 @@ except Exception as e:
                     output = stdout.decode("utf-8", errors="replace")
 
                     result = filter_odoo_output(output)
-                    return (
-                        sanitize_output(result)
-                        if result
-                        else "Query executed successfully (no output)"
-                    )
+                    return sanitize_output(result) if result else "Query executed successfully (no output)"
 
                 except asyncio.TimeoutError:
                     return f"Error: Query timed out after {effective_timeout}s"
@@ -5555,23 +5009,15 @@ except Exception as e:
 
                 try:
                     loop = asyncio.get_event_loop()
-                    result = await loop.run_in_executor(
-                        None, lambda: execute_ssh_command(ssh_config, remote_command)
-                    )
+                    result = await loop.run_in_executor(None, lambda: execute_ssh_command(ssh_config, remote_command))
 
                     exit_code = result.exit_code
-                    command_failed = (
-                        not result.success and "ODOO_ERROR" not in result.output
-                    )
+                    command_failed = not result.success and "ODOO_ERROR" not in result.output
 
                     # For SSH, filter with ssh_mode=True to strip STDERR section
                     filtered = filter_odoo_output(result.output, ssh_mode=True)
                     stdout_out = sanitize_output(filtered) if filtered else ""
-                    stderr_out = (
-                        sanitize_output(result.stderr.strip())
-                        if result.stderr.strip()
-                        else ""
-                    )
+                    stderr_out = sanitize_output(result.stderr.strip()) if result.stderr.strip() else ""
 
                     terminal_payload: dict[str, Any] = {
                         "tool": f"odoo_{tool_name}",
@@ -5583,9 +5029,7 @@ except Exception as e:
                     if stderr_out:
                         terminal_payload["stderr"] = stderr_out
                     if command_failed:
-                        terminal_payload["error"] = (
-                            f"Odoo SSH command failed (exit {exit_code})"
-                        )
+                        terminal_payload["error"] = f"Odoo SSH command failed (exit {exit_code})"
 
                     return json.dumps(terminal_payload, indent=2)
 
@@ -5612,9 +5056,7 @@ except Exception as e:
         tool_description = f"Query {config.get('name', 'Odoo')} ERP using Python ORM code ({mode_label} connection)."
         if description:
             tool_description += f" This system contains: {description}"
-        tool_description += (
-            " Use env['model'].search_read(domain, fields, limit=N) for data retrieval."
-        )
+        tool_description += " Use env['model'].search_read(domain, fields, limit=N) for data retrieval."
 
         return StructuredTool.from_function(
             coroutine=execute_odoo,
@@ -5627,9 +5069,7 @@ except Exception as e:
         """Create an SSH shell tool from config."""
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
-        timeout_max_seconds = int(
-            config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0
-        )
+        timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
         working_directory = conn_config.get("working_directory", "")
@@ -5638,12 +5078,8 @@ except Exception as e:
         _default_timeout = timeout
 
         class SSHInput(BaseModel):
-            command: str = Field(
-                default="", description="Shell command to execute on the remote server"
-            )
-            reason: str = Field(
-                default="", description="Brief description of what this command does"
-            )
+            command: str = Field(default="", description="Shell command to execute on the remote server")
+            reason: str = Field(default="", description="Brief description of what this command does")
 
         self._add_timeout_field_to_schema(
             SSHInput,
@@ -5714,9 +5150,7 @@ except Exception as e:
                 if _SSH_ENV_VAR_RE.search(command):
                     # Expand env vars on the remote host
                     loop = asyncio.get_event_loop()
-                    expanded_command, expand_error = await loop.run_in_executor(
-                        None, lambda: expand_env_vars_via_ssh(ssh_config, command)
-                    )
+                    expanded_command, expand_error = await loop.run_in_executor(None, lambda: expand_env_vars_via_ssh(ssh_config, command))
                     if expand_error:
                         return json.dumps(
                             {
@@ -5753,9 +5187,7 @@ except Exception as e:
             try:
                 # Run in thread pool to avoid blocking
                 loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None, lambda: execute_ssh_command(ssh_config, full_command)
-                )
+                result = await loop.run_in_executor(None, lambda: execute_ssh_command(ssh_config, full_command))
 
                 exit_code = result.exit_code
                 stdout_raw = result.stdout.strip()
@@ -5787,9 +5219,7 @@ except Exception as e:
                     indent=2,
                 )
 
-        tool_description = (
-            f"Execute shell commands on {config.get('name', 'remote server')} via SSH."
-        )
+        tool_description = f"Execute shell commands on {config.get('name', 'remote server')} via SSH."
         if description:
             tool_description += f" This server provides access to: {description}"
         if not allow_write:
@@ -5812,9 +5242,7 @@ except Exception as e:
         _tool_id = tool_id  # noqa: F841
 
         class FilesystemSearchInput(BaseModel):
-            query: str = Field(
-                description="Natural language search query to find relevant documents/files"
-            )
+            query: str = Field(description="Natural language search query to find relevant documents/files")
             max_results: int = Field(
                 default=10,
                 ge=1,
@@ -5843,9 +5271,7 @@ except Exception as e:
                 max_chars_per_result=max_chars_per_result,
             )
 
-        tool_description = (
-            f"Search indexed documents from {config.get('name', 'filesystem')}."
-        )
+        tool_description = f"Search indexed documents from {config.get('name', 'filesystem')}."
         if description:
             tool_description += f" {description}"
         if index_name:
@@ -5884,15 +5310,10 @@ except Exception as e:
             )
             document_type: Optional[str] = Field(
                 default=None,
-                description=(
-                    "Optional filter by document type: SLDPRT (parts), "
-                    "SLDASM (assemblies), SLDDRW (drawings), or None for all"
-                ),
+                description=("Optional filter by document type: SLDPRT (parts), SLDASM (assemblies), SLDDRW (drawings), or None for all"),
             )
 
-        async def search_pdm(
-            query: str, document_type: Optional[str] = None, **_: Any
-        ) -> str:
+        async def search_pdm(query: str, document_type: Optional[str] = None, **_: Any) -> str:
             """Search the PDM index."""
             logger.info(f"[{tool_name}] PDM search: {query[:100]}...")
             return await search_pdm_index(
@@ -5918,9 +5339,7 @@ except Exception as e:
             args_schema=PdmSearchInput,
         )
 
-    def get_context_from_retrievers(
-        self, query: str, max_docs: int = 5
-    ) -> tuple[str, list[dict]]:
+    def get_context_from_retrievers(self, query: str, max_docs: int = 5) -> tuple[str, list[dict]]:
         """
         Retrieve relevant context from all FAISS indexes.
 
@@ -5946,11 +5365,7 @@ except Exception as e:
                         {
                             "index": name,
                             "source": source,
-                            "preview": (
-                                doc.page_content[:200] + "..."
-                                if len(doc.page_content) > 200
-                                else doc.page_content
-                            ),
+                            "preview": (doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content),
                         }
                     )
             except Exception as e:
@@ -5960,20 +5375,12 @@ except Exception as e:
             return "", sources
 
         # Apply token budget if configured (0 = unlimited)
-        token_budget = (
-            self._app_settings.get("context_token_budget", 4000)
-            if self._app_settings
-            else 4000
-        )
+        token_budget = self._app_settings.get("context_token_budget", 4000) if self._app_settings else 4000
 
         if token_budget > 0:
-            context, actual_tokens = truncate_to_token_budget(
-                all_docs, max_tokens=token_budget
-            )
+            context, actual_tokens = truncate_to_token_budget(all_docs, max_tokens=token_budget)
             if actual_tokens >= token_budget:
-                logger.debug(
-                    f"Context truncated to {actual_tokens} tokens (budget: {token_budget})"
-                )
+                logger.debug(f"Context truncated to {actual_tokens} tokens (budget: {token_budget})")
         else:
             context = "\n\n---\n\n".join(all_docs)
 
@@ -6078,18 +5485,14 @@ except Exception as e:
         if not parts:
             return ""
 
-        suffix = (
-            "" if len(env_vars) <= max_items else f", +{len(env_vars) - max_items} more"
-        )
+        suffix = "" if len(env_vars) <= max_items else f", +{len(env_vars) - max_items} more"
         return "- Workspace env vars (keys only): " + ", ".join(parts) + suffix + ".\n"
 
     @staticmethod
     def _sanitize_userspace_runtime_error_for_turn_hint(error_text: str) -> str:
         """Compact runtime errors for prompt injection without control characters."""
         compact = re.sub(r"\s+", " ", error_text.replace("\x00", " ")).strip()
-        compact = "".join(
-            char for char in compact if char.isprintable() or char in {"\t", "\n"}
-        )
+        compact = "".join(char for char in compact if char.isprintable() or char in {"\t", "\n"})
         if len(compact) > USERSPACE_RUNTIME_ERROR_TURN_HINT_MAX_CHARS:
             return "..." + compact[-USERSPACE_RUNTIME_ERROR_TURN_HINT_MAX_CHARS:]
         return compact
@@ -6098,16 +5501,10 @@ except Exception as e:
     def _build_userspace_runtime_status_turn_hint(cls, status: Any) -> str:
         """Build a high-signal turn reminder line for active runtime blockers."""
         session_state = str(getattr(status, "session_state", "") or "").strip()
-        runtime_phase = str(
-            getattr(status, "runtime_operation_phase", "") or ""
-        ).strip()
+        runtime_phase = str(getattr(status, "runtime_operation_phase", "") or "").strip()
         devserver_running = bool(getattr(status, "devserver_running", False))
-        last_error = cls._sanitize_userspace_runtime_error_for_turn_hint(
-            str(getattr(status, "last_error", "") or "")
-        )
-        live_data_warning = cls._sanitize_userspace_runtime_error_for_turn_hint(
-            str(getattr(status, "live_data_warning", "") or "")
-        )
+        last_error = cls._sanitize_userspace_runtime_error_for_turn_hint(str(getattr(status, "last_error", "") or ""))
+        live_data_warning = cls._sanitize_userspace_runtime_error_for_turn_hint(str(getattr(status, "live_data_warning", "") or ""))
 
         failed_runtime = session_state == "error" or runtime_phase == "failed"
         has_runtime_blocker = bool(last_error) or failed_runtime
@@ -6132,10 +5529,7 @@ except Exception as e:
                     "Fix this before unrelated feature work; validate the relevant source/entrypoint and re-check the preview."
                 )
             else:
-                lines.append(
-                    "- Current runtime blocker: "
-                    f"{status_text}. Inspect runtime startup state before unrelated feature work."
-                )
+                lines.append(f"- Current runtime blocker: {status_text}. Inspect runtime startup state before unrelated feature work.")
 
         if live_data_warning:
             lines.append(
@@ -6163,9 +5557,7 @@ except Exception as e:
             display_name = source_name or tool_name or "Unknown tool"
             source_path = str(getattr(mount, "source_path", "") or "").strip() or "."
             sync_status = str(getattr(mount, "sync_status", "") or "pending")
-            normalized_target = (
-                target_path if target_path.startswith("/") else f"/{target_path}"
-            )
+            normalized_target = target_path if target_path.startswith("/") else f"/{target_path}"
             workspace_relative = posixpath.relpath(normalized_target, "/workspace")
             enabled = bool(getattr(mount, "enabled", True))
             mount_items.append(
@@ -6201,27 +5593,15 @@ except Exception as e:
             bucket_name = str(getattr(bucket, "name", "") or "").strip()
             if not bucket_name:
                 continue
-            public_prefix = (
-                str(getattr(bucket, "public_prefix", "") or "public").strip()
-                or "public"
-            )
-            private_prefix = (
-                str(getattr(bucket, "private_prefix", "") or "private").strip()
-                or "private"
-            )
+            public_prefix = str(getattr(bucket, "public_prefix", "") or "public").strip() or "public"
+            private_prefix = str(getattr(bucket, "private_prefix", "") or "private").strip() or "private"
             bucket_items.append(
                 {
                     "name": bucket_name,
                     "public_root": f"/{bucket_name}/{public_prefix}",
                     "private_root": f"/{bucket_name}/{private_prefix}",
-                    "description": str(
-                        getattr(bucket, "description", "") or ""
-                    ).strip(),
-                    "is_default": (
-                        "true"
-                        if bool(getattr(bucket, "is_default", False))
-                        else "false"
-                    ),
+                    "description": str(getattr(bucket, "description", "") or "").strip(),
+                    "is_default": ("true" if bool(getattr(bucket, "is_default", False)) else "false"),
                 }
             )
 
@@ -6296,9 +5676,7 @@ except Exception as e:
         return bool(str(content).strip())
 
     @classmethod
-    def _filter_debug_messages_with_content(
-        cls, messages: List[dict[str, Any]]
-    ) -> List[dict[str, Any]]:
+    def _filter_debug_messages_with_content(cls, messages: List[dict[str, Any]]) -> List[dict[str, Any]]:
         """Drop debug messages with empty serialized content before persistence."""
         filtered: List[dict[str, Any]] = []
         for message in messages:
@@ -6331,9 +5709,7 @@ except Exception as e:
         if not settings.debug_mode or not conversation_id:
             return
 
-        rendered_user_input_serialized = self._serialize_prompt_content(
-            rendered_user_input
-        )
+        rendered_user_input_serialized = self._serialize_prompt_content(rendered_user_input)
         if isinstance(rendered_user_input_serialized, str):
             rendered_user_input_text = rendered_user_input_serialized
         else:
@@ -6344,9 +5720,7 @@ except Exception as e:
             )
 
         try:
-            serialized_chat_history = [
-                self._serialize_base_message(message) for message in chat_history
-            ]
+            serialized_chat_history = [self._serialize_base_message(message) for message in chat_history]
             await repository.create_provider_prompt_debug_record(
                 conversation_id=conversation_id,
                 chat_task_id=chat_task_id,
@@ -6357,12 +5731,8 @@ except Exception as e:
                 request_kind=request_kind,
                 rendered_system_prompt=system_prompt,
                 rendered_user_input=rendered_user_input_text,
-                rendered_provider_messages=self._filter_debug_messages_with_content(
-                    provider_messages
-                ),
-                rendered_chat_history=self._filter_debug_messages_with_content(
-                    serialized_chat_history
-                ),
+                rendered_provider_messages=self._filter_debug_messages_with_content(provider_messages),
+                rendered_chat_history=self._filter_debug_messages_with_content(serialized_chat_history),
                 tool_scope_prompt=tool_scope_prompt,
                 prompt_additions=prompt_additions,
                 turn_reminders=turn_reminders,
@@ -6407,9 +5777,7 @@ except Exception as e:
                 if isinstance(item, dict):
                     # Already in dict format
                     if item.get("type") == "text":
-                        langchain_content.append(
-                            {"type": "text", "text": item.get("text", "")}
-                        )
+                        langchain_content.append({"type": "text", "text": item.get("text", "")})
                     elif item.get("type") == "image_url":
                         langchain_content.append(self._normalize_image_part(item))
                 elif hasattr(item, "type"):
@@ -6470,18 +5838,14 @@ except Exception as e:
             for item in content:
                 if isinstance(item, dict):
                     if item.get("type") == "text":
-                        langchain_content.append(
-                            {"type": "text", "text": item.get("text", "")}
-                        )
+                        langchain_content.append({"type": "text", "text": item.get("text", "")})
                     elif item.get("type") == "image_url":
                         index = len(langchain_content)
                         langchain_content.append(None)
                         image_tasks.append(
                             (
                                 index,
-                                asyncio.create_task(
-                                    self._normalize_image_part_async(item)
-                                ),
+                                asyncio.create_task(self._normalize_image_part_async(item)),
                             )
                         )
                 elif hasattr(item, "type"):
@@ -6497,18 +5861,14 @@ except Exception as e:
                         image_tasks.append(
                             (
                                 index,
-                                asyncio.create_task(
-                                    self._normalize_image_part_async(image_part)
-                                ),
+                                asyncio.create_task(self._normalize_image_part_async(image_part)),
                             )
                         )
 
             if image_tasks:
                 for index, task in image_tasks:
                     langchain_content[index] = await task
-                langchain_content = [
-                    item for item in langchain_content if item is not None
-                ]
+                langchain_content = [item for item in langchain_content if item is not None]
 
             return langchain_content if langchain_content else ""
 
@@ -6544,10 +5904,7 @@ except Exception as e:
                 stripped.append(part)
 
         if image_count > 0:
-            logger.info(
-                f"Stripped {image_count} image(s) from input to reduce token usage "
-                "(tool-calling agents resend input on each iteration)"
-            )
+            logger.info(f"Stripped {image_count} image(s) from input to reduce token usage (tool-calling agents resend input on each iteration)")
 
         return stripped if stripped else content
 
@@ -6563,9 +5920,7 @@ except Exception as e:
             with httpx.Client(timeout=30, follow_redirects=True) as client:
                 resp = client.get(url)
                 resp.raise_for_status()
-                content_type = (
-                    resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-                )
+                content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
                 if not content_type.startswith("image/"):
                     logger.debug(
                         "HTTP URL %s returned non-image content-type: %s",
@@ -6590,9 +5945,7 @@ except Exception as e:
             async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
-                content_type = (
-                    resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-                )
+                content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
                 if not content_type.startswith("image/"):
                     logger.debug(
                         "HTTP URL %s returned non-image content-type: %s",
@@ -6719,9 +6072,7 @@ except Exception as e:
                 image_url_dict["url"] = self._downsample_image_data_url(current_url)
             normalized["image_url"] = image_url_dict
         elif isinstance(image_url, str):
-            normalized["image_url"] = {
-                "url": self._downsample_image_data_url(image_url)
-            }
+            normalized["image_url"] = {"url": self._downsample_image_data_url(image_url)}
 
         return normalized
 
@@ -6734,14 +6085,10 @@ except Exception as e:
             image_url_dict = dict(image_url)
             current_url = image_url_dict.get("url")
             if isinstance(current_url, str):
-                image_url_dict["url"] = await self._downsample_image_data_url_async(
-                    current_url
-                )
+                image_url_dict["url"] = await self._downsample_image_data_url_async(current_url)
             normalized["image_url"] = image_url_dict
         elif isinstance(image_url, str):
-            normalized["image_url"] = {
-                "url": await self._downsample_image_data_url_async(image_url)
-            }
+            normalized["image_url"] = {"url": await self._downsample_image_data_url_async(image_url)}
 
         return normalized
 
@@ -6767,9 +6114,7 @@ except Exception as e:
         try:
             resolved_path = Path(raw_path).resolve()
         except Exception:
-            logger.debug(
-                "Ignoring unreadable image path for tool context: %s", raw_path
-            )
+            logger.debug("Ignoring unreadable image path for tool context: %s", raw_path)
             return None
 
         try:
@@ -6808,9 +6153,7 @@ except Exception as e:
         data_url = f"data:{content_type};base64,{encoded}"
         return self._downsample_image_data_url(data_url)
 
-    def _build_screenshot_reference_content(
-        self, observation: Any
-    ) -> list[dict[str, Any]] | None:
+    def _build_screenshot_reference_content(self, observation: Any) -> list[dict[str, Any]] | None:
         """Attach the latest userspace screenshot as multimodal tool context."""
         raw = observation if isinstance(observation, str) else str(observation or "")
         if not raw:
@@ -6828,24 +6171,11 @@ except Exception as e:
         if not isinstance(screenshot_payload, dict):
             screenshot_payload = {}
 
-        image_data_url = self._build_local_image_data_url(
-            str(
-                payload.get("screenshot_path")
-                or screenshot_payload.get("screenshot_path")
-                or ""
-            )
-        )
+        image_data_url = self._build_local_image_data_url(str(payload.get("screenshot_path") or screenshot_payload.get("screenshot_path") or ""))
         if not image_data_url:
             return None
 
-        preview_path = (
-            str(
-                payload.get("preview_path")
-                or screenshot_payload.get("preview_path")
-                or ""
-            ).strip()
-            or "/"
-        )
+        preview_path = str(payload.get("preview_path") or screenshot_payload.get("preview_path") or "").strip() or "/"
         return [
             {
                 "type": "text",
@@ -6877,12 +6207,8 @@ except Exception as e:
             for step in intermediate_steps:
                 action = step[0] if isinstance(step, tuple) and step else None
                 if getattr(action, "tool", "") == "capture_userspace_screenshot":
-                    latest_screenshot_tool_call_id = (
-                        str(getattr(action, "tool_call_id", "") or "") or None
-                    )
-                    latest_screenshot_observation = (
-                        step[1] if isinstance(step, tuple) and len(step) > 1 else None
-                    )
+                    latest_screenshot_tool_call_id = str(getattr(action, "tool_call_id", "") or "") or None
+                    latest_screenshot_observation = step[1] if isinstance(step, tuple) and len(step) > 1 else None
 
         formatted_messages: list[BaseMessage] = []
         for msg in format_to_tool_messages(intermediate_steps):
@@ -6891,26 +6217,17 @@ except Exception as e:
                     ToolMessage(
                         content=strip_table_metadata(msg.content),
                         tool_call_id=msg.tool_call_id,
-                        additional_kwargs=(
-                            dict(msg.additional_kwargs)
-                            if getattr(msg, "additional_kwargs", None)
-                            else None
-                        ),
+                        additional_kwargs=(dict(msg.additional_kwargs) if getattr(msg, "additional_kwargs", None) else None),
                     )
                 )
                 continue
             formatted_messages.append(msg)
 
-        reference_content = self._build_screenshot_reference_content(
-            latest_screenshot_observation
-        )
+        reference_content = self._build_screenshot_reference_content(latest_screenshot_observation)
         if latest_screenshot_tool_call_id and reference_content is not None:
             augmented_messages: list[BaseMessage] = []
             for msg in formatted_messages:
-                if (
-                    isinstance(msg, ToolMessage)
-                    and msg.tool_call_id == latest_screenshot_tool_call_id
-                ):
+                if isinstance(msg, ToolMessage) and msg.tool_call_id == latest_screenshot_tool_call_id:
                     tool_text = str(msg.content or "").strip()
                     content: list[dict[str, Any]] = []
                     if tool_text:
@@ -6920,11 +6237,7 @@ except Exception as e:
                         ToolMessage(
                             content=content,
                             tool_call_id=msg.tool_call_id,
-                            additional_kwargs=(
-                                dict(msg.additional_kwargs)
-                                if getattr(msg, "additional_kwargs", None)
-                                else None
-                            ),
+                            additional_kwargs=(dict(msg.additional_kwargs) if getattr(msg, "additional_kwargs", None) else None),
                         )
                     )
                 else:
@@ -7017,11 +6330,7 @@ except Exception as e:
                     "repeat_count",
                     "signature",
                 )
-                diagnostic_parts = [
-                    f"{key}={diagnostics[key]}"
-                    for key in diagnostic_keys
-                    if key in diagnostics
-                ]
+                diagnostic_parts = [f"{key}={diagnostics[key]}" for key in diagnostic_keys if key in diagnostics]
                 if diagnostic_parts:
                     parts.append("diagnostics: " + ", ".join(diagnostic_parts))
 
@@ -7049,23 +6358,15 @@ except Exception as e:
         if intermediate_steps:
             for step in intermediate_steps[-max_items:]:
                 action = step[0] if isinstance(step, tuple) and step else None
-                observation = (
-                    step[1] if isinstance(step, tuple) and len(step) > 1 else ""
-                )
+                observation = step[1] if isinstance(step, tuple) and len(step) > 1 else ""
                 tool_name = str(getattr(action, "tool", "unknown") or "unknown")
                 tool_input = getattr(action, "tool_input", {})
                 args_preview = cls._truncate_prompt_preview(
-                    (
-                        json.dumps(tool_input, ensure_ascii=True, default=str)
-                        if isinstance(tool_input, dict)
-                        else str(tool_input)
-                    ),
+                    (json.dumps(tool_input, ensure_ascii=True, default=str) if isinstance(tool_input, dict) else str(tool_input)),
                     220,
                 )
                 output_summary = cls._summarize_tool_output_for_synthesis(observation)
-                lines.append(
-                    f"- {tool_name} args={args_preview}; result={output_summary}"
-                )
+                lines.append(f"- {tool_name} args={args_preview}; result={output_summary}")
         elif replay_messages:
             index = 0
             while index < len(replay_messages):
@@ -7083,23 +6384,15 @@ except Exception as e:
                 tool_name = str(tool_call.get("name") or "unknown")
                 tool_args = tool_call.get("args") or {}
                 args_preview = cls._truncate_prompt_preview(
-                    (
-                        json.dumps(tool_args, ensure_ascii=True, default=str)
-                        if isinstance(tool_args, dict)
-                        else str(tool_args)
-                    ),
+                    (json.dumps(tool_args, ensure_ascii=True, default=str) if isinstance(tool_args, dict) else str(tool_args)),
                     220,
                 )
                 tool_output = ""
-                if index + 1 < len(replay_messages) and isinstance(
-                    replay_messages[index + 1], ToolMessage
-                ):
+                if index + 1 < len(replay_messages) and isinstance(replay_messages[index + 1], ToolMessage):
                     tool_output = str(replay_messages[index + 1].content or "")
                     index += 1
                 output_summary = cls._summarize_tool_output_for_synthesis(tool_output)
-                lines.append(
-                    f"- {tool_name} args={args_preview}; result={output_summary}"
-                )
+                lines.append(f"- {tool_name} args={args_preview}; result={output_summary}")
                 if len(lines) >= max_items:
                     break
                 index += 1
@@ -7220,9 +6513,7 @@ except Exception as e:
         return stripped
 
     @classmethod
-    def _filter_lmstudio_channel_headers(
-        cls, pending: str, content: str, *, final: bool = False
-    ) -> tuple[str, str]:
+    def _filter_lmstudio_channel_headers(cls, pending: str, content: str, *, final: bool = False) -> tuple[str, str]:
         """Suppress complete or partially streamed LM Studio channel headers."""
         combined = cls._strip_lmstudio_channel_headers(f"{pending}{content}")
         if not combined:
@@ -7257,15 +6548,9 @@ except Exception as e:
             text_parts: list[str] = []
             for block in content:
                 if isinstance(block, dict):
-                    text_parts.append(
-                        RAGComponents._strip_lmstudio_channel_headers(
-                            str(block.get("text", ""))
-                        )
-                    )
+                    text_parts.append(RAGComponents._strip_lmstudio_channel_headers(str(block.get("text", ""))))
                 else:
-                    text_parts.append(
-                        RAGComponents._strip_lmstudio_channel_headers(str(block))
-                    )
+                    text_parts.append(RAGComponents._strip_lmstudio_channel_headers(str(block)))
             return "".join(text_parts)
 
         return RAGComponents._strip_lmstudio_channel_headers(str(content))
@@ -7343,9 +6628,7 @@ except Exception as e:
                 continue
 
             block_type = str(block.get("type", "")).lower()
-            is_reasoning_block_type = block_type in reasoning_block_types or any(
-                block_type.endswith(suffix) for suffix in reasoning_delta_suffixes
-            )
+            is_reasoning_block_type = block_type in reasoning_block_types or any(block_type.endswith(suffix) for suffix in reasoning_delta_suffixes)
             if (
                 not is_reasoning_block_type
                 and block.get("thought") is not True
@@ -7471,9 +6754,7 @@ except Exception as e:
                 return reasoning_text
 
         content = getattr(chunk, "content", None)
-        reasoning_from_content = (
-            RAGComponents._extract_reasoning_text_from_content_list(content)
-        )
+        reasoning_from_content = RAGComponents._extract_reasoning_text_from_content_list(content)
         if reasoning_from_content:
             return reasoning_from_content
 
@@ -7491,9 +6772,7 @@ except Exception as e:
         if isinstance(output, dict):
             # Responses API often places final assistant text under output[] items.
             output_items = output.get("output")
-            text_from_output_items = cls._extract_text_from_responses_output_items(
-                output_items
-            )
+            text_from_output_items = cls._extract_text_from_responses_output_items(output_items)
             if text_from_output_items:
                 return text_from_output_items
 
@@ -7510,9 +6789,7 @@ except Exception as e:
                 if isinstance(first_generation, dict):
                     message = first_generation.get("message")
                     if isinstance(message, dict):
-                        return cls._extract_text_from_stream_content(
-                            message.get("content")
-                        )
+                        return cls._extract_text_from_stream_content(message.get("content"))
                     if message is not None and hasattr(message, "content"):
                         return cls._extract_text_from_stream_content(message.content)
 
@@ -7560,17 +6837,13 @@ except Exception as e:
 
         if isinstance(output, dict):
             output_items = output.get("output")
-            reasoning_from_items = cls._extract_reasoning_text_from_content_list(
-                output_items
-            )
+            reasoning_from_items = cls._extract_reasoning_text_from_content_list(output_items)
             if reasoning_from_items:
                 return reasoning_from_items
 
             message = output.get("message")
             if isinstance(message, dict):
-                message_reasoning = cls._extract_reasoning_text_from_content_list(
-                    message.get("content")
-                )
+                message_reasoning = cls._extract_reasoning_text_from_content_list(message.get("content"))
                 if message_reasoning:
                     return message_reasoning
                 thinking = message.get("thinking")
@@ -7586,11 +6859,7 @@ except Exception as e:
                 if isinstance(first_generation, dict):
                     message = first_generation.get("message")
                     if isinstance(message, dict):
-                        message_reasoning = (
-                            cls._extract_reasoning_text_from_content_list(
-                                message.get("content")
-                            )
-                        )
+                        message_reasoning = cls._extract_reasoning_text_from_content_list(message.get("content"))
                         if message_reasoning:
                             return message_reasoning
                         thinking = message.get("thinking")
@@ -7611,22 +6880,14 @@ except Exception as e:
                                 return reasoning_text
 
                     if isinstance(message, dict):
-                        message_reasoning = (
-                            cls._extract_reasoning_text_from_content_list(
-                                message.get("content")
-                            )
-                        )
+                        message_reasoning = cls._extract_reasoning_text_from_content_list(message.get("content"))
                         if message_reasoning:
                             return message_reasoning
 
                 if hasattr(first_generation, "message"):
                     message = first_generation.message
                     if hasattr(message, "content"):
-                        message_reasoning = (
-                            cls._extract_reasoning_text_from_content_list(
-                                message.content
-                            )
-                        )
+                        message_reasoning = cls._extract_reasoning_text_from_content_list(message.content)
                         if message_reasoning:
                             return message_reasoning
                     if hasattr(message, "additional_kwargs"):
@@ -7686,9 +6947,7 @@ except Exception as e:
             names.add(f"search_{tool_name}")
         return names
 
-    def _get_tool_connection_metadata(
-        self, runtime_tool_name: str
-    ) -> dict[str, str] | None:
+    def _get_tool_connection_metadata(self, runtime_tool_name: str) -> dict[str, str] | None:
         """Resolve tool connection metadata for a runtime tool name."""
         if not self._tool_configs:
             return None
@@ -7703,9 +6962,7 @@ except Exception as e:
                     return None
                 timeout = config.get("timeout") or 30
                 timeout_max = config.get("timeout_max_seconds") or 300
-                connection_mode = (config.get("connection_config") or {}).get(
-                    "mode"
-                ) or ""
+                connection_mode = (config.get("connection_config") or {}).get("mode") or ""
                 return {
                     "tool_config_id": tool_id,
                     "tool_config_name": tool_name,
@@ -7754,10 +7011,7 @@ except Exception as e:
         if not lines:
             return ""
 
-        prompt = (
-            "\n\n## ACTIVE TOOL CONNECTIONS FOR THIS REQUEST\n\n"
-            + "Use only these active tool connections in this request context.\n"
-        )
+        prompt = "\n\n## ACTIVE TOOL CONNECTIONS FOR THIS REQUEST\n\n" + "Use only these active tool connections in this request context.\n"
         if mode == "userspace":
             prompt += (
                 "When creating reusable dashboards/charts/tables, preserve the tool name and input as the stable data connection reference.\n"
@@ -7833,11 +7087,7 @@ except Exception as e:
                 continue
 
             connection_meta = self._get_tool_connection_metadata(tool_name)
-            component_id = (
-                (connection_meta or {}).get("tool_config_id", "").strip()
-                if connection_meta
-                else ""
-            )
+            component_id = (connection_meta or {}).get("tool_config_id", "").strip() if connection_meta else ""
             if not component_id or component_id not in allowed_ids:
                 wrapped_tools.append(tool)
                 continue
@@ -7866,21 +7116,17 @@ except Exception as e:
                             row_count,
                             query_text,
                         )
-                        warning_cleared = userspace_service.clear_live_data_execution_warning(
-                            workspace_id
-                        )
+                        warning_cleared = userspace_service.clear_live_data_execution_warning(workspace_id)
                         if warning_cleared:
                             await userspace_runtime_service.bump_workspace_generation(
                                 workspace_id,
                                 "live_data_warning",
                             )
                     elif str(result).startswith("Error:"):
-                        warning_changed = (
-                            userspace_service.record_live_data_execution_warning(
-                                workspace_id,
-                                _component_id,
-                                str(result),
-                            )
+                        warning_changed = userspace_service.record_live_data_execution_warning(
+                            workspace_id,
+                            _component_id,
+                            str(result),
                         )
                         if warning_changed:
                             await userspace_runtime_service.bump_workspace_generation(
@@ -7964,9 +7210,7 @@ except Exception as e:
                 elif tool_name == "create_datatable":
                     overrides["args_schema"] = CreateLiveDataTableInput
 
-            overridden_tools.append(
-                self._clone_structured_tool(tool, **overrides)
-            )
+            overridden_tools.append(self._clone_structured_tool(tool, **overrides))
 
         return overridden_tools
 
@@ -8052,17 +7296,11 @@ except Exception as e:
 
         class UpsertUserSpaceEnvVarInput(BaseModel):
             key: str = Field(
-                description=(
-                    "Environment variable key (for example: OPENAI_API_KEY). "
-                    "Must match [A-Za-z_][A-Za-z0-9_]*."
-                ),
+                description=("Environment variable key (for example: OPENAI_API_KEY). Must match [A-Za-z_][A-Za-z0-9_]*."),
             )
             value: str | None = Field(
                 default=None,
-                description=(
-                    "Optional secret value. Omit to create/update placeholder keys "
-                    "that users can fill in the Environment Variables modal."
-                ),
+                description=("Optional secret value. Omit to create/update placeholder keys that users can fill in the Environment Variables modal."),
             )
             description: str | None = Field(
                 default=None,
@@ -8078,18 +7316,13 @@ except Exception as e:
                 default=12,
                 ge=1,
                 le=50,
-                description=(
-                    "Maximum number of workspace files to inspect in the assay pass. "
-                    "Prefer dashboard entry + recently updated files."
-                ),
+                description=("Maximum number of workspace files to inspect in the assay pass. Prefer dashboard entry + recently updated files."),
             )
             max_chars_per_file: int = Field(
                 default=1600,
                 ge=200,
                 le=12000,
-                description=(
-                    "Maximum number of UTF-8 characters to include per inspected file preview."
-                ),
+                description=("Maximum number of UTF-8 characters to include per inspected file preview."),
             )
             reason: str = Field(
                 default="",
@@ -8098,9 +7331,7 @@ except Exception as e:
 
         class ReadUserSpaceFileInput(BaseModel):
             class ReadEntryInput(BaseModel):
-                path: str = Field(
-                    description="Relative path from the workspace files root to read."
-                )
+                path: str = Field(description="Relative path from the workspace files root to read.")
                 start_line: Optional[int] = Field(
                     default=None,
                     description="Optional starting line (1-indexed, inclusive) for this entry.",
@@ -8116,10 +7347,7 @@ except Exception as e:
 
             workspace_id: Optional[str] = Field(
                 default=None,
-                description=(
-                    "Optional target workspace ID for cross-workspace access. "
-                    "Omit to read from this workspace."
-                ),
+                description=("Optional target workspace ID for cross-workspace access. Omit to read from this workspace."),
             )
             path: str = Field(
                 default="dashboard/main.ts",
@@ -8199,10 +7427,7 @@ except Exception as e:
         class DeleteUserSpaceFileInput(BaseModel):
             workspace_id: Optional[str] = Field(
                 default=None,
-                description=(
-                    "Optional target workspace ID for cross-workspace access. "
-                    "Requires read_write grant for non-primary workspaces."
-                ),
+                description=("Optional target workspace ID for cross-workspace access. Requires read_write grant for non-primary workspaces."),
             )
             path: str = Field(
                 default="",
@@ -8239,12 +7464,8 @@ except Exception as e:
 
         class MoveUserSpaceFileInput(BaseModel):
             class MoveEntryInput(BaseModel):
-                old_path: str = Field(
-                    description="Existing relative path from the workspace files root."
-                )
-                new_path: str = Field(
-                    description="Destination relative path from the workspace files root."
-                )
+                old_path: str = Field(description="Existing relative path from the workspace files root.")
+                new_path: str = Field(description="Destination relative path from the workspace files root.")
 
             old_path: str = Field(
                 default="",
@@ -8346,24 +7567,15 @@ except Exception as e:
 
             path: str = Field(
                 default="",
-                description=(
-                    "Relative path from the workspace files root to create/update "
-                    "(for example: dashboard/main.ts)."
-                ),
+                description=("Relative path from the workspace files root to create/update (for example: dashboard/main.ts)."),
             )
             workspace_id: Optional[str] = Field(
                 default=None,
-                description=(
-                    "Optional target workspace ID for cross-workspace access. "
-                    "Requires read_write grant for non-primary workspaces."
-                ),
+                description=("Optional target workspace ID for cross-workspace access. Requires read_write grant for non-primary workspaces."),
             )
             content: str = Field(
                 default="",
-                description=(
-                    "Full UTF-8 file content to write. Omit when using files for a "
-                    "batched multi-file upsert (per-entry content is required there)."
-                ),
+                description=("Full UTF-8 file content to write. Omit when using files for a batched multi-file upsert (per-entry content is required there)."),
             )
 
             @field_validator("content", mode="before")
@@ -8405,9 +7617,7 @@ except Exception as e:
 
             artifact_type: ArtifactType | None = Field(
                 default="module_ts",
-                description=(
-                    "Artifact type for preview/rendering. Use module_ts for interactive reports."
-                ),
+                description=("Artifact type for preview/rendering. Use module_ts for interactive reports."),
             )
             live_data_requested: bool = Field(
                 default=False,
@@ -8470,9 +7680,7 @@ except Exception as e:
         class PatchUserSpaceFileInput(BaseModel):
             class ReplacementInput(BaseModel):
                 old_text: str = Field(
-                    description=(
-                        "Exact text to replace. Must match existing file content."
-                    ),
+                    description=("Exact text to replace. Must match existing file content."),
                 )
                 new_text: str = Field(
                     description="Replacement text for this occurrence.",
@@ -8481,9 +7689,7 @@ except Exception as e:
                     default=1,
                     ge=1,
                     le=100,
-                    description=(
-                        "Maximum replacements for this old_text (default 1 for surgical edits)."
-                    ),
+                    description=("Maximum replacements for this old_text (default 1 for surgical edits)."),
                 )
                 required: bool = Field(
                     default=True,
@@ -8498,8 +7704,7 @@ except Exception as e:
                 default_factory=list,
                 max_length=50,
                 description=(
-                    "Ordered replacement operations to apply. Prefer a JSON array of objects; "
-                    "quoted JSON strings are tolerated and parsed best-effort."
+                    "Ordered replacement operations to apply. Prefer a JSON array of objects; quoted JSON strings are tolerated and parsed best-effort."
                 ),
             )
             patches: list[dict[str, Any]] | None = Field(
@@ -8568,10 +7773,7 @@ except Exception as e:
         class CreateUserSpaceSnapshotInput(BaseModel):
             message: str = Field(
                 default="AI checkpoint",
-                description=(
-                    "Short summary for this snapshot checkpoint. "
-                    "Use milestone-oriented messages (e.g., 'wired sales chart + table')."
-                ),
+                description=("Short summary for this snapshot checkpoint. Use milestone-oriented messages (e.g., 'wired sales chart + table')."),
             )
             reason: str = Field(
                 default="",
@@ -8591,33 +7793,23 @@ except Exception as e:
         class CaptureUserSpaceScreenshotInput(BaseModel):
             workspace_id: Optional[str] = Field(
                 default=None,
-                description=(
-                    "Optional target workspace ID for cross-workspace access. "
-                    "Omit to screenshot this workspace's runtime preview."
-                ),
+                description=("Optional target workspace ID for cross-workspace access. Omit to screenshot this workspace's runtime preview."),
             )
             path: str = Field(
                 default="",
-                description=(
-                    "Optional preview subpath to capture (for example: dashboard or reports/sales). "
-                    "Default captures the preview root."
-                ),
+                description=("Optional preview subpath to capture (for example: dashboard or reports/sales). Default captures the preview root."),
             )
             width: int = Field(
                 default=1440,
                 ge=320,
                 le=IMAGE_PAYLOAD_LIMITS["max_width"],
-                description=(
-                    "Viewport width in pixels. Hard-capped for AI-friendly screenshot size."
-                ),
+                description=("Viewport width in pixels. Hard-capped for AI-friendly screenshot size."),
             )
             height: int = Field(
                 default=900,
                 ge=240,
                 le=IMAGE_PAYLOAD_LIMITS["max_height"],
-                description=(
-                    "Viewport height in pixels. Hard-capped for AI-friendly screenshot size."
-                ),
+                description=("Viewport height in pixels. Hard-capped for AI-friendly screenshot size."),
             )
             full_page: bool = Field(
                 default=True,
@@ -8640,18 +7832,14 @@ except Exception as e:
             capture_element: bool = Field(
                 default=False,
                 description=(
-                    "When true, clip screenshot to the unique visible element matched by "
-                    "wait_for_selector. Capture fails if selector is missing or ambiguous."
+                    "When true, clip screenshot to the unique visible element matched by wait_for_selector. Capture fails if selector is missing or ambiguous."
                 ),
             )
             clip_padding_px: int = Field(
                 default=16,
                 ge=0,
                 le=256,
-                description=(
-                    "Optional padding around the captured element clip, in pixels. "
-                    "Applies only when capture_element is true."
-                ),
+                description=("Optional padding around the captured element clip, in pixels. Applies only when capture_element is true."),
             )
             wait_after_load_ms: int = Field(
                 default=1800,
@@ -8671,17 +7859,9 @@ except Exception as e:
         class BrowseUserSpaceExternalUrlInput(BaseModel):
             workspace_id: Optional[str] = Field(
                 default=None,
-                description=(
-                    "Optional target workspace ID for cross-workspace access. "
-                    "Omit to browse from this workspace's runtime session."
-                ),
+                description=("Optional target workspace ID for cross-workspace access. Omit to browse from this workspace's runtime session."),
             )
-            url: str = Field(
-                description=(
-                    "Absolute http/https URL to open through the workspace runtime's "
-                    "Playwright browser."
-                )
-            )
+            url: str = Field(description=("Absolute http/https URL to open through the workspace runtime's Playwright browser."))
             timeout_ms: int = Field(
                 default=20000,
                 ge=1000,
@@ -8718,10 +7898,7 @@ except Exception as e:
         class RunTerminalCommandInput(BaseModel):
             workspace_id: Optional[str] = Field(
                 default=None,
-                description=(
-                    "Optional target workspace ID for cross-workspace access. "
-                    "Requires read_write grant for non-primary workspaces."
-                ),
+                description=("Optional target workspace ID for cross-workspace access. Requires read_write grant for non-primary workspaces."),
             )
             command: str = Field(
                 description=(
@@ -8738,10 +7915,7 @@ except Exception as e:
             )
             cwd: str = Field(
                 default=".",
-                description=(
-                    "Workspace-relative working directory. Defaults to workspace root. "
-                    "Must stay within the workspace boundary."
-                ),
+                description=("Workspace-relative working directory. Defaults to workspace root. Must stay within the workspace boundary."),
             )
             reason: str = Field(
                 default="",
@@ -8790,17 +7964,9 @@ except Exception as e:
             if path:
                 payload["path"] = path
             if message:
-                payload["message"] = (
-                    _append_sqlite_hint(message, include_sqlite_hint)
-                    if include_sqlite_hint
-                    else message
-                )
+                payload["message"] = _append_sqlite_hint(message, include_sqlite_hint) if include_sqlite_hint else message
             if error:
-                payload["error"] = (
-                    _append_sqlite_hint(error, include_sqlite_hint)
-                    if include_sqlite_hint
-                    else error
-                )
+                payload["error"] = _append_sqlite_hint(error, include_sqlite_hint) if include_sqlite_hint else error
             resolved_failure_class = failure_class or self._classify_userspace_failure(
                 message,
                 error,
@@ -8808,19 +7974,12 @@ except Exception as e:
                 warnings,
             )
             payload["failure_class"] = resolved_failure_class
-            payload["next_best_tool"] = (
-                next_best_tool
-                or self._next_best_tool_for_failure(
-                    resolved_failure_class,
-                    fallback_tool="patch_userspace_file",
-                )
+            payload["next_best_tool"] = next_best_tool or self._next_best_tool_for_failure(
+                resolved_failure_class,
+                fallback_tool="patch_userspace_file",
             )
             if action_required:
-                payload["action_required"] = (
-                    _append_sqlite_hint(action_required, include_sqlite_hint)
-                    if include_sqlite_hint
-                    else action_required
-                )
+                payload["action_required"] = _append_sqlite_hint(action_required, include_sqlite_hint) if include_sqlite_hint else action_required
             if contract_violations:
                 payload["contract_violations"] = contract_violations
             if warnings:
@@ -8947,11 +8106,7 @@ except Exception as e:
                 rejected = True
                 persisted = False
             elif rejected_count == 0 and persisted_count > 0:
-                aggregate_status = (
-                    "persisted_with_violations"
-                    if any_persisted_with_violations
-                    else "persisted"
-                )
+                aggregate_status = "persisted_with_violations" if any_persisted_with_violations else "persisted"
                 rejected = False
                 persisted = True
             elif persisted_count == 0 and rejected_count > 0:
@@ -8967,9 +8122,7 @@ except Exception as e:
                 rejected = False
                 persisted = False
             else:
-                aggregate_status = (
-                    "persisted" if persisted_count else "rejected_not_persisted"
-                )
+                aggregate_status = "persisted" if persisted_count else "rejected_not_persisted"
                 rejected = persisted_count == 0
                 persisted = persisted_count > 0
 
@@ -8987,16 +8140,10 @@ except Exception as e:
                 messages.append(f"{no_change_count} unchanged")
             if with_violations_count:
                 messages.append(f"{with_violations_count} with violations")
-            summary_message = (
-                f"Batched {op}: {', '.join(messages)} of {total} file(s)."
-                if messages
-                else f"Batched {op}: {total} file(s) processed."
-            )
+            summary_message = f"Batched {op}: {', '.join(messages)} of {total} file(s)." if messages else f"Batched {op}: {total} file(s) processed."
 
             if op == "read":
-                next_best = (
-                    "list_userspace_files" if rejected_count else "patch_userspace_file"
-                )
+                next_best = "list_userspace_files" if rejected_count else "patch_userspace_file"
             elif rejected_count:
                 next_best = "patch_userspace_file"
             elif op in ("upsert", "patch"):
@@ -9046,10 +8193,7 @@ except Exception as e:
                 except ToolException as exc:
                     entry_results.append(
                         {
-                            "path": entry.get("path")
-                            or entry.get("new_path")
-                            or entry.get("old_path")
-                            or "",
+                            "path": entry.get("path") or entry.get("new_path") or entry.get("old_path") or "",
                             "old_path": entry.get("old_path"),
                             "new_path": entry.get("new_path"),
                             "status": "rejected_not_persisted",
@@ -9064,10 +8208,7 @@ except Exception as e:
                 except Exception as exc:  # pragma: no cover - defensive
                     entry_results.append(
                         {
-                            "path": entry.get("path")
-                            or entry.get("new_path")
-                            or entry.get("old_path")
-                            or "",
+                            "path": entry.get("path") or entry.get("new_path") or entry.get("old_path") or "",
                             "old_path": entry.get("old_path"),
                             "new_path": entry.get("new_path"),
                             "status": "rejected_not_persisted",
@@ -9144,14 +8285,10 @@ except Exception as e:
             **_: Any,
         ) -> str:
             del reason
-            target_ws, target_uid = await _resolve_target_workspace(
-                workspace_id, "read"
-            )
+            target_ws, target_uid = await _resolve_target_workspace(workspace_id, "read")
             workspace_id = target_ws
             user_id = target_uid
-            files = await userspace_service.list_workspace_files(
-                workspace_id, user_id, include_dirs=True
-            )
+            files = await userspace_service.list_workspace_files(workspace_id, user_id, include_dirs=True)
             file_items = [f.model_dump(mode="json") for f in files]
             return _render_userspace_tool_payload(
                 tool_name="list_userspace_files",
@@ -9205,11 +8342,7 @@ except Exception as e:
             return _render_userspace_tool_payload(
                 tool_name="upsert_userspace_env_var",
                 status="persisted",
-                message=(
-                    f"Environment variable {normalized_key} saved."
-                    if value is not None
-                    else f"Environment variable placeholder {normalized_key} saved."
-                ),
+                message=(f"Environment variable {normalized_key} saved." if value is not None else f"Environment variable placeholder {normalized_key} saved."),
                 persisted=True,
                 retryable=True,
                 failure_class="none",
@@ -9223,9 +8356,7 @@ except Exception as e:
         ) -> tuple[str | None, str]:
             ep_status = userspace_service.get_workspace_entrypoint_status(workspace_id)
             if ep_status.state == "valid":
-                is_default = userspace_service.is_default_static_entrypoint(
-                    workspace_id
-                )
+                is_default = userspace_service.is_default_static_entrypoint(workspace_id)
                 if is_default:
                     return (
                         ".ragtime/runtime-entrypoint.json",
@@ -9238,10 +8369,7 @@ except Exception as e:
                 framework_label = ep_status.framework or "custom"
                 return (
                     ".ragtime/runtime-entrypoint.json",
-                    (
-                        f".ragtime/runtime-entrypoint.json is configured with "
-                        f"framework={framework_label}. Runtime launch is locked in."
-                    ),
+                    (f".ragtime/runtime-entrypoint.json is configured with framework={framework_label}. Runtime launch is locked in."),
                 )
             if ep_status.state == "invalid":
                 return (
@@ -9255,24 +8383,16 @@ except Exception as e:
             )
 
         async def _get_workspace_structure() -> dict[str, Any]:
-            files = await userspace_service.list_workspace_files(
-                workspace_id, user_id, include_dirs=True
-            )
+            files = await userspace_service.list_workspace_files(workspace_id, user_id, include_dirs=True)
             file_paths = {file.path for file in files}
-            authoritative_entrypoint, entrypoint_reason = (
-                _compute_authoritative_entrypoint(file_paths)
-            )
+            authoritative_entrypoint, entrypoint_reason = _compute_authoritative_entrypoint(file_paths)
             return {
                 "files": files,
                 "authoritative_entrypoint": authoritative_entrypoint,
                 "entrypoint_reason": entrypoint_reason,
                 "has_dashboard_entry": "dashboard/main.ts" in file_paths,
-                "has_runtime_entrypoint": ".ragtime/runtime-entrypoint.json"
-                in file_paths,
-                "has_index_html": any(
-                    PurePosixPath(path).name.lower() == "index.html"
-                    for path in file_paths
-                ),
+                "has_runtime_entrypoint": ".ragtime/runtime-entrypoint.json" in file_paths,
+                "has_index_html": any(PurePosixPath(path).name.lower() == "index.html" for path in file_paths),
             }
 
         def _is_index_html_path(path: str) -> bool:
@@ -9321,12 +8441,8 @@ except Exception as e:
                     "exists": True,
                     "live_data_connections_count": len(entry_connections),
                     "live_data_checks_count": len(entry_checks),
-                    "live_data_connection_component_ids": [
-                        conn.component_id for conn in entry_connections
-                    ],
-                    "live_data_check_component_ids": [
-                        check.component_id for check in entry_checks
-                    ],
+                    "live_data_connection_component_ids": [conn.component_id for conn in entry_connections],
+                    "live_data_check_component_ids": [check.component_id for check in entry_checks],
                 }
 
             return {
@@ -9351,9 +8467,7 @@ except Exception as e:
             **_: Any,
         ) -> str:
             del reason
-            await userspace_service.enforce_workspace_role(
-                workspace_id, user_id, "editor"
-            )
+            await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
 
             structure = await _get_workspace_structure()
             files = structure["files"]
@@ -9362,16 +8476,10 @@ except Exception as e:
             authoritative_entrypoint = structure["authoritative_entrypoint"]
             entrypoint_reason = str(structure["entrypoint_reason"])
             contract_context_path = "dashboard/main.ts"
-            live_data_contract_context = await _build_live_data_contract_context(
-                contract_context_path
-            )
+            live_data_contract_context = await _build_live_data_contract_context(contract_context_path)
 
-            dashboard_paths = sorted(
-                [file.path for file in files if file.path.startswith("dashboard/")]
-            )
-            non_dashboard_paths = sorted(
-                [file.path for file in files if not file.path.startswith("dashboard/")]
-            )
+            dashboard_paths = sorted([file.path for file in files if file.path.startswith("dashboard/")])
+            non_dashboard_paths = sorted([file.path for file in files if not file.path.startswith("dashboard/")])
 
             prioritized_paths: list[str] = []
             if "dashboard/main.ts" in dashboard_paths:
@@ -9410,9 +8518,7 @@ except Exception as e:
                 "workspace_id": workspace_id,
                 "summary": {
                     "total_files": len(files),
-                    "dashboard_file_count": len(
-                        [file for file in files if file.path.startswith("dashboard/")]
-                    ),
+                    "dashboard_file_count": len([file for file in files if file.path.startswith("dashboard/")]),
                     "has_dashboard_entry": has_dashboard_entry,
                     "inspected_file_count": len(inspected),
                 },
@@ -9425,9 +8531,7 @@ except Exception as e:
                 },
                 "live_data_contract": live_data_contract_context,
                 "inspected_files": inspected,
-                "next_step": (
-                    "Read target files in full before overwrite, then update files and validate TypeScript."
-                ),
+                "next_step": ("Read target files in full before overwrite, then update files and validate TypeScript."),
                 "editing_guidance": (
                     "When dashboard/main.ts exists, implement dashboard feature changes in dashboard/* files and avoid index.html edits for behavior changes."
                 ),
@@ -9465,11 +8569,7 @@ except Exception as e:
                 normalized_entries: list[dict[str, Any]] = []
                 if reads:
                     for item in reads:
-                        raw = (
-                            item.model_dump(mode="python")
-                            if isinstance(item, BaseModel)
-                            else item
-                        )
+                        raw = item.model_dump(mode="python") if isinstance(item, BaseModel) else item
                         if not isinstance(raw, dict):
                             continue
                         entry_path = (raw.get("path") or "").strip()
@@ -9490,9 +8590,7 @@ except Exception as e:
                             continue
                         normalized_entries.append({"path": entry_path})
                 if not normalized_entries:
-                    raise ToolException(
-                        "Invalid batched read: provide at least one non-empty path."
-                    )
+                    raise ToolException("Invalid batched read: provide at least one non-empty path.")
 
                 batch_workspace_id = workspace_id
 
@@ -9512,16 +8610,12 @@ except Exception as e:
                     invoke_entry=_invoke_read_entry,
                 )
 
-            target_ws, target_uid = await _resolve_target_workspace(
-                workspace_id, "read"
-            )
+            target_ws, target_uid = await _resolve_target_workspace(workspace_id, "read")
             workspace_id = target_ws
             user_id = target_uid
             normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
             try:
-                file_data = await userspace_service.get_workspace_file(
-                    workspace_id, normalized_path, user_id
-                )
+                file_data = await userspace_service.get_workspace_file(workspace_id, normalized_path, user_id)
             except HTTPException as exc:
                 if exc.status_code == 404:
                     return _render_userspace_tool_payload(
@@ -9552,9 +8646,7 @@ except Exception as e:
                 raise
             payload = file_data.model_dump(mode="json")
 
-            if payload.get("content") and (
-                start_line is not None or end_line is not None or search_query
-            ):
+            if payload.get("content") and (start_line is not None or end_line is not None or search_query):
                 lines = payload["content"].splitlines(keepends=True)
                 total_lines = len(lines)
 
@@ -9576,9 +8668,7 @@ except Exception as e:
                                 match_indices.append(i)
 
                         if not match_indices:
-                            payload["content"] = (
-                                f"No matches found for '{search_query}' in the specified range (lines {s_line}-{e_line})."
-                            )
+                            payload["content"] = f"No matches found for '{search_query}' in the specified range (lines {s_line}-{e_line})."
                             payload["_meta"] = {
                                 "search_query": search_query,
                                 "matches_found": 0,
@@ -9596,7 +8686,7 @@ except Exception as e:
                                     window_start = max(window_start, last_end)
 
                                 for i in range(window_start, window_end):
-                                    output_lines.append(f"{i+1:5d} | {lines[i]}")
+                                    output_lines.append(f"{i + 1:5d} | {lines[i]}")
                                 last_end = window_end
 
                             payload["content"] = "".join(output_lines)
@@ -9608,7 +8698,7 @@ except Exception as e:
                     else:
                         output_lines = []
                         for i in range(s_line - 1, e_line):
-                            output_lines.append(f"{i+1:5d} | {lines[i]}")
+                            output_lines.append(f"{i + 1:5d} | {lines[i]}")
                         payload["content"] = "".join(output_lines)
                         payload["_meta"] = {
                             "start_line": s_line,
@@ -9617,9 +8707,7 @@ except Exception as e:
                         }
 
             structure = await _get_workspace_structure()
-            if _is_index_html_path(normalized_path) and bool(
-                structure["has_dashboard_entry"]
-            ):
+            if _is_index_html_path(normalized_path) and bool(structure["has_dashboard_entry"]):
                 payload["warning"] = (
                     "This workspace has dashboard/main.ts. For dashboard behavior changes, edit dashboard/* files (especially dashboard/main.ts and imported modules) instead of index.html."
                 )
@@ -9657,27 +8745,19 @@ except Exception as e:
                         workspace_id=batch_workspace_id,
                     )
 
-                normalized_entries = [
-                    {"path": (p or "").strip()} for p in paths if (p or "").strip()
-                ]
+                normalized_entries = [{"path": (p or "").strip()} for p in paths if (p or "").strip()]
                 if not normalized_entries:
-                    raise ToolException(
-                        "Invalid paths: provide at least one non-empty path."
-                    )
+                    raise ToolException("Invalid paths: provide at least one non-empty path.")
                 return await _run_userspace_batch(
                     tool_name="delete_userspace_file",
                     op="delete",
                     entries=normalized_entries,
                     invoke_entry=_invoke_delete_entry,
                 )
-            target_ws, target_uid = await _resolve_target_workspace(
-                workspace_id, "write"
-            )
+            target_ws, target_uid = await _resolve_target_workspace(workspace_id, "write")
             workspace_id = target_ws
             user_id = target_uid
-            await userspace_service.enforce_workspace_role(
-                workspace_id, user_id, "editor"
-            )
+            await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
             normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
             if not normalized_path:
                 raise ToolException("Invalid path: path is required.")
@@ -9707,17 +8787,13 @@ except Exception as e:
                     rejected=True,
                     persisted=False,
                     retryable=True,
-                    failure_class=self._classify_userspace_failure(
-                        getattr(exc, "detail", exc)
-                    ),
+                    failure_class=self._classify_userspace_failure(getattr(exc, "detail", exc)),
                     next_best_tool="list_userspace_files",
                     path=normalized_path,
                     error=f"Cannot delete {normalized_path}: {getattr(exc, 'detail', exc)}",
                     action_required="Inspect the file path and workspace state, then retry delete_userspace_file.",
                 )
-            await userspace_runtime_service.bump_workspace_generation(
-                workspace_id, "file_delete", payload={"path": normalized_path}
-            )
+            await userspace_runtime_service.bump_workspace_generation(workspace_id, "file_delete", payload={"path": normalized_path})
             return _render_userspace_tool_payload(
                 tool_name="delete_userspace_file",
                 status="persisted",
@@ -9742,11 +8818,7 @@ except Exception as e:
             if moves:
                 normalized_entries: list[dict[str, Any]] = []
                 for item in moves:
-                    raw = (
-                        item.model_dump(mode="python")
-                        if isinstance(item, BaseModel)
-                        else item
-                    )
+                    raw = item.model_dump(mode="python") if isinstance(item, BaseModel) else item
                     if not isinstance(raw, dict):
                         continue
                     op_old = (raw.get("old_path") or "").strip()
@@ -9755,9 +8827,7 @@ except Exception as e:
                         continue
                     normalized_entries.append({"old_path": op_old, "new_path": op_new})
                 if not normalized_entries:
-                    raise ToolException(
-                        "Invalid moves: provide at least one entry with old_path and new_path."
-                    )
+                    raise ToolException("Invalid moves: provide at least one entry with old_path and new_path.")
 
                 async def _invoke_move_entry(entry: dict[str, Any]) -> str:
                     return await move_userspace_file(
@@ -9771,15 +8841,9 @@ except Exception as e:
                     entries=normalized_entries,
                     invoke_entry=_invoke_move_entry,
                 )
-            await userspace_service.enforce_workspace_role(
-                workspace_id, user_id, "editor"
-            )
-            normalized_old_path = (
-                (old_path or "").strip().replace("\\", "/").lstrip("/")
-            )
-            normalized_new_path = (
-                (new_path or "").strip().replace("\\", "/").lstrip("/")
-            )
+            await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+            normalized_old_path = (old_path or "").strip().replace("\\", "/").lstrip("/")
+            normalized_new_path = (new_path or "").strip().replace("\\", "/").lstrip("/")
             if not normalized_old_path or not normalized_new_path:
                 raise ToolException("Invalid path: old_path and new_path are required.")
             try:
@@ -9827,16 +8891,10 @@ except Exception as e:
                     rejected=True,
                     persisted=False,
                     retryable=True,
-                    failure_class=self._classify_userspace_failure(
-                        getattr(exc, "detail", exc)
-                    ),
+                    failure_class=self._classify_userspace_failure(getattr(exc, "detail", exc)),
                     next_best_tool="list_userspace_files",
                     path=normalized_old_path,
-                    error=(
-                        "Cannot move file from "
-                        f"{normalized_old_path} to {normalized_new_path}: "
-                        f"{getattr(exc, 'detail', exc)}"
-                    ),
+                    error=(f"Cannot move file from {normalized_old_path} to {normalized_new_path}: {getattr(exc, 'detail', exc)}"),
                     action_required="Inspect both paths and retry move_userspace_file.",
                     diagnostics={
                         "old_path": normalized_old_path,
@@ -9878,24 +8936,16 @@ except Exception as e:
             if patches:
                 normalized_entries: list[dict[str, Any]] = []
                 for item in patches:
-                    raw = (
-                        item.model_dump(mode="python")
-                        if isinstance(item, BaseModel)
-                        else item
-                    )
+                    raw = item.model_dump(mode="python") if isinstance(item, BaseModel) else item
                     if not isinstance(raw, dict):
                         continue
                     entry_path = (raw.get("path") or "").strip()
                     entry_replacements = raw.get("replacements")
                     if not entry_path or entry_replacements is None:
                         continue
-                    normalized_entries.append(
-                        {"path": entry_path, "replacements": entry_replacements}
-                    )
+                    normalized_entries.append({"path": entry_path, "replacements": entry_replacements})
                 if not normalized_entries:
-                    raise ToolException(
-                        "Invalid patches: provide at least one entry with path and replacements."
-                    )
+                    raise ToolException("Invalid patches: provide at least one entry with path and replacements.")
 
                 async def _invoke_patch_entry(entry: dict[str, Any]) -> str:
                     return await patch_userspace_file(
@@ -9909,27 +8959,18 @@ except Exception as e:
                     entries=normalized_entries,
                     invoke_entry=_invoke_patch_entry,
                 )
-            await userspace_service.enforce_workspace_role(
-                workspace_id, user_id, "editor"
-            )
+            await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
 
             normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
             if not normalized_path:
                 raise ToolException("Invalid path: path is required.")
 
             try:
-                file_data = await userspace_service.get_workspace_file(
-                    workspace_id, normalized_path, user_id
-                )
+                file_data = await userspace_service.get_workspace_file(workspace_id, normalized_path, user_id)
             except HTTPException as exc:
                 if getattr(exc, "status_code", None) == 404:
-                    raise ToolException(
-                        f"File not found: {normalized_path}. "
-                        "Use upsert_userspace_file to create it first, or check the path."
-                    ) from exc
-                raise ToolException(
-                    f"Cannot read {normalized_path}: {getattr(exc, 'detail', exc)}"
-                ) from exc
+                    raise ToolException(f"File not found: {normalized_path}. Use upsert_userspace_file to create it first, or check the path.") from exc
+                raise ToolException(f"Cannot read {normalized_path}: {getattr(exc, 'detail', exc)}") from exc
 
             parsed_replacements: list[PatchUserSpaceFileInput.ReplacementInput] = []
 
@@ -9958,29 +8999,19 @@ except Exception as e:
             if raw_replacements is None:
                 raw_replacements = []
             if not isinstance(raw_replacements, list):
-                raise ToolException(
-                    "Invalid replacements format. Provide a list of replacement objects or a JSON string that decodes to one."
-                )
+                raise ToolException("Invalid replacements format. Provide a list of replacement objects or a JSON string that decodes to one.")
 
             for item in raw_replacements:
-                payload = (
-                    item.model_dump(mode="python")
-                    if isinstance(item, BaseModel)
-                    else item
-                )
+                payload = item.model_dump(mode="python") if isinstance(item, BaseModel) else item
                 try:
-                    parsed_replacements.append(
-                        PatchUserSpaceFileInput.ReplacementInput.model_validate(payload)
-                    )
+                    parsed_replacements.append(PatchUserSpaceFileInput.ReplacementInput.model_validate(payload))
                 except Exception as exc:
                     raise ToolException(
                         "Invalid replacement object. Each item must include old_text and new_text, with optional max_replacements and required."
                     ) from exc
 
             if not parsed_replacements:
-                raise ToolException(
-                    "No replacements provided. Supply at least one replacement operation."
-                )
+                raise ToolException("No replacements provided. Supply at least one replacement operation.")
 
             updated_content = file_data.content
             applied: list[dict[str, Any]] = []
@@ -10019,9 +9050,7 @@ except Exception as e:
                 required = replacement.required
 
                 if not old_text:
-                    raise ToolException(
-                        f"Replacement #{index} invalid: old_text must not be empty."
-                    )
+                    raise ToolException(f"Replacement #{index} invalid: old_text must not be empty.")
 
                 found_count = updated_content.count(old_text)
                 if found_count == 0:
@@ -10030,18 +9059,10 @@ except Exception as e:
                         old_suffix = _last_non_empty_line(old_text)[:160]
                         normalized_old = old_text.replace("\r\n", "\n")
                         normalized_file = updated_content.replace("\r\n", "\n")
-                        newline_normalized_match = (
-                            normalized_file.count(normalized_old) > 0
-                            if normalized_old
-                            else False
-                        )
+                        newline_normalized_match = normalized_file.count(normalized_old) > 0 if normalized_old else False
 
-                        prefix_matches = (
-                            updated_content.count(old_prefix) if old_prefix else 0
-                        )
-                        suffix_matches = (
-                            updated_content.count(old_suffix) if old_suffix else 0
-                        )
+                        prefix_matches = updated_content.count(old_prefix) if old_prefix else 0
+                        suffix_matches = updated_content.count(old_suffix) if old_suffix else 0
 
                         file_excerpt = updated_content[:1200]
                         return _render_userspace_tool_payload(
@@ -10134,19 +9155,13 @@ except Exception as e:
                         + ", ".join(patch_mock_patterns)
                         + ". Replace static/mock data with live runtime data via context.components[componentId].execute()."
                     ),
-                    action_required=(
-                        "Replace mock/static dashboard data with live runtime data wiring, then retry patch_userspace_file."
-                    ),
+                    action_required=("Replace mock/static dashboard data with live runtime data wiring, then retry patch_userspace_file."),
                     diagnostics={"patterns": patch_mock_patterns},
                 )
-            elif patch_mock_patterns and normalized_lower_path.endswith(
-                _HARDCODED_DATA_SOURCE_EXTENSIONS
-            ):
+            elif patch_mock_patterns and normalized_lower_path.endswith(_HARDCODED_DATA_SOURCE_EXTENSIONS):
                 # Check if this file is the runtime entrypoint and workspace has tools
                 try:
-                    patch_ws = await userspace_service.get_workspace(
-                        workspace_id, user_id
-                    )
+                    patch_ws = await userspace_service.get_workspace(workspace_id, user_id)
                     if bool(patch_ws.selected_tool_ids):
                         patch_resolved_ep: str | None = None
                         try:
@@ -10157,20 +9172,13 @@ except Exception as e:
                             )
                             patch_cfg = json.loads(patch_ep_file.content or "{}")
                             if isinstance(patch_cfg, dict):
-                                patch_resolved_ep = _resolve_entrypoint_source_file(
-                                    patch_cfg
-                                )
+                                patch_resolved_ep = _resolve_entrypoint_source_file(patch_cfg)
                         except Exception:
                             pass
-                        is_entrypoint = (
-                            patch_resolved_ep is not None
-                            and normalized_lower_path == patch_resolved_ep.lower()
-                        )
+                        is_entrypoint = patch_resolved_ep is not None and normalized_lower_path == patch_resolved_ep.lower()
                         if is_entrypoint:
                             patch_hardcoded_warning = (
-                                "Hardcoded data patterns detected: "
-                                + ", ".join(patch_mock_patterns)
-                                + ". When workspace has selected tools, entrypoint data "
+                                "Hardcoded data patterns detected: " + ", ".join(patch_mock_patterns) + ". When workspace has selected tools, entrypoint data "
                                 "should be fetched from live sources, not embedded in source code."
                             )
                 except Exception:
@@ -10204,13 +9212,9 @@ except Exception as e:
                         retryable=True,
                         failure_class=self._classify_userspace_failure(detail_text),
                         path=normalized_path,
-                        message=(
-                            "Patch text replacements were computed locally but the file was NOT persisted."
-                        ),
+                        message=("Patch text replacements were computed locally but the file was NOT persisted."),
                         error=detail_text,
-                        action_required=(
-                            "Apply the required wiring or validation fixes from this response, then retry patch_userspace_file."
-                        ),
+                        action_required=("Apply the required wiring or validation fixes from this response, then retry patch_userspace_file."),
                         attempted_replacements=applied,
                         skipped=skipped,
                         updated=False,
@@ -10224,16 +9228,10 @@ except Exception as e:
                     normalized_path,
                 )
 
-            write_signature = hashlib.sha256(
-                f"{normalized_path}\0{updated_content}".encode("utf-8")
-            ).hexdigest()[:16]
+            write_signature = hashlib.sha256(f"{normalized_path}\0{updated_content}".encode("utf-8")).hexdigest()[:16]
             response_payload = _build_userspace_tool_payload(
                 tool_name="patch_userspace_file",
-                status=(
-                    "persisted_with_violations"
-                    if patch_hardcoded_warning
-                    else "persisted"
-                ),
+                status=("persisted_with_violations" if patch_hardcoded_warning else "persisted"),
                 path=normalized_path,
                 message=(
                     "Patch applied and persisted."
@@ -10243,22 +9241,14 @@ except Exception as e:
                 persisted=True,
                 persisted_with_violations=bool(patch_hardcoded_warning),
                 retryable=True,
-                failure_class=(
-                    "hardcoded_data_detected" if patch_hardcoded_warning else "none"
-                ),
-                next_best_tool=(
-                    "patch_userspace_file"
-                    if patch_hardcoded_warning
-                    else "validate_userspace_code"
-                ),
+                failure_class=("hardcoded_data_detected" if patch_hardcoded_warning else "none"),
+                next_best_tool=("patch_userspace_file" if patch_hardcoded_warning else "validate_userspace_code"),
                 action_required=(
                     "Run validate_userspace_code on the changed file."
                     if not patch_hardcoded_warning
                     else "Use patch_userspace_file to replace mock/static data with live data sources, then run validate_userspace_code."
                 ),
-                contract_violations=(
-                    [patch_hardcoded_warning] if patch_hardcoded_warning else None
-                ),
+                contract_violations=([patch_hardcoded_warning] if patch_hardcoded_warning else None),
                 file=result.model_dump(mode="json"),
                 applied=applied,
                 skipped=skipped,
@@ -10267,9 +9257,7 @@ except Exception as e:
             )
             if typecheck is not None:
                 response_payload["typescript_validation"] = typecheck
-            await userspace_runtime_service.bump_workspace_generation(
-                workspace_id, "file_patch", payload={"path": normalized_path}
-            )
+            await userspace_runtime_service.bump_workspace_generation(workspace_id, "file_patch", payload={"path": normalized_path})
             return json.dumps(response_payload, indent=2)
 
         async def upsert_userspace_file(
@@ -10290,11 +9278,7 @@ except Exception as e:
                 batch_workspace_id = workspace_id
                 normalized_entries: list[dict[str, Any]] = []
                 for item in files:
-                    raw = (
-                        item.model_dump(mode="python")
-                        if isinstance(item, BaseModel)
-                        else item
-                    )
+                    raw = item.model_dump(mode="python") if isinstance(item, BaseModel) else item
                     if not isinstance(raw, dict):
                         continue
                     entry_path = (raw.get("path") or "").strip()
@@ -10304,18 +9288,14 @@ except Exception as e:
                         continue
                     normalized_entries.append(raw)
                 if not normalized_entries:
-                    raise ToolException(
-                        "Invalid files: provide at least one entry with path and content."
-                    )
+                    raise ToolException("Invalid files: provide at least one entry with path and content.")
 
                 async def _invoke_upsert_entry(entry: dict[str, Any]) -> str:
                     return await upsert_userspace_file(
                         content=entry.get("content") or "",
                         path=entry.get("path") or "",
                         artifact_type=entry.get("artifact_type", "module_ts"),
-                        live_data_requested=bool(
-                            entry.get("live_data_requested", False)
-                        ),
+                        live_data_requested=bool(entry.get("live_data_requested", False)),
                         live_data_connections=entry.get("live_data_connections"),
                         live_data_checks=entry.get("live_data_checks"),
                         workspace_id=batch_workspace_id,
@@ -10327,21 +9307,14 @@ except Exception as e:
                     entries=normalized_entries,
                     invoke_entry=_invoke_upsert_entry,
                 )
-            target_ws, target_uid = await _resolve_target_workspace(
-                workspace_id, "write"
-            )
+            target_ws, target_uid = await _resolve_target_workspace(workspace_id, "write")
             workspace_id = target_ws
             user_id = target_uid
-            await userspace_service.enforce_workspace_role(
-                workspace_id, user_id, "editor"
-            )
+            await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
 
             path = (path or "").strip()
             if not path:
-                raise ToolException(
-                    "path is required. Provide a relative workspace file path "
-                    "(for example: dashboard/main.ts)."
-                )
+                raise ToolException("path is required. Provide a relative workspace file path (for example: dashboard/main.ts).")
 
             warnings: list[str] = []
             allowed_violations: list[str] = []
@@ -10358,40 +9331,23 @@ except Exception as e:
                     "index.html is allowed for runtime scaffolding but should not contain application logic."
                 )
 
-            parsed_live_data_connections: list[UserSpaceLiveDataConnection] | None = (
-                None
-            )
+            parsed_live_data_connections: list[UserSpaceLiveDataConnection] | None = None
             parsed_live_data_checks: list[UserSpaceLiveDataCheck] | None = None
             if live_data_connections is not None:
                 parsed_live_data_connections = []
                 for item in live_data_connections:
-                    payload = (
-                        item.model_dump(mode="python")
-                        if isinstance(item, BaseModel)
-                        else item
-                    )
-                    parsed_live_data_connections.append(
-                        UserSpaceLiveDataConnection.model_validate(payload)
-                    )
+                    payload = item.model_dump(mode="python") if isinstance(item, BaseModel) else item
+                    parsed_live_data_connections.append(UserSpaceLiveDataConnection.model_validate(payload))
 
             if live_data_checks is not None:
                 parsed_live_data_checks = []
                 inferred_component_id: str | None = None
-                if (
-                    parsed_live_data_connections
-                    and len(parsed_live_data_connections) == 1
-                ):
+                if parsed_live_data_connections and len(parsed_live_data_connections) == 1:
                     inferred_component_id = parsed_live_data_connections[0].component_id
                 for item in live_data_checks:
-                    payload = (
-                        item.model_dump(mode="python")
-                        if isinstance(item, BaseModel)
-                        else item
-                    )
+                    payload = item.model_dump(mode="python") if isinstance(item, BaseModel) else item
                     if not isinstance(payload, dict):
-                        contract_violations.append(
-                            "Invalid live_data_checks item: expected an object with component_id and validation flags."
-                        )
+                        contract_violations.append("Invalid live_data_checks item: expected an object with component_id and validation flags.")
                         continue
 
                     raw_component_id = (
@@ -10410,9 +9366,7 @@ except Exception as e:
                         continue
 
                     payload["component_id"] = raw_component_id
-                    parsed_live_data_checks.append(
-                        UserSpaceLiveDataCheck.model_validate(payload)
-                    )
+                    parsed_live_data_checks.append(UserSpaceLiveDataCheck.model_validate(payload))
 
             workspace = await userspace_service.get_workspace(workspace_id, user_id)
             ws_sqlite_include = workspace.sqlite_persistence_mode == "include"
@@ -10425,24 +9379,16 @@ except Exception as e:
                 for connection in parsed_live_data_connections:
                     if connection.component_id not in allowed_component_ids:
                         hard_errors.append(
-                            "Invalid live_data_connections component_id: "
-                            f"{connection.component_id}. It must match a tool selected for this workspace."
+                            f"Invalid live_data_connections component_id: {connection.component_id}. It must match a tool selected for this workspace."
                         )
 
             if parsed_live_data_checks:
                 for check in parsed_live_data_checks:
                     if check.component_id not in allowed_component_ids:
-                        hard_errors.append(
-                            "Invalid live_data_checks component_id: "
-                            f"{check.component_id}. It must match a tool selected for this workspace."
-                        )
-                    if (
-                        not check.connection_check_passed
-                        or not check.transformation_check_passed
-                    ):
+                        hard_errors.append(f"Invalid live_data_checks component_id: {check.component_id}. It must match a tool selected for this workspace.")
+                    if not check.connection_check_passed or not check.transformation_check_passed:
                         contract_violations.append(
-                            "live_data_checks must indicate successful connection and transformation for "
-                            f"component_id={check.component_id}."
+                            f"live_data_checks must indicate successful connection and transformation for component_id={check.component_id}."
                         )
 
             # Live data contract only applies to the dashboard entry
@@ -10455,13 +9401,9 @@ except Exception as e:
             # Helper components under dashboard/ receive data as
             # parameters and do not need their own live data wiring.
             workspace_has_tools = bool(workspace.selected_tool_ids)
-            effective_live_data_requested = live_data_requested or (
-                workspace_has_tools and is_dashboard_entry
-            )
+            effective_live_data_requested = live_data_requested or (workspace_has_tools and is_dashboard_entry)
 
-            requires_live_data_contract = (
-                effective_live_data_requested and is_dashboard_entry
-            )
+            requires_live_data_contract = effective_live_data_requested and is_dashboard_entry
 
             # Detect hardcoded mock/sample data naming patterns.
             # Dashboard entry: hard policy violation (reject).
@@ -10470,28 +9412,20 @@ except Exception as e:
                 mock_patterns = find_hardcoded_data_patterns(content)
                 if mock_patterns:
                     hard_errors.append(
-                        "Hardcoded data patterns detected: "
-                        + ", ".join(mock_patterns)
-                        + ". All dashboard data must be fetched at runtime via "
+                        "Hardcoded data patterns detected: " + ", ".join(mock_patterns) + ". All dashboard data must be fetched at runtime via "
                         "context.components[componentId].execute()."
                     )
-            elif workspace_has_tools and normalized_path.endswith(
-                _HARDCODED_DATA_SOURCE_EXTENSIONS
-            ):
+            elif workspace_has_tools and normalized_path.endswith(_HARDCODED_DATA_SOURCE_EXTENSIONS):
                 # Check if target is the runtime entrypoint
                 resolved_ep: str | None = None
                 try:
-                    ep_file = await userspace_service.get_workspace_file(
-                        workspace_id, ".ragtime/runtime-entrypoint.json", user_id
-                    )
+                    ep_file = await userspace_service.get_workspace_file(workspace_id, ".ragtime/runtime-entrypoint.json", user_id)
                     ep_cfg = json.loads(ep_file.content or "{}")
                     if isinstance(ep_cfg, dict):
                         resolved_ep = _resolve_entrypoint_source_file(ep_cfg)
                 except Exception:
                     pass
-                is_runtime_entrypoint = (
-                    resolved_ep is not None and normalized_path == resolved_ep.lower()
-                )
+                is_runtime_entrypoint = resolved_ep is not None and normalized_path == resolved_ep.lower()
                 if is_runtime_entrypoint:
                     ep_mock_patterns = find_hardcoded_data_patterns(content)
                     if ep_mock_patterns:
@@ -10525,28 +9459,16 @@ except Exception as e:
                         "Provide checks with successful connection and transformation for each component_id."
                     )
                 else:
-                    connection_ids = {
-                        connection.component_id
-                        for connection in (parsed_live_data_connections or [])
-                    }
+                    connection_ids = {connection.component_id for connection in (parsed_live_data_connections or [])}
                     verified_ids = {
-                        check.component_id
-                        for check in parsed_live_data_checks
-                        if check.connection_check_passed
-                        and check.transformation_check_passed
+                        check.component_id for check in parsed_live_data_checks if check.connection_check_passed and check.transformation_check_passed
                     }
                     missing_ids = sorted(connection_ids - verified_ids)
                     if missing_ids:
-                        contract_violations.append(
-                            "Missing successful live_data_checks verification for component_id(s): "
-                            + ", ".join(missing_ids)
-                        )
+                        contract_violations.append("Missing successful live_data_checks verification for component_id(s): " + ", ".join(missing_ids))
 
             if requires_live_data_contract and parsed_live_data_connections:
-                declared_connection_ids = {
-                    connection.component_id
-                    for connection in parsed_live_data_connections
-                }
+                declared_connection_ids = {connection.component_id for connection in parsed_live_data_connections}
                 missing_execution_proofs = userspace_service.verify_execution_proofs(
                     workspace_id,
                     declared_connection_ids,
@@ -10590,11 +9512,7 @@ except Exception as e:
             # metadata alone -- the source code must structurally call
             # the live data execution API.
             if requires_live_data_contract and is_dashboard_entry:
-                declared_ids = (
-                    {c.component_id for c in parsed_live_data_connections}
-                    if parsed_live_data_connections
-                    else set()
-                )
+                declared_ids = {c.component_id for c in parsed_live_data_connections} if parsed_live_data_connections else set()
                 binding = await validate_live_data_binding(
                     content,
                     path,
@@ -10632,9 +9550,7 @@ except Exception as e:
                     if ast_missing and has_execute:
                         warnings.append(
                             "Declared component_ids not found in AST "
-                            "execute() calls: "
-                            + ", ".join(ast_missing)
-                            + ". Verify these connections are used in "
+                            "execute() calls: " + ", ".join(ast_missing) + ". Verify these connections are used in "
                             "the code."
                         )
 
@@ -10654,26 +9570,17 @@ except Exception as e:
                     contract_errors = typecheck.get("contract_errors") or []
                     if contract_errors:
                         for err in contract_errors:
-                            violation = "User Space runtime contract violation: " + str(
-                                err
-                            )
+                            violation = "User Space runtime contract violation: " + str(err)
                             if violation not in allowed_violations:
                                 allowed_violations.append(violation)
                     diagnostics = typecheck.get("errors") or []
                     if diagnostics:
-                        warnings.append(
-                            "TypeScript/runtime diagnostics detected. Run validate_userspace_code and fix reported errors before finalizing."
-                        )
+                        warnings.append("TypeScript/runtime diagnostics detected. Run validate_userspace_code and fix reported errors before finalizing.")
 
             if hard_errors:
-                all_runtime_contract = all(
-                    err.startswith("User Space runtime contract violation:")
-                    for err in hard_errors
-                )
+                all_runtime_contract = all(err.startswith("User Space runtime contract violation:") for err in hard_errors)
                 if all_runtime_contract:
-                    detail = "USER SPACE RUNTIME CONTRACT VIOLATION -- " + " | ".join(
-                        hard_errors
-                    )
+                    detail = "USER SPACE RUNTIME CONTRACT VIOLATION -- " + " | ".join(hard_errors)
                 else:
                     detail = "LIVE DATA POLICY VIOLATION -- " + " | ".join(hard_errors)
                 if warnings:
@@ -10694,9 +9601,7 @@ except Exception as e:
                     failure_class=failure_class,
                     path=path,
                     error=detail,
-                    action_required=(
-                        "Fix the hard policy violations listed above, then retry upsert_userspace_file."
-                    ),
+                    action_required=("Fix the hard policy violations listed above, then retry upsert_userspace_file."),
                     include_sqlite_hint=ws_sqlite_include,
                     diagnostics={"policy_violations": hard_errors},
                     contract_violations=contract_violations or None,
@@ -10744,9 +9649,7 @@ except Exception as e:
                         failure_class="path_invalid",
                         next_best_tool="list_userspace_files",
                         path=path,
-                        error=(
-                            f"File not found: {path}. The requested path does not exist or is not accessible in this workspace."
-                        ),
+                        error=(f"File not found: {path}. The requested path does not exist or is not accessible in this workspace."),
                         action_required=(
                             "Use list_userspace_files to choose an existing path, or provide a valid relative file path under the workspace files root."
                         ),
@@ -10775,9 +9678,7 @@ except Exception as e:
                         next_best_tool="assay_userspace_code",
                         path=path,
                         error=detail_text,
-                        action_required=(
-                            "Use only component_ids from tools selected for this workspace."
-                        ),
+                        action_required=("Use only component_ids from tools selected for this workspace."),
                         live_data_contract=live_data_contract_context,
                         warnings=warnings or None,
                     )
@@ -10786,9 +9687,7 @@ except Exception as e:
                     if typecheck is not None:
                         policy_response_payload["typescript_validation"] = typecheck
                     return json.dumps(policy_response_payload, indent=2)
-                if status_code == 400 and detail_text.startswith(
-                    "Entry-point wiring required:"
-                ):
+                if status_code == 400 and detail_text.startswith("Entry-point wiring required:"):
                     entrypoint_response_payload = _build_userspace_tool_payload(
                         tool_name="upsert_userspace_file",
                         status="rejected_not_persisted",
@@ -10810,10 +9709,7 @@ except Exception as e:
                     if typecheck is not None:
                         entrypoint_response_payload["typescript_validation"] = typecheck
                     return json.dumps(entrypoint_response_payload, indent=2)
-                if (
-                    status_code == 400
-                    and "no server-verified execution proof" in lower_detail_text
-                ):
+                if status_code == 400 and "no server-verified execution proof" in lower_detail_text:
                     execution_proof_response_payload = _build_userspace_tool_payload(
                         tool_name="upsert_userspace_file",
                         status="rejected_not_persisted",
@@ -10834,9 +9730,7 @@ except Exception as e:
                     if warnings:
                         execution_proof_response_payload["warnings"] = warnings
                     if typecheck is not None:
-                        execution_proof_response_payload["typescript_validation"] = (
-                            typecheck
-                        )
+                        execution_proof_response_payload["typescript_validation"] = typecheck
                     return json.dumps(execution_proof_response_payload, indent=2)
                 if status_code == 400:
                     failure_class = self._classify_userspace_failure(detail_text)
@@ -10849,9 +9743,7 @@ except Exception as e:
                         failure_class=failure_class,
                         path=path,
                         error=detail_text,
-                        action_required=(
-                            "Resolve the validation error in this response and retry upsert_userspace_file."
-                        ),
+                        action_required=("Resolve the validation error in this response and retry upsert_userspace_file."),
                         live_data_contract=live_data_contract_context,
                         warnings=warnings or None,
                         contract_violations=contract_violations or None,
@@ -10863,33 +9755,19 @@ except Exception as e:
                     return json.dumps(policy_response_payload, indent=2)
                 raise
 
-            write_signature = hashlib.sha256(
-                f"{path}\0{content}".encode("utf-8")
-            ).hexdigest()[:16]
+            write_signature = hashlib.sha256(f"{path}\0{content}".encode("utf-8")).hexdigest()[:16]
             success_response_payload = _build_userspace_tool_payload(
                 tool_name="upsert_userspace_file",
-                status=(
-                    "persisted_with_violations" if contract_violations else "persisted"
-                ),
+                status=("persisted_with_violations" if contract_violations else "persisted"),
                 path=path,
                 message=(
-                    "File persisted."
-                    if not contract_violations
-                    else "File persisted, but follow-up fixes are required before the build loop is complete."
+                    "File persisted." if not contract_violations else "File persisted, but follow-up fixes are required before the build loop is complete."
                 ),
                 persisted=True,
                 persisted_with_violations=bool(contract_violations),
                 retryable=True,
-                failure_class=(
-                    self._classify_userspace_failure(contract_violations)
-                    if contract_violations
-                    else "none"
-                ),
-                next_best_tool=(
-                    "patch_userspace_file"
-                    if contract_violations
-                    else "validate_userspace_code"
-                ),
+                failure_class=(self._classify_userspace_failure(contract_violations) if contract_violations else "none"),
+                next_best_tool=("patch_userspace_file" if contract_violations else "validate_userspace_code"),
                 action_required=(
                     "Run validate_userspace_code on every changed source file."
                     if not contract_violations
@@ -10922,9 +9800,7 @@ except Exception as e:
             **_: Any,
         ) -> str:
             del reason
-            await userspace_service.enforce_workspace_role(
-                workspace_id, user_id, "editor"
-            )
+            await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
             snapshot = await userspace_service.create_snapshot(
                 workspace_id,
                 user_id,
@@ -10934,9 +9810,7 @@ except Exception as e:
                 workspace_id,
                 "Snapshot created after successful validation loop.",
             )
-            await userspace_runtime_service.bump_workspace_generation(
-                workspace_id, "snapshot"
-            )
+            await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
             return _render_userspace_tool_payload(
                 tool_name="create_userspace_snapshot",
                 status="persisted",
@@ -10954,30 +9828,20 @@ except Exception as e:
             **_: Any,
         ) -> str:
             del reason
-            await userspace_service.enforce_workspace_role(
-                workspace_id, user_id, "editor"
-            )
-            normalized_start_path = (
-                (path or "dashboard/main.ts").strip().replace("\\", "/").lstrip("/")
-            )
-            live_data_contract_context = await _build_live_data_contract_context(
-                normalized_start_path
-            )
+            await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+            normalized_start_path = (path or "dashboard/main.ts").strip().replace("\\", "/").lstrip("/")
+            live_data_contract_context = await _build_live_data_contract_context(normalized_start_path)
 
             file_cache: dict[str, Any] = {}
 
             async def get_file(relative_path: str) -> Any | None:
-                normalized = (
-                    (relative_path or "").strip().replace("\\", "/").lstrip("/")
-                )
+                normalized = (relative_path or "").strip().replace("\\", "/").lstrip("/")
                 if not normalized:
                     return None
                 if normalized in file_cache:
                     return file_cache[normalized]
                 try:
-                    file_data = await userspace_service.get_workspace_file(
-                        workspace_id, normalized, user_id
-                    )
+                    file_data = await userspace_service.get_workspace_file(workspace_id, normalized, user_id)
                 except HTTPException as exc:
                     if getattr(exc, "status_code", None) == 404:
                         return None
@@ -11011,10 +9875,7 @@ except Exception as e:
                 seen_candidates: set[str] = set()
                 for candidate in candidates:
                     normalized_candidate = candidate.replace("\\", "/").lstrip("/")
-                    if (
-                        not normalized_candidate
-                        or normalized_candidate in seen_candidates
-                    ):
+                    if not normalized_candidate or normalized_candidate in seen_candidates:
                         continue
                     seen_candidates.add(normalized_candidate)
                     if await get_file(normalized_candidate):
@@ -11095,20 +9956,13 @@ except Exception as e:
                         if resolved not in visited and resolved not in to_visit:
                             to_visit.append(resolved)
                     else:
-                        unresolved_message = (
-                            f"{current}: Unable to resolve local import '{specifier}'."
-                        )
+                        unresolved_message = f"{current}: Unable to resolve local import '{specifier}'."
                         if unresolved_message not in aggregate_errors:
                             aggregate_errors.append(unresolved_message)
 
-            should_check_runnable_entrypoint = normalized_start_path.startswith(
-                "dashboard/"
-            )
+            should_check_runnable_entrypoint = normalized_start_path.startswith("dashboard/")
             if should_check_runnable_entrypoint:
-                runnable_entrypoint_error = (
-                    "No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json "
-                    "with a command/cwd/framework."
-                )
+                runnable_entrypoint_error = "No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json with a command/cwd/framework."
                 runtime_config_file = await get_file(".ragtime/runtime-entrypoint.json")
                 runtime_config_command_present = False
                 if runtime_config_file is not None:
@@ -11122,9 +9976,7 @@ except Exception as e:
                         )
                     else:
                         if isinstance(runtime_config_payload, dict):
-                            runtime_command = str(
-                                runtime_config_payload.get("command") or ""
-                            ).strip()
+                            runtime_command = str(runtime_config_payload.get("command") or "").strip()
                             runtime_config_command_present = bool(runtime_command)
                             if runtime_config_command_present:
                                 if shutil.which("sh") is None:
@@ -11135,28 +9987,20 @@ except Exception as e:
                                     command_tokens = shlex.split(runtime_command)
                                 except ValueError as exc:
                                     add_runtime_warning(
-                                        "Runtime preflight: .ragtime/runtime-entrypoint.json command parsing failed "
-                                        f"({exc}). Launch may fail at runtime."
+                                        f"Runtime preflight: .ragtime/runtime-entrypoint.json command parsing failed ({exc}). Launch may fail at runtime."
                                     )
                                 else:
                                     if command_tokens:
                                         primary_command = command_tokens[0]
-                                        if (
-                                            "/" not in primary_command
-                                            and shutil.which(primary_command) is None
-                                        ):
+                                        if "/" not in primary_command and shutil.which(primary_command) is None:
                                             add_runtime_warning(
                                                 "Runtime preflight: .ragtime/runtime-entrypoint.json command references "
                                                 f"'{primary_command}', which is not found in PATH."
                                             )
                                     else:
-                                        add_runtime_warning(
-                                            "Runtime preflight: .ragtime/runtime-entrypoint.json command is empty after parsing."
-                                        )
+                                        add_runtime_warning("Runtime preflight: .ragtime/runtime-entrypoint.json command is empty after parsing.")
                         else:
-                            add_runtime_warning(
-                                "Runtime preflight: .ragtime/runtime-entrypoint.json should be a JSON object with command/cwd/framework keys."
-                            )
+                            add_runtime_warning("Runtime preflight: .ragtime/runtime-entrypoint.json should be a JSON object with command/cwd/framework keys.")
 
                 if not runtime_config_command_present:
                     add_runtime_error(runnable_entrypoint_error)
@@ -11166,11 +10010,7 @@ except Exception as e:
                 if runtime_config_command_present:
                     entrypoint_framework = ""
                     if isinstance(runtime_config_payload, dict):  # type: ignore[possibly-undefined]
-                        entrypoint_framework = (
-                            str(runtime_config_payload.get("framework") or "")
-                            .strip()
-                            .lower()
-                        )
+                        entrypoint_framework = str(runtime_config_payload.get("framework") or "").strip().lower()
                     dep_spec = FRAMEWORK_REQUIRED_PACKAGES.get(entrypoint_framework)
                     if dep_spec is not None:
                         manifest_name, required_pkgs = dep_spec
@@ -11182,19 +10022,13 @@ except Exception as e:
                         existing_manifest_names: list[str] = []
                         for candidate_name in manifest_candidates:
                             manifest_file = await get_file(candidate_name)
-                            manifest_text = (
-                                (manifest_file.content if manifest_file else None) or ""
-                            ).lower()
+                            manifest_text = ((manifest_file.content if manifest_file else None) or "").lower()
                             if manifest_text:
                                 manifest_text_parts.append(manifest_text)
                                 existing_manifest_names.append(candidate_name)
 
                         combined_manifest_text = "\n".join(manifest_text_parts)
-                        missing = [
-                            pkg
-                            for pkg in required_pkgs
-                            if pkg.lower() not in combined_manifest_text
-                        ]
+                        missing = [pkg for pkg in required_pkgs if pkg.lower() not in combined_manifest_text]
                         if missing:
                             missing_list = ", ".join(missing)
                             if not existing_manifest_names:
@@ -11213,12 +10047,8 @@ except Exception as e:
                                     "Add them to the active dependency manifest so the runtime bootstrap can install them."
                                 )
 
-            strict_frontend_candidate = is_userspace_strict_frontend_path(
-                normalized_start_path
-            )
-            should_probe_runtime = (
-                should_check_runnable_entrypoint or strict_frontend_candidate
-            )
+            strict_frontend_candidate = is_userspace_strict_frontend_path(normalized_start_path)
+            should_probe_runtime = should_check_runnable_entrypoint or strict_frontend_candidate
 
             if should_probe_runtime:
                 runtime_probe["attempted"] = True
@@ -11232,10 +10062,7 @@ except Exception as e:
                     if not status.devserver_running:
                         state = status.session_state or "unknown"
                         last_error = status.last_error or "unknown"
-                        add_runtime_error(
-                            "Runtime strict validation failed: devserver is not running "
-                            f"(state={state}, last_error={last_error})."
-                        )
+                        add_runtime_error(f"Runtime strict validation failed: devserver is not running (state={state}, last_error={last_error}).")
 
                     upstream_url = await userspace_runtime_service.build_workspace_preview_upstream_url(
                         workspace_id,
@@ -11245,12 +10072,8 @@ except Exception as e:
                     runtime_probe["upstream_url"] = upstream_url
 
                     probe_headers: dict[str, str] = {}
-                    worker_token = str(
-                        getattr(settings, "userspace_runtime_worker_auth_token", "")
-                    ).strip()
-                    manager_token = str(
-                        getattr(settings, "userspace_runtime_manager_auth_token", "")
-                    ).strip()
+                    worker_token = str(getattr(settings, "userspace_runtime_worker_auth_token", "")).strip()
+                    manager_token = str(getattr(settings, "userspace_runtime_manager_auth_token", "")).strip()
 
                     if "/worker/" in upstream_url and worker_token:
                         probe_headers["Authorization"] = f"Bearer {worker_token}"
@@ -11259,12 +10082,8 @@ except Exception as e:
                     elif worker_token:
                         probe_headers["Authorization"] = f"Bearer {worker_token}"
 
-                    probe_timeout = httpx.Timeout(
-                        connect=2.0, read=12.0, write=8.0, pool=4.0
-                    )
-                    async with httpx.AsyncClient(
-                        timeout=probe_timeout, follow_redirects=False
-                    ) as client:
+                    probe_timeout = httpx.Timeout(connect=2.0, read=12.0, write=8.0, pool=4.0)
+                    async with httpx.AsyncClient(timeout=probe_timeout, follow_redirects=False) as client:
                         response = await client.get(
                             upstream_url,
                             headers=probe_headers or None,
@@ -11274,10 +10093,7 @@ except Exception as e:
                     if response.status_code >= 400:
                         body_preview = (response.text or "")[:200].strip()
                         detail_suffix = f" Body: {body_preview}" if body_preview else ""
-                        add_runtime_error(
-                            "Runtime strict validation failed: preview upstream returned "
-                            f"HTTP {response.status_code}.{detail_suffix}"
-                        )
+                        add_runtime_error(f"Runtime strict validation failed: preview upstream returned HTTP {response.status_code}.{detail_suffix}")
                     elif response.status_code == 200:
                         body_text = (response.text or "")[:2000]
                         if "<title>Directory listing for" in body_text:
@@ -11296,11 +10112,7 @@ except Exception as e:
                             # during the probe — exposing runtime DOM errors
                             # that would otherwise be hidden behind a "loading"
                             # placeholder that never resolves.
-                            workspace_has_tools = bool(
-                                live_data_contract_context.get(
-                                    "workspace_has_selected_tools"
-                                )
-                            )
+                            workspace_has_tools = bool(live_data_contract_context.get("workspace_has_selected_tools"))
                             try:
                                 probe_result = await userspace_runtime_service.probe_workspace_content(
                                     workspace_id,
@@ -11311,31 +10123,17 @@ except Exception as e:
                                     inject_mock_context=workspace_has_tools,
                                 )
                                 runtime_probe["content_probe"] = probe_result
-                                body_text_length = int(
-                                    probe_result.get("body_text_length", 0)
-                                )
-                                console_errors = normalize_runtime_console_errors(
-                                    probe_result.get("console_errors", [])
-                                )
-                                has_error_indicator = bool(
-                                    probe_result.get("has_error_indicator", False)
-                                )
-                                runtime_probe["console_error_count"] = len(
-                                    console_errors
-                                )
+                                body_text_length = int(probe_result.get("body_text_length", 0))
+                                console_errors = normalize_runtime_console_errors(probe_result.get("console_errors", []))
+                                has_error_indicator = bool(probe_result.get("has_error_indicator", False))
+                                runtime_probe["console_error_count"] = len(console_errors)
                                 if console_errors:
                                     runtime_probe["console_errors"] = console_errors[:5]
 
-                                serious_console_errors = [
-                                    error
-                                    for error in console_errors
-                                    if is_serious_runtime_console_error(error)
-                                ]
+                                serious_console_errors = [error for error in console_errors if is_serious_runtime_console_error(error)]
                                 if serious_console_errors:
                                     sample_error = serious_console_errors[0][:220]
-                                    guidance = explain_runtime_console_error(
-                                        serious_console_errors[0]
-                                    )
+                                    guidance = explain_runtime_console_error(serious_console_errors[0])
                                     detail_suffix = f" {guidance}" if guidance else ""
                                     add_runtime_error(
                                         "Runtime validation failed: browser console "
@@ -11348,9 +10146,7 @@ except Exception as e:
                                     error_detail = ""
                                     if console_errors:
                                         first_error = str(console_errors[0])[:150]
-                                        error_detail = (
-                                            f" Browser console error: {first_error}"
-                                        )
+                                        error_detail = f" Browser console error: {first_error}"
                                     add_runtime_error(
                                         "Runtime validation failed: preview renders a blank page "
                                         "with no visible content. The app's JavaScript is likely "
@@ -11360,14 +10156,8 @@ except Exception as e:
                                     )
                                 elif has_error_indicator:
                                     runtime_probe["error_page_detected"] = True
-                                    text_preview = str(
-                                        probe_result.get("body_text_preview", "")
-                                    )[:150]
-                                    add_runtime_error(
-                                        "Runtime validation failed: preview is "
-                                        "rendering an error page. "
-                                        f"Visible text: {text_preview}"
-                                    )
+                                    text_preview = str(probe_result.get("body_text_preview", ""))[:150]
+                                    add_runtime_error(f"Runtime validation failed: preview is rendering an error page. Visible text: {text_preview}")
                             except Exception:
                                 # Content probe is best-effort; don't fail
                                 # validation if Playwright is unavailable.
@@ -11376,20 +10166,12 @@ except Exception as e:
                 try:
                     await asyncio.wait_for(_run_runtime_probe(), timeout=55)
                 except TimeoutError:
-                    add_runtime_error(
-                        "Runtime strict validation failed: runtime probe timed out after 55s."
-                    )
+                    add_runtime_error("Runtime strict validation failed: runtime probe timed out after 55s.")
                 except HTTPException as exc:
                     detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
-                    add_runtime_error(
-                        "Runtime strict validation failed: runtime session/preview setup failed. "
-                        f"{detail_text}"
-                    )
+                    add_runtime_error(f"Runtime strict validation failed: runtime session/preview setup failed. {detail_text}")
                 except Exception as exc:
-                    add_runtime_error(
-                        "Runtime strict validation failed: runtime probe request failed. "
-                        f"{exc}"
-                    )
+                    add_runtime_error(f"Runtime strict validation failed: runtime probe request failed. {exc}")
 
             # Validate index.html bootstrap pattern when present
             if should_check_runnable_entrypoint:
@@ -11407,9 +10189,7 @@ except Exception as e:
 
             if aggregate_runtime_warnings:
                 for warning in aggregate_runtime_warnings:
-                    add_runtime_error(
-                        f"Runtime strict validation warning treated as error: {warning}"
-                    )
+                    add_runtime_error(f"Runtime strict validation warning treated as error: {warning}")
 
             # ── Hardcoded data scan across all workspace source files ──
             # Only runs when the workspace has selected tools.  Scans every
@@ -11423,9 +10203,7 @@ except Exception as e:
                 ws_has_tools = False
 
             if ws_has_tools:
-                all_files = await userspace_service.list_workspace_files(
-                    workspace_id, user_id
-                )
+                all_files = await userspace_service.list_workspace_files(workspace_id, user_id)
                 for ws_file in all_files:
                     fpath = (ws_file.path or "").strip()
                     if not fpath.lower().endswith(_HARDCODED_DATA_SOURCE_EXTENSIONS):
@@ -11444,13 +10222,7 @@ except Exception as e:
                     if patterns_found:
                         hardcoded_data_violations[fpath] = patterns_found
 
-            overall_ok = (
-                bool(file_results)
-                and all(
-                    bool((res or {}).get("ok", False)) for res in file_results.values()
-                )
-                and not aggregate_errors
-            )
+            overall_ok = bool(file_results) and all(bool((res or {}).get("ok", False)) for res in file_results.values()) and not aggregate_errors
 
             diagnostic_groups = self._group_userspace_validation_diagnostics(
                 errors=aggregate_errors,
@@ -11475,14 +10247,7 @@ except Exception as e:
 
             result = {
                 "ok": overall_ok,
-                "validator_available": (
-                    all(
-                        bool((res or {}).get("validator_available", False))
-                        for res in file_results.values()
-                    )
-                    if file_results
-                    else False
-                ),
+                "validator_available": (all(bool((res or {}).get("validator_available", False)) for res in file_results.values()) if file_results else False),
                 "error_count": len(aggregate_errors),
                 "errors": aggregate_errors,
                 "runtime_errors": aggregate_runtime_errors,
@@ -11497,9 +10262,7 @@ except Exception as e:
             }
             if hardcoded_data_violations:
                 result["hardcoded_data_violations"] = hardcoded_data_violations
-                result["hardcoded_data_violation_count"] = sum(
-                    len(v) for v in hardcoded_data_violations.values()
-                )
+                result["hardcoded_data_violation_count"] = sum(len(v) for v in hardcoded_data_violations.values())
             result["diagnostics_by_category"] = diagnostic_groups
 
             if overall_ok:
@@ -11508,9 +10271,7 @@ except Exception as e:
                     "Validation passed with no remaining errors.",
                 )
             else:
-                summary = (
-                    aggregate_errors[0] if aggregate_errors else primary_failure_class
-                )
+                summary = aggregate_errors[0] if aggregate_errors else primary_failure_class
                 self._record_userspace_failure(
                     workspace_id,
                     failure_class=primary_failure_class,
@@ -11522,20 +10283,12 @@ except Exception as e:
                 tool_name="validate_userspace_code",
                 status="validated" if overall_ok else "validation_failed",
                 path=normalized_start_path,
-                message=(
-                    "Validation passed."
-                    if overall_ok
-                    else "Validation failed. Fix the reported diagnostics before finalizing."
-                ),
+                message=("Validation passed." if overall_ok else "Validation failed. Fix the reported diagnostics before finalizing."),
                 persisted=False,
                 rejected=not overall_ok,
                 retryable=True,
                 failure_class=primary_failure_class,
-                next_best_tool=(
-                    "create_userspace_snapshot"
-                    if overall_ok
-                    else self._next_best_tool_for_failure(primary_failure_class)
-                ),
+                next_best_tool=("create_userspace_snapshot" if overall_ok else self._next_best_tool_for_failure(primary_failure_class)),
                 action_required=(
                     "Create a snapshot for this completed change loop."
                     if overall_ok
@@ -11564,27 +10317,23 @@ except Exception as e:
             **_: Any,
         ) -> str:
             del reason
-            target_ws, target_uid = await _resolve_target_workspace(
-                workspace_id, "read"
-            )
+            target_ws, target_uid = await _resolve_target_workspace(workspace_id, "read")
             workspace_id = target_ws
             user_id = target_uid
             try:
-                response_payload = (
-                    await userspace_runtime_service.capture_workspace_screenshot(
-                        workspace_id=workspace_id,
-                        user_id=user_id,
-                        path=path,
-                        width=width,
-                        height=height,
-                        full_page=full_page,
-                        timeout_ms=timeout_ms,
-                        wait_for_selector=wait_for_selector,
-                        capture_element=capture_element,
-                        clip_padding_px=clip_padding_px,
-                        wait_after_load_ms=wait_after_load_ms,
-                        refresh_before_capture=refresh_before_capture,
-                    )
+                response_payload = await userspace_runtime_service.capture_workspace_screenshot(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    path=path,
+                    width=width,
+                    height=height,
+                    full_page=full_page,
+                    timeout_ms=timeout_ms,
+                    wait_for_selector=wait_for_selector,
+                    capture_element=capture_element,
+                    clip_padding_px=clip_padding_px,
+                    wait_after_load_ms=wait_after_load_ms,
+                    refresh_before_capture=refresh_before_capture,
                 )
             except HTTPException as exc:
                 detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
@@ -11616,10 +10365,7 @@ except Exception as e:
             if screenshot_path:
                 screenshot_name = Path(screenshot_path).name
                 if screenshot_name:
-                    image_url = (
-                        f"/indexes/userspace/runtime/workspaces/{workspace_id}/"
-                        f"screenshots/{quote(screenshot_name)}"
-                    )
+                    image_url = f"/indexes/userspace/runtime/workspaces/{workspace_id}/screenshots/{quote(screenshot_name)}"
                     response_payload["preview_image_url"] = image_url
             compact_payload = _compact_userspace_screenshot_payload(response_payload)
             return _render_userspace_tool_payload(
@@ -11642,9 +10388,7 @@ except Exception as e:
             **_: Any,
         ) -> str:
             del reason
-            target_ws, target_uid = await _resolve_target_workspace(
-                workspace_id, "write"
-            )
+            target_ws, target_uid = await _resolve_target_workspace(workspace_id, "write")
             workspace_id = target_ws
             user_id = target_uid
             command = (command or "").strip()
@@ -11683,11 +10427,7 @@ except Exception as e:
             command_failed = timed_out or exit_code != 0
             terminal_payload: dict[str, Any] = {
                 "tool": "run_terminal_command",
-                "status": (
-                    "command_timed_out"
-                    if timed_out
-                    else "command_failed" if command_failed else "completed"
-                ),
+                "status": ("command_timed_out" if timed_out else "command_failed" if command_failed else "completed"),
                 "cwd": cwd_value,
                 "exit_code": exit_code,
             }
@@ -11731,9 +10471,7 @@ except Exception as e:
             **_: Any,
         ) -> str:
             del reason
-            target_ws, target_uid = await _resolve_target_workspace(
-                workspace_id, "read"
-            )
+            target_ws, target_uid = await _resolve_target_workspace(workspace_id, "read")
             workspace_id = target_ws
             user_id = target_uid
             cleaned_url = (url or "").strip()
@@ -11830,9 +10568,7 @@ except Exception as e:
             _create_userspace_tool(
                 coroutine=list_userspace_files,
                 name="list_userspace_files",
-                description=(
-                    "List files in the active User Space workspace. Use this before creating or updating files."
-                ),
+                description=("List files in the active User Space workspace. Use this before creating or updating files."),
                 args_schema=ListUserSpaceFilesInput,
             ),
             _create_userspace_tool(
@@ -12016,9 +10752,7 @@ except Exception as e:
             kwargs.pop("handle_validation_error", None)
             return StructuredTool(**kwargs)
 
-    def get_blocked_config_tool_names(
-        self, allowed_tool_config_ids: list[str]
-    ) -> set[str]:
+    def get_blocked_config_tool_names(self, allowed_tool_config_ids: list[str]) -> set[str]:
         """Return generated tool names that should be blocked for current request context."""
         if not self._tool_configs:
             return set()
@@ -12035,9 +10769,7 @@ except Exception as e:
 
         return all_config_tool_names - allowed_tool_names
 
-    def _map_blocked_tool_names_to_allowed_tool_config_ids(
-        self, blocked_tool_names: set[str] | None
-    ) -> list[str] | None:
+    def _map_blocked_tool_names_to_allowed_tool_config_ids(self, blocked_tool_names: set[str] | None) -> list[str] | None:
         """Map a request's blocked tool names back to allowed ToolConfig IDs."""
         if blocked_tool_names is None:
             return None
@@ -12045,9 +10777,7 @@ except Exception as e:
         allowed_tool_config_ids: list[str] = []
         for config in self._tool_configs or []:
             tool_names = self._derive_config_tool_names(config)
-            if tool_names and any(
-                name not in blocked_tool_names for name in tool_names
-            ):
+            if tool_names and any(name not in blocked_tool_names for name in tool_names):
                 config_id = (config.get("id") or "").strip()
                 if config_id:
                     allowed_tool_config_ids.append(config_id)
@@ -12062,11 +10792,7 @@ except Exception as e:
         if not self._tool_configs or not runtime_tools:
             return set()
 
-        runtime_tool_names = {
-            getattr(tool, "name", "")
-            for tool in runtime_tools
-            if getattr(tool, "name", "")
-        }
+        runtime_tool_names = {getattr(tool, "name", "") for tool in runtime_tools if getattr(tool, "name", "")}
         if not runtime_tool_names:
             return set()
 
@@ -12109,9 +10835,7 @@ except Exception as e:
             user_id,
             include_dirs=False,
         )
-        ws_file_paths = sorted(
-            f.path for f in ws_files if not f.path.startswith(".ragtime/")
-        )
+        ws_file_paths = sorted(f.path for f in ws_files if not f.path.startswith(".ragtime/"))
 
         last_snapshot_msg: str | None = None
         try:
@@ -12122,9 +10846,7 @@ except Exception as e:
             # Snapshot history is optional prompt context; never fail request assembly.
             pass
 
-        recent_failure_summaries = self._get_userspace_recent_failure_summaries(
-            workspace_id
-        )
+        recent_failure_summaries = self._get_userspace_recent_failure_summaries(workspace_id)
 
         continuity = build_workspace_continuity_context(
             file_count=len(ws_file_paths),
@@ -12134,9 +10856,7 @@ except Exception as e:
             last_snapshot_message=last_snapshot_msg,
             recent_failure_summaries=recent_failure_summaries,
         )
-        continuity += self._build_cross_workspace_access_summary(
-            accessible_workspace_modes or {}
-        )
+        continuity += self._build_cross_workspace_access_summary(accessible_workspace_modes or {})
         return continuity
 
     def _build_chat_diagnostic_tools(
@@ -12158,9 +10878,7 @@ except Exception as e:
         enabled_tool_ids = (
             set(CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS)
             if enabled_builtin_tool_ids is None
-            else set(enabled_builtin_tool_ids).intersection(
-                CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS
-            )
+            else set(enabled_builtin_tool_ids).intersection(CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS)
         )
         if not enabled_tool_ids:
             return []
@@ -12191,23 +10909,15 @@ except Exception as e:
                 default=min(30, cmd_timeout_max),
                 ge=1,
                 le=cmd_timeout_max,
-                description=(
-                    "Maximum wall-clock seconds before the command is "
-                    "force-terminated. Bounded by server config."
-                ),
+                description=("Maximum wall-clock seconds before the command is force-terminated. Bounded by server config."),
             )
             reason: str = Field(
                 default="",
-                description=(
-                    "Short human-readable reason for running this command "
-                    "(captured in audit logs)."
-                ),
+                description=("Short human-readable reason for running this command (captured in audit logs)."),
             )
 
         class _ChatWebSearchInput(BaseModel):
-            query: str = Field(
-                description="Web search query to run via the configured chat search provider."
-            )
+            query: str = Field(description="Web search query to run via the configured chat search provider.")
             max_results: int = Field(
                 default=int(CHAT_DIAGNOSTICS_SEARCH_MAX_RESULTS),
                 ge=1,
@@ -12223,51 +10933,33 @@ except Exception as e:
             )
             reason: str = Field(
                 default="",
-                description=(
-                    "Short human-readable reason for the lookup "
-                    "(captured in audit logs)."
-                ),
+                description=("Short human-readable reason for the lookup (captured in audit logs)."),
             )
 
         class _ChatWebBrowseInput(BaseModel):
             url: str = Field(description="Absolute http/https URL to fetch and render.")
             reason: str = Field(
                 default="",
-                description=(
-                    "Short human-readable reason for the lookup "
-                    "(captured in audit logs)."
-                ),
+                description=("Short human-readable reason for the lookup (captured in audit logs)."),
             )
 
         class _ChatWebReadPdfInput(BaseModel):
-            url: str = Field(
-                description=(
-                    "Absolute http/https URL of a PDF to fetch and extract text from. "
-                    "Use a URL returned by web_search when possible."
-                )
-            )
+            url: str = Field(description=("Absolute http/https URL of a PDF to fetch and extract text from. Use a URL returned by web_search when possible."))
             start_char: int = Field(
                 default=0,
                 ge=0,
-                description=(
-                    "Character offset into the extracted PDF text for range reads. "
-                    "Ignored when query is provided."
-                ),
+                description=("Character offset into the extracted PDF text for range reads. Ignored when query is provided."),
             )
             max_chars: int = Field(
                 default=8000,
                 ge=1,
                 le=50000,
-                description=(
-                    "Maximum extracted text characters to return. Use repeated calls with "
-                    "start_char to page through long PDFs."
-                ),
+                description=("Maximum extracted text characters to return. Use repeated calls with start_char to page through long PDFs."),
             )
             query: str = Field(
                 default="",
                 description=(
-                    "Optional phrase or terms to find inside the PDF. When set, the tool "
-                    "returns query-centered snippets instead of a raw character range."
+                    "Optional phrase or terms to find inside the PDF. When set, the tool returns query-centered snippets instead of a raw character range."
                 ),
             )
             max_matches: int = Field(
@@ -12278,10 +10970,7 @@ except Exception as e:
             )
             reason: str = Field(
                 default="",
-                description=(
-                    "Short human-readable reason for the PDF lookup "
-                    "(captured in audit logs)."
-                ),
+                description=("Short human-readable reason for the PDF lookup (captured in audit logs)."),
             )
 
         async def _run_chat_diagnostic_command(
@@ -12339,8 +11028,7 @@ except Exception as e:
             duration_ms = int((time.monotonic() - t0) * 1000)
             cmd_head = (command.strip().split() or [""])[0][:32]
             logger.info(
-                "chat_diagnostic_command ran conv=%s user=%s cmd=%s exit=%s "
-                "duration_ms=%d reason=%s",
+                "chat_diagnostic_command ran conv=%s user=%s cmd=%s exit=%s duration_ms=%d reason=%s",
                 effective_conversation_id,
                 request_user_id or "anonymous",
                 cmd_head,
@@ -12385,8 +11073,7 @@ except Exception as e:
                 )
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 logger.info(
-                    "chat_web_search conv=%s user=%s q_len=%d hits=%d "
-                    "duration_ms=%d reason=%s",
+                    "chat_web_search conv=%s user=%s q_len=%d hits=%d duration_ms=%d reason=%s",
                     effective_conversation_id,
                     request_user_id or "anonymous",
                     len(cleaned_query),
@@ -12407,9 +11094,7 @@ except Exception as e:
                         "answer": search_payload.get("answer") or "",
                         "results": search_payload.get("results") or [],
                         "result_count": int(search_payload.get("result_count") or 0),
-                        "pdf_result_count": int(
-                            search_payload.get("pdf_result_count") or 0
-                        ),
+                        "pdf_result_count": int(search_payload.get("pdf_result_count") or 0),
                         "engine_url": search_payload.get("engine_url") or "",
                         "response_time": search_payload.get("response_time"),
                         "request_id": search_payload.get("request_id") or "",
@@ -12546,8 +11231,7 @@ except Exception as e:
                 )
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 logger.info(
-                    "chat_web_browse_url conv=%s user=%s host=%s "
-                    "duration_ms=%d reason=%s",
+                    "chat_web_browse_url conv=%s user=%s host=%s duration_ms=%d reason=%s",
                     effective_conversation_id,
                     request_user_id or "anonymous",
                     cleaned_url[:120],
@@ -12677,11 +11361,7 @@ except Exception as e:
         t0 = time.monotonic()
         runtime_tools = list(getattr(executor, "tools", []) if executor else [])
         if blocked_tool_names:
-            runtime_tools = [
-                tool
-                for tool in runtime_tools
-                if getattr(tool, "name", "") not in blocked_tool_names
-            ]
+            runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in blocked_tool_names]
 
         mode = "chat"
         prompt_is_ui = is_ui
@@ -12725,14 +11405,8 @@ except Exception as e:
             display_name = str(display_name or "")
         display_name = display_name.strip()
         display_name_supplied = bool(
-            (
-                isinstance(current_user_context, dict)
-                and "display_name" in current_user_context
-            )
-            or (
-                isinstance(workspace_context, dict)
-                and "display_name" in workspace_context
-            )
+            (isinstance(current_user_context, dict) and "display_name" in current_user_context)
+            or (isinstance(workspace_context, dict) and "display_name" in workspace_context)
         )
         if request_user_id and (not username or not display_name_supplied):
             current_user = None
@@ -12749,9 +11423,7 @@ except Exception as e:
                 if not username:
                     username = str(getattr(current_user, "username", "") or "").strip()
                 if not display_name_supplied:
-                    display_name = str(
-                        getattr(current_user, "displayName", "") or ""
-                    ).strip()
+                    display_name = str(getattr(current_user, "displayName", "") or "").strip()
 
         user_identity_prompt_fragment = build_current_user_prompt_fragment(
             username=username,
@@ -12761,9 +11433,7 @@ except Exception as e:
             username=username,
             display_name=display_name,
         )
-        raw_accessible_modes = (workspace_context or {}).get(
-            "accessible_workspace_modes", {}
-        )
+        raw_accessible_modes = (workspace_context or {}).get("accessible_workspace_modes", {})
         accessible_workspace_modes: dict[str, str] = {}
         if isinstance(raw_accessible_modes, dict):
             for key, value in raw_accessible_modes.items():
@@ -12792,25 +11462,17 @@ except Exception as e:
 
             # Expand group selections: add all enabled tools from selected groups
             if workspace.selected_tool_group_ids:
-                group_tool_ids = await repository.get_tool_ids_for_groups(
-                    workspace.selected_tool_group_ids
-                )
+                group_tool_ids = await repository.get_tool_ids_for_groups(workspace.selected_tool_group_ids)
                 existing = set(allowed_tool_config_ids)
                 for tid in group_tool_ids:
                     if tid not in existing:
                         allowed_tool_config_ids.append(tid)
                         existing.add(tid)
             elif not allowed_tool_config_ids:
-                allowed_tool_config_ids = (
-                    await repository.list_healthy_enabled_tool_ids()
-                )
+                allowed_tool_config_ids = await repository.list_healthy_enabled_tool_ids()
             if allowed_tool_config_ids:
-                healthy_ids = {
-                    str(config.get("id") or "") for config in self._tool_configs or []
-                }
-                allowed_tool_config_ids = [
-                    tool_id for tool_id in allowed_tool_config_ids if tool_id in healthy_ids
-                ]
+                healthy_ids = {str(config.get("id") or "") for config in self._tool_configs or []}
+                allowed_tool_config_ids = [tool_id for tool_id in allowed_tool_config_ids if tool_id in healthy_ids]
 
             include_sqlite_persistence = workspace.sqlite_persistence_mode == "include"
 
@@ -12837,9 +11499,7 @@ except Exception as e:
                     request_user_id,
                 ),
             )
-            userspace_env_var_turn_hint = self._build_userspace_env_var_turn_hint(
-                env_var_summaries
-            )
+            userspace_env_var_turn_hint = self._build_userspace_env_var_turn_hint(env_var_summaries)
 
             try:
                 runtime_status = await asyncio.wait_for(
@@ -12849,9 +11509,7 @@ except Exception as e:
                     ),
                     timeout=USERSPACE_RUNTIME_STATUS_PROMPT_TIMEOUT_SECONDS,
                 )
-                userspace_runtime_status_turn_hint = (
-                    self._build_userspace_runtime_status_turn_hint(runtime_status)
-                )
+                userspace_runtime_status_turn_hint = self._build_userspace_runtime_status_turn_hint(runtime_status)
             except Exception as exc:
                 logger.debug(
                     "Skipping userspace runtime status prompt hint for workspace %s: %s",
@@ -12871,11 +11529,7 @@ except Exception as e:
                     request_user_id=request_user_id,
                     enabled_builtin_tool_ids=workspace_builtin_tool_ids,
                 )
-            runtime_tools = [
-                tool
-                for tool in runtime_tools
-                if getattr(tool, "name", "") not in {"create_chart", "create_datatable"}
-            ]
+            runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in {"create_chart", "create_datatable"}]
             runtime_tools.extend(userspace_tools)
             runtime_tools.extend(workspace_builtin_tools)
             runtime_tools = self._apply_mode_specific_tool_description_overrides(
@@ -12887,12 +11541,10 @@ except Exception as e:
                 workspace_id,
                 allowed_tool_config_ids,
             )
-            runtime_tools, request_tool_state = (
-                self._wrap_runtime_tools_with_request_state(
-                    runtime_tools,
-                    mode="userspace",
-                    workspace_id=workspace_id,
-                )
+            runtime_tools, request_tool_state = self._wrap_runtime_tools_with_request_state(
+                runtime_tools,
+                mode="userspace",
+                workspace_id=workspace_id,
             )
 
             mode = "userspace"
@@ -12901,9 +11553,7 @@ except Exception as e:
             # Dynamic entrypoint nudge: fetch status once and reuse for
             # both is_default check, nudge generation, and state summary.
             ep_status = userspace_service.get_workspace_entrypoint_status(workspace_id)
-            is_default = userspace_service.is_default_static_entrypoint(
-                workspace_id, status=ep_status
-            )
+            is_default = userspace_service.is_default_static_entrypoint(workspace_id, status=ep_status)
 
             continuity_ctx = await self._build_userspace_continuity_prompt(
                 workspace_id=workspace_id,
@@ -12923,15 +11573,9 @@ except Exception as e:
             if CHAT_DIAGNOSTICS_ENABLED and workspace_builtin_tool_ids:
                 prompt_additions += build_chat_diagnostics_prompt_addition(
                     include_terminal=False,
-                    include_web_search=(
-                        CHAT_WEB_SEARCH_TOOL_ID in workspace_builtin_tool_ids
-                    ),
-                    include_web_browse=(
-                        CHAT_WEB_BROWSE_TOOL_ID in workspace_builtin_tool_ids
-                    ),
-                    include_web_read_pdf=(
-                        CHAT_WEB_READ_PDF_TOOL_ID in workspace_builtin_tool_ids
-                    ),
+                    include_web_search=(CHAT_WEB_SEARCH_TOOL_ID in workspace_builtin_tool_ids),
+                    include_web_browse=(CHAT_WEB_BROWSE_TOOL_ID in workspace_builtin_tool_ids),
+                    include_web_read_pdf=(CHAT_WEB_READ_PDF_TOOL_ID in workspace_builtin_tool_ids),
                 )
 
             # Cache nudge fragment by entrypoint state signature.
@@ -12945,34 +11589,24 @@ except Exception as e:
             )
             nudge_fragment = self._request_prompt_cache.get(nudge_cache_key)
             if nudge_fragment is None:
-                nudge_fragment = build_userspace_entrypoint_nudge(
-                    ep_status, is_default_static=is_default
-                )
+                nudge_fragment = build_userspace_entrypoint_nudge(ep_status, is_default_static=is_default)
                 self._request_prompt_cache[nudge_cache_key] = nudge_fragment
             prompt_additions += nudge_fragment
-            prompt_additions += self._build_userspace_env_var_prompt_fragment(
-                env_var_summaries
-            )
+            prompt_additions += self._build_userspace_env_var_prompt_fragment(env_var_summaries)
             prompt_additions += self._build_userspace_mount_prompt_fragment(
                 mountable_sources,
                 workspace_mounts,
             )
-            prompt_additions += self._build_userspace_object_storage_prompt_fragment(
-                object_storage_config
-            )
+            prompt_additions += self._build_userspace_object_storage_prompt_fragment(object_storage_config)
             prompt_additions += UI_VISUALIZATION_USERSPACE_PROMPT
         else:
             has_workspace_payload = workspace_context is not None
-            has_inline_viz_tools = any(
-                getattr(tool, "name", "") in {"create_chart", "create_datatable"}
-                for tool in runtime_tools
-            )
+            has_inline_viz_tools = any(getattr(tool, "name", "") in {"create_chart", "create_datatable"} for tool in runtime_tools)
             if has_workspace_payload or has_inline_viz_tools:
                 has_live_tool_connections = any(
                     self._get_tool_connection_metadata(getattr(tool, "name", ""))
                     for tool in runtime_tools
-                    if getattr(tool, "name", "")
-                    not in {"create_chart", "create_datatable"}
+                    if getattr(tool, "name", "") not in {"create_chart", "create_datatable"}
                 )
                 runtime_tools = self._apply_mode_specific_tool_description_overrides(
                     runtime_tools,
@@ -12982,18 +11616,12 @@ except Exception as e:
                 if add_chat_visualization_prompt:
                     prompt_additions += UI_VISUALIZATION_CHAT_PROMPT
 
-            allowed_tool_config_ids = (
-                self._map_blocked_tool_names_to_allowed_tool_config_ids(
-                    blocked_tool_names
-                )
-            )
+            allowed_tool_config_ids = self._map_blocked_tool_names_to_allowed_tool_config_ids(blocked_tool_names)
 
             if CHAT_DIAGNOSTICS_ENABLED:
                 enabled_builtin_tool_ids = set(CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS)
                 if disabled_builtin_tool_ids:
-                    enabled_builtin_tool_ids.difference_update(
-                        disabled_builtin_tool_ids
-                    )
+                    enabled_builtin_tool_ids.difference_update(disabled_builtin_tool_ids)
                 chat_diag_tools = self._build_chat_diagnostic_tools(
                     conversation_id=conversation_id,
                     request_user_id=request_user_id,
@@ -13002,18 +11630,10 @@ except Exception as e:
                 if chat_diag_tools:
                     runtime_tools.extend(chat_diag_tools)
                     prompt_additions += build_chat_diagnostics_prompt_addition(
-                        include_terminal=(
-                            CHAT_DIAGNOSTIC_COMMAND_TOOL_ID in enabled_builtin_tool_ids
-                        ),
-                        include_web_search=(
-                            CHAT_WEB_SEARCH_TOOL_ID in enabled_builtin_tool_ids
-                        ),
-                        include_web_browse=(
-                            CHAT_WEB_BROWSE_TOOL_ID in enabled_builtin_tool_ids
-                        ),
-                        include_web_read_pdf=(
-                            CHAT_WEB_READ_PDF_TOOL_ID in enabled_builtin_tool_ids
-                        ),
+                        include_terminal=(CHAT_DIAGNOSTIC_COMMAND_TOOL_ID in enabled_builtin_tool_ids),
+                        include_web_search=(CHAT_WEB_SEARCH_TOOL_ID in enabled_builtin_tool_ids),
+                        include_web_browse=(CHAT_WEB_BROWSE_TOOL_ID in enabled_builtin_tool_ids),
+                        include_web_read_pdf=(CHAT_WEB_READ_PDF_TOOL_ID in enabled_builtin_tool_ids),
                     )
 
         if user_identity_prompt_fragment:
@@ -13064,46 +11684,23 @@ except Exception as e:
             candidate_tool_configs = list(tool_configs)
         else:
             allowed_ids = set(allowed_tool_config_ids)
-            candidate_tool_configs = [
-                config
-                for config in tool_configs
-                if (config.get("id") or "") in allowed_ids
-            ]
+            candidate_tool_configs = [config for config in tool_configs if (config.get("id") or "") in allowed_ids]
 
         unavailable_tool_configs: list[dict] = []
         filtered_tool_configs = candidate_tool_configs
         if runtime_tools is not None:
-            runnable_ids = self._map_runtime_tools_to_runnable_tool_config_ids(
-                runtime_tools
-            )
-            filtered_tool_configs = [
-                config
-                for config in candidate_tool_configs
-                if (config.get("id") or "") in runnable_ids
-            ]
-            unavailable_tool_configs = [
-                config
-                for config in candidate_tool_configs
-                if (config.get("id") or "") not in runnable_ids
-            ]
+            runnable_ids = self._map_runtime_tools_to_runnable_tool_config_ids(runtime_tools)
+            filtered_tool_configs = [config for config in candidate_tool_configs if (config.get("id") or "") in runnable_ids]
+            unavailable_tool_configs = [config for config in candidate_tool_configs if (config.get("id") or "") not in runnable_ids]
 
         cache_key = (
             "request_system_prompt",
             bool(is_ui),
             mode,
             tuple(sorted((config.get("id") or "") for config in filtered_tool_configs)),
-            tuple(
-                sorted((config.get("id") or "") for config in unavailable_tool_configs)
-            ),
-            bool(
-                self._app_settings
-                and self._app_settings.get("tool_output_mode", "default") == "auto"
-            ),
-            bool(
-                tool_configs
-                and allowed_tool_config_ids is not None
-                and len(allowed_tool_config_ids) == 0
-            ),
+            tuple(sorted((config.get("id") or "") for config in unavailable_tool_configs)),
+            bool(self._app_settings and self._app_settings.get("tool_output_mode", "default") == "auto"),
+            bool(tool_configs and allowed_tool_config_ids is not None and len(allowed_tool_config_ids) == 0),
         )
         cached_prompt = self._request_prompt_cache.get(cache_key)
         if cached_prompt is not None:
@@ -13113,25 +11710,14 @@ except Exception as e:
         tool_prompt_section = build_tool_system_prompt(
             filtered_tool_configs,
             unavailable_tool_configs=unavailable_tool_configs,
-            no_tools_selected=(
-                bool(tool_configs)
-                and allowed_tool_config_ids is not None
-                and len(allowed_tool_config_ids) == 0
-            ),
+            no_tools_selected=(bool(tool_configs) and allowed_tool_config_ids is not None and len(allowed_tool_config_ids) == 0),
         )
 
-        base_prompt = (
-            BASE_USERSPACE_SYSTEM_PROMPT
-            if mode == "userspace"
-            else BASE_CHAT_SYSTEM_PROMPT
-        )
+        base_prompt = BASE_USERSPACE_SYSTEM_PROMPT if mode == "userspace" else BASE_CHAT_SYSTEM_PROMPT
         prompt = base_prompt + index_prompt_section + tool_prompt_section
         if is_ui:
             prompt += UI_VISUALIZATION_COMMON_PROMPT
-            if (
-                self._app_settings
-                and self._app_settings.get("tool_output_mode", "default") == "auto"
-            ):
+            if self._app_settings and self._app_settings.get("tool_output_mode", "default") == "auto":
                 prompt += TOOL_OUTPUT_VISIBILITY_PROMPT
         self._request_prompt_cache[cache_key] = prompt
         return prompt
@@ -13150,9 +11736,7 @@ except Exception as e:
 
         prompt_system = system_prompt
         include_ai_turn_reminder = bool(turn_system_content)
-        if turn_system_content and self._uses_copilot_responses_instructions(
-            runtime_llm
-        ):
+        if turn_system_content and self._uses_copilot_responses_instructions(runtime_llm):
             prompt_system = f"{system_prompt}\n\n{turn_system_content}"
             include_ai_turn_reminder = False
 
@@ -13209,9 +11793,7 @@ except Exception as e:
         sent as assistant turns. For this path, we fold those reminders into the
         system/instructions channel instead.
         """
-        return isinstance(llm, _CopilotChatOpenAI) and bool(
-            getattr(llm, "use_responses_api", False)
-        )
+        return isinstance(llm, _CopilotChatOpenAI) and bool(getattr(llm, "use_responses_api", False))
 
     @staticmethod
     def _parse_tool_calls_from_thinking(thinking_text: str) -> list[dict]:
@@ -13263,9 +11845,7 @@ except Exception as e:
             if func_match:
                 func_name = func_match.group(1)
                 params: dict[str, str] = {}
-                for pm in re.finditer(
-                    r"<parameter=(\w+)>\s*(.*?)\s*</parameter>", block, re.DOTALL
-                ):
+                for pm in re.finditer(r"<parameter=(\w+)>\s*(.*?)\s*</parameter>", block, re.DOTALL):
                     params[pm.group(1)] = pm.group(2).strip()
                 tool_calls.append(
                     {
@@ -13289,9 +11869,7 @@ except Exception as e:
 
         # Gather thinking text from all known locations
         thinking = (
-            RAGComponents._extract_reasoning_text_from_payload(
-                message.additional_kwargs.get("reasoning")
-            )
+            RAGComponents._extract_reasoning_text_from_payload(message.additional_kwargs.get("reasoning"))
             or message.additional_kwargs.get("reasoning_content", "")
             or message.additional_kwargs.get("reasoning_text", "")
             or message.additional_kwargs.get("reasoning_summary_text", "")
@@ -13346,9 +11924,7 @@ except Exception as e:
         # Anthropic (extended thinking), and OpenAI (reasoning models).
         llm_with_tools = llm.bind_tools(tools)
         agent = (
-            RunnablePassthrough.assign(
-                agent_scratchpad=lambda x: formatter(x["intermediate_steps"])
-            )
+            RunnablePassthrough.assign(agent_scratchpad=lambda x: formatter(x["intermediate_steps"]))
             | prompt
             | llm_with_tools
             | RunnableLambda(self._promote_thinking_tool_calls)
@@ -13420,14 +11996,10 @@ except Exception as e:
 
         providers: list[str] = []
         for identifier in (self._app_settings or {}).get("allowed_chat_models") or []:
-            provider, allowed_model = self._parse_provider_scoped_model(
-                str(identifier or "")
-            )
+            provider, allowed_model = self._parse_provider_scoped_model(str(identifier or ""))
             if not provider or not allowed_model:
                 continue
-            allowed_variants = self._model_id_variants_for_provider_resolution(
-                allowed_model
-            )
+            allowed_variants = self._model_id_variants_for_provider_resolution(allowed_model)
             if requested_variants.isdisjoint(allowed_variants):
                 continue
             normalized_provider = normalize_provider_name(provider)
@@ -13448,26 +12020,16 @@ except Exception as e:
 
         if allowed_providers:
             preferred_provider = normalize_provider_name(provider_override)
-            provider_pool = [
-                provider
-                for provider in allowed_providers
-                if provider in configured_providers
-            ]
+            provider_pool = [provider for provider in allowed_providers if provider in configured_providers]
             if not provider_pool:
                 provider_pool = [
                     provider
                     for provider in configured_providers
-                    if any(
-                        providers_equivalent(allowed_provider, provider)
-                        for allowed_provider in allowed_providers
-                    )
+                    if any(providers_equivalent(allowed_provider, provider) for allowed_provider in allowed_providers)
                 ]
             if not provider_pool:
                 provider_pool = allowed_providers
-            if preferred_provider and any(
-                providers_equivalent(allowed_provider, preferred_provider)
-                for allowed_provider in allowed_providers
-            ):
+            if preferred_provider and any(providers_equivalent(allowed_provider, preferred_provider) for allowed_provider in allowed_providers):
                 if preferred_provider in configured_providers:
                     provider_pool = [preferred_provider, *provider_pool]
                 elif preferred_provider in allowed_providers:
@@ -13475,42 +12037,27 @@ except Exception as e:
                 provider_pool = list(dict.fromkeys(provider_pool))
         else:
             provider_pool = [requested_provider]
-            provider_pool.extend(
-                provider
-                for provider in configured_providers
-                if provider != requested_provider
-            )
+            provider_pool.extend(provider for provider in configured_providers if provider != requested_provider)
             provider_pool = list(dict.fromkeys(provider_pool))
 
-        ordered = list(
-            dict.fromkeys(normalize_provider_name(provider) for provider in provider_pool if provider)
-        )
+        ordered = list(dict.fromkeys(normalize_provider_name(provider) for provider in provider_pool if provider))
         if provider_override and not allowed_providers:
-            return list(
-                dict.fromkeys([normalize_provider_name(provider_override), *ordered])
-            )
+            return list(dict.fromkeys([normalize_provider_name(provider_override), *ordered]))
         return ordered
 
     def _llm_provider_unavailable_reason(self, provider: str) -> str:
         """Return a concise reason a provider could not produce an LLM."""
         settings = self._app_settings or {}
         normalized = normalize_provider_name(provider)
-        if normalized == "openai" and not str(
-            settings.get("openai_api_key", "") or ""
-        ).strip():
+        if normalized == "openai" and not str(settings.get("openai_api_key", "") or "").strip():
             return "OpenAI API key is missing"
-        if normalized == "anthropic" and not str(
-            settings.get("anthropic_api_key", "") or ""
-        ).strip():
+        if normalized == "anthropic" and not str(settings.get("anthropic_api_key", "") or "").strip():
             return "Anthropic API key is missing"
         if normalized == "github_copilot" and not (
-            str(settings.get("github_copilot_access_token", "") or "").strip()
-            or str(settings.get("github_copilot_refresh_token", "") or "").strip()
+            str(settings.get("github_copilot_access_token", "") or "").strip() or str(settings.get("github_copilot_refresh_token", "") or "").strip()
         ):
             return "GitHub Copilot is not connected"
-        if normalized == "github_models" and not str(
-            settings.get("github_models_api_token", "") or ""
-        ).strip():
+        if normalized == "github_models" and not str(settings.get("github_models_api_token", "") or "").strip():
             return "GitHub Models PAT is missing"
         return "provider client could not be initialized"
 
@@ -13528,14 +12075,8 @@ except Exception as e:
             return ""
         attempted = ""
         if resolution.attempted_providers:
-            attempted = ", attempted providers: " + ", ".join(
-                self._provider_label(provider)
-                for provider in resolution.attempted_providers
-            )
-        return (
-            f" while using {self._provider_label(resolution.provider)} "
-            f"for model '{resolution.model}'{attempted}"
-        )
+            attempted = ", attempted providers: " + ", ".join(self._provider_label(provider) for provider in resolution.attempted_providers)
+        return f" while using {self._provider_label(resolution.provider)} for model '{resolution.model}'{attempted}"
 
     def _chat_runtime_error_message(
         self,
@@ -13551,10 +12092,7 @@ except Exception as e:
             )
 
         resolution_context = self._llm_error_context(resolution)
-        return (
-            f"I encountered an error processing your request{resolution_context}: "
-            f"{_format_exception_message(exc)}"
-        )
+        return f"I encountered an error processing your request{resolution_context}: {_format_exception_message(exc)}"
 
     async def _resolve_chat_request_max_tokens(self, provider: str, model: str) -> int:
         """Resolve chat-specific max_tokens, capped to selected model limits when known."""
@@ -13564,21 +12102,15 @@ except Exception as e:
 
         normalized_provider = normalize_provider_name(provider)
         if normalized_provider in LOCAL_LLM_PROVIDER_NAMES:
-            model_limit = await self._resolve_local_context_limit(
-                normalized_provider, model
-            )
+            model_limit = await self._resolve_local_context_limit(normalized_provider, model)
             if model_limit and resolved > model_limit:
-                logger.debug(
-                    f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}"
-                )
+                logger.debug(f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}")
                 return model_limit
             return resolved
 
         model_limit = await get_output_limit(model)
         if model_limit and resolved > model_limit:
-            logger.debug(
-                f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}"
-            )
+            logger.debug(f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}")
             return model_limit
 
         return resolved
@@ -13593,9 +12125,7 @@ except Exception as e:
         """
         if not self._app_settings or not self.llm:
             return
-        provider = normalize_provider_name(
-            self._app_settings.get("llm_provider", "openai")
-        )
+        provider = normalize_provider_name(self._app_settings.get("llm_provider", "openai"))
         if provider != "github_copilot":
             return
         fresh_token = await ensure_copilot_token_fresh()
@@ -13615,9 +12145,7 @@ except Exception as e:
                 self._copilot_llm_token = fresh_token
                 logger.debug("Refreshed cached Copilot LLM with updated token")
 
-    async def _get_request_scoped_llm(
-        self, conversation_model: Optional[str]
-    ) -> RequestLLMResolution:
+    async def _get_request_scoped_llm(self, conversation_model: Optional[str]) -> RequestLLMResolution:
         """Resolve a request-scoped LLM for the requested model and host."""
         if self.llm is None and self._core_ready:
             try:
@@ -13628,9 +12156,7 @@ except Exception as e:
             except Exception:
                 logger.exception("Failed to refresh app settings before LLM resolution")
 
-        provider_override, model_id = self._parse_provider_scoped_model(
-            conversation_model
-        )
+        provider_override, model_id = self._parse_provider_scoped_model(conversation_model)
 
         if not self._app_settings:
             return RequestLLMResolution(
@@ -13640,9 +12166,7 @@ except Exception as e:
             )
 
         configured_model = str(self._app_settings.get("llm_model", "")).strip()
-        configured_provider = normalize_provider_name(
-            self._app_settings.get("llm_provider", "openai")
-        )
+        configured_provider = normalize_provider_name(self._app_settings.get("llm_provider", "openai"))
 
         if not model_id:
             model_id = configured_model
@@ -13666,10 +12190,7 @@ except Exception as e:
             configured_model
             and model_id == configured_model
             and self.llm is not None
-            and (
-                provider_override is None
-                or providers_same(provider_override, configured_provider)
-            )
+            and (provider_override is None or providers_same(provider_override, configured_provider))
         ):
             await self._ensure_copilot_llm_fresh()
             return RequestLLMResolution(
@@ -13687,24 +12208,17 @@ except Exception as e:
                 provider_override=provider_override,
             )
         except Exception:  # pragma: no cover - defensive: never block chat on resolver
-            logger.exception(
-                "LLM candidate provider resolution failed; using configured provider"
-            )
+            logger.exception("LLM candidate provider resolution failed; using configured provider")
             candidate_providers = [provider]
 
         attempted: list[str] = []
         unavailable_reasons: list[str] = []
         for candidate_provider in candidate_providers:
             attempted.append(candidate_provider)
-            max_tokens = await self._resolve_chat_request_max_tokens(
-                candidate_provider, model_id
-            )
+            max_tokens = await self._resolve_chat_request_max_tokens(candidate_provider, model_id)
             request_llm = await self._build_llm(candidate_provider, model_id, max_tokens)
             if request_llm is None:
-                unavailable_reasons.append(
-                    f"{self._provider_label(candidate_provider)}: "
-                    f"{self._llm_provider_unavailable_reason(candidate_provider)}"
-                )
+                unavailable_reasons.append(f"{self._provider_label(candidate_provider)}: {self._llm_provider_unavailable_reason(candidate_provider)}")
                 continue
 
             if candidate_provider != provider:
@@ -13725,14 +12239,9 @@ except Exception as e:
                 attempted_providers=tuple(attempted),
             )
 
-        provider_list = ", ".join(
-            self._provider_label(provider) for provider in attempted
-        )
+        provider_list = ", ".join(self._provider_label(provider) for provider in attempted)
         details = "; ".join(unavailable_reasons)
-        error_message = (
-            f"Tried providers for model '{model_id}' in candidate order: "
-            f"{provider_list or 'none'}."
-        )
+        error_message = f"Tried providers for model '{model_id}' in candidate order: {provider_list or 'none'}."
         if details:
             error_message = f"{error_message} {details}."
         return RequestLLMResolution(
@@ -13779,19 +12288,11 @@ except Exception as e:
         model_id: Optional[str] = None,
     ) -> str:
         """Build a request-scoped context headroom advisory for the model."""
-        effective_model_id = model_id or (
-            (self._app_settings or {}).get("llm_model", "gpt-4-turbo")
-            if self._app_settings
-            else "gpt-4-turbo"
-        )
+        effective_model_id = model_id or ((self._app_settings or {}).get("llm_model", "gpt-4-turbo") if self._app_settings else "gpt-4-turbo")
         try:
-            provider = normalize_provider_name(
-                (self._app_settings or {}).get("llm_provider", "openai")
-            )
+            provider = normalize_provider_name((self._app_settings or {}).get("llm_provider", "openai"))
             if provider in LOCAL_LLM_PROVIDER_NAMES:
-                detected = await self._resolve_local_context_limit(
-                    provider, effective_model_id
-                )
+                detected = await self._resolve_local_context_limit(provider, effective_model_id)
                 context_limit = max(1, detected or 8192)
             else:
                 # OpenAI/Anthropic: use LiteLLM dataset
@@ -13802,21 +12303,13 @@ except Exception as e:
         estimated_tokens = 0
         for message in chat_history:
             content = getattr(message, "content", message)
-            estimated_tokens += (
-                len(self._content_to_text_for_token_estimate(content)) // 4
-            )
+            estimated_tokens += len(self._content_to_text_for_token_estimate(content)) // 4
 
-        estimated_tokens += (
-            len(self._content_to_text_for_token_estimate(user_content)) // 4
-        )
+        estimated_tokens += len(self._content_to_text_for_token_estimate(user_content)) // 4
 
         usage_percent = int((estimated_tokens / context_limit) * 100)
         headroom_tokens = max(0, context_limit - estimated_tokens)
-        risk_level = (
-            "high"
-            if usage_percent >= 85
-            else "medium" if usage_percent >= 70 else "low"
-        )
+        risk_level = "high" if usage_percent >= 85 else "medium" if usage_percent >= 70 else "low"
 
         return (
             "\n\n## CONTEXT HEADROOM ASSAY\n"
@@ -13889,15 +12382,9 @@ except Exception as e:
             turn_system_content = request_context["user_identity_turn_line"]
             turn_system_content += self._build_turn_reminder_text(
                 request_context["mode"],
-                include_sqlite_persistence=request_context[
-                    "include_sqlite_persistence"
-                ],
-                userspace_env_var_turn_hint=request_context[
-                    "userspace_env_var_turn_hint"
-                ],
-                userspace_runtime_status_turn_hint=request_context[
-                    "userspace_runtime_status_turn_hint"
-                ],
+                include_sqlite_persistence=request_context["include_sqlite_persistence"],
+                userspace_env_var_turn_hint=request_context["userspace_env_var_turn_hint"],
+                userspace_runtime_status_turn_hint=request_context["userspace_runtime_status_turn_hint"],
             )
             turn_system_content += await self._build_context_headroom_prompt(
                 chat_history=chat_history,
@@ -13943,14 +12430,10 @@ except Exception as e:
                 provider_messages: list[dict[str, Any]] = [
                     {
                         "role": "system",
-                        "content": self._serialize_prompt_content(
-                            system_prompt + tool_scope_prompt
-                        ),
+                        "content": self._serialize_prompt_content(system_prompt + tool_scope_prompt),
                     },
                 ]
-                provider_messages.extend(
-                    self._serialize_base_message(message) for message in chat_history
-                )
+                provider_messages.extend(self._serialize_base_message(message) for message in chat_history)
                 provider_messages.append(
                     {
                         "role": "assistant",
@@ -13963,9 +12446,7 @@ except Exception as e:
                         "content": self._serialize_prompt_content(langchain_content),
                     }
                 )
-                provider_name = llm_resolution.provider or str(
-                    (self._app_settings or {}).get("llm_provider", "openai")
-                ).lower()
+                provider_name = llm_resolution.provider or str((self._app_settings or {}).get("llm_provider", "openai")).lower()
                 effective_model = request_model_id
                 # Use agent with tools
                 result = await executor.ainvoke(
@@ -13978,18 +12459,10 @@ except Exception as e:
                 output = result.get("output", "I couldn't generate a response.")
                 # Handle Anthropic-style content blocks (list of dicts with 'text' key)
                 if isinstance(output, list):
-                    output = "".join(
-                        block.get("text", "") if isinstance(block, dict) else str(block)
-                        for block in output
-                    )
+                    output = "".join(block.get("text", "") if isinstance(block, dict) else str(block) for block in output)
                 lowered_output = str(output).lower()
-                request_tool_state["max_iterations_reached"] = bool(
-                    "iteration limit" in lowered_output
-                    or "max iterations" in lowered_output
-                )
-                if request_tool_state["max_iterations_reached"] and request_context.get(
-                    "workspace_id"
-                ):
+                request_tool_state["max_iterations_reached"] = bool("iteration limit" in lowered_output or "max iterations" in lowered_output)
+                if request_tool_state["max_iterations_reached"] and request_context.get("workspace_id"):
                     self._record_userspace_failure(
                         request_context["workspace_id"],
                         failure_class="max_iterations_reached",
@@ -14031,16 +12504,12 @@ except Exception as e:
                     direct_system_prompt = f"{system_prompt}\n\n{turn_system_content}"
                     include_ai_turn_reminder = False
 
-                messages: List[BaseMessage] = [
-                    SystemMessage(content=direct_system_prompt)
-                ]
+                messages: List[BaseMessage] = [SystemMessage(content=direct_system_prompt)]
                 messages.extend(chat_history)
                 if include_ai_turn_reminder:
                     messages.append(AIMessage(content=turn_system_content))
                 messages.append(HumanMessage(content=langchain_content))
-                provider_name = llm_resolution.provider or str(
-                    (self._app_settings or {}).get("llm_provider", "openai")
-                ).lower()
+                provider_name = llm_resolution.provider or str((self._app_settings or {}).get("llm_provider", "openai")).lower()
                 effective_model = request_model_id
                 response = await request_llm.ainvoke(messages)
                 content = response.content
@@ -14060,9 +12529,7 @@ except Exception as e:
                     system_prompt=system_prompt,
                     rendered_user_input=langchain_content,
                     chat_history=chat_history,
-                    provider_messages=[
-                        self._serialize_base_message(message) for message in messages
-                    ],
+                    provider_messages=[self._serialize_base_message(message) for message in messages],
                     tool_scope_prompt="",
                     prompt_additions=request_context["prompt_additions"],
                     turn_reminders=turn_system_content,
@@ -14157,9 +12624,7 @@ except Exception as e:
             request_context["mode"],
             include_sqlite_persistence=request_context["include_sqlite_persistence"],
             userspace_env_var_turn_hint=request_context["userspace_env_var_turn_hint"],
-            userspace_runtime_status_turn_hint=request_context[
-                "userspace_runtime_status_turn_hint"
-            ],
+            userspace_runtime_status_turn_hint=request_context["userspace_runtime_status_turn_hint"],
         )
         turn_system_content += await self._build_context_headroom_prompt(
             chat_history=chat_history,
@@ -14208,28 +12673,19 @@ except Exception as e:
                 # on each iteration (tool call -> response -> tool call...) which
                 # quickly exhausts rate limits. Images are replaced with [image attached].
                 if self._has_image_content(langchain_content):
-                    logger.info(
-                        "Streaming request contains image_url content; preserving images "
-                        "for first-party vision handling"
-                    )
+                    logger.info("Streaming request contains image_url content; preserving images for first-party vision handling")
                     agent_input = langchain_content
                 else:
                     agent_input = self._strip_images_from_content(langchain_content)
-                provider_name = llm_resolution.provider or str(
-                    (self._app_settings or {}).get("llm_provider", "openai")
-                ).lower()
+                provider_name = llm_resolution.provider or str((self._app_settings or {}).get("llm_provider", "openai")).lower()
                 effective_model = request_model_id
                 stream_provider_messages: list[dict[str, Any]] = [
                     {
                         "role": "system",
-                        "content": self._serialize_prompt_content(
-                            system_prompt + tool_scope_prompt
-                        ),
+                        "content": self._serialize_prompt_content(system_prompt + tool_scope_prompt),
                     },
                 ]
-                stream_provider_messages.extend(
-                    self._serialize_base_message(message) for message in chat_history
-                )
+                stream_provider_messages.extend(self._serialize_base_message(message) for message in chat_history)
                 stream_provider_messages.append(
                     {
                         "role": "assistant",
@@ -14287,12 +12743,8 @@ except Exception as e:
 
                                 tool_name = event.get("name", "unknown")
                                 tool_input = event.get("data", {}).get("input", {})
-                                connection_meta = self._get_tool_connection_metadata(
-                                    tool_name
-                                )
-                                presentation_meta = normalize_tool_presentation(
-                                    tool_name, connection_meta
-                                )
+                                connection_meta = self._get_tool_connection_metadata(tool_name)
+                                presentation_meta = normalize_tool_presentation(tool_name, connection_meta)
                                 _tool_start_payloads[run_id] = {
                                     "tool": tool_name,
                                     "input": tool_input,
@@ -14301,9 +12753,7 @@ except Exception as e:
                                     time.monotonic(),
                                     tool_name,
                                 )
-                                logger.debug(
-                                    f"Tool started: {tool_name} (run_id={run_id[:8]})"
-                                )
+                                logger.debug(f"Tool started: {tool_name} (run_id={run_id[:8]})")
                                 tool_event = {
                                     "type": "tool_start",
                                     "tool": tool_name,
@@ -14322,25 +12772,17 @@ except Exception as e:
 
                                 tool_name = event.get("name", "unknown")
                                 tool_output = event.get("data", {}).get("output", "")
-                                connection_meta = self._get_tool_connection_metadata(
-                                    tool_name
-                                )
-                                presentation_meta = normalize_tool_presentation(
-                                    tool_name, connection_meta
-                                )
+                                connection_meta = self._get_tool_connection_metadata(tool_name)
+                                presentation_meta = normalize_tool_presentation(tool_name, connection_meta)
                                 start_payload = _tool_start_payloads.pop(run_id, None)
 
                                 start_info = _tool_start_times.pop(run_id, None)
                                 if start_info:
                                     elapsed = time.monotonic() - start_info[0]
                                     if elapsed > 10:
-                                        logger.warning(
-                                            f"Slow tool execution: {tool_name} took {elapsed:.1f}s (run_id={run_id[:8]})"
-                                        )
+                                        logger.warning(f"Slow tool execution: {tool_name} took {elapsed:.1f}s (run_id={run_id[:8]})")
                                     else:
-                                        logger.debug(
-                                            f"Tool completed: {tool_name} in {elapsed:.1f}s (run_id={run_id[:8]})"
-                                        )
+                                        logger.debug(f"Tool completed: {tool_name} in {elapsed:.1f}s (run_id={run_id[:8]})")
 
                                 ui_tools = {"create_chart", "create_datatable"}
                                 json_display_integrity_tools = {
@@ -14359,10 +12801,7 @@ except Exception as e:
                                     "delete_userspace_file",
                                 }
                                 display_output = tool_output
-                                if (
-                                    isinstance(display_output, str)
-                                    and tool_name in _userspace_write_tools
-                                ):
+                                if isinstance(display_output, str) and tool_name in _userspace_write_tools:
                                     try:
                                         _parsed_output = json.loads(display_output)
                                         if isinstance(_parsed_output, dict):
@@ -14376,15 +12815,9 @@ except Exception as e:
                                             # these so dropping them keeps the
                                             # streamed payload compact enough that
                                             # batched results stay JSON-parseable.
-                                            _parsed_output.pop(
-                                                "live_data_contract", None
-                                            )
-                                            if isinstance(
-                                                _parsed_output.get("file"), dict
-                                            ):
-                                                _parsed_output["file"].pop(
-                                                    "content", None
-                                                )
+                                            _parsed_output.pop("live_data_contract", None)
+                                            if isinstance(_parsed_output.get("file"), dict):
+                                                _parsed_output["file"].pop("content", None)
                                             batch_files = _parsed_output.get("files")
                                             if isinstance(batch_files, list):
                                                 for _entry in batch_files:
@@ -14397,21 +12830,12 @@ except Exception as e:
                                                             _entry.get("file"),
                                                             dict,
                                                         ):
-                                                            _entry["file"].pop(
-                                                                "content", None
-                                                            )
-                                            display_output = json.dumps(
-                                                _parsed_output, indent=2
-                                            )
+                                                            _entry["file"].pop("content", None)
+                                            display_output = json.dumps(_parsed_output, indent=2)
                                     except (json.JSONDecodeError, TypeError):
                                         pass
-                                has_table_metadata = isinstance(
-                                    display_output, str
-                                ) and display_output.startswith(TABLE_METADATA_START)
-                                is_terminal_display_output = bool(
-                                    isinstance(presentation_meta, dict)
-                                    and presentation_meta.get("kind") == "terminal"
-                                )
+                                has_table_metadata = isinstance(display_output, str) and display_output.startswith(TABLE_METADATA_START)
+                                is_terminal_display_output = bool(isinstance(presentation_meta, dict) and presentation_meta.get("kind") == "terminal")
                                 # Structured JSON tool payloads must remain
                                 # parseable client-side. Truncating to 2000 chars
                                 # cuts off closing braces and forces the frontend
@@ -14431,31 +12855,18 @@ except Exception as e:
                                     and not is_terminal_display_output
                                     and not has_table_metadata
                                 ):
-                                    display_output = (
-                                        display_output[:2000] + "... (truncated)"
-                                    )
-                                tool_args = (
-                                    start_payload.get("input") if start_payload else {}
-                                )
+                                    display_output = display_output[:2000] + "... (truncated)"
+                                tool_args = start_payload.get("input") if start_payload else {}
                                 if not isinstance(tool_args, dict):
                                     tool_args = {"input": tool_args}
-                                tool_call_id = (
-                                    run_id
-                                    or f"stream_tool_{len(attempt_replayed_tool_messages)}"
-                                )
+                                tool_call_id = run_id or f"stream_tool_{len(attempt_replayed_tool_messages)}"
                                 attempt_replayed_tool_messages.extend(
                                     [
                                         AIMessage(
                                             content="",
                                             tool_calls=[
                                                 {
-                                                    "name": (
-                                                        start_payload.get(
-                                                            "tool", tool_name
-                                                        )
-                                                        if start_payload
-                                                        else tool_name
-                                                    ),
+                                                    "name": (start_payload.get("tool", tool_name) if start_payload else tool_name),
                                                     "args": tool_args,
                                                     "id": tool_call_id,
                                                 }
@@ -14487,47 +12898,27 @@ except Exception as e:
 
                                 tool_name = event.get("name", "unknown")
                                 error_data = event.get("data", {})
-                                error_output = (
-                                    str(error_data.get("error", error_data)).strip()
-                                    or "Tool execution failed"
-                                )
-                                connection_meta = self._get_tool_connection_metadata(
-                                    tool_name
-                                )
-                                presentation_meta = normalize_tool_presentation(
-                                    tool_name, connection_meta
-                                )
+                                error_output = str(error_data.get("error", error_data)).strip() or "Tool execution failed"
+                                connection_meta = self._get_tool_connection_metadata(tool_name)
+                                presentation_meta = normalize_tool_presentation(tool_name, connection_meta)
                                 start_payload = _tool_start_payloads.pop(run_id, None)
 
                                 start_info = _tool_start_times.pop(run_id, None)
                                 if start_info:
                                     elapsed = time.monotonic() - start_info[0]
-                                    logger.warning(
-                                        f"Tool error: {tool_name} failed after {elapsed:.1f}s (run_id={run_id[:8]}): {error_output[:200]}"
-                                    )
+                                    logger.warning(f"Tool error: {tool_name} failed after {elapsed:.1f}s (run_id={run_id[:8]}): {error_output[:200]}")
 
-                                tool_args = (
-                                    start_payload.get("input") if start_payload else {}
-                                )
+                                tool_args = start_payload.get("input") if start_payload else {}
                                 if not isinstance(tool_args, dict):
                                     tool_args = {"input": tool_args}
-                                tool_call_id = (
-                                    run_id
-                                    or f"stream_tool_{len(attempt_replayed_tool_messages)}"
-                                )
+                                tool_call_id = run_id or f"stream_tool_{len(attempt_replayed_tool_messages)}"
                                 attempt_replayed_tool_messages.extend(
                                     [
                                         AIMessage(
                                             content="",
                                             tool_calls=[
                                                 {
-                                                    "name": (
-                                                        start_payload.get(
-                                                            "tool", tool_name
-                                                        )
-                                                        if start_payload
-                                                        else tool_name
-                                                    ),
+                                                    "name": (start_payload.get("tool", tool_name) if start_payload else tool_name),
                                                     "args": tool_args,
                                                     "id": tool_call_id,
                                                 }
@@ -14554,160 +12945,88 @@ except Exception as e:
                             elif kind == "on_chat_model_stream":
                                 chunk = event.get("data", {}).get("chunk")
                                 if chunk:
-                                    tool_call_chunks = getattr(
-                                        chunk, "tool_call_chunks", None
-                                    )
+                                    tool_call_chunks = getattr(chunk, "tool_call_chunks", None)
                                     if tool_call_chunks:
                                         for tc_chunk in tool_call_chunks:
                                             tc_id = (
-                                                tc_chunk.get("id")
-                                                or tc_chunk.get("index")
+                                                tc_chunk.get("id") or tc_chunk.get("index")
                                                 if isinstance(tc_chunk, dict)
-                                                else getattr(tc_chunk, "id", None)
-                                                or getattr(tc_chunk, "index", None)
+                                                else getattr(tc_chunk, "id", None) or getattr(tc_chunk, "index", None)
                                             )
-                                            tc_name = (
-                                                tc_chunk.get("name")
-                                                if isinstance(tc_chunk, dict)
-                                                else getattr(tc_chunk, "name", None)
-                                            )
-                                            tc_args = (
-                                                tc_chunk.get("args", "")
-                                                if isinstance(tc_chunk, dict)
-                                                else getattr(tc_chunk, "args", "")
-                                            ) or ""
-                                            tc_key = (
-                                                str(tc_id)
-                                                if tc_id is not None
-                                                else run_id
-                                            )
+                                            tc_name = tc_chunk.get("name") if isinstance(tc_chunk, dict) else getattr(tc_chunk, "name", None)
+                                            tc_args = (tc_chunk.get("args", "") if isinstance(tc_chunk, dict) else getattr(tc_chunk, "args", "")) or ""
+                                            tc_key = str(tc_id) if tc_id is not None else run_id
                                             if tc_name:
                                                 _generating_tool_names[tc_key] = tc_name
                                             if tc_args and tc_key:
-                                                prev = _generating_tool_lines.get(
-                                                    tc_key, 0
-                                                )
+                                                prev = _generating_tool_lines.get(tc_key, 0)
                                                 new_lines = tc_args.count("\n")
                                                 if new_lines:
                                                     total = prev + new_lines
-                                                    _generating_tool_lines[tc_key] = (
-                                                        total
-                                                    )
+                                                    _generating_tool_lines[tc_key] = total
                                                     generating_event = {
                                                         "type": "tool_generating",
-                                                        "tool": _generating_tool_names.get(
-                                                            tc_key, ""
-                                                        ),
+                                                        "tool": _generating_tool_names.get(tc_key, ""),
                                                         "lines": total,
                                                     }
-                                                    presentation_meta = (
-                                                        normalize_tool_presentation(
-                                                            _generating_tool_names.get(
-                                                                tc_key, ""
-                                                            )
-                                                        )
-                                                    )
+                                                    presentation_meta = normalize_tool_presentation(_generating_tool_names.get(tc_key, ""))
                                                     if presentation_meta:
-                                                        generating_event[
-                                                            "presentation"
-                                                        ] = presentation_meta
+                                                        generating_event["presentation"] = presentation_meta
                                                     yield generating_event
 
-                                    reasoning_text = (
-                                        self._extract_reasoning_from_stream_chunk(chunk)
-                                    )
+                                    reasoning_text = self._extract_reasoning_from_stream_chunk(chunk)
                                     if reasoning_text:
                                         if run_id:
-                                            streamed_reasoning_by_chat_run[run_id] = (
-                                                streamed_reasoning_by_chat_run.get(
-                                                    run_id, ""
-                                                )
-                                                + reasoning_text
-                                            )
+                                            streamed_reasoning_by_chat_run[run_id] = streamed_reasoning_by_chat_run.get(run_id, "") + reasoning_text
                                         yield {
                                             "type": "reasoning",
                                             "content": reasoning_text,
                                         }
 
                                     if hasattr(chunk, "content") and chunk.content:
-                                        content = (
-                                            self._extract_text_from_stream_content(
-                                                chunk.content
-                                            )
-                                        )
+                                        content = self._extract_text_from_stream_content(chunk.content)
                                         content_buffer_key = run_id or "__default__"
-                                        content, pending_channel_header = (
-                                            self._filter_lmstudio_channel_headers(
-                                                channel_header_buffers_by_chat_run.get(
-                                                    content_buffer_key, ""
-                                                ),
-                                                content,
-                                            )
+                                        content, pending_channel_header = self._filter_lmstudio_channel_headers(
+                                            channel_header_buffers_by_chat_run.get(content_buffer_key, ""),
+                                            content,
                                         )
                                         if pending_channel_header:
-                                            channel_header_buffers_by_chat_run[
-                                                content_buffer_key
-                                            ] = pending_channel_header
+                                            channel_header_buffers_by_chat_run[content_buffer_key] = pending_channel_header
                                         else:
-                                            channel_header_buffers_by_chat_run.pop(
-                                                content_buffer_key, None
-                                            )
+                                            channel_header_buffers_by_chat_run.pop(content_buffer_key, None)
                                         if content:
                                             if content.strip():
                                                 attempt_emitted_content = True
                                             if run_id:
-                                                streamed_content_by_chat_run[run_id] = (
-                                                    streamed_content_by_chat_run.get(
-                                                        run_id, ""
-                                                    )
-                                                    + content
-                                                )
+                                                streamed_content_by_chat_run[run_id] = streamed_content_by_chat_run.get(run_id, "") + content
                                             yield content
 
                             elif kind == "on_chat_model_end":
                                 output = event.get("data", {}).get("output")
-                                final_reasoning = (
-                                    self._extract_reasoning_from_chat_model_output(
-                                        output
-                                    )
-                                )
-                                emitted_reasoning = streamed_reasoning_by_chat_run.pop(
-                                    run_id, ""
-                                )
+                                final_reasoning = self._extract_reasoning_from_chat_model_output(output)
+                                emitted_reasoning = streamed_reasoning_by_chat_run.pop(run_id, "")
                                 if final_reasoning:
-                                    reasoning_suffix = self._compute_missing_suffix(
-                                        emitted_reasoning, final_reasoning
-                                    )
+                                    reasoning_suffix = self._compute_missing_suffix(emitted_reasoning, final_reasoning)
                                     if reasoning_suffix:
                                         yield {
                                             "type": "reasoning",
                                             "content": reasoning_suffix,
                                         }
-                                final_text = self._extract_text_from_chat_model_output(
-                                    output
-                                )
-                                emitted_text = streamed_content_by_chat_run.get(
-                                    run_id, ""
-                                )
-                                missing_suffix = self._compute_missing_suffix(
-                                    emitted_text, final_text
-                                )
+                                final_text = self._extract_text_from_chat_model_output(output)
+                                emitted_text = streamed_content_by_chat_run.get(run_id, "")
+                                missing_suffix = self._compute_missing_suffix(emitted_text, final_text)
                                 if missing_suffix:
                                     if missing_suffix.strip():
                                         attempt_emitted_content = True
                                     if run_id:
-                                        streamed_content_by_chat_run[run_id] = (
-                                            emitted_text + missing_suffix
-                                        )
+                                        streamed_content_by_chat_run[run_id] = emitted_text + missing_suffix
                                     yield missing_suffix
 
                             elif kind == "on_chain_end":
                                 output = event.get("data", {}).get("output", {})
 
                                 if isinstance(output, dict):
-                                    intermediate_steps = output.get(
-                                        "intermediate_steps"
-                                    )
+                                    intermediate_steps = output.get("intermediate_steps")
                                     if isinstance(intermediate_steps, list):
                                         attempt_intermediate_steps = intermediate_steps
                                         if intermediate_steps:
@@ -14715,31 +13034,21 @@ except Exception as e:
                                             any_tool_activity = True
 
                                     agent_output = output.get("output", "")
-                                    if (
-                                        "iteration limit" in str(agent_output).lower()
-                                        or "max iterations" in str(agent_output).lower()
-                                    ):
-                                        request_tool_state["max_iterations_reached"] = (
-                                            True
-                                        )
+                                    if "iteration limit" in str(agent_output).lower() or "max iterations" in str(agent_output).lower():
+                                        request_tool_state["max_iterations_reached"] = True
                                         yield {"type": "max_iterations_reached"}
                                     return_values = output.get("return_values", {})
                                     if isinstance(return_values, dict):
                                         rv_output = return_values.get("output", "")
                                         if "iteration limit" in str(rv_output).lower():
-                                            request_tool_state[
-                                                "max_iterations_reached"
-                                            ] = True
+                                            request_tool_state["max_iterations_reached"] = True
                                             yield {"type": "max_iterations_reached"}
 
                         should_internal_continue = (
                             not request_tool_state.get("max_iterations_reached", False)
                             and not attempt_emitted_content
                             and attempt_had_tool_activity
-                            and bool(
-                                attempt_intermediate_steps
-                                or attempt_replayed_tool_messages
-                            )
+                            and bool(attempt_intermediate_steps or attempt_replayed_tool_messages)
                             and attempt_number < MAX_INTERNAL_AGENT_CONTINUATIONS
                         )
                         if not should_internal_continue:
@@ -14750,24 +13059,16 @@ except Exception as e:
                                 stop_reason = "content_emitted"
                             elif not attempt_had_tool_activity:
                                 stop_reason = "no_tool_activity_this_attempt"
-                            elif not (
-                                attempt_intermediate_steps
-                                or attempt_replayed_tool_messages
-                            ):
+                            elif not (attempt_intermediate_steps or attempt_replayed_tool_messages):
                                 stop_reason = "no_replay_context"
                             elif attempt_number >= MAX_INTERNAL_AGENT_CONTINUATIONS:
                                 stop_reason = "continuation_limit_reached"
-                            request_tool_state["internal_continue_stop_reason"] = (
-                                stop_reason
-                            )
+                            request_tool_state["internal_continue_stop_reason"] = stop_reason
                             if not attempt_emitted_content and any_tool_activity:
                                 logger.info(
-                                    "Internal continuation stopped: reason=%s max_iter=%s emitted=%s "
-                                    "this_attempt_tools=%s steps=%d replayed=%d attempt=%d/%d",
+                                    "Internal continuation stopped: reason=%s max_iter=%s emitted=%s this_attempt_tools=%s steps=%d replayed=%d attempt=%d/%d",
                                     stop_reason,
-                                    request_tool_state.get(
-                                        "max_iterations_reached", False
-                                    ),
+                                    request_tool_state.get("max_iterations_reached", False),
                                     attempt_emitted_content,
                                     attempt_had_tool_activity,
                                     len(attempt_intermediate_steps),
@@ -14779,23 +13080,15 @@ except Exception as e:
 
                         attempt_chat_history = list(attempt_chat_history)
                         if not attempt_history_has_original_input:
-                            attempt_chat_history.append(
-                                HumanMessage(content=attempt_original_input)
-                            )
+                            attempt_chat_history.append(HumanMessage(content=attempt_original_input))
                             attempt_history_has_original_input = True
                         if attempt_intermediate_steps:
-                            attempt_chat_history.extend(
-                                self._format_intermediate_steps_for_agent(
-                                    attempt_intermediate_steps
-                                )
-                            )
+                            attempt_chat_history.extend(self._format_intermediate_steps_for_agent(attempt_intermediate_steps))
                         else:
                             attempt_chat_history.extend(attempt_replayed_tool_messages)
                         attempt_input = INTERNAL_AGENT_CONTINUATION_PROMPT
                         attempt_number += 1
-                        request_tool_state["internal_continue_attempts"] = (
-                            attempt_number
-                        )
+                        request_tool_state["internal_continue_attempts"] = attempt_number
                         logger.info(
                             "Agent stream attempt %d ended after tool activity without final text; continuing internally",
                             attempt_number,
@@ -14806,36 +13099,23 @@ except Exception as e:
                     # make one final direct LLM call WITHOUT tools to
                     # guarantee output, even when the agent produced no
                     # tool activity at all.
-                    if (
-                        not attempt_emitted_content
-                        and not request_tool_state.get("max_iterations_reached", False)
-                        and request_llm is not None
-                    ):
+                    if not attempt_emitted_content and not request_tool_state.get("max_iterations_reached", False) and request_llm is not None:
                         request_tool_state["tool_free_synthesis_used"] = True
                         if any_tool_activity:
                             logger.info(
-                                "All %d agent continuation attempt(s) exhausted without "
-                                "final text; falling back to tool-free LLM synthesis",
+                                "All %d agent continuation attempt(s) exhausted without final text; falling back to tool-free LLM synthesis",
                                 attempt_number,
                             )
                         else:
-                            logger.info(
-                                "Agent run ended without tool activity or final text; "
-                                "falling back to direct LLM recovery"
-                            )
+                            logger.info("Agent run ended without tool activity or final text; falling back to direct LLM recovery")
                         synthesis_chat_history = list(chat_history)
                         synthesis_has_original_input = bool(
                             synthesis_chat_history
                             and isinstance(synthesis_chat_history[-1], HumanMessage)
-                            and self._extract_text_from_message(
-                                synthesis_chat_history[-1]
-                            )
-                            == attempt_original_input
+                            and self._extract_text_from_message(synthesis_chat_history[-1]) == attempt_original_input
                         )
                         if not synthesis_has_original_input:
-                            synthesis_chat_history.append(
-                                HumanMessage(content=attempt_original_input)
-                            )
+                            synthesis_chat_history.append(HumanMessage(content=attempt_original_input))
                         # Synthesis uses the base system prompt WITHOUT
                         # tool_scope_prompt — the LLM has no tool bindings
                         # here, so listing tools just confuses reasoning
@@ -14844,17 +13124,13 @@ except Exception as e:
                             SystemMessage(content=system_prompt),
                         ]
                         synthesis_messages.extend(synthesis_chat_history)
-                        synthesis_tool_context = (
-                            self._build_internal_synthesis_tool_context(
-                                intermediate_steps=attempt_intermediate_steps,
-                                replay_messages=attempt_replayed_tool_messages,
-                            )
+                        synthesis_tool_context = self._build_internal_synthesis_tool_context(
+                            intermediate_steps=attempt_intermediate_steps,
+                            replay_messages=attempt_replayed_tool_messages,
                         )
                         if synthesis_tool_context is not None:
                             synthesis_messages.append(synthesis_tool_context)
-                        synthesis_messages.append(
-                            SystemMessage(content=INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT)
-                        )
+                        synthesis_messages.append(SystemMessage(content=INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT))
                         try:
                             synthesis_chunk_count = 0
                             synthesis_reasoning_chunks = 0
@@ -14864,9 +13140,7 @@ except Exception as e:
                             synthesis_channel_header_buffer = ""
                             async for chunk in request_llm.astream(synthesis_messages):
                                 synthesis_chunk_count += 1
-                                reasoning_text = (
-                                    self._extract_reasoning_from_stream_chunk(chunk)
-                                )
+                                reasoning_text = self._extract_reasoning_from_stream_chunk(chunk)
                                 if reasoning_text:
                                     synthesis_reasoning_chunks += 1
                                     streamed_synthesis_reasoning += reasoning_text
@@ -14875,14 +13149,10 @@ except Exception as e:
                                         "content": reasoning_text,
                                     }
                                 if hasattr(chunk, "content") and chunk.content:
-                                    content = self._extract_text_from_stream_content(
-                                        chunk.content
-                                    )
-                                    content, synthesis_channel_header_buffer = (
-                                        self._filter_lmstudio_channel_headers(
-                                            synthesis_channel_header_buffer,
-                                            content,
-                                        )
+                                    content = self._extract_text_from_stream_content(chunk.content)
+                                    content, synthesis_channel_header_buffer = self._filter_lmstudio_channel_headers(
+                                        synthesis_channel_header_buffer,
+                                        content,
                                     )
                                     if content:
                                         synthesis_text_chunks += 1
@@ -14895,20 +13165,13 @@ except Exception as e:
                                         synthesis_chunk_count,
                                         getattr(chunk, "content", "<no attr>"),
                                         type(chunk).__name__,
-                                        list(
-                                            (
-                                                getattr(chunk, "additional_kwargs", {})
-                                                or {}
-                                            ).keys()
-                                        ),
+                                        list((getattr(chunk, "additional_kwargs", {}) or {}).keys()),
                                     )
                             if synthesis_channel_header_buffer:
-                                content, synthesis_channel_header_buffer = (
-                                    self._filter_lmstudio_channel_headers(
-                                        synthesis_channel_header_buffer,
-                                        "",
-                                        final=True,
-                                    )
+                                content, synthesis_channel_header_buffer = self._filter_lmstudio_channel_headers(
+                                    synthesis_channel_header_buffer,
+                                    "",
+                                    final=True,
                                 )
                                 if content:
                                     synthesis_text_chunks += 1
@@ -14923,14 +13186,8 @@ except Exception as e:
                                 attempt_emitted_content,
                             )
                             if not attempt_emitted_content:
-                                synthesis_response = await request_llm.ainvoke(
-                                    synthesis_messages
-                                )
-                                final_reasoning = (
-                                    self._extract_reasoning_from_chat_model_output(
-                                        synthesis_response
-                                    )
-                                )
+                                synthesis_response = await request_llm.ainvoke(synthesis_messages)
+                                final_reasoning = self._extract_reasoning_from_chat_model_output(synthesis_response)
                                 reasoning_suffix = self._compute_missing_suffix(
                                     streamed_synthesis_reasoning,
                                     final_reasoning,
@@ -14940,9 +13197,7 @@ except Exception as e:
                                         "type": "reasoning",
                                         "content": reasoning_suffix,
                                     }
-                                final_text = self._extract_text_from_chat_model_output(
-                                    synthesis_response
-                                )
+                                final_text = self._extract_text_from_chat_model_output(synthesis_response)
                                 text_suffix = self._compute_missing_suffix(
                                     streamed_synthesis_text,
                                     final_text,
@@ -14950,9 +13205,7 @@ except Exception as e:
                                 if text_suffix:
                                     synthesis_text_chunks += 1
                                     attempt_emitted_content = True
-                                    logger.info(
-                                        "Recovered synthesis text from final response after empty stream"
-                                    )
+                                    logger.info("Recovered synthesis text from final response after empty stream")
                                     yield text_suffix
                             # Safety net: if synthesis still produced no visible
                             # text, generate a minimal progress summary so the
@@ -14960,15 +13213,12 @@ except Exception as e:
                             # background-task placeholder.
                             if not attempt_emitted_content:
                                 logger.warning(
-                                    "Synthesis produced no visible text after stream/invoke "
-                                    "(reasoning_chunks=%d); generating progress summary fallback",
+                                    "Synthesis produced no visible text after stream/invoke (reasoning_chunks=%d); generating progress summary fallback",
                                     synthesis_reasoning_chunks,
                                 )
-                                fallback_summary = (
-                                    self._build_synthesis_reasoning_only_fallback(
-                                        intermediate_steps=attempt_intermediate_steps,
-                                        replay_messages=attempt_replayed_tool_messages,
-                                    )
+                                fallback_summary = self._build_synthesis_reasoning_only_fallback(
+                                    intermediate_steps=attempt_intermediate_steps,
+                                    replay_messages=attempt_replayed_tool_messages,
                                 )
                                 if fallback_summary:
                                     attempt_emitted_content = True
@@ -14990,10 +13240,7 @@ except Exception as e:
                                 system_prompt=system_prompt,
                                 rendered_user_input=INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT,
                                 chat_history=synthesis_chat_history,
-                                provider_messages=[
-                                    self._serialize_base_message(message)
-                                    for message in synthesis_messages
-                                ],
+                                provider_messages=[self._serialize_base_message(message) for message in synthesis_messages],
                                 tool_scope_prompt=tool_scope_prompt,
                                 prompt_additions=request_context["prompt_additions"],
                                 turn_reminders=turn_system_content,
@@ -15005,9 +13252,7 @@ except Exception as e:
                                 message_index=message_index,
                             )
                 finally:
-                    if request_tool_state.get(
-                        "max_iterations_reached"
-                    ) and request_context.get("workspace_id"):
+                    if request_tool_state.get("max_iterations_reached") and request_context.get("workspace_id"):
                         self._record_userspace_failure(
                             request_context["workspace_id"],
                             failure_class="max_iterations_reached",
@@ -15049,46 +13294,34 @@ except Exception as e:
                     direct_system_prompt = f"{system_prompt}\n\n{turn_system_content}"
                     include_ai_turn_reminder = False
 
-                messages: List[BaseMessage] = [
-                    SystemMessage(content=direct_system_prompt)
-                ]
+                messages: List[BaseMessage] = [SystemMessage(content=direct_system_prompt)]
                 messages.extend(chat_history)
                 if include_ai_turn_reminder:
                     messages.append(AIMessage(content=turn_system_content))
                 messages.append(HumanMessage(content=langchain_content))
 
-                provider_name = llm_resolution.provider or str(
-                    (self._app_settings or {}).get("llm_provider", "openai")
-                ).lower()
+                provider_name = llm_resolution.provider or str((self._app_settings or {}).get("llm_provider", "openai")).lower()
                 effective_model = request_model_id
                 try:
                     direct_channel_header_buffer = ""
                     async for chunk in request_llm.astream(messages):
-                        reasoning_text = self._extract_reasoning_from_stream_chunk(
-                            chunk
-                        )
+                        reasoning_text = self._extract_reasoning_from_stream_chunk(chunk)
                         if reasoning_text:
                             yield {"type": "reasoning", "content": reasoning_text}
 
                         if hasattr(chunk, "content") and chunk.content:
-                            content = self._extract_text_from_stream_content(
-                                chunk.content
-                            )
-                            content, direct_channel_header_buffer = (
-                                self._filter_lmstudio_channel_headers(
-                                    direct_channel_header_buffer,
-                                    content,
-                                )
+                            content = self._extract_text_from_stream_content(chunk.content)
+                            content, direct_channel_header_buffer = self._filter_lmstudio_channel_headers(
+                                direct_channel_header_buffer,
+                                content,
                             )
                             if content:
                                 yield content
                     if direct_channel_header_buffer:
-                        content, direct_channel_header_buffer = (
-                            self._filter_lmstudio_channel_headers(
-                                direct_channel_header_buffer,
-                                "",
-                                final=True,
-                            )
+                        content, direct_channel_header_buffer = self._filter_lmstudio_channel_headers(
+                            direct_channel_header_buffer,
+                            "",
+                            final=True,
                         )
                         if content:
                             yield content
@@ -15109,10 +13342,7 @@ except Exception as e:
                         system_prompt=system_prompt,
                         rendered_user_input=langchain_content,
                         chat_history=chat_history,
-                        provider_messages=[
-                            self._serialize_base_message(message)
-                            for message in messages
-                        ],
+                        provider_messages=[self._serialize_base_message(message) for message in messages],
                         tool_scope_prompt="",
                         prompt_additions=request_context["prompt_additions"],
                         turn_reminders=turn_system_content,

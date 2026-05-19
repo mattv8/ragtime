@@ -31,24 +31,24 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import HTTPException
 
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_BLOCK_PRIVATE_NETWORKS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_BROWSE_TIMEOUT_MAX_SECONDS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_ENABLED
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_PDF_READ_DEFAULT_TEXT_CHARS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_PDF_READ_MAX_TEXT_CHARS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SEARCH_MAX_RESULTS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SEARCH_PDF_MAX_BYTES
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SEARCH_PDF_MAX_RESULTS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SEARXNG_BASE_URL
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTICS_SESSION_IDLE_TTL_SECONDS
-from ragtime.chat_runtime.presets import CHAT_WEB_READ_PDF_TOOL_ID
+from ragtime.chat_runtime.presets import (
+    CHAT_DIAGNOSTICS_BLOCK_PRIVATE_NETWORKS,
+    CHAT_DIAGNOSTICS_BROWSE_TIMEOUT_MAX_SECONDS,
+    CHAT_DIAGNOSTICS_COMMAND_TIMEOUT_MAX_SECONDS,
+    CHAT_DIAGNOSTICS_ENABLED,
+    CHAT_DIAGNOSTICS_PDF_READ_DEFAULT_TEXT_CHARS,
+    CHAT_DIAGNOSTICS_PDF_READ_MAX_TEXT_CHARS,
+    CHAT_DIAGNOSTICS_SEARCH_MAX_RESULTS,
+    CHAT_DIAGNOSTICS_SEARCH_PDF_MAX_BYTES,
+    CHAT_DIAGNOSTICS_SEARCH_PDF_MAX_RESULTS,
+    CHAT_DIAGNOSTICS_SEARXNG_BASE_URL,
+    CHAT_DIAGNOSTICS_SESSION_IDLE_TTL_SECONDS,
+    CHAT_WEB_READ_PDF_TOOL_ID,
+)
 from ragtime.config import settings
 from ragtime.core.logging import get_logger
-from ragtime.core.runtime_manager_client import runtime_manager_enabled
-from ragtime.core.runtime_manager_client import runtime_manager_request
-from ragtime.core.security import validate_chat_diagnostic_command
-from ragtime.core.security import validate_external_url
+from ragtime.core.runtime_manager_client import runtime_manager_enabled, runtime_manager_request
+from ragtime.core.security import validate_chat_diagnostic_command, validate_external_url
 
 logger = get_logger(__name__)
 
@@ -238,9 +238,7 @@ class ChatRuntimeService:
         if isinstance(engine, str) and engine.strip():
             result_payload["engine"] = engine.strip()
         elif isinstance(engines, list):
-            clean_engines = [
-                str(value).strip() for value in engines if str(value).strip()
-            ]
+            clean_engines = [str(value).strip() for value in engines if str(value).strip()]
             if clean_engines:
                 result_payload["engine"] = ", ".join(clean_engines[:3])
 
@@ -291,10 +289,7 @@ class ChatRuntimeService:
             body_preview = response.text[:256]
             raise HTTPException(
                 status_code=502,
-                detail=(
-                    f"SearXNG search request failed ({response.status_code}): "
-                    f"{body_preview}"
-                ),
+                detail=(f"SearXNG search request failed ({response.status_code}): {body_preview}"),
             )
 
         try:
@@ -350,9 +345,7 @@ class ChatRuntimeService:
         if not api_key:
             raise HTTPException(
                 status_code=503,
-                detail=(
-                    "Chat search provider 'tavily' requires TAVILY_API_KEY to be set"
-                ),
+                detail=("Chat search provider 'tavily' requires TAVILY_API_KEY to be set"),
             )
 
         payload = {
@@ -390,10 +383,7 @@ class ChatRuntimeService:
             body_preview = response.text[:256]
             raise HTTPException(
                 status_code=502,
-                detail=(
-                    f"Tavily search request failed ({response.status_code}): "
-                    f"{body_preview}"
-                ),
+                detail=(f"Tavily search request failed ({response.status_code}): {body_preview}"),
             )
 
         try:
@@ -594,9 +584,7 @@ class ChatRuntimeService:
                 try:
                     return await self._request(
                         "POST",
-                        path_template.format(
-                            provider_session_id=session.provider_session_id
-                        ),
+                        path_template.format(provider_session_id=session.provider_session_id),
                         json_payload=json_payload,
                         timeout_override_seconds=timeout_override_seconds,
                     )
@@ -717,9 +705,7 @@ class ChatRuntimeService:
         if not cleaned_query:
             raise HTTPException(status_code=400, detail="Search query is empty")
         if len(cleaned_query) > 512:
-            raise HTTPException(
-                status_code=400, detail="Search query exceeds 512 characters"
-            )
+            raise HTTPException(status_code=400, detail="Search query exceeds 512 characters")
         cap = self._max_search_results()
         if max_results is not None:
             cap = max(1, min(cap, int(max_results)))

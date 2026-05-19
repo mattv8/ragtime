@@ -9,7 +9,9 @@ import importlib
 import io
 import json
 import os
+import posixpath
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -24,8 +26,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Literal, Optional, cast
 
 import httpx
-import posixpath
-import secrets
 from fastapi import (
     APIRouter,
     Body,
@@ -44,13 +44,13 @@ from prisma import Json, Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
-from ragtime.chat_runtime.payloads import build_chat_diagnostic_command_payload
-from ragtime.chat_runtime.payloads import build_chat_diagnostic_rejection_payload
-from ragtime.chat_runtime.payloads import normalize_chat_diagnostic_timeout_seconds
-from ragtime.chat_runtime.payloads import resolve_chat_diagnostic_conversation_id
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS
-from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_COMMAND_TOOL_ID
-from ragtime.chat_runtime.presets import CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
+from ragtime.chat_runtime.payloads import (
+    build_chat_diagnostic_command_payload,
+    build_chat_diagnostic_rejection_payload,
+    normalize_chat_diagnostic_timeout_seconds,
+    resolve_chat_diagnostic_conversation_id,
+)
+from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS, CHAT_DIAGNOSTIC_COMMAND_TOOL_ID, CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.chat_runtime.service import chat_runtime_service
 from ragtime.core import llama_cpp, lmstudio, omlx
 from ragtime.core.app_settings import invalidate_settings_cache
@@ -80,13 +80,13 @@ from ragtime.core.model_limits import (
     get_context_limit,
     get_model_freshness_rank,
     get_output_limit,
+    register_model_image_input_capability,
+    register_model_reasoning_capabilities,
+    register_model_supported_endpoints,
     register_openrouter_model_limits,
+    requires_responses_api,
     resolve_model_family_label,
     resolve_model_provider_label,
-    register_model_reasoning_capabilities,
-    register_model_image_input_capability,
-    register_model_supported_endpoints,
-    requires_responses_api,
     supports_function_calling,
     supports_responses_api,
     update_model_function_calling,
@@ -111,8 +111,8 @@ from ragtime.core.ollama import (
     get_model_details,
     is_embedding_capable,
     is_reachable,
+    list_models,
 )
-from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import (
     get_current_user,
@@ -172,15 +172,15 @@ from ragtime.indexer.models import (
     CheckRepoVisibilityRequest,
     ConfigurationWarning,
     Conversation,
-    ConversationCountResponse,
     ConversationBranchPointInfo,
     ConversationBranchSummary,
+    ConversationCountResponse,
     ConversationResponse,
-    ConversationSummaryResponse,
     ConversationShareLink,
     ConversationShareLinkListResponse,
     ConversationShareLinkStatus,
     ConversationShareSlugAvailabilityResponse,
+    ConversationSummaryResponse,
     CreateConversationBranchRequest,
     CreateConversationRequest,
     CreateConversationShareLinkRequest,
@@ -201,6 +201,7 @@ from ragtime.indexer.models import (
     IndexStatus,
     InfluxdbDiscoverRequest,
     InfluxdbDiscoverResponse,
+    ListVisualizationBranchesResponse,
     MessageSnapshotRestoreResponse,
     MssqlDiscoverRequest,
     MssqlDiscoverResponse,
@@ -216,18 +217,18 @@ from ragtime.indexer.models import (
     ProviderPromptDebugListResponse,
     ProviderPromptDebugRecord,
     PublicShareTargetResponse,
-    ListVisualizationBranchesResponse,
     RefreshLiveVisualizationRequest,
     RefreshLiveVisualizationResponse,
+    ReorderToolsRequest,
     RepoVisibilityResponse,
     RetryVisualizationRequest,
     RetryVisualizationResponse,
     SchemaIndexJobResponse,
     SendMessageRequest,
     SharedConversationResponse,
+    SwitchConversationBranchRequest,
     SwitchVisualizationBranchRequest,
     SwitchVisualizationBranchResponse,
-    SwitchConversationBranchRequest,
     ToolConfig,
     ToolGroup,
     ToolTestRequest,
@@ -240,7 +241,6 @@ from ragtime.indexer.models import (
     UpdateSettingsRequest,
     UpdateToolConfigRequest,
     UpdateToolGroupRequest,
-    ReorderToolsRequest,
     UserSpacePreviewSettingsResponse,
     VectorStoreType,
     WorkspaceChatStateResponse,
@@ -300,9 +300,7 @@ _SSH_CREDENTIAL_CACHE_TTL = 15.0  # seconds
 
 # Short-lived cache for external model discovery endpoints used by settings/chat
 # model selectors. This avoids repeated high-latency calls during UI refreshes.
-_MODEL_DISCOVERY_CACHE_TTL_SECONDS = float(
-    os.getenv("MODEL_DISCOVERY_CACHE_TTL_SECONDS", "30")
-)
+_MODEL_DISCOVERY_CACHE_TTL_SECONDS = float(os.getenv("MODEL_DISCOVERY_CACHE_TTL_SECONDS", "30"))
 _model_discovery_cache: dict[str, tuple[float, "LLMModelsResponse"]] = {}
 _model_discovery_inflight: dict[str, asyncio.Task["LLMModelsResponse"]] = {}
 _model_discovery_lock = asyncio.Lock()
@@ -328,8 +326,7 @@ def _resolve_github_auth_mode(
     if has_pat and has_oauth:
         return (
             None,
-            "Both GitHub PAT and Copilot OAuth credentials are configured. "
-            "Choose one authentication mode and clear the other.",
+            "Both GitHub PAT and Copilot OAuth credentials are configured. Choose one authentication mode and clear the other.",
         )
 
     return ("pat" if has_pat else "oauth"), None
@@ -463,14 +460,10 @@ async def analyze_upload(
 
     try:
         # Parse patterns, defaulting file_patterns to **/* if empty
-        parsed_file_patterns = [
-            p.strip() for p in file_patterns.split(",") if p.strip()
-        ]
+        parsed_file_patterns = [p.strip() for p in file_patterns.split(",") if p.strip()]
         if not parsed_file_patterns:
             parsed_file_patterns = ["**/*"]
-        parsed_exclude_patterns = [
-            p.strip() for p in exclude_patterns.split(",") if p.strip()
-        ]
+        parsed_exclude_patterns = [p.strip() for p in exclude_patterns.split(",") if p.strip()]
 
         return await indexer.analyze_upload(
             file=file.file,
@@ -699,9 +692,7 @@ async def upload_and_index(
     parsed_file_patterns = [p.strip() for p in file_patterns.split(",") if p.strip()]
     if not parsed_file_patterns:
         parsed_file_patterns = ["**/*"]
-    parsed_exclude_patterns = [
-        p.strip() for p in exclude_patterns.split(",") if p.strip()
-    ]
+    parsed_exclude_patterns = [p.strip() for p in exclude_patterns.split(",") if p.strip()]
 
     config = IndexConfig(
         name=name,
@@ -831,9 +822,7 @@ async def reindex_from_git(
 
     # Get config from snapshot or use defaults
     config_snapshot = getattr(metadata, "configSnapshot", None)
-    config_data: dict[str, Any] = (
-        config_snapshot if isinstance(config_snapshot, dict) else {}
-    )
+    config_data: dict[str, Any] = config_snapshot if isinstance(config_snapshot, dict) else {}
 
     # Handle legacy enable_ocr field and convert to ocr_mode
     ocr_mode_str = config_data.get("ocr_mode", "disabled")
@@ -844,18 +833,12 @@ async def reindex_from_git(
         name=name,
         description=metadata.description or "",
         file_patterns=config_data.get("file_patterns", ["**/*"]),
-        exclude_patterns=config_data.get(
-            "exclude_patterns", ["**/test/**", "**/tests/**", "**/__pycache__/**"]
-        ),
+        exclude_patterns=config_data.get("exclude_patterns", ["**/test/**", "**/tests/**", "**/__pycache__/**"]),
         chunk_size=config_data.get("chunk_size", 1000),
         chunk_overlap=config_data.get("chunk_overlap", 200),
         max_file_size_kb=config_data.get("max_file_size_kb", 500),
         ocr_mode=OcrMode(ocr_mode_str),
-        ocr_provider=(
-            OcrProvider(config_data["ocr_provider"])
-            if config_data.get("ocr_provider")
-            else None
-        ),
+        ocr_provider=(OcrProvider(config_data["ocr_provider"]) if config_data.get("ocr_provider") else None),
         ocr_vision_model=config_data.get("ocr_vision_model"),
         git_clone_timeout_minutes=config_data.get("git_clone_timeout_minutes", 5),
         git_history_depth=config_data.get("git_history_depth", 1),
@@ -926,9 +909,7 @@ async def retry_failed_job(
 
     if failed_job.source_type == "git":
         if not failed_job.git_url:
-            raise HTTPException(
-                status_code=400, detail="Git URL not found in job. Cannot retry."
-            )
+            raise HTTPException(status_code=400, detail="Git URL not found in job. Cannot retry.")
 
         try:
             new_job = await indexer.create_index_from_git(
@@ -1055,9 +1036,7 @@ async def toggle_index(
         try:
             await rag.initialize()
         except Exception as e:
-            logger.warning(
-                f"Failed to reinitialize RAG after enabling index {name}: {e}"
-            )
+            logger.warning(f"Failed to reinitialize RAG after enabling index {name}: {e}")
 
     return {
         "message": f"Index '{name}' {'enabled' if request.enabled else 'disabled'}",
@@ -1107,24 +1086,12 @@ async def update_index_weight(
 class UpdateIndexConfigRequest(BaseModel):
     """Request to update index configuration for next re-index."""
 
-    git_branch: Optional[str] = Field(
-        default=None, description="Git branch to use for re-indexing"
-    )
-    file_patterns: Optional[List[str]] = Field(
-        default=None, description="Glob patterns for files to include"
-    )
-    exclude_patterns: Optional[List[str]] = Field(
-        default=None, description="Glob patterns for files to exclude"
-    )
-    chunk_size: Optional[int] = Field(
-        default=None, ge=100, le=4000, description="Chunk size for text splitting"
-    )
-    chunk_overlap: Optional[int] = Field(
-        default=None, ge=0, le=1000, description="Chunk overlap for text splitting"
-    )
-    max_file_size_kb: Optional[int] = Field(
-        default=None, ge=10, le=10000, description="Maximum file size in KB"
-    )
+    git_branch: Optional[str] = Field(default=None, description="Git branch to use for re-indexing")
+    file_patterns: Optional[List[str]] = Field(default=None, description="Glob patterns for files to include")
+    exclude_patterns: Optional[List[str]] = Field(default=None, description="Glob patterns for files to exclude")
+    chunk_size: Optional[int] = Field(default=None, ge=100, le=4000, description="Chunk size for text splitting")
+    chunk_overlap: Optional[int] = Field(default=None, ge=0, le=1000, description="Chunk overlap for text splitting")
+    max_file_size_kb: Optional[int] = Field(default=None, ge=10, le=10000, description="Maximum file size in KB")
     ocr_mode: Optional[str] = Field(
         default=None,
         description="OCR mode: 'disabled', 'tesseract', 'vision', or legacy 'ollama'",
@@ -1180,9 +1147,7 @@ async def update_index_config(
 
     # Merge with existing config snapshot
     existing_snapshot = getattr(metadata, "configSnapshot", None)
-    existing_config: dict[str, Any] = (
-        existing_snapshot if isinstance(existing_snapshot, dict) else {}
-    )
+    existing_config: dict[str, Any] = existing_snapshot if isinstance(existing_snapshot, dict) else {}
     new_config = {}
 
     # Copy existing values
@@ -1347,9 +1312,7 @@ async def rename_index(
                 await asyncio.to_thread(shutil.move, str(new_path), str(old_path))
             except Exception:
                 logger.error("Failed to rollback directory rename")
-        raise HTTPException(
-            status_code=500, detail="Failed to rename index in database"
-        )
+        raise HTTPException(status_code=500, detail="Failed to rename index in database")
 
     # Invalidate caches so MCP and RAG pick up the new name
     invalidate_settings_cache()
@@ -1370,9 +1333,7 @@ async def rename_index(
     except Exception as e:
         logger.warning(f"Failed to notify MCP about rename: {e}")
 
-    logger.info(
-        f"Successfully renamed index '{name}' to '{new_name}' (display: '{raw_name}')"
-    )
+    logger.info(f"Successfully renamed index '{name}' to '{new_name}' (display: '{raw_name}')")
 
     return RenameIndexResponse(
         old_name=name,
@@ -1436,9 +1397,7 @@ async def download_index(name: str, _user: User = Depends(require_admin)):
 
 
 @router.get("/filesystem/{name}/download")
-async def download_filesystem_faiss_index(
-    name: str, _user: User = Depends(require_admin)
-):
+async def download_filesystem_faiss_index(name: str, _user: User = Depends(require_admin)):
     """Download filesystem FAISS index files as a zip archive. Admin only.
 
     Returns a zip file containing the index.faiss and index.pkl files for a
@@ -1461,9 +1420,7 @@ async def download_filesystem_faiss_index(
 
     # Validate the index exists
     if not index_path.exists():
-        raise HTTPException(
-            status_code=404, detail=f"Filesystem FAISS index '{name}' not found"
-        )
+        raise HTTPException(status_code=404, detail=f"Filesystem FAISS index '{name}' not found")
 
     # Check that required files exist
     faiss_file = index_path / "index.faiss"
@@ -1489,9 +1446,7 @@ async def download_filesystem_faiss_index(
     return StreamingResponse(
         iter([zip_buffer.getvalue()]),
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f"attachment; filename=filesystem_{name}_index.zip"
-        },
+        headers={"Content-Disposition": f"attachment; filename=filesystem_{name}_index.zip"},
     )
 
 
@@ -1539,12 +1494,8 @@ async def get_userspace_preview_settings():
     settings = await repository.get_settings()
     return UserSpacePreviewSettingsResponse(
         userspace_preview_sandbox_flags=settings.userspace_preview_sandbox_flags,
-        userspace_preview_sandbox_default_flags=list(
-            USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS
-        ),
-        userspace_preview_sandbox_flag_options=[
-            dict(option) for option in USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS
-        ],
+        userspace_preview_sandbox_default_flags=list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
+        userspace_preview_sandbox_flag_options=[dict(option) for option in USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS],
         userspace_sqlite_import_max_bytes=settings.userspace_sqlite_import_max_bytes,
     )
 
@@ -1557,9 +1508,7 @@ class UpdateSettingsResponse(BaseModel):
 
 
 @router.put("/settings", response_model=UpdateSettingsResponse, tags=["Settings"])
-async def update_settings(
-    request: UpdateSettingsRequest, _user: User = Depends(require_admin)
-):
+async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(require_admin)):
     """Update application settings. Admin only.
 
     Returns a warning if the embedding provider or model was changed and
@@ -1607,10 +1556,7 @@ async def update_settings(
     if pat_candidate and (oauth_access_candidate or oauth_refresh_candidate):
         raise HTTPException(
             status_code=400,
-            detail=(
-                "GitHub authentication must use exactly one mode: PAT or OAuth. "
-                "Clear one credential set before saving."
-            ),
+            detail=("GitHub authentication must use exactly one mode: PAT or OAuth. Clear one credential set before saving."),
         )
 
     # Check if embedding config is changing
@@ -1642,10 +1588,7 @@ async def update_settings(
         from ragtime.core.ollama_concurrency import reset_ollama_semaphore
 
         reset_ollama_semaphore()
-        logger.info(
-            f"OCR concurrency limit changed to {updates['ocr_concurrency_limit']}, "
-            "semaphore will reinitialize on next use"
-        )
+        logger.info(f"OCR concurrency limit changed to {updates['ocr_concurrency_limit']}, semaphore will reinitialize on next use")
 
     # Notify MCP clients that tools may have changed (e.g., aggregate_search toggle)
     notify_tools_changed()
@@ -1653,9 +1596,7 @@ async def update_settings(
     return UpdateSettingsResponse(settings=result, embedding_warning=embedding_warning)
 
 
-@router.get(
-    "/settings/embedding-status", response_model=EmbeddingStatus, tags=["Settings"]
-)
+@router.get("/settings/embedding-status", response_model=EmbeddingStatus, tags=["Settings"])
 async def get_embedding_status(_user: User = Depends(require_admin)):
     """
     Get embedding configuration status.
@@ -1671,8 +1612,7 @@ async def get_embedding_status(_user: User = Depends(require_admin)):
 
     if requires_reindex:
         message = (
-            f"Embedding configuration mismatch: indexes use '{settings.embedding_config_hash}' "
-            f"but current config is '{current_hash}'. Full re-index required."
+            f"Embedding configuration mismatch: indexes use '{settings.embedding_config_hash}' but current config is '{current_hash}'. Full re-index required."
         )
     elif settings.embedding_config_hash is None:
         message = "No filesystem indexes exist yet. First index will set the embedding configuration."
@@ -1713,9 +1653,7 @@ class ToolTestResponse(BaseModel):
 
 
 @router.get("/tools", response_model=List[ToolConfig], tags=["Tools"])
-async def list_tool_configs(
-    enabled_only: bool = False, _user: User = Depends(require_admin)
-):
+async def list_tool_configs(enabled_only: bool = False, _user: User = Depends(require_admin)):
     """List all tool configurations. Admin only."""
     return await repository.list_tool_configs(enabled_only=enabled_only)
 
@@ -1732,9 +1670,7 @@ async def list_tool_groups(_user: User = Depends(require_admin)):
 
 
 @router.post("/tool-groups", response_model=ToolGroup, tags=["Tool Groups"])
-async def create_tool_group(
-    request: CreateToolGroupRequest, _user: User = Depends(require_admin)
-):
+async def create_tool_group(request: CreateToolGroupRequest, _user: User = Depends(require_admin)):
     """Create a tool group. Admin only."""
     return await repository.create_tool_group(
         name=request.name,
@@ -1767,9 +1703,7 @@ async def delete_tool_group(group_id: str, _user: User = Depends(require_admin))
 
 
 @router.post("/tools/reorder", tags=["Tools"])
-async def reorder_tool_configs(
-    request: ReorderToolsRequest, _user: User = Depends(require_admin)
-):
+async def reorder_tool_configs(request: ReorderToolsRequest, _user: User = Depends(require_admin)):
     """Bulk-update sort_order for tool configs to reflect a new display order. Admin only."""
     try:
         await repository.reorder_tool_configs(request.tool_ids)
@@ -1779,9 +1713,7 @@ async def reorder_tool_configs(
 
 
 @router.post("/tools", response_model=ToolConfig, tags=["Tools"])
-async def create_tool_config(
-    request: CreateToolConfigRequest, _user: User = Depends(require_admin)
-):
+async def create_tool_config(request: CreateToolConfigRequest, _user: User = Depends(require_admin)):
     """Create a new tool configuration. Admin only."""
     connection_config = request.connection_config.copy()
 
@@ -1914,9 +1846,7 @@ async def get_tool_config(tool_id: str, _user: User = Depends(require_admin)):
 
 
 @router.put("/tools/{tool_id}", response_model=ToolConfig, tags=["Tools"])
-async def update_tool_config(
-    tool_id: str, request: UpdateToolConfigRequest, _user: User = Depends(require_admin)
-):
+async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _user: User = Depends(require_admin)):
     """Update an existing tool configuration. Admin only.
 
     If the name is changed, this also updates all associated index names in
@@ -1926,9 +1856,7 @@ async def update_tool_config(
     updates = request.model_dump(exclude_unset=True)
 
     # Sanitize connection_config if present
-    if "connection_config" in updates and isinstance(
-        updates["connection_config"], dict
-    ):
+    if "connection_config" in updates and isinstance(updates["connection_config"], dict):
         cc = updates["connection_config"]
         # Sanitize integer fields in connection_config
         # This addresses an issue where the frontend might send them as strings (storing "24" in JSON)
@@ -1967,12 +1895,8 @@ async def update_tool_config(
             new_index_name = None
             is_faiss = False
             if original_config.tool_type == ToolType.FILESYSTEM_INDEXER:
-                old_index_name = (original_config.connection_config or {}).get(
-                    "index_name"
-                )
-                vector_store = (original_config.connection_config or {}).get(
-                    "vector_store_type", "pgvector"
-                )
+                old_index_name = (original_config.connection_config or {}).get("index_name")
+                vector_store = (original_config.connection_config or {}).get("vector_store_type", "pgvector")
                 is_faiss = vector_store == "faiss"
                 new_index_name = safe_tool_name(new_name)
 
@@ -1988,13 +1912,9 @@ async def update_tool_config(
                         )
 
             # Use rename_tool_config for comprehensive name updates
-            config, update_counts = await repository.rename_tool_config(
-                tool_id, new_name
-            )
+            config, update_counts = await repository.rename_tool_config(tool_id, new_name)
             if config is None:
-                raise HTTPException(
-                    status_code=500, detail="Failed to rename tool configuration"
-                )
+                raise HTTPException(status_code=500, detail="Failed to rename tool configuration")
 
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
@@ -2002,38 +1922,28 @@ async def update_tool_config(
                     from ragtime.indexer.vector_backends import get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
-                    success = await faiss_backend.rename_index(
-                        old_index_name, new_index_name
-                    )
+                    success = await faiss_backend.rename_index(old_index_name, new_index_name)
                     if success:
                         # Also update RAG's index tracking
                         rag.rename_index(old_index_name, new_index_name)
                     else:
-                        logger.warning(
-                            f"FAISS index rename failed: {old_index_name} -> {new_index_name}"
-                        )
+                        logger.warning(f"FAISS index rename failed: {old_index_name} -> {new_index_name}")
 
             # Log any embedding updates
             total_updates = sum(update_counts.values())
             if total_updates > 0:
-                logger.info(
-                    f"Tool rename updated {total_updates} embedding records: {update_counts}"
-                )
+                logger.info(f"Tool rename updated {total_updates} embedding records: {update_counts}")
 
             # Apply any remaining updates
             if updates:
                 config = await repository.update_tool_config(tool_id, updates)
                 if config is None:
-                    raise HTTPException(
-                        status_code=404, detail="Tool configuration not found"
-                    )
+                    raise HTTPException(status_code=404, detail="Tool configuration not found")
         else:
             # Name unchanged, just apply other updates
             config = await repository.update_tool_config(tool_id, updates)
             if config is None:
-                raise HTTPException(
-                    status_code=404, detail="Tool configuration not found"
-                )
+                raise HTTPException(status_code=404, detail="Tool configuration not found")
     else:
         config = await repository.update_tool_config(tool_id, updates)
         if config is None:
@@ -2048,17 +1958,9 @@ async def update_tool_config(
 
     # Auto-trigger schema indexing when it is newly enabled on supported tools
     try:
-        prev_enabled = bool(
-            (original_config.connection_config or {}).get("schema_index_enabled", False)
-        )
-        new_enabled = bool(
-            (config.connection_config or {}).get("schema_index_enabled", False)
-        )
-        if (
-            config.tool_type.value in SCHEMA_INDEXER_CAPABLE_TYPES
-            and new_enabled
-            and not prev_enabled
-        ):
+        prev_enabled = bool((original_config.connection_config or {}).get("schema_index_enabled", False))
+        new_enabled = bool((config.connection_config or {}).get("schema_index_enabled", False))
+        if config.tool_type.value in SCHEMA_INDEXER_CAPABLE_TYPES and new_enabled and not prev_enabled:
             # Ensure pgvector is available; log instead of failing the update
             if await ensure_pgvector_extension(logger_override=logger):
                 await schema_indexer.trigger_index(
@@ -2110,32 +2012,14 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     if tool.tool_type == "filesystem_indexer":
         try:
             # Get index name and vector store type from connection config
-            index_name = (
-                tool.connection_config.get("index_name")
-                if tool.connection_config
-                else None
-            )
-            vector_store_type_str = (
-                tool.connection_config.get("vector_store_type")
-                if tool.connection_config
-                else None
-            )
-            vector_store_type = (
-                VectorStoreType(vector_store_type_str)
-                if vector_store_type_str
-                else None
-            )
+            index_name = tool.connection_config.get("index_name") if tool.connection_config else None
+            vector_store_type_str = tool.connection_config.get("vector_store_type") if tool.connection_config else None
+            vector_store_type = VectorStoreType(vector_store_type_str) if vector_store_type_str else None
             if index_name:
-                deleted = await filesystem_indexer.delete_index(
-                    index_name, vector_store_type=vector_store_type
-                )
-                logger.info(
-                    f"Cleaned up {deleted} filesystem embeddings for tool {tool_id}"
-                )
+                deleted = await filesystem_indexer.delete_index(index_name, vector_store_type=vector_store_type)
+                logger.info(f"Cleaned up {deleted} filesystem embeddings for tool {tool_id}")
         except Exception as e:
-            logger.warning(
-                f"Failed to cleanup filesystem embeddings for tool {tool_id}: {e}"
-            )
+            logger.warning(f"Failed to cleanup filesystem embeddings for tool {tool_id}: {e}")
 
     elif tool.tool_type in SCHEMA_INDEXER_CAPABLE_TYPES:
         try:
@@ -2143,9 +2027,7 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
             if success:
                 logger.info(f"Cleaned up schema embeddings for tool {tool_id}: {msg}")
         except Exception as e:
-            logger.warning(
-                f"Failed to cleanup schema embeddings for tool {tool_id}: {e}"
-            )
+            logger.warning(f"Failed to cleanup schema embeddings for tool {tool_id}: {e}")
 
     elif tool.tool_type == "solidworks_pdm":
         try:
@@ -2172,23 +2054,16 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
         # Check if any other odoo_shell tools use this network
         all_tools = await repository.list_tool_configs()
         network_still_needed = any(
-            t.tool_type == "odoo_shell"
-            and t.connection_config.get("docker_network") == docker_network
-            and t.id != tool_id
-            for t in all_tools
+            t.tool_type == "odoo_shell" and t.connection_config.get("docker_network") == docker_network and t.id != tool_id for t in all_tools
         )
 
         if not network_still_needed:
             # Disconnect from the network
             try:
                 await disconnect_from_network(docker_network)
-                logger.info(
-                    f"Disconnected from network '{docker_network}' after tool deletion"
-                )
+                logger.info(f"Disconnected from network '{docker_network}' after tool deletion")
             except Exception as e:
-                logger.warning(
-                    f"Failed to disconnect from network '{docker_network}': {e}"
-                )
+                logger.warning(f"Failed to disconnect from network '{docker_network}': {e}")
 
     # Reinitialize RAG agent to remove the deleted tool
     invalidate_settings_cache()
@@ -2201,9 +2076,7 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
 
 
 @router.post("/tools/{tool_id}/toggle", tags=["Tools"])
-async def toggle_tool_config(
-    tool_id: str, enabled: bool, _user: User = Depends(require_admin)
-):
+async def toggle_tool_config(tool_id: str, enabled: bool, _user: User = Depends(require_admin)):
     """Toggle a tool's enabled status. Admin only."""
     config = await repository.update_tool_config(tool_id, {"enabled": enabled})
     if config is None:
@@ -2220,9 +2093,7 @@ async def toggle_tool_config(
 
 
 @router.post("/tools/test", response_model=ToolTestResponse, tags=["Tools"])
-async def test_tool_connection(
-    request: ToolTestRequest, _user: User = Depends(require_admin)
-):
+async def test_tool_connection(request: ToolTestRequest, _user: User = Depends(require_admin)):
     """
     Test a tool connection without saving. Admin only.
     Used during the wizard to validate connection settings.
@@ -2247,9 +2118,7 @@ async def test_tool_connection(
     elif tool_type == ToolType.SOLIDWORKS_PDM:
         return await _test_pdm_connection(config)
     else:
-        return ToolTestResponse(
-            success=False, message=f"Unknown tool type: {tool_type}"
-        )
+        return ToolTestResponse(success=False, message=f"Unknown tool type: {tool_type}")
 
 
 async def _test_filesystem_connection(config: dict) -> ToolTestResponse:
@@ -2283,9 +2152,7 @@ async def _test_pdm_connection(config: dict) -> ToolTestResponse:
     database = config.get("database", "")
 
     if not all([host, user, password, database]):
-        return ToolTestResponse(
-            success=False, message="Missing required connection parameters"
-        )
+        return ToolTestResponse(success=False, message="Missing required connection parameters")
 
     def test_connection() -> tuple[bool, str, dict | None]:
         try:
@@ -2332,12 +2199,8 @@ async def _test_pdm_connection(config: dict) -> ToolTestResponse:
         return ToolTestResponse(success=False, message=f"Error: {str(e)}")
 
 
-@router.post(
-    "/tools/postgres/discover", response_model=PostgresDiscoverResponse, tags=["Tools"]
-)
-async def discover_postgres_databases(
-    request: PostgresDiscoverRequest, _user: User = Depends(require_admin)
-):
+@router.post("/tools/postgres/discover", response_model=PostgresDiscoverResponse, tags=["Tools"])
+async def discover_postgres_databases(request: PostgresDiscoverRequest, _user: User = Depends(require_admin)):
     """
     Discover available databases on a PostgreSQL server. Admin only.
     Connects to the server and lists all accessible databases.
@@ -2362,17 +2225,13 @@ async def discover_postgres_databases(
                 "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
                 "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
             }
-            tunnel_config = ssh_tunnel_config_from_dict(
-                tunnel_config_dict, default_remote_port=5432
-            )
+            tunnel_config = ssh_tunnel_config_from_dict(tunnel_config_dict, default_remote_port=5432)
             tunnel = SSHTunnel(tunnel_config)
             tunnel.start()
             # Connect through the tunnel's local port
             connect_host = "127.0.0.1"
             connect_port = tunnel.local_port
-            logger.info(
-                f"SSH tunnel established for PostgreSQL discovery: localhost:{connect_port}"
-            )
+            logger.info(f"SSH tunnel established for PostgreSQL discovery: localhost:{connect_port}")
 
         # Connect to 'postgres' system database to list all databases
         cmd = [
@@ -2401,9 +2260,7 @@ async def discover_postgres_databases(
         env = {"PGPASSWORD": request.password}
 
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
-            ),
+            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env),
             timeout=15.0,
         )
         _stdout, stderr = await process.communicate()
@@ -2491,12 +2348,8 @@ async def discover_postgres_databases(
             tunnel.stop()
 
 
-@router.post(
-    "/tools/mssql/discover", response_model=MssqlDiscoverResponse, tags=["Tools"]
-)
-async def discover_mssql_databases(
-    request: MssqlDiscoverRequest, _user: User = Depends(require_admin)
-):
+@router.post("/tools/mssql/discover", response_model=MssqlDiscoverResponse, tags=["Tools"])
+async def discover_mssql_databases(request: MssqlDiscoverRequest, _user: User = Depends(require_admin)):
     """
     Discover available databases on an MSSQL server. Admin only.
     Connects to the server and lists all accessible databases.
@@ -2504,9 +2357,7 @@ async def discover_mssql_databases(
     """
     tunnel = None
 
-    def discover_databases(
-        connect_host: str, connect_port: int
-    ) -> tuple[bool, list[DatabaseDiscoverOption], str | None]:
+    def discover_databases(connect_host: str, connect_port: int) -> tuple[bool, list[DatabaseDiscoverOption], str | None]:
         try:
             with mssql_connect(
                 host=connect_host,
@@ -2546,11 +2397,7 @@ async def discover_mssql_databases(
                             DatabaseDiscoverOption(
                                 name=str(name),
                                 accessible=accessible,
-                                access_error=(
-                                    "Login does not have access to this database"
-                                    if not accessible
-                                    else None
-                                ),
+                                access_error=("Login does not have access to this database" if not accessible else None),
                             )
                         )
                 return True, database_options, None
@@ -2586,20 +2433,14 @@ async def discover_mssql_databases(
                 "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
                 "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
             }
-            tunnel_config = ssh_tunnel_config_from_dict(
-                tunnel_config_dict, default_remote_port=1433
-            )
+            tunnel_config = ssh_tunnel_config_from_dict(tunnel_config_dict, default_remote_port=1433)
             tunnel = SSHTunnel(tunnel_config)
             tunnel.start()
             connect_host = "127.0.0.1"
             connect_port = tunnel.local_port
-            logger.info(
-                f"SSH tunnel established for MSSQL discovery: localhost:{connect_port}"
-            )
+            logger.info(f"SSH tunnel established for MSSQL discovery: localhost:{connect_port}")
 
-        success, database_options, error = await asyncio.to_thread(
-            discover_databases, connect_host, connect_port
-        )
+        success, database_options, error = await asyncio.to_thread(discover_databases, connect_host, connect_port)
         accessible_databases = [d.name for d in database_options if d.accessible]
         return MssqlDiscoverResponse(
             success=success,
@@ -2629,12 +2470,8 @@ async def discover_mssql_databases(
             tunnel.stop()
 
 
-@router.post(
-    "/tools/mysql/discover", response_model=MysqlDiscoverResponse, tags=["Tools"]
-)
-async def discover_mysql_databases(
-    request: MysqlDiscoverRequest, _user: User = Depends(require_admin)
-):
+@router.post("/tools/mysql/discover", response_model=MysqlDiscoverResponse, tags=["Tools"])
+async def discover_mysql_databases(request: MysqlDiscoverRequest, _user: User = Depends(require_admin)):
     """
     Discover available databases on a MySQL/MariaDB server. Admin only.
     Connects to the server and lists all accessible databases.
@@ -2642,9 +2479,7 @@ async def discover_mysql_databases(
     """
     tunnel = None
 
-    def discover_databases(
-        connect_host: str, connect_port: int
-    ) -> tuple[bool, list[DatabaseDiscoverOption], str | None]:
+    def discover_databases(connect_host: str, connect_port: int) -> tuple[bool, list[DatabaseDiscoverOption], str | None]:
         try:
             direct_user = request.user or ""
             direct_password = request.password or ""
@@ -2713,11 +2548,7 @@ async def discover_mysql_databases(
                     "performance_schema",
                     "sys",
                 }
-                databases = [
-                    db.strip()
-                    for db in result.stdout.strip().split("\n")
-                    if db.strip() and db.strip().lower() not in system_dbs
-                ]
+                databases = [db.strip() for db in result.stdout.strip().split("\n") if db.strip() and db.strip().lower() not in system_dbs]
                 container_database_options: list[DatabaseDiscoverOption] = []
                 for db in databases:
                     check_result = subprocess.run(
@@ -2740,13 +2571,9 @@ async def discover_mysql_databases(
                         check=False,
                     )
                     if check_result.returncode == 0:
-                        container_database_options.append(
-                            DatabaseDiscoverOption(name=db, accessible=True)
-                        )
+                        container_database_options.append(DatabaseDiscoverOption(name=db, accessible=True))
                     else:
-                        err_text = (
-                            check_result.stderr or check_result.stdout or ""
-                        ).strip()
+                        err_text = (check_result.stderr or check_result.stdout or "").strip()
                         container_database_options.append(
                             DatabaseDiscoverOption(
                                 name=db,
@@ -2812,9 +2639,7 @@ async def discover_mysql_databases(
                                 connect_timeout=10,
                             ):
                                 pass
-                            direct_database_options.append(
-                                DatabaseDiscoverOption(name=db_name, accessible=True)
-                            )
+                            direct_database_options.append(DatabaseDiscoverOption(name=db_name, accessible=True))
                         except Exception as check_error:
                             direct_database_options.append(
                                 DatabaseDiscoverOption(
@@ -2914,20 +2739,14 @@ async def discover_mysql_databases(
                 "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
                 "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
             }
-            tunnel_config = ssh_tunnel_config_from_dict(
-                tunnel_config_dict, default_remote_port=3306
-            )
+            tunnel_config = ssh_tunnel_config_from_dict(tunnel_config_dict, default_remote_port=3306)
             tunnel = SSHTunnel(tunnel_config)
             tunnel.start()
             connect_host = "127.0.0.1"
             connect_port = tunnel.local_port
-            logger.info(
-                f"SSH tunnel established for MySQL discovery: localhost:{connect_port}"
-            )
+            logger.info(f"SSH tunnel established for MySQL discovery: localhost:{connect_port}")
 
-        success, database_options, error = await asyncio.to_thread(
-            discover_databases, connect_host, connect_port
-        )
+        success, database_options, error = await asyncio.to_thread(discover_databases, connect_host, connect_port)
         databases = [db.name for db in database_options if db.accessible]
         return MysqlDiscoverResponse(
             success=success,
@@ -2962,9 +2781,7 @@ async def discover_mysql_databases(
     response_model=InfluxdbDiscoverResponse,
     tags=["Tools"],
 )
-async def discover_influxdb_buckets(
-    request: InfluxdbDiscoverRequest, _user: User = Depends(require_admin)
-):
+async def discover_influxdb_buckets(request: InfluxdbDiscoverRequest, _user: User = Depends(require_admin)):
     """
     Discover available buckets on an InfluxDB server. Admin only.
     Supports direct connections and SSH tunnels.
@@ -2997,23 +2814,14 @@ async def discover_influxdb_buckets(
             # endpoint but CAN run Flux queries.
             try:
                 tables = client.query_api().query("buckets()", org=request.org)
-                buckets = sorted(
-                    {
-                        r.values.get("name", "")
-                        for t in tables
-                        for r in t.records
-                        if r.values.get("name")
-                    }
-                )
+                buckets = sorted({r.values.get("name", "") for t in tables for r in t.records if r.values.get("name")})
                 return True, buckets, None
             except Exception:
                 pass
 
             # Fallback: management API (requires broader permissions)
             buckets_response = client.buckets_api().find_buckets(org=request.org)
-            buckets = sorted(
-                {b.name for b in (buckets_response.buckets or []) if b.name}
-            )
+            buckets = sorted({b.name for b in (buckets_response.buckets or []) if b.name})
             return True, buckets, None
 
         except Exception as e:
@@ -3078,23 +2886,14 @@ async def discover_influxdb_buckets(
                 "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
                 "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
             }
-            tunnel_config = ssh_tunnel_config_from_dict(
-                tunnel_config_dict, default_remote_port=port
-            )
+            tunnel_config = ssh_tunnel_config_from_dict(tunnel_config_dict, default_remote_port=port)
             tunnel = SSHTunnel(tunnel_config)
             tunnel.start()
             effective_url = f"{scheme}://127.0.0.1:{tunnel.local_port}"
-            logger.info(
-                f"SSH tunnel established for InfluxDB discovery: localhost:{tunnel.local_port}"
-            )
+            logger.info(f"SSH tunnel established for InfluxDB discovery: localhost:{tunnel.local_port}")
 
-        success, buckets, error = await asyncio.to_thread(
-            discover_buckets, effective_url
-        )
-        options = [
-            DatabaseDiscoverOption(name=name, accessible=True, access_error=None)
-            for name in buckets
-        ]
+        success, buckets, error = await asyncio.to_thread(discover_buckets, effective_url)
+        options = [DatabaseDiscoverOption(name=name, accessible=True, access_error=None) for name in buckets]
 
         return InfluxdbDiscoverResponse(
             success=success,
@@ -3118,9 +2917,7 @@ async def discover_influxdb_buckets(
 
 
 @router.post("/tools/pdm/discover", response_model=PdmDiscoverResponse, tags=["Tools"])
-async def discover_pdm_schema(
-    request: PdmDiscoverRequest, _user: User = Depends(require_admin)
-):
+async def discover_pdm_schema(request: PdmDiscoverRequest, _user: User = Depends(require_admin)):
     """
     Discover PDM schema metadata from a SolidWorks PDM database. Admin only.
     Returns available file extensions and variable names.
@@ -3154,9 +2951,7 @@ async def discover_pdm_schema(
             connect_host = "127.0.0.1"
             connect_port = tunnel.local_port
 
-        def discover_schema(
-            host: str, port: int
-        ) -> tuple[bool, list[str], list[str], int, str | None]:
+        def discover_schema(host: str, port: int) -> tuple[bool, list[str], list[str], int, str | None]:
             """Returns (success, file_extensions, variable_names, doc_count, error)."""
             try:
                 with mssql_connect(
@@ -3215,9 +3010,7 @@ async def discover_pdm_schema(
                             variables.append(str(var_value))
 
                     # Get total document count
-                    cursor.execute(
-                        "SELECT COUNT(*) as cnt FROM Documents WHERE Deleted = 0"
-                    )
+                    cursor.execute("SELECT COUNT(*) as cnt FROM Documents WHERE Deleted = 0")
                     result = cursor.fetchone()
                     if isinstance(result, dict):
                         doc_count = int(result.get("cnt", 0))
@@ -3233,9 +3026,7 @@ async def discover_pdm_schema(
             except Exception as e:
                 return False, [], [], 0, f"Connection error: {str(e)}"
 
-        success, extensions, variables, doc_count, error = await asyncio.to_thread(
-            discover_schema, connect_host, connect_port
-        )
+        success, extensions, variables, doc_count, error = await asyncio.to_thread(discover_schema, connect_host, connect_port)
         return PdmDiscoverResponse(
             success=success,
             file_extensions=extensions,
@@ -3249,20 +3040,14 @@ async def discover_pdm_schema(
         error_msg = str(e)
         if "Authentication" in error_msg:
             error_msg = f"SSH tunnel authentication failed: {error_msg}"
-        return PdmDiscoverResponse(
-            success=False, error=f"Discovery failed: {error_msg}"
-        )
+        return PdmDiscoverResponse(success=False, error=f"Discovery failed: {error_msg}")
     finally:
         if tunnel:
             tunnel.stop()
 
 
-@router.post(
-    "/tools/ssh/generate-keypair", response_model=SSHKeyPairResponse, tags=["Tools"]
-)
-async def generate_ssh_keypair(
-    comment: str = "ragtime", passphrase: str = "", _user: User = Depends(require_admin)
-):
+@router.post("/tools/ssh/generate-keypair", response_model=SSHKeyPairResponse, tags=["Tools"])
+async def generate_ssh_keypair(comment: str = "ragtime", passphrase: str = "", _user: User = Depends(require_admin)):
     """
     Generate a new SSH keypair for use with remote connections. Admin only.
     Returns private key, public key, and fingerprint.
@@ -3317,20 +3102,14 @@ async def generate_ssh_keypair(
                 check=True,
                 timeout=10,
             )
-            fingerprint = (
-                fp_process.stdout.strip() if fp_process.returncode == 0 else "unknown"
-            )
+            fingerprint = fp_process.stdout.strip() if fp_process.returncode == 0 else "unknown"
 
             return private_key, public_key, fingerprint
 
     try:
         # Run keypair generation in thread to avoid blocking event loop
-        private_key, public_key, fingerprint = await asyncio.to_thread(
-            _generate_keypair
-        )
-        return SSHKeyPairResponse(
-            private_key=private_key, public_key=public_key, fingerprint=fingerprint
-        )
+        private_key, public_key, fingerprint = await asyncio.to_thread(_generate_keypair)
+        return SSHKeyPairResponse(private_key=private_key, public_key=public_key, fingerprint=fingerprint)
 
     except subprocess.TimeoutExpired as e:
         raise HTTPException(status_code=500, detail="Key generation timed out") from e
@@ -3358,9 +3137,7 @@ class FilesystemTestResponse(BaseModel):
     response_model=FilesystemTestResponse,
     tags=["Filesystem Indexer"],
 )
-async def test_filesystem_path(
-    config: FilesystemConnectionConfig, _user: User = Depends(require_admin)
-):
+async def test_filesystem_path(config: FilesystemConnectionConfig, _user: User = Depends(require_admin)):
     """
     Test filesystem path accessibility. Admin only.
 
@@ -3377,20 +3154,14 @@ async def test_filesystem_path(
 
 
 @router.post("/tools/{tool_id}/test", response_model=ToolTestResponse, tags=["Tools"])
-async def test_saved_tool_connection(
-    tool_id: str, _user: User = Depends(require_admin)
-):
+async def test_saved_tool_connection(tool_id: str, _user: User = Depends(require_admin)):
     """Test the connection for a saved tool configuration."""
     config = await repository.get_tool_config(tool_id)
     if config is None:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
 
     # Test the connection
-    result = await test_tool_connection(
-        ToolTestRequest(
-            tool_type=config.tool_type, connection_config=config.connection_config
-        )
-    )
+    result = await test_tool_connection(ToolTestRequest(tool_type=config.tool_type, connection_config=config.connection_config))
 
     # Update shared health state and persisted last-test fields.
     health_result = await tool_health_monitor.record_tool_test_result(
@@ -3434,9 +3205,7 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
     elif tool_type_str == "solidworks_pdm":
         return await _heartbeat_pdm(config)
     else:
-        return ToolTestResponse(
-            success=False, message=f"Unknown tool type: {tool_type_str}"
-        )
+        return ToolTestResponse(success=False, message=f"Unknown tool type: {tool_type_str}")
 
 
 def _coerce_int(value, default: int) -> int:
@@ -3458,17 +3227,13 @@ def _coerce_int(value, default: int) -> int:
         return default
 
 
-def _start_ssh_tunnel_if_enabled(
-    config: dict, host: str, port: int
-) -> tuple[Optional["SSHTunnel"], str, int]:
+def _start_ssh_tunnel_if_enabled(config: dict, host: str, port: int) -> tuple[Optional["SSHTunnel"], str, int]:
     """Start SSH tunnel if enabled and return (tunnel, host, port)."""
     tunnel_cfg_dict = build_ssh_tunnel_config(config, host, port)
     if not tunnel_cfg_dict:
         return None, host, port
 
-    tunnel_config = ssh_tunnel_config_from_dict(
-        tunnel_cfg_dict, default_remote_port=port
-    )
+    tunnel_config = ssh_tunnel_config_from_dict(tunnel_cfg_dict, default_remote_port=port)
     tunnel = SSHTunnel(tunnel_config)
     tunnel.start()
     return tunnel, "127.0.0.1", tunnel.local_port
@@ -3487,9 +3252,7 @@ async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
 
     try:
         if host:
-            tunnel, connect_host, connect_port = _start_ssh_tunnel_if_enabled(
-                config, host, port
-            )
+            tunnel, connect_host, connect_port = _start_ssh_tunnel_if_enabled(config, host, port)
 
             cmd = [
                 "psql",
@@ -3519,18 +3282,12 @@ async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
         else:
             return ToolTestResponse(success=False, message="No connection configured")
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
-        )
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         _stdout, stderr = await process.communicate()
 
         return ToolTestResponse(
             success=process.returncode == 0,
-            message=(
-                "OK"
-                if process.returncode == 0
-                else stderr.decode("utf-8", errors="replace").strip()[:100]
-            ),
+            message=("OK" if process.returncode == 0 else stderr.decode("utf-8", errors="replace").strip()[:100]),
         )
     except Exception as e:
         return ToolTestResponse(success=False, message=str(e)[:100])
@@ -3647,9 +3404,7 @@ async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
 
         try:
             # Use asyncio socket to check if SSH port is reachable
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(ssh_host, ssh_port), timeout=3.0
-            )
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(ssh_host, ssh_port), timeout=3.0)
 
             # Read SSH banner to verify it's actually an SSH server
             banner = await asyncio.wait_for(reader.readline(), timeout=2.0)
@@ -3679,18 +3434,12 @@ async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
         cmd = ["docker", "exec", "-i", container, "echo", "OK"]
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
+            process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             _stdout, stderr = await process.communicate()
 
             return ToolTestResponse(
                 success=process.returncode == 0,
-                message=(
-                    "OK"
-                    if process.returncode == 0
-                    else stderr.decode("utf-8", errors="replace").strip()[:100]
-                ),
+                message=("OK" if process.returncode == 0 else stderr.decode("utf-8", errors="replace").strip()[:100]),
             )
         except Exception as e:
             return ToolTestResponse(success=False, message=str(e)[:100])
@@ -3735,9 +3484,7 @@ async def _deep_ssh_credential_check(config: dict) -> ToolTestResponse:
 
     try:
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, lambda: test_ssh_connection(ssh_config)
-        )
+        result = await loop.run_in_executor(None, lambda: test_ssh_connection(ssh_config))
 
         if result.success:
             return ToolTestResponse(success=True, message="OK")
@@ -3783,9 +3530,7 @@ async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
     # Cache expired or not present - do a quick port check first
     # to provide fast feedback, then trigger background credential refresh
     try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=2.0
-        )
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=2.0)
         banner = await asyncio.wait_for(reader.readline(), timeout=1.0)
         writer.close()
         await writer.wait_closed()
@@ -3814,9 +3559,7 @@ async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
     # Port is reachable - now do a full credential check
     # This runs inline but is cached, so subsequent calls return quickly
     try:
-        result = await asyncio.wait_for(
-            _deep_ssh_credential_check(config), timeout=12.0
-        )
+        result = await asyncio.wait_for(_deep_ssh_credential_check(config), timeout=12.0)
         _ssh_credential_cache[cache_key] = (current_time, result)
         return result
     except asyncio.TimeoutError:
@@ -3835,22 +3578,14 @@ async def _heartbeat_filesystem(config: dict) -> ToolTestResponse:
     def _check_fs() -> ToolTestResponse:
         path = Path(base_path)
         if not path.exists():
-            return ToolTestResponse(
-                success=False, message=f"Path does not exist: {base_path}"
-            )
+            return ToolTestResponse(success=False, message=f"Path does not exist: {base_path}")
         if not path.is_dir():
-            return ToolTestResponse(
-                success=False, message=f"Path is not a directory: {base_path}"
-            )
+            return ToolTestResponse(success=False, message=f"Path is not a directory: {base_path}")
         try:
             entries = list(path.iterdir())[:5]
-            return ToolTestResponse(
-                success=True, message=f"OK - {len(entries)} entries accessible"
-            )
+            return ToolTestResponse(success=True, message=f"OK - {len(entries)} entries accessible")
         except PermissionError:
-            return ToolTestResponse(
-                success=False, message=f"Permission denied: {base_path}"
-            )
+            return ToolTestResponse(success=False, message=f"Permission denied: {base_path}")
         except Exception as e:
             return ToolTestResponse(success=False, message=str(e)[:100])
 
@@ -3873,9 +3608,7 @@ async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
     connect_host = host
     connect_port = port
 
-    tunnel, connect_host, connect_port = _start_ssh_tunnel_if_enabled(
-        config, host, port
-    )
+    tunnel, connect_host, connect_port = _start_ssh_tunnel_if_enabled(config, host, port)
 
     def check_connection() -> tuple[bool, str]:
         try:
@@ -3898,9 +3631,7 @@ async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
             return False, str(e)[:80]
 
     try:
-        success, message = await asyncio.wait_for(
-            asyncio.to_thread(check_connection), timeout=6
-        )
+        success, message = await asyncio.wait_for(asyncio.to_thread(check_connection), timeout=6)
         return ToolTestResponse(success=success, message=message)
     except asyncio.TimeoutError:
         return ToolTestResponse(success=False, message="Connection timed out")
@@ -3928,17 +3659,11 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
             ssh_tunnel_user = config.get("ssh_tunnel_user", "")
 
             if not ssh_tunnel_host:
-                return ToolTestResponse(
-                    success=False, message="SSH tunnel host is required"
-                )
+                return ToolTestResponse(success=False, message="SSH tunnel host is required")
             if not ssh_tunnel_user:
-                return ToolTestResponse(
-                    success=False, message="SSH tunnel user is required"
-                )
+                return ToolTestResponse(success=False, message="SSH tunnel user is required")
             if not user or not password:
-                return ToolTestResponse(
-                    success=False, message="Database username and password are required"
-                )
+                return ToolTestResponse(success=False, message="Database username and password are required")
             if not database:
                 return ToolTestResponse(success=False, message="Database is required")
 
@@ -3951,11 +3676,8 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
                 "ssh_tunnel_password": config.get("ssh_tunnel_password", ""),
                 "ssh_tunnel_key_path": config.get("ssh_tunnel_key_path", ""),
                 "ssh_tunnel_key_content": config.get("ssh_tunnel_key_content", ""),
-                "ssh_tunnel_key_passphrase": config.get(
-                    "ssh_tunnel_key_passphrase", ""
-                ),
-                "host": host
-                or "127.0.0.1",  # Remote endpoint from SSH server's perspective
+                "ssh_tunnel_key_passphrase": config.get("ssh_tunnel_key_passphrase", ""),
+                "host": host or "127.0.0.1",  # Remote endpoint from SSH server's perspective
                 "port": port,
             }
 
@@ -3971,13 +3693,9 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
                 tunnel = None
                 conn = None
                 try:
-                    tunnel_cfg = ssh_tunnel_config_from_dict(
-                        ssh_tunnel_config_dict, default_remote_port=5432
-                    )
+                    tunnel_cfg = ssh_tunnel_config_from_dict(ssh_tunnel_config_dict, default_remote_port=5432)
                     if not tunnel_cfg:
-                        return ToolTestResponse(
-                            success=False, message="Invalid SSH tunnel configuration"
-                        )
+                        return ToolTestResponse(success=False, message="Invalid SSH tunnel configuration")
 
                     tunnel = SSHTunnel(tunnel_cfg)
                     local_port = tunnel.start()
@@ -4002,9 +3720,7 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
                             "mode": "ssh_tunnel",
                             "ssh_host": ssh_tunnel_host,
                             "database": database,
-                            "version": (
-                                version[0].split(",")[0] if version else "Unknown"
-                            ),
+                            "version": (version[0].split(",")[0] if version else "Unknown"),
                         },
                     )
                 except Exception as e:
@@ -4019,9 +3735,7 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
                             success=False,
                             message=f"Database '{database}' does not exist",
                         )
-                    return ToolTestResponse(
-                        success=False, message=f"Connection failed: {error_str}"
-                    )
+                    return ToolTestResponse(success=False, message=f"Connection failed: {error_str}")
                 finally:
                     if conn:
                         try:
@@ -4074,9 +3788,7 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
             )
 
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
-            ),
+            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env),
             timeout=10.0,
         )
         _stdout, stderr = await process.communicate()
@@ -4089,22 +3801,14 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
             )
         else:
             error = stderr.decode("utf-8", errors="replace").strip()
-            return ToolTestResponse(
-                success=False, message=f"Connection failed: {error}"
-            )
+            return ToolTestResponse(success=False, message=f"Connection failed: {error}")
 
     except asyncio.TimeoutError:
-        return ToolTestResponse(
-            success=False, message="Connection timed out after 10 seconds"
-        )
+        return ToolTestResponse(success=False, message="Connection timed out after 10 seconds")
     except FileNotFoundError:
-        return ToolTestResponse(
-            success=False, message="Required command (psql or docker) not found"
-        )
+        return ToolTestResponse(success=False, message="Required command (psql or docker) not found")
     except Exception as e:
-        return ToolTestResponse(
-            success=False, message=f"Connection test failed: {str(e)}"
-        )
+        return ToolTestResponse(success=False, message=f"Connection test failed: {str(e)}")
 
 
 async def _test_mssql_connection(config: dict) -> ToolTestResponse:
@@ -4122,17 +3826,11 @@ async def _test_mssql_connection(config: dict) -> ToolTestResponse:
         port = config.get("port", 1433)
 
         if not ssh_tunnel_host:
-            return ToolTestResponse(
-                success=False, message="SSH tunnel host is required"
-            )
+            return ToolTestResponse(success=False, message="SSH tunnel host is required")
         if not ssh_tunnel_user:
-            return ToolTestResponse(
-                success=False, message="SSH tunnel user is required"
-            )
+            return ToolTestResponse(success=False, message="SSH tunnel user is required")
         if not user or not password:
-            return ToolTestResponse(
-                success=False, message="Database username and password are required"
-            )
+            return ToolTestResponse(success=False, message="Database username and password are required")
         if not database:
             return ToolTestResponse(success=False, message="Database is required")
 
@@ -4168,9 +3866,7 @@ async def _test_mssql_connection(config: dict) -> ToolTestResponse:
         if not host:
             return ToolTestResponse(success=False, message="Host is required")
         if not user or not password:
-            return ToolTestResponse(
-                success=False, message="Username and password are required"
-            )
+            return ToolTestResponse(success=False, message="Username and password are required")
         if not database:
             return ToolTestResponse(success=False, message="Database is required")
 
@@ -4216,17 +3912,11 @@ async def _test_mysql_connection(config: dict) -> ToolTestResponse:
         port = config.get("port", 3306)
 
         if not ssh_tunnel_host:
-            return ToolTestResponse(
-                success=False, message="SSH tunnel host is required"
-            )
+            return ToolTestResponse(success=False, message="SSH tunnel host is required")
         if not ssh_tunnel_user:
-            return ToolTestResponse(
-                success=False, message="SSH tunnel user is required"
-            )
+            return ToolTestResponse(success=False, message="SSH tunnel user is required")
         if not user or not password:
-            return ToolTestResponse(
-                success=False, message="Database username and password are required"
-            )
+            return ToolTestResponse(success=False, message="Database username and password are required")
         if not database:
             return ToolTestResponse(success=False, message="Database is required")
 
@@ -4262,9 +3952,7 @@ async def _test_mysql_connection(config: dict) -> ToolTestResponse:
         if not host:
             return ToolTestResponse(success=False, message="Host is required")
         if not user or not password:
-            return ToolTestResponse(
-                success=False, message="Username and password are required"
-            )
+            return ToolTestResponse(success=False, message="Username and password are required")
         if not database:
             return ToolTestResponse(success=False, message="Database is required")
 
@@ -4302,13 +3990,9 @@ async def _test_influxdb_connection(config: dict) -> ToolTestResponse:
         ssh_tunnel_host = config.get("ssh_tunnel_host", "")
         ssh_tunnel_user = config.get("ssh_tunnel_user", "")
         if not ssh_tunnel_host:
-            return ToolTestResponse(
-                success=False, message="SSH tunnel host is required"
-            )
+            return ToolTestResponse(success=False, message="SSH tunnel host is required")
         if not ssh_tunnel_user:
-            return ToolTestResponse(
-                success=False, message="SSH tunnel user is required"
-            )
+            return ToolTestResponse(success=False, message="SSH tunnel user is required")
 
         ssh_tunnel_config = {
             "ssh_tunnel_enabled": True,
@@ -4381,9 +4065,7 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
     try:
         # First test basic SSH connectivity
         loop = asyncio.get_event_loop()
-        ssh_result = await loop.run_in_executor(
-            None, lambda: test_ssh_connection(ssh_config)
-        )
+        ssh_result = await loop.run_in_executor(None, lambda: test_ssh_connection(ssh_config))
 
         if not ssh_result.success:
             return ToolTestResponse(
@@ -4404,9 +4086,7 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
         test_input = "print('ODOO_TEST_SUCCESS')\nexit()\n"
         full_command = f"{odoo_cmd} <<'ODOO_EOF'\n{test_input}ODOO_EOF"
 
-        odoo_result = await loop.run_in_executor(
-            None, lambda: execute_ssh_command(ssh_config, full_command)
-        )
+        odoo_result = await loop.run_in_executor(None, lambda: execute_ssh_command(ssh_config, full_command))
 
         if "ODOO_TEST_SUCCESS" in odoo_result.output:
             return ToolTestResponse(
@@ -4415,11 +4095,7 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
                 details={"host": ssh_host, "database": database, "mode": "ssh"},
             )
         else:
-            output_snippet = (
-                odoo_result.output[-500:]
-                if len(odoo_result.output) > 500
-                else odoo_result.output
-            )
+            output_snippet = odoo_result.output[-500:] if len(odoo_result.output) > 500 else odoo_result.output
             return ToolTestResponse(
                 success=False,
                 message="Odoo shell test failed via SSH",
@@ -4444,9 +4120,7 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
         # Test if container is running
         cmd = ["docker", "inspect", "-f", "{{.State.Running}}", container]
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            ),
+            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
             timeout=10.0,
         )
         stdout, _stderr = await process.communicate()
@@ -4459,9 +4133,7 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
 
         is_running = stdout.decode().strip().lower() == "true"
         if not is_running:
-            return ToolTestResponse(
-                success=False, message=f"Container '{container}' is not running"
-            )
+            return ToolTestResponse(success=False, message=f"Container '{container}' is not running")
 
         # Get Odoo version - try multiple approaches
         version = "unknown"
@@ -4469,9 +4141,7 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
         # Try direct odoo --version (works for standard Odoo)
         cmd = ["docker", "exec", "-i", container, "odoo", "--version"]
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            ),
+            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
             timeout=10.0,
         )
         stdout, _stderr = await process.communicate()
@@ -4482,17 +4152,13 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
             # Try alternative: check if odoo shell command exists
             cmd = ["docker", "exec", "-i", container, "which", "odoo"]
             process = await asyncio.wait_for(
-                asyncio.create_subprocess_exec(
-                    *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                ),
+                asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
                 timeout=5.0,
             )
             stdout, _ = await process.communicate()
 
             if process.returncode != 0:
-                return ToolTestResponse(
-                    success=False, message="Odoo command not found in container"
-                )
+                return ToolTestResponse(success=False, message="Odoo command not found in container")
             # odoo exists, but --version not supported (custom wrapper)
             version = "detected (custom wrapper)"
 
@@ -4560,9 +4226,7 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
     except FileNotFoundError:
         return ToolTestResponse(success=False, message="Docker command not found")
     except Exception as e:
-        return ToolTestResponse(
-            success=False, message=f"Connection test failed: {str(e)}"
-        )
+        return ToolTestResponse(success=False, message=f"Connection test failed: {str(e)}")
 
 
 async def _test_ssh_connection(config: dict) -> ToolTestResponse:
@@ -4592,9 +4256,7 @@ async def _test_ssh_connection(config: dict) -> ToolTestResponse:
 
     try:
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, lambda: test_ssh_connection(ssh_config)
-        )
+        result = await loop.run_in_executor(None, lambda: test_ssh_connection(ssh_config))
 
         if result.success:
             return ToolTestResponse(
@@ -4667,9 +4329,7 @@ async def discover_docker_resources(_user: User = Depends(require_admin)):
             # The hostname in Docker is typically the container ID
             # Get the actual container name from the ID
             cmd = ["docker", "inspect", "-f", "{{.Name}}", hostname]
-            process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
+            process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, _ = await process.communicate()
             if process.returncode == 0:
                 # Remove leading slash from container name
@@ -4678,9 +4338,7 @@ async def discover_docker_resources(_user: User = Depends(require_admin)):
         # Get networks
         cmd = ["docker", "network", "ls", "--format", "{{json .}}"]
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            ),
+            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
             timeout=10.0,
         )
         stdout, _ = await process.communicate()
@@ -4705,9 +4363,7 @@ async def discover_docker_resources(_user: User = Depends(require_admin)):
         # Get running containers
         cmd = ["docker", "ps", "--format", "{{json .}}"]
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            ),
+            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
             timeout=10.0,
         )
         stdout, _ = await process.communicate()
@@ -4727,28 +4383,17 @@ async def discover_docker_resources(_user: User = Depends(require_admin)):
                             "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}",
                             container_name,
                         ]
-                        net_process = await asyncio.create_subprocess_exec(
-                            *net_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                        )
+                        net_process = await asyncio.create_subprocess_exec(*net_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                         net_stdout, _ = await net_process.communicate()
-                        container_networks = (
-                            net_stdout.decode().strip().split()
-                            if net_process.returncode == 0
-                            else []
-                        )
+                        container_networks = net_stdout.decode().strip().split() if net_process.returncode == 0 else []
 
                         # Check if this is the ragtime container
                         if current_container and container_name == current_container:
-                            current_network = (
-                                container_networks[0] if container_networks else None
-                            )
+                            current_network = container_networks[0] if container_networks else None
 
                         # Check if container has Odoo (simple version check)
                         has_odoo = False
-                        if (
-                            "odoo" in cont.get("Image", "").lower()
-                            or "odoo" in container_name.lower()
-                        ):
+                        if "odoo" in cont.get("Image", "").lower() or "odoo" in container_name.lower():
                             try:
                                 ver_cmd = [
                                     "docker",
@@ -4785,9 +4430,7 @@ async def discover_docker_resources(_user: User = Depends(require_admin)):
 
         # Add container names to networks
         for network in networks:
-            network.containers = [
-                c.name for c in containers if network.name in c.networks
-            ]
+            network.containers = [c.name for c in containers if network.name in c.networks]
 
         return DockerDiscoveryResponse(
             success=True,
@@ -4799,17 +4442,11 @@ async def discover_docker_resources(_user: User = Depends(require_admin)):
         )
 
     except asyncio.TimeoutError:
-        return DockerDiscoveryResponse(
-            success=False, message="Docker discovery timed out"
-        )
+        return DockerDiscoveryResponse(success=False, message="Docker discovery timed out")
     except FileNotFoundError:
-        return DockerDiscoveryResponse(
-            success=False, message="Docker command not found"
-        )
+        return DockerDiscoveryResponse(success=False, message="Docker command not found")
     except Exception as e:
-        return DockerDiscoveryResponse(
-            success=False, message=f"Docker discovery failed: {str(e)}"
-        )
+        return DockerDiscoveryResponse(success=False, message=f"Docker discovery failed: {str(e)}")
 
 
 @router.post("/docker/connect-network", tags=["Tools"])
@@ -4831,14 +4468,10 @@ async def connect_to_network(network_name: str, _user: User = Depends(require_ad
             "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}",
             container_name,
         ]
-        process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, _ = await process.communicate()
 
-        current_networks = (
-            stdout.decode().strip().split() if process.returncode == 0 else []
-        )
+        current_networks = stdout.decode().strip().split() if process.returncode == 0 else []
 
         if network_name in current_networks:
             return {
@@ -4849,9 +4482,7 @@ async def connect_to_network(network_name: str, _user: User = Depends(require_ad
         # Connect to the network
         cmd = ["docker", "network", "connect", network_name, container_name]
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            ),
+            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
             timeout=10.0,
         )
         _, stderr = await process.communicate()
@@ -4872,9 +4503,7 @@ async def connect_to_network(network_name: str, _user: User = Depends(require_ad
 
 
 @router.post("/docker/disconnect-network", tags=["Tools"])
-async def disconnect_from_network(
-    network_name: str, _user: User = Depends(require_admin)
-):
+async def disconnect_from_network(network_name: str, _user: User = Depends(require_admin)):
     """
     Disconnect the ragtime container from a Docker network.
 
@@ -4900,14 +4529,10 @@ async def disconnect_from_network(
             "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}",
             container_name,
         ]
-        process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, _ = await process.communicate()
 
-        current_networks = (
-            stdout.decode().strip().split() if process.returncode == 0 else []
-        )
+        current_networks = stdout.decode().strip().split() if process.returncode == 0 else []
 
         if network_name not in current_networks:
             return {
@@ -4918,9 +4543,7 @@ async def disconnect_from_network(
         # Disconnect from the network
         cmd = ["docker", "network", "disconnect", network_name, container_name]
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            ),
+            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
             timeout=10.0,
         )
         _, stderr = await process.communicate()
@@ -4948,18 +4571,10 @@ async def disconnect_from_network(
 class ContainerCapabilitiesResponse(BaseModel):
     """Response from container capabilities check."""
 
-    privileged: bool = Field(
-        description="Whether the container is running in privileged mode"
-    )
-    has_sys_admin: bool = Field(
-        description="Whether the container has CAP_SYS_ADMIN capability"
-    )
-    can_mount: bool = Field(
-        description="Whether the container can perform mount operations (SMB/NFS)"
-    )
-    message: str = Field(
-        description="Human-readable explanation of the capabilities status"
-    )
+    privileged: bool = Field(description="Whether the container is running in privileged mode")
+    has_sys_admin: bool = Field(description="Whether the container has CAP_SYS_ADMIN capability")
+    can_mount: bool = Field(description="Whether the container can perform mount operations (SMB/NFS)")
+    message: str = Field(description="Human-readable explanation of the capabilities status")
 
 
 def _check_container_capabilities() -> ContainerCapabilitiesResponse:
@@ -4980,13 +4595,9 @@ def _check_container_capabilities() -> ContainerCapabilitiesResponse:
     can_mount = privileged or has_sys_admin
 
     if privileged:
-        message = (
-            "Container is running in privileged mode. SMB/NFS mounts are available."
-        )
+        message = "Container is running in privileged mode. SMB/NFS mounts are available."
     elif has_sys_admin:
-        message = (
-            "Container has CAP_SYS_ADMIN capability. SMB/NFS mounts are available."
-        )
+        message = "Container has CAP_SYS_ADMIN capability. SMB/NFS mounts are available."
     else:
         message = (
             "Container lacks mount privileges. To enable SMB/NFS mounting, "
@@ -5090,9 +4701,7 @@ async def discover_mounts(_user: User = Depends(require_admin)):
         # Get mount information from Docker inspect
         if hostname:
             cmd = ["docker", "inspect", "-f", "{{json .Mounts}}", hostname]
-            process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
+            process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, _stderr = await process.communicate()
 
             if process.returncode == 0:
@@ -5123,9 +4732,7 @@ async def discover_mounts(_user: User = Depends(require_admin)):
                                 container_path=parts[1],
                                 host_path=parts[0],
                                 read_only="ro" in parts[3],
-                                mount_type=(
-                                    "bind" if parts[0].startswith("/") else "unknown"
-                                ),
+                                mount_type=("bind" if parts[0].startswith("/") else "unknown"),
                             )
                         )
         except Exception:
@@ -5161,12 +4768,8 @@ volumes:
     )
 
 
-@router.post(
-    "/filesystem/ssh/browse", response_model=BrowseResponse, tags=["Filesystem Indexer"]
-)
-async def browse_ssh_filesystem(
-    request: SSHBrowseRequest, _: User = Depends(require_admin)
-):
+@router.post("/filesystem/ssh/browse", response_model=BrowseResponse, tags=["Filesystem Indexer"])
+async def browse_ssh_filesystem(request: SSHBrowseRequest, _: User = Depends(require_admin)):
     """
     Browse a remote directory path via SSH.
     """
@@ -5240,9 +4843,7 @@ async def browse_ssh_filesystem(
         else:
             full_path = f"{path}/{clean_name}"
 
-        entries.append(
-            DirectoryEntry(name=clean_name, path=full_path, is_dir=is_dir, size=None)
-        )
+        entries.append(DirectoryEntry(name=clean_name, path=full_path, is_dir=is_dir, size=None))
 
     # Sort: directories first, then files, ignoring case
     entries.sort(key=lambda x: (not x.is_dir, x.name.lower()))
@@ -5250,9 +4851,7 @@ async def browse_ssh_filesystem(
     return BrowseResponse(path=path, entries=entries)
 
 
-@router.get(
-    "/filesystem/browse", response_model=BrowseResponse, tags=["Filesystem Indexer"]
-)
+@router.get("/filesystem/browse", response_model=BrowseResponse, tags=["Filesystem Indexer"])
 async def browse_filesystem(path: str = "/mnt", _: User = Depends(require_admin)):
     """
     Browse a directory path in the container.
@@ -5288,9 +4887,7 @@ async def browse_filesystem(path: str = "/mnt", _: User = Depends(require_admin)
 
         try:
             entries = []
-            for entry in sorted(
-                path_obj.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
-            ):
+            for entry in sorted(path_obj.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
                 try:
                     entries.append(
                         DirectoryEntry(
@@ -5390,9 +4987,7 @@ async def discover_nfs_exports(
         except asyncio.TimeoutError:
             process.kill()
             await process.communicate()
-            return NFSDiscoveryResponse(
-                success=False, error=f"Connection timeout to {host}"
-            )
+            return NFSDiscoveryResponse(success=False, error=f"Connection timeout to {host}")
 
         if process.returncode != 0:
             error_msg = stderr.decode("utf-8", errors="replace").strip()
@@ -5401,9 +4996,7 @@ async def discover_nfs_exports(
                     success=False,
                     error="NFS tools not installed. Install nfs-common package.",
                 )
-            return NFSDiscoveryResponse(
-                success=False, error=error_msg or "Failed to connect"
-            )
+            return NFSDiscoveryResponse(success=False, error=error_msg or "Failed to connect")
 
         exports = []
         for line in stdout.decode("utf-8").strip().split("\n"):
@@ -5413,16 +5006,12 @@ async def discover_nfs_exports(
             if parts:
                 export_path = parts[0]
                 allowed_hosts = " ".join(parts[1:]) if len(parts) > 1 else "*"
-                exports.append(
-                    NFSExport(export_path=export_path, allowed_hosts=allowed_hosts)
-                )
+                exports.append(NFSExport(export_path=export_path, allowed_hosts=allowed_hosts))
 
         return NFSDiscoveryResponse(success=True, exports=exports)
 
     except asyncio.TimeoutError:
-        return NFSDiscoveryResponse(
-            success=False, error=f"Connection timeout to {host}"
-        )
+        return NFSDiscoveryResponse(success=False, error=f"Connection timeout to {host}")
     except Exception as e:
         return NFSDiscoveryResponse(success=False, error=str(e))
 
@@ -5447,18 +5036,14 @@ async def discover_smb_shares(
 
     def _discover_smb() -> SMBDiscoveryResponse:
         try:
-            smb_module = importlib.import_module(
-                "smb.SMBConnection"
-            )  # pyright: ignore[reportMissingImports]
+            smb_module = importlib.import_module("smb.SMBConnection")  # pyright: ignore[reportMissingImports]
             SMBConnection = getattr(smb_module, "SMBConnection")
 
             # Resolve hostname to IP
             try:
                 server_ip = socket.gethostbyname(host)
             except socket.gaierror:
-                return SMBDiscoveryResponse(
-                    success=False, error=f"Cannot resolve hostname: {host}"
-                )
+                return SMBDiscoveryResponse(success=False, error=f"Cannot resolve hostname: {host}")
 
             # Create SMB connection
             conn = SMBConnection(
@@ -5474,13 +5059,9 @@ async def discover_smb_shares(
             try:
                 connected = conn.connect(server_ip, 445, timeout=10)
                 if not connected:
-                    return SMBDiscoveryResponse(
-                        success=False, error="Failed to connect to SMB server"
-                    )
+                    return SMBDiscoveryResponse(success=False, error="Failed to connect to SMB server")
             except Exception as e:
-                return SMBDiscoveryResponse(
-                    success=False, error=f"Connection failed: {e}"
-                )
+                return SMBDiscoveryResponse(success=False, error=f"Connection failed: {e}")
 
             try:
                 share_list = conn.listShares()
@@ -5514,9 +5095,7 @@ async def discover_smb_shares(
             timeout=15.0,
         )
     except asyncio.TimeoutError:
-        return SMBDiscoveryResponse(
-            success=False, error=f"Connection timeout to {host}"
-        )
+        return SMBDiscoveryResponse(success=False, error=f"Connection timeout to {host}")
 
 
 @router.get(
@@ -5534,9 +5113,7 @@ async def browse_nfs_export(
     Browse an NFS export using nfs-ls (userspace, no mount required).
     """
     if not host or not export_path:
-        return BrowseResponse(
-            path=path, entries=[], error="Host and export path are required"
-        )
+        return BrowseResponse(path=path, entries=[], error="Host and export path are required")
 
     try:
         # Build NFS URL: nfs://host/export/path
@@ -5561,9 +5138,7 @@ async def browse_nfs_export(
         except asyncio.TimeoutError:
             process.kill()
             await process.communicate()
-            return BrowseResponse(
-                path=path, entries=[], error=f"Timeout connecting to {host}"
-            )
+            return BrowseResponse(path=path, entries=[], error=f"Timeout connecting to {host}")
 
         if process.returncode != 0:
             error_msg = stderr.decode("utf-8", errors="replace").strip()
@@ -5579,10 +5154,7 @@ async def browse_nfs_export(
                     entries=[],
                     error="Browse failed: nfs-ls usage error (ensure export/path exists)",
                 )
-            if (
-                "mnt3err_acces" in error_msg.lower()
-                or "permission denied" in error_msg.lower()
-            ):
+            if "mnt3err_acces" in error_msg.lower() or "permission denied" in error_msg.lower():
                 return BrowseResponse(
                     path=path,
                     entries=[],
@@ -5594,9 +5166,7 @@ async def browse_nfs_export(
                     entries=[],
                     error="Export or path not found on NFS server.",
                 )
-            return BrowseResponse(
-                path=path, entries=[], error=error_msg or "Browse failed"
-            )
+            return BrowseResponse(path=path, entries=[], error=error_msg or "Browse failed")
 
         entries = []
         for line in stdout.decode("utf-8", errors="replace").split("\n"):
@@ -5609,9 +5179,7 @@ async def browse_nfs_export(
                 continue
 
             # Detect directory from permission bits (first column like ls -l)
-            is_dir = (
-                parts[0].startswith("d") if parts and parts[0] else name.endswith("/")
-            )
+            is_dir = parts[0].startswith("d") if parts and parts[0] else name.endswith("/")
             clean_name = name.rstrip("/")
             entry_path = f"{path}/{clean_name}".lstrip("/") if path else clean_name
             entries.append(
@@ -5627,9 +5195,7 @@ async def browse_nfs_export(
         return BrowseResponse(path=path or "/", entries=entries)
 
     except asyncio.TimeoutError:
-        return BrowseResponse(
-            path=path, entries=[], error=f"Timeout connecting to {host}"
-        )
+        return BrowseResponse(path=path, entries=[], error=f"Timeout connecting to {host}")
     except Exception as e:
         return BrowseResponse(path=path, entries=[], error=str(e))
 
@@ -5652,24 +5218,18 @@ async def browse_smb_share(
     Browse an SMB share using pysmb (userspace, no mount required).
     """
     if not host or not share:
-        return BrowseResponse(
-            path=path, entries=[], error="Host and share are required"
-        )
+        return BrowseResponse(path=path, entries=[], error="Host and share are required")
 
     def _browse_smb() -> BrowseResponse:
         try:
-            smb_module = importlib.import_module(
-                "smb.SMBConnection"
-            )  # pyright: ignore[reportMissingImports]
+            smb_module = importlib.import_module("smb.SMBConnection")  # pyright: ignore[reportMissingImports]
             SMBConnection = getattr(smb_module, "SMBConnection")
 
             # Resolve hostname to IP for SMB
             try:
                 server_ip = socket.gethostbyname(host)
             except socket.gaierror:
-                return BrowseResponse(
-                    path=path, entries=[], error=f"Cannot resolve hostname: {host}"
-                )
+                return BrowseResponse(path=path, entries=[], error=f"Cannot resolve hostname: {host}")
 
             # Create SMB connection
             conn = SMBConnection(
@@ -5685,13 +5245,9 @@ async def browse_smb_share(
             try:
                 connected = conn.connect(server_ip, 445, timeout=10)
                 if not connected:
-                    return BrowseResponse(
-                        path=path, entries=[], error="Failed to connect to SMB server"
-                    )
+                    return BrowseResponse(path=path, entries=[], error="Failed to connect to SMB server")
             except Exception as e:
-                return BrowseResponse(
-                    path=path, entries=[], error=f"Connection failed: {e}"
-                )
+                return BrowseResponse(path=path, entries=[], error=f"Connection failed: {e}")
 
             try:
                 # List directory contents
@@ -5702,9 +5258,7 @@ async def browse_smb_share(
                 for f in file_list:
                     if f.filename in (".", ".."):
                         continue
-                    entry_path = (
-                        f"{path}/{f.filename}".lstrip("/") if path else f.filename
-                    )
+                    entry_path = f"{path}/{f.filename}".lstrip("/") if path else f.filename
                     entries.append(
                         DirectoryEntry(
                             name=f.filename,
@@ -5721,9 +5275,7 @@ async def browse_smb_share(
             except Exception as e:
                 error_msg = str(e)
                 if "STATUS_ACCESS_DENIED" in error_msg:
-                    return BrowseResponse(
-                        path=path, entries=[], error="Access denied - check credentials"
-                    )
+                    return BrowseResponse(path=path, entries=[], error="Access denied - check credentials")
                 return BrowseResponse(path=path, entries=[], error=error_msg)
             finally:
                 conn.close()
@@ -5740,9 +5292,7 @@ async def browse_smb_share(
             timeout=15.0,
         )
     except asyncio.TimeoutError:
-        return BrowseResponse(
-            path=path, entries=[], error=f"Timeout connecting to {host}"
-        )
+        return BrowseResponse(path=path, entries=[], error=f"Timeout connecting to {host}")
 
 
 # -----------------------------------------------------------------------------
@@ -5796,9 +5346,7 @@ async def start_filesystem_analysis(
     try:
         fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
     except Exception as e:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid filesystem configuration: {str(e)}"
-        ) from e
+        raise HTTPException(status_code=400, detail=f"Invalid filesystem configuration: {str(e)}") from e
 
     # Start analysis
     job = await filesystem_indexer.start_analysis(
@@ -5847,9 +5395,7 @@ async def get_filesystem_analysis_status(
 
     # Verify tool_id matches
     if job.tool_config_id != tool_id:
-        raise HTTPException(
-            status_code=404, detail="Analysis job not found for this tool"
-        )
+        raise HTTPException(status_code=404, detail="Analysis job not found for this tool")
 
     return FilesystemAnalysisJobResponse(
         id=job.id,
@@ -5874,9 +5420,7 @@ async def get_filesystem_analysis_status(
 )
 async def trigger_filesystem_index(
     tool_id: str,
-    request: TriggerFilesystemIndexRequest = Body(
-        default=TriggerFilesystemIndexRequest()
-    ),
+    request: TriggerFilesystemIndexRequest = Body(default=TriggerFilesystemIndexRequest()),
     _user: User = Depends(require_admin),
     _: None = Depends(require_valid_embedding_provider),
 ):
@@ -5903,9 +5447,7 @@ async def trigger_filesystem_index(
     try:
         fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
     except Exception as e:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid filesystem configuration: {str(e)}"
-        ) from e
+        raise HTTPException(status_code=400, detail=f"Invalid filesystem configuration: {str(e)}") from e
 
     # Validate pgvector is available
     if not await filesystem_indexer.ensure_pgvector_extension():
@@ -5944,9 +5486,7 @@ async def trigger_filesystem_index(
     response_model=List[FilesystemIndexJobResponse],
     tags=["Filesystem Indexer"],
 )
-async def list_filesystem_index_jobs(
-    tool_id: str, _user: User = Depends(require_admin)
-):
+async def list_filesystem_index_jobs(tool_id: str, _user: User = Depends(require_admin)):
     """List filesystem indexing jobs for a tool. Admin only."""
     jobs = await filesystem_indexer.list_jobs(tool_config_id=tool_id)
     return [
@@ -5974,12 +5514,8 @@ async def list_filesystem_index_jobs(
     ]
 
 
-@router.post(
-    "/tools/{tool_id}/filesystem/jobs/{job_id}/cancel", tags=["Filesystem Indexer"]
-)
-async def cancel_filesystem_index_job(
-    tool_id: str, job_id: str, _user: User = Depends(require_admin)
-):
+@router.post("/tools/{tool_id}/filesystem/jobs/{job_id}/cancel", tags=["Filesystem Indexer"])
+async def cancel_filesystem_index_job(tool_id: str, job_id: str, _user: User = Depends(require_admin)):
     """
     Cancel an active filesystem indexing job. Admin only.
 
@@ -5999,9 +5535,7 @@ async def cancel_filesystem_index_job(
     # Request cancellation
     cancelled = await filesystem_indexer.cancel_job(job_id)
     if not cancelled:
-        raise HTTPException(
-            status_code=400, detail="Job not found or already completed"
-        )
+        raise HTTPException(status_code=400, detail="Job not found or already completed")
 
     return {"success": True, "message": "Cancellation requested"}
 
@@ -6011,9 +5545,7 @@ async def cancel_filesystem_index_job(
     response_model=FilesystemIndexJobResponse,
     tags=["Filesystem Indexer"],
 )
-async def retry_filesystem_index_job(
-    tool_id: str, job_id: str, _user: User = Depends(require_admin)
-):
+async def retry_filesystem_index_job(tool_id: str, job_id: str, _user: User = Depends(require_admin)):
     """
     Retry a failed or cancelled filesystem indexing job. Admin only.
 
@@ -6061,9 +5593,7 @@ async def retry_filesystem_index_job(
     response_model=FilesystemIndexStatsResponse,
     tags=["Filesystem Indexer"],
 )
-async def get_filesystem_index_stats(
-    tool_id: str, _user: User = Depends(require_admin)
-):
+async def get_filesystem_index_stats(tool_id: str, _user: User = Depends(require_admin)):
     """Get statistics for a filesystem index. Admin only."""
     # Get the tool config
     tool_config = await repository.get_tool_config(tool_id)
@@ -6080,20 +5610,14 @@ async def get_filesystem_index_stats(
     try:
         fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
     except Exception as e:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid filesystem configuration: {str(e)}"
-        ) from e
+        raise HTTPException(status_code=400, detail=f"Invalid filesystem configuration: {str(e)}") from e
 
-    stats = await filesystem_indexer.get_index_stats(
-        fs_config.index_name, fs_config.vector_store_type
-    )
+    stats = await filesystem_indexer.get_index_stats(fs_config.index_name, fs_config.vector_store_type)
     return FilesystemIndexStatsResponse(
         index_name=stats["index_name"],
         embedding_count=stats["embedding_count"],
         file_count=stats["file_count"],
-        last_indexed=(
-            stats["last_indexed"].isoformat() if stats["last_indexed"] else None
-        ),
+        last_indexed=(stats["last_indexed"].isoformat() if stats["last_indexed"] else None),
         chunk_count=stats.get("chunk_count"),
         estimated_memory_mb=stats.get("estimated_memory_mb"),
         pgvector_size_mb=stats.get("pgvector_size_mb"),
@@ -6121,13 +5645,9 @@ async def delete_filesystem_index(tool_id: str, _user: User = Depends(require_ad
     try:
         fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
     except Exception as e:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid filesystem configuration: {str(e)}"
-        ) from e
+        raise HTTPException(status_code=400, detail=f"Invalid filesystem configuration: {str(e)}") from e
 
-    deleted_count = await filesystem_indexer.delete_index(
-        fs_config.index_name, vector_store_type=fs_config.vector_store_type
-    )
+    deleted_count = await filesystem_indexer.delete_index(fs_config.index_name, vector_store_type=fs_config.vector_store_type)
     return {
         "success": True,
         "message": f"Deleted {deleted_count} embeddings from index '{fs_config.index_name}'",
@@ -6140,11 +5660,7 @@ async def check_pgvector_status(_user: User = Depends(require_admin)):
     is_available = await filesystem_indexer.ensure_pgvector_extension()
     return {
         "available": is_available,
-        "message": (
-            "pgvector extension is installed"
-            if is_available
-            else "pgvector extension not available"
-        ),
+        "message": ("pgvector extension is installed" if is_available else "pgvector extension not available"),
     }
 
 
@@ -6166,11 +5682,7 @@ async def run_garbage_collection(_user: User = Depends(require_admin)):
         "success": True,
         "total_deleted": gc_total,
         "details": gc_results,
-        "message": (
-            f"Garbage collected {gc_total} orphaned embedding(s)"
-            if gc_total > 0
-            else "No orphaned embeddings found"
-        ),
+        "message": (f"Garbage collected {gc_total} orphaned embedding(s)" if gc_total > 0 else "No orphaned embeddings found"),
     }
 
 
@@ -6211,9 +5723,7 @@ class OllamaTestResponse(BaseModel):
 
 
 @router.post("/ollama/test", response_model=OllamaTestResponse, tags=["Settings"])
-async def test_ollama_connection(
-    request: OllamaTestRequest, _user: User = Depends(require_admin)
-):
+async def test_ollama_connection(request: OllamaTestRequest, _user: User = Depends(require_admin)):
     """
     Test connection to an Ollama server and retrieve available models.
 
@@ -6269,9 +5779,7 @@ async def test_ollama_connection(
             base_url=base_url,
         )
     except Exception as e:
-        return OllamaTestResponse(
-            success=False, message=f"Connection failed: {str(e)}", base_url=base_url
-        )
+        return OllamaTestResponse(success=False, message=f"Connection failed: {str(e)}", base_url=base_url)
 
 
 # -----------------------------------------------------------------------------
@@ -6381,9 +5889,7 @@ def _vision_models_from_infos(provider: str, infos: list[Any]) -> list[VisionMod
     response_model=VisionModelsResponse,
     tags=["Settings"],
 )
-async def get_provider_vision_models(
-    request: VisionModelsRequest, _user: User = Depends(require_admin)
-):
+async def get_provider_vision_models(request: VisionModelsRequest, _user: User = Depends(require_admin)):
     """List vision-capable OCR models using provider or catalog metadata."""
     app_settings = await repository.get_settings()
     provider = normalize_provider_name(request.provider)
@@ -6401,9 +5907,7 @@ async def get_provider_vision_models(
     if not base_url:
         base_url = resolve_provider_base_url(app_settings, provider, "llm")
 
-    api_key = str(request.api_key or "").strip() or _provider_api_key_from_settings(
-        app_settings, provider
-    )
+    api_key = str(request.api_key or "").strip() or _provider_api_key_from_settings(app_settings, provider)
     candidate_models = list(request.candidate_models)
 
     try:
@@ -6460,9 +5964,7 @@ async def get_provider_vision_models(
     response_model=OllamaVisionModelsResponse,
     tags=["Settings"],
 )
-async def get_ollama_vision_models(
-    request: OllamaVisionModelsRequest, _user: User = Depends(require_admin)
-):
+async def get_ollama_vision_models(request: OllamaVisionModelsRequest, _user: User = Depends(require_admin)):
     """
     List vision-capable models from an Ollama server.
 
@@ -6559,12 +6061,8 @@ class EmbeddingModelsResponse(BaseModel):
 OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 
-@router.post(
-    "/embedding/models", response_model=EmbeddingModelsResponse, tags=["Settings"]
-)
-async def fetch_embedding_models(
-    request: EmbeddingModelsRequest, _user: User = Depends(require_admin)
-):
+@router.post("/embedding/models", response_model=EmbeddingModelsResponse, tags=["Settings"])
+async def fetch_embedding_models(request: EmbeddingModelsRequest, _user: User = Depends(require_admin)):
     """
     Fetch available embedding models from a provider given a valid API key.
 
@@ -6590,11 +6088,7 @@ async def fetch_embedding_models(
             api_key=(
                 str(request.api_key or settings.lmstudio_api_key or "") or None
                 if normalized_provider == "lmstudio"
-                else (
-                    str(request.api_key or settings.omlx_api_key or "") or None
-                    if normalized_provider == "omlx"
-                    else None
-                )
+                else (str(request.api_key or settings.omlx_api_key or "") or None if normalized_provider == "omlx" else None)
             ),
         )
 
@@ -6697,9 +6191,7 @@ async def _fetch_lmstudio_embedding_models(
     selected_model: str = "",
 ) -> EmbeddingModelsResponse:
     """Fetch embedding models from LM Studio native metadata."""
-    return await _fetch_local_embedding_models(
-        "lmstudio", base_url, selected_model=selected_model
-    )
+    return await _fetch_local_embedding_models("lmstudio", base_url, selected_model=selected_model)
 
 
 async def _fetch_llama_cpp_embedding_models(
@@ -6708,9 +6200,7 @@ async def _fetch_llama_cpp_embedding_models(
     selected_model: str = "",
 ) -> EmbeddingModelsResponse:
     """Fetch/probe embedding models from a llama.cpp server."""
-    return await _fetch_local_embedding_models(
-        "llama_cpp", base_url, selected_model=selected_model
-    )
+    return await _fetch_local_embedding_models("llama_cpp", base_url, selected_model=selected_model)
 
 
 async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsResponse:
@@ -6750,12 +6240,8 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
                     )
                 # Fallback: also include models with "embedding" in the name
                 # (covers new models not yet in models.dev)
-                elif "embedding" in model_id.lower() and model_id not in [
-                    m.id for m in models
-                ]:
-                    models.append(
-                        EmbeddingModel(id=model_id, name=model_id, dimensions=None)
-                    )
+                elif "embedding" in model_id.lower() and model_id not in [m.id for m in models]:
+                    models.append(EmbeddingModel(id=model_id, name=model_id, dimensions=None))
 
             # Sort: priority models first, then alphabetically
             def sort_key(m: EmbeddingModel) -> tuple:
@@ -6772,9 +6258,7 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
                 message=f"Found {len(models)} embedding model(s) (validated against models.dev metadata).",
                 models=models,
                 default_model=(
-                    OPENAI_DEFAULT_EMBEDDING_MODEL
-                    if any(m.id == OPENAI_DEFAULT_EMBEDDING_MODEL for m in models)
-                    else (models[0].id if models else None)
+                    OPENAI_DEFAULT_EMBEDDING_MODEL if any(m.id == OPENAI_DEFAULT_EMBEDDING_MODEL for m in models) else (models[0].id if models else None)
                 ),
             )
 
@@ -6784,17 +6268,11 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
                 success=False,
                 message="Invalid API key. Please check your OpenAI API key.",
             )
-        return EmbeddingModelsResponse(
-            success=False, message=f"OpenAI API error: {e.response.status_code}"
-        )
+        return EmbeddingModelsResponse(success=False, message=f"OpenAI API error: {e.response.status_code}")
     except httpx.TimeoutException:
-        return EmbeddingModelsResponse(
-            success=False, message="Request to OpenAI timed out."
-        )
+        return EmbeddingModelsResponse(success=False, message="Request to OpenAI timed out.")
     except Exception as e:
-        return EmbeddingModelsResponse(
-            success=False, message=f"Failed to fetch OpenAI embedding models: {str(e)}"
-        )
+        return EmbeddingModelsResponse(success=False, message=f"Failed to fetch OpenAI embedding models: {str(e)}")
 
 
 # -----------------------------------------------------------------------------
@@ -6919,9 +6397,7 @@ class AvailableModelsResponse(BaseModel):
     default_model: Optional[str] = None
     automatic_default_model: Optional[str] = None
     current_model: Optional[str] = None  # Currently selected model in settings
-    discovered_model_identifiers: List[str] = (
-        []
-    )  # Unfiltered provider-scoped identifiers from live discovery
+    discovered_model_identifiers: List[str] = []  # Unfiltered provider-scoped identifiers from live discovery
     allowed_models: List[str] = []  # List of allowed model IDs (for settings UI)
     allowed_openapi_models: List[str] = []  # Separately curated OpenAPI model list
     models_loading: bool = False
@@ -6988,9 +6464,7 @@ def _enrich_model_metadata(
     if provider_label:
         model.model_provider_label = provider_label
     if not model.model_provider:
-        model.model_provider = _model_publisher_key(model.id) or (
-            provider_label.lower().replace(" ", "_") if provider_label else None
-        )
+        model.model_provider = _model_publisher_key(model.id) or (provider_label.lower().replace(" ", "_") if provider_label else None)
     if family_label:
         model.model_family = family_label
         model.group = family_label
@@ -7071,9 +6545,7 @@ def _build_scoped_model_identifier(model: AvailableModel) -> str:
 
 def _build_discovered_model_identifiers(models: List[AvailableModel]) -> List[str]:
     """Build de-duplicated provider-scoped identifiers from discovered models."""
-    return list(
-        dict.fromkeys(_build_scoped_model_identifier(model) for model in models)
-    )
+    return list(dict.fromkeys(_build_scoped_model_identifier(model) for model in models))
 
 
 def _model_id_variants(model_id: str) -> set[str]:
@@ -7087,9 +6559,7 @@ def _model_id_variants(model_id: str) -> set[str]:
     return variants
 
 
-def _find_available_model_for_identifier(
-    models: List[AvailableModel], identifier: Optional[str]
-) -> Optional[AvailableModel]:
+def _find_available_model_for_identifier(models: List[AvailableModel], identifier: Optional[str]) -> Optional[AvailableModel]:
     """Find a model from available models by bare or provider-scoped identifier."""
     provider, model_id = _parse_model_identifier(identifier or "")
     if not model_id:
@@ -7203,11 +6673,7 @@ async def _fetch_openrouter_models(api_key: str) -> LLMModelsResponse:
                 continue
 
             supported_parameters = row.get("supported_parameters")
-            supported_parameters = (
-                [str(item).lower() for item in supported_parameters if item]
-                if isinstance(supported_parameters, list)
-                else []
-            )
+            supported_parameters = [str(item).lower() for item in supported_parameters if item] if isinstance(supported_parameters, list) else []
             (
                 capabilities,
                 _supported_endpoints,
@@ -7215,10 +6681,7 @@ async def _fetch_openrouter_models(api_key: str) -> LLMModelsResponse:
                 thinking_budget_supported,
                 effort_levels,
             ) = _extract_provider_capability_metadata(row)
-            if any(
-                parameter in supported_parameters
-                for parameter in ("reasoning", "reasoning_effort", "include_reasoning")
-            ):
+            if any(parameter in supported_parameters for parameter in ("reasoning", "reasoning_effort", "include_reasoning")):
                 reasoning_supported = True
                 if "reasoning" not in capabilities:
                     capabilities.append("reasoning")
@@ -7235,20 +6698,14 @@ async def _fetch_openrouter_models(api_key: str) -> LLMModelsResponse:
                 metadata=row,
             ) or resolve_model_family_from_metadata("openrouter", row)
             architecture = row.get("architecture")
-            tokenizer = (
-                str(architecture.get("tokenizer"))
-                if isinstance(architecture, dict) and architecture.get("tokenizer")
-                else None
-            )
+            tokenizer = str(architecture.get("tokenizer")) if isinstance(architecture, dict) and architecture.get("tokenizer") else None
 
             register_model_supported_endpoints(model_id, ["/chat/completions"])
             if reasoning_supported or thinking_budget_supported:
                 register_model_reasoning_capabilities(
                     model_id,
                     reasoning_supported=bool(reasoning_supported),
-                    reasoning_effort_supported=bool(
-                        effort_levels or "reasoning_effort" in capabilities
-                    ),
+                    reasoning_effort_supported=bool(effort_levels or "reasoning_effort" in capabilities),
                     thinking_budget_supported=bool(thinking_budget_supported),
                 )
 
@@ -7288,17 +6745,11 @@ async def _fetch_openrouter_models(api_key: str) -> LLMModelsResponse:
                 success=False,
                 message="Invalid API key. Please check your OpenRouter API key.",
             )
-        return LLMModelsResponse(
-            success=False, message=f"OpenRouter API error: {e.response.status_code}"
-        )
+        return LLMModelsResponse(success=False, message=f"OpenRouter API error: {e.response.status_code}")
     except httpx.TimeoutException:
-        return LLMModelsResponse(
-            success=False, message="Request to OpenRouter timed out."
-        )
+        return LLMModelsResponse(success=False, message="Request to OpenRouter timed out.")
     except Exception as e:
-        return LLMModelsResponse(
-            success=False, message=f"Failed to fetch OpenRouter models: {str(e)}"
-        )
+        return LLMModelsResponse(success=False, message=f"Failed to fetch OpenRouter models: {str(e)}")
 
 
 async def _fetch_github_provider_models(
@@ -7358,9 +6809,7 @@ async def _fetch_github_provider_models(
             auth_failed = "authorization failed" in (result.message or "").lower()
             if refresh_token and auth_failed and not token_override:
                 try:
-                    exchanged_token, exchanged_expires_at = (
-                        await exchange_github_token_for_copilot_token(refresh_token)
-                    )
+                    exchanged_token, exchanged_expires_at = await exchange_github_token_for_copilot_token(refresh_token)
                     await repository.update_settings(
                         {
                             "github_copilot_access_token": exchanged_token,
@@ -7423,30 +6872,20 @@ async def _fetch_llm_models_for_provider(
         token = str(api_key or settings.anthropic_api_key or "").strip()
         if not token:
             if raise_on_unconfigured:
-                raise HTTPException(
-                    status_code=400, detail="Anthropic is not configured"
-                )
-            return LLMModelsResponse(
-                success=False, message="Anthropic is not configured"
-            )
+                raise HTTPException(status_code=400, detail="Anthropic is not configured")
+            return LLMModelsResponse(success=False, message="Anthropic is not configured")
         return await _fetch_anthropic_models(token)
 
     if normalized_provider == "openrouter":
         token = str(api_key or settings.openrouter_api_key or "").strip()
         if not token:
             if raise_on_unconfigured:
-                raise HTTPException(
-                    status_code=400, detail="OpenRouter is not configured"
-                )
-            return LLMModelsResponse(
-                success=False, message="OpenRouter is not configured"
-            )
+                raise HTTPException(status_code=400, detail="OpenRouter is not configured")
+            return LLMModelsResponse(success=False, message="OpenRouter is not configured")
         return await _fetch_openrouter_models(token)
 
     if normalized_provider == "ollama":
-        resolved_base_url = resolve_provider_base_url(
-            settings, normalized_provider, "llm", override=base_url
-        )
+        resolved_base_url = resolve_provider_base_url(settings, normalized_provider, "llm", override=base_url)
         if not resolved_base_url:
             if raise_on_unconfigured:
                 raise HTTPException(status_code=400, detail="Ollama is not configured")
@@ -7454,40 +6893,26 @@ async def _fetch_llm_models_for_provider(
         return await _fetch_ollama_llm_models(resolved_base_url)
 
     if normalized_provider == "llama_cpp":
-        resolved_base_url = resolve_provider_base_url(
-            settings, normalized_provider, "llm", override=base_url
-        )
+        resolved_base_url = resolve_provider_base_url(settings, normalized_provider, "llm", override=base_url)
         if not resolved_base_url:
             if raise_on_unconfigured:
-                raise HTTPException(
-                    status_code=400, detail="llama.cpp is not configured"
-                )
-            return LLMModelsResponse(
-                success=False, message="llama.cpp is not configured"
-            )
+                raise HTTPException(status_code=400, detail="llama.cpp is not configured")
+            return LLMModelsResponse(success=False, message="llama.cpp is not configured")
         return await _fetch_llama_cpp_llm_models(resolved_base_url)
 
     if normalized_provider == "lmstudio":
-        resolved_base_url = resolve_provider_base_url(
-            settings, normalized_provider, "llm", override=base_url
-        )
+        resolved_base_url = resolve_provider_base_url(settings, normalized_provider, "llm", override=base_url)
         if not resolved_base_url:
             if raise_on_unconfigured:
-                raise HTTPException(
-                    status_code=400, detail="LM Studio is not configured"
-                )
-            return LLMModelsResponse(
-                success=False, message="LM Studio is not configured"
-            )
+                raise HTTPException(status_code=400, detail="LM Studio is not configured")
+            return LLMModelsResponse(success=False, message="LM Studio is not configured")
         return await _fetch_lmstudio_llm_models(
             resolved_base_url,
             api_key=str(api_key or settings.lmstudio_api_key or "") or None,
         )
 
     if normalized_provider == "omlx":
-        resolved_base_url = resolve_provider_base_url(
-            settings, normalized_provider, "llm", override=base_url
-        )
+        resolved_base_url = resolve_provider_base_url(settings, normalized_provider, "llm", override=base_url)
         if not resolved_base_url:
             if raise_on_unconfigured:
                 raise HTTPException(status_code=400, detail="oMLX is not configured")
@@ -7596,19 +7021,11 @@ async def _validate_conversation_model_before_send(stored_model: str) -> None:
         )
 
     if not provider:
-        provider = (
-            str(getattr(settings, "llm_provider", "openai") or "openai").strip().lower()
-        )
+        provider = str(getattr(settings, "llm_provider", "openai") or "openai").strip().lower()
 
     normalized_provider = normalize_provider_name(provider)
-    allowed_models = [
-        str(value).strip()
-        for value in (getattr(settings, "allowed_chat_models", None) or [])
-        if str(value).strip()
-    ]
-    if allowed_models and not _identifier_in_allowed_models(
-        f"{normalized_provider}::{model_id}", allowed_models
-    ):
+    allowed_models = [str(value).strip() for value in (getattr(settings, "allowed_chat_models", None) or []) if str(value).strip()]
+    if allowed_models and not _identifier_in_allowed_models(f"{normalized_provider}::{model_id}", allowed_models):
         raise HTTPException(
             status_code=400,
             detail="Selected model has been removed from Chat Models. Select another model to continue.",
@@ -7632,9 +7049,7 @@ def _generation_failure_message(error: Exception) -> str:
     return text or "Generation failed."
 
 
-async def _persist_generation_failure_message(
-    conversation_id: str, error: Exception
-) -> None:
+async def _persist_generation_failure_message(conversation_id: str, error: Exception) -> None:
     """Persist a visible assistant error event without adding it to LLM history."""
     message = _generation_failure_message(error)
     try:
@@ -7655,9 +7070,7 @@ async def _validate_generation_ready_after_user_message(
     """Validate generation readiness after the submitted user message is saved."""
     try:
         if not rag.is_ready:
-            raise HTTPException(
-                status_code=503, detail="RAG service initializing, please retry"
-            )
+            raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
         await _validate_conversation_model_before_send(stored_model)
     except Exception as exc:
         await _persist_generation_failure_message(conversation_id, exc)
@@ -7696,9 +7109,7 @@ async def _create_background_chat_task_after_user_message(
         )
         task = await repository.get_chat_task(task_id)
         if not task:
-            raise HTTPException(
-                status_code=500, detail="Failed to create background task"
-            )
+            raise HTTPException(status_code=500, detail="Failed to create background task")
         return task
     except Exception as exc:
         await _persist_generation_failure_message(conversation_id, exc)
@@ -7849,9 +7260,7 @@ async def start_copilot_device_flow(
                 },
             )
             if response.status_code == 400:
-                logger.warning(
-                    "GitHub device flow rejected models:read scope; retrying with read:user"
-                )
+                logger.warning("GitHub device flow rejected models:read scope; retrying with read:user")
                 response = await client.post(
                     device_code_url,
                     headers=headers,
@@ -7888,9 +7297,7 @@ async def start_copilot_device_flow(
     return CopilotDeviceStartResponse(
         success=True,
         request_id=request_id,
-        verification_uri=data.get(
-            "verification_uri", "https://github.com/login/device"
-        ),
+        verification_uri=data.get("verification_uri", "https://github.com/login/device"),
         verification_uri_complete=data.get("verification_uri_complete"),
         user_code=data.get("user_code", ""),
         interval=interval,
@@ -7912,9 +7319,7 @@ async def poll_copilot_device_flow(
     """Poll GitHub Copilot OAuth device flow and persist token on success."""
     state = _copilot_device_requests.get(request.request_id)
     if not state:
-        raise HTTPException(
-            status_code=404, detail="Device authorization request not found"
-        )
+        raise HTTPException(status_code=404, detail="Device authorization request not found")
 
     now = datetime.now(timezone.utc)
     if now >= state["expires_at"]:
@@ -7961,9 +7366,7 @@ async def poll_copilot_device_flow(
         oauth_expires_in = data.get("expires_in")
         oauth_expires_at = None
         if isinstance(oauth_expires_in, (int, float)) and int(oauth_expires_in) > 0:
-            oauth_expires_at = datetime.now(timezone.utc) + timedelta(
-                seconds=int(oauth_expires_in)
-            )
+            oauth_expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(oauth_expires_in))
 
         # Capture the OAuth refresh_token (ghr_*) if present.  GitHub Apps
         # with token expiration enabled return this alongside the access_token.
@@ -7975,9 +7378,7 @@ async def poll_copilot_device_flow(
         copilot_access_token = access_token
         copilot_expires_at = oauth_expires_at
         try:
-            exchanged_token, exchanged_expires_at = (
-                await _exchange_github_token_for_copilot_token(access_token)
-            )
+            exchanged_token, exchanged_expires_at = await _exchange_github_token_for_copilot_token(access_token)
             copilot_access_token = exchanged_token
             copilot_expires_at = exchanged_expires_at or oauth_expires_at
         except Exception as exchange_error:
@@ -8150,11 +7551,7 @@ def _latest_group_key(
     model: LLMModel | AvailableModel,
     fallback_provider: str,
 ) -> tuple[str, str, str]:
-    model_provider = model.model_provider or (
-        model.model_provider_label.lower().replace(" ", "_")
-        if model.model_provider_label
-        else ""
-    )
+    model_provider = model.model_provider or (model.model_provider_label.lower().replace(" ", "_") if model.model_provider_label else "")
     host_provider = str(getattr(model, "provider", None) or fallback_provider)
     return (
         host_provider,
@@ -8172,9 +7569,7 @@ def _mark_latest_models(
         grouped[_latest_group_key(model, fallback_provider)].append(model)
 
     for group_models in grouped.values():
-        candidates = [
-            model for model in group_models if isinstance(model.freshness_rank, int)
-        ]
+        candidates = [model for model in group_models if isinstance(model.freshness_rank, int)]
         if not candidates:
             continue
 
@@ -8271,9 +7666,7 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
 
 
 @router.post("/llm/models", response_model=LLMModelsResponse, tags=["Settings"])
-async def fetch_llm_models(
-    request: LLMModelsRequest, _user: User = Depends(require_admin)
-):
+async def fetch_llm_models(request: LLMModelsRequest, _user: User = Depends(require_admin)):
     """
     Fetch available models from an LLM provider given a valid API key.
 
@@ -8304,9 +7697,7 @@ async def fetch_llm_models(
     )
 
 
-def _merge_llm_model_results(
-    primary: LLMModelsResponse, extra: LLMModelsResponse
-) -> LLMModelsResponse:
+def _merge_llm_model_results(primary: LLMModelsResponse, extra: LLMModelsResponse) -> LLMModelsResponse:
     """Merge model results by id while keeping primary metadata precedence."""
     if not primary.success and extra.success:
         return extra
@@ -8315,9 +7706,7 @@ def _merge_llm_model_results(
     if not primary.success and not extra.success:
         return primary
 
-    merged: dict[str, LLMModel] = {
-        m.id: m.model_copy(deep=True) for m in primary.models
-    }
+    merged: dict[str, LLMModel] = {m.id: m.model_copy(deep=True) for m in primary.models}
     for model in extra.models:
         existing = merged.get(model.id)
         if existing is None:
@@ -8345,10 +7734,7 @@ async def _fetch_copilot_directory_models(
     include_google: bool = False,
 ) -> LLMModelsResponse:
     """Fetch known GitHub Copilot models from models.dev directory."""
-    cache_key = (
-        "copilot-directory:"
-        f"anthropic={int(include_anthropic)}:google={int(include_google)}"
-    )
+    cache_key = f"copilot-directory:anthropic={int(include_anthropic)}:google={int(include_google)}"
 
     async def _fetch_uncached() -> LLMModelsResponse:
         try:
@@ -8363,14 +7749,8 @@ async def _fetch_copilot_directory_models(
                 response.raise_for_status()
 
             payload = response.json()
-            provider_payload = (
-                payload.get("github-copilot", {}) if isinstance(payload, dict) else {}
-            )
-            models_obj = (
-                provider_payload.get("models", {})
-                if isinstance(provider_payload, dict)
-                else {}
-            )
+            provider_payload = payload.get("github-copilot", {}) if isinstance(payload, dict) else {}
+            models_obj = provider_payload.get("models", {}) if isinstance(provider_payload, dict) else {}
             if not isinstance(models_obj, dict):
                 return LLMModelsResponse(
                     success=False,
@@ -8387,13 +7767,9 @@ async def _fetch_copilot_directory_models(
                     continue
 
                 model_id_l = model_id.lower()
-                if not include_anthropic and (
-                    "claude" in model_id_l or "anthropic" in model_id_l
-                ):
+                if not include_anthropic and ("claude" in model_id_l or "anthropic" in model_id_l):
                     continue
-                if not include_google and (
-                    "gemini" in model_id_l or "google" in model_id_l
-                ):
+                if not include_google and ("gemini" in model_id_l or "google" in model_id_l):
                     continue
 
                 output_modalities = row.get("modalities", {}).get("output")
@@ -8471,10 +7847,7 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
                     effort_levels,
                 ) = _extract_provider_capability_metadata(model)
                 # Include GPT models suitable for chat (exclude embeddings, whisper, tts, dall-e, etc.)
-                if model_id.startswith("gpt-") and not any(
-                    x in model_id
-                    for x in ["instruct", "vision", "realtime", "audio", "tts"]
-                ):
+                if model_id.startswith("gpt-") and not any(x in model_id for x in ["instruct", "vision", "realtime", "audio", "tts"]):
                     # Check if model supports function calling (indicates chat capability)
                     if await supports_function_calling(model_id):
                         output_limit = await get_output_limit(model_id)
@@ -8498,19 +7871,14 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
             # Sort: priority models first, then alphabetically
             # Priority sorting is now handled by is_latest flag for UI
             # Here we just ensure deterministic order or created time
-            models.sort(
-                key=lambda m: (m.group or "", m.is_latest, m.created or 0), reverse=True
-            )
+            models.sort(key=lambda m: (m.group or "", m.is_latest, m.created or 0), reverse=True)
 
             return LLMModelsResponse(
                 success=True,
                 message=f"Found {len(models)} chat model(s).",
                 models=models,
                 default_model=(
-                    OPENAI_DEFAULT_MODEL
-                    if OPENAI_DEFAULT_MODEL
-                    and any(m.id == OPENAI_DEFAULT_MODEL for m in models)
-                    else (models[0].id if models else None)
+                    OPENAI_DEFAULT_MODEL if OPENAI_DEFAULT_MODEL and any(m.id == OPENAI_DEFAULT_MODEL for m in models) else (models[0].id if models else None)
                 ),
             )
 
@@ -8520,15 +7888,11 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
                 success=False,
                 message="Invalid API key. Please check your OpenAI API key.",
             )
-        return LLMModelsResponse(
-            success=False, message=f"OpenAI API error: {e.response.status_code}"
-        )
+        return LLMModelsResponse(success=False, message=f"OpenAI API error: {e.response.status_code}")
     except httpx.TimeoutException:
         return LLMModelsResponse(success=False, message="Request to OpenAI timed out.")
     except Exception as e:
-        return LLMModelsResponse(
-            success=False, message=f"Failed to fetch OpenAI models: {str(e)}"
-        )
+        return LLMModelsResponse(success=False, message=f"Failed to fetch OpenAI models: {str(e)}")
 
 
 async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
@@ -8561,9 +7925,7 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
                     register_model_reasoning_capabilities(
                         model_id,
                         reasoning_supported=bool(reasoning_supported),
-                        reasoning_effort_supported=bool(
-                            effort_levels or "reasoning_effort" in capabilities
-                        ),
+                        reasoning_effort_supported=bool(effort_levels or "reasoning_effort" in capabilities),
                         thinking_budget_supported=bool(thinking_budget_supported),
                     )
                 # All Claude models support function calling (chat capable)
@@ -8594,8 +7956,7 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
                 models=models,
                 default_model=(
                     ANTHROPIC_DEFAULT_MODEL
-                    if ANTHROPIC_DEFAULT_MODEL
-                    and any(m.id == ANTHROPIC_DEFAULT_MODEL for m in models)
+                    if ANTHROPIC_DEFAULT_MODEL and any(m.id == ANTHROPIC_DEFAULT_MODEL for m in models)
                     else (models[0].id if models else None)
                 ),
             )
@@ -8606,17 +7967,11 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
                 success=False,
                 message="Invalid API key. Please check your Anthropic API key.",
             )
-        return LLMModelsResponse(
-            success=False, message=f"Anthropic API error: {e.response.status_code}"
-        )
+        return LLMModelsResponse(success=False, message=f"Anthropic API error: {e.response.status_code}")
     except httpx.TimeoutException:
-        return LLMModelsResponse(
-            success=False, message="Request to Anthropic timed out."
-        )
+        return LLMModelsResponse(success=False, message="Request to Anthropic timed out.")
     except Exception as e:
-        return LLMModelsResponse(
-            success=False, message=f"Failed to fetch Anthropic models: {str(e)}"
-        )
+        return LLMModelsResponse(success=False, message=f"Failed to fetch Anthropic models: {str(e)}")
 
 
 async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
@@ -8631,9 +7986,7 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
             )
 
         # List all models (not just embedding models, since this is for LLM)
-        ollama_models = await ollama_list_models(
-            base_url, embeddings_only=False, include_dimensions=False
-        )
+        ollama_models = await ollama_list_models(base_url, embeddings_only=False, include_dimensions=False)
 
         models = [LLMModel(id=m.name, name=m.name) for m in ollama_models]
 
@@ -8656,9 +8009,7 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
                     if isinstance(details, dict) and details:
                         capabilities = extract_capabilities(details)
                         models[idx].capabilities = capabilities or None
-                        models[idx].reasoning_supported = (
-                            True if "thinking" in capabilities else None
-                        )
+                        models[idx].reasoning_supported = True if "thinking" in capabilities else None
                         # Filter out embedding-only models (nomic-embed-text, etc.)
                         if is_embedding_capable(details, models[idx].id):
                             embedding_model_ids.add(models[idx].id)
@@ -8678,9 +8029,7 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
         # Remove embedding-only models from the list
         if embedding_model_ids:
             models = [m for m in models if m.id not in embedding_model_ids]
-            logger.debug(
-                f"Filtered out {len(embedding_model_ids)} embedding-only Ollama model(s): {embedding_model_ids}"
-            )
+            logger.debug(f"Filtered out {len(embedding_model_ids)} embedding-only Ollama model(s): {embedding_model_ids}")
 
         return LLMModelsResponse(
             success=True,
@@ -8733,18 +8082,14 @@ async def _fetch_llama_cpp_llm_models(base_url: str) -> LLMModelsResponse:
         )
 
 
-async def _fetch_lmstudio_llm_models(
-    base_url: str, api_key: str | None = None
-) -> LLMModelsResponse:
+async def _fetch_lmstudio_llm_models(base_url: str, api_key: str | None = None) -> LLMModelsResponse:
     """Fetch available chat models from LM Studio native metadata."""
     try:
         normalized_base_url = lmstudio.normalize_base_url(
             base_url,
             lmstudio.DEFAULT_BASE_URL,
         )
-        discovered = await lmstudio.list_chat_models(
-            normalized_base_url, api_key=api_key
-        )
+        discovered = await lmstudio.list_chat_models(normalized_base_url, api_key=api_key)
         models = [
             LLMModel(
                 id=model.id,
@@ -8779,9 +8124,7 @@ async def _fetch_lmstudio_llm_models(
         )
 
 
-async def _fetch_omlx_llm_models(
-    base_url: str, api_key: str | None = None
-) -> LLMModelsResponse:
+async def _fetch_omlx_llm_models(base_url: str, api_key: str | None = None) -> LLMModelsResponse:
     """Fetch available chat models from oMLX OpenAI-compatible metadata."""
     try:
         normalized_base_url = omlx.normalize_base_url(
@@ -8944,10 +8287,7 @@ async def unload_lmstudio_model(
     except Exception as e:
         return LmStudioModelActionResponse(
             success=False,
-            message=(
-                f"Failed to unload LM Studio model after unloading {len(unloaded)} "
-                f"of {len(instance_ids)} instance(s): {str(e)}"
-            ),
+            message=(f"Failed to unload LM Studio model after unloading {len(unloaded)} of {len(instance_ids)} instance(s): {str(e)}"),
             data={"unloaded": unloaded},
         )
 
@@ -9117,14 +8457,10 @@ def _extract_provider_capability_metadata(
         if isinstance(supports_obj, list):
             capabilities_out = [str(flag).lower() for flag in supports_obj]
         elif isinstance(supports_obj, dict):
-            capabilities_out = [
-                str(flag).lower() for flag, enabled in supports_obj.items() if enabled
-            ]
+            capabilities_out = [str(flag).lower() for flag, enabled in supports_obj.items() if enabled]
             reasoning_effort_value = supports_obj.get("reasoning_effort")
             if isinstance(reasoning_effort_value, list):
-                effort_levels.extend(
-                    str(level).lower() for level in reasoning_effort_value if level
-                )
+                effort_levels.extend(str(level).lower() for level in reasoning_effort_value if level)
 
         thinking_obj = capabilities_obj.get("thinking")
         if isinstance(thinking_obj, dict):
@@ -9134,10 +8470,7 @@ def _extract_provider_capability_metadata(
             thinking_types = thinking_obj.get("types")
             if isinstance(thinking_types, dict):
                 enabled_obj = thinking_types.get("enabled")
-                if (
-                    isinstance(enabled_obj, dict)
-                    and enabled_obj.get("supported") is True
-                ):
+                if isinstance(enabled_obj, dict) and enabled_obj.get("supported") is True:
                     thinking_budget_supported = True
                 elif enabled_obj is True:
                     thinking_budget_supported = True
@@ -9155,10 +8488,7 @@ def _extract_provider_capability_metadata(
                     effort_levels.append(str(key).lower())
 
         if capabilities_out:
-            if (
-                "reasoning" in capabilities_out
-                or "reasoning_effort" in capabilities_out
-            ):
+            if "reasoning" in capabilities_out or "reasoning_effort" in capabilities_out:
                 reasoning_supported = True
             if "thinking_budget" in capabilities_out:
                 thinking_budget_supported = True
@@ -9203,10 +8533,7 @@ async def _fetch_github_copilot_models(
 ) -> LLMModelsResponse:
     """Fetch available models from GitHub Copilot API."""
     normalized_base = (base_url or COPILOT_DEFAULT_BASE_URL).rstrip("/")
-    cache_key = (
-        "copilot-models:"
-        f"base={normalized_base}:token={_copilot_token_fingerprint(access_token)}"
-    )
+    cache_key = f"copilot-models:base={normalized_base}:token={_copilot_token_fingerprint(access_token)}"
 
     def _normalize_model_id(raw_id: str) -> str:
         model_id = raw_id.strip()
@@ -9284,9 +8611,7 @@ async def _fetch_github_copilot_models(
                             continue
                         output_modalities = row.get("supported_output_modalities")
                         if isinstance(output_modalities, list) and output_modalities:
-                            if "text" not in [
-                                str(m).lower() for m in output_modalities
-                            ]:
+                            if "text" not in [str(m).lower() for m in output_modalities]:
                                 continue
 
                         model_name = str(row.get("name") or model_id)
@@ -9302,11 +8627,7 @@ async def _fetch_github_copilot_models(
                             context_limit = await get_context_limit(model_id)
 
                         existing = models_by_id.get(model_id)
-                        created = (
-                            row.get("created")
-                            if isinstance(row.get("created"), int)
-                            else None
-                        )
+                        created = row.get("created") if isinstance(row.get("created"), int) else None
                         (
                             capabilities,
                             supported_endpoints,
@@ -9330,30 +8651,21 @@ async def _fetch_github_copilot_models(
                         # Cache supported API endpoints so the LLM builder
                         # knows when to use the Responses API.
                         if supported_endpoints:
-                            register_model_supported_endpoints(
-                                model_id, supported_endpoints
-                            )
+                            register_model_supported_endpoints(model_id, supported_endpoints)
 
                         # Cache reasoning capability hints from Copilot model metadata.
                         if reasoning_supported or thinking_budget_supported:
                             register_model_reasoning_capabilities(
                                 model_id,
                                 reasoning_supported=bool(reasoning_supported),
-                                reasoning_effort_supported=bool(
-                                    effort_levels or "reasoning_effort" in capabilities
-                                ),
-                                thinking_budget_supported=bool(
-                                    thinking_budget_supported
-                                ),
+                                reasoning_effort_supported=bool(effort_levels or "reasoning_effort" in capabilities),
+                                thinking_budget_supported=bool(thinking_budget_supported),
                             )
 
                         # Prefer entries that include richer token limit metadata.
                         if existing is None:
                             models_by_id[model_id] = candidate
-                        elif (
-                            existing.max_output_tokens is None
-                            and candidate.max_output_tokens is not None
-                        ):
+                        elif existing.max_output_tokens is None and candidate.max_output_tokens is not None:
                             models_by_id[model_id] = candidate
             except Exception as e:
                 last_error = str(e)
@@ -9445,9 +8757,7 @@ async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
                 register_model_reasoning_capabilities(
                     model_id,
                     reasoning_supported=bool(reasoning_supported),
-                    reasoning_effort_supported=bool(
-                        effort_levels or "reasoning_effort" in capabilities
-                    ),
+                    reasoning_effort_supported=bool(effort_levels or "reasoning_effort" in capabilities),
                     thinking_budget_supported=bool(thinking_budget_supported),
                 )
 
@@ -9470,11 +8780,7 @@ async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
                 LLMModel(
                     id=model_id,
                     name=model_name,
-                    created=(
-                        row.get("created")
-                        if isinstance(row.get("created"), int)
-                        else None
-                    ),
+                    created=(row.get("created") if isinstance(row.get("created"), int) else None),
                     max_output_tokens=output_limit,
                     context_limit=context_limit,
                     capabilities=capabilities or None,
@@ -9519,9 +8825,7 @@ async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
 # =============================================================================
 
 
-@router.get(
-    "/chat/available-models", response_model=AvailableModelsResponse, tags=["Chat"]
-)
+@router.get("/chat/available-models", response_model=AvailableModelsResponse, tags=["Chat"])
 async def get_available_chat_models():
     """
     Get all available models from configured LLM providers.
@@ -9559,36 +8863,18 @@ async def get_available_chat_models():
     if app_settings.openai_api_key and len(app_settings.openai_api_key) > 10:
         provider_states["openai"].configured = True
         provider_states["openai"].connected = True
-        tasks.append(
-            asyncio.create_task(
-                _safe_fetch_llm_models_task(
-                    "openai", _fetch_openai_models(app_settings.openai_api_key)
-                )
-            )
-        )
+        tasks.append(asyncio.create_task(_safe_fetch_llm_models_task("openai", _fetch_openai_models(app_settings.openai_api_key))))
 
     if app_settings.anthropic_api_key and len(app_settings.anthropic_api_key) > 10:
         provider_states["anthropic"].configured = True
         provider_states["anthropic"].connected = True
-        tasks.append(
-            asyncio.create_task(
-                _safe_fetch_llm_models_task(
-                    "anthropic", _fetch_anthropic_models(app_settings.anthropic_api_key)
-                )
-            )
-        )
+        tasks.append(asyncio.create_task(_safe_fetch_llm_models_task("anthropic", _fetch_anthropic_models(app_settings.anthropic_api_key))))
 
     openrouter_api_key = str(getattr(app_settings, "openrouter_api_key", "") or "")
     if openrouter_api_key and len(openrouter_api_key) > 10:
         provider_states["openrouter"].configured = True
         provider_states["openrouter"].connected = True
-        tasks.append(
-            asyncio.create_task(
-                _safe_fetch_llm_models_task(
-                    "openrouter", _fetch_openrouter_models(openrouter_api_key)
-                )
-            )
-        )
+        tasks.append(asyncio.create_task(_safe_fetch_llm_models_task("openrouter", _fetch_openrouter_models(openrouter_api_key))))
 
     ollama_url = getattr(app_settings, "llm_ollama_base_url", "") or ""
     if not ollama_url or ollama_url == "http://localhost:11434":
@@ -9596,33 +8882,19 @@ async def get_available_chat_models():
     if ollama_url:
         provider_states["ollama"].configured = True
         provider_states["ollama"].connected = True
-        tasks.append(
-            asyncio.create_task(
-                _safe_fetch_llm_models_task(
-                    "ollama", _fetch_ollama_llm_models(ollama_url)
-                )
-            )
-        )
+        tasks.append(asyncio.create_task(_safe_fetch_llm_models_task("ollama", _fetch_ollama_llm_models(ollama_url))))
 
     llama_cpp_url = _resolve_llama_cpp_chat_base_url(app_settings)
     if llama_cpp_url:
         provider_states["llama_cpp"].configured = True
         provider_states["llama_cpp"].connected = True
-        tasks.append(
-            asyncio.create_task(
-                _safe_fetch_llm_models_task(
-                    "llama_cpp", _fetch_llama_cpp_llm_models(llama_cpp_url)
-                )
-            )
-        )
+        tasks.append(asyncio.create_task(_safe_fetch_llm_models_task("llama_cpp", _fetch_llama_cpp_llm_models(llama_cpp_url))))
 
     lmstudio_url = _resolve_lmstudio_chat_base_url(app_settings)
     if lmstudio_url:
         provider_states["lmstudio"].configured = True
         provider_states["lmstudio"].connected = True
-        _lmstudio_api_key = (
-            str(getattr(app_settings, "lmstudio_api_key", "") or "") or None
-        )
+        _lmstudio_api_key = str(getattr(app_settings, "lmstudio_api_key", "") or "") or None
         tasks.append(
             asyncio.create_task(
                 _safe_fetch_llm_models_task(
@@ -9652,27 +8924,17 @@ async def get_available_chat_models():
     github_auth_mode, github_auth_error = _resolve_github_auth_mode(app_settings)
     provider_states["github_copilot"].loading = is_copilot_token_refresh_in_progress()
     if github_auth_error:
-        provider_states["github_copilot"].configured = bool(
-            github_models_token or github_copilot_token or github_refresh_token
-        )
+        provider_states["github_copilot"].configured = bool(github_models_token or github_copilot_token or github_refresh_token)
         provider_states["github_copilot"].connected = False
         provider_states["github_copilot"].error = github_auth_error
         logger.warning("Skipping GitHub model discovery: %s", github_auth_error)
     elif github_auth_mode == "pat" and github_models_token:
         provider_states["github_copilot"].configured = True
         provider_states["github_copilot"].connected = True
-        tasks.append(
-            asyncio.create_task(
-                _safe_fetch_llm_models_task(
-                    "github_copilot", _fetch_github_models_catalog(github_models_token)
-                )
-            )
-        )
+        tasks.append(asyncio.create_task(_safe_fetch_llm_models_task("github_copilot", _fetch_github_models_catalog(github_models_token))))
     elif github_auth_mode == "oauth" and (github_copilot_token or github_refresh_token):
         provider_states["github_copilot"].configured = True
-        provider_states["github_copilot"].connected = bool(
-            github_copilot_token and len(github_copilot_token) > 10
-        )
+        provider_states["github_copilot"].connected = bool(github_copilot_token and len(github_copilot_token) > 10)
         if github_copilot_token and len(github_copilot_token) > 10:
             tasks.append(
                 asyncio.create_task(
@@ -9680,20 +8942,15 @@ async def get_available_chat_models():
                         "github_copilot",
                         _fetch_github_copilot_models(
                             github_copilot_token,
-                            app_settings.github_copilot_base_url
-                            or COPILOT_DEFAULT_BASE_URL,
+                            app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
                         ),
                     )
                 )
             )
         elif provider_states["github_copilot"].loading:
-            provider_states["github_copilot"].error = (
-                "Refreshing GitHub Copilot credentials."
-            )
+            provider_states["github_copilot"].error = "Refreshing GitHub Copilot credentials."
         else:
-            provider_states["github_copilot"].error = (
-                "GitHub Copilot access token is not available. Reconnect GitHub Copilot."
-            )
+            provider_states["github_copilot"].error = "GitHub Copilot access token is not available. Reconnect GitHub Copilot."
 
     # --- Await all provider fetches in parallel ---
     results: list[tuple[str, LLMModelsResponse]] = []
@@ -9722,11 +8979,7 @@ async def get_available_chat_models():
         for m in result.models:
             if provider_key == "github_copilot":
                 # For PAT-mode catalog models, strip publisher prefix for context lookup
-                context_model_id = (
-                    m.id.split("/", 1)[1]
-                    if github_auth_mode == "pat" and "/" in m.id
-                    else m.id
-                )
+                context_model_id = m.id.split("/", 1)[1] if github_auth_mode == "pat" and "/" in m.id else m.id
             else:
                 context_model_id = m.id
 
@@ -9751,11 +9004,7 @@ async def get_available_chat_models():
                     context_limit=(
                         m.context_limit or 8192
                         if provider_key in LOCAL_LLM_PROVIDER_NAMES
-                        else (
-                            m.context_limit
-                            if isinstance(m.context_limit, int) and m.context_limit > 0
-                            else await get_context_limit(context_model_id)
-                        )
+                        else (m.context_limit if isinstance(m.context_limit, int) and m.context_limit > 0 else await get_context_limit(context_model_id))
                     ),
                     max_output_tokens=m.max_output_tokens,
                     group=m.group,
@@ -9786,9 +9035,7 @@ async def get_available_chat_models():
 
     # Use current configured LLM model as automatic default when available.
     current_model = (app_settings.llm_model or "").strip() or None
-    current_model_match = _find_available_model_for_identifier(
-        all_models, current_model
-    )
+    current_model_match = _find_available_model_for_identifier(all_models, current_model)
     if current_model_match:
         default_model = current_model_match.id
 
@@ -9796,36 +9043,20 @@ async def get_available_chat_models():
 
     # Filter by allowed models if specified.
     # Supports legacy model IDs and provider-scoped keys: provider::model_id.
-    allowed_models = [
-        str(value).strip()
-        for value in (app_settings.allowed_chat_models or [])
-        if str(value).strip()
-    ]
+    allowed_models = [str(value).strip() for value in (app_settings.allowed_chat_models or []) if str(value).strip()]
     if allowed_models:
-        all_models = [
-            model
-            for model in all_models
-            if _identifier_in_allowed_models(
-                _build_scoped_model_identifier(model), allowed_models
-            )
-        ]
+        all_models = [model for model in all_models if _identifier_in_allowed_models(_build_scoped_model_identifier(model), allowed_models)]
 
     # Assign groups to models for UI organization
     await ensure_model_metadata_loaded()
     all_models = _assign_model_groups(all_models)
 
-    automatic_default_match = _find_available_model_for_identifier(
-        all_models, default_model
-    )
+    automatic_default_match = _find_available_model_for_identifier(all_models, default_model)
     if automatic_default_match is None and all_models:
         automatic_default_match = all_models[0]
 
-    manual_default_identifier = (
-        str(getattr(app_settings, "default_chat_model", "") or "").strip() or None
-    )
-    manual_default_match = _find_available_model_for_identifier(
-        all_models, manual_default_identifier
-    )
+    manual_default_identifier = str(getattr(app_settings, "default_chat_model", "") or "").strip() or None
+    manual_default_match = _find_available_model_for_identifier(all_models, manual_default_identifier)
 
     effective_default_match = manual_default_match or automatic_default_match
 
@@ -9834,30 +9065,18 @@ async def get_available_chat_models():
     if copilot_refresh_in_progress and provider_states["github_copilot"].configured:
         provider_states["github_copilot"].loading = True
         if not provider_states["github_copilot"].connected:
-            provider_states["github_copilot"].error = (
-                provider_states["github_copilot"].error
-                or "Refreshing GitHub Copilot credentials."
-            )
+            provider_states["github_copilot"].error = provider_states["github_copilot"].error or "Refreshing GitHub Copilot credentials."
 
     # When a configured provider never fetched (e.g. temporary auth mismatch),
     # keep availability false and attach a stable generic message.
     for state in provider_states.values():
-        if (
-            state.configured
-            and not state.available
-            and not state.loading
-            and not state.error
-        ):
+        if state.configured and not state.available and not state.loading and not state.error:
             state.error = "No models available from provider."
 
     return AvailableModelsResponse(
         models=all_models,
         default_model=effective_default_match.id if effective_default_match else None,
-        automatic_default_model=(
-            _build_scoped_model_identifier(automatic_default_match)
-            if automatic_default_match
-            else None
-        ),
+        automatic_default_model=(_build_scoped_model_identifier(automatic_default_match) if automatic_default_match else None),
         current_model=current_model,
         discovered_model_identifiers=discovered_model_identifiers,
         allowed_models=allowed_models,
@@ -9951,9 +9170,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
 
     lmstudio_url = _resolve_lmstudio_chat_base_url(app_settings)
     if lmstudio_url:
-        _lmstudio_api_key = (
-            str(getattr(app_settings, "lmstudio_api_key", "") or "") or None
-        )
+        _lmstudio_api_key = str(getattr(app_settings, "lmstudio_api_key", "") or "") or None
         tasks.append(
             asyncio.create_task(
                 _safe_fetch_llm_models_task(
@@ -9992,11 +9209,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                 )
             )
         )
-    elif (
-        github_auth_mode == "oauth"
-        and github_copilot_token
-        and len(github_copilot_token) > 10
-    ):
+    elif github_auth_mode == "oauth" and github_copilot_token and len(github_copilot_token) > 10:
         tasks.append(
             asyncio.create_task(
                 _safe_fetch_llm_models_task(
@@ -10025,11 +9238,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
 
         for m in result.models:
             if provider_key == "github_copilot":
-                context_model_id = (
-                    m.id.split("/", 1)[1]
-                    if github_auth_mode == "pat" and "/" in m.id
-                    else m.id
-                )
+                context_model_id = m.id.split("/", 1)[1] if github_auth_mode == "pat" and "/" in m.id else m.id
             else:
                 context_model_id = m.id
 
@@ -10051,11 +9260,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                     context_limit=(
                         m.context_limit or 8192
                         if provider_key in LOCAL_LLM_PROVIDER_NAMES
-                        else (
-                            m.context_limit
-                            if isinstance(m.context_limit, int) and m.context_limit > 0
-                            else await get_context_limit(context_model_id)
-                        )
+                        else (m.context_limit if isinstance(m.context_limit, int) and m.context_limit > 0 else await get_context_limit(context_model_id))
                     ),
                     max_output_tokens=m.max_output_tokens,
                     group=m.group,
@@ -10112,9 +9317,7 @@ def _to_conversation_response(conv: Conversation) -> ConversationResponse:
         total_tokens=conv.total_tokens,
         active_task_id=conv.active_task_id,
         active_branch_id=conv.active_branch_id,
-        disabled_builtin_tool_ids=_normalize_disabled_builtin_tool_ids(
-            conv.disabled_builtin_tool_ids
-        ),
+        disabled_builtin_tool_ids=_normalize_disabled_builtin_tool_ids(conv.disabled_builtin_tool_ids),
         tool_output_mode=conv.tool_output_mode,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
@@ -10145,11 +9348,7 @@ async def _to_shared_conversation_response(
             scope_anchor = int(scope_anchor_raw)
     except (TypeError, ValueError):
         scope_anchor = None
-    if (
-        scope_anchor is not None
-        and scope_direction in ("forward", "backward")
-        and conv.messages
-    ):
+    if scope_anchor is not None and scope_direction in ("forward", "backward") and conv.messages:
         anchor = max(0, min(scope_anchor, len(conv.messages) - 1))
         if scope_direction == "forward":
             sliced = conv.messages[anchor:]
@@ -10205,18 +9404,14 @@ async def _to_shared_conversation_response(
         active_task=_to_chat_task_response(active_task) if active_task else None,
         owner_username=owner_username,
         owner_display_name=owner_display_name,
-        share_access_mode=str(
-            getattr(share_record, "shareAccessMode", "token") or "token"
-        ),
+        share_access_mode=str(getattr(share_record, "shareAccessMode", "token") or "token"),
         granted_role=str(authorization.get("granted_role") or "viewer"),
         can_edit=bool(authorization.get("can_edit")),
         is_authenticated=current_user is not None,
         current_user_member_role=current_user_member_role,
         context_limit=context_limit,
         scope_anchor_message_idx=scope_anchor,
-        scope_direction=(
-            scope_direction if scope_direction in ("forward", "backward") else None
-        ),
+        scope_direction=(scope_direction if scope_direction in ("forward", "backward") else None),
     )
 
 
@@ -10228,9 +9423,7 @@ def _shared_conversation_request_actor(
     if current_user is not None:
         return current_user
 
-    fallback_user_id = str(
-        getattr(share_record, "ownerUserId", "") or getattr(conv, "user_id", "") or ""
-    ).strip()
+    fallback_user_id = str(getattr(share_record, "ownerUserId", "") or getattr(conv, "user_id", "") or "").strip()
     if not fallback_user_id:
         raise HTTPException(
             status_code=500,
@@ -10247,9 +9440,7 @@ async def _get_conversation_member_role(
     if not user_id:
         return None
     db = await repository._get_db()
-    member = await db.conversationmember.find_first(
-        where={"conversationId": conversation_id, "userId": user_id}
-    )
+    member = await db.conversationmember.find_first(where={"conversationId": conversation_id, "userId": user_id})
     return str(getattr(member, "role", "") or "") or None
 
 
@@ -10260,9 +9451,7 @@ async def _add_or_update_conversation_member(
     role: str,
 ) -> str:
     role = role if role in {"owner", "editor", "viewer"} else "viewer"
-    existing = await db.conversationmember.find_first(
-        where={"conversationId": conversation_id, "userId": user_id}
-    )
+    existing = await db.conversationmember.find_first(where={"conversationId": conversation_id, "userId": user_id})
     if existing:
         existing_role = str(getattr(existing, "role", "") or "")
         if existing_role == "owner":
@@ -10275,9 +9464,7 @@ async def _add_or_update_conversation_member(
         )
         return str(getattr(updated, "role", role) or role)
 
-    created = await db.conversationmember.create(
-        data={"conversationId": conversation_id, "userId": user_id, "role": role}
-    )
+    created = await db.conversationmember.create(data={"conversationId": conversation_id, "userId": user_id, "role": role})
     return str(getattr(created, "role", role) or role)
 
 
@@ -10292,13 +9479,11 @@ async def _send_message_to_loaded_conversation(
 ) -> dict[str, Any]:
     conversation_id = conv.id
     if blocked_tool_names is None:
-        _, blocked_tool_names, workspace_context = (
-            await _resolve_workspace_runtime_scope(
-                conv,
-                user,
-                workspace_id,
-                _workspace_chat_required_role(workspace_id),
-            )
+        _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
+            conv,
+            user,
+            workspace_id,
+            _workspace_chat_required_role(workspace_id),
         )
 
     user_message = request.message.strip()
@@ -10332,9 +9517,7 @@ async def _send_message_to_loaded_conversation(
             chat_history.append(HumanMessage(content=parsed_content))
         elif msg.role == "assistant":
             if msg.events:
-                chat_history.extend(
-                    rebuild_tool_messages_from_events(msg.events, msg_idx)
-                )
+                chat_history.extend(rebuild_tool_messages_from_events(msg.events, msg_idx))
             else:
                 chat_history.append(AIMessage(content=msg.content))
 
@@ -10417,13 +9600,11 @@ async def _send_background_message_to_loaded_conversation(
 ) -> dict[str, Any]:
     conversation_id = conv.id
     if blocked_tool_names is None:
-        _, blocked_tool_names, workspace_context = (
-            await _resolve_workspace_runtime_scope(
-                conv,
-                user,
-                workspace_id,
-                _workspace_chat_required_role(workspace_id),
-            )
+        _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
+            conv,
+            user,
+            workspace_id,
+            _workspace_chat_required_role(workspace_id),
         )
 
     user_message = request.message.strip()
@@ -10486,9 +9667,7 @@ async def _link_assistant_snapshot_tool_calls(
     try:
         await repository.link_assistant_snapshot_tool_calls(conv, workspace_id)
     except Exception as e:
-        logger.warning(
-            f"Failed to link agent-created snapshot to assistant message: {e}"
-        )
+        logger.warning(f"Failed to link agent-created snapshot to assistant message: {e}")
 
 
 class WorkspaceConversationStateResponse(BaseModel):
@@ -10590,14 +9769,10 @@ def _to_chat_task_response(task: Any) -> ChatTaskResponse:
     )
 
 
-async def _assert_workspace_access(
-    workspace_id: Optional[str], user: User, required_role: str
-) -> None:
+async def _assert_workspace_access(workspace_id: Optional[str], user: User, required_role: str) -> None:
     if not workspace_id:
         return
-    await userspace_service.enforce_workspace_role(
-        workspace_id, user.id, required_role, is_admin=user.role == "admin"
-    )
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, required_role, is_admin=user.role == "admin")
 
 
 def _workspace_chat_required_role(workspace_id: Optional[str]) -> str:
@@ -10613,11 +9788,7 @@ async def _resolve_selected_tool_ids_for_request(
     requested_workspace_id = (workspace_id or "").strip() or None
     conversation_workspace_id = (conversation.workspace_id or "").strip() or None
 
-    if (
-        requested_workspace_id
-        and conversation_workspace_id
-        and requested_workspace_id != conversation_workspace_id
-    ):
+    if requested_workspace_id and conversation_workspace_id and requested_workspace_id != conversation_workspace_id:
         raise HTTPException(
             status_code=400,
             detail="workspace_id does not match the conversation workspace",
@@ -10628,28 +9799,16 @@ async def _resolve_selected_tool_ids_for_request(
     db = Prisma()
     await db.connect()
     try:
-        conversation_tool_selections = await db.conversationtoolselection.find_many(
-            where={"conversationId": conversation.id}
-        )
-        conversation_group_selections = (
-            await db.conversationtoolgroupselection.find_many(
-                where={"conversationId": conversation.id}
-            )
-        )
-        conversation_selected_tool_ids = [
-            s.toolConfigId for s in conversation_tool_selections
-        ]
-        conversation_selected_group_ids = [
-            s.toolGroupId for s in conversation_group_selections
-        ]
+        conversation_tool_selections = await db.conversationtoolselection.find_many(where={"conversationId": conversation.id})
+        conversation_group_selections = await db.conversationtoolgroupselection.find_many(where={"conversationId": conversation.id})
+        conversation_selected_tool_ids = [s.toolConfigId for s in conversation_tool_selections]
+        conversation_selected_group_ids = [s.toolGroupId for s in conversation_group_selections]
     finally:
         await db.disconnect()
 
     selected_tool_ids = set(conversation_selected_tool_ids)
     if conversation_selected_group_ids:
-        group_tool_ids = await repository.get_tool_ids_for_groups(
-            conversation_selected_group_ids
-        )
+        group_tool_ids = await repository.get_tool_ids_for_groups(conversation_selected_group_ids)
         selected_tool_ids.update(group_tool_ids)
     elif not selected_tool_ids:
         # Default chat behavior: when no explicit per-conversation selection
@@ -10666,9 +9825,7 @@ async def _resolve_selected_tool_ids_for_request(
         # Workspace scope enforces strict selected-tool bounds.
         selected_tool_ids = set(workspace.selected_tool_ids)
         if workspace.selected_tool_group_ids:
-            group_tool_ids = await repository.get_tool_ids_for_groups(
-                workspace.selected_tool_group_ids
-            )
+            group_tool_ids = await repository.get_tool_ids_for_groups(workspace.selected_tool_group_ids)
             selected_tool_ids.update(group_tool_ids)
         elif not selected_tool_ids:
             # Workspaces created before tool-selection persistence may have no
@@ -10677,19 +9834,11 @@ async def _resolve_selected_tool_ids_for_request(
         # Resolve any cross-workspace agent grants originating from this workspace
         # so userspace tools can target other workspaces the user has explicitly
         # granted access to. Stored as JSON-friendly mapping for downstream use.
-        accessible_modes = (
-            await userspace_service.get_active_cross_workspace_grant_modes(
-                effective_workspace_id
-            )
-        )
+        accessible_modes = await userspace_service.get_active_cross_workspace_grant_modes(effective_workspace_id)
         accessible_modes_for_user = {}
         for target_workspace_id, access_mode in accessible_modes.items():
-            normalized_access_mode = str(
-                getattr(access_mode, "value", access_mode) or "read"
-            )
-            required_target_role = (
-                "editor" if normalized_access_mode == "read_write" else "viewer"
-            )
+            normalized_access_mode = str(getattr(access_mode, "value", access_mode) or "read")
+            required_target_role = "editor" if normalized_access_mode == "read_write" else "viewer"
             try:
                 await userspace_service.enforce_workspace_role(
                     target_workspace_id,
@@ -10769,13 +9918,11 @@ async def _resolve_workspace_runtime_scope(
     workspace_id: Optional[str],
     required_role: str,
 ) -> tuple[Optional[str], Optional[set[str]], Optional[dict[str, Any]]]:
-    effective_workspace_id, selected_tool_ids, workspace_context = (
-        await _resolve_selected_tool_ids_for_request(
-            conversation,
-            user,
-            workspace_id,
-            required_role,
-        )
+    effective_workspace_id, selected_tool_ids, workspace_context = await _resolve_selected_tool_ids_for_request(
+        conversation,
+        user,
+        workspace_id,
+        required_role,
     )
     # An empty selection means no system tools are available for this request.
     if not selected_tool_ids:
@@ -10809,9 +9956,7 @@ async def list_conversations(
 
     since_dt = _parse_conversation_time_filter(since, "since")
     until_dt = _parse_conversation_time_filter(until, "until")
-    cursor_updated_at_dt = _parse_conversation_time_filter(
-        cursor_updated_at, "cursor_updated_at"
-    )
+    cursor_updated_at_dt = _parse_conversation_time_filter(cursor_updated_at, "cursor_updated_at")
     if cursor_updated_at_dt is None and cursor_id:
         raise HTTPException(
             status_code=400,
@@ -10836,9 +9981,7 @@ async def list_conversations(
     return [_to_conversation_response(c) for c in convs]
 
 
-@router.get(
-    "/conversations/summaries", response_model=List[ConversationSummaryResponse]
-)
+@router.get("/conversations/summaries", response_model=List[ConversationSummaryResponse])
 async def list_conversation_summaries(
     workspace_id: Optional[str] = None,
     since: Optional[str] = None,
@@ -10892,9 +10035,7 @@ async def get_workspace_conversation_state(
         include_all=is_admin,
         workspace_id=workspace_id,
     )
-    interrupted_conversation_ids = (
-        await repository.get_interrupted_conversation_ids_for_workspace(workspace_id)
-    )
+    interrupted_conversation_ids = await repository.get_interrupted_conversation_ids_for_workspace(workspace_id)
     return WorkspaceConversationStateResponse(
         conversations=[_to_conversation_response(c) for c in convs],
         interrupted_conversation_ids=interrupted_conversation_ids,
@@ -10910,9 +10051,7 @@ async def get_workspaces_conversation_state_summary(
     user: User = Depends(get_current_user),
 ):
     """Return live/interrupted summary for multiple workspaces in one request."""
-    workspace_ids = [
-        wid.strip() for wid in request.workspace_ids if wid and wid.strip()
-    ]
+    workspace_ids = [wid.strip() for wid in request.workspace_ids if wid and wid.strip()]
     if not workspace_ids:
         return []
 
@@ -10953,9 +10092,7 @@ async def get_workspaces_conversation_state_summary_lite(
     user: User = Depends(get_current_user),
 ):
     """Return workspace live/interrupted flags using batched lookups."""
-    workspace_ids = [
-        wid.strip() for wid in request.workspace_ids if wid and wid.strip()
-    ]
+    workspace_ids = [wid.strip() for wid in request.workspace_ids if wid and wid.strip()]
     if not workspace_ids:
         return []
 
@@ -10963,16 +10100,9 @@ async def get_workspaces_conversation_state_summary_lite(
     is_admin = user.role == "admin"
 
     if not is_admin:
-        await asyncio.gather(
-            *(
-                _assert_workspace_access(workspace_id, user, "viewer")
-                for workspace_id in deduped_workspace_ids
-            )
-        )
+        await asyncio.gather(*(_assert_workspace_access(workspace_id, user, "viewer") for workspace_id in deduped_workspace_ids))
 
-    live_workspace_ids, interrupted_workspace_ids = (
-        await repository.get_workspace_task_state_summary(deduped_workspace_ids)
-    )
+    live_workspace_ids, interrupted_workspace_ids = await repository.get_workspace_task_state_summary(deduped_workspace_ids)
 
     return [
         WorkspaceConversationStateSummaryItem(
@@ -10999,9 +10129,7 @@ async def create_conversation(
 
     workspace_id = request.workspace_id if request else None
 
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
 
     conv = await repository.create_conversation(
         title=title,
@@ -11061,9 +10189,7 @@ async def list_conversation_share_links(
 async def create_conversation_share_link(
     conversation_id: str,
     request: Request,
-    body: CreateConversationShareLinkRequest = Body(
-        default_factory=CreateConversationShareLinkRequest
-    ),
+    body: CreateConversationShareLinkRequest = Body(default_factory=CreateConversationShareLinkRequest),
     user: User = Depends(get_current_user),
 ):
     return await userspace_service.create_conversation_share_link(
@@ -11187,11 +10313,7 @@ async def update_conversation_share_link_access(
     response_model=PublicShareTargetResponse,
 )
 async def resolve_public_share_target(share_token: str):
-    return PublicShareTargetResponse(
-        target_type=await userspace_service.resolve_public_share_target_by_token(
-            share_token
-        )
-    )
+    return PublicShareTargetResponse(target_type=await userspace_service.resolve_public_share_target_by_token(share_token))
 
 
 @router.get(
@@ -11243,17 +10365,15 @@ async def shared_conversation_events(
     password: Optional[str] = None,
     user: User | None = Depends(get_current_user_optional),
 ):
-    share_record, authorization = (
-        await userspace_service.get_authorized_shared_conversation_record(
-            share_token,
-            current_user=user,
-            password=password,
-            share_auth_token=share_auth_token_from_request(
-                request.headers,
-                request.cookies,
-                share_token=share_token,
-            ),
-        )
+    share_record, authorization = await userspace_service.get_authorized_shared_conversation_record(
+        share_token,
+        current_user=user,
+        password=password,
+        share_auth_token=share_auth_token_from_request(
+            request.headers,
+            request.cookies,
+            share_token=share_token,
+        ),
     )
     conversation_id = str(authorization.get("conversation_id") or "")
     if not conversation_id:
@@ -11272,19 +10392,17 @@ async def shared_conversation_events_by_slug(
     password: Optional[str] = None,
     user: User | None = Depends(get_current_user_optional),
 ):
-    share_record, authorization = (
-        await userspace_service.get_authorized_shared_conversation_record_by_slug(
-            owner_username,
-            share_slug,
-            current_user=user,
-            password=password,
-            share_auth_token=share_auth_token_from_request(
-                request.headers,
-                request.cookies,
-                owner_username=owner_username,
-                share_slug=share_slug,
-            ),
-        )
+    share_record, authorization = await userspace_service.get_authorized_shared_conversation_record_by_slug(
+        owner_username,
+        share_slug,
+        current_user=user,
+        password=password,
+        share_auth_token=share_auth_token_from_request(
+            request.headers,
+            request.cookies,
+            owner_username=owner_username,
+            share_slug=share_slug,
+        ),
     )
     conversation_id = str(authorization.get("conversation_id") or "")
     if not conversation_id:
@@ -11305,21 +10423,17 @@ async def join_shared_conversation(
     password: Optional[str] = None,
     user: User = Depends(get_current_user),
 ):
-    share_record, authorization = (
-        await userspace_service.get_authorized_shared_conversation_record(
-            share_token,
-            current_user=user,
-            password=password,
-            share_auth_token=share_auth_token_from_request(
-                request.headers,
-                request.cookies,
-                share_token=share_token,
-            ),
-        )
+    share_record, authorization = await userspace_service.get_authorized_shared_conversation_record(
+        share_token,
+        current_user=user,
+        password=password,
+        share_auth_token=share_auth_token_from_request(
+            request.headers,
+            request.cookies,
+            share_token=share_token,
+        ),
     )
-    conv = await repository.get_conversation(
-        str(authorization.get("conversation_id") or "")
-    )
+    conv = await repository.get_conversation(str(authorization.get("conversation_id") or ""))
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     if conv.workspace_id:
@@ -11350,23 +10464,19 @@ async def join_shared_conversation_by_slug(
     password: Optional[str] = None,
     user: User = Depends(get_current_user),
 ):
-    share_record, authorization = (
-        await userspace_service.get_authorized_shared_conversation_record_by_slug(
-            owner_username,
-            share_slug,
-            current_user=user,
-            password=password,
-            share_auth_token=share_auth_token_from_request(
-                request.headers,
-                request.cookies,
-                owner_username=owner_username,
-                share_slug=share_slug,
-            ),
-        )
+    share_record, authorization = await userspace_service.get_authorized_shared_conversation_record_by_slug(
+        owner_username,
+        share_slug,
+        current_user=user,
+        password=password,
+        share_auth_token=share_auth_token_from_request(
+            request.headers,
+            request.cookies,
+            owner_username=owner_username,
+            share_slug=share_slug,
+        ),
     )
-    conv = await repository.get_conversation(
-        str(authorization.get("conversation_id") or "")
-    )
+    conv = await repository.get_conversation(str(authorization.get("conversation_id") or ""))
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     if conv.workspace_id:
@@ -11396,26 +10506,20 @@ async def get_shared_conversation(
     password: Optional[str] = None,
     user: User | None = Depends(get_current_user_optional),
 ):
-    share_record, authorization = (
-        await userspace_service.get_authorized_shared_conversation_record(
-            share_token,
-            current_user=user,
-            password=password,
-            share_auth_token=share_auth_token_from_request(
-                request.headers,
-                request.cookies,
-                share_token=share_token,
-            ),
-        )
+    share_record, authorization = await userspace_service.get_authorized_shared_conversation_record(
+        share_token,
+        current_user=user,
+        password=password,
+        share_auth_token=share_auth_token_from_request(
+            request.headers,
+            request.cookies,
+            share_token=share_token,
+        ),
     )
-    conv = await repository.get_conversation(
-        str(authorization.get("conversation_id") or "")
-    )
+    conv = await repository.get_conversation(str(authorization.get("conversation_id") or ""))
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return await _to_shared_conversation_response(
-        conv, share_record, authorization, user
-    )
+    return await _to_shared_conversation_response(conv, share_record, authorization, user)
 
 
 @router.get(
@@ -11429,28 +10533,22 @@ async def get_shared_conversation_by_slug(
     password: Optional[str] = None,
     user: User | None = Depends(get_current_user_optional),
 ):
-    share_record, authorization = (
-        await userspace_service.get_authorized_shared_conversation_record_by_slug(
-            owner_username,
-            share_slug,
-            current_user=user,
-            password=password,
-            share_auth_token=share_auth_token_from_request(
-                request.headers,
-                request.cookies,
-                owner_username=owner_username,
-                share_slug=share_slug,
-            ),
-        )
+    share_record, authorization = await userspace_service.get_authorized_shared_conversation_record_by_slug(
+        owner_username,
+        share_slug,
+        current_user=user,
+        password=password,
+        share_auth_token=share_auth_token_from_request(
+            request.headers,
+            request.cookies,
+            owner_username=owner_username,
+            share_slug=share_slug,
+        ),
     )
-    conv = await repository.get_conversation(
-        str(authorization.get("conversation_id") or "")
-    )
+    conv = await repository.get_conversation(str(authorization.get("conversation_id") or ""))
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return await _to_shared_conversation_response(
-        conv, share_record, authorization, user
-    )
+    return await _to_shared_conversation_response(conv, share_record, authorization, user)
 
 
 @router.post("/shared-conversations/{share_token}/messages")
@@ -11461,24 +10559,20 @@ async def send_shared_conversation_message(
     password: Optional[str] = None,
     user: User | None = Depends(get_current_user_optional),
 ):
-    share_record, authorization = (
-        await userspace_service.get_authorized_shared_conversation_record(
-            share_token,
-            current_user=user,
-            password=password,
-            share_auth_token=share_auth_token_from_request(
-                request.headers,
-                request.cookies,
-                share_token=share_token,
-            ),
-        )
+    share_record, authorization = await userspace_service.get_authorized_shared_conversation_record(
+        share_token,
+        current_user=user,
+        password=password,
+        share_auth_token=share_auth_token_from_request(
+            request.headers,
+            request.cookies,
+            share_token=share_token,
+        ),
     )
     if not authorization.get("can_edit"):
         raise HTTPException(status_code=403, detail="Shared conversation is read-only")
 
-    conv = await repository.get_conversation(
-        str(authorization.get("conversation_id") or "")
-    )
+    conv = await repository.get_conversation(str(authorization.get("conversation_id") or ""))
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -11515,26 +10609,22 @@ async def send_shared_conversation_message_by_slug(
     password: Optional[str] = None,
     user: User | None = Depends(get_current_user_optional),
 ):
-    share_record, authorization = (
-        await userspace_service.get_authorized_shared_conversation_record_by_slug(
-            owner_username,
-            share_slug,
-            current_user=user,
-            password=password,
-            share_auth_token=share_auth_token_from_request(
-                request.headers,
-                request.cookies,
-                owner_username=owner_username,
-                share_slug=share_slug,
-            ),
-        )
+    share_record, authorization = await userspace_service.get_authorized_shared_conversation_record_by_slug(
+        owner_username,
+        share_slug,
+        current_user=user,
+        password=password,
+        share_auth_token=share_auth_token_from_request(
+            request.headers,
+            request.cookies,
+            owner_username=owner_username,
+            share_slug=share_slug,
+        ),
     )
     if not authorization.get("can_edit"):
         raise HTTPException(status_code=403, detail="Shared conversation is read-only")
 
-    conv = await repository.get_conversation(
-        str(authorization.get("conversation_id") or "")
-    )
+    conv = await repository.get_conversation(str(authorization.get("conversation_id") or ""))
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -11617,9 +10707,7 @@ async def list_conversation_provider_debug_prompts(
             if text:
                 total_prompt_tokens += count_tokens(text)
 
-        enriched_records.append(
-            record.model_copy(update={"prompt_token_count": total_prompt_tokens})
-        )
+        enriched_records.append(record.model_copy(update={"prompt_token_count": total_prompt_tokens}))
 
     return ProviderPromptDebugListResponse(records=enriched_records)
 
@@ -11631,9 +10719,7 @@ async def delete_conversation(
     user: User = Depends(get_current_user),
 ):
     """Delete a conversation. Users can only delete their own conversations."""
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -11649,9 +10735,7 @@ async def delete_conversation(
     return {"message": "Conversation deleted"}
 
 
-@router.patch(
-    "/conversations/{conversation_id}/title", response_model=ConversationResponse
-)
+@router.patch("/conversations/{conversation_id}/title", response_model=ConversationResponse)
 async def update_conversation_title(
     conversation_id: str,
     body: dict,
@@ -11659,9 +10743,7 @@ async def update_conversation_title(
     user: User = Depends(get_current_user),
 ):
     """Update a conversation's title. Users can only update their own conversations."""
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -11682,9 +10764,7 @@ async def update_conversation_title(
     return _to_conversation_response(conv)
 
 
-@router.patch(
-    "/conversations/{conversation_id}/model", response_model=ConversationResponse
-)
+@router.patch("/conversations/{conversation_id}/model", response_model=ConversationResponse)
 async def update_conversation_model(
     conversation_id: str,
     body: dict,
@@ -11692,9 +10772,7 @@ async def update_conversation_model(
     user: User = Depends(get_current_user),
 ):
     """Update a conversation's model. Users can only update their own conversations."""
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -11739,9 +10817,7 @@ async def update_conversation_tool_output_mode(
     user: User = Depends(get_current_user),
 ):
     """Update a conversation's tool output mode. Users can only update their own conversations."""
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -11765,9 +10841,7 @@ async def update_conversation_tool_output_mode(
     return _to_conversation_response(conv)
 
 
-@router.post(
-    "/conversations/{conversation_id}/truncate", response_model=ConversationResponse
-)
+@router.post("/conversations/{conversation_id}/truncate", response_model=ConversationResponse)
 async def truncate_conversation(
     conversation_id: str,
     keep_count: int,
@@ -11778,9 +10852,7 @@ async def truncate_conversation(
     Truncate conversation messages to keep only the first N messages.
     Used when editing/resending a message to remove subsequent messages.
     """
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -11853,23 +10925,15 @@ async def restore_message_snapshot(
     restore_count = int(link["restore_message_count"])
 
     try:
-        await userspace_service.restore_snapshot(
-            effective_workspace_id, snapshot_id, user.id
-        )
+        await userspace_service.restore_snapshot(effective_workspace_id, snapshot_id, user.id)
     except Exception as e:
         logger.warning(f"Failed to restore snapshot {snapshot_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to restore snapshot: {e}"
-        ) from e
+        raise HTTPException(status_code=500, detail=f"Failed to restore snapshot: {e}") from e
 
     try:
-        await userspace_runtime_service.invalidate_workspace_runtime_state(
-            effective_workspace_id
-        )
+        await userspace_runtime_service.invalidate_workspace_runtime_state(effective_workspace_id)
     except Exception as e:
-        logger.warning(
-            f"Failed to invalidate runtime state after message snapshot restore: {e}"
-        )
+        logger.warning(f"Failed to invalidate runtime state after message snapshot restore: {e}")
 
     truncated = await repository.truncate_messages(conversation_id, restore_count)
     if truncated is None:
@@ -11970,9 +11034,7 @@ async def create_conversation_branch(
     Preserves the original messages from the edit point onward, optionally
     creates a UserSpace snapshot before branching (for workspace chats).
     """
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -11986,9 +11048,7 @@ async def create_conversation_branch(
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    if request.from_message_index < 0 or request.from_message_index > len(
-        conv.messages
-    ):
+    if request.from_message_index < 0 or request.from_message_index > len(conv.messages):
         raise HTTPException(status_code=400, detail="Invalid message index")
 
     # Auto-snapshot for workspace conversations
@@ -12000,9 +11060,7 @@ async def create_conversation_branch(
                 user.id,
             )
         except Exception as e:
-            logger.warning(
-                f"Failed to determine whether chat branch auto-snapshot is needed: {e}"
-            )
+            logger.warning(f"Failed to determine whether chat branch auto-snapshot is needed: {e}")
             should_create_snapshot = True
 
         if should_create_snapshot:
@@ -12041,11 +11099,7 @@ async def create_conversation_branch(
             anchor_msg = branch.preserved_messages[0]
 
         if anchor_msg and anchor_msg.message_id and not anchor_msg.snapshot_restore:
-            keep_count = (
-                request.from_message_index + 1
-                if anchor_msg.role == "user"
-                else request.from_message_index
-            )
+            keep_count = request.from_message_index + 1 if anchor_msg.role == "user" else request.from_message_index
             try:
                 await repository.upsert_message_snapshot_link(
                     conversation_id=conversation_id,
@@ -12081,9 +11135,7 @@ async def switch_conversation_branch(
     Saves current downstream messages to the current branch, then
     restores the target branch's messages.
     """
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -12093,9 +11145,7 @@ async def switch_conversation_branch(
     if not has_access:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    conv = await repository.switch_conversation_branch(
-        conversation_id, request.branch_id
-    )
+    conv = await repository.switch_conversation_branch(conversation_id, request.branch_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Branch not found")
 
@@ -12118,9 +11168,7 @@ async def release_conversation_branch(
     the user can round-trip between the restored and post-delete views via
     the "Current" option in the branch nav.
     """
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -12148,9 +11196,7 @@ async def delete_conversation_branch(
     user: User = Depends(get_current_user),
 ):
     """Delete a conversation branch."""
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -12178,9 +11224,7 @@ async def send_message(
     Send a message to a conversation and get a response.
     Non-streaming version.
     """
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
 
     # Check access
     has_access = await repository.check_conversation_access(
@@ -12215,9 +11259,7 @@ async def send_message_stream(
     Send a message to a conversation and stream the response.
     Returns SSE stream of tokens.
     """
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
 
     # Check access
     has_access = await repository.check_conversation_access(
@@ -12272,9 +11314,7 @@ async def send_message_stream(
             chat_history.append(HumanMessage(content=parsed_content))
         elif msg.role == "assistant":
             if msg.events:
-                chat_history.extend(
-                    rebuild_tool_messages_from_events(msg.events, msg_idx)
-                )
+                chat_history.extend(rebuild_tool_messages_from_events(msg.events, msg_idx))
             else:
                 chat_history.append(AIMessage(content=msg.content))
 
@@ -12302,12 +11342,8 @@ async def send_message_stream(
         """Generate streaming response tokens."""
         chunk_id = f"chatcmpl-{int(time.time())}"
         full_response = ""
-        chronological_events: list[dict[str, Any]] = (
-            []
-        )  # Collect events in order (content and tools)
-        current_tool_call: dict[str, Any] | None = (
-            None  # Track current tool call being built
-        )
+        chronological_events: list[dict[str, Any]] = []  # Collect events in order (content and tools)
+        current_tool_call: dict[str, Any] | None = None  # Track current tool call being built
         reasoning_block_started_at: datetime | None = None
         current_user_context = _build_current_user_prompt_context(user)
 
@@ -12412,22 +11448,15 @@ async def send_message_stream(
                     token = event
                     full_response += token
                     if reasoning_block_started_at is not None:
-                        finalize_reasoning_block(
-                            chronological_events, reasoning_block_started_at
-                        )
+                        finalize_reasoning_block(chronological_events, reasoning_block_started_at)
                         reasoning_block_started_at = None
                     # Add content events when we get text (batch them for efficiency)
-                    if (
-                        chronological_events
-                        and chronological_events[-1].get("type") == "content"
-                    ):
+                    if chronological_events and chronological_events[-1].get("type") == "content":
                         # Append to last content event
                         chronological_events[-1]["content"] += token
                     else:
                         # Start new content event
-                        chronological_events.append(
-                            {"type": "content", "channel": "final", "content": token}
-                        )
+                        chronological_events.append({"type": "content", "channel": "final", "content": token})
 
                     chunk = {
                         "id": chunk_id,
@@ -12444,9 +11473,7 @@ async def send_message_stream(
                     }
                     yield f"data: {json.dumps(chunk)}\n\n"
             if reasoning_block_started_at is not None:
-                finalize_reasoning_block(
-                    chronological_events, reasoning_block_started_at
-                )
+                finalize_reasoning_block(chronological_events, reasoning_block_started_at)
                 reasoning_block_started_at = None
 
             # Persist the full response using chronological events.
@@ -12482,18 +11509,13 @@ async def send_message_stream(
             logger.exception("Error in streaming response")
 
             raw_error = str(e)
-            friendly_error = (
-                "An error occurred while generating the response. Please try again."
-            )
+            friendly_error = "An error occurred while generating the response. Please try again."
 
             max_iters = None
             if rag and getattr(rag, "agent_executor", None):
                 max_iters = getattr(rag.agent_executor, "max_iterations", None)
 
-            if (
-                "iteration" in raw_error.lower()
-                or "max iterations" in raw_error.lower()
-            ):
+            if "iteration" in raw_error.lower() or "max iterations" in raw_error.lower():
                 limit_text = f" ({max_iters})" if max_iters else ""
                 friendly_error = f"Stopped after reaching the max_iterations limit{limit_text}. Please narrow the request or retry."
 
@@ -12503,19 +11525,13 @@ async def send_message_stream(
                 chronological_events.append(current_tool_call)
 
             if reasoning_block_started_at is not None:
-                finalize_reasoning_block(
-                    chronological_events, reasoning_block_started_at
-                )
+                finalize_reasoning_block(chronological_events, reasoning_block_started_at)
                 reasoning_block_started_at = None
 
             # Persist whatever we have so far using chronological events only.
             combined_response = full_response.strip()
             if friendly_error:
-                combined_response = (
-                    f"{combined_response}\n\n{friendly_error}"
-                    if combined_response
-                    else friendly_error
-                )
+                combined_response = f"{combined_response}\n\n{friendly_error}" if combined_response else friendly_error
 
             try:
                 persisted_err_conv = await repository.add_message(
@@ -12524,9 +11540,7 @@ async def send_message_stream(
                     combined_response,
                     events=chronological_events if chronological_events else None,
                 )
-                await _link_assistant_snapshot_tool_calls(
-                    persisted_err_conv, workspace_id
-                )
+                await _link_assistant_snapshot_tool_calls(persisted_err_conv, workspace_id)
             except Exception:
                 logger.exception("Failed to persist assistant message after error")
 
@@ -12572,10 +11586,7 @@ class RetryTerminalToolRequest(BaseModel):
     builtin_tool_id: Optional[str] = Field(
         default=None,
         min_length=1,
-        description=(
-            "Optional built-in tool ID to replay when no tool config is used "
-            "(currently supports run_chat_diagnostic_command)."
-        ),
+        description=("Optional built-in tool ID to replay when no tool config is used (currently supports run_chat_diagnostic_command)."),
     )
     input: dict[str, Any] = Field(
         default_factory=dict,
@@ -12615,9 +11626,7 @@ async def retry_visualization(
     retry service can rerun a captured read/query source tool and then use the
     configured LLM to repair malformed table/chart data before rendering.
     """
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     # Check access
     has_access = await repository.check_conversation_access(
         conversation_id,
@@ -12705,9 +11714,7 @@ async def refresh_live_visualization(
     user: User = Depends(get_current_user),
 ):
     """Rerun a live component-backed chart/datatable and version this event."""
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -12723,9 +11730,7 @@ async def refresh_live_visualization(
 
     expected_tool = "create_chart" if request.tool_type == "chart" else "create_datatable"
     try:
-        message_index, original_output = _get_visualization_event_output(
-            conversation, request, expected_tool
-        )
+        message_index, original_output = _get_visualization_event_output(conversation, request, expected_tool)
         component_request = build_component_request_from_visualization(
             original_output,
             request.tool_type,
@@ -12798,9 +11803,7 @@ async def list_visualization_branches(
     user: User = Depends(get_current_user),
 ):
     """List stored versions for one chart/datatable event."""
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -12834,9 +11837,7 @@ async def switch_visualization_branch(
     user: User = Depends(get_current_user),
 ):
     """Activate a stored version for one chart/datatable event."""
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -12876,9 +11877,7 @@ async def retry_terminal_tool(
     user: User = Depends(get_current_user),
 ):
     """Replay a runtime shell or SQL tool with its captured input."""
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
     has_access = await repository.check_conversation_access(
         conversation_id,
         user.id,
@@ -12889,9 +11888,7 @@ async def retry_terminal_tool(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     if not rag.is_ready:
-        raise HTTPException(
-            status_code=503, detail="RAG service initializing, please retry"
-        )
+        raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
 
     conversation = await repository.get_conversation(conversation_id)
     if not conversation:
@@ -12979,9 +11976,7 @@ async def retry_terminal_tool(
         raise HTTPException(status_code=400, detail="Tool is not replayable")
 
     try:
-        tool = await rag.build_primary_runtime_tool_from_config(
-            tool_config.model_dump()
-        )
+        tool = await rag.build_primary_runtime_tool_from_config(tool_config.model_dump())
         if tool is None:
             raise HTTPException(status_code=500, detail="Failed to build tool")
 
@@ -13010,9 +12005,7 @@ async def upload_chat_attachment(
     user: User = Depends(get_current_user),
 ):
     """Upload a non-image chat attachment for later chunking during message processing."""
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
 
     has_access = await repository.check_conversation_access(
         conversation_id,
@@ -13057,9 +12050,7 @@ async def send_message_background(
     Send a message to a conversation and process it in the background.
     Returns a task object that can be polled for status and results.
     """
-    await _assert_workspace_access(
-        workspace_id, user, _workspace_chat_required_role(workspace_id)
-    )
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
 
     # Check access
     has_access = await repository.check_conversation_access(
@@ -13112,9 +12103,7 @@ async def send_message_background(
     return _to_chat_task_response(task)
 
 
-@router.get(
-    "/conversations/{conversation_id}/task", response_model=Optional[ChatTaskResponse]
-)
+@router.get("/conversations/{conversation_id}/task", response_model=Optional[ChatTaskResponse])
 async def get_conversation_active_task(
     conversation_id: str,
     workspace_id: Optional[str] = None,
@@ -13197,15 +12186,11 @@ async def get_conversation_task_state(
     active_task = await repository.get_active_task_for_conversation(conversation_id)
     interrupted_task = None
     if not active_task:
-        interrupted_task = await repository.get_last_interrupted_task_for_conversation(
-            conversation_id
-        )
+        interrupted_task = await repository.get_last_interrupted_task_for_conversation(conversation_id)
 
     return ConversationTaskStateResponse(
         active_task=_to_chat_task_response(active_task) if active_task else None,
-        interrupted_task=(
-            _to_chat_task_response(interrupted_task) if interrupted_task else None
-        ),
+        interrupted_task=(_to_chat_task_response(interrupted_task) if interrupted_task else None),
     )
 
 
@@ -13338,9 +12323,7 @@ async def stream_chat_task(
                     if t and t.status == ChatTaskStatus.running:
                         if not background_task_service.is_task_running(task_id):
                             _err = "Task processing stopped unexpectedly"
-                            await repository.update_chat_task_status(
-                                task_id, ChatTaskStatus.failed, _err
-                            )
+                            await repository.update_chat_task_status(task_id, ChatTaskStatus.failed, _err)
                             yield f"data: {json.dumps({'type': 'completion', 'status': 'failed', 'error': _err})}\n\n"
                             break
 
@@ -13433,9 +12416,7 @@ async def get_conversation_members(
     await db.connect()
     try:
         # Check if user has access to this conversation
-        conversation = await db.conversation.find_unique(
-            where={"id": conversation_id}, include={"members": True}
-        )
+        conversation = await db.conversation.find_unique(where={"id": conversation_id}, include={"members": True})
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -13445,9 +12426,7 @@ async def get_conversation_members(
         if workspace_id:
             await _assert_workspace_access(workspace_id, user, "viewer")
         else:
-            user_member = next(
-                (m for m in conversation.members if m.userId == user.id), None
-            )
+            user_member = next((m for m in conversation.members if m.userId == user.id), None)
             if not is_admin and not user_member and conversation.userId != user.id:
                 raise HTTPException(status_code=403, detail="Access denied")
 
@@ -13468,35 +12447,22 @@ async def update_conversation_members(
     await db.connect()
     try:
         # Check if user is owner
-        conversation = await db.conversation.find_unique(
-            where={"id": conversation_id}, include={"members": True}
-        )
+        conversation = await db.conversation.find_unique(where={"id": conversation_id}, include={"members": True})
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         workspace_id = getattr(conversation, "workspaceId", None)
         if workspace_id:
-            await _assert_workspace_access(
-                workspace_id, user, _workspace_chat_required_role(workspace_id)
-            )
+            await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
         else:
-            user_member = next(
-                (m for m in conversation.members if m.userId == user.id), None
-            )
-            if user.role != "admin" and (
-                (not user_member or user_member.role != "owner")
-                and conversation.userId != user.id
-            ):
-                raise HTTPException(
-                    status_code=403, detail="Only owner can manage members"
-                )
+            user_member = next((m for m in conversation.members if m.userId == user.id), None)
+            if user.role != "admin" and ((not user_member or user_member.role != "owner") and conversation.userId != user.id):
+                raise HTTPException(status_code=403, detail="Only owner can manage members")
 
         members = request.get("members", [])
 
         # Delete existing non-owner members
-        await db.conversationmember.delete_many(
-            where={"conversationId": conversation_id, "role": {"not": "owner"}}
-        )
+        await db.conversationmember.delete_many(where={"conversationId": conversation_id, "role": {"not": "owner"}})
 
         # Add new members
         for member in members:
@@ -13522,9 +12488,7 @@ async def get_conversation_tools(
     await db.connect()
     try:
         # Check if user has access
-        conversation = await db.conversation.find_unique(
-            where={"id": conversation_id}, include={"members": True}
-        )
+        conversation = await db.conversation.find_unique(where={"id": conversation_id}, include={"members": True})
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -13534,21 +12498,15 @@ async def get_conversation_tools(
         if workspace_id:
             await _assert_workspace_access(workspace_id, user, "viewer")
         else:
-            user_member = next(
-                (m for m in conversation.members if m.userId == user.id), None
-            )
+            user_member = next((m for m in conversation.members if m.userId == user.id), None)
             if not is_admin and not user_member and conversation.userId != user.id:
                 raise HTTPException(status_code=403, detail="Access denied")
 
         # Get tool selections
-        selections = await db.conversationtoolselection.find_many(
-            where={"conversationId": conversation_id}
-        )
+        selections = await db.conversationtoolselection.find_many(where={"conversationId": conversation_id})
 
         # Get tool group selections
-        group_selections = await db.conversationtoolgroupselection.find_many(
-            where={"conversationId": conversation_id}
-        )
+        group_selections = await db.conversationtoolgroupselection.find_many(where={"conversationId": conversation_id})
 
         tool_config_ids = [s.toolConfigId for s in selections]
         tool_group_ids = [s.toolGroupId for s in group_selections]
@@ -13558,9 +12516,7 @@ async def get_conversation_tools(
         return {
             "tool_config_ids": tool_config_ids,
             "tool_group_ids": tool_group_ids,
-            "disabled_builtin_tool_ids": _normalize_disabled_builtin_tool_ids(
-                getattr(conversation, "disabledBuiltinToolIds", [])
-            ),
+            "disabled_builtin_tool_ids": _normalize_disabled_builtin_tool_ids(getattr(conversation, "disabledBuiltinToolIds", [])),
         }
     finally:
         await db.disconnect()
@@ -13577,55 +12533,34 @@ async def update_conversation_tools(
     await db.connect()
     try:
         # Check if user can edit
-        conversation = await db.conversation.find_unique(
-            where={"id": conversation_id}, include={"members": True}
-        )
+        conversation = await db.conversation.find_unique(where={"id": conversation_id}, include={"members": True})
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         workspace_id = getattr(conversation, "workspaceId", None)
         if workspace_id:
-            await _assert_workspace_access(
-                workspace_id, user, _workspace_chat_required_role(workspace_id)
-            )
+            await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
         else:
-            user_member = next(
-                (m for m in conversation.members if m.userId == user.id), None
-            )
-            if user.role != "admin" and (
-                (not user_member or user_member.role == "viewer")
-                and conversation.userId != user.id
-            ):
-                raise HTTPException(
-                    status_code=403, detail="Only owner/editor can manage tools"
-                )
+            user_member = next((m for m in conversation.members if m.userId == user.id), None)
+            if user.role != "admin" and ((not user_member or user_member.role == "viewer") and conversation.userId != user.id):
+                raise HTTPException(status_code=403, detail="Only owner/editor can manage tools")
 
         tool_config_ids = request.get("tool_config_ids", [])
         tool_group_ids = request.get("tool_group_ids", [])
         has_builtin_update = "disabled_builtin_tool_ids" in request
-        disabled_builtin_tool_ids = _normalize_disabled_builtin_tool_ids(
-            request.get("disabled_builtin_tool_ids", [])
-        )
+        disabled_builtin_tool_ids = _normalize_disabled_builtin_tool_ids(request.get("disabled_builtin_tool_ids", []))
 
         # Delete existing selections
-        await db.conversationtoolselection.delete_many(
-            where={"conversationId": conversation_id}
-        )
+        await db.conversationtoolselection.delete_many(where={"conversationId": conversation_id})
 
         # Add new selections
         for tool_id in tool_config_ids:
-            await db.conversationtoolselection.create(
-                data={"conversationId": conversation_id, "toolConfigId": tool_id}
-            )
+            await db.conversationtoolselection.create(data={"conversationId": conversation_id, "toolConfigId": tool_id})
 
         # Update group selections
-        await db.conversationtoolgroupselection.delete_many(
-            where={"conversationId": conversation_id}
-        )
+        await db.conversationtoolgroupselection.delete_many(where={"conversationId": conversation_id})
         for group_id in tool_group_ids:
-            await db.conversationtoolgroupselection.create(
-                data={"conversationId": conversation_id, "toolGroupId": group_id}
-            )
+            await db.conversationtoolgroupselection.create(data={"conversationId": conversation_id, "toolGroupId": group_id})
 
         if has_builtin_update:
             await db.conversation.update(
@@ -13718,9 +12653,7 @@ async def get_schema_index_status(tool_id: str, _user: User = Depends(require_ad
     response_model=SchemaIndexJobResponse,
     tags=["Schema Indexer"],
 )
-async def get_schema_index_job(
-    tool_id: str, job_id: str, _user: User = Depends(require_admin)
-):
+async def get_schema_index_job(tool_id: str, job_id: str, _user: User = Depends(require_admin)):
     """Get a specific schema indexing job status. Admin only."""
     job = await schema_indexer.get_job_status(job_id)
     if not job:
@@ -13734,9 +12667,7 @@ async def get_schema_index_job(
     "/tools/{tool_id}/schema/job/{job_id}/cancel",
     tags=["Schema Indexer"],
 )
-async def cancel_schema_index_job(
-    tool_id: str, job_id: str, _user: User = Depends(require_admin)
-):
+async def cancel_schema_index_job(tool_id: str, job_id: str, _user: User = Depends(require_admin)):
     """Cancel an active schema indexing job. Admin only."""
     job = await schema_indexer.get_job_status(job_id)
     if not job:
@@ -13768,16 +12699,10 @@ class SchemaStatsResponse(BaseModel):
     """Response for schema index statistics."""
 
     embedding_count: int = Field(description="Number of table embeddings")
-    last_indexed_at: Optional[str] = Field(
-        default=None, description="ISO timestamp of last successful index"
-    )
-    schema_hash: Optional[str] = Field(
-        default=None, description="Hash of indexed schema for change detection"
-    )
+    last_indexed_at: Optional[str] = Field(default=None, description="ISO timestamp of last successful index")
+    schema_hash: Optional[str] = Field(default=None, description="Hash of indexed schema for change detection")
     # Memory estimation for the schema index stored in pgvector
-    embedding_dimension: Optional[int] = Field(
-        default=None, description="Dimension of embedding vectors"
-    )
+    embedding_dimension: Optional[int] = Field(default=None, description="Dimension of embedding vectors")
     estimated_memory_mb: Optional[float] = Field(
         default=None,
         description="Estimated memory size in MB (pgvector storage, not process RAM)",
@@ -13850,9 +12775,7 @@ async def get_schema_index_stats(tool_id: str, _user: User = Depends(require_adm
     embedding_dimension = settings.embedding_dimension if settings else None
 
     # Estimate memory size
-    estimated_memory_mb = _estimate_schema_index_memory_mb(
-        embedding_count, embedding_dimension
-    )
+    estimated_memory_mb = _estimate_schema_index_memory_mb(embedding_count, embedding_dimension)
 
     return SchemaStatsResponse(
         embedding_count=embedding_count,
@@ -13907,9 +12830,7 @@ async def retry_schema_index_job(
     # Retry the job
     new_job = await schema_indexer.retry_job(job_id)
     if not new_job:
-        raise HTTPException(
-            status_code=400, detail="Cannot retry job (not failed/cancelled)"
-        )
+        raise HTTPException(status_code=400, detail="Cannot retry job (not failed/cancelled)")
 
     return schema_indexer.job_to_response(new_job)
 
@@ -14000,9 +12921,7 @@ async def get_pdm_index_status(tool_id: str, _user: User = Depends(require_admin
     response_model=PdmIndexJobResponse,
     tags=["PDM Indexer"],
 )
-async def get_pdm_index_job(
-    tool_id: str, job_id: str, _user: User = Depends(require_admin)
-):
+async def get_pdm_index_job(tool_id: str, job_id: str, _user: User = Depends(require_admin)):
     """Get a specific PDM indexing job status. Admin only."""
     job = await pdm_indexer.get_job_status(job_id)
     if not job:
@@ -14016,9 +12935,7 @@ async def get_pdm_index_job(
     "/tools/{tool_id}/pdm/job/{job_id}/cancel",
     tags=["PDM Indexer"],
 )
-async def cancel_pdm_index_job(
-    tool_id: str, job_id: str, _user: User = Depends(require_admin)
-):
+async def cancel_pdm_index_job(tool_id: str, job_id: str, _user: User = Depends(require_admin)):
     """Cancel an active PDM indexing job. Admin only."""
     job = await pdm_indexer.get_job_status(job_id)
     if not job:
@@ -14051,9 +12968,7 @@ class PdmStatsResponse(BaseModel):
 
     document_count: int = Field(description="Number of indexed documents")
     embedding_count: int = Field(description="Number of embeddings")
-    last_indexed_at: Optional[str] = Field(
-        default=None, description="ISO timestamp of last successful index"
-    )
+    last_indexed_at: Optional[str] = Field(default=None, description="ISO timestamp of last successful index")
 
 
 @router.get(
@@ -14073,11 +12988,7 @@ async def get_pdm_index_stats(tool_id: str, _user: User = Depends(require_admin)
     # Get last indexed timestamp from latest completed job
     last_indexed_at = None
     latest_job = await pdm_indexer.get_latest_job(tool_id)
-    if (
-        latest_job
-        and latest_job.status.value == "completed"
-        and latest_job.completed_at
-    ):
+    if latest_job and latest_job.status.value == "completed" and latest_job.completed_at:
         last_indexed_at = latest_job.completed_at.isoformat()
 
     return PdmStatsResponse(
@@ -14131,9 +13042,7 @@ async def retry_pdm_index_job(
     # Retry the job
     new_job = await pdm_indexer.retry_job(job_id)
     if not new_job:
-        raise HTTPException(
-            status_code=400, detail="Cannot retry job (not failed/cancelled)"
-        )
+        raise HTTPException(status_code=400, detail="Cannot retry job (not failed/cancelled)")
 
     return PdmIndexJobResponse(
         id=new_job.id,

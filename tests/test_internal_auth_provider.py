@@ -76,13 +76,9 @@ class InternalAuthProviderTests(unittest.TestCase):
             )
 
     def test_group_entry_rid_supports_token_and_object_sid(self) -> None:
+        self.assertEqual(_group_entry_rid(SimpleNamespace(primaryGroupToken="512")), 512)
         self.assertEqual(
-            _group_entry_rid(SimpleNamespace(primaryGroupToken="512")), 512
-        )
-        self.assertEqual(
-            _group_entry_rid(
-                SimpleNamespace(objectSid=SimpleNamespace(value=b"\x01\x02\x03\x04"))
-            ),
+            _group_entry_rid(SimpleNamespace(objectSid=SimpleNamespace(value=b"\x01\x02\x03\x04"))),
             67305985,
         )
 
@@ -99,9 +95,7 @@ class InternalLogonGateTests(unittest.IsolatedAsyncioTestCase):
             return db
 
         with patch("ragtime.core.auth.get_db", new=fake_get_db):
-            self.assertTrue(
-                await _passes_local_logon_gate(SimpleNamespace(id="user-1"))
-            )
+            self.assertTrue(await _passes_local_logon_gate(SimpleNamespace(id="user-1")))
 
     async def test_local_user_must_belong_to_one_gate_group(self) -> None:
         class AuthGroupDelegate:
@@ -121,9 +115,7 @@ class InternalLogonGateTests(unittest.IsolatedAsyncioTestCase):
             return db
 
         with patch("ragtime.core.auth.get_db", new=fake_get_db):
-            self.assertTrue(
-                await _passes_local_logon_gate(SimpleNamespace(id="user-1"))
-            )
+            self.assertTrue(await _passes_local_logon_gate(SimpleNamespace(id="user-1")))
 
     async def test_local_user_fails_when_outside_gate_groups(self) -> None:
         class AuthGroupDelegate:
@@ -143,9 +135,7 @@ class InternalLogonGateTests(unittest.IsolatedAsyncioTestCase):
             return db
 
         with patch("ragtime.core.auth.get_db", new=fake_get_db):
-            self.assertFalse(
-                await _passes_local_logon_gate(SimpleNamespace(id="user-1"))
-            )
+            self.assertFalse(await _passes_local_logon_gate(SimpleNamespace(id="user-1")))
 
 
 class InternalRoleResolutionTests(unittest.IsolatedAsyncioTestCase):

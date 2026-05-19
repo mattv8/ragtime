@@ -311,12 +311,8 @@ class McpRouteFilter:
     tool_config_ids: list[str]  # IDs of tool configs to include
     include_knowledge_search: bool = True
     include_git_history: bool = True
-    selected_document_indexes: list[str] | None = (
-        None  # None = all, [] = none, list = specific
-    )
-    selected_filesystem_indexes: list[str] | None = (
-        None  # Filter by filesystem tool IDs
-    )
+    selected_document_indexes: list[str] | None = None  # None = all, [] = none, list = specific
+    selected_filesystem_indexes: list[str] | None = None  # Filter by filesystem tool IDs
     selected_schema_indexes: list[str] | None = None  # Filter by schema tool IDs
 
 
@@ -367,9 +363,7 @@ class MCPToolAdapter:
 
         # Apply route filter if provided
         if route_filter is not None:
-            tool_configs = [
-                c for c in tool_configs if c.get("id") in route_filter.tool_config_ids
-            ]
+            tool_configs = [c for c in tool_configs if c.get("id") in route_filter.tool_config_ids]
 
         # Check heartbeat status
         health_status = await self._check_heartbeats(tool_configs)
@@ -388,9 +382,7 @@ class MCPToolAdapter:
             # Skip unhealthy tools unless explicitly requested
             status = health_status.get(tool_id)
             if status and not status.alive and not include_unhealthy:
-                logger.info(
-                    f"MCP: Skipping unhealthy tool: {tool_name} ({status.error})"
-                )
+                logger.info(f"MCP: Skipping unhealthy tool: {tool_name} ({status.error})")
                 continue
 
             # For filesystem_indexer tools, check selected_filesystem_indexes filter
@@ -405,16 +397,11 @@ class MCPToolAdapter:
                 tools.append(tool_def)
                 logger.info(f"MCP: Added tool: {tool_def.name} (type: {tool_type})")
             else:
-                logger.info(
-                    f"MCP: Failed to create tool definition for: {tool_name} (type: {tool_type})"
-                )
+                logger.info(f"MCP: Failed to create tool definition for: {tool_name} (type: {tool_type})")
 
             # Create schema search tool if schema indexing is enabled for this tool
             # Apply selected_schema_indexes filter if provided
-            if (
-                route_filter is not None
-                and route_filter.selected_schema_indexes is not None
-            ):
+            if route_filter is not None and route_filter.selected_schema_indexes is not None:
                 if tool_id not in route_filter.selected_schema_indexes:
                     continue
             schema_tool_def = await self._create_schema_search_tool_definition(config)
@@ -423,9 +410,7 @@ class MCPToolAdapter:
 
         # Add knowledge search tool(s) based on aggregate_search setting
         # Skip if route_filter explicitly excludes knowledge search
-        include_knowledge = (
-            route_filter is None or route_filter.include_knowledge_search
-        )
+        include_knowledge = route_filter is None or route_filter.include_knowledge_search
 
         if include_knowledge:
             app_settings = await get_app_settings()
@@ -434,19 +419,13 @@ class MCPToolAdapter:
             if aggregate_search:
                 # Single aggregated search_knowledge tool
                 # When aggregate_search is true, always include all indexes (don't filter)
-                knowledge_tool = await self._create_knowledge_search_tool(
-                    selected_indexes=None
-                )
+                knowledge_tool = await self._create_knowledge_search_tool(selected_indexes=None)
                 if knowledge_tool:
                     tools.append(knowledge_tool)
             else:
                 # Separate search_<index_name> tools for each index
                 # Apply document index filter when in per-index mode
-                per_index_tools = await self._create_per_index_search_tools(
-                    selected_indexes=(
-                        route_filter.selected_document_indexes if route_filter else None
-                    )
-                )
+                per_index_tools = await self._create_per_index_search_tools(selected_indexes=(route_filter.selected_document_indexes if route_filter else None))
                 tools.extend(per_index_tools)
         else:
             app_settings = await get_app_settings()
@@ -502,9 +481,7 @@ class MCPToolAdapter:
             for config in tool_configs:
                 schema_tool_name = self._build_schema_tool_name(config)
                 if schema_tool_name == tool_name:
-                    schema_tool_def = await self._create_schema_search_tool_definition(
-                        config
-                    )
+                    schema_tool_def = await self._create_schema_search_tool_definition(config)
                     if schema_tool_def:
                         self._tool_executors[tool_name] = schema_tool_def.execute_fn
                         return await schema_tool_def.execute_fn(**arguments)
@@ -519,9 +496,7 @@ class MCPToolAdapter:
                     return await tool_def.execute_fn(**arguments)
 
         # Check for git history tools
-        if tool_name == "search_git_history" or tool_name.startswith(
-            "search_git_history_"
-        ):
+        if tool_name == "search_git_history" or tool_name.startswith("search_git_history_"):
             app_settings = await get_app_settings()
             aggregate_search = app_settings.get("aggregate_search", True)
             git_tools = await self._create_git_history_tools(aggregate_search)
@@ -532,9 +507,7 @@ class MCPToolAdapter:
 
         return f"Error: Unknown tool '{tool_name}'"
 
-    async def _check_heartbeats(
-        self, tool_configs: list[dict]
-    ) -> dict[str, ToolHealthStatus]:
+    async def _check_heartbeats(self, tool_configs: list[dict]) -> dict[str, ToolHealthStatus]:
         """
         Check heartbeat status for all tools, using cache when possible.
 
@@ -544,20 +517,12 @@ class MCPToolAdapter:
         now = datetime.now(timezone.utc)
 
         # Check if cache is still valid
-        if (
-            self._last_heartbeat_check
-            and (now - self._last_heartbeat_check).total_seconds()
-            < self._heartbeat_cache_ttl
-        ):
+        if self._last_heartbeat_check and (now - self._last_heartbeat_check).total_seconds() < self._heartbeat_cache_ttl:
             return self._heartbeat_cache
 
         if self._heartbeat_cache:
             self._schedule_heartbeat_refresh(tool_configs)
-            return {
-                tool_id: status
-                for tool_id, status in self._heartbeat_cache.items()
-                if tool_id in {str(config.get("id") or "") for config in tool_configs}
-            }
+            return {tool_id: status for tool_id, status in self._heartbeat_cache.items() if tool_id in {str(config.get("id") or "") for config in tool_configs}}
 
         return await self._refresh_heartbeats(tool_configs)
 
@@ -585,18 +550,14 @@ class MCPToolAdapter:
         except Exception:
             logger.debug("Background MCP heartbeat refresh failed", exc_info=True)
 
-    async def _refresh_heartbeats(
-        self, tool_configs: list[dict]
-    ) -> dict[str, ToolHealthStatus]:
+    async def _refresh_heartbeats(self, tool_configs: list[dict]) -> dict[str, ToolHealthStatus]:
         now = datetime.now(timezone.utc)
 
         # Import here to avoid circular imports
         try:
             from ragtime.indexer.routes import _heartbeat_check
         except ImportError:
-            logger.warning(
-                "MCP heartbeat check unavailable - skipping health filtering"
-            )
+            logger.warning("MCP heartbeat check unavailable - skipping health filtering")
             self._heartbeat_cache = {
                 config.get("id", ""): ToolHealthStatus(
                     tool_id=config.get("id", ""),
@@ -754,9 +715,7 @@ class MCPToolAdapter:
         name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
         return f"search_{name}_schema"
 
-    async def _create_schema_search_tool_definition(
-        self, config: dict
-    ) -> MCPToolDefinition | None:
+    async def _create_schema_search_tool_definition(self, config: dict) -> MCPToolDefinition | None:
         """
         Create an MCP tool definition for schema search if enabled.
 
@@ -858,18 +817,14 @@ class MCPToolAdapter:
             "solidworks_pdm": f"Search indexed SolidWorks PDM metadata from '{name}'.",
         }
 
-        base_desc = type_descriptions.get(
-            tool_type, f"Execute {tool_type} tool '{name}'"
-        )
+        base_desc = type_descriptions.get(tool_type, f"Execute {tool_type} tool '{name}'")
 
         if description:
             base_desc += f" This resource contains: {description}"
 
         return base_desc
 
-    async def _create_executor(
-        self, config: dict, tool_type: str
-    ) -> Callable[..., Awaitable[str]]:
+    async def _create_executor(self, config: dict, tool_type: str) -> Callable[..., Awaitable[str]]:
         """
         Create an async executor function for the tool.
 
@@ -883,45 +838,25 @@ class MCPToolAdapter:
 
         tool_name = config.get("name", "").replace(" ", "_").lower()
         # Ensure executor uses the exact same tool-safe naming convention
-        tool_name = (
-            re.sub(r"[^a-zA-Z0-9]+", "_", (config.get("name", "") or "").strip())
-            .strip("_")
-            .lower()
-        )
+        tool_name = re.sub(r"[^a-zA-Z0-9]+", "_", (config.get("name", "") or "").strip()).strip("_").lower()
         tool_id = config.get("id", "")
 
         if tool_type == "postgres":
-            tool = await rag_temp._create_postgres_tool(
-                config, tool_name, tool_id, include_metadata=False
-            )  # pyright: ignore[reportPrivateUsage]
+            tool = await rag_temp._create_postgres_tool(config, tool_name, tool_id, include_metadata=False)  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "mssql":
-            tool = await rag_temp._create_mssql_tool(
-                config, tool_name, tool_id, include_metadata=False
-            )  # pyright: ignore[reportPrivateUsage]
+            tool = await rag_temp._create_mssql_tool(config, tool_name, tool_id, include_metadata=False)  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "mysql":
-            tool = await rag_temp._create_mysql_tool(
-                config, tool_name, tool_id, include_metadata=False
-            )  # pyright: ignore[reportPrivateUsage]
+            tool = await rag_temp._create_mysql_tool(config, tool_name, tool_id, include_metadata=False)  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "influxdb":
-            tool = await rag_temp._create_influxdb_tool(
-                config, tool_name, tool_id, include_metadata=False
-            )  # pyright: ignore[reportPrivateUsage]
+            tool = await rag_temp._create_influxdb_tool(config, tool_name, tool_id, include_metadata=False)  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "odoo_shell":
-            tool = await rag_temp._create_odoo_tool(
-                config, tool_name, tool_id
-            )  # pyright: ignore[reportPrivateUsage]
+            tool = await rag_temp._create_odoo_tool(config, tool_name, tool_id)  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "ssh_shell":
-            tool = await rag_temp._create_ssh_tool(
-                config, tool_name, tool_id
-            )  # pyright: ignore[reportPrivateUsage]
+            tool = await rag_temp._create_ssh_tool(config, tool_name, tool_id)  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "filesystem_indexer":
-            tool = await rag_temp._create_filesystem_tool(
-                config, tool_name, tool_id
-            )  # pyright: ignore[reportPrivateUsage]
+            tool = await rag_temp._create_filesystem_tool(config, tool_name, tool_id)  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "solidworks_pdm":
-            tool = await rag_temp._create_pdm_search_tool(
-                config, tool_name, tool_id
-            )  # pyright: ignore[reportPrivateUsage]
+            tool = await rag_temp._create_pdm_search_tool(config, tool_name, tool_id)  # pyright: ignore[reportPrivateUsage]
         else:
 
             async def unknown_executor(**_kwargs: Any) -> str:
@@ -947,9 +882,7 @@ class MCPToolAdapter:
 
         return executor
 
-    async def _create_knowledge_search_tool(
-        self, selected_indexes: list[str] | None = None
-    ) -> MCPToolDefinition | None:
+    async def _create_knowledge_search_tool(self, selected_indexes: list[str] | None = None) -> MCPToolDefinition | None:
         """Create the knowledge search tool if indexes are available.
 
         Args:
@@ -970,11 +903,7 @@ class MCPToolAdapter:
         if selected_indexes is not None:
             if not selected_indexes:
                 return None  # Empty list means no document indexes selected
-            available_dbs = {
-                name: db
-                for name, db in rag.faiss_dbs.items()
-                if name in selected_indexes
-            }
+            available_dbs = {name: db for name, db in rag.faiss_dbs.items() if name in selected_indexes}
             if not available_dbs:
                 return None
         else:
@@ -1016,8 +945,7 @@ class MCPToolAdapter:
 
             # Log the search attempt for debugging
             logger.debug(
-                f"MCP search_knowledge called with query='{query[:50] if query else ''}...', "
-                f"index_name='{index_name}', k={k}, max_chars={max_chars_per_result}"
+                f"MCP search_knowledge called with query='{query[:50] if query else ''}...', index_name='{index_name}', k={k}, max_chars={max_chars_per_result}"
             )
             logger.debug(f"Available FAISS dbs: {list(dbs_snapshot.keys())}")
 
@@ -1033,9 +961,7 @@ class MCPToolAdapter:
 
             for name, db in dbs_to_search.items():
                 try:
-                    logger.debug(
-                        f"MCP searching index '{name}' with query: {query[:50] if query else ''}..., k={k}"
-                    )
+                    logger.debug(f"MCP searching index '{name}' with query: {query[:50] if query else ''}..., k={k}")
                     # Use MMR or similarity search based on settings
                     # FAISS search embeds the query then scans the index --
                     # both are blocking, so offload to a thread to keep the
@@ -1061,20 +987,14 @@ class MCPToolAdapter:
                         source = doc.metadata.get("source", "unknown")
                         content = doc.page_content
                         # Apply truncation if max_chars_per_result > 0
-                        if (
-                            max_chars_per_result > 0
-                            and len(content) > max_chars_per_result
-                        ):
+                        if max_chars_per_result > 0 and len(content) > max_chars_per_result:
                             content = content[:max_chars_per_result] + "... (truncated)"
                         results.append(f"[{name}] {source}:\n{content}")
                 except Exception as e:
                     error_msg = str(e)
                     logger.warning(f"Error searching {name}: {e}", exc_info=True)
                     # Detect Ollama connectivity issues
-                    if (
-                        "ollama" in error_msg.lower()
-                        or "failed to connect" in error_msg.lower()
-                    ):
+                    if "ollama" in error_msg.lower() or "failed to connect" in error_msg.lower():
                         errors.append(
                             f"[{name}] Embedding service unavailable - Cannot connect to Ollama. "
                             "Check that Ollama is running and the URL in Settings is accessible from the server "
@@ -1085,10 +1005,7 @@ class MCPToolAdapter:
 
             if results:
                 logger.debug(f"MCP search_knowledge found {len(results)} results")
-                return (
-                    f"Found {len(results)} relevant documents:\n\n"
-                    + "\n\n---\n\n".join(results)
-                )
+                return f"Found {len(results)} relevant documents:\n\n" + "\n\n---\n\n".join(results)
 
             # Return errors if we had any, otherwise generic no results message
             if errors:
@@ -1105,17 +1022,13 @@ class MCPToolAdapter:
                 "query": TOOL_INPUT_SCHEMAS["knowledge_search"]["properties"]["query"],
                 "index_name": {
                     "type": "string",
-                    "description": (
-                        "Optional: specific index to search (leave empty to search all indexes). "
-                        f"Available indexes: {', '.join(index_names)}"
-                    ),
+                    "description": (f"Optional: specific index to search (leave empty to search all indexes). Available indexes: {', '.join(index_names)}"),
                     "default": "",
                 },
                 "k": {
                     "type": "integer",
                     "description": (
-                        f"Number of results to retrieve (default: {default_k}, max: 50). "
-                        "Increase for broader searches, decrease for focused results."
+                        f"Number of results to retrieve (default: {default_k}, max: 50). Increase for broader searches, decrease for focused results."
                     ),
                     "default": default_k,
                     "minimum": 1,
@@ -1144,9 +1057,7 @@ class MCPToolAdapter:
             execute_fn=search_knowledge,
         )
 
-    async def _create_per_index_search_tools(
-        self, selected_indexes: list[str] | None = None
-    ) -> list[MCPToolDefinition]:
+    async def _create_per_index_search_tools(self, selected_indexes: list[str] | None = None) -> list[MCPToolDefinition]:
         """Create separate search tools for each index.
 
         When aggregate_search is disabled, this creates search_<index_name>
@@ -1170,11 +1081,7 @@ class MCPToolAdapter:
         if selected_indexes is not None:
             if not selected_indexes:
                 return []  # Empty list means no document indexes selected
-            available_dbs = {
-                name: db
-                for name, db in rag.faiss_dbs.items()
-                if name in selected_indexes
-            }
+            available_dbs = {name: db for name, db in rag.faiss_dbs.items() if name in selected_indexes}
             if not available_dbs:
                 return []
         else:
@@ -1205,20 +1112,14 @@ class MCPToolAdapter:
                 },
                 "k": {
                     "type": "integer",
-                    "description": (
-                        f"Number of results to retrieve (default: {default_k}, max: 50). "
-                        "Increase for broader searches."
-                    ),
+                    "description": (f"Number of results to retrieve (default: {default_k}, max: 50). Increase for broader searches."),
                     "default": default_k,
                     "minimum": 1,
                     "maximum": 50,
                 },
                 "max_chars_per_result": {
                     "type": "integer",
-                    "description": (
-                        "Maximum characters per result (default: 500). "
-                        "Use 0 for full content when results are truncated."
-                    ),
+                    "description": ("Maximum characters per result (default: 500). Use 0 for full content when results are truncated."),
                     "default": 500,
                     "minimum": 0,
                     "maximum": 10000,
@@ -1262,9 +1163,7 @@ class MCPToolAdapter:
                     k = max(1, min(50, k))
                     max_chars_per_result = max(0, min(10000, max_chars_per_result))
 
-                    logger.debug(
-                        f"MCP search_{idx_name} called with query='{query[:50] if query else ''}...', k={k}, max_chars={max_chars_per_result}"
-                    )
+                    logger.debug(f"MCP search_{idx_name} called with query='{query[:50] if query else ''}...', k={k}, max_chars={max_chars_per_result}")
 
                     try:
                         # Use MMR or similarity search based on settings
@@ -1285,45 +1184,25 @@ class MCPToolAdapter:
                                 k=k,
                             )
 
-                        logger.debug(
-                            f"MCP index '{idx_name}' returned {len(docs)} documents"
-                        )
+                        logger.debug(f"MCP index '{idx_name}' returned {len(docs)} documents")
                         for doc in docs:
                             source = doc.metadata.get("source", "unknown")
                             content = doc.page_content
                             # Apply truncation if max_chars_per_result > 0
-                            if (
-                                max_chars_per_result > 0
-                                and len(content) > max_chars_per_result
-                            ):
-                                content = (
-                                    content[:max_chars_per_result] + "... (truncated)"
-                                )
+                            if max_chars_per_result > 0 and len(content) > max_chars_per_result:
+                                content = content[:max_chars_per_result] + "... (truncated)"
                             results.append(f"{source}:\n{content}")
                     except Exception as e:
                         error_msg = str(e)
-                        logger.warning(
-                            f"Error searching {idx_name}: {e}", exc_info=True
-                        )
-                        if (
-                            "ollama" in error_msg.lower()
-                            or "failed to connect" in error_msg.lower()
-                        ):
-                            return (
-                                "Embedding service unavailable - Cannot connect to Ollama. "
-                                "Check that Ollama is running and accessible."
-                            )
+                        logger.warning(f"Error searching {idx_name}: {e}", exc_info=True)
+                        if "ollama" in error_msg.lower() or "failed to connect" in error_msg.lower():
+                            return "Embedding service unavailable - Cannot connect to Ollama. Check that Ollama is running and accessible."
                         return f"Search error: {error_msg}"
 
                     if results:
-                        return (
-                            f"Found {len(results)} relevant documents:\n\n"
-                            + "\n\n---\n\n".join(results)
-                        )
+                        return f"Found {len(results)} relevant documents:\n\n" + "\n\n---\n\n".join(results)
 
-                    return (
-                        f"No relevant documents found in {idx_name} for query: {query}"
-                    )
+                    return f"No relevant documents found in {idx_name} for query: {query}"
 
                 return search_index
 
@@ -1333,17 +1212,13 @@ class MCPToolAdapter:
                     description=tool_description,
                     input_schema=per_index_schema,
                     tool_config={"tool_type": "per_index_search", "name": index_name},
-                    execute_fn=make_search_func(
-                        index_name, db, use_mmr, mmr_lambda, default_k
-                    ),
+                    execute_fn=make_search_func(index_name, db, use_mmr, mmr_lambda, default_k),
                 )
             )
 
         return tools
 
-    async def _create_git_history_tools(
-        self, aggregate_search: bool
-    ) -> list[MCPToolDefinition]:
+    async def _create_git_history_tools(self, aggregate_search: bool) -> list[MCPToolDefinition]:
         """Create git history search tool(s) for git-based indexes.
 
         When aggregate_search is enabled: creates a single search_git_history tool
@@ -1388,10 +1263,7 @@ class MCPToolAdapter:
             if git_history_depth != 1:
                 git_repos.append((repo_dir_name, git_repo, description))
             else:
-                logger.debug(
-                    f"Skipping git history tool for {repo_dir_name}: "
-                    "shallow clone (depth=1)"
-                )
+                logger.debug(f"Skipping git history tool for {repo_dir_name}: shallow clone (depth=1)")
 
         if not git_repos:
             return []
@@ -1411,9 +1283,7 @@ class MCPToolAdapter:
                     "index_name": {
                         "type": "string",
                         "description": (
-                            "Optional: specific index/repo name to search "
-                            "(searches all git repos if not specified). "
-                            f"Available repos: {', '.join(repo_names)}"
+                            f"Optional: specific index/repo name to search (searches all git repos if not specified). Available repos: {', '.join(repo_names)}"
                         ),
                     },
                 },
@@ -1439,9 +1309,7 @@ class MCPToolAdapter:
                     execute_fn=execute_aggregate,
                 )
             )
-            logger.info(
-                f"MCP: Added search_git_history tool for {len(git_repos)} repo(s)"
-            )
+            logger.info(f"MCP: Added search_git_history tool for {len(git_repos)} repo(s)")
         else:
             # Separate tool per repo
             for name, repo_path, description in git_repos:
@@ -1449,21 +1317,11 @@ class MCPToolAdapter:
                 per_index_schema = {
                     "type": "object",
                     "properties": {
-                        "action": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
-                            "action"
-                        ],
-                        "query": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
-                            "query"
-                        ],
-                        "commit_hash": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
-                            "commit_hash"
-                        ],
-                        "file_path": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
-                            "file_path"
-                        ],
-                        "k": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
-                            "k"
-                        ],
+                        "action": TOOL_INPUT_SCHEMAS["git_history"]["properties"]["action"],
+                        "query": TOOL_INPUT_SCHEMAS["git_history"]["properties"]["query"],
+                        "commit_hash": TOOL_INPUT_SCHEMAS["git_history"]["properties"]["commit_hash"],
+                        "file_path": TOOL_INPUT_SCHEMAS["git_history"]["properties"]["file_path"],
+                        "k": TOOL_INPUT_SCHEMAS["git_history"]["properties"]["k"],
                     },
                     "required": ["action"],
                 }

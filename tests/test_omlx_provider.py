@@ -132,13 +132,9 @@ class OmlxEmbeddingDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(omlx, "list_status_models", fake_list_status_models),
             patch.object(omlx, "list_models", fake_list_models),
-            patch.object(
-                omlx, "probe_embedding_dimension", fake_probe_embedding_dimension
-            ),
+            patch.object(omlx, "probe_embedding_dimension", fake_probe_embedding_dimension),
         ):
-            models = await omlx.list_embedding_models(
-                "http://example.test", selected_model="chat-a"
-            )
+            models = await omlx.list_embedding_models("http://example.test", selected_model="chat-a")
 
         self.assertEqual(models, [])
 
@@ -170,14 +166,10 @@ class OmlxEmbeddingDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(omlx, "list_status_models", fake_list_status_models),
             patch.object(omlx, "list_models", fake_list_models),
-            patch.object(
-                omlx, "probe_embedding_dimension", fake_probe_embedding_dimension
-            ),
+            patch.object(omlx, "probe_embedding_dimension", fake_probe_embedding_dimension),
             patch.object(omlx, "probe_chat_capability", fake_probe_chat_capability),
         ):
-            models = await omlx.list_embedding_models(
-                "http://example.test", selected_model="embed-a"
-            )
+            models = await omlx.list_embedding_models("http://example.test", selected_model="embed-a")
 
         self.assertEqual(len(models), 1)
         self.assertEqual(models[0].id, "embed-a")

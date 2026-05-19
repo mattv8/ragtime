@@ -62,9 +62,7 @@ class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
             is_ready=True,
             process_query_stream=mock.Mock(return_value=stream),
         )
-        fake_settings_cache = SimpleNamespace(
-            get_settings=mock.AsyncMock(return_value={"max_tool_output_chars": 5000})
-        )
+        fake_settings_cache = SimpleNamespace(get_settings=mock.AsyncMock(return_value={"max_tool_output_chars": 5000}))
 
         with (
             mock.patch.object(background_tasks, "repository", fake_repository),

@@ -137,10 +137,7 @@ def get_embedding_dimension(
             return dim
 
     # Unknown dimension
-    logger.debug(
-        f"Unknown embedding dimension for {model}, "
-        "will be determined at index creation time"
-    )
+    logger.debug(f"Unknown embedding dimension for {model}, will be determined at index creation time")
     return None
 
 
@@ -208,9 +205,7 @@ def estimate_memory_at_dimensions(
         results.append(
             {
                 "dimension": dim,
-                "steady_memory_mb": round(
-                    est["steady_memory_bytes"] / (1024 * 1024), 1
-                ),
+                "steady_memory_mb": round(est["steady_memory_bytes"] / (1024 * 1024), 1),
                 "peak_memory_mb": round(est["peak_memory_bytes"] / (1024 * 1024), 1),
                 "examples": get_dimension_examples(dim, embedding_models),
             }
@@ -251,11 +246,7 @@ def refine_peak_estimate_from_history(
     Returns:
         Refined peak memory estimate
     """
-    if (
-        historical_peak_bytes
-        and historical_steady_bytes
-        and historical_steady_bytes > 0
-    ):
+    if historical_peak_bytes and historical_steady_bytes and historical_steady_bytes > 0:
         observed_ratio = historical_peak_bytes / historical_steady_bytes
         # Sanity check: ratio should be between 1.0 and 3.0
         if 1.0 <= observed_ratio <= 3.0:

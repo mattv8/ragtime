@@ -57,11 +57,7 @@ def _filter_stderr_noise(stderr: str) -> str:
         return stderr
 
     lines = stderr.splitlines()
-    filtered_lines = [
-        line
-        for line in lines
-        if not any(pattern in line for pattern in STDERR_NOISE_PATTERNS)
-    ]
+    filtered_lines = [line for line in lines if not any(pattern in line for pattern in STDERR_NOISE_PATTERNS)]
     return "\n".join(filtered_lines)
 
 
@@ -129,9 +125,7 @@ class SSHConfig:
 
         # Must have at least one auth method
         if not any([self.password, self.key_path, self.key_content]):
-            raise ValueError(
-                "SSH authentication required: provide password, key_path, or key_content"
-            )
+            raise ValueError("SSH authentication required: provide password, key_path, or key_content")
 
 
 def _load_private_key(
@@ -196,16 +190,12 @@ def _create_ssh_client(config: SSHConfig) -> paramiko.SSHClient:
     """Create and connect an SSH client."""
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    logger.debug(
-        f"SSH connecting to {config.user}@{config.host}:{config.port} using {config.auth_method.value}"
-    )
+    logger.debug(f"SSH connecting to {config.user}@{config.host}:{config.port} using {config.auth_method.value}")
     client.connect(**_build_connect_kwargs(config))
     return client
 
 
-def _drain_channel(
-    channel, stdout_chunks: list[bytes], stderr_chunks: list[bytes]
-) -> None:
+def _drain_channel(channel, stdout_chunks: list[bytes], stderr_chunks: list[bytes]) -> None:
     """Drain any remaining data from the channel buffers."""
     while channel.recv_ready():
         stdout_chunks.append(channel.recv(4096))
@@ -258,9 +248,7 @@ def execute_ssh_command(
         while True:
             # check timeout
             if config.timeout and (time.time() - start_time > config.timeout):
-                logger.warning(
-                    f"SSH command execution timed out after {config.timeout}s"
-                )
+                logger.warning(f"SSH command execution timed out after {config.timeout}s")
                 timed_out = True
                 channel.close()
                 break
@@ -290,12 +278,8 @@ def execute_ssh_command(
         if timed_out:
             exit_code = -1
             # Append timeout note to stderr but mark as success so partial stdout is returned
-            timeout_msg = (
-                f"[Command execution timed out after {config.timeout} seconds]"
-            )
-            stderr_data = (
-                f"{stderr_data}\n{timeout_msg}" if stderr_data else timeout_msg
-            )
+            timeout_msg = f"[Command execution timed out after {config.timeout} seconds]"
+            stderr_data = f"{stderr_data}\n{timeout_msg}" if stderr_data else timeout_msg
         else:
             exit_code = channel.recv_exit_status()
 
@@ -434,9 +418,7 @@ class SSHTunnelConfig:
         if not self.ssh_user:
             raise ValueError("SSH user is required for tunnel")
         if not any([self.ssh_password, self.ssh_key_path, self.ssh_key_content]):
-            raise ValueError(
-                "SSH authentication required: provide password, key_path, or key_content"
-            )
+            raise ValueError("SSH authentication required: provide password, key_path, or key_content")
 
 
 class SSHTunnel:
@@ -504,11 +486,7 @@ class SSHTunnel:
         self._forward_thread = threading.Thread(target=self._forward_loop, daemon=True)
         self._forward_thread.start()
 
-        logger.info(
-            f"SSH tunnel started: localhost:{self._local_port} -> "
-            f"{self.config.remote_host}:{self.config.remote_port} "
-            f"via {self.config.ssh_host}"
-        )
+        logger.info(f"SSH tunnel started: localhost:{self._local_port} -> {self.config.remote_host}:{self.config.remote_port} via {self.config.ssh_host}")
 
         return self._local_port
 
@@ -679,10 +657,7 @@ def _leaf_delete_directories(
     leaf_dirs: list[str] = []
     for directory in sorted(path for path in directories if path):
         directory_prefix = f"{directory}/"
-        has_nested_dir = any(
-            other != directory and other.startswith(directory_prefix)
-            for other in directories
-        )
+        has_nested_dir = any(other != directory and other.startswith(directory_prefix) for other in directories)
         has_nested_file = any(path.startswith(directory_prefix) for path in files)
         if not has_nested_dir and not has_nested_file:
             leaf_dirs.append(f"{directory}/")
@@ -800,11 +775,7 @@ def _scan_remote_tree(
         for entry in entries:
             if entry.filename in (".", ".."):
                 continue
-            child_relative = (
-                entry.filename
-                if not current_relative_dir
-                else f"{current_relative_dir}/{entry.filename}"
-            )
+            child_relative = entry.filename if not current_relative_dir else f"{current_relative_dir}/{entry.filename}"
             child_remote = _remote_join(remote_root, child_relative)
             mode = entry.st_mode or 0
             if stat.S_ISDIR(mode):
@@ -845,9 +816,7 @@ def _scan_local_tree(
             if len(files) >= max_files:
                 return files, directories, errors
             local_file = root_path / filename
-            relative_file = (
-                filename if not relative_dir_str else f"{relative_dir_str}/{filename}"
-            )
+            relative_file = filename if not relative_dir_str else f"{relative_dir_str}/{filename}"
             try:
                 stat_result = local_file.stat()
             except Exception as exc:
@@ -1086,9 +1055,7 @@ def _sync_ssh_directory_delete(
 ) -> SSHSyncResult:
     """Remote-wins sync that deletes local files absent on the remote."""
     local_root.parent.mkdir(parents=True, exist_ok=True)
-    temp_root = local_root.parent / (
-        f".{local_root.name}.sync-{_os.getpid()}-{threading.get_ident()}-{int(time.time() * 1000)}"
-    )
+    temp_root = local_root.parent / (f".{local_root.name}.sync-{_os.getpid()}-{threading.get_ident()}-{int(time.time() * 1000)}")
     if temp_root.exists():
         shutil.rmtree(temp_root, ignore_errors=True)
     temp_root.mkdir(parents=True, exist_ok=True)
@@ -1170,11 +1137,11 @@ def _sync_ssh_directory_target_authoritative(
     )
     errors.extend(remote_errors)
     errors.extend(local_errors)
-    files_total = sum(
-        1
-        for relative_path in local_files
-        if remote_files.get(relative_path) != local_files[relative_path]
-    ) + len(set(remote_files) - set(local_files)) + len([path for path in remote_dirs - local_dirs if path])
+    files_total = (
+        sum(1 for relative_path in local_files if remote_files.get(relative_path) != local_files[relative_path])
+        + len(set(remote_files) - set(local_files))
+        + len([path for path in remote_dirs - local_dirs if path])
+    )
     if progress_callback:
         progress_callback(0, files_total, "Uploading SSH files")
 
@@ -1787,9 +1754,7 @@ def rsync_ssh_directory(
     )
 
 
-def ssh_tunnel_config_from_dict(
-    config_dict: dict, default_remote_port: int = 3306
-) -> SSHTunnelConfig:
+def ssh_tunnel_config_from_dict(config_dict: dict, default_remote_port: int = 3306) -> SSHTunnelConfig:
     """
     Create SSHTunnelConfig from a connection config dictionary.
 
@@ -1820,9 +1785,7 @@ def ssh_tunnel_config_from_dict(
     # Remote endpoint is the main host/port - this is where the database is
     # from the SSH server's perspective (usually 127.0.0.1 / localhost)
     remote_host = config_dict.get("host", "127.0.0.1") or "127.0.0.1"
-    remote_port = _coerce_int(
-        config_dict.get("port", default_remote_port), default_remote_port
-    )
+    remote_port = _coerce_int(config_dict.get("port", default_remote_port), default_remote_port)
 
     return SSHTunnelConfig(
         ssh_host=config_dict.get("ssh_tunnel_host", ""),
@@ -1870,8 +1833,7 @@ def test_ssh_tunnel(config: SSHTunnelConfig) -> tuple[bool, str]:
                 channel.close()
                 return (
                     True,
-                    f"SSH tunnel test successful: {config.ssh_host} -> "
-                    f"{config.remote_host}:{config.remote_port}",
+                    f"SSH tunnel test successful: {config.ssh_host} -> {config.remote_host}:{config.remote_port}",
                 )
             else:
                 return (

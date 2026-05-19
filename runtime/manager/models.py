@@ -42,24 +42,17 @@ class StartSessionRequest(BaseModel):
     )
     workspace_env: dict[str, str] = Field(
         default_factory=dict,
-        description=(
-            "Workspace environment variables resolved by control plane. "
-            "Values are injected server-side into devserver runtime only."
-        ),
+        description=("Workspace environment variables resolved by control plane. Values are injected server-side into devserver runtime only."),
     )
     workspace_env_visibility: dict[str, bool] = Field(
         default_factory=dict,
         description=(
-            "Workspace environment variable visibility map for agent-facing shells. "
-            "Keys are variable names and values indicate whether a secret value exists."
+            "Workspace environment variable visibility map for agent-facing shells. Keys are variable names and values indicate whether a secret value exists."
         ),
     )
     workspace_mounts: list[dict[str, Any]] = Field(
         default_factory=list,
-        description=(
-            "Workspace mount specs resolved by control plane. "
-            "Each entry has source_local_path, target_path, tool_type, read_only."
-        ),
+        description=("Workspace mount specs resolved by control plane. Each entry has source_local_path, target_path, tool_type, read_only."),
     )
 
 
@@ -124,9 +117,7 @@ class WorkerStartSessionRequest(BaseModel):
     )
     workspace_env_visibility: dict[str, bool] = Field(
         default_factory=dict,
-        description=(
-            "Workspace env visibility map for agent-facing PTY and exec commands"
-        ),
+        description=("Workspace env visibility map for agent-facing PTY and exec commands"),
     )
     workspace_mounts: list[dict[str, Any]] = Field(
         default_factory=list,
@@ -170,18 +161,10 @@ class RuntimeContentProbeResponse(BaseModel):
     ok: bool = Field(description="Whether the content probe succeeded")
     workspace_id: str = Field(description="Workspace ID")
     preview_path: str = Field(description="Workspace-relative preview path")
-    status_code: int | None = Field(
-        default=None, description="HTTP status code from the page"
-    )
-    body_text_length: int = Field(
-        default=0, description="Length of visible text in the rendered page"
-    )
-    body_text_preview: str = Field(
-        default="", description="First 200 chars of visible text"
-    )
-    body_html_length: int = Field(
-        default=0, description="Length of innerHTML in the rendered page"
-    )
+    status_code: int | None = Field(default=None, description="HTTP status code from the page")
+    body_text_length: int = Field(default=0, description="Length of visible text in the rendered page")
+    body_text_preview: str = Field(default="", description="First 200 chars of visible text")
+    body_html_length: int = Field(default=0, description="Length of innerHTML in the rendered page")
     title: str = Field(default="", description="Document title after render")
     has_error_indicator: bool = Field(
         default=False,
@@ -205,10 +188,7 @@ class RuntimeScreenshotRequest(BaseModel):
     )
     capture_element: bool = Field(
         default=False,
-        description=(
-            "Capture the unique visible element matched by wait_for_selector. "
-            "Fails when selector is missing or ambiguous."
-        ),
+        description=("Capture the unique visible element matched by wait_for_selector. Fails when selector is missing or ambiguous."),
     )
     clip_padding_px: int = Field(
         default=16,
@@ -233,12 +213,7 @@ class RuntimeScreenshotResponse(BaseModel):
     screenshot_path: str = Field(description="Absolute screenshot file path")
     screenshot_size_bytes: int = Field(description="Screenshot file size in bytes")
     render: dict[str, Any] = Field(description="Capture/render settings metadata")
-    probe: dict[str, Any] = Field(
-        description=(
-            "Captured browser probe metadata including optional element clipping "
-            "diagnostics"
-        )
-    )
+    probe: dict[str, Any] = Field(description=("Captured browser probe metadata including optional element clipping diagnostics"))
 
 
 class RuntimeRestartRequest(BaseModel):
@@ -248,10 +223,7 @@ class RuntimeRestartRequest(BaseModel):
     )
     workspace_env_visibility: dict[str, bool] | None = Field(
         default=None,
-        description=(
-            "If provided, update the redacted workspace environment visibility view "
-            "used by PTY and terminal exec before restart"
-        ),
+        description=("If provided, update the redacted workspace environment visibility view used by PTY and terminal exec before restart"),
     )
     workspace_mounts: list[dict[str, Any]] | None = Field(
         default=None,
@@ -336,9 +308,7 @@ class RuntimeExternalBrowseResponse(BaseModel):
     ok: bool = Field(description="Whether the navigation succeeded")
     url: str = Field(description="Final URL after redirects")
     requested_url: str = Field(description="Originally requested URL")
-    status_code: int | None = Field(
-        default=None, description="HTTP status code from the navigation"
-    )
+    status_code: int | None = Field(default=None, description="HTTP status code from the navigation")
     title: str = Field(default="", description="Document title after render")
     text: str = Field(default="", description="Visible page text (truncated)")
     text_length: int = Field(
@@ -473,12 +443,8 @@ class RuntimeWorkspaceGitCommandResponse(BaseModel):
 
 
 class RuntimeWorkspaceScmStatusResponse(BaseModel):
-    has_sync_scope_files: bool = Field(
-        description="Whether the workspace has any sync-scoped files"
-    )
-    has_uncommitted_changes: bool = Field(
-        description="Whether git status reports local changes"
-    )
+    has_sync_scope_files: bool = Field(description="Whether the workspace has any sync-scoped files")
+    has_uncommitted_changes: bool = Field(description="Whether git status reports local changes")
     current_commit_hash: str | None = Field(
         default=None,
         description="Current HEAD commit hash when available",
@@ -498,15 +464,11 @@ class RuntimeManagerHealthResponse(BaseModel):
     workers_leased: int = Field(description="Currently leased worker count")
     active_sessions: int = Field(description="Active runtime session count")
     max_sessions: int = Field(description="Maximum concurrent sessions")
-    sessions: list[ManagerSessionSummary] = Field(
-        default_factory=list, description="Summary of active sessions"
-    )
+    sessions: list[ManagerSessionSummary] = Field(default_factory=list, description="Summary of active sessions")
 
 
 class WorkerHealthResponse(BaseModel):
     status: str = Field(description="Worker status")
     service_mode: str = Field(description="Runtime service mode")
     active_sessions: int = Field(description="Active worker sessions")
-    metadata: dict[str, Any] = Field(
-        default_factory=dict, description="Worker metadata"
-    )
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Worker metadata")

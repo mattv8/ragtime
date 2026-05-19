@@ -6,7 +6,6 @@ Each file checksum is recorded in `_ragtime_migrations`; changing an applied fil
 raises an error to avoid silent drift.
 """
 
-
 from __future__ import annotations
 
 import argparse
@@ -15,6 +14,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -22,11 +22,7 @@ def _sha256_text(text: str) -> str:
 def _iter_migration_files(migrations_dir: Path) -> list[Path]:
     if not migrations_dir.exists() or not migrations_dir.is_dir():
         return []
-    return sorted(
-        path
-        for path in migrations_dir.iterdir()
-        if path.is_file() and path.suffix.lower() == ".sql"
-    )
+    return sorted(path for path in migrations_dir.iterdir() if path.is_file() and path.suffix.lower() == ".sql")
 
 
 def _ensure_tracking_table(conn: sqlite3.Connection) -> None:
@@ -83,10 +79,7 @@ def apply_migrations(db_path: Path, migrations_dir: Path) -> int:
             existing_checksum = _get_applied_checksum(conn, filename)
             if existing_checksum is not None:
                 if existing_checksum != checksum:
-                    raise RuntimeError(
-                        f"Applied migration '{filename}' was modified. "
-                        "Create a new migration file instead of editing history."
-                    )
+                    raise RuntimeError(f"Applied migration '{filename}' was modified. Create a new migration file instead of editing history.")
                 skipped += 1
                 continue
 
@@ -101,9 +94,7 @@ def apply_migrations(db_path: Path, migrations_dir: Path) -> int:
             applied += 1
             print(f"Applied migration: {filename}")
 
-        print(
-            f"SQLite migration complete: applied={applied}, skipped={skipped}, total={len(migration_files)}"
-        )
+        print(f"SQLite migration complete: applied={applied}, skipped={skipped}, total={len(migration_files)}")
         return applied
     finally:
         conn.close()

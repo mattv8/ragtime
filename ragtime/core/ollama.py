@@ -140,9 +140,7 @@ def supports_structured_output(details: dict) -> bool:
     return has_capability(details, "tools")
 
 
-async def is_reachable(
-    base_url: str, timeout: float = 10.0
-) -> tuple[bool, Optional[str]]:
+async def is_reachable(base_url: str, timeout: float = 10.0) -> tuple[bool, Optional[str]]:
     """
     Check if an Ollama server is reachable.
 
@@ -503,9 +501,7 @@ async def validate_ollama_connection(base_url: str) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 
 
-async def _warn_if_cpu_loaded(
-    client: httpx.AsyncClient, model: str, base_url: str
-) -> Optional[bool]:
+async def _warn_if_cpu_loaded(client: httpx.AsyncClient, model: str, base_url: str) -> Optional[bool]:
     """Return GPU residency status and warn when model is still CPU-resident.
 
     Returns:
@@ -524,8 +520,7 @@ async def _warn_if_cpu_loaded(
             size_vram = loaded_model.get("size_vram")
             if isinstance(size_vram, int) and size_vram == 0:
                 logger.warning(
-                    "Ollama model '%s' is loaded but reports size_vram=0. "
-                    "This indicates CPU residency; verify GPU availability on the Ollama host.",
+                    "Ollama model '%s' is loaded but reports size_vram=0. This indicates CPU residency; verify GPU availability on the Ollama host.",
                     model,
                 )
                 return False
@@ -593,9 +588,7 @@ async def warmup_model(
                 else:
                     logger.info(f"Ollama model '{model}' is loaded and ready")
                 return True
-            logger.warning(
-                f"Ollama warmup for '{model}' returned status {resp.status_code}"
-            )
+            logger.warning(f"Ollama warmup for '{model}' returned status {resp.status_code}")
     except Exception as e:
         logger.warning(f"Could not warm up Ollama model '{model}': {e}")
     return False
@@ -639,15 +632,11 @@ async def warmup_embedding_model(
             if resp.status_code == 200:
                 gpu_resident = await _warn_if_cpu_loaded(client, model, base_url)
                 if gpu_resident is True:
-                    logger.info(
-                        f"Ollama embedding model '{model}' is loaded and ready (GPU)"
-                    )
+                    logger.info(f"Ollama embedding model '{model}' is loaded and ready (GPU)")
                 else:
                     logger.info(f"Ollama embedding model '{model}' is loaded and ready")
                 return True
-            logger.warning(
-                f"Ollama embedding warmup for '{model}' returned status {resp.status_code}"
-            )
+            logger.warning(f"Ollama embedding warmup for '{model}' returned status {resp.status_code}")
     except Exception as e:
         logger.warning(f"Could not warm up Ollama embedding model '{model}': {e}")
     return False

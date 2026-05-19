@@ -14,6 +14,7 @@ Usage:
 import asyncio
 import html
 import os
+import secrets
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -22,7 +23,6 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import quote, urlencode
 
-import secrets
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Query, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
@@ -46,10 +46,10 @@ from ragtime.api.auth import (
     _auth_codes,
     _cleanup_expired_auth_codes,
     authenticate,
+    validate_redirect_uri,
 )
 from ragtime.api.auth import oauth2_token as _oauth2_token_handler
 from ragtime.api.auth import router as auth_router
-from ragtime.api.auth import validate_redirect_uri
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.auth import (
@@ -153,10 +153,7 @@ def _validate_ssl_certificates() -> None:
     )
 
     if result is None:
-        logger.warning(
-            "SSL validation failed - uvicorn may fail to start with HTTPS. "
-            "Check the SSL errors above."
-        )
+        logger.warning("SSL validation failed - uvicorn may fail to start with HTTPS. Check the SSL errors above.")
 
 
 # Global ThreadPoolExecutor for I/O-bound operations
@@ -175,9 +172,7 @@ async def lifespan(app: FastAPI):
     # This improves thread reuse and allows concurrent file operations
     cpu_count = os.cpu_count() or 4
     max_io_workers = min(64, cpu_count * 4)  # 4 threads per core, max 64
-    _io_thread_pool = ThreadPoolExecutor(
-        max_workers=max_io_workers, thread_name_prefix="ragtime-io-"
-    )
+    _io_thread_pool = ThreadPoolExecutor(max_workers=max_io_workers, thread_name_prefix="ragtime-io-")
     # Set as the default executor for asyncio.to_thread() calls
     loop = asyncio.get_event_loop()
     loop.set_default_executor(_io_thread_pool)
@@ -296,9 +291,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     Authorization tokens, cookies, or other secrets to container logs.
     The response never echoes back the request body.
     """
-    logger.error(
-        f"Validation error on {request.method} {request.url.path}: {exc.errors()}"
-    )
+    logger.error(f"Validation error on {request.method} {request.url.path}: {exc.errors()}")
 
     if settings.debug_mode:
         # Only log body/headers in debug mode; redact sensitive headers
@@ -313,10 +306,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "x-api-key",
             "proxy-authorization",
         }
-        safe_headers = {
-            k: ("***" if k.lower() in _sensitive_header_keys else v)
-            for k, v in request.headers.items()
-        }
+        safe_headers = {k: ("***" if k.lower() in _sensitive_header_keys else v) for k, v in request.headers.items()}
         logger.debug(f"Request body (debug): {body_str}")
         logger.debug(f"Request headers (debug): {safe_headers}")
 
@@ -336,10 +326,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 origins = build_allowed_origins(settings.allowed_origins)
 if settings.allowed_origins == "*":
     origins = ["*"]
-    logger.warning(
-        "CORS: ALLOWED_ORIGINS='*' with credentials is permissive. "
-        "For production, set ALLOWED_ORIGINS to specific trusted origins."
-    )
+    logger.warning("CORS: ALLOWED_ORIGINS='*' with credentials is permissive. For production, set ALLOWED_ORIGINS to specific trusted origins.")
 else:
     if not settings.allowed_origins:
         logger.info(
@@ -379,16 +366,12 @@ app.include_router(userspace_runtime_router)
 # Mount static files for indexer UI assets at root
 # Ensure assets directory exists so static file mount always works
 INDEXER_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-app.mount(
-    "/assets", StaticFiles(directory=INDEXER_ASSETS_DIR), name="indexer_ui_assets"
-)
+app.mount("/assets", StaticFiles(directory=INDEXER_ASSETS_DIR), name="indexer_ui_assets")
 logger.info("Indexer API enabled at /indexes, UI served at root (/)")
 
 # Include MCP routes (enabled/disabled controlled via database setting)
 app.include_router(mcp_router)  # Debug endpoints at /mcp-debug/*
-app.include_router(
-    mcp_default_filter_router
-)  # Default route filters at /mcp-routes/default-filters/*
+app.include_router(mcp_default_filter_router)  # Default route filters at /mcp-routes/default-filters/*
 app.include_router(mcp_config_router)  # MCP route configuration at /mcp-routes/*
 # Add all MCP routes (default /mcp and custom /mcp/{route_path})
 for route in get_mcp_routes():
@@ -422,9 +405,7 @@ async def register_client(request: Request):
         to_remove = list(_registered_clients.keys())[: MAX_REGISTERED_CLIENTS // 10]
         for key in to_remove:
             del _registered_clients[key]
-        logger.warning(
-            f"OAuth client registry full, evicted {len(to_remove)} oldest clients"
-        )
+        logger.warning(f"OAuth client registry full, evicted {len(to_remove)} oldest clients")
 
     try:
         body = await request.json()
@@ -445,9 +426,7 @@ async def register_client(request: Request):
     }
     _registered_clients[client_id] = client_data
 
-    logger.info(
-        f"Dynamically registered client: {client_data['client_name']} with id {client_id}"
-    )
+    logger.info(f"Dynamically registered client: {client_data['client_name']} with id {client_id}")
 
     # Return registration response per RFC 7591
     return {
@@ -475,19 +454,12 @@ async def oauth_discovery(request: Request):
 
     # Security warning: OAuth should use HTTPS in production
     if base_url.startswith("http://") and not settings.debug_mode:
-        logger.warning(
-            "OAuth metadata served over HTTP. Use HTTPS in production for security."
-        )
+        logger.warning("OAuth metadata served over HTTP. Use HTTPS in production for security.")
 
-    logger.info(
-        f"OAuth authorization server metadata requested from {request.client.host if request.client else 'unknown'}"
-    )
+    logger.info(f"OAuth authorization server metadata requested from {request.client.host if request.client else 'unknown'}")
 
     app_settings = await get_app_settings()
-    if (
-        app_settings.get("mcp_default_route_auth")
-        and app_settings.get("mcp_default_route_auth_method") == "client_credentials"
-    ):
+    if app_settings.get("mcp_default_route_auth") and app_settings.get("mcp_default_route_auth_method") == "client_credentials":
         return build_authorization_server_metadata(base_url, None)
 
     return {
@@ -531,32 +503,17 @@ async def oauth_protected_resource(request: Request, path: str = ""):
     normalized_path = (path or "").strip("/")
     route_path: str | None = None
     if normalized_path and normalized_path != "mcp":
-        route_path = (
-            normalized_path[len("mcp/") :]
-            if normalized_path.startswith("mcp/")
-            else normalized_path
-        )
+        route_path = normalized_path[len("mcp/") :] if normalized_path.startswith("mcp/") else normalized_path
 
     app_settings = await get_app_settings()
     if route_path is None:
-        if (
-            app_settings.get("mcp_default_route_auth")
-            and app_settings.get("mcp_default_route_auth_method")
-            == "client_credentials"
-        ):
-            logger.debug(
-                "OAuth protected-resource discovery resolved default /mcp route to client_credentials metadata"
-            )
+        if app_settings.get("mcp_default_route_auth") and app_settings.get("mcp_default_route_auth_method") == "client_credentials":
+            logger.debug("OAuth protected-resource discovery resolved default /mcp route to client_credentials metadata")
             return build_protected_resource_metadata(base_url, None)
     else:
         db = await get_db()
         route = await db.mcprouteconfig.find_unique(where={"routePath": route_path})
-        if (
-            route
-            and route.enabled
-            and route.requireAuth
-            and (route.authMethod or "password") == "client_credentials"
-        ):
+        if route and route.enabled and route.requireAuth and (route.authMethod or "password") == "client_credentials":
             logger.debug(
                 "OAuth protected-resource discovery resolved custom route /mcp/%s to client_credentials metadata",
                 route_path,
@@ -588,9 +545,7 @@ async def authorize_get(
     redirect_uri: str = Query(..., description="Redirect URI"),
     response_type: str = Query(..., description="Must be 'code'"),
     code_challenge: str = Query(..., description="PKCE code challenge"),
-    code_challenge_method: str = Query(
-        "S256", description="PKCE method (must be S256)"
-    ),
+    code_challenge_method: str = Query("S256", description="PKCE method (must be S256)"),
     state: Optional[str] = Query(None, description="CSRF state parameter"),
 ):
     """
@@ -602,9 +557,7 @@ async def authorize_get(
     Supports MCP clients from any IDE (VS Code, JetBrains, Cursor, etc.)
     that implement OAuth2 Authorization Code flow with PKCE.
     """
-    logger.info(
-        f"OAuth authorize request: client_id={client_id}, redirect_uri={redirect_uri}"
-    )
+    logger.info(f"OAuth authorize request: client_id={client_id}, redirect_uri={redirect_uri}")
 
     # Validate redirect_uri (security: prevent open redirect attacks)
     # Allows loopback callbacks, trusted IDE callback domains, and exact
@@ -684,9 +637,7 @@ async def authorize_post(
 
     if not result.success or not result.user_id:
         # Return JSON error for frontend to display
-        return JSONResponse(
-            status_code=401, content={"error": result.error or "Authentication failed"}
-        )
+        return JSONResponse(status_code=401, content={"error": result.error or "Authentication failed"})
 
     # Cleanup expired codes
     _cleanup_expired_auth_codes()
@@ -777,14 +728,10 @@ async def authorize_with_session(
     # Validate session
     token_data, user = await validate_session_and_fetch_user(session_cookie)
     if not token_data:
-        return JSONResponse(
-            status_code=401, content={"error": "Session expired", "require_login": True}
-        )
+        return JSONResponse(status_code=401, content={"error": "Session expired", "require_login": True})
 
     if not user:
-        return JSONResponse(
-            status_code=401, content={"error": "User not found", "require_login": True}
-        )
+        return JSONResponse(status_code=401, content={"error": "User not found", "require_login": True})
 
     # Cleanup expired codes
     _cleanup_expired_auth_codes()
@@ -833,10 +780,7 @@ async def authorize_with_session(
 @app.get("/token", include_in_schema=False)
 async def token_endpoint_get(request: Request):
     """Log unexpected browser-style token requests without changing behavior."""
-    logger.warning(
-        "Unexpected OAuth token GET request received (%s)"
-        % _oauth_request_context(request)
-    )
+    logger.warning("Unexpected OAuth token GET request received (%s)" % _oauth_request_context(request))
     response = JSONResponse(
         status_code=405,
         content={
@@ -870,9 +814,7 @@ async def token_endpoint(
     """
     if grant_type == "authorization_code":
         logger.info(
-            "OAuth2 token exchange requested "
-            "(client_id=%s, redirect_uri=%s, %s)"
-            % (client_id or "-", redirect_uri or "-", _oauth_request_context(request))
+            "OAuth2 token exchange requested (client_id=%s, redirect_uri=%s, %s)" % (client_id or "-", redirect_uri or "-", _oauth_request_context(request))
         )
 
     return await _oauth2_token_handler(
@@ -909,9 +851,7 @@ def _oauth_redirect_error_payload(
 ) -> dict[str, object]:
     error_message = validation.summary
     if validation.next_steps:
-        error_message = (
-            f"{validation.summary} Next steps: {' '.join(validation.next_steps)}"
-        )
+        error_message = f"{validation.summary} Next steps: {' '.join(validation.next_steps)}"
     payload: dict[str, object] = {"error": error_message}
     if validation.next_steps:
         payload["next_steps"] = list(validation.next_steps)
@@ -932,26 +872,10 @@ def _render_share_unlock_prompt(
     safe_title = html.escape(title)
     safe_subtitle = html.escape(subtitle) if subtitle else ""
     safe_owner_label = html.escape(owner_label) if owner_label else ""
-    subtitle_block = (
-        f"<p style='margin:0 0 6px 0;color:#e2e8f0;font-size:15px;font-weight:600'>{safe_subtitle}</p>"
-        if safe_subtitle
-        else ""
-    )
-    owner_block = (
-        f"<p style='margin:0 0 14px 0;color:#94a3b8;font-size:13px'>{safe_owner_label}</p>"
-        if safe_owner_label
-        else ""
-    )
-    error_block = (
-        f"<p style='color:#fca5a5;margin:0 0 12px 0;font-size:14px'>{safe_error}</p>"
-        if safe_error
-        else ""
-    )
-    next_block = (
-        f"<input type='hidden' name='next' value='{safe_next_target}'>"
-        if safe_next_target
-        else ""
-    )
+    subtitle_block = f"<p style='margin:0 0 6px 0;color:#e2e8f0;font-size:15px;font-weight:600'>{safe_subtitle}</p>" if safe_subtitle else ""
+    owner_block = f"<p style='margin:0 0 14px 0;color:#94a3b8;font-size:13px'>{safe_owner_label}</p>" if safe_owner_label else ""
+    error_block = f"<p style='color:#fca5a5;margin:0 0 12px 0;font-size:14px'>{safe_error}</p>" if safe_error else ""
+    next_block = f"<input type='hidden' name='next' value='{safe_next_target}'>" if safe_next_target else ""
     return (
         "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>Shared Workspace</title></head><body style='margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif'>"
@@ -1042,9 +966,7 @@ async def _share_current_user_from_websocket(websocket: WebSocket):
 
 
 async def _share_current_user_from_token_source(source: Request | WebSocket):
-    _, user = await validate_session_and_fetch_user(
-        source.cookies.get("ragtime_session")
-    )
+    _, user = await validate_session_and_fetch_user(source.cookies.get("ragtime_session"))
     return user
 
 
@@ -1088,11 +1010,9 @@ async def _shared_launch_redirect_by_slug(
         owner_username=owner_username,
         share_slug=share_slug,
     )
-    workspace_name, owner_display_name = (
-        await userspace_service.get_share_prompt_metadata_by_slug(
-            owner_username,
-            share_slug,
-        )
+    workspace_name, owner_display_name = await userspace_service.get_share_prompt_metadata_by_slug(
+        owner_username,
+        share_slug,
     )
     target_type = await userspace_service.resolve_public_share_target_by_slug(
         owner_username,
@@ -1111,9 +1031,7 @@ async def _shared_launch_redirect_by_slug(
             )
         except HTTPException as exc:
             detail = str(exc.detail).lower() if isinstance(exc.detail, str) else ""
-            is_password_error = exc.status_code == 401 and (
-                "password required" in detail or "invalid password" in detail
-            )
+            is_password_error = exc.status_code == 401 and ("password required" in detail or "invalid password" in detail)
             if is_password_error and request.method == "GET":
                 response = HTMLResponse(
                     _render_share_password_prompt(
@@ -1144,9 +1062,7 @@ async def _shared_launch_redirect_by_slug(
         )
     except HTTPException as exc:
         detail = str(exc.detail).lower() if isinstance(exc.detail, str) else ""
-        is_password_error = exc.status_code == 401 and (
-            "password required" in detail or "invalid password" in detail
-        )
+        is_password_error = exc.status_code == 401 and ("password required" in detail or "invalid password" in detail)
         if is_password_error and request.method == "GET":
             response = HTMLResponse(
                 _render_share_password_prompt(
@@ -1196,9 +1112,7 @@ async def _shared_launch_redirect_by_token(
     workspace_name, _ = await userspace_service.get_share_prompt_metadata_by_token(
         share_token,
     )
-    target_type = await userspace_service.resolve_public_share_target_by_token(
-        share_token
-    )
+    target_type = await userspace_service.resolve_public_share_target_by_token(share_token)
     if target_type == "unknown":
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -1211,9 +1125,7 @@ async def _shared_launch_redirect_by_token(
             )
         except HTTPException as exc:
             detail = str(exc.detail).lower() if isinstance(exc.detail, str) else ""
-            is_password_error = exc.status_code == 401 and (
-                "password required" in detail or "invalid password" in detail
-            )
+            is_password_error = exc.status_code == 401 and ("password required" in detail or "invalid password" in detail)
             if is_password_error and request.method == "GET":
                 response = HTMLResponse(
                     _render_share_token_password_prompt(
@@ -1241,9 +1153,7 @@ async def _shared_launch_redirect_by_token(
         )
     except HTTPException as exc:
         detail = str(exc.detail).lower() if isinstance(exc.detail, str) else ""
-        is_password_error = exc.status_code == 401 and (
-            "password required" in detail or "invalid password" in detail
-        )
+        is_password_error = exc.status_code == 401 and ("password required" in detail or "invalid password" in detail)
         if is_password_error and request.method == "GET":
             response = HTMLResponse(
                 _render_share_token_password_prompt(
@@ -1286,9 +1196,7 @@ async def userspace_share_token_authorize(share_token: str, request: Request):
     workspace_name, _ = await userspace_service.get_share_prompt_metadata_by_token(
         share_token,
     )
-    target_type = await userspace_service.resolve_public_share_target_by_token(
-        share_token
-    )
+    target_type = await userspace_service.resolve_public_share_target_by_token(share_token)
     if target_type == "unknown":
         raise HTTPException(status_code=404, detail="Not found")
     fallback_target = f"/shared/{quote(share_token, safe='')}"
@@ -1315,12 +1223,10 @@ async def userspace_share_token_authorize(share_token: str, request: Request):
 
     try:
         if target_type == "conversation":
-            authorization = (
-                await userspace_service.authorize_shared_conversation_access(
-                    share_token,
-                    current_user=current_user,
-                    password=share_password,
-                )
+            authorization = await userspace_service.authorize_shared_conversation_access(
+                share_token,
+                current_user=current_user,
+                password=share_password,
             )
         else:
             authorization = await userspace_service.authorize_shared_workspace_access(
@@ -1390,11 +1296,9 @@ async def userspace_share_slug_authorize(
         raise HTTPException(status_code=404, detail="Not found")
 
     current_user = await _share_current_user_from_request(request)
-    workspace_name, owner_display_name = (
-        await userspace_service.get_share_prompt_metadata_by_slug(
-            owner_username,
-            share_slug,
-        )
+    workspace_name, owner_display_name = await userspace_service.get_share_prompt_metadata_by_slug(
+        owner_username,
+        share_slug,
     )
     target_type = await userspace_service.resolve_public_share_target_by_slug(
         owner_username,
@@ -1427,22 +1331,18 @@ async def userspace_share_slug_authorize(
 
     try:
         if target_type == "conversation":
-            authorization = (
-                await userspace_service.authorize_shared_conversation_access_by_slug(
-                    owner_username,
-                    share_slug,
-                    current_user=current_user,
-                    password=share_password,
-                )
+            authorization = await userspace_service.authorize_shared_conversation_access_by_slug(
+                owner_username,
+                share_slug,
+                current_user=current_user,
+                password=share_password,
             )
         else:
-            authorization = (
-                await userspace_service.authorize_shared_workspace_access_by_slug(
-                    owner_username,
-                    share_slug,
-                    current_user=current_user,
-                    password=share_password,
-                )
+            authorization = await userspace_service.authorize_shared_workspace_access_by_slug(
+                owner_username,
+                share_slug,
+                current_user=current_user,
+                password=share_password,
             )
     except HTTPException as exc:
         detail = str(exc.detail) if isinstance(exc.detail, str) else "Invalid password"
@@ -1481,12 +1381,8 @@ async def userspace_share_slug_authorize(
     methods=["GET"],
     include_in_schema=False,
 )
-async def userspace_share_root_proxy(
-    owner_username: str, share_slug: str, request: Request
-):
-    return await _shared_launch_redirect_by_slug(
-        owner_username, share_slug, request, ""
-    )
+async def userspace_share_root_proxy(owner_username: str, share_slug: str, request: Request):
+    return await _shared_launch_redirect_by_slug(owner_username, share_slug, request, "")
 
 
 @app.api_route(
@@ -1500,9 +1396,7 @@ async def userspace_share_path_proxy(
     path: str,
     request: Request,
 ):
-    return await _shared_launch_redirect_by_slug(
-        owner_username, share_slug, request, path
-    )
+    return await _shared_launch_redirect_by_slug(owner_username, share_slug, request, path)
 
 
 @app.websocket(

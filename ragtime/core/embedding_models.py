@@ -85,20 +85,10 @@ async def _fetch_models_dev_embedding_models() -> dict[str, EmbeddingModelInfo]:
                         continue
 
                     modalities = model_info.get("modalities", {})
-                    output_modalities = (
-                        modalities.get("output", [])
-                        if isinstance(modalities, dict)
-                        else []
-                    )
-                    output_set = {
-                        str(v).strip().lower()
-                        for v in output_modalities
-                        if isinstance(v, str)
-                    }
+                    output_modalities = modalities.get("output", []) if isinstance(modalities, dict) else []
+                    output_set = {str(v).strip().lower() for v in output_modalities if isinstance(v, str)}
 
-                    is_embedding = (
-                        "embedding" in output_set or "embedding" in model_id.lower()
-                    )
+                    is_embedding = "embedding" in output_set or "embedding" in model_id.lower()
                     if not is_embedding:
                         continue
 
@@ -114,9 +104,7 @@ async def _fetch_models_dev_embedding_models() -> dict[str, EmbeddingModelInfo]:
                     )
 
                     existing = models.get(model_id)
-                    if existing is None or (
-                        existing.provider != "openai" and info.provider == "openai"
-                    ):
+                    if existing is None or (existing.provider != "openai" and info.provider == "openai"):
                         models[model_id] = info
 
                     # Alias provider-prefixed IDs to short ID when safe.
@@ -158,11 +146,7 @@ def get_openai_embedding_models_sync(
 
     Returns models sorted by priority (recommended first, then alphabetically).
     """
-    openai_models = [
-        m
-        for m in all_models.values()
-        if m.provider == "openai" and "embedding" in m.id.lower()
-    ]
+    openai_models = [m for m in all_models.values() if m.provider == "openai" and "embedding" in m.id.lower()]
 
     def sort_key(m: EmbeddingModelInfo) -> str:
         return m.id
@@ -177,9 +161,7 @@ async def get_openai_embedding_models() -> list[EmbeddingModelInfo]:
     return get_openai_embedding_models_sync(all_models)
 
 
-def is_embedding_model(
-    model_id: str, all_models: dict[str, EmbeddingModelInfo]
-) -> bool:
+def is_embedding_model(model_id: str, all_models: dict[str, EmbeddingModelInfo]) -> bool:
     """Check if a model ID is an embedding model according to models.dev."""
     return model_id in all_models
 
@@ -207,9 +189,7 @@ async def get_model_dimensions(model_id: str) -> int | None:
     return None
 
 
-def get_model_dimensions_sync(
-    model_id: str, all_models: dict[str, EmbeddingModelInfo]
-) -> int | None:
+def get_model_dimensions_sync(model_id: str, all_models: dict[str, EmbeddingModelInfo]) -> int | None:
     """
     Synchronous version - get dimensions from pre-fetched model data.
 
@@ -264,47 +244,33 @@ async def get_embedding_model_context_limit(
         if context_len:
             return context_len
         # Fallback for Ollama models without context_length in API
-        logger.debug(
-            f"Could not get context_length for {model_name}, using default {default_limit}"
-        )
+        logger.debug(f"Could not get context_length for {model_name}, using default {default_limit}")
         return default_limit
 
     if provider == "llama_cpp":
         if not llama_cpp_base_url:
-            logger.warning(
-                "No llama.cpp base URL provided, using default context limit"
-            )
+            logger.warning("No llama.cpp base URL provided, using default context limit")
             return default_limit
 
         from ragtime.core import llama_cpp
 
-        context_len = await llama_cpp.get_model_context_length(
-            model_name, llama_cpp_base_url
-        )
+        context_len = await llama_cpp.get_model_context_length(model_name, llama_cpp_base_url)
         if context_len:
             return context_len
-        logger.debug(
-            f"Could not get context length for llama.cpp model {model_name}, using default {default_limit}"
-        )
+        logger.debug(f"Could not get context length for llama.cpp model {model_name}, using default {default_limit}")
         return default_limit
 
     if provider == "lmstudio":
         if not lmstudio_base_url:
-            logger.warning(
-                "No LM Studio base URL provided, using default context limit"
-            )
+            logger.warning("No LM Studio base URL provided, using default context limit")
             return default_limit
 
         from ragtime.core import lmstudio
 
-        context_len = await lmstudio.get_model_context_length(
-            model_name, lmstudio_base_url
-        )
+        context_len = await lmstudio.get_model_context_length(model_name, lmstudio_base_url)
         if context_len:
             return context_len
-        logger.debug(
-            f"Could not get context length for LM Studio model {model_name}, using default {default_limit}"
-        )
+        logger.debug(f"Could not get context length for LM Studio model {model_name}, using default {default_limit}")
         return default_limit
 
     # For OpenAI and other providers, check models.dev data
@@ -320,9 +286,7 @@ async def get_embedding_model_context_limit(
             if info.max_input_tokens:
                 return info.max_input_tokens
 
-    logger.debug(
-        f"Could not get max_input_tokens for {model_name}, using default {default_limit}"
-    )
+    logger.debug(f"Could not get max_input_tokens for {model_name}, using default {default_limit}")
     return default_limit
 
 

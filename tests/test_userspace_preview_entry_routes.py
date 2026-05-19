@@ -65,9 +65,7 @@ class _FakeRuntimeService:
         path: str = "/",
         parent_origin: str | None = None,
     ):
-        self.issue_calls.append(
-            (workspace_id, user_id, control_plane_origin, path, parent_origin)
-        )
+        self.issue_calls.append((workspace_id, user_id, control_plane_origin, path, parent_origin))
         return UserSpacePreviewLaunchResponse(
             workspace_id=workspace_id,
             preview_origin="https://workspace-id.ragtime.dev.visnovsky.us",
@@ -92,14 +90,17 @@ class PreviewEntryRouteTests(unittest.IsolatedAsyncioTestCase):
         fake_runtime_service = _FakeRuntimeService()
         request = _build_request("/indexes/userspace/runtime/workspaces/workspace-id/preview-launch")
 
-        with mock.patch.object(
-            _RUNTIME_ROUTES,
-            "_runtime_service",
-            return_value=fake_runtime_service,
-        ), mock.patch.object(
-            _RUNTIME_ROUTES,
-            "get_browser_matched_origin",
-            return_value="https://ragtime.dev.visnovsky.us",
+        with (
+            mock.patch.object(
+                _RUNTIME_ROUTES,
+                "_runtime_service",
+                return_value=fake_runtime_service,
+            ),
+            mock.patch.object(
+                _RUNTIME_ROUTES,
+                "get_browser_matched_origin",
+                return_value="https://ragtime.dev.visnovsky.us",
+            ),
         ):
             response = await issue_workspace_preview_launch(
                 "workspace-id",
@@ -125,14 +126,17 @@ class PreviewEntryRouteTests(unittest.IsolatedAsyncioTestCase):
         fake_runtime_service = _FakeRuntimeService()
         request = _build_request("/indexes/userspace/runtime/workspaces/workspace-id/preview-entry")
 
-        with mock.patch.object(
-            _RUNTIME_ROUTES,
-            "_runtime_service",
-            return_value=fake_runtime_service,
-        ), mock.patch.object(
-            _RUNTIME_ROUTES,
-            "get_browser_matched_origin",
-            return_value="https://ragtime.dev.visnovsky.us",
+        with (
+            mock.patch.object(
+                _RUNTIME_ROUTES,
+                "_runtime_service",
+                return_value=fake_runtime_service,
+            ),
+            mock.patch.object(
+                _RUNTIME_ROUTES,
+                "get_browser_matched_origin",
+                return_value="https://ragtime.dev.visnovsky.us",
+            ),
         ):
             response = await workspace_preview_entry(
                 "workspace-id",

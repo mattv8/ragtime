@@ -118,7 +118,7 @@ async def get_api_provider_model_breakdown(
         WHERE endpoint = '/v1/chat/completions'
           AND status_code >= 200
           AND status_code < 400
-          {'AND ' + ' AND '.join(where_clauses) if where_clauses else ''}
+          {"AND " + " AND ".join(where_clauses) if where_clauses else ""}
         GROUP BY provider, model
         ORDER BY total_requests DESC
     """

@@ -96,11 +96,7 @@ class SessionManager:
         )
 
     def _ensure_capacity_locked(self) -> None:
-        active_sessions = sum(
-            1
-            for session in self._sessions.values()
-            if session.state in {"running", "starting"}
-        )
+        active_sessions = sum(1 for session in self._sessions.values() if session.state in {"running", "starting"})
         if active_sessions >= self._max_sessions:
             raise HTTPException(
                 status_code=503,
@@ -188,19 +184,14 @@ class SessionManager:
                 self._apply_worker_state(session, worker_data)
                 now = utc_now()
                 session.updated_at = now
-                session.lease_expires_at = now + timedelta(
-                    seconds=self._lease_ttl_seconds
-                )
+                session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
                 return session
 
     def _purge_terminal_sessions_locked(self, now: datetime) -> None:
         for provider_session_id, session in list(self._sessions.items()):
             if session.state not in {"stopped", "error"}:
                 continue
-            if (
-                session.state == "error"
-                and (now - session.updated_at).total_seconds() < 60
-            ):
+            if session.state == "error" and (now - session.updated_at).total_seconds() < 60:
                 continue
             workspace_provider_session = self._workspace_index.get(session.workspace_id)
             if workspace_provider_session == provider_session_id:
@@ -212,19 +203,14 @@ class SessionManager:
             expired_provider_ids = [
                 provider_session_id
                 for provider_session_id, session in self._sessions.items()
-                if session.state in {"starting", "running"}
-                and session.lease_expires_at <= now
+                if session.state in {"starting", "running"} and session.lease_expires_at <= now
             ]
 
         for provider_session_id in expired_provider_ids:
             async with self._provider_lock(provider_session_id):
                 async with self._lock:
                     session = self._sessions.get(provider_session_id)
-                    if (
-                        not session
-                        or session.state not in {"starting", "running"}
-                        or session.lease_expires_at > now
-                    ):
+                    if not session or session.state not in {"starting", "running"} or session.lease_expires_at > now:
                         continue
                     worker_session_id = session.worker_session_id
 
@@ -252,17 +238,11 @@ class SessionManager:
             now = utc_now()
             await self._cleanup_expired_sessions(now)
             async with self._lock:
-                active_session_ids = [
-                    session.provider_session_id
-                    for session in self._sessions.values()
-                    if session.state in {"starting", "running"}
-                ]
+                active_session_ids = [session.provider_session_id for session in self._sessions.values() if session.state in {"starting", "running"}]
 
             for provider_session_id in active_session_ids:
                 try:
-                    await self._sync_session_from_worker_by_provider_id(
-                        provider_session_id
-                    )
+                    await self._sync_session_from_worker_by_provider_id(provider_session_id)
                 except Exception:
                     async with self._lock:
                         session = self._sessions.get(provider_session_id)
@@ -294,15 +274,11 @@ class SessionManager:
                         existing_provider_id = existing_id
                     else:
                         self._ensure_capacity_locked()
-                        provider_session_id = provider_session_id or (
-                            f"mgr-{request.workspace_id[:8]}-{uuid4().hex[:8]}"
-                        )
+                        provider_session_id = provider_session_id or (f"mgr-{request.workspace_id[:8]}-{uuid4().hex[:8]}")
                         pty_access_token = uuid4().hex
 
             if existing_provider_id:
-                session = await self._sync_session_from_worker_by_provider_id(
-                    existing_provider_id
-                )
+                session = await self._sync_session_from_worker_by_provider_id(existing_provider_id)
                 if session is None:
                     raise HTTPException(
                         status_code=404,
@@ -317,16 +293,12 @@ class SessionManager:
                         )
                     now = utc_now()
                     session.leased_by_user_id = request.leased_by_user_id
-                    session.lease_expires_at = now + timedelta(
-                        seconds=self._lease_ttl_seconds
-                    )
+                    session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
                     session.updated_at = now
                     return self._as_response(session)
 
             if not provider_session_id or pty_access_token is None:
-                raise HTTPException(
-                    status_code=500, detail="Runtime session start failed"
-                )
+                raise HTTPException(status_code=500, detail="Runtime session start failed")
 
             worker_request = WorkerStartSessionRequest(
                 workspace_id=request.workspace_id,
@@ -356,14 +328,10 @@ class SessionManager:
                     duplicate_worker_session_id = worker_session.worker_session_id
                 else:
                     self._sessions[provider_session_id] = session
-                    self._workspace_index[session.workspace_id] = (
-                        session.provider_session_id
-                    )
+                    self._workspace_index[session.workspace_id] = session.provider_session_id
                 now = utc_now()
                 session.leased_by_user_id = request.leased_by_user_id
-                session.lease_expires_at = now + timedelta(
-                    seconds=self._lease_ttl_seconds
-                )
+                session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
                 session.updated_at = now
                 response = self._as_response(session)
 
@@ -382,9 +350,7 @@ class SessionManager:
             if provider_session_id not in self._sessions:
                 raise HTTPException(status_code=404, detail="Runtime session not found")
 
-        session = await self._sync_session_from_worker_by_provider_id(
-            provider_session_id
-        )
+        session = await self._sync_session_from_worker_by_provider_id(provider_session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Runtime session not found")
         return self._as_response(session)
@@ -394,9 +360,7 @@ class SessionManager:
             async with self._lock:
                 session = self._sessions.get(provider_session_id)
                 if not session:
-                    raise HTTPException(
-                        status_code=404, detail="Runtime session not found"
-                    )
+                    raise HTTPException(status_code=404, detail="Runtime session not found")
                 worker_session_id = session.worker_session_id
                 response_session = replace(session)
             try:
@@ -429,9 +393,7 @@ class SessionManager:
             async with self._lock:
                 session = self._sessions.get(provider_session_id)
                 if not session:
-                    raise HTTPException(
-                        status_code=404, detail="Runtime session not found"
-                    )
+                    raise HTTPException(status_code=404, detail="Runtime session not found")
                 worker_session_id = session.worker_session_id
             worker_data = await asyncio.wait_for(
                 self._worker_service.restart_session(
@@ -459,9 +421,7 @@ class SessionManager:
             async with self._lock:
                 session = self._sessions.get(provider_session_id)
                 if not session:
-                    raise HTTPException(
-                        status_code=404, detail="Runtime session not found"
-                    )
+                    raise HTTPException(status_code=404, detail="Runtime session not found")
                 worker_session_id = session.worker_session_id
             worker_data = await asyncio.wait_for(
                 self._worker_service.refresh_mounts(
@@ -526,9 +486,7 @@ class SessionManager:
         file_path: str,
     ) -> RuntimeFileReadResponse:
         session = self._get_session_or_raise(provider_session_id)
-        return await self._worker_service.read_file(
-            session.worker_session_id, file_path
-        )
+        return await self._worker_service.read_file(session.worker_session_id, file_path)
 
     async def write_file(
         self,
@@ -549,9 +507,7 @@ class SessionManager:
         file_path: str,
     ) -> dict[str, Any]:
         session = self._get_session_or_raise(provider_session_id)
-        return await self._worker_service.delete_file(
-            session.worker_session_id, file_path
-        )
+        return await self._worker_service.delete_file(session.worker_session_id, file_path)
 
     async def capture_screenshot(
         self,
@@ -683,11 +639,7 @@ class SessionManager:
     async def pool_status(self) -> dict[str, Any]:
         async def _collect() -> dict[str, Any]:
             async with self._lock:
-                active = [
-                    s
-                    for s in self._sessions.values()
-                    if s.state in {"running", "starting"}
-                ]
+                active = [s for s in self._sessions.values() if s.state in {"running", "starting"}]
                 return {
                     "workers_total": 1,
                     "workers_leased": len(active),

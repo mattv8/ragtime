@@ -354,11 +354,7 @@ class FaissBackend(VectorStoreBackend):
         original_count = len(pending["texts"])
 
         # Filter out entries for this file
-        indices_to_keep = [
-            i
-            for i, m in enumerate(pending["metadatas"])
-            if m.get("file_path") != file_path
-        ]
+        indices_to_keep = [i for i, m in enumerate(pending["metadatas"]) if m.get("file_path") != file_path]
 
         pending["texts"] = [pending["texts"][i] for i in indices_to_keep]
         pending["embeddings"] = [pending["embeddings"][i] for i in indices_to_keep]
@@ -379,9 +375,7 @@ class FaissBackend(VectorStoreBackend):
         if index_name in self._pending:
             deleted = len(self._pending[index_name]["texts"])
             del self._pending[index_name]
-            logger.info(
-                f"Cleared {deleted} pending embeddings for FAISS index: {index_name}"
-            )
+            logger.info(f"Cleared {deleted} pending embeddings for FAISS index: {index_name}")
 
         # Clear from loaded indexes
         if index_name in self._loaded_indexes:
@@ -398,13 +392,9 @@ class FaissBackend(VectorStoreBackend):
                 if deleted == 0:
                     deleted = 1
             except Exception as e:
-                logger.error(
-                    f"Failed to delete FAISS index directory {index_path}: {e}"
-                )
+                logger.error(f"Failed to delete FAISS index directory {index_path}: {e}")
         else:
-            logger.debug(
-                f"FAISS index path does not exist, nothing to delete: {index_path}"
-            )
+            logger.debug(f"FAISS index path does not exist, nothing to delete: {index_path}")
 
         return deleted
 
@@ -429,9 +419,7 @@ class FaissBackend(VectorStoreBackend):
             # Update in-memory tracking
             if old_name in self._loaded_indexes:
                 self._loaded_indexes[new_name] = self._loaded_indexes.pop(old_name)
-                logger.info(
-                    f"Updated in-memory FAISS tracking: {old_name} -> {new_name}"
-                )
+                logger.info(f"Updated in-memory FAISS tracking: {old_name} -> {new_name}")
 
             # Update pending buffer if exists
             if old_name in self._pending:
@@ -451,11 +439,7 @@ class FaissBackend(VectorStoreBackend):
         """Search loaded FAISS indexes."""
         results = []
 
-        indexes_to_search = (
-            {index_name: self._loaded_indexes[index_name]}
-            if index_name and index_name in self._loaded_indexes
-            else self._loaded_indexes
-        )
+        indexes_to_search = {index_name: self._loaded_indexes[index_name]} if index_name and index_name in self._loaded_indexes else self._loaded_indexes
 
         for idx_name, faiss_db in indexes_to_search.items():
             try:
@@ -558,9 +542,7 @@ class FaissBackend(VectorStoreBackend):
             del self._pending[index_name]
             return
 
-        logger.info(
-            f"Finalizing FAISS index {index_name} with {len(pending['texts'])} chunks"
-        )
+        logger.info(f"Finalizing FAISS index {index_name} with {len(pending['texts'])} chunks")
 
         # Create FAISS index from embeddings
         # We already have embeddings, so we use from_embeddings
@@ -568,9 +550,7 @@ class FaissBackend(VectorStoreBackend):
 
         # Get embedding model for FAISS (needed for later searches)
         app_settings = await get_app_settings()
-        embeddings_model = await get_embeddings_model(
-            app_settings, return_none_on_error=True, logger_override=logger
-        )
+        embeddings_model = await get_embeddings_model(app_settings, return_none_on_error=True, logger_override=logger)
 
         if not embeddings_model:
             raise RuntimeError("Could not get embedding model for FAISS index creation")

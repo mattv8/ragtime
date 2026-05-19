@@ -1,6 +1,5 @@
 """Live component-backed refresh helpers for chat visualizations."""
 
-
 from __future__ import annotations
 
 import json
@@ -9,6 +8,7 @@ from typing import Any, Literal
 
 from ragtime.userspace.live_data import normalize_live_data_connection
 from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse
+
 
 class LiveVisualizationRefreshError(ValueError):
     """Raised when a visualization cannot be refreshed from live metadata."""
@@ -94,20 +94,13 @@ def _refresh_datatable_payload(
         raise LiveVisualizationRefreshError("Live query returned no columns for the table.")
 
     existing_columns = config.get("columns") if isinstance(config.get("columns"), list) else None
-    if (
-        existing_columns
-        and len(existing_columns) == len(columns)
-        and all(isinstance(col, dict) for col in existing_columns)
-    ):
+    if existing_columns and len(existing_columns) == len(columns) and all(isinstance(col, dict) for col in existing_columns):
         # Preserve LLM-provided column metadata (titles, render hints) when the
         # SQL column count is unchanged; refresh only the row data below.
         config["columns"] = [dict(col) for col in existing_columns]
     else:
         config["columns"] = [{"title": column} for column in columns]
-    config["data"] = [
-        [row.get(column) for column in columns]
-        for row in component_response.rows
-    ]
+    config["data"] = [[row.get(column) for column in columns] for row in component_response.rows]
     config.setdefault("pageLength", 10 if len(component_response.rows) > 10 else max(len(component_response.rows), 1))
     config.setdefault("searching", len(component_response.rows) > 5)
     config.setdefault("ordering", True)
@@ -127,12 +120,7 @@ def _refresh_chart_payload(
         raise LiveVisualizationRefreshError("Chart live data metadata is missing result_mapping.")
 
     label_field = str(
-        mapping.get("label_field")
-        or mapping.get("labelField")
-        or mapping.get("x_field")
-        or mapping.get("xField")
-        or mapping.get("label")
-        or ""
+        mapping.get("label_field") or mapping.get("labelField") or mapping.get("x_field") or mapping.get("xField") or mapping.get("label") or ""
     ).strip()
     if not label_field:
         raise LiveVisualizationRefreshError("Chart result_mapping is missing label_field.")

@@ -175,10 +175,7 @@ class WorkspaceAgentGrant(BaseModel):
 class UpsertWorkspaceAgentGrantRequest(BaseModel):
     target_workspace_id: str = Field(
         min_length=1,
-        description=(
-            "Workspace ID that the agent in this (source) workspace will be "
-            "permitted to access."
-        ),
+        description=("Workspace ID that the agent in this (source) workspace will be permitted to access."),
     )
     access_mode: WorkspaceAgentGrantMode = Field(
         default="read",
@@ -370,9 +367,7 @@ class UserSpaceRuntimeRestartBatchTask(BaseModel):
     queued_at: datetime
     started_at: datetime | None = None
     updated_at: datetime
-    workspace_results: list[UserSpaceRuntimeRestartWorkspaceTask] = Field(
-        default_factory=list
-    )
+    workspace_results: list[UserSpaceRuntimeRestartWorkspaceTask] = Field(default_factory=list)
 
 
 class CreateWorkspaceRequest(BaseModel):
@@ -381,10 +376,7 @@ class CreateWorkspaceRequest(BaseModel):
     sqlite_persistence_mode: SqlitePersistenceMode = "include"
     selected_tool_ids: list[str] | None = Field(
         default=None,
-        description=(
-            "Workspace-selected tool config IDs. When omitted, all enabled tools "
-            "are selected by default."
-        ),
+        description=("Workspace-selected tool config IDs. When omitted, all enabled tools are selected by default."),
     )
     selected_tool_group_ids: list[str] | None = Field(
         default=None,
@@ -437,9 +429,7 @@ class UpdateWorkspaceRequest(BaseModel):
     sqlite_persistence_mode: SqlitePersistenceMode | None = None
     selected_tool_ids: list[str] | None = None
     selected_tool_group_ids: list[str] | None = None
-    owner_user_id: str | None = Field(
-        default=None, description="Transfer ownership to this user (admin only)"
-    )
+    owner_user_id: str | None = Field(default=None, description="Transfer ownership to this user (admin only)")
 
 
 class UserSpaceWorkspaceScmStatus(BaseModel):
@@ -597,9 +587,7 @@ class UpsertWorkspaceEnvVarRequest(BaseModel):
     value: str | None = Field(
         default=None,
         max_length=10000,
-        description=(
-            "Replacement value. Required for create, optional for rename-only updates."
-        ),
+        description=("Replacement value. Required for create, optional for rename-only updates."),
     )
     new_key: str | None = Field(
         default=None,
@@ -624,9 +612,7 @@ class UpsertGlobalEnvVarRequest(BaseModel):
     value: str | None = Field(
         default=None,
         max_length=10000,
-        description=(
-            "Replacement value. Required for create, optional for rename-only updates."
-        ),
+        description=("Replacement value. Required for create, optional for rename-only updates."),
     )
     new_key: str | None = Field(
         default=None,
@@ -851,9 +837,7 @@ class UserSpaceSnapshot(BaseModel):
     can_rename: bool = True
     can_delete: bool = False
     git_commit_hash: str | None = None
-    remote_commit_hash: str | None = (
-        None  # When set, snapshot is backed by remote commit (authoritative)
-    )
+    remote_commit_hash: str | None = None  # When set, snapshot is backed by remote commit (authoritative)
     message: str | None = None
     created_at: datetime
     file_count: int
@@ -1130,9 +1114,7 @@ class CreateUserspaceMountSourceRequest(BaseModel):
         default=None,
         description="Backing tool config; when set, source_type and connection_config are derived from the tool",
     )
-    source_type: UserspaceMountSourceType | None = Field(
-        default=None, description="Required only when tool_config_id is not provided"
-    )
+    source_type: UserspaceMountSourceType | None = Field(default=None, description="Required only when tool_config_id is not provided")
     connection_config: dict[str, Any] = Field(default_factory=dict)
     approved_paths: list[str] = Field(default_factory=list)
     access_user_ids: list[str] = Field(default_factory=list)
@@ -1241,9 +1223,7 @@ class UpdateUserspaceMountSourceRequest(BaseModel):
 
 
 class BrowseUserspaceMountSourceRequest(BaseModel):
-    path: str = Field(
-        default="/", description="Synthetic absolute path relative to the source root"
-    )
+    path: str = Field(default="/", description="Synthetic absolute path relative to the source root")
 
 
 class DeleteUserspaceMountSourceResponse(BaseModel):
@@ -1390,10 +1370,7 @@ class UpdateWorkspaceMountRequest(BaseModel):
     destructive_auto_sync_preview_token: str | None = Field(
         default=None,
         min_length=1,
-        description=(
-            "Fresh destructive preview token required when enabling auto-sync "
-            "or switching an auto-sync mount into a destructive mode."
-        ),
+        description=("Fresh destructive preview token required when enabling auto-sync or switching an auto-sync mount into a destructive mode."),
     )
 
 

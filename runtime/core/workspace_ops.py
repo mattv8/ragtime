@@ -38,15 +38,10 @@ def normalize_relative_file_path(file_path: str) -> str:
 
 def enforce_sqlite_managed_path(clean_path: str) -> None:
     suffix = Path(clean_path).suffix.lower()
-    if suffix in SQLITE_FILE_EXTENSIONS and not clean_path.startswith(
-        SQLITE_MANAGED_DIR_PREFIX
-    ):
+    if suffix in SQLITE_FILE_EXTENSIONS and not clean_path.startswith(SQLITE_MANAGED_DIR_PREFIX):
         raise HTTPException(
             status_code=400,
-            detail=(
-                "SQLite persistence files must be managed under .ragtime/db/. "
-                "Use paths like .ragtime/db/app.sqlite3."
-            ),
+            detail=("SQLite persistence files must be managed under .ragtime/db/. Use paths like .ragtime/db/app.sqlite3."),
         )
 
 
@@ -99,9 +94,7 @@ def workspace_path_matches_mount_prefix(path: str, prefix: str) -> bool:
     normalized_prefix = (prefix or "").strip().replace("\\", "/").lstrip("/")
     if not normalized_path or not normalized_prefix:
         return False
-    return normalized_path == normalized_prefix or normalized_path.startswith(
-        normalized_prefix + "/"
-    )
+    return normalized_path == normalized_prefix or normalized_path.startswith(normalized_prefix + "/")
 
 
 def deduplicate_ancestor_paths(paths: list[str]) -> list[str]:
@@ -188,9 +181,7 @@ def list_mount_source_tree_entries(
                     WorkspaceTreeEntry(
                         path=repo_rel,
                         size_bytes=0,
-                        updated_at=datetime.fromtimestamp(
-                            stat.st_mtime, tz=timezone.utc
-                        ),
+                        updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
                         entry_type="directory",
                     ),
                 )

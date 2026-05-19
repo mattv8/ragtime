@@ -1,11 +1,11 @@
 from pathlib import Path
 
-from ragtime.indexer.filesystem_service import FilesystemIndexerService
 from ragtime.indexer.file_utils import (
     collect_files_recursive,
     has_binary_content,
     should_index_file_type,
 )
+from ragtime.indexer.filesystem_service import FilesystemIndexerService
 from ragtime.indexer.models import FilesystemConnectionConfig, OcrMode
 
 
@@ -50,36 +50,54 @@ def test_file_type_policy_detects_text_and_binary_samples(tmp_path):
 
     assert has_binary_content(text_file) is False
     assert has_binary_content(binary_file) is True
-    assert should_index_file_type(
-        text_file,
-        matches_include_pattern=False,
-        ocr_enabled=False,
-    ) is True
-    assert should_index_file_type(
-        binary_file,
-        matches_include_pattern=True,
-        ocr_enabled=False,
-    ) is False
-    assert should_index_file_type(
-        image_file,
-        matches_include_pattern=True,
-        ocr_enabled=False,
-    ) is False
-    assert should_index_file_type(
-        image_file,
-        matches_include_pattern=False,
-        ocr_enabled=True,
-    ) is True
-    assert should_index_file_type(
-        pdf_file,
-        matches_include_pattern=False,
-        ocr_enabled=False,
-    ) is False
-    assert should_index_file_type(
-        pdf_file,
-        matches_include_pattern=True,
-        ocr_enabled=False,
-    ) is True
+    assert (
+        should_index_file_type(
+            text_file,
+            matches_include_pattern=False,
+            ocr_enabled=False,
+        )
+        is True
+    )
+    assert (
+        should_index_file_type(
+            binary_file,
+            matches_include_pattern=True,
+            ocr_enabled=False,
+        )
+        is False
+    )
+    assert (
+        should_index_file_type(
+            image_file,
+            matches_include_pattern=True,
+            ocr_enabled=False,
+        )
+        is False
+    )
+    assert (
+        should_index_file_type(
+            image_file,
+            matches_include_pattern=False,
+            ocr_enabled=True,
+        )
+        is True
+    )
+    assert (
+        should_index_file_type(
+            pdf_file,
+            matches_include_pattern=False,
+            ocr_enabled=False,
+        )
+        is False
+    )
+    assert (
+        should_index_file_type(
+            pdf_file,
+            matches_include_pattern=True,
+            ocr_enabled=False,
+        )
+        is True
+    )
 
 
 def test_shared_collector_includes_non_binary_files_outside_patterns(tmp_path):

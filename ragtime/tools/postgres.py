@@ -21,8 +21,7 @@ class PostgresQueryInput(BaseModel):
     """Input schema for PostgreSQL queries."""
 
     query: str = Field(
-        description="SQL SELECT query to execute. Must be read-only and include LIMIT clause. "
-        "For JSONB name fields, use (column->>'en_US') syntax."
+        description="SQL SELECT query to execute. Must be read-only and include LIMIT clause. For JSONB name fields, use (column->>'en_US') syntax."
     )
     description: str = Field(
         default="",
@@ -71,9 +70,7 @@ async def execute_postgres_query(query: str, description: str) -> str:
     if limit_match:
         current_limit = int(limit_match.group(1))
         if current_limit > max_query_results:
-            query = re.sub(
-                r"LIMIT\s+\d+", f"LIMIT {max_query_results}", query, flags=re.IGNORECASE
-            )
+            query = re.sub(r"LIMIT\s+\d+", f"LIMIT {max_query_results}", query, flags=re.IGNORECASE)
             logger.info(f"Reduced LIMIT from {current_limit} to {max_query_results}")
 
     # Escape single quotes in query for shell
@@ -106,19 +103,13 @@ async def execute_postgres_query(query: str, description: str) -> str:
             postgres_container,
             "bash",
             "-c",
-            (
-                'PGPASSWORD="$POSTGRES_PASSWORD" psql --csv '
-                '-U "$POSTGRES_USER" -d "$POSTGRES_DB" '
-                f"-c '{escaped_query}'"
-            ),
+            (f'PGPASSWORD="$POSTGRES_PASSWORD" psql --csv -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \'{escaped_query}\''),
         ]
         env = None
 
     try:
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
-            ),
+            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env),
             timeout=query_timeout,
         )
         stdout, stderr = await process.communicate()

@@ -50,12 +50,12 @@ from ragtime.userspace.models import (
     CloudOAuthProviderStatus,
     CloudOAuthStartRequest,
     CloudOAuthStartResponse,
+    CreateCloudMountSourceDirectoryRequest,
     CreateSnapshotBranchRequest,
     CreateSnapshotRequest,
-    CreateCloudMountSourceDirectoryRequest,
-    CreateUserUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
     CreateUserSpaceObjectStorageBucketRequest,
+    CreateUserUserspaceMountSourceRequest,
     CreateWorkspaceMountRequest,
     CreateWorkspaceRequest,
     CreateWorkspaceShareLinkRequest,
@@ -76,8 +76,8 @@ from ragtime.userspace.models import (
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
-    UpdateUserUserspaceMountSourceRequest,
     UpdateUserSpaceObjectStorageBucketRequest,
+    UpdateUserUserspaceMountSourceRequest,
     UpdateWorkspaceMembersRequest,
     UpdateWorkspaceMountRequest,
     UpdateWorkspaceRequest,
@@ -121,10 +121,10 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceScmPreviewResponse,
     UserSpaceWorkspaceScmSettingsRequest,
     UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceSqliteImportTask,
     UserSpaceWorkspaceShareLink,
     UserSpaceWorkspaceShareLinkListResponse,
     UserSpaceWorkspaceShareLinkStatus,
+    UserSpaceWorkspaceSqliteImportTask,
     WorkspaceAgentGrant,
     WorkspaceMount,
     WorkspaceMountBrowseRequest,
@@ -205,10 +205,7 @@ async def _stage_upload_file_with_limit(
                     limit = format_userspace_sqlite_import_limit(max_bytes)
                     raise HTTPException(
                         status_code=413,
-                        detail=(
-                            f"SQL dump exceeds the configured {limit} size limit. "
-                            "An administrator can raise this under Settings > User Space."
-                        ),
+                        detail=(f"SQL dump exceeds the configured {limit} size limit. An administrator can raise this under Settings > User Space."),
                     )
                 await asyncio.to_thread(output_handle.write, chunk)
         return temp_path
@@ -243,17 +240,8 @@ def _apply_share_link_variants(
     share_url = str(getattr(payload, "share_url", "") or "").strip() or None
     workspace_id = str(getattr(payload, "workspace_id", "") or "").strip()
     resolved_has_password = bool(getattr(payload, "has_password", False))
-    resolved_access_mode = (
-        str(
-            access_mode or getattr(payload, "share_access_mode", "token") or "token"
-        ).strip()
-        or "token"
-    )
-    resolved_has_share_link = (
-        bool(getattr(payload, "has_share_link", True))
-        if has_share_link is None
-        else has_share_link
-    ) and bool(share_token)
+    resolved_access_mode = str(access_mode or getattr(payload, "share_access_mode", "token") or "token").strip() or "token"
+    resolved_has_share_link = (bool(getattr(payload, "has_share_link", True)) if has_share_link is None else has_share_link) and bool(share_token)
     subdomain_share_enabled = resolved_has_share_link
     subdomain_share_url = None
     if subdomain_share_enabled and workspace_id:
@@ -320,9 +308,7 @@ async def list_userspace_tools(user: Any = Depends(get_current_user)):
                 group_id=tool.group_id,
                 group_name=tool.group_name,
                 available=available,
-                disabled_reason=(
-                    None if available else tool_health_monitor.get_unavailable_reason(tool_id)
-                ),
+                disabled_reason=(None if available else tool_health_monitor.get_unavailable_reason(tool_id)),
             )
         )
     return results
@@ -343,9 +329,7 @@ async def list_workspaces(
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin" and include_all
-    return await userspace_service.list_workspaces(
-        user.id, offset=offset, limit=limit, is_admin=is_admin
-    )
+    return await userspace_service.list_workspaces(user.id, offset=offset, limit=limit, is_admin=is_admin)
 
 
 @router.post("/workspaces", response_model=UserSpaceWorkspace)
@@ -353,9 +337,7 @@ async def create_workspace(
     request: CreateWorkspaceRequest,
     user: Any = Depends(get_current_user),
 ):
-    request.selected_tool_ids = await _normalize_selected_tool_ids(
-        request.selected_tool_ids
-    )
+    request.selected_tool_ids = await _normalize_selected_tool_ids(request.selected_tool_ids)
     # selected_tool_group_ids are validated in service layer
     return await userspace_service.create_workspace(request, user.id)
 
@@ -369,9 +351,7 @@ async def queue_workspace_create_task(
     request: CreateWorkspaceRequest,
     user: Any = Depends(get_current_user),
 ):
-    request.selected_tool_ids = await _normalize_selected_tool_ids(
-        request.selected_tool_ids
-    )
+    request.selected_tool_ids = await _normalize_selected_tool_ids(request.selected_tool_ids)
     return await userspace_service.enqueue_workspace_create_task(request, user.id)
 
 
@@ -465,12 +445,10 @@ async def download_workspace_archive_export_task(
     user: Any = Depends(get_current_user),
 ):
     is_admin = user.role == "admin"
-    archive_path, archive_file_name = (
-        await userspace_service.get_workspace_archive_export_download(
-            task_id,
-            user.id,
-            is_admin=is_admin,
-        )
+    archive_path, archive_file_name = await userspace_service.get_workspace_archive_export_download(
+        task_id,
+        user.id,
+        is_admin=is_admin,
     )
     return FileResponse(path=archive_path, filename=archive_file_name)
 
@@ -586,9 +564,7 @@ async def get_workspace_collab_presence(
     # Enforce access to the workspace (any viewer role is sufficient).
     await userspace_service.get_workspace(workspace_id, user.id)
 
-    presence_entries = await userspace_runtime_service.get_workspace_collab_presence(
-        workspace_id
-    )
+    presence_entries = await userspace_runtime_service.get_workspace_collab_presence(workspace_id)
 
     user_ids = [str(entry.get("user_id") or "") for entry in presence_entries]
     user_ids = [uid for uid in user_ids if uid]
@@ -764,9 +740,7 @@ async def export_workspace_to_scm(
         user.id,
         request,
     )
-    await userspace_runtime_service.bump_workspace_generation(
-        workspace_id, "scm_export"
-    )
+    await userspace_runtime_service.bump_workspace_generation(workspace_id, "scm_export")
     return result
 
 
@@ -776,13 +750,9 @@ async def update_workspace(
     request: UpdateWorkspaceRequest,
     user: Any = Depends(get_current_user),
 ):
-    request.selected_tool_ids = await _normalize_selected_tool_ids(
-        request.selected_tool_ids
-    )
+    request.selected_tool_ids = await _normalize_selected_tool_ids(request.selected_tool_ids)
     is_admin = user.role == "admin"
-    result = await userspace_service.update_workspace(
-        workspace_id, request, user.id, is_admin=is_admin
-    )
+    result = await userspace_service.update_workspace(workspace_id, request, user.id, is_admin=is_admin)
     if is_admin and result.owner_user_id != user.id:
         logger.info(
             "Admin '%s' updated workspace '%s' (owner: %s)",
@@ -806,9 +776,7 @@ async def check_workspace_scm_repo_visibility(
     db = await get_db()
     workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
     stored_token = None
-    encrypted = (
-        getattr(workspace_record, "scmToken", None) if workspace_record else None
-    )
+    encrypted = getattr(workspace_record, "scmToken", None) if workspace_record else None
     if encrypted:
         stored_token = decrypt_secret(encrypted)
 
@@ -898,9 +866,7 @@ async def update_workspace_members(
     request: UpdateWorkspaceMembersRequest,
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_service.update_workspace_members(
-        workspace_id, request, user.id
-    )
+    return await userspace_service.update_workspace_members(workspace_id, request, user.id)
 
 
 @router.get(
@@ -1488,9 +1454,7 @@ async def create_workspace_mount(
     request: CreateWorkspaceMountRequest,
     user: Any = Depends(get_current_user),
 ):
-    result = await userspace_service.create_workspace_mount(
-        workspace_id, user.id, request
-    )
+    result = await userspace_service.create_workspace_mount(workspace_id, user.id, request)
     await userspace_runtime_service.bump_workspace_generation(
         workspace_id,
         "mount_create",
@@ -1530,9 +1494,7 @@ async def delete_workspace_mount(
     mount_id: str,
     user: Any = Depends(get_current_user),
 ):
-    result = await userspace_service.delete_workspace_mount(
-        workspace_id, user.id, mount_id
-    )
+    result = await userspace_service.delete_workspace_mount(workspace_id, user.id, mount_id)
     await userspace_runtime_service.bump_workspace_generation(
         workspace_id,
         "mount_delete",
@@ -1604,17 +1566,13 @@ async def upsert_workspace_file(
     request: UpsertWorkspaceFileRequest,
     user: Any = Depends(get_current_user),
 ):
-    result = await userspace_service.upsert_workspace_file(
-        workspace_id, file_path, request, user.id
-    )
+    result = await userspace_service.upsert_workspace_file(workspace_id, file_path, request, user.id)
     userspace_service.invalidate_file_list_cache(workspace_id)
     await userspace_service.schedule_workspace_mount_sync_for_workspace_path(
         workspace_id,
         file_path,
     )
-    await userspace_runtime_service.bump_workspace_generation(
-        workspace_id, "file_upsert"
-    )
+    await userspace_runtime_service.bump_workspace_generation(workspace_id, "file_upsert")
     return result
 
 
@@ -1642,9 +1600,7 @@ async def delete_workspace_file(
         workspace_id,
         file_path,
     )
-    await userspace_runtime_service.bump_workspace_generation(
-        workspace_id, "file_delete"
-    )
+    await userspace_runtime_service.bump_workspace_generation(workspace_id, "file_delete")
     return {"success": True}
 
 
@@ -1660,11 +1616,9 @@ async def get_workspace_changed_file_state(
         workspace_id,
         user.id,
     )
-    acknowledged_changed_file_paths = (
-        await userspace_service.list_workspace_changed_file_acknowledgements(
-            workspace_id,
-            user.id,
-        )
+    acknowledged_changed_file_paths = await userspace_service.list_workspace_changed_file_acknowledgements(
+        workspace_id,
+        user.id,
     )
     generation = await userspace_runtime_service.get_workspace_generation(workspace_id)
     return UserSpaceChangedFileStateResponse(
@@ -1684,12 +1638,10 @@ async def acknowledge_workspace_changed_file_path(
     request: UserSpaceAcknowledgeChangedFilePathRequest,
     user: Any = Depends(get_current_user),
 ):
-    acknowledged_changed_file_paths = (
-        await userspace_service.acknowledge_workspace_changed_file_path(
-            workspace_id,
-            user.id,
-            request.path,
-        )
+    acknowledged_changed_file_paths = await userspace_service.acknowledge_workspace_changed_file_path(
+        workspace_id,
+        user.id,
+        request.path,
     )
     changed_file_paths = await userspace_service.list_workspace_changed_file_paths(
         workspace_id,
@@ -1712,11 +1664,9 @@ async def clear_workspace_changed_file_acknowledgements(
     workspace_id: str,
     user: Any = Depends(get_current_user),
 ):
-    acknowledged_changed_file_paths = (
-        await userspace_service.clear_workspace_changed_file_acknowledgements(
-            workspace_id,
-            user.id,
-        )
+    acknowledged_changed_file_paths = await userspace_service.clear_workspace_changed_file_acknowledgements(
+        workspace_id,
+        user.id,
     )
     changed_file_paths = await userspace_service.list_workspace_changed_file_paths(
         workspace_id,
@@ -1740,12 +1690,10 @@ async def clear_workspace_changed_file_acknowledgement(
     file_path: str,
     user: Any = Depends(get_current_user),
 ):
-    acknowledged_changed_file_paths = (
-        await userspace_service.clear_workspace_changed_file_acknowledgements(
-            workspace_id,
-            user.id,
-            relative_path=file_path,
-        )
+    acknowledged_changed_file_paths = await userspace_service.clear_workspace_changed_file_acknowledgements(
+        workspace_id,
+        user.id,
+        relative_path=file_path,
     )
     changed_file_paths = await userspace_service.list_workspace_changed_file_paths(
         workspace_id,
@@ -1813,10 +1761,7 @@ async def list_workspace_share_links(
     )
     return response.model_copy(
         update={
-            "links": [
-                _apply_share_link_variants(link, base_url=base_url)
-                for link in response.links
-            ],
+            "links": [_apply_share_link_variants(link, base_url=base_url) for link in response.links],
         }
     )
 
@@ -1828,9 +1773,7 @@ async def list_workspace_share_links(
 async def create_workspace_share_link(
     workspace_id: str,
     request: Request,
-    body: CreateWorkspaceShareLinkRequest = Body(
-        default_factory=CreateWorkspaceShareLinkRequest
-    ),
+    body: CreateWorkspaceShareLinkRequest = Body(default_factory=CreateWorkspaceShareLinkRequest),
     user: Any = Depends(get_current_user),
 ):
     base_url = get_browser_matched_origin(request)
@@ -2057,9 +2000,7 @@ async def execute_shared_component_by_slug(
     )
 
 
-@router.get(
-    "/workspaces/{workspace_id}/snapshots", response_model=list[UserSpaceSnapshot]
-)
+@router.get("/workspaces/{workspace_id}/snapshots", response_model=list[UserSpaceSnapshot])
 async def list_snapshots(workspace_id: str, user: Any = Depends(get_current_user)):
     return await userspace_service.list_snapshots(workspace_id, user.id)
 
@@ -2115,9 +2056,7 @@ async def create_snapshot(
     request: CreateSnapshotRequest,
     user: Any = Depends(get_current_user),
 ):
-    result = await userspace_service.create_snapshot(
-        workspace_id, user.id, request.message
-    )
+    result = await userspace_service.create_snapshot(workspace_id, user.id, request.message)
     await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
 
     # Per-message snapshot link: anchor the new snapshot to the latest message
@@ -2131,11 +2070,7 @@ async def create_snapshot(
                 if last_msg.message_id:
                     # User-side anchor includes the message; assistant-side anchor
                     # excludes the assistant reply ("before assistant reply").
-                    keep_count = (
-                        len(conv.messages)
-                        if last_msg.role == "user"
-                        else len(conv.messages) - 1
-                    )
+                    keep_count = len(conv.messages) if last_msg.role == "user" else len(conv.messages) - 1
                     if keep_count >= 0:
                         await repository.upsert_message_snapshot_link(
                             conversation_id=conv.id,
@@ -2245,9 +2180,7 @@ async def switch_snapshot_branch(
     request: SwitchSnapshotBranchRequest,
     user: Any = Depends(get_current_user),
 ):
-    result = await userspace_service.switch_snapshot_branch(
-        workspace_id, request, user.id
-    )
+    result = await userspace_service.switch_snapshot_branch(workspace_id, request, user.id)
     await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
     return result
 
@@ -2261,9 +2194,7 @@ async def create_snapshot_branch(
     request: CreateSnapshotBranchRequest,
     user: Any = Depends(get_current_user),
 ):
-    result = await userspace_service.create_snapshot_branch(
-        workspace_id, user.id, name=request.name
-    )
+    result = await userspace_service.create_snapshot_branch(workspace_id, user.id, name=request.name)
     await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
     return result
 
@@ -2277,9 +2208,7 @@ async def promote_branch_to_main(
     request: PromoteBranchToMainRequest,
     user: Any = Depends(get_current_user),
 ):
-    result = await userspace_service.promote_branch_to_main(
-        workspace_id, request.branch_id, user.id
-    )
+    result = await userspace_service.promote_branch_to_main(workspace_id, request.branch_id, user.id)
     await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
     return result
 
@@ -2317,17 +2246,12 @@ async def queue_sqlite_import_task(
     if ext not in allowed_extensions:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Unsupported file extension '{ext}'. "
-                f"Accepted: {', '.join(sorted(allowed_extensions))}"
-            ),
+            detail=(f"Unsupported file extension '{ext}'. Accepted: {', '.join(sorted(allowed_extensions))}"),
         )
     settings = await repository.get_settings()
     max_import_size_bytes = settings.userspace_sqlite_import_max_bytes
     try:
-        temp_path = await _stage_upload_file_with_limit(
-            file, max_import_size_bytes, ext
-        )
+        temp_path = await _stage_upload_file_with_limit(file, max_import_size_bytes, ext)
     finally:
         await file.close()
     try:

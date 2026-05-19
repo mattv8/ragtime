@@ -88,9 +88,7 @@ def _enable_dynamic_tool_refresh(server: Server) -> None:
             experimental_capabilities=experimental_capabilities,
         )
 
-    server.create_initialization_options = (
-        create_initialization_options_with_tool_refresh
-    )
+    server.create_initialization_options = create_initialization_options_with_tool_refresh
 
 
 def register_tools_changed_callback(callback: Callable[[], None]) -> None:
@@ -135,9 +133,7 @@ async def get_mcp_server() -> Server:
         _mcp_server_state["server"] = _create_server(configured_name)
         # Keep legacy module-level export in sync for backward compatibility.
         globals()["mcp_server"] = _mcp_server_state["server"]
-        logger.info(
-            "Updated MCP server name to %s from Server Branding", configured_name
-        )
+        logger.info("Updated MCP server name to %s from Server Branding", configured_name)
         _mcp_server_state["id"] = configured_name
     return cast(Server, _mcp_server_state["server"])
 
@@ -208,9 +204,7 @@ def _register_handlers(
         _track_active_session(server)
 
         try:
-            tool_definitions = await tool_adapter.get_available_tools(
-                route_filter=route_filter
-            )
+            tool_definitions = await tool_adapter.get_available_tools(route_filter=route_filter)
 
             for tool_def in tool_definitions:
                 tools.append(
@@ -248,9 +242,7 @@ def _register_handlers(
         try:
             # If a route filter is active, validate the tool is allowed
             if route_filter is not None:
-                allowed_tools = await tool_adapter.get_available_tools(
-                    route_filter=route_filter
-                )
+                allowed_tools = await tool_adapter.get_available_tools(route_filter=route_filter)
                 allowed_names = {t.name for t in allowed_tools}
                 if name not in allowed_names:
                     logger.warning(f"Tool '{name}' not allowed by route filter")
@@ -272,10 +264,7 @@ def _register_handlers(
 
 async def get_custom_route_server(
     route_path: str,
-) -> (
-    tuple[Server, MCPToolAdapter, bool, str | None, str | None, str | None, str | None]
-    | None
-):
+) -> tuple[Server, MCPToolAdapter, bool, str | None, str | None, str | None, str | None] | None:
     """
     Get or create an MCP server for a custom route.
 
@@ -316,11 +305,7 @@ async def get_custom_route_server(
         return None
 
     # Get tool config IDs
-    tool_ids = (
-        [sel.toolConfigId for sel in route.toolSelections]
-        if route.toolSelections
-        else []
-    )
+    tool_ids = [sel.toolConfigId for sel in route.toolSelections] if route.toolSelections else []
 
     # Create route filter with index selections
     route_filter = McpRouteFilter(
@@ -390,9 +375,7 @@ async def get_default_route_filtered_server(
         return None
 
     # Get tool config IDs
-    tool_ids = (
-        [sel.toolConfigId for sel in f.toolSelections] if f.toolSelections else []
-    )
+    tool_ids = [sel.toolConfigId for sel in f.toolSelections] if f.toolSelections else []
 
     # Create route filter with index selections
     route_filter = McpRouteFilter(
@@ -457,9 +440,7 @@ async def run_mcp_server(transport: str = "stdio") -> None:
                 await default_server.run(
                     read_stream,
                     write_stream,
-                    default_server.create_initialization_options(
-                        notification_options=notification_options
-                    ),
+                    default_server.create_initialization_options(notification_options=notification_options),
                 )
         else:
             raise ValueError(f"Unsupported transport: {transport}")

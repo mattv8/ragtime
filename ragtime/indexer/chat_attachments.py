@@ -72,9 +72,7 @@ def _normalize_suffix(filename: str) -> str:
     return Path(filename).suffix.lower()
 
 
-def is_supported_chat_attachment(
-    filename: str, mime_type: Optional[str] = None
-) -> bool:
+def is_supported_chat_attachment(filename: str, mime_type: Optional[str] = None) -> bool:
     suffix = _normalize_suffix(filename)
     normalized_mime = (mime_type or "").strip().lower()
 
@@ -103,9 +101,7 @@ async def store_chat_attachment_upload(
     mime_type = (file.content_type or "application/octet-stream").strip()
 
     if not is_supported_chat_attachment(filename, mime_type):
-        raise HTTPException(
-            status_code=400, detail="File type is not supported in chat attachments"
-        )
+        raise HTTPException(status_code=400, detail="File type is not supported in chat attachments")
 
     payload = await file.read()
     size_bytes = len(payload)
@@ -136,9 +132,7 @@ async def store_chat_attachment_upload(
     }
 
     await asyncio.to_thread(stored_path.write_bytes, payload)
-    await asyncio.to_thread(
-        _metadata_path(attachment_id).write_text, json.dumps(metadata), "utf-8"
-    )
+    await asyncio.to_thread(_metadata_path(attachment_id).write_text, json.dumps(metadata), "utf-8")
     logger.info(
         "Stored chat attachment %s for conversation=%s filename=%s size=%d",
         attachment_id,
@@ -156,9 +150,7 @@ def _load_metadata(attachment_id: str) -> Optional[dict[str, Any]]:
     try:
         return json.loads(path.read_text("utf-8"))
     except Exception as exc:
-        logger.warning(
-            "Failed to read chat attachment metadata %s: %s", attachment_id, exc
-        )
+        logger.warning("Failed to read chat attachment metadata %s: %s", attachment_id, exc)
         return None
 
 
@@ -201,9 +193,7 @@ def resolve_chat_attachment(
         raise FileNotFoundError(f"Chat attachment {attachment_id} has expired")
 
     if not _validate_attachment_owner(metadata, conversation_id, user_id, workspace_id):
-        raise PermissionError(
-            f"Chat attachment {attachment_id} is not available in this conversation"
-        )
+        raise PermissionError(f"Chat attachment {attachment_id} is not available in this conversation")
 
     stored_name = str(metadata.get("stored_name") or "source")
     path = _attachment_dir(attachment_id) / stored_name
@@ -250,9 +240,7 @@ async def _load_cached_chunks(attachment_id: str) -> Optional[list[str]]:
         if isinstance(data, list):
             return [str(item) for item in data if str(item).strip()]
     except Exception as exc:
-        logger.warning(
-            "Failed to load cached chat attachment chunks %s: %s", attachment_id, exc
-        )
+        logger.warning("Failed to load cached chat attachment chunks %s: %s", attachment_id, exc)
     return None
 
 
@@ -261,14 +249,10 @@ async def _write_cached_chunks(attachment_id: str, chunks: list[str]) -> None:
     try:
         await asyncio.to_thread(cache_path.write_text, json.dumps(chunks), "utf-8")
     except Exception as exc:
-        logger.warning(
-            "Failed to cache chat attachment chunks %s: %s", attachment_id, exc
-        )
+        logger.warning("Failed to cache chat attachment chunks %s: %s", attachment_id, exc)
 
 
-async def _extract_attachment_chunks(
-    metadata: dict[str, Any], payload_path: Path
-) -> list[str]:
+async def _extract_attachment_chunks(metadata: dict[str, Any], payload_path: Path) -> list[str]:
     attachment_id = str(metadata.get("attachment_id") or "")
     cached = await _load_cached_chunks(attachment_id)
     if cached is not None:
@@ -290,9 +274,7 @@ async def _extract_attachment_chunks(
         use_tokens=True,
         batch_size=1,
     )
-    chunk_texts = [
-        doc.page_content.strip() for doc in documents if doc.page_content.strip()
-    ]
+    chunk_texts = [doc.page_content.strip() for doc in documents if doc.page_content.strip()]
     if not chunk_texts:
         chunk_texts = [extracted.strip()]
 
@@ -317,14 +299,8 @@ async def get_chat_attachment_budget_tokens(model_id: Optional[str]) -> int:
     )
 
 
-def _format_chunk_block(
-    filename: str, chunk_text: str, chunk_index: int, total_chunks: int
-) -> str:
-    return (
-        f"--- Attached file: {filename} ---\n"
-        f"Chunk {chunk_index}/{total_chunks}\n"
-        f"{chunk_text.strip()}"
-    )
+def _format_chunk_block(filename: str, chunk_text: str, chunk_index: int, total_chunks: int) -> str:
+    return f"--- Attached file: {filename} ---\nChunk {chunk_index}/{total_chunks}\n{chunk_text.strip()}"
 
 
 async def preprocess_chat_attachment_content_parts(
@@ -338,10 +314,7 @@ async def preprocess_chat_attachment_content_parts(
         return content, None
 
     has_chat_attachment = any(
-        isinstance(part, dict)
-        and part.get("type") == "file"
-        and part.get("attachment_id")
-        and part.get("attachment_source") == CHAT_ATTACHMENT_SOURCE
+        isinstance(part, dict) and part.get("type") == "file" and part.get("attachment_id") and part.get("attachment_source") == CHAT_ATTACHMENT_SOURCE
         for part in content
     )
     if not has_chat_attachment:
@@ -360,10 +333,7 @@ async def preprocess_chat_attachment_content_parts(
 
     for part in content:
         if not (
-            isinstance(part, dict)
-            and part.get("type") == "file"
-            and part.get("attachment_id")
-            and part.get("attachment_source") == CHAT_ATTACHMENT_SOURCE
+            isinstance(part, dict) and part.get("type") == "file" and part.get("attachment_id") and part.get("attachment_source") == CHAT_ATTACHMENT_SOURCE
         ):
             transformed.append(part)
             continue
@@ -409,9 +379,7 @@ async def preprocess_chat_attachment_content_parts(
                 if selected_blocks and block_tokens > remaining_budget:
                     break
                 if not selected_blocks and block_tokens > remaining_budget:
-                    truncated, used_tokens = truncate_to_token_budget(
-                        [block], remaining_budget
-                    )
+                    truncated, used_tokens = truncate_to_token_budget([block], remaining_budget)
                     if truncated.strip():
                         selected_blocks.append(truncated)
                         remaining_budget = max(0, remaining_budget - used_tokens)
@@ -429,10 +397,7 @@ async def preprocess_chat_attachment_content_parts(
             stats["omitted_chunk_count"] += omitted_chunks
 
             if omitted_chunks > 0:
-                note = (
-                    f'[Omitted {omitted_chunks} additional chunk(s) from "{filename}" '
-                    f"to stay within the attachment context budget.]"
-                )
+                note = f'[Omitted {omitted_chunks} additional chunk(s) from "{filename}" to stay within the attachment context budget.]'
                 note_tokens = count_tokens(note)
                 if note_tokens <= remaining_budget:
                     selected_blocks.append(note)
@@ -455,9 +420,7 @@ async def preprocess_chat_attachment_content_parts(
                 }
             )
         except Exception as exc:
-            logger.exception(
-                "Failed to preprocess chat attachment %s: %s", attachment_id, exc
-            )
+            logger.exception("Failed to preprocess chat attachment %s: %s", attachment_id, exc)
             transformed.append(
                 {
                     "type": "text",

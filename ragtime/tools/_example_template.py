@@ -31,33 +31,21 @@ logger = get_logger(__name__)
 # Define the input parameters your tool accepts.
 # Use Pydantic models with Field descriptions for LLM guidance.
 
+
 class ExampleToolInput(BaseModel):
     """Input schema for the example tool."""
 
-    query: str = Field(
-        description="The query or request to process. Be specific about what data you need."
-    )
-    limit: int = Field(
-        default=10,
-        description="Maximum number of results to return.",
-        ge=1,
-        le=100
-    )
-    format: Optional[str] = Field(
-        default="table",
-        description="Output format: 'table', 'json', or 'list'"
-    )
+    query: str = Field(description="The query or request to process. Be specific about what data you need.")
+    limit: int = Field(default=10, description="Maximum number of results to return.", ge=1, le=100)
+    format: Optional[str] = Field(default="table", description="Output format: 'table', 'json', or 'list'")
 
 
 # =============================================================================
 # TOOL IMPLEMENTATION
 # =============================================================================
 
-async def execute_example_query(
-    query: str,
-    limit: int = 10,
-    format: str = "table"
-) -> str:
+
+async def execute_example_query(query: str, limit: int = 10, format: str = "table") -> str:
     """
     Execute the example tool logic.
 
@@ -117,7 +105,7 @@ IMPORTANT:
 
 Example usage: "Get example data with limit 5"
 """,
-    args_schema=ExampleToolInput
+    args_schema=ExampleToolInput,
 )
 
 

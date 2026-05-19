@@ -9,13 +9,13 @@ Tools are auto-discovered from this package. To add a new tool:
 See registry.py for the discovery mechanism.
 """
 
-from .postgres import postgres_tool, PostgresQueryInput, execute_postgres_query
+from .postgres import PostgresQueryInput, execute_postgres_query, postgres_tool
 from .registry import (
-    register_tool,
-    get_tool,
+    discover_tools,
     get_all_tools,
     get_enabled_tools,
-    discover_tools,
+    get_tool,
+    register_tool,
 )
 
 # Re-export individual tools for direct import if needed

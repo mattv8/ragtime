@@ -57,10 +57,7 @@ def _normalize_source_table(source_data: Any) -> tuple[list[str], list[list[Any]
     if not isinstance(raw_rows, list) or not raw_rows:
         raise ValueError("source_data.rows must be a non-empty array")
 
-    columns = [
-        str(column).strip() or f"Column {index + 1}"
-        for index, column in enumerate(raw_columns)
-    ]
+    columns = [str(column).strip() or f"Column {index + 1}" for index, column in enumerate(raw_columns)]
     rows: list[list[Any]] = []
     for raw_row in raw_rows:
         if isinstance(raw_row, dict):
@@ -84,10 +81,7 @@ class CreateDataTableInput(BaseModel):
     title: str = Field(description="Table title displayed above the table")
     columns: list[str] = Field(description="Column headers for the table")
     data: list[list[Any]] = Field(
-        description=(
-            "2D array of table data where each inner array is a row. "
-            "Can also be provided as 'rows' or as a list of objects with column keys."
-        ),
+        description=("2D array of table data where each inner array is a row. Can also be provided as 'rows' or as a list of objects with column keys."),
     )
     description: str = Field(
         default="",
@@ -159,8 +153,7 @@ class CreateLiveDataTableInput(BaseModel):
     data_connection: dict[str, Any] = Field(
         ...,
         description=(
-            "Required live data-connection metadata. Must include component_kind=tool_config, "
-            "component_id, and the exact successful query payload as request."
+            "Required live data-connection metadata. Must include component_kind=tool_config, component_id, and the exact successful query payload as request."
         ),
     )
 

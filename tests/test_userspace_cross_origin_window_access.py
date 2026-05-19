@@ -12,15 +12,8 @@ def _load_validator_module():
     in isolation via ``importlib.util`` is safe and keeps the test suite
     runnable outside the container.
     """
-    module_path = (
-        Path(__file__).resolve().parents[1]
-        / "ragtime"
-        / "rag"
-        / "userspace_window_validator.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        "ragtime_userspace_window_validator_under_test", module_path
-    )
+    module_path = Path(__file__).resolve().parents[1] / "ragtime" / "rag" / "userspace_window_validator.py"
+    spec = importlib.util.spec_from_file_location("ragtime_userspace_window_validator_under_test", module_path)
     assert spec and spec.loader, f"failed to build spec for {module_path}"
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

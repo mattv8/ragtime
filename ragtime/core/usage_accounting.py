@@ -19,9 +19,7 @@ from ragtime.core.tokenization import count_tokens
 logger = get_logger(__name__)
 
 
-def _estimate_input_tokens(
-    user_message: str, chat_history: Optional[list] = None
-) -> int:
+def _estimate_input_tokens(user_message: str, chat_history: Optional[list] = None) -> int:
     """Estimate input tokens from the user message and optional chat history."""
     tokens = count_tokens(user_message)
     if chat_history:
@@ -36,9 +34,7 @@ def _estimate_input_tokens(
     return tokens
 
 
-def _estimate_output_tokens(
-    response_text: str, events: Optional[list[dict]] = None
-) -> int:
+def _estimate_output_tokens(response_text: str, events: Optional[list[dict]] = None) -> int:
     """Estimate output tokens from the response text and optional events."""
     tokens = count_tokens(response_text) if response_text else 0
     if events:
@@ -134,9 +130,7 @@ async def finalize_usage_attempt(
         if input_tokens is not None:
             update_data["inputTokens"] = input_tokens
         if failure_reason is not None:
-            update_data["failureReason"] = (
-                failure_reason[:500] if failure_reason else None
-            )
+            update_data["failureReason"] = failure_reason[:500] if failure_reason else None
         if provider is not None:
             update_data["provider"] = provider
         if model is not None:
@@ -376,9 +370,7 @@ async def get_user_daily_usage_series(
 async def get_usage_earliest_date() -> str | None:
     """Return the earliest usage attempt date as an ISO date string, or None."""
     db = await get_db()
-    rows = await db.query_raw(
-        "SELECT MIN(started_at)::date::text AS earliest FROM user_usage_attempts"
-    )
+    rows = await db.query_raw("SELECT MIN(started_at)::date::text AS earliest FROM user_usage_attempts")
     if rows and rows[0].get("earliest"):
         return rows[0]["earliest"]
     return None

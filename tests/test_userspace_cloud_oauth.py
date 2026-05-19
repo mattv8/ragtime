@@ -3,6 +3,9 @@ import types
 import unittest
 from datetime import datetime, timedelta, timezone
 
+from ragtime.userspace.models import CloudOAuthCallbackRequest, UserCloudOAuthAccount
+from ragtime.userspace.service import UserSpaceService
+
 if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package = types.ModuleType("ragtime.rag")
     fake_prompts_module = types.ModuleType("ragtime.rag.prompts")
@@ -10,9 +13,6 @@ if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package.prompts = fake_prompts_module
     sys.modules.setdefault("ragtime.rag", fake_rag_package)
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
-
-from ragtime.userspace.models import CloudOAuthCallbackRequest, UserCloudOAuthAccount
-from ragtime.userspace.service import UserSpaceService
 
 
 class _CloudOAuthService(UserSpaceService):

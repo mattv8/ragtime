@@ -88,9 +88,7 @@ def setup_ssl(
         detected = _detect_certificates(DEFAULT_CERT_DIR)
         if detected:
             result.cert_path, result.key_path = detected
-            logger.info(
-                f"Auto-detected certificates: {result.cert_path.name}, {result.key_path.name}"
-            )
+            logger.info(f"Auto-detected certificates: {result.cert_path.name}, {result.key_path.name}")
         elif auto_generate:
             # No certs found, generate new ones
             logger.info("No certificates found, generating self-signed certificate...")
@@ -123,9 +121,7 @@ def setup_ssl(
         for error in result.errors:
             logger.error(f"  - {error}")
         logger.error("-" * width)
-        logger.error(
-            "Fix these issues or remove the certificates to auto-generate new ones."
-        )
+        logger.error("Fix these issues or remove the certificates to auto-generate new ones.")
         logger.error("Falling back to HTTP")
         logger.error("=" * width)
         return None
@@ -187,16 +183,8 @@ def _detect_certificates(ssl_dir: Path) -> tuple[Path, Path] | None:
                     user_keys.append(f)
 
     # Prefer user certs over self-signed
-    cert_file = (
-        user_certs[0]
-        if user_certs
-        else (self_signed_certs[0] if self_signed_certs else None)
-    )
-    key_file = (
-        user_keys[0]
-        if user_keys
-        else (self_signed_keys[0] if self_signed_keys else None)
-    )
+    cert_file = user_certs[0] if user_certs else (self_signed_certs[0] if self_signed_certs else None)
+    key_file = user_keys[0] if user_keys else (self_signed_keys[0] if self_signed_keys else None)
 
     if cert_file and key_file:
         if user_certs:
@@ -268,29 +256,19 @@ def _validate_ssl_files(result: SSLValidationResult) -> None:
     key_content = key_path.read_text()[:500]
 
     if "PRIVATE KEY" in cert_content:
-        result.add_error(
-            f"Certificate file contains a private key - files may be swapped. "
-            f"Expected certificate in {cert_path.name}, got key content."
-        )
+        result.add_error(f"Certificate file contains a private key - files may be swapped. Expected certificate in {cert_path.name}, got key content.")
         return
 
     if "CERTIFICATE" in key_content and "PRIVATE KEY" not in key_content:
-        result.add_error(
-            f"Key file contains a certificate - files may be swapped. "
-            f"Expected private key in {key_path.name}, got certificate content."
-        )
+        result.add_error(f"Key file contains a certificate - files may be swapped. Expected private key in {key_path.name}, got certificate content.")
         return
 
     if "CERTIFICATE" not in cert_content:
-        result.add_error(
-            f"Certificate file does not contain a valid certificate: {cert_path.name}"
-        )
+        result.add_error(f"Certificate file does not contain a valid certificate: {cert_path.name}")
         return
 
     if "PRIVATE KEY" not in key_content:
-        result.add_error(
-            f"Key file does not contain a valid private key: {key_path.name}"
-        )
+        result.add_error(f"Key file does not contain a valid private key: {key_path.name}")
         return
 
     # Check certificate expiration
@@ -342,9 +320,7 @@ def _validate_ssl_files(result: SSLValidationResult) -> None:
         )
 
         if cert_mod.returncode != 0:
-            result.add_error(
-                f"Cannot read certificate modulus: {cert_mod.stderr.strip()}"
-            )
+            result.add_error(f"Cannot read certificate modulus: {cert_mod.stderr.strip()}")
             return
 
         if key_mod.returncode != 0:
@@ -364,10 +340,7 @@ def _validate_ssl_files(result: SSLValidationResult) -> None:
             key_modulus = key_mod.stdout.strip()
 
             if cert_modulus != key_modulus:
-                result.add_error(
-                    "Certificate and private key do not match. "
-                    "The key was not used to generate this certificate."
-                )
+                result.add_error("Certificate and private key do not match. The key was not used to generate this certificate.")
                 return
 
     except Exception as e:
@@ -384,15 +357,9 @@ def _validate_ssl_files(result: SSLValidationResult) -> None:
         if sig_result.returncode == 0:
             sig_text = sig_result.stdout.lower()
             if "sha1" in sig_text and "signature algorithm" in sig_text:
-                result.add_warning(
-                    "Certificate uses SHA-1 signature which is deprecated. "
-                    "Consider regenerating with SHA-256."
-                )
+                result.add_warning("Certificate uses SHA-1 signature which is deprecated. Consider regenerating with SHA-256.")
             if "md5" in sig_text:
-                result.add_error(
-                    "Certificate uses MD5 signature which is insecure. "
-                    "Regenerate with SHA-256 or stronger."
-                )
+                result.add_error("Certificate uses MD5 signature which is insecure. Regenerate with SHA-256 or stronger.")
     except Exception:
         pass  # Non-critical check
 
@@ -431,12 +398,9 @@ def _generate_self_signed_cert(cert_path: Path, key_path: Path) -> None:
         logger.info(f"Generated self-signed certificate: {cert_path}")
         logger.info(f"Certificate valid for {CERT_VALIDITY_DAYS} days")
         logger.warning(
-            "This is a self-signed certificate. Browsers will show security warnings. "
-            "For production, use a reverse proxy with proper SSL certificates."
+            "This is a self-signed certificate. Browsers will show security warnings. For production, use a reverse proxy with proper SSL certificates."
         )
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Failed to generate SSL certificate: {e.stderr}") from e
     except FileNotFoundError as exc:
-        raise RuntimeError(
-            "openssl command not found. Ensure openssl is installed in the container."
-        ) from exc
+        raise RuntimeError("openssl command not found. Ensure openssl is installed in the container.") from exc

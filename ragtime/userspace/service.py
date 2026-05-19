@@ -6,11 +6,14 @@ import hmac
 import io
 import json
 import os
+import posixpath
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time as _time
 import zipfile
@@ -21,9 +24,6 @@ from typing import Any, Callable, Literal, Optional, TypedDict, cast
 from urllib.parse import quote
 from uuid import uuid4
 
-import posixpath
-import secrets
-import tarfile
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
 from prisma import Json
@@ -107,9 +107,9 @@ from ragtime.userspace.models import (
     CloudOAuthStartRequest,
     CloudOAuthStartResponse,
     CreateCloudMountSourceDirectoryRequest,
-    CreateUserUserspaceMountSourceRequest,
     CreateUserspaceMountSourceRequest,
     CreateUserSpaceObjectStorageBucketRequest,
+    CreateUserUserspaceMountSourceRequest,
     CreateWorkspaceMountRequest,
     CreateWorkspaceRequest,
     DeleteGlobalEnvVarResponse,
@@ -134,8 +134,8 @@ from ragtime.userspace.models import (
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
-    UpdateUserUserspaceMountSourceRequest,
     UpdateUserSpaceObjectStorageBucketRequest,
+    UpdateUserUserspaceMountSourceRequest,
     UpdateWorkspaceMembersRequest,
     UpdateWorkspaceMountRequest,
     UpdateWorkspaceRequest,
@@ -184,10 +184,10 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceScmSettingsRequest,
     UserSpaceWorkspaceScmStatus,
     UserSpaceWorkspaceScmSyncResponse,
-    UserSpaceWorkspaceSqliteImportTask,
     UserSpaceWorkspaceShareLink,
     UserSpaceWorkspaceShareLinkListResponse,
     UserSpaceWorkspaceShareLinkStatus,
+    UserSpaceWorkspaceSqliteImportTask,
     WorkspaceAgentGrant,
     WorkspaceAgentGrantMode,
     WorkspaceArchiveExportTaskPhase,
@@ -212,8 +212,8 @@ from ragtime.userspace.models import (
     WorkspaceScmPreviewState,
     WorkspaceScmProvider,
     WorkspaceScmRemoteRole,
-    WorkspaceSqliteImportTaskPhase,
     WorkspaceShareSlugAvailabilityResponse,
+    WorkspaceSqliteImportTaskPhase,
 )
 from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
 from ragtime.userspace.sqlite_import import SqlImportResult
@@ -225,9 +225,7 @@ _WORKSPACE_GIT_USER_EMAIL = "userspace@ragtime.local"
 
 _FILE_LIST_CACHE_TTL_SECONDS = 2
 _ENTRYPOINT_STATUS_CACHE_TTL_SECONDS = 300  # 5-minute TTL for entrypoint status
-_CHANGED_FILE_ACK_MAX_ROWS_PER_WORKSPACE_USER = (
-    2000  # Threshold to bound growth of UserSpaceChangedFileAcknowledgement table
-)
+_CHANGED_FILE_ACK_MAX_ROWS_PER_WORKSPACE_USER = 2000  # Threshold to bound growth of UserSpaceChangedFileAcknowledgement table
 _SHARE_PASSWORD_ACCESS_TOKEN_KIND = "userspace_share_password_access"
 _SHARE_PASSWORD_ACCESS_TTL_SECONDS = 60 * 30
 _WORKSPACE_SQLITE_IMPORT_TASK_TTL_SECONDS = 24 * 60 * 60
@@ -821,16 +819,10 @@ _WORKSPACE_OBJECT_STORAGE_PUBLIC_PREFIX = "public"
 _WORKSPACE_OBJECT_STORAGE_PRIVATE_PREFIX = "private"
 _WORKSPACE_OBJECT_STORAGE_ENDPOINT_ENV_KEY = "RAGTIME_OBJECT_STORAGE_ENDPOINT"
 _WORKSPACE_OBJECT_STORAGE_ACCESS_KEY_ENV_KEY = "RAGTIME_OBJECT_STORAGE_ACCESS_KEY_ID"
-_WORKSPACE_OBJECT_STORAGE_SECRET_KEY_ENV_KEY = (
-    "RAGTIME_OBJECT_STORAGE_SECRET_ACCESS_KEY"
-)
+_WORKSPACE_OBJECT_STORAGE_SECRET_KEY_ENV_KEY = "RAGTIME_OBJECT_STORAGE_SECRET_ACCESS_KEY"
 _WORKSPACE_OBJECT_STORAGE_BUCKETS_ENV_KEY = "RAGTIME_OBJECT_STORAGE_BUCKETS_JSON"
-_WORKSPACE_OBJECT_STORAGE_DEFAULT_BUCKET_ENV_KEY = (
-    "RAGTIME_OBJECT_STORAGE_DEFAULT_BUCKET"
-)
-_WORKSPACE_OBJECT_STORAGE_FORCE_PATH_STYLE_ENV_KEY = (
-    "RAGTIME_OBJECT_STORAGE_FORCE_PATH_STYLE"
-)
+_WORKSPACE_OBJECT_STORAGE_DEFAULT_BUCKET_ENV_KEY = "RAGTIME_OBJECT_STORAGE_DEFAULT_BUCKET"
+_WORKSPACE_OBJECT_STORAGE_FORCE_PATH_STYLE_ENV_KEY = "RAGTIME_OBJECT_STORAGE_FORCE_PATH_STYLE"
 _WORKSPACE_OBJECT_STORAGE_REGION_ENV_KEY = "RAGTIME_OBJECT_STORAGE_REGION"
 _WORKSPACE_OBJECT_STORAGE_ENABLED_ENV_KEY = "RAGTIME_OBJECT_STORAGE_ENABLED"
 
@@ -928,9 +920,7 @@ _SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
 _SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
 
 _HIDDEN_DIRS = frozenset({".git", "node_modules", "__pycache__", ".ragtime", "dist"})
-_AGENT_WRITABLE_RAGTIME_FILES = frozenset(
-    {"runtime-entrypoint.json", "runtime-bootstrap.json"}
-)
+_AGENT_WRITABLE_RAGTIME_FILES = frozenset({"runtime-entrypoint.json", "runtime-bootstrap.json"})
 _AGENT_WRITABLE_RAGTIME_PREFIXES = ("db/migrations/", "scripts/")
 
 
@@ -963,16 +953,12 @@ def _normalize_workspace_name_for_uniqueness(name: str) -> str:
 
 def _is_workspace_name_conflict_error(exc: Exception) -> bool:
     message = str(exc).lower()
-    return "owner_user_id_name_normalized" in message or (
-        "unique" in message and "name_normalized" in message
-    )
+    return "owner_user_id_name_normalized" in message or ("unique" in message and "name_normalized" in message)
 
 
 def _is_share_token_conflict_error(exc: Exception) -> bool:
     message = str(exc).lower()
-    return "unique" in message and (
-        "sharetoken" in message or "share_token" in message or "share token" in message
-    )
+    return "unique" in message and ("sharetoken" in message or "share_token" in message or "share token" in message)
 
 
 def _normalize_share_slug_for_uniqueness(slug: str) -> str:
@@ -992,9 +978,7 @@ def _normalize_owner_username_for_share_path(username: str) -> str:
 
 def _is_share_slug_conflict_error(exc: Exception) -> bool:
     message = str(exc).lower()
-    return "owner_user_id_share_slug" in message or (
-        "unique" in message and "share_slug" in message
-    )
+    return "owner_user_id_share_slug" in message or ("unique" in message and "share_slug" in message)
 
 
 def _normalize_share_access_mode(value: str | None) -> ShareAccessMode:
@@ -1057,9 +1041,7 @@ def _requires_entrypoint_wiring(
     if not is_module_source:
         return False
 
-    is_dashboard_module = artifact_type == "module_ts" or normalized_path.startswith(
-        "dashboard/"
-    )
+    is_dashboard_module = artifact_type == "module_ts" or normalized_path.startswith("dashboard/")
     return is_dashboard_module
 
 
@@ -1105,11 +1087,7 @@ def _entrypoint_references_module(main_content: str, candidates: list[str]) -> b
         return False
 
     for candidate in candidates:
-        if (
-            f'"{candidate}"' in main_content
-            or f"'{candidate}'" in main_content
-            or f"`{candidate}`" in main_content
-        ):
+        if f'"{candidate}"' in main_content or f"'{candidate}'" in main_content or f"`{candidate}`" in main_content:
             return True
     return False
 
@@ -1132,15 +1110,10 @@ def _is_managed_sqlite_file_path(relative_path: str) -> bool:
 
 
 def _enforce_sqlite_file_path_policy(relative_path: str) -> None:
-    if _is_sqlite_file_path(relative_path) and not _is_managed_sqlite_file_path(
-        relative_path
-    ):
+    if _is_sqlite_file_path(relative_path) and not _is_managed_sqlite_file_path(relative_path):
         raise HTTPException(
             status_code=400,
-            detail=(
-                "SQLite persistence files must be managed under .ragtime/db/. "
-                "Use paths like .ragtime/db/app.sqlite3."
-            ),
+            detail=("SQLite persistence files must be managed under .ragtime/db/. Use paths like .ragtime/db/app.sqlite3."),
         )
 
 
@@ -1163,106 +1136,70 @@ class UserSpaceService:
         self._archive_tasks_dir.mkdir(parents=True, exist_ok=True)
         self._sqlite_import_tasks_dir.mkdir(parents=True, exist_ok=True)
         self._execution_proofs: dict[str, dict[str, _ExecutionProofRecord]] = {}
-        self._live_data_execution_warnings: dict[
-            str, _LiveDataExecutionWarningRecord
-        ] = {}
+        self._live_data_execution_warnings: dict[str, _LiveDataExecutionWarningRecord] = {}
         # TTL-cached entrypoint status per workspace: {workspace_id: (EntrypointStatus, timestamp)}
         self._entrypoint_status_cache: dict[str, tuple[EntrypointStatus, float]] = {}
         # Short-lived file list cache: {workspace_id: (result, include_dirs, timestamp)}
-        self._file_list_cache: dict[
-            str, tuple[list[UserSpaceFileInfo], bool, float]
-        ] = {}
+        self._file_list_cache: dict[str, tuple[list[UserSpaceFileInfo], bool, float]] = {}
         # Limit concurrent git status requests to avoid overloading process slots.
         self._git_status_semaphore = asyncio.Semaphore(8)
         # Limit concurrent mount sync jobs; each runs blocking SSH or rsync work
         # in a worker thread.
-        self._workspace_mount_sync_semaphore = asyncio.Semaphore(
-            self._positive_int_env("USERSPACE_MOUNT_SYNC_CONCURRENCY", 2)
-        )
-        self._workspace_mount_sync_tasks: dict[
-            str, asyncio.Task[WorkspaceMountSyncResponse]
-        ] = {}
+        self._workspace_mount_sync_semaphore = asyncio.Semaphore(self._positive_int_env("USERSPACE_MOUNT_SYNC_CONCURRENCY", 2))
+        self._workspace_mount_sync_tasks: dict[str, asyncio.Task[WorkspaceMountSyncResponse]] = {}
         self._workspace_mount_sync_tasks_lock = asyncio.Lock()
-        self._workspace_create_semaphore = asyncio.Semaphore(
-            self._positive_int_env("USERSPACE_CREATE_CONCURRENCY", 2)
-        )
+        self._workspace_create_semaphore = asyncio.Semaphore(self._positive_int_env("USERSPACE_CREATE_CONCURRENCY", 2))
         self._workspace_create_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_create_task_statuses: dict[str, _WorkspaceCreateTaskRecord] = {}
         self._workspace_create_tasks_lock = asyncio.Lock()
-        self._workspace_duplicate_semaphore = asyncio.Semaphore(
-            self._positive_int_env("USERSPACE_DUPLICATE_CONCURRENCY", 2)
-        )
+        self._workspace_duplicate_semaphore = asyncio.Semaphore(self._positive_int_env("USERSPACE_DUPLICATE_CONCURRENCY", 2))
         self._workspace_duplicate_tasks: dict[str, asyncio.Task[None]] = {}
-        self._workspace_duplicate_task_statuses: dict[
-            str, _WorkspaceDuplicateTaskRecord
-        ] = {}
+        self._workspace_duplicate_task_statuses: dict[str, _WorkspaceDuplicateTaskRecord] = {}
         self._workspace_duplicate_tasks_lock = asyncio.Lock()
-        self._workspace_archive_semaphore = asyncio.Semaphore(
-            self._positive_int_env("USERSPACE_ARCHIVE_CONCURRENCY", 2)
-        )
+        self._workspace_archive_semaphore = asyncio.Semaphore(self._positive_int_env("USERSPACE_ARCHIVE_CONCURRENCY", 2))
         self._workspace_archive_operation_locks: dict[str, asyncio.Lock] = {}
         self._workspace_archive_operation_locks_lock = asyncio.Lock()
         self._workspace_archive_export_tasks: dict[str, asyncio.Task[None]] = {}
-        self._workspace_archive_export_task_statuses: dict[
-            str, _WorkspaceArchiveExportTaskRecord
-        ] = {}
+        self._workspace_archive_export_task_statuses: dict[str, _WorkspaceArchiveExportTaskRecord] = {}
         self._workspace_archive_export_active_task_ids_by_workspace: dict[str, str] = {}
         self._workspace_archive_import_tasks: dict[str, asyncio.Task[None]] = {}
-        self._workspace_archive_import_task_statuses: dict[
-            str, _WorkspaceArchiveImportTaskRecord
-        ] = {}
+        self._workspace_archive_import_task_statuses: dict[str, _WorkspaceArchiveImportTaskRecord] = {}
         self._workspace_archive_import_active_task_ids_by_workspace: dict[str, str] = {}
         self._workspace_archive_tasks_lock = asyncio.Lock()
-        self._workspace_sqlite_import_semaphore = asyncio.Semaphore(
-            self._positive_int_env("USERSPACE_SQLITE_IMPORT_CONCURRENCY", 1)
-        )
+        self._workspace_sqlite_import_semaphore = asyncio.Semaphore(self._positive_int_env("USERSPACE_SQLITE_IMPORT_CONCURRENCY", 1))
         self._workspace_sqlite_import_tasks: dict[str, asyncio.Task[None]] = {}
-        self._workspace_sqlite_import_task_statuses: dict[
-            str, _WorkspaceSqliteImportTaskRecord
-        ] = {}
+        self._workspace_sqlite_import_task_statuses: dict[str, _WorkspaceSqliteImportTaskRecord] = {}
         self._workspace_sqlite_import_active_task_ids_by_workspace: dict[str, str] = {}
         self._workspace_sqlite_import_tasks_lock = asyncio.Lock()
         self._runtime_restart_batch_tasks: dict[str, asyncio.Task[None]] = {}
-        self._runtime_restart_batch_task_statuses: dict[
-            str, _RuntimeRestartBatchTaskRecord
-        ] = {}
+        self._runtime_restart_batch_task_statuses: dict[str, _RuntimeRestartBatchTaskRecord] = {}
         self._runtime_restart_batch_tasks_lock = asyncio.Lock()
         self._runtime_restart_active_task_id: str | None = None
         self._runtime_restart_latest_task_id: str | None = None
         # Limit concurrent workspace deletions; each can stop a runtime and
         # remove a workspace tree from disk.
-        self._workspace_delete_semaphore = asyncio.Semaphore(
-            self._positive_int_env("USERSPACE_DELETE_CONCURRENCY", 2)
-        )
+        self._workspace_delete_semaphore = asyncio.Semaphore(self._positive_int_env("USERSPACE_DELETE_CONCURRENCY", 2))
         self._workspace_delete_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_delete_task_statuses: dict[str, _WorkspaceDeleteTaskRecord] = {}
         self._workspace_delete_active_task_ids_by_workspace: dict[str, str] = {}
         self._workspace_delete_tasks_lock = asyncio.Lock()
         self._workspace_mount_operation_locks: dict[str, asyncio.Lock] = {}
         self._workspace_mount_operation_locks_lock = asyncio.Lock()
-        self._workspace_mount_sync_previews: dict[
-            str, _WorkspaceMountSyncPreviewRecord
-        ] = {}
+        self._workspace_mount_sync_previews: dict[str, _WorkspaceMountSyncPreviewRecord] = {}
         self._workspace_mount_sync_previews_lock = asyncio.Lock()
         self._workspace_scm_previews: dict[str, _WorkspaceScmPreviewRecord] = {}
         self._workspace_scm_previews_lock = asyncio.Lock()
         self._workspace_scm_backfill_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_scm_backfill_tasks_lock = asyncio.Lock()
-        self._workspace_scm_sync_semaphore = asyncio.Semaphore(
-            self._positive_int_env("USERSPACE_SCM_SYNC_CONCURRENCY", 2)
-        )
+        self._workspace_scm_sync_semaphore = asyncio.Semaphore(self._positive_int_env("USERSPACE_SCM_SYNC_CONCURRENCY", 2))
         self._workspace_scm_watch_task: asyncio.Task[Any] | None = None
         self._workspace_scm_watch_task_lock = asyncio.Lock()
         self._workspace_scm_watch_inflight: set[str] = set()
         self._workspace_scm_watch_next_due_monotonic: dict[str, float] = {}
         self._workspace_scm_operation_locks: dict[str, asyncio.Lock] = {}
         self._workspace_scm_operation_locks_lock = asyncio.Lock()
-        self._workspace_mount_watch_interval_seconds = (
-            USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS
-        )
-        self._workspace_mount_watch_jitter_seconds = (
-            USERSPACE_MOUNT_WATCH_JITTER_SECONDS
-        )
+        self._workspace_mount_watch_interval_seconds = USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS
+        self._workspace_mount_watch_jitter_seconds = USERSPACE_MOUNT_WATCH_JITTER_SECONDS
         self._workspace_mount_watch_task: asyncio.Task[Any] | None = None
         self._workspace_mount_watch_task_lock = asyncio.Lock()
         self._workspace_mount_watch_inflight: set[str] = set()
@@ -1295,10 +1232,7 @@ class UserSpaceService:
 
     @staticmethod
     def _ssh_rsync_capability_cache_key(ssh_config: Any) -> str:
-        return (
-            f"{getattr(ssh_config, 'user', '')}@{getattr(ssh_config, 'host', '')}:"
-            f"{getattr(ssh_config, 'port', 22)}"
-        )
+        return f"{getattr(ssh_config, 'user', '')}@{getattr(ssh_config, 'host', '')}:{getattr(ssh_config, 'port', 22)}"
 
     @staticmethod
     def _ssh_rsync_fallback_notice() -> str:
@@ -1417,10 +1351,7 @@ class UserSpaceService:
         ):
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    "SCM overwrite preview is missing, expired, or stale. "
-                    "Run preview again before forcing sync."
-                ),
+                detail=("SCM overwrite preview is missing, expired, or stale. Run preview again before forcing sync."),
             )
 
     async def _clear_workspace_scm_previews(self, workspace_id: str) -> None:
@@ -1469,9 +1400,7 @@ class UserSpaceService:
         workspace_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        task.add_done_callback(
-            partial(self._finalize_workspace_scm_backfill_task, workspace_id)
-        )
+        task.add_done_callback(partial(self._finalize_workspace_scm_backfill_task, workspace_id))
 
     @staticmethod
     def _has_destructive_auto_sync_approval(
@@ -1506,10 +1435,7 @@ class UserSpaceService:
         ):
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    "Destructive sync preview is missing, expired, or stale. "
-                    "Run preview again before syncing."
-                ),
+                detail=("Destructive sync preview is missing, expired, or stale. Run preview again before syncing."),
             )
 
         current_preview: Any
@@ -1533,18 +1459,12 @@ class UserSpaceService:
         if not current_preview.success:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "; ".join(current_preview.errors[:5])
-                    or "Failed to preview destructive sync"
-                ),
+                detail=("; ".join(current_preview.errors[:5]) or "Failed to preview destructive sync"),
             )
         if current_preview.state_fingerprint != preview_record.state_fingerprint:
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    "Sync preview is stale because the source or target changed. "
-                    "Run preview again before syncing."
-                ),
+                detail=("Sync preview is stale because the source or target changed. Run preview again before syncing."),
             )
 
     def _prune_workspace_mount_sync_task(
@@ -1735,12 +1655,8 @@ class UserSpaceService:
             "phase": record.phase,
             "progress": record.progress,
             "dialect_detected": record.dialect_detected,
-            "uploaded_dump_path": (
-                str(record.uploaded_dump_path) if record.uploaded_dump_path else None
-            ),
-            "progress_path": (
-                str(record.progress_path) if record.progress_path else None
-            ),
+            "uploaded_dump_path": (str(record.uploaded_dump_path) if record.uploaded_dump_path else None),
+            "progress_path": (str(record.progress_path) if record.progress_path else None),
             "stdout_path": str(record.stdout_path) if record.stdout_path else None,
             "stderr_path": str(record.stderr_path) if record.stderr_path else None,
             "process_id": record.process_id,
@@ -1776,9 +1692,7 @@ class UserSpaceService:
             try:
                 payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
                 task_id = str(payload["task_id"])
-                phase = cast(
-                    WorkspaceSqliteImportTaskPhase, payload.get("phase") or "failed"
-                )
+                phase = cast(WorkspaceSqliteImportTaskPhase, payload.get("phase") or "failed")
                 was_in_progress = phase not in {"completed", "failed"}
                 record = _WorkspaceSqliteImportTaskRecord(
                     task_id=task_id,
@@ -1791,21 +1705,15 @@ class UserSpaceService:
                     updated_at=datetime.fromisoformat(payload["updated_at"]),
                 )
             except Exception:
-                logger.warning(
-                    "Skipping malformed SQLite import sidecar %s", sidecar_path
-                )
+                logger.warning("Skipping malformed SQLite import sidecar %s", sidecar_path)
                 continue
-            record.progress = float(
-                payload.get("progress") or (1.0 if phase == "completed" else 0.0)
-            )
+            record.progress = float(payload.get("progress") or (1.0 if phase == "completed" else 0.0))
             record.dialect_detected = str(payload.get("dialect_detected") or "generic")
             uploaded_dump_path = payload.get("uploaded_dump_path")
             progress_path = payload.get("progress_path")
             stdout_path = payload.get("stdout_path")
             stderr_path = payload.get("stderr_path")
-            record.uploaded_dump_path = (
-                Path(uploaded_dump_path) if uploaded_dump_path else None
-            )
+            record.uploaded_dump_path = Path(uploaded_dump_path) if uploaded_dump_path else None
             record.progress_path = Path(progress_path) if progress_path else None
             record.stdout_path = Path(stdout_path) if stdout_path else None
             record.stderr_path = Path(stderr_path) if stderr_path else None
@@ -1822,13 +1730,8 @@ class UserSpaceService:
             record.message = payload.get("message")
             record.error = payload.get("error")
             self._workspace_sqlite_import_task_statuses[task_id] = record
-            if (
-                payload.get("phase") not in {"completed", "failed"}
-                and record.progress_path
-            ):
-                self._apply_workspace_sqlite_import_progress(
-                    task_id, record.progress_path
-                )
+            if payload.get("phase") not in {"completed", "failed"} and record.progress_path:
+                self._apply_workspace_sqlite_import_progress(task_id, record.progress_path)
             if (
                 payload.get("phase") not in {"completed", "failed"}
                 and not self._is_process_running(record.process_id)
@@ -1872,13 +1775,8 @@ class UserSpaceService:
     ) -> None:
         if self._workspace_sqlite_import_tasks.get(task_id) is task:
             self._workspace_sqlite_import_tasks.pop(task_id, None)
-        if (
-            self._workspace_sqlite_import_active_task_ids_by_workspace.get(workspace_id)
-            == task_id
-        ):
-            self._workspace_sqlite_import_active_task_ids_by_workspace.pop(
-                workspace_id, None
-            )
+        if self._workspace_sqlite_import_active_task_ids_by_workspace.get(workspace_id) == task_id:
+            self._workspace_sqlite_import_active_task_ids_by_workspace.pop(workspace_id, None)
 
     def _attach_workspace_sqlite_import_task_cleanup(
         self,
@@ -1886,26 +1784,15 @@ class UserSpaceService:
         workspace_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        task.add_done_callback(
-            partial(self._prune_workspace_sqlite_import_task, task_id, workspace_id)
-        )
+        task.add_done_callback(partial(self._prune_workspace_sqlite_import_task, task_id, workspace_id))
 
     def _prune_expired_workspace_sqlite_import_task_statuses(self) -> None:
-        cutoff = _utc_now() - timedelta(
-            seconds=_WORKSPACE_SQLITE_IMPORT_TASK_TTL_SECONDS
-        )
-        for task_id, record in list(
-            self._workspace_sqlite_import_task_statuses.items()
-        ):
-            if (
-                record.phase not in {"completed", "failed"}
-                or record.updated_at > cutoff
-            ):
+        cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_SQLITE_IMPORT_TASK_TTL_SECONDS)
+        for task_id, record in list(self._workspace_sqlite_import_task_statuses.items()):
+            if record.phase not in {"completed", "failed"} or record.updated_at > cutoff:
                 continue
             self._workspace_sqlite_import_task_statuses.pop(task_id, None)
-            self._remove_workspace_archive_dir_sync(
-                self._workspace_sqlite_import_task_dir(task_id)
-            )
+            self._remove_workspace_archive_dir_sync(self._workspace_sqlite_import_task_dir(task_id))
 
     def _set_workspace_sqlite_import_task_phase(
         self,
@@ -1960,9 +1847,7 @@ class UserSpaceService:
         if record is None:
             return
         sidecar_path = self._workspace_archive_export_task_sidecar_path(task_id)
-        archive_path_str = (
-            str(record.archive_path) if record.archive_path is not None else None
-        )
+        archive_path_str = str(record.archive_path) if record.archive_path is not None else None
         payload = {
             "task_id": record.task_id,
             "workspace_id": record.workspace_id,
@@ -1984,9 +1869,7 @@ class UserSpaceService:
             sidecar_path.parent.mkdir(parents=True, exist_ok=True)
             sidecar_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         except Exception:
-            logger.exception(
-                "Failed to persist archive export task sidecar %s", task_id
-            )
+            logger.exception("Failed to persist archive export task sidecar %s", task_id)
 
     def _rehydrate_workspace_archive_export_task_statuses(self) -> None:
         """Scan archive_tasks dir for sidecars and load completed/failed export records into memory."""
@@ -2001,9 +1884,7 @@ class UserSpaceService:
             try:
                 payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
             except Exception:
-                logger.warning(
-                    "Skipping unreadable archive export sidecar %s", sidecar_path
-                )
+                logger.warning("Skipping unreadable archive export sidecar %s", sidecar_path)
                 continue
             try:
                 task_id = str(payload["task_id"])
@@ -2021,9 +1902,7 @@ class UserSpaceService:
                 queued_at = datetime.fromisoformat(payload["queued_at"])
                 updated_at = datetime.fromisoformat(payload["updated_at"])
             except (KeyError, ValueError, TypeError):
-                logger.warning(
-                    "Skipping malformed archive export sidecar %s", sidecar_path
-                )
+                logger.warning("Skipping malformed archive export sidecar %s", sidecar_path)
                 continue
             record = _WorkspaceArchiveExportTaskRecord(
                 task_id=task_id,
@@ -2094,15 +1973,8 @@ class UserSpaceService:
     ) -> None:
         if self._workspace_archive_export_tasks.get(task_id) is task:
             self._workspace_archive_export_tasks.pop(task_id, None)
-        if (
-            self._workspace_archive_export_active_task_ids_by_workspace.get(
-                workspace_id
-            )
-            == task_id
-        ):
-            self._workspace_archive_export_active_task_ids_by_workspace.pop(
-                workspace_id, None
-            )
+        if self._workspace_archive_export_active_task_ids_by_workspace.get(workspace_id) == task_id:
+            self._workspace_archive_export_active_task_ids_by_workspace.pop(workspace_id, None)
 
     def _attach_workspace_archive_export_task_cleanup(
         self,
@@ -2110,9 +1982,7 @@ class UserSpaceService:
         workspace_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        task.add_done_callback(
-            partial(self._prune_workspace_archive_export_task, task_id, workspace_id)
-        )
+        task.add_done_callback(partial(self._prune_workspace_archive_export_task, task_id, workspace_id))
 
     def _prune_workspace_archive_import_task(
         self,
@@ -2122,15 +1992,8 @@ class UserSpaceService:
     ) -> None:
         if self._workspace_archive_import_tasks.get(task_id) is task:
             self._workspace_archive_import_tasks.pop(task_id, None)
-        if (
-            self._workspace_archive_import_active_task_ids_by_workspace.get(
-                workspace_id
-            )
-            == task_id
-        ):
-            self._workspace_archive_import_active_task_ids_by_workspace.pop(
-                workspace_id, None
-            )
+        if self._workspace_archive_import_active_task_ids_by_workspace.get(workspace_id) == task_id:
+            self._workspace_archive_import_active_task_ids_by_workspace.pop(workspace_id, None)
 
     def _attach_workspace_archive_import_task_cleanup(
         self,
@@ -2138,17 +2001,11 @@ class UserSpaceService:
         workspace_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        task.add_done_callback(
-            partial(self._prune_workspace_archive_import_task, task_id, workspace_id)
-        )
+        task.add_done_callback(partial(self._prune_workspace_archive_import_task, task_id, workspace_id))
 
     def _prune_expired_workspace_archive_export_task_statuses(self) -> None:
-        cutoff = _utc_now() - timedelta(
-            seconds=_WORKSPACE_ARCHIVE_EXPORT_TASK_TTL_SECONDS
-        )
-        for task_id, record in list(
-            self._workspace_archive_export_task_statuses.items()
-        ):
+        cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_ARCHIVE_EXPORT_TASK_TTL_SECONDS)
+        for task_id, record in list(self._workspace_archive_export_task_statuses.items()):
             # Completed exports are kept as a persistent history (file-backed) until
             # the user explicitly deletes them. Only prune failed exports on TTL.
             if record.phase != "failed":
@@ -2156,33 +2013,23 @@ class UserSpaceService:
             if record.updated_at > cutoff:
                 continue
             self._workspace_archive_export_task_statuses.pop(task_id, None)
-            self._remove_workspace_archive_dir_sync(
-                self._workspace_archive_task_dir(task_id)
-            )
+            self._remove_workspace_archive_dir_sync(self._workspace_archive_task_dir(task_id))
 
     def _prune_expired_workspace_archive_import_task_statuses(self) -> None:
-        cutoff = _utc_now() - timedelta(
-            seconds=_WORKSPACE_ARCHIVE_IMPORT_TASK_TTL_SECONDS
-        )
-        for task_id, record in list(
-            self._workspace_archive_import_task_statuses.items()
-        ):
+        cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_ARCHIVE_IMPORT_TASK_TTL_SECONDS)
+        for task_id, record in list(self._workspace_archive_import_task_statuses.items()):
             if record.phase not in {"completed", "failed"}:
                 continue
             if record.updated_at > cutoff:
                 continue
             self._workspace_archive_import_task_statuses.pop(task_id, None)
-            self._remove_workspace_archive_dir_sync(
-                self._workspace_archive_task_dir(task_id)
-            )
+            self._remove_workspace_archive_dir_sync(self._workspace_archive_task_dir(task_id))
 
     @staticmethod
     def _workspace_archive_export_task_model(
         record: _WorkspaceArchiveExportTaskRecord,
     ) -> UserSpaceWorkspaceArchiveExportTask:
-        archive_format: WorkspaceArchiveFormat = (
-            "zip" if record.archive_format == "zip" else "tar.gz"
-        )
+        archive_format: WorkspaceArchiveFormat = "zip" if record.archive_format == "zip" else "tar.gz"
         return UserSpaceWorkspaceArchiveExportTask(
             task_id=record.task_id,
             workspace_id=record.workspace_id,
@@ -2491,11 +2338,7 @@ class UserSpaceService:
         scm_meta: dict[str, Any],
     ) -> UserSpaceWorkspaceScmSettingsRequest:
         return UserSpaceWorkspaceScmSettingsRequest(
-            remote_role=(
-                cast(WorkspaceScmRemoteRole, str(scm_meta.get("remote_role") or ""))
-                if scm_meta.get("remote_role")
-                else None
-            ),
+            remote_role=(cast(WorkspaceScmRemoteRole, str(scm_meta.get("remote_role") or "")) if scm_meta.get("remote_role") else None),
             auto_sync_policy=(
                 cast(
                     WorkspaceScmAutoSyncPolicy,
@@ -2504,20 +2347,12 @@ class UserSpaceService:
                 if scm_meta.get("auto_sync_policy")
                 else None
             ),
-            auto_pull_enabled=(
-                bool(scm_meta.get("auto_pull_enabled"))
-                if scm_meta.get("auto_pull_enabled") is not None
-                else None
-            ),
+            auto_pull_enabled=(bool(scm_meta.get("auto_pull_enabled")) if scm_meta.get("auto_pull_enabled") is not None else None),
             auto_push_interval_seconds=(
-                int(scm_meta.get("auto_push_interval_seconds") or 0)
-                if scm_meta.get("auto_push_interval_seconds") is not None
-                else None
+                int(scm_meta.get("auto_push_interval_seconds") or 0) if scm_meta.get("auto_push_interval_seconds") is not None else None
             ),
             auto_pull_interval_seconds=(
-                int(scm_meta.get("auto_pull_interval_seconds") or 0)
-                if scm_meta.get("auto_pull_interval_seconds") is not None
-                else None
+                int(scm_meta.get("auto_pull_interval_seconds") or 0) if scm_meta.get("auto_pull_interval_seconds") is not None else None
             ),
         )
 
@@ -2543,11 +2378,7 @@ class UserSpaceService:
                 self._workspace_archive_scm_settings_request(scm_meta),
             )
         except Exception as exc:
-            detail = (
-                str(exc.detail)
-                if isinstance(exc, HTTPException)
-                else str(exc).strip() or "failed to restore SCM settings"
-            )
+            detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc).strip() or "failed to restore SCM settings"
             warnings.append(f"SCM settings were not restored: {detail}")
 
     async def _run_guarded_workspace_archive_task(
@@ -2562,9 +2393,7 @@ class UserSpaceService:
     ) -> None:
         try:
             async with self._workspace_archive_semaphore:
-                operation_lock = await self._get_workspace_archive_operation_lock(
-                    workspace_id
-                )
+                operation_lock = await self._get_workspace_archive_operation_lock(workspace_id)
                 async with operation_lock:
                     workspace = await self._enforce_workspace_access(
                         workspace_id,
@@ -2573,11 +2402,7 @@ class UserSpaceService:
                     )
                     await task_body(workspace)
         except Exception as exc:
-            detail = (
-                str(exc.detail)
-                if isinstance(exc, HTTPException)
-                else str(exc).strip() or log_message
-            )
+            detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc).strip() or log_message
             logger.exception("%s for %s: %s", log_message, workspace_id, detail)
             try:
                 await on_failure(detail)
@@ -2591,27 +2416,19 @@ class UserSpaceService:
 
     @staticmethod
     def _workspace_duplicate_copy_files_default(app_settings: Any) -> bool:
-        return bool(
-            getattr(app_settings, "userspace_duplicate_copy_files_default", True)
-        )
+        return bool(getattr(app_settings, "userspace_duplicate_copy_files_default", True))
 
     @staticmethod
     def _workspace_duplicate_copy_metadata_default(app_settings: Any) -> bool:
-        return bool(
-            getattr(app_settings, "userspace_duplicate_copy_metadata_default", True)
-        )
+        return bool(getattr(app_settings, "userspace_duplicate_copy_metadata_default", True))
 
     @staticmethod
     def _workspace_duplicate_copy_chats_default(app_settings: Any) -> bool:
-        return bool(
-            getattr(app_settings, "userspace_duplicate_copy_chats_default", False)
-        )
+        return bool(getattr(app_settings, "userspace_duplicate_copy_chats_default", False))
 
     @staticmethod
     def _workspace_duplicate_copy_mounts_default(app_settings: Any) -> bool:
-        return bool(
-            getattr(app_settings, "userspace_duplicate_copy_mounts_default", False)
-        )
+        return bool(getattr(app_settings, "userspace_duplicate_copy_mounts_default", False))
 
     @staticmethod
     def _duplicate_workspace_name_candidate(source_name: str, index: int) -> str:
@@ -2633,16 +2450,12 @@ class UserSpaceService:
             order={"createdAt": "asc"},
         )
         used: set[str] = {
-            str(getattr(workspace, "nameNormalized", "") or "")
-            for workspace in owner_workspaces
-            if str(getattr(workspace, "nameNormalized", "") or "")
+            str(getattr(workspace, "nameNormalized", "") or "") for workspace in owner_workspaces if str(getattr(workspace, "nameNormalized", "") or "")
         }
 
         next_index = 1
         while True:
-            candidate = self._duplicate_workspace_name_candidate(
-                source_name, next_index
-            )
+            candidate = self._duplicate_workspace_name_candidate(source_name, next_index)
             normalized = _normalize_workspace_name_for_uniqueness(candidate)
             if normalized and normalized not in used:
                 return candidate
@@ -2748,9 +2561,7 @@ class UserSpaceService:
         seen_ids: set[str],
         raw_ids: Any,
     ) -> None:
-        for source_id in UserSpaceService._normalize_workspace_archive_selection_ids(
-            raw_ids
-        ):
+        for source_id in UserSpaceService._normalize_workspace_archive_selection_ids(raw_ids):
             if source_id in seen_ids:
                 continue
             seen_ids.add(source_id)
@@ -2783,9 +2594,7 @@ class UserSpaceService:
     ) -> list[str]:
         filtered_ids: list[str] = []
         seen_ids: set[str] = set()
-        for source_id in UserSpaceService._normalize_workspace_archive_selection_ids(
-            raw_ids
-        ):
+        for source_id in UserSpaceService._normalize_workspace_archive_selection_ids(raw_ids):
             if source_id not in allowed_ids or source_id in seen_ids:
                 continue
             seen_ids.add(source_id)
@@ -2827,18 +2636,14 @@ class UserSpaceService:
                 payload.get("tool_group_ids"),
             )
 
-        allowed_tool_ids, skipped_tool_count = (
-            await self._resolve_existing_workspace_archive_selection_ids(
-                db.toolconfig,
-                tool_source_ids,
-                require_enabled=True,
-            )
+        allowed_tool_ids, skipped_tool_count = await self._resolve_existing_workspace_archive_selection_ids(
+            db.toolconfig,
+            tool_source_ids,
+            require_enabled=True,
         )
-        allowed_tool_group_ids, skipped_tool_group_count = (
-            await self._resolve_existing_workspace_archive_selection_ids(
-                db.toolgroup,
-                group_source_ids,
-            )
+        allowed_tool_group_ids, skipped_tool_group_count = await self._resolve_existing_workspace_archive_selection_ids(
+            db.toolgroup,
+            group_source_ids,
         )
 
         warnings: list[str] = []
@@ -2870,11 +2675,9 @@ class UserSpaceService:
                 where={"conversationId": source_conversation.id},
                 order={"createdAt": "asc"},
             )
-            source_tool_group_selections = (
-                await db.conversationtoolgroupselection.find_many(
-                    where={"conversationId": source_conversation.id},
-                    order={"createdAt": "asc"},
-                )
+            source_tool_group_selections = await db.conversationtoolgroupselection.find_many(
+                where={"conversationId": source_conversation.id},
+                order={"createdAt": "asc"},
             )
             source_branches = await db.conversationbranch.find_many(
                 where={"conversationId": source_conversation.id},
@@ -2883,52 +2686,21 @@ class UserSpaceService:
             payloads.append(
                 {
                     "id": str(source_conversation.id),
-                    "title": str(
-                        getattr(source_conversation, "title", "Untitled Chat")
-                        or "Untitled Chat"
-                    ),
+                    "title": str(getattr(source_conversation, "title", "Untitled Chat") or "Untitled Chat"),
                     "model": str(getattr(source_conversation, "model", "") or ""),
-                    "messages": self._json_safe_clone(
-                        getattr(source_conversation, "messages", None) or []
-                    ),
-                    "total_tokens": int(
-                        getattr(source_conversation, "totalTokens", 0) or 0
-                    ),
-                    "tool_output_mode": str(
-                        getattr(source_conversation, "toolOutputMode", "default")
-                        or "default"
-                    ),
-                    "active_branch_id": (
-                        str(getattr(source_conversation, "activeBranchId", "") or "")
-                        or None
-                    ),
-                    "tool_config_ids": [
-                        str(selection.toolConfigId)
-                        for selection in source_tool_selections
-                        if getattr(selection, "toolConfigId", None)
-                    ],
-                    "tool_group_ids": [
-                        str(selection.toolGroupId)
-                        for selection in source_tool_group_selections
-                        if getattr(selection, "toolGroupId", None)
-                    ],
+                    "messages": self._json_safe_clone(getattr(source_conversation, "messages", None) or []),
+                    "total_tokens": int(getattr(source_conversation, "totalTokens", 0) or 0),
+                    "tool_output_mode": str(getattr(source_conversation, "toolOutputMode", "default") or "default"),
+                    "active_branch_id": (str(getattr(source_conversation, "activeBranchId", "") or "") or None),
+                    "tool_config_ids": [str(selection.toolConfigId) for selection in source_tool_selections if getattr(selection, "toolConfigId", None)],
+                    "tool_group_ids": [str(selection.toolGroupId) for selection in source_tool_group_selections if getattr(selection, "toolGroupId", None)],
                     "branches": [
                         {
                             "id": str(source_branch.id),
-                            "parent_branch_id": (
-                                str(getattr(source_branch, "parentBranchId", "") or "")
-                                or None
-                            ),
-                            "branch_point_index": int(
-                                getattr(source_branch, "branchPointIndex", 0) or 0
-                            ),
-                            "branch_kind": (
-                                str(getattr(source_branch, "branchKind", "") or "")
-                                or None
-                            ),
-                            "preserved_messages": self._json_safe_clone(
-                                getattr(source_branch, "preservedMessages", None) or []
-                            ),
+                            "parent_branch_id": (str(getattr(source_branch, "parentBranchId", "") or "") or None),
+                            "branch_point_index": int(getattr(source_branch, "branchPointIndex", 0) or 0),
+                            "branch_kind": (str(getattr(source_branch, "branchKind", "") or "") or None),
+                            "preserved_messages": self._json_safe_clone(getattr(source_branch, "preservedMessages", None) or []),
                         }
                         for source_branch in source_branches
                     ],
@@ -2950,9 +2722,7 @@ class UserSpaceService:
             *,
             id_map: dict[str, str] | None = None,
         ) -> Any:
-            messages = self._json_safe_clone(
-                raw_messages if raw_messages is not None else []
-            )
+            messages = self._json_safe_clone(raw_messages if raw_messages is not None else [])
             if isinstance(messages, str):
                 stripped = messages.strip()
                 if not stripped:
@@ -3042,9 +2812,7 @@ class UserSpaceService:
                     allowed_tool_config_ids,
                 )
                 if allowed_tool_config_ids is not None
-                else self._normalize_workspace_archive_selection_ids(
-                    payload.get("tool_config_ids")
-                )
+                else self._normalize_workspace_archive_selection_ids(payload.get("tool_config_ids"))
             )
             for tool_config_id in resolved_tool_config_ids:
                 await db.conversationtoolselection.create(
@@ -3060,9 +2828,7 @@ class UserSpaceService:
                     allowed_tool_group_ids,
                 )
                 if allowed_tool_group_ids is not None
-                else self._normalize_workspace_archive_selection_ids(
-                    payload.get("tool_group_ids")
-                )
+                else self._normalize_workspace_archive_selection_ids(payload.get("tool_group_ids"))
             )
             for tool_group_id in resolved_tool_group_ids:
                 await db.conversationtoolgroupselection.create(
@@ -3073,18 +2839,13 @@ class UserSpaceService:
                 )
 
             branch_payloads = payload.get("branches") or []
-            branch_id_map = {
-                str(branch_payload.get("id") or str(uuid4())): str(uuid4())
-                for branch_payload in branch_payloads
-            }
+            branch_id_map = {str(branch_payload.get("id") or str(uuid4())): str(uuid4()) for branch_payload in branch_payloads}
             for branch_payload in branch_payloads:
                 source_branch_id = str(branch_payload.get("id") or "")
                 cloned_branch_id = branch_id_map.get(source_branch_id)
                 if not cloned_branch_id:
                     continue
-                parent_branch_id = (
-                    str(branch_payload.get("parent_branch_id") or "") or None
-                )
+                parent_branch_id = str(branch_payload.get("parent_branch_id") or "") or None
                 resolved_parent_branch_id: str | None = None
                 if parent_branch_id is not None:
                     resolved_parent_branch_id = branch_id_map.get(parent_branch_id)
@@ -3093,12 +2854,8 @@ class UserSpaceService:
                         "id": cloned_branch_id,
                         "conversationId": cloned_conversation_id,
                         "parentBranchId": resolved_parent_branch_id,
-                        "branchPointIndex": int(
-                            branch_payload.get("branch_point_index") or 0
-                        ),
-                        "branchKind": (
-                            str(branch_payload.get("branch_kind") or "") or None
-                        ),
+                        "branchPointIndex": int(branch_payload.get("branch_point_index") or 0),
+                        "branchKind": (str(branch_payload.get("branch_kind") or "") or None),
                         "preservedMessages": Json(
                             _rekey_chat_messages(
                                 branch_payload.get("preserved_messages"),
@@ -3110,9 +2867,7 @@ class UserSpaceService:
                     }
                 )
 
-            active_branch_id = branch_id_map.get(
-                str(payload.get("active_branch_id") or "") or ""
-            )
+            active_branch_id = branch_id_map.get(str(payload.get("active_branch_id") or "") or "")
             if active_branch_id:
                 await db.conversation.update(
                     where={"id": cloned_conversation_id},
@@ -3128,9 +2883,7 @@ class UserSpaceService:
         target_workspace_id: str,
         user_id: str,
     ) -> int:
-        chat_payloads = await self._serialize_workspace_chat_payloads(
-            source_workspace_id
-        )
+        chat_payloads = await self._serialize_workspace_chat_payloads(source_workspace_id)
         return await self._import_workspace_chat_payloads(
             target_workspace_id,
             user_id,
@@ -3154,29 +2907,11 @@ class UserSpaceService:
                     required_role="viewer",
                 )
                 app_settings = await repository.get_settings()
-                copy_files = (
-                    request.copy_files
-                    if request.copy_files is not None
-                    else self._workspace_duplicate_copy_files_default(app_settings)
-                )
-                copy_metadata = (
-                    request.copy_metadata
-                    if request.copy_metadata is not None
-                    else self._workspace_duplicate_copy_metadata_default(app_settings)
-                )
-                copy_chats = (
-                    request.copy_chats
-                    if request.copy_chats is not None
-                    else self._workspace_duplicate_copy_chats_default(app_settings)
-                )
-                copy_mounts = (
-                    request.copy_mounts
-                    if request.copy_mounts is not None
-                    else self._workspace_duplicate_copy_mounts_default(app_settings)
-                )
-                target_name = (
-                    request.name or ""
-                ).strip() or await self._allocate_next_duplicate_workspace_name(
+                copy_files = request.copy_files if request.copy_files is not None else self._workspace_duplicate_copy_files_default(app_settings)
+                copy_metadata = request.copy_metadata if request.copy_metadata is not None else self._workspace_duplicate_copy_metadata_default(app_settings)
+                copy_chats = request.copy_chats if request.copy_chats is not None else self._workspace_duplicate_copy_chats_default(app_settings)
+                copy_mounts = request.copy_mounts if request.copy_mounts is not None else self._workspace_duplicate_copy_mounts_default(app_settings)
+                target_name = (request.name or "").strip() or await self._allocate_next_duplicate_workspace_name(
                     user_id,
                     source_workspace.name,
                 )
@@ -3187,12 +2922,8 @@ class UserSpaceService:
                         {
                             "description": source_workspace.description,
                             "sqlite_persistence_mode": source_workspace.sqlite_persistence_mode,
-                            "selected_tool_ids": list(
-                                source_workspace.selected_tool_ids
-                            ),
-                            "selected_tool_group_ids": list(
-                                source_workspace.selected_tool_group_ids
-                            ),
+                            "selected_tool_ids": list(source_workspace.selected_tool_ids),
+                            "selected_tool_group_ids": list(source_workspace.selected_tool_group_ids),
                         }
                     )
 
@@ -3230,10 +2961,7 @@ class UserSpaceService:
                 self._seed_runtime_entrypoint_config(workspace.id)
                 await self._ensure_workspace_git_repo(workspace.id)
 
-                if copy_metadata and (
-                    getattr(source_workspace, "owner_user_id", None) == user_id
-                    or await self._is_admin_user(user_id)
-                ):
+                if copy_metadata and (getattr(source_workspace, "owner_user_id", None) == user_id or await self._is_admin_user(user_id)):
                     await self._copy_workspace_env_vars_for_duplicate(
                         source_workspace_id,
                         workspace.id,
@@ -3272,11 +3000,7 @@ class UserSpaceService:
                     workspace_name=workspace.name,
                 )
         except Exception as exc:
-            detail = (
-                str(exc.detail)
-                if isinstance(exc, HTTPException)
-                else str(exc).strip() or "Failed to duplicate workspace"
-            )
+            detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc).strip() or "Failed to duplicate workspace"
             logger.exception(
                 "Workspace duplicate task failed for %s: %s",
                 source_workspace_id,
@@ -3284,9 +3008,7 @@ class UserSpaceService:
             )
             if created_workspace_id is not None:
                 try:
-                    await repository.delete_workspace_conversations(
-                        created_workspace_id
-                    )
+                    await repository.delete_workspace_conversations(created_workspace_id)
                     await self.delete_workspace(created_workspace_id, user_id)
                 except Exception as cleanup_exc:
                     logger.warning(
@@ -3305,9 +3027,7 @@ class UserSpaceService:
         normalized = (name or "").strip().replace("\\", "/").lstrip("/")
         path = PurePosixPath(normalized)
         if not normalized or any(part in {"", ".", ".."} for part in path.parts):
-            raise HTTPException(
-                status_code=400, detail="Archive contains invalid paths"
-            )
+            raise HTTPException(status_code=400, detail="Archive contains invalid paths")
         return path
 
     @staticmethod
@@ -3339,10 +3059,7 @@ class UserSpaceService:
         if isinstance(value, dict):
             seen.add(object_id)
             try:
-                return {
-                    str(key): cls._json_safe_clone(item, seen)
-                    for key, item in value.items()
-                }
+                return {str(key): cls._json_safe_clone(item, seen) for key, item in value.items()}
             finally:
                 seen.discard(object_id)
 
@@ -3401,15 +3118,11 @@ class UserSpaceService:
         db = await get_db()
         model = self._workspace_env_var_model(db)
         existing_rows = await model.find_many(where={"workspaceId": workspace_id})
-        existing_by_key = {
-            str(getattr(row, "key", "") or ""): row for row in existing_rows
-        }
+        existing_by_key = {str(getattr(row, "key", "") or ""): row for row in existing_rows}
         created_count = 0
         preserved_value_count = 0
         for placeholder in placeholders:
-            key = self._normalize_workspace_env_var_key(
-                str(placeholder.get("key") or "")
-            )
+            key = self._normalize_workspace_env_var_key(str(placeholder.get("key") or ""))
             description = str(placeholder.get("description") or "").strip()
             existing = existing_by_key.get(key)
             if existing is None:
@@ -3457,17 +3170,13 @@ class UserSpaceService:
                     row
                     for row in mount_source_rows
                     if str(getattr(row, "name", "") or "") == source_name
-                    and str(getattr(row, "sourceType", "") or "")
-                    == str(placeholder.get("source_type") or "")
-                    and str(getattr(row, "mountBackend", "") or "")
-                    == str(placeholder.get("mount_backend") or "")
+                    and str(getattr(row, "sourceType", "") or "") == str(placeholder.get("source_type") or "")
+                    and str(getattr(row, "mountBackend", "") or "") == str(placeholder.get("mount_backend") or "")
                 ),
                 None,
             )
             if matching_source is None:
-                warnings.append(
-                    f"Mount placeholder not resolved: {source_name} -> {target_path}"
-                )
+                warnings.append(f"Mount placeholder not resolved: {source_name} -> {target_path}")
                 continue
             try:
                 created_mount = await self.create_workspace_mount(
@@ -3480,9 +3189,7 @@ class UserSpaceService:
                         description=str(placeholder.get("description") or "") or None,
                         auto_sync_enabled=False,
                         sync_interval_seconds=placeholder.get("sync_interval_seconds"),
-                        sync_mode=self._normalize_workspace_mount_sync_configuration_value(
-                            str(placeholder.get("sync_mode") or "merge")
-                        ),
+                        sync_mode=self._normalize_workspace_mount_sync_configuration_value(str(placeholder.get("sync_mode") or "merge")),
                     ),
                 )
                 if not bool(placeholder.get("enabled", True)):
@@ -3493,18 +3200,10 @@ class UserSpaceService:
                         UpdateWorkspaceMountRequest(enabled=False),
                     )
                 if bool(placeholder.get("auto_sync_enabled")):
-                    warnings.append(
-                        f"Imported mount {target_path} with auto-sync disabled until credentials are configured"
-                    )
+                    warnings.append(f"Imported mount {target_path} with auto-sync disabled until credentials are configured")
             except Exception as exc:
-                detail = (
-                    str(exc.detail)
-                    if isinstance(exc, HTTPException)
-                    else str(exc).strip() or "failed to create mount"
-                )
-                warnings.append(
-                    f"Mount placeholder not resolved for {target_path}: {detail}"
-                )
+                detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc).strip() or "failed to create mount"
+                warnings.append(f"Mount placeholder not resolved for {target_path}: {detail}")
         return warnings
 
     @staticmethod
@@ -3522,9 +3221,7 @@ class UserSpaceService:
     ) -> list[str]:
         prefixes: list[str] = [".ragtime/s3"]
         for mount in mounts:
-            relative_target = workspace_mount_target_repo_relative_path(
-                mount.target_path
-            )
+            relative_target = workspace_mount_target_repo_relative_path(mount.target_path)
             if not relative_target:
                 continue
             prefixes.append(relative_target)
@@ -3538,18 +3235,13 @@ class UserSpaceService:
         manifest: dict[str, Any],
         ignored_prefixes: list[str],
         extra_files: dict[str, Path],
-        progress_callback: (
-            Callable[[int, int, int, int, str | None], None] | None
-        ) = None,
+        progress_callback: (Callable[[int, int, int, int, str | None], None] | None) = None,
     ) -> None:
         ignored_prefixes = deduplicate_ancestor_paths(ignored_prefixes)
         staged_files = sync_scope_relative_paths(source_root)
         archive_entries: list[tuple[str, Path]] = []
         for relative_path, source_path in staged_files.items():
-            if any(
-                workspace_path_matches_mount_prefix(relative_path, prefix)
-                for prefix in ignored_prefixes
-            ):
+            if any(workspace_path_matches_mount_prefix(relative_path, prefix) for prefix in ignored_prefixes):
                 continue
             if relative_path == ".ragtime/.runtime-bootstrap.done":
                 continue
@@ -3680,19 +3372,13 @@ class UserSpaceService:
 
         manifest_path = extract_dir / "manifest.json"
         if not manifest_path.is_file():
-            raise HTTPException(
-                status_code=400, detail="Archive is missing manifest.json"
-            )
+            raise HTTPException(status_code=400, detail="Archive is missing manifest.json")
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception as exc:
-            raise HTTPException(
-                status_code=400, detail="Archive manifest is invalid"
-            ) from exc
+            raise HTTPException(status_code=400, detail="Archive manifest is invalid") from exc
         if not isinstance(manifest, dict) or int(manifest.get("version") or 0) != 1:
-            raise HTTPException(
-                status_code=400, detail="Unsupported archive manifest version"
-            )
+            raise HTTPException(status_code=400, detail="Unsupported archive manifest version")
         return manifest
 
     @staticmethod
@@ -3704,15 +3390,10 @@ class UserSpaceService:
         preserved_prefixes = deduplicate_ancestor_paths(preserved_prefixes)
         if workspace_files_dir.exists():
             for existing_path in sorted(workspace_files_dir.rglob("*"), reverse=True):
-                relative_path_str = existing_path.relative_to(
-                    workspace_files_dir
-                ).as_posix()
+                relative_path_str = existing_path.relative_to(workspace_files_dir).as_posix()
                 if relative_path_str == ".git" or relative_path_str.startswith(".git/"):
                     continue
-                if any(
-                    workspace_path_matches_mount_prefix(relative_path_str, prefix)
-                    for prefix in preserved_prefixes
-                ):
+                if any(workspace_path_matches_mount_prefix(relative_path_str, prefix) for prefix in preserved_prefixes):
                     continue
                 if existing_path.is_file() or existing_path.is_symlink():
                     existing_path.unlink(missing_ok=True)
@@ -3733,15 +3414,9 @@ class UserSpaceService:
 
     async def _reset_workspace_snapshot_state(self, workspace_id: str) -> None:
         db = await get_db()
-        await db.execute_raw(
-            f"DELETE FROM userspace_snapshots WHERE workspace_id = {self._sql_quote(workspace_id)}"
-        )
-        await db.execute_raw(
-            f"DELETE FROM userspace_snapshot_branches WHERE workspace_id = {self._sql_quote(workspace_id)}"
-        )
-        await db.execute_raw(
-            f"UPDATE workspaces SET current_snapshot_id = NULL, current_snapshot_branch_id = NULL WHERE id = {self._sql_quote(workspace_id)}"
-        )
+        await db.execute_raw(f"DELETE FROM userspace_snapshots WHERE workspace_id = {self._sql_quote(workspace_id)}")
+        await db.execute_raw(f"DELETE FROM userspace_snapshot_branches WHERE workspace_id = {self._sql_quote(workspace_id)}")
+        await db.execute_raw(f"UPDATE workspaces SET current_snapshot_id = NULL, current_snapshot_branch_id = NULL WHERE id = {self._sql_quote(workspace_id)}")
         await asyncio.to_thread(
             self._remove_workspace_archive_dir_sync,
             self._workspace_files_dir(workspace_id) / ".git",
@@ -3761,9 +3436,7 @@ class UserSpaceService:
                 check=False,
             )
             if result.returncode != 0:
-                raise RuntimeError(
-                    result.stderr.strip() or "Failed to restore snapshot bundle"
-                )
+                raise RuntimeError(result.stderr.strip() or "Failed to restore snapshot bundle")
             source_git_dir = temp_repo / ".git"
             if not source_git_dir.is_dir():
                 raise RuntimeError("Snapshot bundle did not contain a git repository")
@@ -3784,18 +3457,14 @@ class UserSpaceService:
             check=False,
         )
         if git_status.returncode != 0 or git_status.stdout.strip():
-            warnings.append(
-                "Snapshot history was skipped because the workspace has uncommitted changes"
-            )
+            warnings.append("Snapshot history was skipped because the workspace has uncommitted changes")
             return None, None, warnings
         db = await get_db()
         cursor_rows = await db.query_raw(
             f"SELECT current_snapshot_id, current_snapshot_branch_id FROM workspaces WHERE id = {self._sql_quote(workspace_id)} LIMIT 1"
         )
         if not cursor_rows or not cursor_rows[0].get("current_snapshot_id"):
-            warnings.append(
-                "Snapshot history was skipped because the workspace has no snapshot timeline"
-            )
+            warnings.append("Snapshot history was skipped because the workspace has no snapshot timeline")
             return None, None, warnings
         branch_rows = await db.query_raw(
             f"SELECT id, name, git_ref_name, base_snapshot_id, branched_from_snapshot_id, is_active, created_at FROM userspace_snapshot_branches WHERE workspace_id = {self._sql_quote(workspace_id)} ORDER BY created_at ASC"
@@ -3804,9 +3473,7 @@ class UserSpaceService:
             f"SELECT id, branch_id, git_commit_hash, message, remote_commit_hash, file_count, parent_snapshot_id, created_at FROM userspace_snapshots WHERE workspace_id = {self._sql_quote(workspace_id)} ORDER BY created_at ASC"
         )
         if not branch_rows or not snapshot_rows:
-            warnings.append(
-                "Snapshot history was skipped because the workspace snapshot records are incomplete"
-            )
+            warnings.append("Snapshot history was skipped because the workspace snapshot records are incomplete")
             return None, None, warnings
         bundle_path = task_dir / "snapshots" / "workspace.bundle"
         bundle_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3816,36 +3483,23 @@ class UserSpaceService:
             check=False,
         )
         if bundle_result.returncode != 0:
-            warnings.append(
-                bundle_result.stderr.strip()
-                or "Snapshot history was skipped because the git bundle could not be created"
-            )
+            warnings.append(bundle_result.stderr.strip() or "Snapshot history was skipped because the git bundle could not be created")
             return None, None, warnings
         return (
             {
                 "cursor": {
-                    "current_snapshot_id": str(
-                        cursor_rows[0].get("current_snapshot_id") or ""
-                    ),
-                    "current_snapshot_branch_id": str(
-                        cursor_rows[0].get("current_snapshot_branch_id") or ""
-                    ),
+                    "current_snapshot_id": str(cursor_rows[0].get("current_snapshot_id") or ""),
+                    "current_snapshot_branch_id": str(cursor_rows[0].get("current_snapshot_branch_id") or ""),
                 },
                 "branches": [
                     {
                         "id": str(row.get("id") or ""),
                         "name": str(row.get("name") or "Branch"),
                         "git_ref_name": str(row.get("git_ref_name") or ""),
-                        "base_snapshot_id": str(row.get("base_snapshot_id") or "")
-                        or None,
-                        "branched_from_snapshot_id": str(
-                            row.get("branched_from_snapshot_id") or ""
-                        )
-                        or None,
+                        "base_snapshot_id": str(row.get("base_snapshot_id") or "") or None,
+                        "branched_from_snapshot_id": str(row.get("branched_from_snapshot_id") or "") or None,
                         "is_active": bool(row.get("is_active")),
-                        "created_at": _coerce_utc_datetime(
-                            row.get("created_at")
-                        ).isoformat(),
+                        "created_at": _coerce_utc_datetime(row.get("created_at")).isoformat(),
                     }
                     for row in branch_rows
                 ],
@@ -3853,17 +3507,12 @@ class UserSpaceService:
                     {
                         "id": str(row.get("id") or ""),
                         "branch_id": str(row.get("branch_id") or ""),
-                        "git_commit_hash": str(row.get("git_commit_hash") or "")
-                        or None,
+                        "git_commit_hash": str(row.get("git_commit_hash") or "") or None,
                         "message": str(row.get("message") or "") or None,
-                        "remote_commit_hash": str(row.get("remote_commit_hash") or "")
-                        or None,
+                        "remote_commit_hash": str(row.get("remote_commit_hash") or "") or None,
                         "file_count": int(row.get("file_count") or 0),
-                        "parent_snapshot_id": str(row.get("parent_snapshot_id") or "")
-                        or None,
-                        "created_at": _coerce_utc_datetime(
-                            row.get("created_at")
-                        ).isoformat(),
+                        "parent_snapshot_id": str(row.get("parent_snapshot_id") or "") or None,
+                        "created_at": _coerce_utc_datetime(row.get("created_at")).isoformat(),
                     }
                     for row in snapshot_rows
                 ],
@@ -3884,25 +3533,17 @@ class UserSpaceService:
         if not snapshots_manifest:
             return 0, warnings
         db = await get_db()
-        existing_rows = await db.query_raw(
-            f"SELECT id FROM userspace_snapshot_branches WHERE workspace_id = {self._sql_quote(workspace_id)} LIMIT 1"
-        )
+        existing_rows = await db.query_raw(f"SELECT id FROM userspace_snapshot_branches WHERE workspace_id = {self._sql_quote(workspace_id)} LIMIT 1")
         if existing_rows:
-            warnings.append(
-                "Snapshot history was skipped because the target workspace already has snapshots"
-            )
+            warnings.append("Snapshot history was skipped because the target workspace already has snapshots")
             return 0, warnings
         bundle_relative_path = str(snapshots_manifest.get("bundle_path") or "").strip()
         if not bundle_relative_path:
-            warnings.append(
-                "Snapshot history was skipped because the archive is missing the snapshot bundle"
-            )
+            warnings.append("Snapshot history was skipped because the archive is missing the snapshot bundle")
             return 0, warnings
         bundle_path = extract_dir / bundle_relative_path
         if not bundle_path.is_file():
-            warnings.append(
-                "Snapshot history was skipped because the snapshot bundle could not be extracted"
-            )
+            warnings.append("Snapshot history was skipped because the snapshot bundle could not be extracted")
             return 0, warnings
         await asyncio.to_thread(
             self._restore_workspace_snapshot_bundle_sync,
@@ -3932,9 +3573,7 @@ class UserSpaceService:
             if not cloned_branch_id:
                 continue
             base_snapshot_id = str(branch.get("base_snapshot_id") or "").strip()
-            branched_from_snapshot_id = str(
-                branch.get("branched_from_snapshot_id") or ""
-            ).strip()
+            branched_from_snapshot_id = str(branch.get("branched_from_snapshot_id") or "").strip()
             await db.execute_raw(f"""
                 INSERT INTO userspace_snapshot_branches
                 (id, workspace_id, name, git_ref_name, base_snapshot_id, branched_from_snapshot_id, is_active, created_at, updated_at)
@@ -3942,12 +3581,12 @@ class UserSpaceService:
                 (
                     {self._sql_quote(cloned_branch_id)},
                     {self._sql_quote(workspace_id)},
-                    {self._sql_quote(str(branch.get('name') or 'Branch'))},
-                    {self._sql_quote(str(branch.get('git_ref_name') or ''))},
+                    {self._sql_quote(str(branch.get("name") or "Branch"))},
+                    {self._sql_quote(str(branch.get("git_ref_name") or ""))},
                     {self._sql_quote(snapshot_id_map.get(base_snapshot_id) if base_snapshot_id else None)},
                     {self._sql_quote(snapshot_id_map.get(branched_from_snapshot_id) if branched_from_snapshot_id else None)},
-                    {'TRUE' if bool(branch.get('is_active')) else 'FALSE'},
-                    {self._sql_quote(str(branch.get('created_at') or _utc_now().isoformat()))},
+                    {"TRUE" if bool(branch.get("is_active")) else "FALSE"},
+                    {self._sql_quote(str(branch.get("created_at") or _utc_now().isoformat()))},
                     NOW()
                 )
                 """)
@@ -3970,34 +3609,22 @@ class UserSpaceService:
                     {self._sql_quote(cloned_snapshot_id)},
                     {self._sql_quote(workspace_id)},
                     {self._sql_quote(cloned_branch_id)},
-                    {self._sql_quote(str(snapshot.get('git_commit_hash') or '') or None)},
-                    {self._sql_quote(str(snapshot.get('message') or '') or None)},
-                    {self._sql_quote(str(snapshot.get('remote_commit_hash') or '') or None)},
-                    {int(snapshot.get('file_count') or 0)},
+                    {self._sql_quote(str(snapshot.get("git_commit_hash") or "") or None)},
+                    {self._sql_quote(str(snapshot.get("message") or "") or None)},
+                    {self._sql_quote(str(snapshot.get("remote_commit_hash") or "") or None)},
+                    {int(snapshot.get("file_count") or 0)},
                     {self._sql_quote(snapshot_id_map.get(parent_snapshot_id) if parent_snapshot_id else None)},
                     {self._sql_quote(user_id)},
-                    {self._sql_quote(str(snapshot.get('created_at') or _utc_now().isoformat()))},
+                    {self._sql_quote(str(snapshot.get("created_at") or _utc_now().isoformat()))},
                     NOW()
                 )
                 """)
             imported_snapshot_count += 1
         cursor = snapshots_manifest.get("cursor") or {}
-        source_current_snapshot_id = (
-            str(cursor.get("current_snapshot_id") or "").strip() or None
-        )
-        source_current_branch_id = (
-            str(cursor.get("current_snapshot_branch_id") or "").strip() or None
-        )
-        current_snapshot_id = (
-            snapshot_id_map.get(source_current_snapshot_id)
-            if source_current_snapshot_id
-            else None
-        )
-        current_branch_id = (
-            branch_id_map.get(source_current_branch_id)
-            if source_current_branch_id
-            else None
-        )
+        source_current_snapshot_id = str(cursor.get("current_snapshot_id") or "").strip() or None
+        source_current_branch_id = str(cursor.get("current_snapshot_branch_id") or "").strip() or None
+        current_snapshot_id = snapshot_id_map.get(source_current_snapshot_id) if source_current_snapshot_id else None
+        current_branch_id = branch_id_map.get(source_current_branch_id) if source_current_branch_id else None
         await self._set_current_snapshot_cursor(
             workspace_id,
             current_snapshot_id,
@@ -4043,20 +3670,14 @@ class UserSpaceService:
         )
         await self.update_workspace(workspace_id, update_request, user_id)
 
-        env_created_count, env_preserved_count = (
-            await self._import_workspace_env_var_placeholders(
-                workspace_id,
-                cast(list[dict[str, Any]], manifest.get("env_vars") or []),
-            )
+        env_created_count, env_preserved_count = await self._import_workspace_env_var_placeholders(
+            workspace_id,
+            cast(list[dict[str, Any]], manifest.get("env_vars") or []),
         )
         if env_created_count:
-            warnings.append(
-                f"Imported {env_created_count} workspace env var placeholders without secret values"
-            )
+            warnings.append(f"Imported {env_created_count} workspace env var placeholders without secret values")
         if env_preserved_count:
-            warnings.append(
-                f"Kept {env_preserved_count} existing workspace env var values"
-            )
+            warnings.append(f"Kept {env_preserved_count} existing workspace env var values")
 
         warnings.extend(
             await self._import_workspace_mount_placeholders(
@@ -4075,13 +3696,11 @@ class UserSpaceService:
 
         imported_snapshot_count = 0
         if include_snapshots:
-            imported_snapshot_count, snapshot_warnings = (
-                await self._import_workspace_snapshot_archive_payload(
-                    workspace_id,
-                    user_id,
-                    cast(dict[str, Any] | None, manifest.get("snapshots")),
-                    extract_dir,
-                )
+            imported_snapshot_count, snapshot_warnings = await self._import_workspace_snapshot_archive_payload(
+                workspace_id,
+                user_id,
+                cast(dict[str, Any] | None, manifest.get("snapshots")),
+                extract_dir,
             )
             warnings.extend(snapshot_warnings)
         imported_chat_count = 0
@@ -4122,39 +3741,25 @@ class UserSpaceService:
                     "selected_tool_ids": list(workspace.selected_tool_ids),
                     "selected_tool_group_ids": list(workspace.selected_tool_group_ids),
                 },
-                "env_vars": await self._serialize_workspace_env_var_placeholders(
-                    workspace_id
-                ),
-                "mounts": [
-                    self._serialize_workspace_mount_placeholder(mount)
-                    for mount in mounts
-                ],
+                "env_vars": await self._serialize_workspace_env_var_placeholders(workspace_id),
+                "mounts": [self._serialize_workspace_mount_placeholder(mount) for mount in mounts],
             }
             scm_metadata = self._serialize_workspace_archive_scm_metadata(workspace.scm)
             if scm_metadata is not None:
                 manifest["scm"] = scm_metadata
             if request.include_chat_history:
-                manifest["chats"] = await self._serialize_workspace_chat_payloads(
-                    workspace_id
-                )
+                manifest["chats"] = await self._serialize_workspace_chat_payloads(workspace_id)
             extra_files: dict[str, Path] = {}
             if request.include_snapshots:
-                snapshot_manifest, bundle_path, snapshot_warnings = (
-                    await self._build_workspace_snapshot_archive_payload(
-                        workspace_id,
-                        task_dir,
-                    )
+                snapshot_manifest, bundle_path, snapshot_warnings = await self._build_workspace_snapshot_archive_payload(
+                    workspace_id,
+                    task_dir,
                 )
                 warnings.extend(snapshot_warnings)
                 if snapshot_manifest is not None:
                     manifest["snapshots"] = snapshot_manifest
                     if bundle_path is not None:
-                        extra_files[
-                            str(
-                                snapshot_manifest.get("bundle_path")
-                                or "snapshots/workspace.bundle"
-                            )
-                        ] = bundle_path
+                        extra_files[str(snapshot_manifest.get("bundle_path") or "snapshots/workspace.bundle")] = bundle_path
 
             archive_file_name = self._workspace_archive_export_file_name(
                 workspace.name,
@@ -4238,9 +3843,7 @@ class UserSpaceService:
         extract_dir = task_dir / "extracted"
 
         async def _task_body(_: Any) -> None:
-            archive_format = self._detect_workspace_archive_format(
-                uploaded_archive_path.name
-            )
+            archive_format = self._detect_workspace_archive_format(uploaded_archive_path.name)
             await self._update_workspace_archive_import_task_phase(
                 workspace_id,
                 task_id,
@@ -4266,15 +3869,11 @@ class UserSpaceService:
                 self._replace_workspace_files_from_archive_sync,
                 self._workspace_files_dir(workspace_id),
                 extract_dir / "files",
-                self._workspace_archive_preserved_prefixes_from_mounts(
-                    workspace_mounts
-                ),
+                self._workspace_archive_preserved_prefixes_from_mounts(workspace_mounts),
             )
             await self._reset_workspace_snapshot_state(workspace_id)
             self.invalidate_entrypoint_cache(workspace_id)
-            await self.clear_workspace_changed_file_acknowledgements_for_all_users(
-                workspace_id
-            )
+            await self.clear_workspace_changed_file_acknowledgements_for_all_users(workspace_id)
 
             await self._update_workspace_archive_import_task_phase(
                 workspace_id,
@@ -4282,15 +3881,13 @@ class UserSpaceService:
                 "importing_metadata",
                 archive_format=archive_format,
             )
-            imported_warnings, imported_snapshot_count, imported_chat_count = (
-                await self._apply_workspace_archive_manifest(
-                    workspace_id,
-                    user_id,
-                    manifest,
-                    include_snapshots=include_snapshots,
-                    include_chat_history=include_chat_history,
-                    extract_dir=extract_dir,
-                )
+            imported_warnings, imported_snapshot_count, imported_chat_count = await self._apply_workspace_archive_manifest(
+                workspace_id,
+                user_id,
+                manifest,
+                include_snapshots=include_snapshots,
+                include_chat_history=include_chat_history,
+                extract_dir=extract_dir,
             )
             warnings[:] = imported_warnings
             if imported_snapshot_count == 0:
@@ -4298,9 +3895,7 @@ class UserSpaceService:
             await self._touch_workspace(workspace_id)
             from ragtime.userspace.runtime_service import userspace_runtime_service
 
-            await userspace_runtime_service.invalidate_workspace_runtime_state(
-                workspace_id
-            )
+            await userspace_runtime_service.invalidate_workspace_runtime_state(workspace_id)
             await userspace_runtime_service.bump_workspace_generation(
                 workspace_id,
                 "archive_import",
@@ -4410,9 +4005,7 @@ class UserSpaceService:
         self._prune_expired_workspace_archive_export_task_statuses()
         record = self._workspace_archive_export_task_statuses.get(task_id)
         if record is None:
-            await self._clear_missing_workspace_archive_task_reference(
-                "export", task_id
-            )
+            await self._clear_missing_workspace_archive_task_reference("export", task_id)
             raise HTTPException(status_code=404, detail="Archive export task not found")
         if record.requested_by_user_id != user_id and not is_admin:
             raise HTTPException(status_code=404, detail="Archive export task not found")
@@ -4432,13 +4025,9 @@ class UserSpaceService:
         )
         record = self._workspace_archive_export_task_statuses.get(task_id)
         if task.phase != "completed" or record is None or record.archive_path is None:
-            raise HTTPException(
-                status_code=409, detail="Archive export is not ready yet"
-            )
+            raise HTTPException(status_code=409, detail="Archive export is not ready yet")
         if not record.archive_path.is_file():
-            raise HTTPException(
-                status_code=404, detail="Archive file is no longer available"
-            )
+            raise HTTPException(status_code=404, detail="Archive file is no longer available")
         return record.archive_path, record.archive_file_name or record.archive_path.name
 
     async def list_workspace_archive_exports(
@@ -4467,9 +4056,7 @@ class UserSpaceService:
                 continue
             if not record.archive_file_name or record.archive_size_bytes is None:
                 continue
-            archive_format: WorkspaceArchiveFormat = (
-                "zip" if record.archive_format == "zip" else "tar.gz"
-            )
+            archive_format: WorkspaceArchiveFormat = "zip" if record.archive_format == "zip" else "tar.gz"
             items.append(
                 UserSpaceWorkspaceArchiveExportListItem(
                     task_id=record.task_id,
@@ -4549,9 +4136,7 @@ class UserSpaceService:
             now = _utc_now()
             task_dir = self._workspace_archive_task_dir(task_id)
             task_dir.mkdir(parents=True, exist_ok=True)
-            final_archive_path = (
-                task_dir / f"upload{self._workspace_archive_extension(archive_format)}"
-            )
+            final_archive_path = task_dir / f"upload{self._workspace_archive_extension(archive_format)}"
             shutil.move(str(uploaded_archive_path), str(final_archive_path))
             record = _WorkspaceArchiveImportTaskRecord(
                 task_id=task_id,
@@ -4608,9 +4193,7 @@ class UserSpaceService:
         self._prune_expired_workspace_archive_import_task_statuses()
         record = self._workspace_archive_import_task_statuses.get(task_id)
         if record is None:
-            await self._clear_missing_workspace_archive_task_reference(
-                "import", task_id
-            )
+            await self._clear_missing_workspace_archive_task_reference("import", task_id)
             raise HTTPException(status_code=404, detail="Archive import task not found")
         if record.requested_by_user_id != user_id and not is_admin:
             raise HTTPException(status_code=404, detail="Archive import task not found")
@@ -4634,10 +4217,7 @@ class UserSpaceService:
         if workspace.sqlite_persistence_mode != "include":
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "SQLite persistence mode must be enabled (set to 'include') "
-                    "on this workspace before importing a SQL dump."
-                ),
+                detail=("SQLite persistence mode must be enabled (set to 'include') on this workspace before importing a SQL dump."),
             )
 
         self._prune_expired_workspace_sqlite_import_task_statuses()
@@ -4738,17 +4318,14 @@ class UserSpaceService:
         records = [
             record
             for record in self._workspace_sqlite_import_task_statuses.values()
-            if record.workspace_id == workspace_id
-            and (record.requested_by_user_id == user_id or is_admin)
+            if record.workspace_id == workspace_id and (record.requested_by_user_id == user_id or is_admin)
         ]
         if not records:
             return None
         records.sort(key=lambda record: record.updated_at, reverse=True)
         return self._workspace_sqlite_import_task_model(records[0])
 
-    def _apply_workspace_sqlite_import_progress(
-        self, task_id: str, progress_path: Path
-    ) -> None:
+    def _apply_workspace_sqlite_import_progress(self, task_id: str, progress_path: Path) -> None:
         if not progress_path.is_file():
             return
         try:
@@ -4813,14 +4390,9 @@ class UserSpaceService:
                 )
                 + f" (dialect: {result.dialect})."
             )
-        return (
-            f"Import failed with {len(result.errors)} error(s) "
-            f"after {result.statements_executed} statement(s)."
-        )
+        return f"Import failed with {len(result.errors)} error(s) after {result.statements_executed} statement(s)."
 
-    def _finish_workspace_sqlite_import_from_stdout(
-        self, task_id: str, stdout_path: Path
-    ) -> None:
+    def _finish_workspace_sqlite_import_from_stdout(self, task_id: str, stdout_path: Path) -> None:
         payload = json.loads(stdout_path.read_text(encoding="utf-8"))
         result = SqlImportResult(
             success=bool(payload.get("success")),
@@ -4846,9 +4418,7 @@ class UserSpaceService:
             error=None if result.success else self._sqlite_import_message(result),
         )
 
-    async def _monitor_rehydrated_workspace_sqlite_import_task(
-        self, task_id: str
-    ) -> None:
+    async def _monitor_rehydrated_workspace_sqlite_import_task(self, task_id: str) -> None:
         record = self._workspace_sqlite_import_task_statuses.get(task_id)
         if record is None:
             return
@@ -4856,24 +4426,13 @@ class UserSpaceService:
             started_monotonic = _time.monotonic()
             while record.phase not in {"completed", "failed"}:
                 if record.progress_path:
-                    self._apply_workspace_sqlite_import_progress(
-                        task_id, record.progress_path
-                    )
-                if (
-                    record.stdout_path
-                    and record.stdout_path.is_file()
-                    and record.stdout_path.stat().st_size > 0
-                ):
-                    self._finish_workspace_sqlite_import_from_stdout(
-                        task_id, record.stdout_path
-                    )
+                    self._apply_workspace_sqlite_import_progress(task_id, record.progress_path)
+                if record.stdout_path and record.stdout_path.is_file() and record.stdout_path.stat().st_size > 0:
+                    self._finish_workspace_sqlite_import_from_stdout(task_id, record.stdout_path)
                     break
                 if not self._is_process_running(record.process_id):
                     break
-                if (
-                    _time.monotonic() - started_monotonic
-                    > _SQLITE_IMPORT_SUBPROCESS_TIMEOUT_SECONDS
-                ):
+                if _time.monotonic() - started_monotonic > _SQLITE_IMPORT_SUBPROCESS_TIMEOUT_SECONDS:
                     if record.process_id:
                         try:
                             os.kill(record.process_id, 9)
@@ -4884,14 +4443,10 @@ class UserSpaceService:
 
             if record.phase not in {"completed", "failed"}:
                 if record.stderr_path and record.stderr_path.is_file():
-                    detail = record.stderr_path.read_text(
-                        encoding="utf-8", errors="replace"
-                    ).strip()
+                    detail = record.stderr_path.read_text(encoding="utf-8", errors="replace").strip()
                 else:
                     detail = ""
-                raise RuntimeError(
-                    detail or "SQLite import process exited unexpectedly"
-                )
+                raise RuntimeError(detail or "SQLite import process exited unexpectedly")
         except Exception as exc:
             logger.exception("Recovered workspace SQLite import task failed")
             detail = str(exc) or "SQLite import failed"
@@ -4926,18 +4481,12 @@ class UserSpaceService:
     ) -> None:
         del user_id
         remove_dump = True
-        sqlite_path = (
-            self._workspace_files_dir(workspace_id) / ".ragtime" / "db" / "app.sqlite3"
-        )
+        sqlite_path = self._workspace_files_dir(workspace_id) / ".ragtime" / "db" / "app.sqlite3"
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-        self._set_workspace_sqlite_import_task_phase(
-            task_id, "waiting_for_slot", progress=_SQLITE_IMPORT_WAITING_PROGRESS
-        )
+        self._set_workspace_sqlite_import_task_phase(task_id, "waiting_for_slot", progress=_SQLITE_IMPORT_WAITING_PROGRESS)
         try:
             async with self._workspace_sqlite_import_semaphore:
-                self._set_workspace_sqlite_import_task_phase(
-                    task_id, "staging_upload", progress=_SQLITE_IMPORT_STAGING_PROGRESS
-                )
+                self._set_workspace_sqlite_import_task_phase(task_id, "staging_upload", progress=_SQLITE_IMPORT_STAGING_PROGRESS)
                 stdout_path.parent.mkdir(parents=True, exist_ok=True)
                 stdout_path.write_text("", encoding="utf-8")
                 stderr_path.write_text("", encoding="utf-8")
@@ -4970,21 +4519,12 @@ class UserSpaceService:
                 try:
                     started_monotonic = _time.monotonic()
                     while not wait_task.done():
-                        if (
-                            _time.monotonic() - started_monotonic
-                            > _SQLITE_IMPORT_SUBPROCESS_TIMEOUT_SECONDS
-                        ):
+                        if _time.monotonic() - started_monotonic > _SQLITE_IMPORT_SUBPROCESS_TIMEOUT_SECONDS:
                             process.kill()
                             await wait_task
-                            raise RuntimeError(
-                                "SQL import timed out before it could complete"
-                            )
-                        self._apply_workspace_sqlite_import_progress(
-                            task_id, progress_path
-                        )
-                        await asyncio.sleep(
-                            _SQLITE_IMPORT_SUBPROCESS_PROGRESS_INTERVAL_SECONDS
-                        )
+                            raise RuntimeError("SQL import timed out before it could complete")
+                        self._apply_workspace_sqlite_import_progress(task_id, progress_path)
+                        await asyncio.sleep(_SQLITE_IMPORT_SUBPROCESS_PROGRESS_INTERVAL_SECONDS)
                     await wait_task
                 except asyncio.CancelledError:
                     remove_dump = False
@@ -4992,13 +4532,8 @@ class UserSpaceService:
 
                 self._apply_workspace_sqlite_import_progress(task_id, progress_path)
                 if process.returncode != 0:
-                    detail = stderr_path.read_text(
-                        encoding="utf-8", errors="replace"
-                    ).strip()
-                    raise RuntimeError(
-                        detail
-                        or f"SQL import subprocess failed with exit code {process.returncode}"
-                    )
+                    detail = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
+                    raise RuntimeError(detail or f"SQL import subprocess failed with exit code {process.returncode}")
 
                 self._finish_workspace_sqlite_import_from_stdout(task_id, stdout_path)
         except Exception as exc:
@@ -5017,9 +4552,7 @@ class UserSpaceService:
                 try:
                     dump_path.unlink(missing_ok=True)
                 except Exception:
-                    logger.warning(
-                        "Failed to remove SQLite import upload: %s", dump_path
-                    )
+                    logger.warning("Failed to remove SQLite import upload: %s", dump_path)
 
     async def _run_workspace_create_task(
         self,
@@ -5065,11 +4598,7 @@ class UserSpaceService:
                     workspace_name=workspace.name,
                 )
         except Exception as exc:
-            detail = (
-                str(exc.detail)
-                if isinstance(exc, HTTPException)
-                else str(exc).strip() or "Failed to create workspace"
-            )
+            detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc).strip() or "Failed to create workspace"
             logger.exception("Workspace create task failed: %s", detail)
             self._set_workspace_create_task_phase(
                 task_id,
@@ -5104,9 +4633,7 @@ class UserSpaceService:
         )
         queued_request = request.model_copy(deep=True)
         task = asyncio.create_task(
-            self._run_workspace_create_task(
-                task_id, queued_request, user_id, resolved_model
-            ),
+            self._run_workspace_create_task(task_id, queued_request, user_id, resolved_model),
             name=f"userspace-workspace-create:{task_id}",
         )
 
@@ -5137,9 +4664,7 @@ class UserSpaceService:
 
         app_settings = await repository.get_settings()
         resolved_model = _resolve_default_conversation_model(app_settings)
-        target_name = (
-            request.name or ""
-        ).strip() or await self._allocate_next_duplicate_workspace_name(
+        target_name = (request.name or "").strip() or await self._allocate_next_duplicate_workspace_name(
             user_id,
             source_workspace.name,
         )
@@ -5195,9 +4720,7 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="Duplicate task not found")
         return self._workspace_duplicate_task_model(record)
 
-    async def get_workspace_create_task(
-        self, task_id: str, user_id: str, *, is_admin: bool = False
-    ) -> UserSpaceWorkspaceCreateTask:
+    async def get_workspace_create_task(self, task_id: str, user_id: str, *, is_admin: bool = False) -> UserSpaceWorkspaceCreateTask:
         self._prune_expired_workspace_create_task_statuses()
         record = self._workspace_create_task_statuses.get(task_id)
         if record is None or (record.requested_by_user_id != user_id and not is_admin):
@@ -5206,15 +4729,10 @@ class UserSpaceService:
 
     @staticmethod
     def _runtime_restart_workspace_timeout_seconds() -> float:
-        configured = float(
-            getattr(settings, "userspace_runtime_restart_workspace_timeout_seconds", 0)
-            or 0
-        )
+        configured = float(getattr(settings, "userspace_runtime_restart_workspace_timeout_seconds", 0) or 0)
         if configured > 0:
             return configured
-        manager_timeout = float(
-            getattr(settings, "userspace_runtime_manager_timeout_seconds", 120.0)
-        )
+        manager_timeout = float(getattr(settings, "userspace_runtime_manager_timeout_seconds", 120.0))
         return max(manager_timeout + 30.0, 90.0)
 
     def _prune_runtime_restart_batch_task(
@@ -5264,15 +4782,9 @@ class UserSpaceService:
         cls,
         record: _RuntimeRestartBatchTaskRecord,
     ) -> UserSpaceRuntimeRestartBatchTask:
-        completed_workspaces = sum(
-            1 for item in record.workspace_results if item.phase == "completed"
-        )
-        failed_workspaces = sum(
-            1 for item in record.workspace_results if item.phase == "failed"
-        )
-        skipped_workspaces = sum(
-            1 for item in record.workspace_results if item.phase == "skipped"
-        )
+        completed_workspaces = sum(1 for item in record.workspace_results if item.phase == "completed")
+        failed_workspaces = sum(1 for item in record.workspace_results if item.phase == "failed")
+        skipped_workspaces = sum(1 for item in record.workspace_results if item.phase == "skipped")
         return UserSpaceRuntimeRestartBatchTask(
             task_id=record.task_id,
             phase=cast(RuntimeRestartBatchTaskPhase, record.phase),
@@ -5286,10 +4798,7 @@ class UserSpaceService:
             queued_at=record.queued_at,
             started_at=record.started_at,
             updated_at=record.updated_at,
-            workspace_results=[
-                cls._runtime_restart_workspace_task_model(item)
-                for item in record.workspace_results
-            ],
+            workspace_results=[cls._runtime_restart_workspace_task_model(item) for item in record.workspace_results],
         )
 
     def _set_runtime_restart_batch_phase(
@@ -5335,11 +4844,7 @@ class UserSpaceService:
         if record is None:
             return
         target = next(
-            (
-                item
-                for item in record.workspace_results
-                if item.workspace_id == workspace_id
-            ),
+            (item for item in record.workspace_results if item.workspace_id == workspace_id),
             None,
         )
         if target is None:
@@ -5409,9 +4914,7 @@ class UserSpaceService:
                     )
                 except HTTPException as exc:
                     detail = str(exc.detail)
-                    phase: RuntimeRestartWorkspacePhase = (
-                        "skipped" if exc.status_code == 404 else "failed"
-                    )
+                    phase: RuntimeRestartWorkspacePhase = "skipped" if exc.status_code == 404 else "failed"
                     self._set_runtime_restart_workspace_phase(
                         task_id,
                         workspace_id,
@@ -5436,12 +4939,8 @@ class UserSpaceService:
             record = self._runtime_restart_batch_task_statuses.get(task_id)
             if record is None:
                 return
-            failed_count = sum(
-                1 for item in record.workspace_results if item.phase == "failed"
-            )
-            final_phase: RuntimeRestartBatchTaskPhase = (
-                "completed_with_failures" if failed_count > 0 else "completed"
-            )
+            failed_count = sum(1 for item in record.workspace_results if item.phase == "failed")
+            final_phase: RuntimeRestartBatchTaskPhase = "completed_with_failures" if failed_count > 0 else "completed"
             self._set_runtime_restart_current_workspace(task_id, None, None)
             self._set_runtime_restart_batch_phase(task_id, final_phase)
         except Exception as exc:
@@ -5461,9 +4960,7 @@ class UserSpaceService:
         async with self._runtime_restart_batch_tasks_lock:
             active_task_id = self._runtime_restart_active_task_id
             if active_task_id is not None:
-                active_record = self._runtime_restart_batch_task_statuses.get(
-                    active_task_id
-                )
+                active_record = self._runtime_restart_batch_task_statuses.get(active_task_id)
                 if active_record is not None and active_record.phase in {
                     "queued",
                     "restarting",
@@ -5517,9 +5014,7 @@ class UserSpaceService:
         self._prune_expired_runtime_restart_batch_task_statuses()
         record = self._runtime_restart_batch_task_statuses.get(task_id)
         if record is None:
-            raise HTTPException(
-                status_code=404, detail="Runtime restart task not found"
-            )
+            raise HTTPException(status_code=404, detail="Runtime restart task not found")
         return self._runtime_restart_batch_task_model(record)
 
     async def get_latest_runtime_restart_batch_task(
@@ -5528,9 +5023,7 @@ class UserSpaceService:
         self._prune_expired_runtime_restart_batch_task_statuses()
         task_id = self._runtime_restart_latest_task_id
         if task_id is None:
-            raise HTTPException(
-                status_code=404, detail="Runtime restart task not found"
-            )
+            raise HTTPException(status_code=404, detail="Runtime restart task not found")
         return await self.get_runtime_restart_batch_task(task_id)
 
     def _prune_workspace_delete_task(
@@ -5541,10 +5034,7 @@ class UserSpaceService:
     ) -> None:
         if self._workspace_delete_tasks.get(task_id) is task:
             self._workspace_delete_tasks.pop(task_id, None)
-        if (
-            self._workspace_delete_active_task_ids_by_workspace.get(workspace_id)
-            == task_id
-        ):
+        if self._workspace_delete_active_task_ids_by_workspace.get(workspace_id) == task_id:
             self._workspace_delete_active_task_ids_by_workspace.pop(workspace_id, None)
 
     def _attach_workspace_delete_task_cleanup(
@@ -5553,9 +5043,7 @@ class UserSpaceService:
         workspace_id: str,
         task: asyncio.Task[None],
     ) -> None:
-        task.add_done_callback(
-            partial(self._prune_workspace_delete_task, task_id, workspace_id)
-        )
+        task.add_done_callback(partial(self._prune_workspace_delete_task, task_id, workspace_id))
 
     def _prune_expired_workspace_delete_task_statuses(self) -> None:
         cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_DELETE_TASK_TTL_SECONDS)
@@ -5608,9 +5096,7 @@ class UserSpaceService:
                 from ragtime.userspace.runtime_service import userspace_runtime_service
 
                 try:
-                    await userspace_runtime_service.stop_runtime_session(
-                        workspace_id, user_id
-                    )
+                    await userspace_runtime_service.stop_runtime_session(workspace_id, user_id)
                 except HTTPException as exc:
                     if exc.status_code != 404:
                         raise
@@ -5622,22 +5108,12 @@ class UserSpaceService:
                 await self.delete_workspace(workspace_id, user_id, is_admin=is_admin)
                 self._set_workspace_delete_task_phase(task_id, "completed")
         except Exception as exc:
-            detail = (
-                str(exc.detail)
-                if isinstance(exc, HTTPException)
-                else str(exc).strip() or "Failed to delete workspace"
-            )
-            logger.exception(
-                "Workspace delete task failed for %s: %s", workspace_id, detail
-            )
+            detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc).strip() or "Failed to delete workspace"
+            logger.exception("Workspace delete task failed for %s: %s", workspace_id, detail)
             self._set_workspace_delete_task_phase(task_id, "failed", error=detail)
 
-    async def enqueue_workspace_delete_task(
-        self, workspace_id: str, user_id: str, *, is_admin: bool = False
-    ) -> UserSpaceWorkspaceDeleteTask:
-        workspace = await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="owner", is_admin=is_admin
-        )
+    async def enqueue_workspace_delete_task(self, workspace_id: str, user_id: str, *, is_admin: bool = False) -> UserSpaceWorkspaceDeleteTask:
+        workspace = await self._enforce_workspace_access(workspace_id, user_id, required_role="owner", is_admin=is_admin)
         self._prune_expired_workspace_delete_task_statuses()
 
         async with self._workspace_delete_tasks_lock:
@@ -5685,9 +5161,7 @@ class UserSpaceService:
             )
             return self._workspace_delete_task_model(record)
 
-    async def get_workspace_delete_task(
-        self, task_id: str, user_id: str, *, is_admin: bool = False
-    ) -> UserSpaceWorkspaceDeleteTask:
+    async def get_workspace_delete_task(self, task_id: str, user_id: str, *, is_admin: bool = False) -> UserSpaceWorkspaceDeleteTask:
         self._prune_expired_workspace_delete_task_statuses()
         record = self._workspace_delete_task_statuses.get(task_id)
         if record is None or (record.requested_by_user_id != user_id and not is_admin):
@@ -5702,12 +5176,8 @@ class UserSpaceService:
     ) -> None:
         next_recheck_monotonic = 0.0
         if not available:
-            next_recheck_monotonic = (
-                _time.monotonic() + self._SSH_RSYNC_MISSING_RECHECK_SECONDS
-            )
-        self._ssh_rsync_capability_cache[
-            self._ssh_rsync_capability_cache_key(ssh_config)
-        ] = (available, next_recheck_monotonic)
+            next_recheck_monotonic = _time.monotonic() + self._SSH_RSYNC_MISSING_RECHECK_SECONDS
+        self._ssh_rsync_capability_cache[self._ssh_rsync_capability_cache_key(ssh_config)] = (available, next_recheck_monotonic)
 
     async def _probe_remote_rsync_availability(
         self,
@@ -5800,9 +5270,7 @@ class UserSpaceService:
     @staticmethod
     def _normalize_live_data_warning_message(error_text: str) -> str:
         compact = re.sub(r"\s+", " ", error_text.replace("\x00", " ")).strip()
-        compact = "".join(
-            char for char in compact if char.isprintable() or char in {"\t", "\n"}
-        )
+        compact = "".join(char for char in compact if char.isprintable() or char in {"\t", "\n"})
         return compact
 
     def record_live_data_execution_warning(
@@ -5817,11 +5285,7 @@ class UserSpaceService:
             return self.clear_live_data_execution_warning(workspace_id)
 
         current = self._live_data_execution_warnings.get(workspace_id)
-        changed = (
-            current is None
-            or current.component_id != component_id
-            or current.message != message
-        )
+        changed = current is None or current.component_id != component_id or current.message != message
         self._live_data_execution_warnings[workspace_id] = _LiveDataExecutionWarningRecord(
             component_id=component_id,
             message=message,
@@ -5864,9 +5328,7 @@ class UserSpaceService:
         except OSError:
             return ""
 
-    def _detect_imported_replit_features(
-        self, workspace_id: str
-    ) -> tuple[list[str], bool]:
+    def _detect_imported_replit_features(self, workspace_id: str) -> tuple[list[str], bool]:
         """Return deterministic Replit import markers and legacy storage status."""
 
         files_dir = self._workspace_files_dir(workspace_id)
@@ -5891,13 +5353,7 @@ class UserSpaceService:
             features.append("@google-cloud/storage dependency")
             has_legacy_object_storage = True
 
-        object_storage_path = (
-            files_dir
-            / "server"
-            / "replit_integrations"
-            / "object_storage"
-            / "objectStorage.ts"
-        )
+        object_storage_path = files_dir / "server" / "replit_integrations" / "object_storage" / "objectStorage.ts"
         object_storage_text = self._read_workspace_text_file(object_storage_path)
         if object_storage_text:
             features.append("Replit object-storage adapter")
@@ -5921,10 +5377,7 @@ class UserSpaceService:
         return self._workspace_dir(workspace_id) / _WORKSPACE_OBJECT_STORAGE_DIRNAME
 
     def _workspace_object_storage_config_path(self, workspace_id: str) -> Path:
-        return (
-            self._workspace_object_storage_dir(workspace_id)
-            / _WORKSPACE_OBJECT_STORAGE_CONFIG_NAME
-        )
+        return self._workspace_object_storage_dir(workspace_id) / _WORKSPACE_OBJECT_STORAGE_CONFIG_NAME
 
     def _workspace_object_storage_buckets_dir(self, workspace_id: str) -> Path:
         return self._workspace_object_storage_dir(workspace_id) / "buckets"
@@ -5942,10 +5395,7 @@ class UserSpaceService:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*[a-z0-9]", normalized):
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Bucket name must use lowercase letters, numbers, and hyphens, "
-                    "and must start and end with a letter or number"
-                ),
+                detail=("Bucket name must use lowercase letters, numbers, and hyphens, and must start and end with a letter or number"),
             )
         return normalized
 
@@ -6057,16 +5507,12 @@ class UserSpaceService:
 
     @staticmethod
     def _bucket_public_object_root(bucket: dict[str, Any]) -> str:
-        prefix = str(
-            bucket.get("public_prefix") or _WORKSPACE_OBJECT_STORAGE_PUBLIC_PREFIX
-        )
+        prefix = str(bucket.get("public_prefix") or _WORKSPACE_OBJECT_STORAGE_PUBLIC_PREFIX)
         return f"/{bucket['name']}/{prefix.strip('/')}"
 
     @staticmethod
     def _bucket_private_object_root(bucket: dict[str, Any]) -> str:
-        prefix = str(
-            bucket.get("private_prefix") or _WORKSPACE_OBJECT_STORAGE_PRIVATE_PREFIX
-        )
+        prefix = str(bucket.get("private_prefix") or _WORKSPACE_OBJECT_STORAGE_PRIVATE_PREFIX)
         return f"/{bucket['name']}/{prefix.strip('/')}"
 
     def _object_storage_bucket_model(
@@ -6078,15 +5524,9 @@ class UserSpaceService:
         bucket_name = str(bucket.get("name") or "").strip()
         return UserSpaceObjectStorageBucket(
             name=bucket_name,
-            description=self._normalize_object_storage_bucket_description(
-                cast(str | None, bucket.get("description"))
-            ),
-            public_prefix=str(
-                bucket.get("public_prefix") or _WORKSPACE_OBJECT_STORAGE_PUBLIC_PREFIX
-            ),
-            private_prefix=str(
-                bucket.get("private_prefix") or _WORKSPACE_OBJECT_STORAGE_PRIVATE_PREFIX
-            ),
+            description=self._normalize_object_storage_bucket_description(cast(str | None, bucket.get("description"))),
+            public_prefix=str(bucket.get("public_prefix") or _WORKSPACE_OBJECT_STORAGE_PUBLIC_PREFIX),
+            private_prefix=str(bucket.get("private_prefix") or _WORKSPACE_OBJECT_STORAGE_PRIVATE_PREFIX),
             is_default=bucket_name == (default_bucket_name or ""),
             created_at=self._parse_object_storage_datetime(bucket.get("created_at")),
             updated_at=self._parse_object_storage_datetime(bucket.get("updated_at")),
@@ -6098,14 +5538,8 @@ class UserSpaceService:
         payload: dict[str, Any],
     ) -> UserSpaceObjectStorageConfig:
         raw_buckets = payload.get("buckets")
-        buckets_raw: list[dict[str, Any]] = (
-            [bucket for bucket in raw_buckets if isinstance(bucket, dict)]
-            if isinstance(raw_buckets, list)
-            else []
-        )
-        default_bucket_name = (
-            str(payload.get("default_bucket_name") or "").strip() or None
-        )
+        buckets_raw: list[dict[str, Any]] = [bucket for bucket in raw_buckets if isinstance(bucket, dict)] if isinstance(raw_buckets, list) else []
+        default_bucket_name = str(payload.get("default_bucket_name") or "").strip() or None
         buckets = [
             self._object_storage_bucket_model(
                 bucket,
@@ -6114,11 +5548,7 @@ class UserSpaceService:
             for bucket in buckets_raw
             if str(bucket.get("name") or "").strip()
         ]
-        public_paths = [
-            self._bucket_public_object_root(bucket)
-            for bucket in buckets_raw
-            if str(bucket.get("name") or "").strip()
-        ]
+        public_paths = [self._bucket_public_object_root(bucket) for bucket in buckets_raw if str(bucket.get("name") or "").strip()]
         private_path = None
         for bucket in buckets_raw:
             if str(bucket.get("name") or "").strip() == (default_bucket_name or ""):
@@ -6160,9 +5590,7 @@ class UserSpaceService:
         if default_bucket_name:
             env[_WORKSPACE_OBJECT_STORAGE_DEFAULT_BUCKET_ENV_KEY] = default_bucket_name
         if config_model.public_object_search_paths:
-            env["PUBLIC_OBJECT_SEARCH_PATHS"] = ",".join(
-                config_model.public_object_search_paths
-            )
+            env["PUBLIC_OBJECT_SEARCH_PATHS"] = ",".join(config_model.public_object_search_paths)
         if config_model.private_object_dir:
             env["PRIVATE_OBJECT_DIR"] = config_model.private_object_dir
         return env
@@ -6208,32 +5636,21 @@ class UserSpaceService:
         )
         payload = self._ensure_object_storage_config(workspace_id)
         raw_buckets = payload.get("buckets")
-        buckets: list[dict[str, Any]] = (
-            [bucket for bucket in raw_buckets if isinstance(bucket, dict)]
-            if isinstance(raw_buckets, list)
-            else []
-        )
+        buckets: list[dict[str, Any]] = [bucket for bucket in raw_buckets if isinstance(bucket, dict)] if isinstance(raw_buckets, list) else []
         bucket_name = self._normalize_object_storage_bucket_name(request.name)
-        if any(
-            str((bucket or {}).get("name") or "") == bucket_name for bucket in buckets
-        ):
+        if any(str((bucket or {}).get("name") or "") == bucket_name for bucket in buckets):
             raise HTTPException(status_code=409, detail="Bucket already exists")
 
         now = _utc_now()
         buckets.append(
             self._build_object_storage_bucket_record(
                 name=bucket_name,
-                description=self._normalize_object_storage_bucket_description(
-                    request.description
-                ),
+                description=self._normalize_object_storage_bucket_description(request.description),
                 now=now,
             )
         )
         payload["buckets"] = buckets
-        if (
-            request.make_default
-            or not str(payload.get("default_bucket_name") or "").strip()
-        ):
+        if request.make_default or not str(payload.get("default_bucket_name") or "").strip():
             payload["default_bucket_name"] = bucket_name
 
         self._write_object_storage_config(workspace_id, payload)
@@ -6259,11 +5676,7 @@ class UserSpaceService:
         normalized_name = self._normalize_object_storage_bucket_name(bucket_name)
         payload = self._ensure_object_storage_config(workspace_id)
         raw_buckets = payload.get("buckets")
-        buckets: list[dict[str, Any]] = (
-            [bucket for bucket in raw_buckets if isinstance(bucket, dict)]
-            if isinstance(raw_buckets, list)
-            else []
-        )
+        buckets: list[dict[str, Any]] = [bucket for bucket in raw_buckets if isinstance(bucket, dict)] if isinstance(raw_buckets, list) else []
         target: dict[str, Any] | None = None
         for bucket in buckets:
             if str(bucket.get("name") or "") == normalized_name:
@@ -6273,9 +5686,7 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="Bucket not found")
 
         if request.description is not None:
-            target["description"] = self._normalize_object_storage_bucket_description(
-                request.description
-            )
+            target["description"] = self._normalize_object_storage_bucket_description(request.description)
         target["updated_at"] = _utc_now().isoformat()
         if request.make_default:
             payload["default_bucket_name"] = normalized_name
@@ -6302,16 +5713,8 @@ class UserSpaceService:
         normalized_name = self._normalize_object_storage_bucket_name(bucket_name)
         payload = self._ensure_object_storage_config(workspace_id)
         raw_buckets = payload.get("buckets")
-        buckets: list[dict[str, Any]] = (
-            [bucket for bucket in raw_buckets if isinstance(bucket, dict)]
-            if isinstance(raw_buckets, list)
-            else []
-        )
-        remaining = [
-            bucket
-            for bucket in buckets
-            if str(bucket.get("name") or "") != normalized_name
-        ]
+        buckets: list[dict[str, Any]] = [bucket for bucket in raw_buckets if isinstance(bucket, dict)] if isinstance(raw_buckets, list) else []
+        remaining = [bucket for bucket in buckets if str(bucket.get("name") or "") != normalized_name]
         if len(remaining) == len(buckets):
             raise HTTPException(status_code=404, detail="Bucket not found")
         if not remaining:
@@ -6324,9 +5727,7 @@ class UserSpaceService:
         if str(payload.get("default_bucket_name") or "") == normalized_name:
             payload["default_bucket_name"] = str(remaining[0].get("name") or "")
 
-        bucket_dir = (
-            self._workspace_object_storage_buckets_dir(workspace_id) / normalized_name
-        )
+        bucket_dir = self._workspace_object_storage_buckets_dir(workspace_id) / normalized_name
         try:
             if bucket_dir.exists() and bucket_dir.is_dir():
                 shutil.rmtree(bucket_dir)
@@ -6354,9 +5755,7 @@ class UserSpaceService:
     def _normalize_workspace_env_var_key(raw_key: str) -> str:
         key = (raw_key or "").strip()
         if not key:
-            raise HTTPException(
-                status_code=400, detail="Environment variable key is required"
-            )
+            raise HTTPException(status_code=400, detail="Environment variable key is required")
         if len(key) > 128:
             raise HTTPException(
                 status_code=400,
@@ -6389,11 +5788,7 @@ class UserSpaceService:
             record_id=str(row.get("id") or ""),
             key=str(row.get("key") or ""),
             value=str(row.get("value") or ""),
-            description=(
-                str(row.get("description"))
-                if row.get("description") is not None
-                else None
-            ),
+            description=(str(row.get("description")) if row.get("description") is not None else None),
             created_at=_coerce_utc_datetime(row.get("created_at")),
             updated_at=_coerce_utc_datetime(row.get("updated_at")),
         )
@@ -6405,21 +5800,14 @@ class UserSpaceService:
         key: str,
     ) -> _GlobalEnvVarRecord | None:
         rows: list[dict[str, Any]] = await db.query_raw(
-            (
-                "SELECT id, key, value, description, created_at, updated_at "
-                "FROM global_environment_variables "
-                f"WHERE key = {self._sql_quote(key)} "
-                "LIMIT 1"
-            )
+            (f"SELECT id, key, value, description, created_at, updated_at FROM global_environment_variables WHERE key = {self._sql_quote(key)} LIMIT 1")
         )
         if not rows:
             return None
         return self._global_env_var_record_from_row(rows[0])
 
     async def _count_global_env_vars_raw(self, db: Any) -> int:
-        rows: list[dict[str, Any]] = await db.query_raw(
-            "SELECT COUNT(*)::int AS cnt FROM global_environment_variables"
-        )
+        rows: list[dict[str, Any]] = await db.query_raw("SELECT COUNT(*)::int AS cnt FROM global_environment_variables")
         if not rows:
             return 0
         return int(rows[0].get("cnt", 0) or 0)
@@ -6492,9 +5880,7 @@ class UserSpaceService:
             payload,
         )
         if not recorded:
-            logger.debug(
-                "Failed to persist env-var audit event for workspace %s", workspace_id
-            )
+            logger.debug("Failed to persist env-var audit event for workspace %s", workspace_id)
 
     @staticmethod
     def _sanitize_workspace_env_map(raw_items: list[Any]) -> dict[str, str]:
@@ -6513,8 +5899,7 @@ class UserSpaceService:
         if model is not None:
             return await model.find_many(order={"key": "asc"})
         rows: list[dict[str, Any]] = await db.query_raw(
-            "SELECT id, key, value, description, created_at, updated_at "
-            "FROM global_environment_variables ORDER BY key ASC"
+            "SELECT id, key, value, description, created_at, updated_at FROM global_environment_variables ORDER BY key ASC"
         )
         return [self._global_env_var_record_from_row(row) for row in rows]
 
@@ -6578,21 +5963,14 @@ class UserSpaceService:
 
     @staticmethod
     def _is_legacy_default_bootstrap(payload: dict[str, Any]) -> bool:
-        if (
-            payload.get("managed_by") is not None
-            or payload.get("template_version") is not None
-        ):
+        if payload.get("managed_by") is not None or payload.get("template_version") is not None:
             return False
         if int(payload.get("version") or 0) != 1:
             return False
         commands = payload.get("commands")
         if not isinstance(commands, list):
             return False
-        command_names = {
-            str(item.get("name") or "").strip()
-            for item in commands
-            if isinstance(item, dict)
-        }
+        command_names = {str(item.get("name") or "").strip() for item in commands if isinstance(item, dict)}
         return command_names == {"npm_ci", "npm_install", "pip_requirements"}
 
     def _sync_runtime_bootstrap_config(self, workspace_id: str) -> None:
@@ -6619,11 +5997,7 @@ class UserSpaceService:
         auto_update = bool(existing.get("auto_update", managed_by == "ragtime"))
         template_version = int(existing.get("template_version") or 0)
         is_legacy_default = self._is_legacy_default_bootstrap(existing)
-        should_update = (
-            managed_by == "ragtime"
-            and auto_update
-            and template_version < _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION
-        ) or is_legacy_default
+        should_update = (managed_by == "ragtime" and auto_update and template_version < _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION) or is_legacy_default
         if not should_update:
             return
 
@@ -6648,9 +6022,7 @@ class UserSpaceService:
             encoding="utf-8",
         )
 
-    async def build_runtime_bridge_content(
-        self, workspace_id: str | None = None
-    ) -> str:
+    async def build_runtime_bridge_content(self, workspace_id: str | None = None) -> str:
         if not workspace_id:
             return _build_bridge_content()
 
@@ -6834,9 +6206,7 @@ class UserSpaceService:
 
         normalized_text = "\n".join(normalized_lines)
         if not normalized_text.startswith(_REPLIT_NORMALIZATION_HEADER[0]):
-            normalized_text = (
-                "\n".join(_REPLIT_NORMALIZATION_HEADER) + "\n\n" + normalized_text
-            )
+            normalized_text = "\n".join(_REPLIT_NORMALIZATION_HEADER) + "\n\n" + normalized_text
         if original_text.endswith("\n"):
             normalized_text += "\n"
         replit_path.write_text(normalized_text, encoding="utf-8")
@@ -6853,9 +6223,7 @@ class UserSpaceService:
         no inference was made or the entrypoint was already valid.
         """
         status = self.get_workspace_entrypoint_status(workspace_id)
-        if status.state == "valid" and not self.is_default_static_entrypoint(
-            workspace_id, status
-        ):
+        if status.state == "valid" and not self.is_default_static_entrypoint(workspace_id, status):
             return None
 
         inferred = self._infer_entrypoint_from_imported_files(workspace_id)
@@ -6918,9 +6286,7 @@ class UserSpaceService:
         if status.state != "valid":
             return False
         default = self._default_runtime_entrypoint_config()
-        return status.command == default.get("command", "") and (
-            status.framework or ""
-        ) == default.get("framework", "")
+        return status.command == default.get("command", "") and (status.framework or "") == default.get("framework", "")
 
     def invalidate_entrypoint_cache(self, workspace_id: str) -> None:
         """Drop cached entrypoint status for *workspace_id*.
@@ -6966,12 +6332,10 @@ class UserSpaceService:
     ) -> tuple[int, bytes, bytes]:
         from ragtime.userspace.runtime_service import userspace_runtime_service
 
-        returncode, stdout_bytes, stderr_bytes = (
-            await userspace_runtime_service.run_workspace_git_command_internal(
-                workspace_id,
-                args=args,
-                env=env,
-            )
+        returncode, stdout_bytes, stderr_bytes = await userspace_runtime_service.run_workspace_git_command_internal(
+            workspace_id,
+            args=args,
+            env=env,
         )
         if check and returncode != 0:
             stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
@@ -7159,11 +6523,7 @@ class UserSpaceService:
             getattr(workspace_record, "scmAutoSyncPolicy", None),
             ("manual", "auto_push"),
         )
-        return bool(
-            getattr(workspace_record, "scmGitUrl", None)
-            and policy == "auto_push"
-            and not bool(getattr(workspace_record, "scmSyncPaused", False))
-        )
+        return bool(getattr(workspace_record, "scmGitUrl", None) and policy == "auto_push" and not bool(getattr(workspace_record, "scmSyncPaused", False)))
 
     def _is_workspace_auto_pull_enabled(self, workspace_record: Any) -> bool:
         remote_role = self._normalize_scm_enum(
@@ -7182,11 +6542,7 @@ class UserSpaceService:
         workspace_record: Any,
         direction: WorkspaceScmDirection,
     ) -> int:
-        field = (
-            "scmAutoPushIntervalSeconds"
-            if direction == "export"
-            else "scmAutoPullIntervalSeconds"
-        )
+        field = "scmAutoPushIntervalSeconds" if direction == "export" else "scmAutoPullIntervalSeconds"
         return self._normalize_workspace_scm_interval_seconds(
             getattr(
                 workspace_record,
@@ -7208,21 +6564,13 @@ class UserSpaceService:
 
     def schedule_startup_git_drift_reconciliation(self) -> None:
         """Start best-effort Git policy reconciliation for existing workspaces."""
-        if (
-            self._git_drift_startup_task is not None
-            and not self._git_drift_startup_task.done()
-        ):
+        if self._git_drift_startup_task is not None and not self._git_drift_startup_task.done():
             return
-        self._git_drift_startup_task = asyncio.create_task(
-            self._startup_git_drift_reconciliation()
-        )
+        self._git_drift_startup_task = asyncio.create_task(self._startup_git_drift_reconciliation())
 
     def schedule_workspace_mount_watch(self) -> None:
         """Start optional background loop that auto-syncs watch-enabled SSH mounts."""
-        if (
-            self._workspace_mount_watch_task is not None
-            and not self._workspace_mount_watch_task.done()
-        ):
+        if self._workspace_mount_watch_task is not None and not self._workspace_mount_watch_task.done():
             return
         self._workspace_mount_watch_task = asyncio.create_task(
             self._workspace_mount_watch_loop(),
@@ -7231,10 +6579,7 @@ class UserSpaceService:
 
     def schedule_workspace_scm_watch(self) -> None:
         """Start background loop that runs interval-based SCM auto push/pull."""
-        if (
-            self._workspace_scm_watch_task is not None
-            and not self._workspace_scm_watch_task.done()
-        ):
+        if self._workspace_scm_watch_task is not None and not self._workspace_scm_watch_task.done():
             return
         self._workspace_scm_watch_task = asyncio.create_task(
             self._workspace_scm_watch_loop(),
@@ -7259,9 +6604,7 @@ class UserSpaceService:
 
     def schedule_workspace_sqlite_import_recovery(self) -> None:
         """Reattach monitors to SQLite import subprocesses that survived reload."""
-        for task_id, record in list(
-            self._workspace_sqlite_import_task_statuses.items()
-        ):
+        for task_id, record in list(self._workspace_sqlite_import_task_statuses.items()):
             if record.phase in {"completed", "failed"}:
                 continue
             if task_id in self._workspace_sqlite_import_tasks:
@@ -7273,12 +6616,8 @@ class UserSpaceService:
                 name=f"userspace-workspace-sqlite-import-recovery:{record.workspace_id}",
             )
             self._workspace_sqlite_import_tasks[task_id] = task
-            self._workspace_sqlite_import_active_task_ids_by_workspace[
-                record.workspace_id
-            ] = task_id
-            self._attach_workspace_sqlite_import_task_cleanup(
-                task_id, record.workspace_id, task
-            )
+            self._workspace_sqlite_import_active_task_ids_by_workspace[record.workspace_id] = task_id
+            self._attach_workspace_sqlite_import_task_cleanup(task_id, record.workspace_id, task)
 
     async def _workspace_scm_watch_loop(self) -> None:
         poll_seconds = 30.0
@@ -7310,11 +6649,7 @@ class UserSpaceService:
                 cast(WorkspaceScmDirection, "export"),
                 cast(WorkspaceScmDirection, "import"),
             ):
-                is_enabled = (
-                    self._is_workspace_auto_push_enabled(workspace)
-                    if direction == "export"
-                    else self._is_workspace_auto_pull_enabled(workspace)
-                )
+                is_enabled = self._is_workspace_auto_push_enabled(workspace) if direction == "export" else self._is_workspace_auto_pull_enabled(workspace)
                 if not is_enabled:
                     continue
 
@@ -7355,9 +6690,7 @@ class UserSpaceService:
         key = self._workspace_scm_watch_key(workspace_id, direction)
         try:
             async with self._workspace_scm_sync_semaphore:
-                operation_lock = await self._get_workspace_scm_operation_lock(
-                    workspace_id
-                )
+                operation_lock = await self._get_workspace_scm_operation_lock(workspace_id)
                 async with operation_lock:
                     if direction == "export":
                         await self._run_workspace_auto_push(workspace_id)
@@ -7384,18 +6717,14 @@ class UserSpaceService:
                     float(interval_seconds),
                 )
             self._workspace_scm_watch_next_due_monotonic[key] = (
-                _time.monotonic()
-                + float(interval_seconds)
-                + self._workspace_scm_watch_stagger_seconds(workspace_id, direction)
+                _time.monotonic() + float(interval_seconds) + self._workspace_scm_watch_stagger_seconds(workspace_id, direction)
             )
             self._workspace_scm_watch_inflight.discard(key)
 
     async def _run_workspace_auto_push(self, workspace_id: str) -> None:
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
-        if not workspace_record or not self._is_workspace_auto_push_enabled(
-            workspace_record
-        ):
+        if not workspace_record or not self._is_workspace_auto_push_enabled(workspace_record):
             return
 
         rows = await db.query_raw(f"""
@@ -7427,17 +6756,10 @@ class UserSpaceService:
             LIMIT 1
             """)
         current_snapshot_id = (
-            str(current_snapshot_rows[0].get("current_snapshot_id"))
-            if current_snapshot_rows
-            and current_snapshot_rows[0].get("current_snapshot_id")
-            else None
+            str(current_snapshot_rows[0].get("current_snapshot_id")) if current_snapshot_rows and current_snapshot_rows[0].get("current_snapshot_id") else None
         )
 
-        branch_name_by_id = {
-            str(rows[0].get("branch_id") or ""): str(
-                rows[0].get("branch_name") or "Branch"
-            )
-        }
+        branch_name_by_id = {str(rows[0].get("branch_id") or ""): str(rows[0].get("branch_name") or "Branch")}
         snapshot = self._snapshot_from_row(
             rows[0],
             current_snapshot_id,
@@ -7448,9 +6770,7 @@ class UserSpaceService:
     async def _run_workspace_auto_pull(self, workspace_id: str) -> None:
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
-        if not workspace_record or not self._is_workspace_auto_pull_enabled(
-            workspace_record
-        ):
+        if not workspace_record or not self._is_workspace_auto_pull_enabled(workspace_record):
             return
 
         owner_user_id = str(getattr(workspace_record, "ownerUserId", "") or "").strip()
@@ -7485,9 +6805,7 @@ class UserSpaceService:
         )
 
     async def _workspace_mount_watch_loop(self) -> None:
-        poll_seconds = max(
-            1.0, min(5.0, self._workspace_mount_watch_interval_seconds / 3.0)
-        )
+        poll_seconds = max(1.0, min(5.0, self._workspace_mount_watch_interval_seconds / 3.0))
         while True:
             try:
                 await asyncio.wait_for(
@@ -7502,9 +6820,7 @@ class UserSpaceService:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.debug(
-                    "Workspace mount watch tick failed: %s", exc, exc_info=True
-                )
+                logger.debug("Workspace mount watch tick failed: %s", exc, exc_info=True)
 
     def _workspace_mount_watch_stagger_seconds(self, mount_id: str) -> float:
         if self._workspace_mount_watch_jitter_seconds <= 0:
@@ -7615,11 +6931,8 @@ class UserSpaceService:
                     0.0,
                 )
                 if target_path and now_monotonic >= signature_due_at:
-                    self._workspace_mount_watch_next_signature_monotonic[mount_id] = (
-                        now_monotonic
-                        + self._workspace_mount_signature_poll_seconds(
-                            float(interval_seconds)
-                        )
+                    self._workspace_mount_watch_next_signature_monotonic[mount_id] = now_monotonic + self._workspace_mount_signature_poll_seconds(
+                        float(interval_seconds)
                     )
                     try:
                         signature = await self._workspace_mount_target_signature(
@@ -7652,9 +6965,7 @@ class UserSpaceService:
                 name=f"userspace-mount-watch-sync:{workspace_id}:{mount_id}",
             )
 
-        stale_mount_ids = (
-            set(self._workspace_mount_watch_next_due_monotonic) - active_mount_ids
-        )
+        stale_mount_ids = set(self._workspace_mount_watch_next_due_monotonic) - active_mount_ids
         for mount_id in stale_mount_ids:
             self._workspace_mount_watch_next_due_monotonic.pop(mount_id, None)
             self._workspace_mount_watch_next_signature_monotonic.pop(mount_id, None)
@@ -7677,11 +6988,7 @@ class UserSpaceService:
                     "userMountSource": {"include": {"oauthAccount": True}},
                 },
             )
-            if (
-                not mount
-                or not bool(getattr(mount, "enabled", True))
-                or not bool(getattr(mount, "autoSyncEnabled", False))
-            ):
+            if not mount or not bool(getattr(mount, "enabled", True)) or not bool(getattr(mount, "autoSyncEnabled", False)):
                 return
 
             mount_source = getattr(mount, "mountSource", None) or getattr(
@@ -7690,20 +6997,14 @@ class UserSpaceService:
                 None,
             )
             source_type = str(getattr(mount_source, "sourceType", "") or "") if mount_source else ""
-            if (
-                not mount_source
-                or not bool(getattr(mount_source, "enabled", False))
-                or source_type not in self._WORKSPACE_MOUNT_SYNC_CAPABLE_SOURCE_TYPES
-            ):
+            if not mount_source or not bool(getattr(mount_source, "enabled", False)) or source_type not in self._WORKSPACE_MOUNT_SYNC_CAPABLE_SOURCE_TYPES:
                 return
 
             sync_mode = self._normalize_workspace_mount_sync_mode(
                 getattr(mount, "syncMode", None),
                 legacy_sync_deletes=bool(getattr(mount, "syncDeletes", False)),
             )
-            if self._is_destructive_workspace_mount_sync_mode(
-                sync_mode
-            ) and not self._has_destructive_auto_sync_approval(mount, sync_mode):
+            if self._is_destructive_workspace_mount_sync_mode(sync_mode) and not self._has_destructive_auto_sync_approval(mount, sync_mode):
                 await self._finalize_workspace_mount_sync(
                     db,
                     mount_id=mount_id,
@@ -7713,9 +7014,7 @@ class UserSpaceService:
                     files_synced=0,
                     sync_backend=str(getattr(mount, "syncBackend", "") or "") or None,
                     sync_notice=str(getattr(mount, "syncNotice", "") or "") or None,
-                    last_sync_error=(
-                        "Destructive auto-sync requires confirmation. Disable Auto and enable it again to review the dry run."
-                    ),
+                    last_sync_error=("Destructive auto-sync requires confirmation. Disable Auto and enable it again to review the dry run."),
                 )
                 try:
                     from ragtime.userspace.runtime_service import (
@@ -7748,17 +7047,12 @@ class UserSpaceService:
             target_path = str(getattr(mount, "targetPath", "") or "")
             if target_path:
                 try:
-                    self._workspace_mount_watch_target_signatures[mount_id] = (
-                        await self._workspace_mount_target_signature(
-                            workspace_id,
-                            target_path,
-                        )
+                    self._workspace_mount_watch_target_signatures[mount_id] = await self._workspace_mount_target_signature(
+                        workspace_id,
+                        target_path,
                     )
-                    self._workspace_mount_watch_next_signature_monotonic[mount_id] = (
-                        _time.monotonic()
-                        + self._workspace_mount_signature_poll_seconds(
-                            float(source_interval_seconds)
-                        )
+                    self._workspace_mount_watch_next_signature_monotonic[mount_id] = _time.monotonic() + self._workspace_mount_signature_poll_seconds(
+                        float(source_interval_seconds)
                     )
                 except Exception:
                     logger.debug(
@@ -7795,8 +7089,7 @@ class UserSpaceService:
             elapsed = _time.monotonic() - t0
             if elapsed > source_interval_seconds:
                 logger.warning(
-                    "Mount %s sync took %.1fs, exceeding configured interval of %.0fs; "
-                    "next sync deferred until cooldown elapses",
+                    "Mount %s sync took %.1fs, exceeding configured interval of %.0fs; next sync deferred until cooldown elapses",
                     mount_id,
                     elapsed,
                     source_interval_seconds,
@@ -7804,9 +7097,7 @@ class UserSpaceService:
             # Schedule from completion so the interval is measured between the
             # end of one sync and the start of the next.
             self._workspace_mount_watch_next_due_monotonic[mount_id] = (
-                _time.monotonic()
-                + source_interval_seconds
-                + self._workspace_mount_watch_stagger_seconds(mount_id)
+                _time.monotonic() + source_interval_seconds + self._workspace_mount_watch_stagger_seconds(mount_id)
             )
             self._workspace_mount_watch_inflight.discard(mount_id)
 
@@ -7824,9 +7115,7 @@ class UserSpaceService:
                 if not workspace_id:
                     continue
                 try:
-                    await self._reconcile_workspace_git_drift(
-                        workspace_id, reason="startup"
-                    )
+                    await self._reconcile_workspace_git_drift(workspace_id, reason="startup")
                 except Exception as exc:
                     logger.debug(
                         "Startup drift reconcile failed for %s: %s",
@@ -7850,10 +7139,7 @@ class UserSpaceService:
 
     async def shutdown_workspace_mount_watch(self) -> None:
         """Cancel the workspace mount watch task and clear watch state."""
-        if (
-            self._workspace_mount_watch_task
-            and not self._workspace_mount_watch_task.done()
-        ):
+        if self._workspace_mount_watch_task and not self._workspace_mount_watch_task.done():
             self._workspace_mount_watch_task.cancel()
             try:
                 await self._workspace_mount_watch_task
@@ -7877,9 +7163,7 @@ class UserSpaceService:
         self._workspace_scm_watch_inflight.clear()
         self._workspace_scm_watch_next_due_monotonic.clear()
 
-    def _resolve_workspace_file_path(
-        self, workspace_id: str, relative_path: str
-    ) -> Path:
+    def _resolve_workspace_file_path(self, workspace_id: str, relative_path: str) -> Path:
         if not relative_path or relative_path.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
@@ -7891,9 +7175,7 @@ class UserSpaceService:
             raise HTTPException(status_code=400, detail="Invalid file path")
         return target
 
-    def resolve_workspace_file_path(
-        self, workspace_id: str, relative_path: str
-    ) -> Path:
+    def resolve_workspace_file_path(self, workspace_id: str, relative_path: str) -> Path:
         return self._resolve_workspace_file_path(workspace_id, relative_path)
 
     async def _resolve_workspace_tree_file_path(
@@ -7909,15 +7191,10 @@ class UserSpaceService:
         best_source_dir: Path | None = None
         mount_specs = await self.resolve_workspace_mounts_for_runtime(workspace_id)
         for spec in mount_specs:
-            repo_relative_prefix = self._workspace_mount_target_repo_relative_path(
-                str(spec.get("target_path", "") or "")
-            )
-            if (
-                not repo_relative_prefix
-                or not self._workspace_path_matches_mount_prefix(
-                    normalized_path,
-                    repo_relative_prefix,
-                )
+            repo_relative_prefix = self._workspace_mount_target_repo_relative_path(str(spec.get("target_path", "") or ""))
+            if not repo_relative_prefix or not self._workspace_path_matches_mount_prefix(
+                normalized_path,
+                repo_relative_prefix,
             ):
                 continue
 
@@ -7938,19 +7215,13 @@ class UserSpaceService:
         if runtime_workspace_dir.is_dir() and runtime_target.exists():
             resolved_runtime_workspace = runtime_workspace_dir.resolve()
             resolved_runtime_target = runtime_target.resolve()
-            if (
-                resolved_runtime_target == resolved_runtime_workspace
-                or resolved_runtime_workspace in resolved_runtime_target.parents
-            ):
+            if resolved_runtime_target == resolved_runtime_workspace or resolved_runtime_workspace in resolved_runtime_target.parents:
                 return resolved_runtime_target
 
         target = best_source_dir if not suffix else best_source_dir / suffix
         resolved_source_dir = best_source_dir.resolve()
         resolved_target = target.resolve()
-        if (
-            resolved_target != resolved_source_dir
-            and resolved_source_dir not in resolved_target.parents
-        ):
+        if resolved_target != resolved_source_dir and resolved_source_dir not in resolved_target.parents:
             raise HTTPException(status_code=400, detail="Invalid file path")
         return resolved_target
 
@@ -8006,11 +7277,7 @@ class UserSpaceService:
             return True
         parts = Path(normalized).parts
         # Allow agent access to specific .ragtime/ files (e.g. runtime-entrypoint.json)
-        if (
-            len(parts) == 2
-            and parts[0] == ".ragtime"
-            and parts[1] in _AGENT_WRITABLE_RAGTIME_FILES
-        ):
+        if len(parts) == 2 and parts[0] == ".ragtime" and parts[1] in _AGENT_WRITABLE_RAGTIME_FILES:
             return False
         # Allow agent access to writable .ragtime/ subtrees (e.g. db/migrations/)
         if len(parts) >= 2 and parts[0] == ".ragtime":
@@ -8129,16 +7396,12 @@ class UserSpaceService:
             numstat_path = parts[2].strip()
             # For renames, numstat shows the new path with --find-renames
             # but may use {old => new} notation — try the raw path, then old_path lookup
-            matched: _WorkspaceSnapshotFileDiff | None = summary_by_path.get(
-                numstat_path
-            ) or old_path_lookup.get(numstat_path)
+            matched: _WorkspaceSnapshotFileDiff | None = summary_by_path.get(numstat_path) or old_path_lookup.get(numstat_path)
             if matched is None:
                 # Try normalizing in case of path format differences
                 normalized = self._normalize_workspace_relative_path(numstat_path)
                 if normalized:
-                    matched = summary_by_path.get(normalized) or old_path_lookup.get(
-                        normalized
-                    )
+                    matched = summary_by_path.get(normalized) or old_path_lookup.get(normalized)
             if matched is None:
                 continue
             if add_token == "-" or delete_token == "-":
@@ -8201,23 +7464,15 @@ class UserSpaceService:
             if not stripped:
                 continue
             try:
-                parsed_status, candidate_path, old_path = self._parse_name_status_line(
-                    stripped
-                )
+                parsed_status, candidate_path, old_path = self._parse_name_status_line(stripped)
             except ValueError:
                 continue
 
-            normalized_path = self._normalize_workspace_relative_path(
-                candidate_path or ""
-            )
-            normalized_old_path = (
-                self._normalize_workspace_relative_path(old_path or "") or None
-            )
+            normalized_path = self._normalize_workspace_relative_path(candidate_path or "")
+            normalized_old_path = self._normalize_workspace_relative_path(old_path or "") or None
             if not normalized_path or self._is_reserved_internal_path(normalized_path):
                 continue
-            if normalized_old_path and self._is_reserved_internal_path(
-                normalized_old_path
-            ):
+            if normalized_old_path and self._is_reserved_internal_path(normalized_old_path):
                 normalized_old_path = None
             summary_by_path[normalized_path] = cast(
                 _WorkspaceSnapshotFileDiff,
@@ -8232,9 +7487,7 @@ class UserSpaceService:
                 },
             )
 
-        await self._apply_numstat_batch(
-            workspace_id, [parent_ref, snapshot_commit_hash], summary_by_path
-        )
+        await self._apply_numstat_batch(workspace_id, [parent_ref, snapshot_commit_hash], summary_by_path)
 
         return summary_by_path
 
@@ -8261,23 +7514,15 @@ class UserSpaceService:
             if not stripped:
                 continue
             try:
-                parsed_status, candidate_path, old_path = self._parse_name_status_line(
-                    stripped
-                )
+                parsed_status, candidate_path, old_path = self._parse_name_status_line(stripped)
             except ValueError:
                 continue
 
-            normalized_path = self._normalize_workspace_relative_path(
-                candidate_path or ""
-            )
-            normalized_old_path = (
-                self._normalize_workspace_relative_path(old_path or "") or None
-            )
+            normalized_path = self._normalize_workspace_relative_path(candidate_path or "")
+            normalized_old_path = self._normalize_workspace_relative_path(old_path or "") or None
             if not normalized_path or self._is_reserved_internal_path(normalized_path):
                 continue
-            if normalized_old_path and self._is_reserved_internal_path(
-                normalized_old_path
-            ):
+            if normalized_old_path and self._is_reserved_internal_path(normalized_old_path):
                 normalized_old_path = None
             summary_by_path[normalized_path] = cast(
                 _WorkspaceSnapshotFileDiff,
@@ -8292,9 +7537,7 @@ class UserSpaceService:
                 },
             )
 
-        await self._apply_numstat_batch(
-            workspace_id, [snapshot_commit_hash], summary_by_path
-        )
+        await self._apply_numstat_batch(workspace_id, [snapshot_commit_hash], summary_by_path)
 
         async with self._git_status_semaphore:
             status_result = await self._run_git(
@@ -8315,11 +7558,7 @@ class UserSpaceService:
             status_token = token[:2]
             candidate_path = token[3:]
             previous_path: str | None = None
-            if (
-                status_token
-                and status_token[0] in {"R", "C"}
-                and (index + 1) < len(tokens)
-            ):
+            if status_token and status_token[0] in {"R", "C"} and (index + 1) < len(tokens):
                 next_token = tokens[index + 1]
                 if next_token:
                     previous_path = candidate_path
@@ -8327,18 +7566,14 @@ class UserSpaceService:
                 index += 1
 
             normalized_path = self._normalize_workspace_relative_path(candidate_path)
-            normalized_previous_path = (
-                self._normalize_workspace_relative_path(previous_path or "") or None
-            )
+            normalized_previous_path = self._normalize_workspace_relative_path(previous_path or "") or None
             if not normalized_path or self._is_reserved_internal_path(normalized_path):
                 index += 1
                 continue
 
             entry = summary_by_path.get(normalized_path)
             if status_token == "??":
-                file_path = self._resolve_workspace_file_path(
-                    workspace_id, normalized_path
-                )
+                file_path = self._resolve_workspace_file_path(workspace_id, normalized_path)
                 if file_path.exists() and file_path.is_file():
                     raw_content = await asyncio.to_thread(file_path.read_bytes)
                     decoded = self._decode_optional_text_content(raw_content)
@@ -8348,11 +7583,7 @@ class UserSpaceService:
                             "path": normalized_path,
                             "status": "A",
                             "old_path": None,
-                            "additions": (
-                                0
-                                if decoded is None
-                                else self._count_text_lines(decoded)
-                            ),
+                            "additions": (0 if decoded is None else self._count_text_lines(decoded)),
                             "deletions": 0,
                             "is_binary": decoded is None,
                             "is_untracked_in_current": True,
@@ -8403,12 +7634,8 @@ class UserSpaceService:
 
         is_snapshot_own_diff = False
         if not summary_map and snapshot_commit_hash:
-            parent_ref = await self._resolve_snapshot_parent_ref(
-                workspace_id, snapshot_commit_hash
-            )
-            own_diff_map = await self._build_snapshot_own_diff_summary_map(
-                workspace_id, snapshot_commit_hash, parent_ref
-            )
+            parent_ref = await self._resolve_snapshot_parent_ref(workspace_id, snapshot_commit_hash)
+            own_diff_map = await self._build_snapshot_own_diff_summary_map(workspace_id, snapshot_commit_hash, parent_ref)
             if own_diff_map:
                 summary_map = own_diff_map
                 is_snapshot_own_diff = True
@@ -8421,12 +7648,10 @@ class UserSpaceService:
         snapshot_id: str,
         user_id: str,
     ) -> UserSpaceSnapshotDiffSummaryResponse:
-        snapshot_commit_hash, summary_map, is_snapshot_own_diff = (
-            await self._prepare_snapshot_diff_context(
-                workspace_id,
-                snapshot_id,
-                user_id,
-            )
+        snapshot_commit_hash, summary_map, is_snapshot_own_diff = await self._prepare_snapshot_diff_context(
+            workspace_id,
+            snapshot_id,
+            user_id,
         )
         files = [
             UserSpaceSnapshotDiffFileSummary(
@@ -8479,16 +7704,12 @@ class UserSpaceService:
                 if not stripped:
                     continue
                 try:
-                    parsed_status, candidate_path, old_path = (
-                        self._parse_name_status_line(stripped)
-                    )
+                    parsed_status, candidate_path, old_path = self._parse_name_status_line(stripped)
                 except ValueError:
                     continue
                 np = self._normalize_workspace_relative_path(candidate_path or "")
                 if np == normalized_path:
-                    nop = (
-                        self._normalize_workspace_relative_path(old_path or "") or None
-                    )
+                    nop = self._normalize_workspace_relative_path(old_path or "") or None
                     entry = cast(
                         _WorkspaceSnapshotFileDiff,
                         {
@@ -8522,24 +7743,17 @@ class UserSpaceService:
                     if not stripped:
                         continue
                     try:
-                        parsed_status, candidate_path, old_path = (
-                            self._parse_name_status_line(stripped)
-                        )
+                        parsed_status, candidate_path, old_path = self._parse_name_status_line(stripped)
                     except ValueError:
                         continue
                     np = self._normalize_workspace_relative_path(candidate_path or "")
                     if np == normalized_path:
-                        nop = (
-                            self._normalize_workspace_relative_path(old_path or "")
-                            or None
-                        )
+                        nop = self._normalize_workspace_relative_path(old_path or "") or None
                         entry = cast(
                             _WorkspaceSnapshotFileDiff,
                             {
                                 "path": normalized_path,
-                                "status": cast(
-                                    Literal["A", "D", "M", "R"], parsed_status
-                                ),
+                                "status": cast(Literal["A", "D", "M", "R"], parsed_status),
                                 "old_path": nop,
                                 "additions": 0,
                                 "deletions": 0,
@@ -8575,20 +7789,14 @@ class UserSpaceService:
                     if np != normalized_path:
                         continue
                     if status_token == "??":
-                        file_path = self._resolve_workspace_file_path(
-                            workspace_id, normalized_path
-                        )
+                        file_path = self._resolve_workspace_file_path(workspace_id, normalized_path)
                         is_binary = False
                         additions = 0
                         if file_path.exists() and file_path.is_file():
                             raw_content = await asyncio.to_thread(file_path.read_bytes)
                             decoded = self._decode_optional_text_content(raw_content)
                             is_binary = decoded is None
-                            additions = (
-                                0
-                                if decoded is None
-                                else self._count_text_lines(decoded)
-                            )
+                            additions = 0 if decoded is None else self._count_text_lines(decoded)
                         entry = cast(
                             _WorkspaceSnapshotFileDiff,
                             {
@@ -8625,9 +7833,7 @@ class UserSpaceService:
 
         # Fallback: try snapshot's own diff (parent -> snapshot)
         if entry is None and snapshot_commit_hash:
-            parent_ref = await self._resolve_snapshot_parent_ref(
-                workspace_id, snapshot_commit_hash
-            )
+            parent_ref = await self._resolve_snapshot_parent_ref(workspace_id, snapshot_commit_hash)
             own_status = await self._run_git(
                 workspace_id,
                 [
@@ -8646,24 +7852,17 @@ class UserSpaceService:
                     if not stripped:
                         continue
                     try:
-                        parsed_status, candidate_path, old_path = (
-                            self._parse_name_status_line(stripped)
-                        )
+                        parsed_status, candidate_path, old_path = self._parse_name_status_line(stripped)
                     except ValueError:
                         continue
                     np = self._normalize_workspace_relative_path(candidate_path or "")
                     if np == normalized_path:
-                        nop = (
-                            self._normalize_workspace_relative_path(old_path or "")
-                            or None
-                        )
+                        nop = self._normalize_workspace_relative_path(old_path or "") or None
                         entry = cast(
                             _WorkspaceSnapshotFileDiff,
                             {
                                 "path": normalized_path,
-                                "status": cast(
-                                    Literal["A", "D", "M", "R"], parsed_status
-                                ),
+                                "status": cast(Literal["A", "D", "M", "R"], parsed_status),
                                 "old_path": nop,
                                 "additions": 0,
                                 "deletions": 0,
@@ -8678,16 +7877,10 @@ class UserSpaceService:
         if entry is not None:
             single_map = {normalized_path: entry}
             if is_snapshot_own_diff:
-                parent_ref = await self._resolve_snapshot_parent_ref(
-                    workspace_id, snapshot_commit_hash
-                )
-                await self._apply_numstat_batch(
-                    workspace_id, [parent_ref, snapshot_commit_hash], single_map
-                )
+                parent_ref = await self._resolve_snapshot_parent_ref(workspace_id, snapshot_commit_hash)
+                await self._apply_numstat_batch(workspace_id, [parent_ref, snapshot_commit_hash], single_map)
             else:
-                await self._apply_numstat_batch(
-                    workspace_id, [snapshot_commit_hash], single_map
-                )
+                await self._apply_numstat_batch(workspace_id, [snapshot_commit_hash], single_map)
 
         return entry, is_snapshot_own_diff
 
@@ -8712,9 +7905,7 @@ class UserSpaceService:
         snapshot_row = await self._get_snapshot_record(workspace_id, snapshot_id)
         snapshot_commit_hash = str(snapshot_row.get("git_commit_hash") or "")
 
-        file_summary, is_snapshot_own_diff = await self._lookup_single_file_diff_entry(
-            workspace_id, snapshot_commit_hash, normalized_path
-        )
+        file_summary, is_snapshot_own_diff = await self._lookup_single_file_diff_entry(workspace_id, snapshot_commit_hash, normalized_path)
         if file_summary is None:
             raise HTTPException(status_code=404, detail="Snapshot diff file not found")
 
@@ -8727,9 +7918,7 @@ class UserSpaceService:
         is_untracked_in_current = bool(file_summary["is_untracked_in_current"])
 
         if is_snapshot_own_diff:
-            parent_ref = await self._resolve_snapshot_parent_ref(
-                workspace_id, snapshot_commit_hash
-            )
+            parent_ref = await self._resolve_snapshot_parent_ref(workspace_id, snapshot_commit_hash)
             if file_summary["status"] != "A":
                 before_content, before_is_binary = await self._read_git_text_content(
                     workspace_id,
@@ -8749,24 +7938,14 @@ class UserSpaceService:
                 )
                 is_binary = is_binary or before_is_binary
 
-            current_file_path = self._resolve_workspace_file_path(
-                workspace_id, after_path
-            )
-            if (
-                not is_deleted_in_current
-                and current_file_path.exists()
-                and current_file_path.is_file()
-            ):
-                after_content, after_is_binary = (
-                    await self._read_workspace_text_content(current_file_path)
-                )
+            current_file_path = self._resolve_workspace_file_path(workspace_id, after_path)
+            if not is_deleted_in_current and current_file_path.exists() and current_file_path.is_file():
+                after_content, after_is_binary = await self._read_workspace_text_content(current_file_path)
                 is_binary = is_binary or after_is_binary
 
         is_truncated = False
         if not is_binary:
-            content_size = len(before_content.encode("utf-8", errors="replace")) + len(
-                after_content.encode("utf-8", errors="replace")
-            )
+            content_size = len(before_content.encode("utf-8", errors="replace")) + len(after_content.encode("utf-8", errors="replace"))
             if content_size > _SNAPSHOT_DIFF_MAX_FILE_BYTES:
                 is_truncated = True
                 before_content = ""
@@ -8774,17 +7953,13 @@ class UserSpaceService:
 
         message: str | None = None
         if is_binary:
-            message = (
-                "Binary or non-UTF-8 content cannot be rendered in the diff viewer."
-            )
+            message = "Binary or non-UTF-8 content cannot be rendered in the diff viewer."
             before_content = ""
             after_content = ""
         elif is_truncated:
             message = "File content is too large to display in the diff viewer."
         elif file_summary["status"] == "D":
-            message = (
-                "File exists in the snapshot but is deleted in the current workspace."
-            )
+            message = "File exists in the snapshot but is deleted in the current workspace."
         elif is_untracked_in_current:
             message = "File is untracked in the current workspace."
 
@@ -8873,9 +8048,7 @@ class UserSpaceService:
             return None
         return str(getattr(share_record, "shareToken", "") or "").strip() or None
 
-    def _share_prompt_metadata_from_record(
-        self, share_record: Any
-    ) -> tuple[str | None, str | None]:
+    def _share_prompt_metadata_from_record(self, share_record: Any) -> tuple[str | None, str | None]:
         # WorkspaceShare records don't have a "name" field directly; the
         # workspace name lives on the related Workspace record. ConversationShare
         # records get their display name from the related conversation's title.
@@ -8887,9 +8060,7 @@ class UserSpaceService:
         if not share_name:
             conversation = getattr(share_record, "conversation", None)
             share_name = str(getattr(conversation, "title", "") or "").strip() or None
-        owner_obj = getattr(share_record, "owner", None) or getattr(
-            share_record, "ownerUser", None
-        )
+        owner_obj = getattr(share_record, "owner", None) or getattr(share_record, "ownerUser", None)
         if owner_obj is None:
             workspace = getattr(share_record, "workspace", None)
             if workspace is not None:
@@ -9131,9 +8302,7 @@ class UserSpaceService:
             workspace_share_where["NOT"] = {"workspaceId": exclude_workspace_id}
         elif exclude_workspace_share_id:
             workspace_share_where["NOT"] = {"id": exclude_workspace_share_id}
-        workspace_share = await db.workspaceshare.find_first(
-            where=workspace_share_where
-        )
+        workspace_share = await db.workspaceshare.find_first(where=workspace_share_where)
         if workspace_share is not None:
             return True
 
@@ -9145,9 +8314,7 @@ class UserSpaceService:
             conversation_where["NOT"] = {"id": exclude_share_id}
         elif exclude_conversation_id:
             conversation_where["NOT"] = {"conversationId": exclude_conversation_id}
-        conversation_share = await db.conversationshare.find_first(
-            where=conversation_where
-        )
+        conversation_share = await db.conversationshare.find_first(where=conversation_where)
         return conversation_share is not None
 
     async def _resolve_share_owner_ids(self, owner_username: str) -> list[str]:
@@ -9167,10 +8334,7 @@ class UserSpaceService:
         return [
             str(getattr(user, "id", ""))
             for user in users
-            if _normalize_owner_username_for_share_path(
-                str(getattr(user, "username", "") or "")
-            )
-            == normalized_owner
+            if _normalize_owner_username_for_share_path(str(getattr(user, "username", "") or "")) == normalized_owner
         ]
 
     async def get_share_prompt_metadata_by_token(
@@ -9178,12 +8342,10 @@ class UserSpaceService:
         share_token: str,
     ) -> tuple[str | None, str | None]:
         try:
-            _target_type, share_record = (
-                await self._resolve_public_share_record_by_token(
-                    share_token,
-                    include_owner=True,
-                    include_conversation=True,
-                )
+            _target_type, share_record = await self._resolve_public_share_record_by_token(
+                share_token,
+                include_owner=True,
+                include_conversation=True,
             )
         except HTTPException:
             return None, None
@@ -9195,13 +8357,11 @@ class UserSpaceService:
         share_slug: str,
     ) -> tuple[str | None, str | None]:
         try:
-            _target_type, share_record = (
-                await self._resolve_public_share_record_by_slug(
-                    owner_username,
-                    share_slug,
-                    include_owner=True,
-                    include_conversation=True,
-                )
+            _target_type, share_record = await self._resolve_public_share_record_by_slug(
+                owner_username,
+                share_slug,
+                include_owner=True,
+                include_conversation=True,
             )
         except HTTPException:
             return None, None
@@ -9230,13 +8390,9 @@ class UserSpaceService:
         if not owner:
             raise HTTPException(status_code=404, detail="Workspace owner not found")
 
-        normalized = _normalize_owner_username_for_share_path(
-            str(getattr(owner, "username", "") or "")
-        )
+        normalized = _normalize_owner_username_for_share_path(str(getattr(owner, "username", "") or ""))
         if not normalized:
-            raise HTTPException(
-                status_code=400, detail="Workspace owner username invalid"
-            )
+            raise HTTPException(status_code=400, detail="Workspace owner username invalid")
         return normalized
 
     async def _allocate_next_share_slug(
@@ -9255,16 +8411,10 @@ class UserSpaceService:
         self,
         workspace_record: Any,
     ) -> tuple[ShareAccessMode, str | None, list[str], list[str]]:
-        mode = _normalize_share_access_mode(
-            str(getattr(workspace_record, "shareAccessMode", "token") or "token")
-        )
+        mode = _normalize_share_access_mode(str(getattr(workspace_record, "shareAccessMode", "token") or "token"))
         password_encrypted = str(getattr(workspace_record, "sharePassword", "") or "")
-        selected_user_ids = _normalize_string_list(
-            getattr(workspace_record, "shareSelectedUserIds", [])
-        )
-        selected_ldap_groups = _normalize_string_list(
-            getattr(workspace_record, "shareSelectedLdapGroups", [])
-        )
+        selected_user_ids = _normalize_string_list(getattr(workspace_record, "shareSelectedUserIds", []))
+        selected_ldap_groups = _normalize_string_list(getattr(workspace_record, "shareSelectedLdapGroups", []))
         return (
             mode,
             (password_encrypted or None),
@@ -9339,10 +8489,7 @@ class UserSpaceService:
                 )
                 if conn.entries:
                     group_entry = conn.entries[0]
-                    if (
-                        hasattr(group_entry, "primaryGroupToken")
-                        and group_entry.primaryGroupToken
-                    ):
+                    if hasattr(group_entry, "primaryGroupToken") and group_entry.primaryGroupToken:
                         group_rid = int(str(group_entry.primaryGroupToken))
                         return group_rid == primary_group_id
 
@@ -9359,24 +8506,18 @@ class UserSpaceService:
         current_user: Any | None,
         provided_password: str | None,
     ) -> None:
-        mode, password_encrypted, selected_user_ids, selected_ldap_groups = (
-            self._extract_share_access_state(share_record)
-        )
+        mode, password_encrypted, selected_user_ids, selected_ldap_groups = self._extract_share_access_state(share_record)
 
         if mode == "token":
             return
 
         if mode == "password":
             if not password_encrypted:
-                raise HTTPException(
-                    status_code=403, detail="Share password not configured"
-                )
+                raise HTTPException(status_code=403, detail="Share password not configured")
             provided = (provided_password or "").strip()
             if not provided:
                 raise HTTPException(status_code=401, detail="Password required")
-            if not hmac.compare_digest(
-                decrypt_secret(password_encrypted) or "", provided
-            ):
+            if not hmac.compare_digest(decrypt_secret(password_encrypted) or "", provided):
                 raise HTTPException(status_code=401, detail="Invalid password")
             return
 
@@ -9384,10 +8525,7 @@ class UserSpaceService:
         # Password mode is handled above and always requires the password.
         if current_user is not None:
             owner_id = str(getattr(share_record, "ownerUserId", "") or "").strip()
-            if (
-                owner_id
-                and owner_id == str(getattr(current_user, "id", "") or "").strip()
-            ):
+            if owner_id and owner_id == str(getattr(current_user, "id", "") or "").strip():
                 return
 
         if current_user is None:
@@ -9398,23 +8536,16 @@ class UserSpaceService:
 
         if mode == "selected_users":
             if str(getattr(current_user, "id", "")) not in selected_user_ids:
-                raise HTTPException(
-                    status_code=403, detail="User not allowed for this share"
-                )
+                raise HTTPException(status_code=403, detail="User not allowed for this share")
             return
 
         if mode == "ldap_groups":
-            if (
-                getattr(current_user, "authProvider", None) == "local"
-                and getattr(current_user, "role", None) == "admin"
-            ):
+            if getattr(current_user, "authProvider", None) == "local" and getattr(current_user, "role", None) == "admin":
                 return
             for group_dn in selected_ldap_groups:
                 if await self._is_user_in_ldap_group(current_user, group_dn):
                     return
-            raise HTTPException(
-                status_code=403, detail="User not in allowed LDAP groups"
-            )
+            raise HTTPException(status_code=403, detail="User not in allowed LDAP groups")
 
     @staticmethod
     def _share_password_access_proof(share_record: Any) -> str | None:
@@ -9423,9 +8554,7 @@ class UserSpaceService:
         share_record_id = str(getattr(share_record, "id", "") or "")
         if not password_encrypted or not share_token or not share_record_id:
             return None
-        return hashlib.sha256(
-            f"{share_record_id}:{share_token}:{password_encrypted}".encode("utf-8")
-        ).hexdigest()
+        return hashlib.sha256(f"{share_record_id}:{share_token}:{password_encrypted}".encode("utf-8")).hexdigest()
 
     def _build_share_password_access_token(
         self,
@@ -9447,9 +8576,7 @@ class UserSpaceService:
             "exp": int(expires_at.timestamp()),
             "jti": str(uuid4()),
         }
-        token = jwt.encode(
-            payload, settings.encryption_key, algorithm=settings.jwt_algorithm
-        )
+        token = jwt.encode(payload, settings.encryption_key, algorithm=settings.jwt_algorithm)
         return token, expires_at
 
     def _verify_share_password_access_token(
@@ -9522,9 +8649,7 @@ class UserSpaceService:
                     current_user,
                     password,
                 )
-                resolved_token, expires_at = self._build_share_password_access_token(
-                    share_record
-                )
+                resolved_token, expires_at = self._build_share_password_access_token(share_record)
         else:
             await self._enforce_share_access(
                 share_record,
@@ -9571,9 +8696,7 @@ class UserSpaceService:
             order={"createdAt": "asc"},
         )
         used: set[str] = {
-            str(getattr(workspace, "nameNormalized", "") or "")
-            for workspace in owner_workspaces
-            if str(getattr(workspace, "nameNormalized", "") or "")
+            str(getattr(workspace, "nameNormalized", "") or "") for workspace in owner_workspaces if str(getattr(workspace, "nameNormalized", "") or "")
         }
 
         next_index = 1
@@ -9613,9 +8736,7 @@ class UserSpaceService:
                     if not isinstance(item, dict):
                         continue
                     try:
-                        parsed_connections.append(
-                            UserSpaceLiveDataConnection.model_validate(item)
-                        )
+                        parsed_connections.append(UserSpaceLiveDataConnection.model_validate(item))
                     except Exception:
                         continue
                 live_data_connections = parsed_connections or None
@@ -9627,9 +8748,7 @@ class UserSpaceService:
                     if not isinstance(item, dict):
                         continue
                     try:
-                        parsed_checks.append(
-                            UserSpaceLiveDataCheck.model_validate(item)
-                        )
+                        parsed_checks.append(UserSpaceLiveDataCheck.model_validate(item))
                     except Exception:
                         continue
                 live_data_checks = parsed_checks or None
@@ -9640,9 +8759,7 @@ class UserSpaceService:
 
         return artifact_type, live_data_connections, live_data_checks
 
-    async def _touch_workspace(
-        self, workspace_id: str, ts: datetime | None = None
-    ) -> None:
+    async def _touch_workspace(self, workspace_id: str, ts: datetime | None = None) -> None:
         db = await get_db()
         try:
             await db.workspace.update(
@@ -9652,18 +8769,12 @@ class UserSpaceService:
         except Exception:
             logger.debug("Failed to update workspace timestamp for %s", workspace_id)
 
-    async def touch_workspace(
-        self, workspace_id: str, ts: datetime | None = None
-    ) -> None:
+    async def touch_workspace(self, workspace_id: str, ts: datetime | None = None) -> None:
         await self._touch_workspace(workspace_id, ts=ts)
 
     def _build_dashboard_entrypoint_content(self, relative_path: str) -> str:
         normalized = (relative_path or "").replace("\\", "/")
-        module_rel = (
-            normalized[len("dashboard/") :]
-            if normalized.startswith("dashboard/")
-            else normalized
-        )
+        module_rel = normalized[len("dashboard/") :] if normalized.startswith("dashboard/") else normalized
         module_without_ext = module_rel
         for extension in _MODULE_SOURCE_EXTENSIONS:
             if module_without_ext.lower().endswith(extension):
@@ -9714,9 +8825,7 @@ class UserSpaceService:
         paths: list[str] = []
         seen: set[str] = set()
         for row in rows:
-            relative = self._workspace_mount_target_repo_relative_path(
-                str(getattr(row, "targetPath", "") or "")
-            )
+            relative = self._workspace_mount_target_repo_relative_path(str(getattr(row, "targetPath", "") or ""))
             if not relative or relative in seen:
                 continue
             seen.add(relative)
@@ -9735,9 +8844,7 @@ class UserSpaceService:
         paths: list[str] = []
         seen: set[str] = set()
         for row in rows:
-            relative = self._workspace_mount_target_repo_relative_path(
-                str(getattr(row, "targetPath", "") or "")
-            )
+            relative = self._workspace_mount_target_repo_relative_path(str(getattr(row, "targetPath", "") or ""))
             if not relative or relative in seen:
                 continue
             seen.add(relative)
@@ -9753,16 +8860,12 @@ class UserSpaceService:
         if not normalized_path:
             raise HTTPException(status_code=400, detail="Invalid file path")
 
-        disabled_prefixes = await self._list_disabled_workspace_mount_target_repo_paths(
-            workspace_id
-        )
+        disabled_prefixes = await self._list_disabled_workspace_mount_target_repo_paths(workspace_id)
         for prefix in disabled_prefixes:
             if self._workspace_path_matches_mount_prefix(normalized_path, prefix):
                 raise HTTPException(
                     status_code=409,
-                    detail=(
-                        "Path is inside an unmounted workspace mount and is not accessible"
-                    ),
+                    detail=("Path is inside an unmounted workspace mount and is not accessible"),
                 )
         return normalized_path
 
@@ -9794,11 +8897,7 @@ class UserSpaceService:
         # SQLite exclusion policy.
         db = await get_db()
         workspace = await db.workspace.find_unique(where={"id": workspace_id})
-        sqlite_mode = _normalize_sqlite_persistence_mode(
-            str(getattr(workspace, "sqlitePersistenceMode", "include") or "include")
-            if workspace
-            else "include"
-        )
+        sqlite_mode = _normalize_sqlite_persistence_mode(str(getattr(workspace, "sqlitePersistenceMode", "include") or "include") if workspace else "include")
         if sqlite_mode == "exclude":
             reset_patterns.extend(_SQLITE_EXCLUDE_GLOBS)
 
@@ -9839,11 +8938,7 @@ class UserSpaceService:
         for member in member_rows:
             member_user_id = getattr(member, "userId", "")
             role_value = getattr(member, "role", "viewer")
-            role = (
-                role_value
-                if isinstance(role_value, str)
-                else str(getattr(role_value, "value", role_value))
-            )
+            role = role_value if isinstance(role_value, str) else str(getattr(role_value, "value", role_value))
             if member_user_id == getattr(record, "ownerUserId", "") and role == "owner":
                 owner_present = True
             members.append(
@@ -9860,25 +8955,13 @@ class UserSpaceService:
             )
 
         tool_rows = list(getattr(record, "toolSelections", []) or [])
-        selected_tool_ids = [
-            getattr(tool_row, "toolConfigId", "")
-            for tool_row in tool_rows
-            if getattr(tool_row, "toolConfigId", None)
-        ]
+        selected_tool_ids = [getattr(tool_row, "toolConfigId", "") for tool_row in tool_rows if getattr(tool_row, "toolConfigId", None)]
 
         group_rows = list(getattr(record, "toolGroupSelections", []) or [])
-        selected_tool_group_ids = [
-            getattr(row, "toolGroupId", "")
-            for row in group_rows
-            if getattr(row, "toolGroupId", None)
-        ]
+        selected_tool_group_ids = [getattr(row, "toolGroupId", "") for row in group_rows if getattr(row, "toolGroupId", None)]
         if conversation_ids is None:
             conversation_rows = list(getattr(record, "conversations", []) or [])
-            conversation_ids = [
-                getattr(conversation_row, "id", "")
-                for conversation_row in conversation_rows
-                if getattr(conversation_row, "id", None)
-            ]
+            conversation_ids = [getattr(conversation_row, "id", "") for conversation_row in conversation_rows if getattr(conversation_row, "id", None)]
 
         owner_obj = getattr(record, "owner", None)
         owner_username: str | None = None
@@ -9899,16 +8982,8 @@ class UserSpaceService:
             getattr(record, "scmAutoSyncPolicy", None),
             ("manual", "auto_push"),
         )
-        remote_role = (
-            cast(WorkspaceScmRemoteRole, raw_remote_role)
-            if raw_remote_role in {"upstream", "publish"}
-            else None
-        )
-        auto_sync_policy = (
-            cast(WorkspaceScmAutoSyncPolicy, raw_auto_sync_policy)
-            if raw_auto_sync_policy in {"manual", "auto_push"}
-            else None
-        )
+        remote_role = cast(WorkspaceScmRemoteRole, raw_remote_role) if raw_remote_role in {"upstream", "publish"} else None
+        auto_sync_policy = cast(WorkspaceScmAutoSyncPolicy, raw_auto_sync_policy) if raw_auto_sync_policy in {"manual", "auto_push"} else None
         scm = UserSpaceWorkspaceScmStatus(
             connected=bool(getattr(record, "scmGitUrl", None)),
             git_url=getattr(record, "scmGitUrl", None),
@@ -9964,11 +9039,7 @@ class UserSpaceService:
             description=record.description,
             sqlite_persistence_mode=cast(
                 SqlitePersistenceMode,
-                _normalize_sqlite_persistence_mode(
-                    str(
-                        getattr(record, "sqlitePersistenceMode", "include") or "include"
-                    )
-                ),
+                _normalize_sqlite_persistence_mode(str(getattr(record, "sqlitePersistenceMode", "include") or "include")),
             ),
             owner_user_id=record.ownerUserId,
             owner_username=owner_username,
@@ -10005,11 +9076,7 @@ class UserSpaceService:
         allowed: tuple[str, ...],
     ) -> str | None:
         """Normalize a Prisma enum value to its string form, or None."""
-        raw = (
-            str(getattr(value, "value", value) if value is not None else "")
-            .strip()
-            .lower()
-        )
+        raw = str(getattr(value, "value", value) if value is not None else "").strip().lower()
         return raw if raw in allowed else None
 
     @staticmethod
@@ -10041,9 +9108,7 @@ class UserSpaceService:
             right_path = right.get(relative_path)
             if left_path is None or right_path is None:
                 changed.append(relative_path)
-            elif self._compute_file_sha256(left_path) != self._compute_file_sha256(
-                right_path
-            ):
+            elif self._compute_file_sha256(left_path) != self._compute_file_sha256(right_path):
                 changed.append(relative_path)
             if len(changed) >= _WORKSPACE_SCM_PREVIEW_SAMPLE_LIMIT:
                 break
@@ -10052,25 +9117,19 @@ class UserSpaceService:
     async def _workspace_has_sync_scope_files(self, workspace_id: str) -> bool:
         from ragtime.userspace.runtime_service import userspace_runtime_service
 
-        status = await userspace_runtime_service.get_workspace_scm_status_internal(
-            workspace_id
-        )
+        status = await userspace_runtime_service.get_workspace_scm_status_internal(workspace_id)
         return bool(status.get("has_sync_scope_files", False))
 
     async def _workspace_has_uncommitted_changes(self, workspace_id: str) -> bool:
         from ragtime.userspace.runtime_service import userspace_runtime_service
 
-        status = await userspace_runtime_service.get_workspace_scm_status_internal(
-            workspace_id
-        )
+        status = await userspace_runtime_service.get_workspace_scm_status_internal(workspace_id)
         return bool(status.get("has_uncommitted_changes", False))
 
     async def _workspace_current_commit_hash(self, workspace_id: str) -> str | None:
         from ragtime.userspace.runtime_service import userspace_runtime_service
 
-        status = await userspace_runtime_service.get_workspace_scm_status_internal(
-            workspace_id
-        )
+        status = await userspace_runtime_service.get_workspace_scm_status_internal(workspace_id)
         value = str(status.get("current_commit_hash", "") or "").strip()
         return value or None
 
@@ -10117,9 +9176,7 @@ class UserSpaceService:
                     None,
                     result.stderr.strip() or result.stdout.strip() or "Clone failed",
                 )
-            head = await self._run_git_in_dir(
-                temp_dir, ["rev-parse", "HEAD"], check=False
-            )
+            head = await self._run_git_in_dir(temp_dir, ["rev-parse", "HEAD"], check=False)
             return temp_dir, head.stdout.strip() or None, None
         except Exception as exc:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -10260,11 +9317,7 @@ class UserSpaceService:
                 check=False,
             )
             if tree_result.returncode == 0:
-                commit["file_count"] = sum(
-                    1
-                    for f in tree_result.stdout.splitlines()
-                    if f.strip() and not self._is_reserved_internal_path(f)
-                )
+                commit["file_count"] = sum(1 for f in tree_result.stdout.splitlines() if f.strip() and not self._is_reserved_internal_path(f))
             else:
                 commit["file_count"] = 0
 
@@ -10310,9 +9363,7 @@ class UserSpaceService:
               AND branch_id = {self._sql_quote(branch_id)}
               AND git_commit_hash IN ({in_clause})
             """)
-        existing_by_hash: dict[str, str] = {
-            str(r["git_commit_hash"]): str(r["id"]) for r in existing_rows
-        }
+        existing_by_hash: dict[str, str] = {str(r["git_commit_hash"]): str(r["id"]) for r in existing_rows}
 
         # ------------------------------------------------------------------
         # 5. Create snapshot records (oldest → newest) with parent chain.
@@ -10392,20 +9443,14 @@ class UserSpaceService:
     ) -> Path:
         files_dir = self._workspace_files_dir(workspace_id)
         temp_dir = Path(tempfile.mkdtemp(prefix="ragtime-workspace-export-"))
-        staged_files = await asyncio.to_thread(
-            self._sync_scope_relative_paths, files_dir
-        )
+        staged_files = await asyncio.to_thread(self._sync_scope_relative_paths, files_dir)
         for relative_path, source_path in staged_files.items():
             target_path = temp_dir / relative_path
             target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target_path)
         await self._run_git_in_dir(temp_dir, ["init"])
-        await self._run_git_in_dir(
-            temp_dir, ["config", "user.name", "Ragtime Workspace Sync"]
-        )
-        await self._run_git_in_dir(
-            temp_dir, ["config", "user.email", "userspace-sync@ragtime.local"]
-        )
+        await self._run_git_in_dir(temp_dir, ["config", "user.name", "Ragtime Workspace Sync"])
+        await self._run_git_in_dir(temp_dir, ["config", "user.email", "userspace-sync@ragtime.local"])
         await self._run_git_in_dir(temp_dir, ["add", "."])
         return temp_dir
 
@@ -10434,8 +9479,7 @@ class UserSpaceService:
             "scmLastSyncDirection": direction,
             "scmLastSyncStatus": status,
             "scmLastSyncMessage": message,
-            "scmConnectedAt": getattr(current_record, "scmConnectedAt", None)
-            or _utc_now(),
+            "scmConnectedAt": getattr(current_record, "scmConnectedAt", None) or _utc_now(),
         }
         if git_url is not None:
             update_data["scmGitUrl"] = git_url
@@ -10485,9 +9529,7 @@ class UserSpaceService:
         request: UserSpaceWorkspaceScmSettingsRequest,
     ) -> UserSpaceWorkspaceScmStatus:
         """Update SCM relationship / policy settings without touching connection fields."""
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="owner"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
         db = await get_db()
         update_data: dict[str, Any] = {}
         if request.remote_role is not None:
@@ -10525,15 +9567,9 @@ class UserSpaceService:
             where={"id": workspace_id},
             data=update_data,
         )
-        if (
-            request.auto_sync_policy == "auto_push"
-            or request.auto_push_interval_seconds is not None
-        ):
+        if request.auto_sync_policy == "auto_push" or request.auto_push_interval_seconds is not None:
             self._nudge_workspace_scm_watch_due(workspace_id, "export")
-        if (
-            request.auto_pull_enabled is True
-            or request.auto_pull_interval_seconds is not None
-        ):
+        if request.auto_pull_enabled is True or request.auto_pull_interval_seconds is not None:
             self._nudge_workspace_scm_watch_due(workspace_id, "import")
         return self._workspace_from_record(updated).scm or UserSpaceWorkspaceScmStatus()
 
@@ -10615,13 +9651,9 @@ class UserSpaceService:
             return
         # -------------------------------------------------------------------
 
-        git_branch = self._normalize_workspace_scm_branch(
-            getattr(workspace_record, "scmGitBranch", None)
-        )
+        git_branch = self._normalize_workspace_scm_branch(getattr(workspace_record, "scmGitBranch", None))
         stored_token_encrypted = getattr(workspace_record, "scmToken", None)
-        git_token = (
-            decrypt_secret(stored_token_encrypted) if stored_token_encrypted else None
-        )
+        git_token = decrypt_secret(stored_token_encrypted) if stored_token_encrypted else None
         parsed = parse_git_url(git_url, git_token)
         if not parsed:
             await self._update_workspace_scm_sync_metadata(
@@ -10640,9 +9672,7 @@ class UserSpaceService:
 
         provider = cast(WorkspaceScmProvider, parsed.provider.value)
         repo_visibility = getattr(workspace_record, "scmRepoVisibility", None)
-        last_remote_commit_hash = getattr(
-            workspace_record, "scmLastRemoteCommitHash", None
-        )
+        last_remote_commit_hash = getattr(workspace_record, "scmLastRemoteCommitHash", None)
 
         try:
             remote_commit_hash = await self._push_workspace_snapshot_commit(
@@ -10651,9 +9681,7 @@ class UserSpaceService:
                 git_url=git_url,
                 git_branch=git_branch,
                 git_token=git_token,
-                remote_commit_hash=(
-                    str(last_remote_commit_hash) if last_remote_commit_hash else None
-                ),
+                remote_commit_hash=(str(last_remote_commit_hash) if last_remote_commit_hash else None),
                 allow_force=False,
             )
             db = await get_db()
@@ -10668,9 +9696,7 @@ class UserSpaceService:
                 git_url=git_url,
                 git_branch=git_branch,
                 provider=provider,
-                repo_visibility=(
-                    str(repo_visibility) if repo_visibility is not None else None
-                ),
+                repo_visibility=(str(repo_visibility) if repo_visibility is not None else None),
                 remote_commit_hash=remote_commit_hash,
                 snapshot_id=snapshot.id,
                 status="success",
@@ -10683,22 +9709,14 @@ class UserSpaceService:
                 workspace_id,
             )
         except HTTPException as exc:
-            detail = (
-                exc.detail if isinstance(exc.detail, str) else "Snapshot push failed"
-            )
+            detail = exc.detail if isinstance(exc.detail, str) else "Snapshot push failed"
 
             # Detect non-fast-forward / divergence and pause auto-sync
-            is_divergence = any(
-                marker in detail.lower()
-                for marker in ("non-fast-forward", "fetch first", "failed to push")
-            )
+            is_divergence = any(marker in detail.lower() for marker in ("non-fast-forward", "fetch first", "failed to push"))
             if is_divergence:
                 await self._pause_workspace_scm_sync(
                     workspace_id,
-                    reason=(
-                        "Remote branch has diverged. "
-                        "Pull the latest changes or resolve the conflict before pushing."
-                    ),
+                    reason=("Remote branch has diverged. Pull the latest changes or resolve the conflict before pushing."),
                 )
 
             await self._update_workspace_scm_sync_metadata(
@@ -10706,16 +9724,13 @@ class UserSpaceService:
                 git_url=git_url,
                 git_branch=git_branch,
                 provider=provider,
-                repo_visibility=(
-                    str(repo_visibility) if repo_visibility is not None else None
-                ),
+                repo_visibility=(str(repo_visibility) if repo_visibility is not None else None),
                 status="error",
                 message=f"Failed to push snapshot: {detail}",
                 direction="export",
             )
             logger.error(
-                "Automatic snapshot push FAILED for workspace %s (remote %s): %s. "
-                "Snapshot exists locally but is not synced to remote.",
+                "Automatic snapshot push FAILED for workspace %s (remote %s): %s. Snapshot exists locally but is not synced to remote.",
                 workspace_id,
                 git_url,
                 detail,
@@ -10739,9 +9754,7 @@ class UserSpaceService:
             for relative_path, source_path in source_files.items():
                 destination_path = target_root / relative_path
                 destination_path.parent.mkdir(parents=True, exist_ok=True)
-                if destination_path.exists() and self._compute_file_sha256(
-                    destination_path
-                ) == self._compute_file_sha256(source_path):
+                if destination_path.exists() and self._compute_file_sha256(destination_path) == self._compute_file_sha256(source_path):
                     continue
                 shutil.copy2(source_path, destination_path)
 
@@ -10809,9 +9822,7 @@ class UserSpaceService:
                 for rel, src in self._sync_scope_relative_paths(source_root).items():
                     dest = target_root / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    if dest.exists() and self._compute_file_sha256(
-                        dest
-                    ) == self._compute_file_sha256(src):
+                    if dest.exists() and self._compute_file_sha256(dest) == self._compute_file_sha256(src):
                         continue
                     shutil.copy2(src, dest)
                     affected.append(rel)
@@ -10837,9 +9848,7 @@ class UserSpaceService:
                     src = source_root / rel_path
                     if src.exists():
                         dest.parent.mkdir(parents=True, exist_ok=True)
-                        if dest.exists() and self._compute_file_sha256(
-                            dest
-                        ) == self._compute_file_sha256(src):
+                        if dest.exists() and self._compute_file_sha256(dest) == self._compute_file_sha256(src):
                             continue
                         shutil.copy2(src, dest)
                         affected.append(rel_path)
@@ -10875,9 +9884,7 @@ class UserSpaceService:
         inferred_entrypoint: dict[str, str] | None = None,
         normalization_actions: list[str] | None = None,
     ) -> str:
-        detected_replit_features, has_legacy_replit_object_storage = (
-            self._detect_imported_replit_features(workspace_id)
-        )
+        detected_replit_features, has_legacy_replit_object_storage = self._detect_imported_replit_features(workspace_id)
         prompt_builder = cast(Any, build_workspace_scm_setup_prompt)
         return prompt_builder(  # type: ignore[call-arg]
             git_url=git_url,
@@ -10893,34 +9900,21 @@ class UserSpaceService:
         workspace_record: Any,
         request: UserSpaceWorkspaceScmPreviewRequest,
     ) -> tuple[str, str, str | None, WorkspaceScmProvider, str | None]:
-        git_url = str(
-            request.git_url or getattr(workspace_record, "scmGitUrl", "") or ""
-        ).strip()
+        git_url = str(request.git_url or getattr(workspace_record, "scmGitUrl", "") or "").strip()
         if not git_url:
-            raise HTTPException(
-                status_code=400, detail="Git repository URL is required"
-            )
+            raise HTTPException(status_code=400, detail="Git repository URL is required")
 
-        git_branch = self._normalize_workspace_scm_branch(
-            request.git_branch or getattr(workspace_record, "scmGitBranch", None)
-        )
+        git_branch = self._normalize_workspace_scm_branch(request.git_branch or getattr(workspace_record, "scmGitBranch", None))
         provided_token = (request.git_token or "").strip() or None
         stored_token_encrypted = getattr(workspace_record, "scmToken", None)
-        stored_token = (
-            decrypt_secret(stored_token_encrypted) if stored_token_encrypted else None
-        )
+        stored_token = decrypt_secret(stored_token_encrypted) if stored_token_encrypted else None
         git_token = provided_token or stored_token
         parsed = parse_git_url(git_url, git_token)
         if not parsed:
             raise HTTPException(status_code=400, detail="Invalid Git repository URL")
 
         provider = cast(WorkspaceScmProvider, parsed.provider.value)
-        repo_visibility = str(
-            request.create_repo_private is False
-            and "public"
-            or getattr(workspace_record, "scmRepoVisibility", None)
-            or "private"
-        )
+        repo_visibility = str(request.create_repo_private is False and "public" or getattr(workspace_record, "scmRepoVisibility", None) or "private")
         return git_url, git_branch, git_token, provider, repo_visibility
 
     async def _maybe_store_workspace_scm_token(
@@ -10951,55 +9945,35 @@ class UserSpaceService:
         *,
         store_preview: bool,
     ) -> tuple[UserSpaceWorkspaceScmPreviewResponse, str | None]:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
-        git_url, git_branch, git_token, provider, repo_visibility = (
-            await self._resolve_workspace_scm_target(workspace_record, request)
-        )
+        git_url, git_branch, git_token, provider, repo_visibility = await self._resolve_workspace_scm_target(workspace_record, request)
 
         current_snapshot_id = getattr(workspace_record, "currentSnapshotId", None)
-        last_synced_snapshot_id = getattr(
-            workspace_record, "scmLastSyncedSnapshotId", None
-        )
-        last_remote_commit_hash = getattr(
-            workspace_record, "scmLastRemoteCommitHash", None
-        )
+        last_synced_snapshot_id = getattr(workspace_record, "scmLastSyncedSnapshotId", None)
+        last_remote_commit_hash = getattr(workspace_record, "scmLastRemoteCommitHash", None)
         local_commit_hash = await self._workspace_current_commit_hash(workspace_id)
-        local_has_uncommitted_changes = await self._workspace_has_uncommitted_changes(
-            workspace_id
-        )
+        local_has_uncommitted_changes = await self._workspace_has_uncommitted_changes(workspace_id)
         local_has_files = await self._workspace_has_sync_scope_files(workspace_id)
         local_changed = (
             local_has_uncommitted_changes
-            or bool(
-                current_snapshot_id and current_snapshot_id != last_synced_snapshot_id
-            )
+            or bool(current_snapshot_id and current_snapshot_id != last_synced_snapshot_id)
             or (not current_snapshot_id and local_has_files)
         )
 
-        remote_dir, remote_commit_hash, clone_error = (
-            await self._clone_remote_branch_to_tempdir(
-                git_url,
-                git_branch,
-                git_token,
-            )
+        remote_dir, remote_commit_hash, clone_error = await self._clone_remote_branch_to_tempdir(
+            git_url,
+            git_branch,
+            git_token,
         )
 
         remote_exists = remote_commit_hash is not None
-        remote_changed = bool(
-            remote_commit_hash and remote_commit_hash != last_remote_commit_hash
-        )
-        head_commits_match = bool(
-            local_commit_hash
-            and remote_commit_hash
-            and local_commit_hash == remote_commit_hash
-        )
+        remote_changed = bool(remote_commit_hash and remote_commit_hash != last_remote_commit_hash)
+        head_commits_match = bool(local_commit_hash and remote_commit_hash and local_commit_hash == remote_commit_hash)
 
         state: WorkspaceScmPreviewState
         summary: str
@@ -11017,24 +9991,17 @@ class UserSpaceService:
             )
 
         # Detect upstream workspace with a prior sync (subsequent pull vs first import).
-        is_upstream_with_prior_sync = getattr(
-            workspace_record, "scmRemoteRole", None
-        ) == "upstream" and bool(last_remote_commit_hash)
+        is_upstream_with_prior_sync = getattr(workspace_record, "scmRemoteRole", None) == "upstream" and bool(last_remote_commit_hash)
 
         if not remote_exists:
             if direction == "import":
                 state = "missing_branch"
-                summary = (
-                    f"Branch '{git_branch}' was not found in the remote repository."
-                )
+                summary = f"Branch '{git_branch}' was not found in the remote repository."
             else:
                 state = "safe"
                 can_proceed_without_force = True
                 if request.create_repo_if_missing:
-                    summary = (
-                        "Remote repository or branch is missing. Ragtime can create "
-                        "the repository if needed and push this workspace as the first commit."
-                    )
+                    summary = "Remote repository or branch is missing. Ragtime can create the repository if needed and push this workspace as the first commit."
                 else:
                     summary = f"Branch '{git_branch}' does not exist remotely yet. Export can create it safely."
         elif direction == "import":
@@ -11042,10 +10009,7 @@ class UserSpaceService:
                 # Upstream pull: always merge (safe). Overwrite is a separate user action.
                 if not remote_changed:
                     state = "up_to_date"
-                    summary = (
-                        "No new upstream commits since the last pull, and the "
-                        "workspace has no unsynced local state."
-                    )
+                    summary = "No new upstream commits since the last pull, and the workspace has no unsynced local state."
                 else:
                     state = "safe"
                     can_proceed_without_force = True
@@ -11060,10 +10024,7 @@ class UserSpaceService:
                 summary = "Remote changes are available and the workspace has no unsynced local state."
             elif not local_changed and not remote_changed:
                 state = "up_to_date"
-                summary = (
-                    "No unsynced workspace changes and no new remote commits "
-                    "since the last sync."
-                )
+                summary = "No unsynced workspace changes and no new remote commits since the last sync."
             else:
                 state = "destructive"
                 will_overwrite_local = True
@@ -11075,10 +10036,7 @@ class UserSpaceService:
                 summary = "Workspace changes are ready to export and the remote has not moved since the last sync."
             elif not local_changed and not remote_changed:
                 state = "up_to_date"
-                summary = (
-                    "No unsynced workspace changes and no new remote commits "
-                    "since the last sync."
-                )
+                summary = "No unsynced workspace changes and no new remote commits since the last sync."
             else:
                 state = "destructive"
                 will_overwrite_remote = True
@@ -11087,10 +10045,7 @@ class UserSpaceService:
         if state == "up_to_date":
             if remote_exists and last_remote_commit_hash and remote_commit_hash:
                 if head_commits_match:
-                    state_explanation = (
-                        "Workspace HEAD matches the current remote HEAD, and the "
-                        "remote has not moved since the last successful sync."
-                    )
+                    state_explanation = "Workspace HEAD matches the current remote HEAD, and the remote has not moved since the last successful sync."
                 else:
                     state_explanation = (
                         "This preview treats up-to-date as a sync-state check: the "
@@ -11100,10 +10055,7 @@ class UserSpaceService:
                         "without requiring an import or export."
                     )
             elif not remote_exists:
-                state_explanation = (
-                    "No remote branch exists yet, so there is no newer remote state "
-                    "to compare against."
-                )
+                state_explanation = "No remote branch exists yet, so there is no newer remote state to compare against."
 
         state_fingerprint = hashlib.sha256(
             json.dumps(
@@ -11129,9 +10081,7 @@ class UserSpaceService:
         preview_expires_at: datetime | None = None
         if state == "destructive" and store_preview:
             preview_token = secrets.token_urlsafe(24)
-            preview_expires_at = _utc_now() + timedelta(
-                seconds=_WORKSPACE_SCM_PREVIEW_TTL_SECONDS
-            )
+            preview_expires_at = _utc_now() + timedelta(seconds=_WORKSPACE_SCM_PREVIEW_TTL_SECONDS)
             await self._store_workspace_scm_preview(
                 _WorkspaceScmPreviewRecord(
                     token=preview_token,
@@ -11167,9 +10117,7 @@ class UserSpaceService:
                 can_proceed_without_force=can_proceed_without_force,
                 workspace_head_commit_hash=local_commit_hash,
                 remote_head_commit_hash=remote_commit_hash,
-                last_synced_remote_commit_hash=(
-                    str(last_remote_commit_hash) if last_remote_commit_hash else None
-                ),
+                last_synced_remote_commit_hash=(str(last_remote_commit_hash) if last_remote_commit_hash else None),
                 head_commits_match=head_commits_match,
                 local_commit_hash=local_commit_hash,
                 remote_commit_hash=remote_commit_hash,
@@ -11193,8 +10141,7 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="Workspace not found")
         return UserSpaceWorkspaceScmConnectionResponse(
             workspace_id=workspace_id,
-            scm=self._workspace_from_record(workspace_record).scm
-            or UserSpaceWorkspaceScmStatus(),
+            scm=self._workspace_from_record(workspace_record).scm or UserSpaceWorkspaceScmStatus(),
         )
 
     async def _workspace_scm_noop_response(
@@ -11211,9 +10158,7 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
         git_url = str(getattr(workspace_record, "scmGitUrl", "") or "").strip()
-        git_branch = self._normalize_workspace_scm_branch(
-            getattr(workspace_record, "scmGitBranch", None)
-        )
+        git_branch = self._normalize_workspace_scm_branch(getattr(workspace_record, "scmGitBranch", None))
         provider = self._normalize_workspace_scm_provider(
             getattr(workspace_record, "scmProvider", None),
             git_url or None,
@@ -11225,10 +10170,7 @@ class UserSpaceService:
             git_branch=git_branch,
             provider=provider,
             repo_visibility=repo_visibility,
-            remote_commit_hash=(
-                remote_commit_hash
-                or getattr(workspace_record, "scmLastRemoteCommitHash", None)
-            ),
+            remote_commit_hash=(remote_commit_hash or getattr(workspace_record, "scmLastRemoteCommitHash", None)),
             status="success",
             message=summary,
             direction=direction,
@@ -11241,10 +10183,7 @@ class UserSpaceService:
             summary=summary,
             scm=scm,
             snapshot=None,
-            remote_commit_hash=(
-                remote_commit_hash
-                or getattr(workspace_record, "scmLastRemoteCommitHash", None)
-            ),
+            remote_commit_hash=(remote_commit_hash or getattr(workspace_record, "scmLastRemoteCommitHash", None)),
             suggested_setup_prompt=None,
         )
 
@@ -11254,9 +10193,7 @@ class UserSpaceService:
         user_id: str,
         request: UserSpaceWorkspaceScmConnectionRequest,
     ) -> UserSpaceWorkspaceScmConnectionResponse:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
         if not workspace_record:
@@ -11270,25 +10207,17 @@ class UserSpaceService:
             "scmGitUrl": request.git_url.strip(),
             "scmGitBranch": self._normalize_workspace_scm_branch(request.git_branch),
             "scmProvider": parsed.provider.value,
-            "scmRepoVisibility": (
-                request.repo_visibility
-                or getattr(workspace_record, "scmRepoVisibility", None)
-                or "private"
-            ),
-            "scmConnectedAt": getattr(workspace_record, "scmConnectedAt", None)
-            or _utc_now(),
+            "scmRepoVisibility": (request.repo_visibility or getattr(workspace_record, "scmRepoVisibility", None) or "private"),
+            "scmConnectedAt": getattr(workspace_record, "scmConnectedAt", None) or _utc_now(),
             "updatedAt": _utc_now(),
         }
         if request.git_token:
             update_data["scmToken"] = encrypt_secret(request.git_token.strip())
 
-        updated = await db.workspace.update(
-            where={"id": workspace_id}, data=update_data
-        )
+        updated = await db.workspace.update(where={"id": workspace_id}, data=update_data)
         return UserSpaceWorkspaceScmConnectionResponse(
             workspace_id=workspace_id,
-            scm=self._workspace_from_record(updated).scm
-            or UserSpaceWorkspaceScmStatus(),
+            scm=self._workspace_from_record(updated).scm or UserSpaceWorkspaceScmStatus(),
         )
 
     async def disconnect_workspace_scm_connection(
@@ -11296,9 +10225,7 @@ class UserSpaceService:
         workspace_id: str,
         user_id: str,
     ) -> UserSpaceWorkspaceScmConnectionResponse:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="owner"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
         operation_lock = await self._get_workspace_scm_operation_lock(workspace_id)
         async with operation_lock:
             db = await get_db()
@@ -11331,8 +10258,7 @@ class UserSpaceService:
 
         return UserSpaceWorkspaceScmConnectionResponse(
             workspace_id=workspace_id,
-            scm=self._workspace_from_record(updated).scm
-            or UserSpaceWorkspaceScmStatus(),
+            scm=self._workspace_from_record(updated).scm or UserSpaceWorkspaceScmStatus(),
         )
 
     async def preview_workspace_scm_import(
@@ -11443,13 +10369,11 @@ class UserSpaceService:
             request,
         )
 
-        remote_dir, remote_commit_hash, clone_error = (
-            await self._clone_remote_branch_to_tempdir(
-                preview.git_url,
-                preview.git_branch,
-                git_token,
-                full_history=True,
-            )
+        remote_dir, remote_commit_hash, clone_error = await self._clone_remote_branch_to_tempdir(
+            preview.git_url,
+            preview.git_branch,
+            git_token,
+            full_history=True,
         )
         if remote_dir is None or not remote_commit_hash:
             raise HTTPException(
@@ -11457,9 +10381,7 @@ class UserSpaceService:
                 detail=clone_error or "Failed to clone remote repository branch",
             )
 
-        if preview.will_overwrite_local and (
-            preview.local_changed or preview.local_has_uncommitted_changes
-        ):
+        if preview.will_overwrite_local and (preview.local_changed or preview.local_has_uncommitted_changes):
             await self.create_snapshot(
                 workspace_id,
                 user_id,
@@ -11493,15 +10415,9 @@ class UserSpaceService:
         normalization_actions: list[str] | None = None
         if is_first_import:
             inferred_entrypoint = self._seed_entrypoint_from_import(workspace_id)
-            normalization_actions = _dedupe_preserve_order(
-                self._normalize_imported_replit_runtime_artifacts(workspace_id)
-            )
+            normalization_actions = _dedupe_preserve_order(self._normalize_imported_replit_runtime_artifacts(workspace_id))
 
-        snapshot_message = (
-            f"Pull from {preview.git_url} ({preview.git_branch})"
-            if is_upstream
-            else f"Import from {preview.git_url} ({preview.git_branch})"
-        )
+        snapshot_message = f"Pull from {preview.git_url} ({preview.git_branch})" if is_upstream else f"Import from {preview.git_url} ({preview.git_branch})"
         imported_snapshot = await self.create_snapshot(
             workspace_id,
             user_id,
@@ -11518,11 +10434,7 @@ class UserSpaceService:
             """)
         imported_snapshot.remote_commit_hash = remote_commit_hash
 
-        sync_message = (
-            f"Pulled from {preview.git_branch}"
-            if is_upstream
-            else f"Imported from {preview.git_branch}"
-        )
+        sync_message = f"Pulled from {preview.git_branch}" if is_upstream else f"Imported from {preview.git_branch}"
         scm = await self._update_workspace_scm_sync_metadata(
             workspace_id,
             git_url=preview.git_url,
@@ -11572,11 +10484,7 @@ class UserSpaceService:
                 },
             )
 
-        summary = (
-            "Upstream changes pulled successfully."
-            if is_upstream and not is_first_import
-            else "Workspace imported successfully."
-        )
+        summary = "Upstream changes pulled successfully." if is_upstream and not is_first_import else "Workspace imported successfully."
         return UserSpaceWorkspaceScmSyncResponse(
             workspace_id=workspace_id,
             direction="import",
@@ -11665,11 +10573,7 @@ class UserSpaceService:
         else:
             timeline = await self.get_snapshot_timeline(workspace_id, user_id)
             exported_snapshot = next(
-                (
-                    snapshot
-                    for snapshot in timeline.snapshots
-                    if snapshot.id == preview.current_snapshot_id
-                ),
+                (snapshot for snapshot in timeline.snapshots if snapshot.id == preview.current_snapshot_id),
                 None,
             )
             if exported_snapshot is None:
@@ -11705,12 +10609,7 @@ class UserSpaceService:
                 git_url=git_url,
                 git_branch=preview.git_branch,
                 provider=preview.provider,
-                repo_visibility=(
-                    request.create_repo_private
-                    and "private"
-                    or preview.repo_visibility
-                    or "public"
-                ),
+                repo_visibility=(request.create_repo_private and "private" or preview.repo_visibility or "public"),
                 git_token=export_request.git_token,
                 status="error",
                 message=detail,
@@ -11723,12 +10622,7 @@ class UserSpaceService:
             git_url=git_url,
             git_branch=preview.git_branch,
             provider=preview.provider,
-            repo_visibility=(
-                request.create_repo_private
-                and "private"
-                or preview.repo_visibility
-                or "public"
-            ),
+            repo_visibility=(request.create_repo_private and "private" or preview.repo_visibility or "public"),
             git_token=export_request.git_token,
             remote_commit_hash=remote_commit_hash,
             snapshot_id=exported_snapshot.id,
@@ -11751,11 +10645,7 @@ class UserSpaceService:
     @staticmethod
     def _selected_tool_ids_from_workspace_record(workspace_record: Any) -> list[str]:
         tool_rows = list(getattr(workspace_record, "toolSelections", []) or [])
-        return [
-            getattr(row, "toolConfigId", "")
-            for row in tool_rows
-            if getattr(row, "toolConfigId", None)
-        ]
+        return [getattr(row, "toolConfigId", "") for row in tool_rows if getattr(row, "toolConfigId", None)]
 
     async def _enforce_workspace_access(
         self,
@@ -11790,11 +10680,7 @@ class UserSpaceService:
                 if getattr(member, "userId", None) != user_id:
                     continue
                 role_value = getattr(member, "role", "viewer")
-                user_role = (
-                    role_value
-                    if isinstance(role_value, str)
-                    else str(getattr(role_value, "value", role_value))
-                )
+                user_role = role_value if isinstance(role_value, str) else str(getattr(role_value, "value", role_value))
                 break
 
         if user_role is None:
@@ -11859,13 +10745,9 @@ class UserSpaceService:
         total = await db.workspace.count(where=where_clause)
 
         conversation_ids_by_workspace_id: dict[str, list[str]] = {}
-        workspace_ids = [
-            str(getattr(row, "id", "")) for row in rows if getattr(row, "id", None)
-        ]
+        workspace_ids = [str(getattr(row, "id", "")) for row in rows if getattr(row, "id", None)]
         if workspace_ids:
-            workspace_id_sql = ", ".join(
-                self._sql_quote(workspace_id) for workspace_id in workspace_ids
-            )
+            workspace_id_sql = ", ".join(self._sql_quote(workspace_id) for workspace_id in workspace_ids)
             conversation_id_rows: list[dict[str, Any]] = await db.query_raw(f"""
                 SELECT workspace_id, id
                 FROM conversations
@@ -11878,9 +10760,7 @@ class UserSpaceService:
                 conversation_id = str(conversation_row.get("id") or "")
                 if not workspace_id or not conversation_id:
                     continue
-                conversation_ids_by_workspace_id.setdefault(workspace_id, []).append(
-                    conversation_id
-                )
+                conversation_ids_by_workspace_id.setdefault(workspace_id, []).append(conversation_id)
 
         return PaginatedWorkspacesResponse(
             items=[
@@ -11910,9 +10790,7 @@ class UserSpaceService:
             return
 
         if replace_existing:
-            await db.workspacetoolselection.delete_many(
-                where={"workspaceId": workspace_id}
-            )
+            await db.workspacetoolselection.delete_many(where={"workspaceId": workspace_id})
 
         for tool_id in tool_ids:
             tool = await db.toolconfig.find_unique(where={"id": tool_id})
@@ -11937,9 +10815,7 @@ class UserSpaceService:
             return
 
         if replace_existing:
-            await db.workspacetoolgroupselection.delete_many(
-                where={"workspaceId": workspace_id}
-            )
+            await db.workspacetoolgroupselection.delete_many(where={"workspaceId": workspace_id})
 
         for group_id in group_ids:
             grp = await db.toolgroup.find_unique(where={"id": group_id})
@@ -11952,9 +10828,7 @@ class UserSpaceService:
                 }
             )
 
-    async def create_workspace(
-        self, request: CreateWorkspaceRequest, user_id: str
-    ) -> UserSpaceWorkspace:
+    async def create_workspace(self, request: CreateWorkspaceRequest, user_id: str) -> UserSpaceWorkspace:
         db = await get_db()
 
         now = _utc_now()
@@ -11977,9 +10851,7 @@ class UserSpaceService:
                     "name": final_name,
                     "nameNormalized": name_normalized,
                     "description": request.description,
-                    "sqlitePersistenceMode": _normalize_sqlite_persistence_mode(
-                        request.sqlite_persistence_mode
-                    ),
+                    "sqlitePersistenceMode": _normalize_sqlite_persistence_mode(request.sqlite_persistence_mode),
                     "ownerUserId": user_id,
                     "createdAt": now,
                     "updatedAt": now,
@@ -12042,9 +10914,7 @@ class UserSpaceService:
 
         return self._workspace_from_record(refreshed)
 
-    async def get_workspace(
-        self, workspace_id: str, user_id: str
-    ) -> UserSpaceWorkspace:
+    async def get_workspace(self, workspace_id: str, user_id: str) -> UserSpaceWorkspace:
         return await self._enforce_workspace_access(workspace_id, user_id)
 
     def _workspace_share_status_from_record(
@@ -12065,9 +10935,7 @@ class UserSpaceService:
         share_id = str(getattr(share_record, "id", "") or "")
         share_token = str(getattr(share_record, "shareToken", "") or "")
         share_slug = str(getattr(share_record, "shareSlug", "") or "")
-        access_mode, password_encrypted, selected_user_ids, selected_ldap_groups = (
-            self._extract_share_access_state(share_record)
-        )
+        access_mode, password_encrypted, selected_user_ids, selected_ldap_groups = self._extract_share_access_state(share_record)
         created_at = getattr(share_record, "shareTokenCreatedAt", None)
         label_value = getattr(share_record, "label", None)
         label = str(label_value).strip() if label_value else None
@@ -12075,12 +10943,8 @@ class UserSpaceService:
         share_url: str | None = None
         anonymous_share_url: str | None = None
         if has_share_link:
-            share_url = self._build_workspace_share_url(
-                owner_username, share_slug, base_url=base_url
-            )
-            anonymous_share_url = self._build_workspace_anonymous_share_url(
-                share_token, base_url=base_url
-            )
+            share_url = self._build_workspace_share_url(owner_username, share_slug, base_url=base_url)
+            anonymous_share_url = self._build_workspace_anonymous_share_url(share_token, base_url=base_url)
         return UserSpaceWorkspaceShareLinkStatus(
             id=share_id,
             workspace_id=workspace_id,
@@ -12104,23 +10968,14 @@ class UserSpaceService:
         user_id: str,
         base_url: str | None = None,
     ) -> UserSpaceWorkspaceShareLinkListResponse:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Workspace not found")
-        owner_username = await self._get_public_owner_username(
-            str(getattr(workspace_record, "ownerUserId", "") or "")
-        )
+        owner_username = await self._get_public_owner_username(str(getattr(workspace_record, "ownerUserId", "") or ""))
         records = await self._list_workspace_share_records(workspace_id)
-        links = [
-            self._workspace_share_status_from_record(
-                workspace_id, owner_username, record, base_url=base_url
-            )
-            for record in records
-        ]
+        links = [self._workspace_share_status_from_record(workspace_id, owner_username, record, base_url=base_url) for record in records]
         return UserSpaceWorkspaceShareLinkListResponse(
             workspace_id=workspace_id,
             owner_username=owner_username,
@@ -12134,20 +10989,14 @@ class UserSpaceService:
         base_url: str | None = None,
     ) -> UserSpaceWorkspaceShareLinkStatus:
         """Returns the primary (oldest) share link status for backward compatibility."""
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Workspace not found")
-        owner_username = await self._get_public_owner_username(
-            str(getattr(workspace_record, "ownerUserId", "") or "")
-        )
+        owner_username = await self._get_public_owner_username(str(getattr(workspace_record, "ownerUserId", "") or ""))
         share_record = await self._get_primary_workspace_share_record(workspace_id)
-        return self._workspace_share_status_from_record(
-            workspace_id, owner_username, share_record, base_url=base_url
-        )
+        return self._workspace_share_status_from_record(workspace_id, owner_username, share_record, base_url=base_url)
 
     async def _ensure_workspace_share_owner(
         self,
@@ -12155,18 +11004,13 @@ class UserSpaceService:
         share_id: str,
         user_id: str,
     ) -> tuple[Any, Any]:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Workspace not found")
         share_record = await self._get_workspace_share_record_by_id(share_id)
-        if (
-            share_record is None
-            or str(getattr(share_record, "workspaceId", "") or "") != workspace_id
-        ):
+        if share_record is None or str(getattr(share_record, "workspaceId", "") or "") != workspace_id:
             raise HTTPException(status_code=404, detail="Share link not found")
         return workspace_record, share_record
 
@@ -12177,9 +11021,7 @@ class UserSpaceService:
         base_url: str | None = None,
         label: str | None = None,
     ) -> UserSpaceWorkspaceShareLink:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
         if not workspace_record:
@@ -12215,9 +11057,7 @@ class UserSpaceService:
                 share_token = candidate
                 break
             except Exception as exc:
-                if _is_share_token_conflict_error(exc) or _is_share_slug_conflict_error(
-                    exc
-                ):
+                if _is_share_token_conflict_error(exc) or _is_share_slug_conflict_error(exc):
                     share_slug = await self._allocate_next_share_slug(
                         owner_user_id,
                         str(getattr(workspace_record, "name", "") or ""),
@@ -12231,12 +11071,8 @@ class UserSpaceService:
             )
 
         owner_username = await self._get_public_owner_username(owner_user_id)
-        share_url = self._build_workspace_share_url(
-            owner_username, share_slug, base_url=base_url
-        )
-        anonymous_share_url = self._build_workspace_anonymous_share_url(
-            share_token, base_url=base_url
-        )
+        share_url = self._build_workspace_share_url(owner_username, share_slug, base_url=base_url)
+        anonymous_share_url = self._build_workspace_anonymous_share_url(share_token, base_url=base_url)
 
         return UserSpaceWorkspaceShareLink(
             id=str(getattr(share_record, "id", "")),
@@ -12271,21 +11107,15 @@ class UserSpaceService:
         user_id: str,
         base_url: str | None = None,
     ) -> UserSpaceWorkspaceShareLinkStatus:
-        workspace_record, _share_record = await self._ensure_workspace_share_owner(
-            workspace_id, share_id, user_id
-        )
+        workspace_record, _share_record = await self._ensure_workspace_share_owner(workspace_id, share_id, user_id)
         db = await get_db()
         normalized_label = (label or "").strip() or None
         share_record = await db.workspaceshare.update(
             where={"id": share_id},
             data={"label": normalized_label, "updatedAt": _utc_now()},
         )
-        owner_username = await self._get_public_owner_username(
-            str(getattr(workspace_record, "ownerUserId", "") or "")
-        )
-        return self._workspace_share_status_from_record(
-            workspace_id, owner_username, share_record, base_url=base_url
-        )
+        owner_username = await self._get_public_owner_username(str(getattr(workspace_record, "ownerUserId", "") or ""))
+        return self._workspace_share_status_from_record(workspace_id, owner_username, share_record, base_url=base_url)
 
     async def update_workspace_share_slug(
         self,
@@ -12298,9 +11128,7 @@ class UserSpaceService:
         normalized_slug = _normalize_share_slug_for_uniqueness(slug)
         if not normalized_slug:
             raise HTTPException(status_code=400, detail="Share slug is required")
-        workspace_record, _share_record = await self._ensure_workspace_share_owner(
-            workspace_id, share_id, user_id
-        )
+        workspace_record, _share_record = await self._ensure_workspace_share_owner(workspace_id, share_id, user_id)
         owner_user_id = str(getattr(workspace_record, "ownerUserId", "") or "")
         if await self._share_slug_in_use(
             owner_user_id,
@@ -12325,9 +11153,7 @@ class UserSpaceService:
                 ) from exc
             raise
         owner_username = await self._get_public_owner_username(owner_user_id)
-        return self._workspace_share_status_from_record(
-            workspace_id, owner_username, share_record, base_url=base_url
-        )
+        return self._workspace_share_status_from_record(workspace_id, owner_username, share_record, base_url=base_url)
 
     async def check_workspace_share_slug_availability(
         self,
@@ -12336,9 +11162,7 @@ class UserSpaceService:
         slug: str,
         user_id: str,
     ) -> WorkspaceShareSlugAvailabilityResponse:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         normalized_slug = _normalize_share_slug_for_uniqueness(slug)
         if not normalized_slug:
             raise HTTPException(status_code=400, detail="Share slug is required")
@@ -12364,9 +11188,7 @@ class UserSpaceService:
         user_id: str,
         base_url: str | None = None,
     ) -> UserSpaceWorkspaceShareLinkStatus:
-        workspace_record, _share_record = await self._ensure_workspace_share_owner(
-            workspace_id, share_id, user_id
-        )
+        workspace_record, _share_record = await self._ensure_workspace_share_owner(workspace_id, share_id, user_id)
         mode = _normalize_share_access_mode(request.share_access_mode)
         selected_user_ids = _normalize_string_list(request.selected_user_ids)
         selected_ldap_groups = _normalize_string_list(request.selected_ldap_groups)
@@ -12397,21 +11219,15 @@ class UserSpaceService:
             update_data["sharePassword"] = None
 
         db = await get_db()
-        share_record = await db.workspaceshare.update(
-            where={"id": share_id}, data=update_data
-        )
+        share_record = await db.workspaceshare.update(where={"id": share_id}, data=update_data)
 
         await invalidate_preview_sessions_for_workspace(workspace_id)
         from ragtime.userspace.runtime_service import userspace_runtime_service
 
         await userspace_runtime_service.invalidate_preview_session_cache(workspace_id)
 
-        owner_username = await self._get_public_owner_username(
-            str(getattr(workspace_record, "ownerUserId", "") or "")
-        )
-        return self._workspace_share_status_from_record(
-            workspace_id, owner_username, share_record, base_url=base_url
-        )
+        owner_username = await self._get_public_owner_username(str(getattr(workspace_record, "ownerUserId", "") or ""))
+        return self._workspace_share_status_from_record(workspace_id, owner_username, share_record, base_url=base_url)
 
     async def _get_conversation_share_management_record(
         self,
@@ -12455,9 +11271,7 @@ class UserSpaceService:
         self,
         conversation_record: Any,
     ) -> str:
-        workspace_id = str(
-            getattr(conversation_record, "workspaceId", "") or ""
-        ).strip()
+        workspace_id = str(getattr(conversation_record, "workspaceId", "") or "").strip()
         if workspace_id:
             workspace = await self._get_workspace_record(workspace_id)
             if not workspace:
@@ -12466,9 +11280,7 @@ class UserSpaceService:
             if owner_user_id:
                 return owner_user_id
 
-        conversation_owner_user_id = str(
-            getattr(conversation_record, "userId", "") or ""
-        ).strip()
+        conversation_owner_user_id = str(getattr(conversation_record, "userId", "") or "").strip()
         if conversation_owner_user_id:
             return conversation_owner_user_id
 
@@ -12537,9 +11349,7 @@ class UserSpaceService:
         share_id = str(getattr(share_record, "id", "") or "")
         share_token = str(getattr(share_record, "shareToken", "") or "")
         share_slug = str(getattr(share_record, "shareSlug", "") or "")
-        access_mode, password_encrypted, selected_user_ids, selected_ldap_groups = (
-            self._extract_share_access_state(share_record)
-        )
+        access_mode, password_encrypted, selected_user_ids, selected_ldap_groups = self._extract_share_access_state(share_record)
         granted_role = str(getattr(share_record, "grantedRole", "viewer") or "viewer")
         created_at = getattr(share_record, "shareTokenCreatedAt", None)
         label_value = getattr(share_record, "label", None)
@@ -12580,9 +11390,7 @@ class UserSpaceService:
             selected_ldap_groups=selected_ldap_groups,
             has_password=bool(password_encrypted),
             granted_role=cast(Any, granted_role),
-            scope_anchor_message_idx=(
-                int(scope_anchor) if scope_anchor is not None else None
-            ),
+            scope_anchor_message_idx=(int(scope_anchor) if scope_anchor is not None else None),
             scope_direction=cast(Any, scope_direction),
         )
 
@@ -12599,9 +11407,7 @@ class UserSpaceService:
             user_id,
             is_admin=is_admin,
         )
-        owner_user_id = await self._resolve_conversation_share_owner_user_id(
-            conversation
-        )
+        owner_user_id = await self._resolve_conversation_share_owner_user_id(conversation)
         owner_username = await self._get_public_owner_username(owner_user_id)
         records = await self._list_conversation_share_records(conversation_id)
         links = [
@@ -12635,15 +11441,11 @@ class UserSpaceService:
             user_id,
             is_admin=is_admin,
         )
-        owner_user_id = await self._resolve_conversation_share_owner_user_id(
-            conversation
-        )
+        owner_user_id = await self._resolve_conversation_share_owner_user_id(conversation)
         owner_username = await self._get_public_owner_username(owner_user_id)
 
         normalized_label = (label or "").strip() or None
-        anchor_idx, direction = self._normalize_scope_input(
-            scope_anchor_message_idx, scope_direction
-        )
+        anchor_idx, direction = self._normalize_scope_input(scope_anchor_message_idx, scope_direction)
 
         share_slug = await self._allocate_next_share_slug(
             owner_user_id,
@@ -12677,9 +11479,7 @@ class UserSpaceService:
                 share_token = candidate
                 break
             except Exception as exc:
-                if _is_share_token_conflict_error(exc) or _is_share_slug_conflict_error(
-                    exc
-                ):
+                if _is_share_token_conflict_error(exc) or _is_share_slug_conflict_error(exc):
                     # Try a different slug / token combo
                     share_slug = await self._allocate_next_share_slug(
                         owner_user_id,
@@ -12743,19 +11543,14 @@ class UserSpaceService:
         is_admin: bool,
     ) -> tuple[Any, Any, str]:
         share_record = await self._get_conversation_share_record_by_id(share_id)
-        if (
-            share_record is None
-            or str(getattr(share_record, "conversationId", "") or "") != conversation_id
-        ):
+        if share_record is None or str(getattr(share_record, "conversationId", "") or "") != conversation_id:
             raise HTTPException(status_code=404, detail="Share link not found")
         conversation = await self._get_conversation_share_management_record(
             conversation_id,
             user_id,
             is_admin=is_admin,
         )
-        owner_user_id = await self._resolve_conversation_share_owner_user_id(
-            conversation
-        )
+        owner_user_id = await self._resolve_conversation_share_owner_user_id(conversation)
         return share_record, conversation, owner_user_id
 
     async def delete_conversation_share_link(
@@ -12766,9 +11561,7 @@ class UserSpaceService:
         *,
         is_admin: bool = False,
     ) -> None:
-        await self._ensure_conversation_share_owner(
-            share_id, conversation_id, user_id, is_admin=is_admin
-        )
+        await self._ensure_conversation_share_owner(share_id, conversation_id, user_id, is_admin=is_admin)
         db = await get_db()
         await db.conversationshare.delete(where={"id": share_id})
 
@@ -12786,28 +11579,18 @@ class UserSpaceService:
         update_label: bool = False,
         update_scope: bool = False,
     ) -> ConversationShareLinkStatus:
-        share_record, _conversation, owner_user_id = (
-            await self._ensure_conversation_share_owner(
-                share_id, conversation_id, user_id, is_admin=is_admin
-            )
-        )
+        share_record, _conversation, owner_user_id = await self._ensure_conversation_share_owner(share_id, conversation_id, user_id, is_admin=is_admin)
         owner_username = await self._get_public_owner_username(owner_user_id)
         update_data: dict[str, Any] = {"updatedAt": _utc_now()}
         if update_label:
             update_data["label"] = (label or "").strip() or None
         if update_scope:
-            anchor_idx, direction = self._normalize_scope_input(
-                scope_anchor_message_idx, scope_direction
-            )
+            anchor_idx, direction = self._normalize_scope_input(scope_anchor_message_idx, scope_direction)
             update_data["scopeAnchorMessageIdx"] = anchor_idx
             update_data["scopeDirection"] = direction
         db = await get_db()
-        share_record = await db.conversationshare.update(
-            where={"id": share_id}, data=update_data
-        )
-        return self._conversation_share_status_from_record(
-            conversation_id, owner_username, share_record, base_url=base_url
-        )
+        share_record = await db.conversationshare.update(where={"id": share_id}, data=update_data)
+        return self._conversation_share_status_from_record(conversation_id, owner_username, share_record, base_url=base_url)
 
     async def update_conversation_share_link_slug(
         self,
@@ -12822,11 +11605,7 @@ class UserSpaceService:
         normalized_slug = _normalize_share_slug_for_uniqueness(slug)
         if not normalized_slug:
             raise HTTPException(status_code=400, detail="Share slug is required")
-        share_record, _conversation, owner_user_id = (
-            await self._ensure_conversation_share_owner(
-                share_id, conversation_id, user_id, is_admin=is_admin
-            )
-        )
+        share_record, _conversation, owner_user_id = await self._ensure_conversation_share_owner(share_id, conversation_id, user_id, is_admin=is_admin)
         if await self._share_slug_in_use(
             owner_user_id,
             normalized_slug,
@@ -12846,9 +11625,7 @@ class UserSpaceService:
             },
         )
         owner_username = await self._get_public_owner_username(owner_user_id)
-        return self._conversation_share_status_from_record(
-            conversation_id, owner_username, share_record, base_url=base_url
-        )
+        return self._conversation_share_status_from_record(conversation_id, owner_username, share_record, base_url=base_url)
 
     async def check_conversation_share_slug_availability(
         self,
@@ -12867,9 +11644,7 @@ class UserSpaceService:
             user_id,
             is_admin=is_admin,
         )
-        owner_user_id = await self._resolve_conversation_share_owner_user_id(
-            conversation
-        )
+        owner_user_id = await self._resolve_conversation_share_owner_user_id(conversation)
         return ConversationShareSlugAvailabilityResponse(
             slug=normalized_slug,
             available=not await self._share_slug_in_use(
@@ -12904,11 +11679,7 @@ class UserSpaceService:
                 detail="At least one LDAP group is required for ldap-groups mode",
             )
 
-        share_record, _conversation, owner_user_id = (
-            await self._ensure_conversation_share_owner(
-                share_id, conversation_id, user_id, is_admin=is_admin
-            )
-        )
+        share_record, _conversation, owner_user_id = await self._ensure_conversation_share_owner(share_id, conversation_id, user_id, is_admin=is_admin)
 
         update_data: dict[str, Any] = {
             "ownerUserId": owner_user_id,
@@ -12927,13 +11698,9 @@ class UserSpaceService:
             update_data["sharePassword"] = None
 
         db = await get_db()
-        share_record = await db.conversationshare.update(
-            where={"id": share_id}, data=update_data
-        )
+        share_record = await db.conversationshare.update(where={"id": share_id}, data=update_data)
         owner_username = await self._get_public_owner_username(owner_user_id)
-        return self._conversation_share_status_from_record(
-            conversation_id, owner_username, share_record, base_url=base_url
-        )
+        return self._conversation_share_status_from_record(conversation_id, owner_username, share_record, base_url=base_url)
 
     async def _authorize_shared_conversation_record(
         self,
@@ -13022,13 +11789,11 @@ class UserSpaceService:
         password: str | None = None,
         share_auth_token: str | None = None,
     ) -> _ShareAuthorizationResult:
-        _share_record, authorization = (
-            await self.get_authorized_shared_conversation_record(
-                share_token,
-                current_user=current_user,
-                password=password,
-                share_auth_token=share_auth_token,
-            )
+        _share_record, authorization = await self.get_authorized_shared_conversation_record(
+            share_token,
+            current_user=current_user,
+            password=password,
+            share_auth_token=share_auth_token,
         )
         return authorization
 
@@ -13041,14 +11806,12 @@ class UserSpaceService:
         password: str | None = None,
         share_auth_token: str | None = None,
     ) -> _ShareAuthorizationResult:
-        _share_record, authorization = (
-            await self.get_authorized_shared_conversation_record_by_slug(
-                owner_username,
-                share_slug,
-                current_user=current_user,
-                password=password,
-                share_auth_token=share_auth_token,
-            )
+        _share_record, authorization = await self.get_authorized_shared_conversation_record_by_slug(
+            owner_username,
+            share_slug,
+            current_user=current_user,
+            password=password,
+            share_auth_token=share_auth_token,
         )
         return authorization
 
@@ -13091,9 +11854,7 @@ class UserSpaceService:
         share_token: str,
     ) -> Literal["workspace", "conversation", "unknown"]:
         try:
-            target_type, _share_record = (
-                await self._resolve_public_share_record_by_token(share_token)
-            )
+            target_type, _share_record = await self._resolve_public_share_record_by_token(share_token)
         except HTTPException as exc:
             if exc.status_code == 404:
                 return "unknown"
@@ -13106,11 +11867,9 @@ class UserSpaceService:
         share_slug: str,
     ) -> Literal["workspace", "conversation", "unknown"]:
         try:
-            target_type, _share_record = (
-                await self._resolve_public_share_record_by_slug(
-                    owner_username,
-                    share_slug,
-                )
+            target_type, _share_record = await self._resolve_public_share_record_by_slug(
+                owner_username,
+                share_slug,
             )
         except HTTPException as exc:
             if exc.status_code == 404:
@@ -13284,12 +12043,8 @@ class UserSpaceService:
             live_data_connections=live_data_connections,
         )
 
-    async def delete_workspace(
-        self, workspace_id: str, user_id: str, is_admin: bool = False
-    ) -> None:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="owner", is_admin=is_admin
-        )
+    async def delete_workspace(self, workspace_id: str, user_id: str, is_admin: bool = False) -> None:
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner", is_admin=is_admin)
         db = await get_db()
         try:
             await db.workspace.delete(where={"id": workspace_id})
@@ -13321,9 +12076,7 @@ class UserSpaceService:
         user_id: str,
         is_admin: bool = False,
     ) -> UserSpaceWorkspace:
-        current_ws = await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor", is_admin=is_admin
-        )
+        current_ws = await self._enforce_workspace_access(workspace_id, user_id, required_role="editor", is_admin=is_admin)
         db = await get_db()
 
         update_data: dict[str, Any] = {"updatedAt": _utc_now()}
@@ -13339,9 +12092,7 @@ class UserSpaceService:
                 raise HTTPException(status_code=404, detail="Target user not found")
             update_data["ownerUserId"] = request.owner_user_id
             # Ensure new owner is a member with owner role
-            existing_member = await db.workspacemember.find_first(
-                where={"workspaceId": workspace_id, "userId": request.owner_user_id}
-            )
+            existing_member = await db.workspacemember.find_first(where={"workspaceId": workspace_id, "userId": request.owner_user_id})
             if existing_member:
                 await db.workspacemember.update(
                     where={"id": existing_member.id},
@@ -13358,9 +12109,7 @@ class UserSpaceService:
             # Downgrade previous owner to editor in members
             old_owner_id = current_ws.owner_user_id
             if old_owner_id != request.owner_user_id:
-                old_owner_member = await db.workspacemember.find_first(
-                    where={"workspaceId": workspace_id, "userId": old_owner_id}
-                )
+                old_owner_member = await db.workspacemember.find_first(where={"workspaceId": workspace_id, "userId": old_owner_id})
                 if old_owner_member:
                     await db.workspacemember.update(
                         where={"id": old_owner_member.id},
@@ -13370,17 +12119,13 @@ class UserSpaceService:
         if request.name is not None:
             normalized_name = _normalize_workspace_name_for_uniqueness(request.name)
             if not normalized_name:
-                raise HTTPException(
-                    status_code=400, detail="Workspace name is required"
-                )
+                raise HTTPException(status_code=400, detail="Workspace name is required")
             update_data["name"] = request.name.strip()
             update_data["nameNormalized"] = normalized_name
         if request.description is not None:
             update_data["description"] = request.description
         if request.sqlite_persistence_mode is not None:
-            update_data["sqlitePersistenceMode"] = _normalize_sqlite_persistence_mode(
-                request.sqlite_persistence_mode
-            )
+            update_data["sqlitePersistenceMode"] = _normalize_sqlite_persistence_mode(request.sqlite_persistence_mode)
 
         try:
             await db.workspace.update(where={"id": workspace_id}, data=update_data)
@@ -13428,16 +12173,10 @@ class UserSpaceService:
         request: UpdateWorkspaceMembersRequest,
         user_id: str,
     ) -> UserSpaceWorkspace:
-        workspace = await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="owner"
-        )
+        workspace = await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
         db = await get_db()
 
-        normalized_members: dict[str, WorkspaceMember] = {
-            workspace.owner_user_id: WorkspaceMember(
-                user_id=workspace.owner_user_id, role="owner"
-            )
-        }
+        normalized_members: dict[str, WorkspaceMember] = {workspace.owner_user_id: WorkspaceMember(user_id=workspace.owner_user_id, role="owner")}
         for member in request.members:
             if member.user_id == workspace.owner_user_id:
                 continue
@@ -13489,11 +12228,7 @@ class UserSpaceService:
 
     @staticmethod
     def _normalize_agent_grant_mode(value: Any) -> WorkspaceAgentGrantMode:
-        raw = (
-            value
-            if isinstance(value, str)
-            else str(getattr(value, "value", value) or "")
-        )
+        raw = value if isinstance(value, str) else str(getattr(value, "value", value) or "")
         if raw == "read_write":
             return "read_write"
         return "read"
@@ -13512,9 +12247,7 @@ class UserSpaceService:
             source_workspace_name=source_workspace_name,
             target_workspace_id=str(getattr(record, "targetWorkspaceId", "") or ""),
             target_workspace_name=target_workspace_name,
-            access_mode=self._normalize_agent_grant_mode(
-                getattr(record, "accessMode", "read")
-            ),
+            access_mode=self._normalize_agent_grant_mode(getattr(record, "accessMode", "read")),
             granted_by_user_id=str(getattr(record, "grantedByUserId", "") or ""),
             granted_by_username=granted_by_username,
             expires_at=getattr(record, "expiresAt", None),
@@ -13578,9 +12311,7 @@ class UserSpaceService:
         if model is None:
             return []
 
-        workspace_field = (
-            "sourceWorkspaceId" if direction == "source" else "targetWorkspaceId"
-        )
+        workspace_field = "sourceWorkspaceId" if direction == "source" else "targetWorkspaceId"
         rows = await model.find_many(
             where={workspace_field: workspace_id},
             order={"createdAt": "asc"},
@@ -13588,14 +12319,8 @@ class UserSpaceService:
 
         results: list[WorkspaceAgentGrant] = []
         for row in rows:
-            row_access_mode = self._normalize_agent_grant_mode(
-                getattr(row, "accessMode", "read")
-            )
-            if (
-                direction == "target"
-                and row_access_mode == "read_write"
-                and not self._workspace_role_allows(workspace_role, "editor")
-            ):
+            row_access_mode = self._normalize_agent_grant_mode(getattr(row, "accessMode", "read"))
+            if direction == "target" and row_access_mode == "read_write" and not self._workspace_role_allows(workspace_role, "editor"):
                 continue
             source_workspace_name: str | None = None
             target_workspace_name: str | None = None
@@ -13606,21 +12331,15 @@ class UserSpaceService:
             if source_id:
                 source_record = await db.workspace.find_unique(where={"id": source_id})
                 if source_record is not None:
-                    source_workspace_name = str(
-                        getattr(source_record, "name", "") or ""
-                    )
+                    source_workspace_name = str(getattr(source_record, "name", "") or "")
             if target_id:
                 target_record = await db.workspace.find_unique(where={"id": target_id})
                 if target_record is not None:
-                    target_workspace_name = str(
-                        getattr(target_record, "name", "") or ""
-                    )
+                    target_workspace_name = str(getattr(target_record, "name", "") or "")
             if granter_id:
                 granter_record = await db.user.find_unique(where={"id": granter_id})
                 if granter_record is not None:
-                    granted_by_username = str(
-                        getattr(granter_record, "username", "") or ""
-                    )
+                    granted_by_username = str(getattr(granter_record, "username", "") or "")
             results.append(
                 self._agent_grant_from_record(
                     row,
@@ -13649,18 +12368,14 @@ class UserSpaceService:
         """
         target_workspace_id = (request.target_workspace_id or "").strip()
         if not target_workspace_id:
-            raise HTTPException(
-                status_code=400, detail="target_workspace_id is required"
-            )
+            raise HTTPException(status_code=400, detail="target_workspace_id is required")
         if target_workspace_id == source_workspace_id:
             raise HTTPException(
                 status_code=400,
                 detail="Cannot grant a workspace cross-workspace access to itself",
             )
 
-        access_mode: WorkspaceAgentGrantMode = (
-            "read_write" if request.access_mode == "read_write" else "read"
-        )
+        access_mode: WorkspaceAgentGrantMode = "read_write" if request.access_mode == "read_write" else "read"
 
         source_workspace = await self._enforce_workspace_access(
             source_workspace_id,
@@ -13680,10 +12395,7 @@ class UserSpaceService:
         if model is None:
             raise HTTPException(
                 status_code=500,
-                detail=(
-                    "Workspace agent grants are not supported by the current "
-                    "database client. Run prisma generate after migration."
-                ),
+                detail=("Workspace agent grants are not supported by the current database client. Run prisma generate after migration."),
             )
 
         existing = await model.find_first(
@@ -13737,9 +12449,7 @@ class UserSpaceService:
                 audit_payload,
             )
         except Exception:  # noqa: BLE001 - audit best-effort
-            logger.exception(
-                "Failed to record audit event for cross-workspace agent grant"
-            )
+            logger.exception("Failed to record audit event for cross-workspace agent grant")
 
         return self._agent_grant_from_record(
             record,
@@ -13769,9 +12479,7 @@ class UserSpaceService:
         if existing is None:
             return False
 
-        access_mode = self._normalize_agent_grant_mode(
-            getattr(existing, "accessMode", "read")
-        )
+        access_mode = self._normalize_agent_grant_mode(getattr(existing, "accessMode", "read"))
         allowed = False
         try:
             await self._enforce_workspace_access(
@@ -13813,9 +12521,7 @@ class UserSpaceService:
                 audit_payload,
             )
         except Exception:  # noqa: BLE001
-            logger.exception(
-                "Failed to record audit event for cross-workspace agent grant revoke"
-            )
+            logger.exception("Failed to record audit event for cross-workspace agent grant revoke")
         return True
 
     async def get_active_cross_workspace_grant_modes(
@@ -13844,9 +12550,7 @@ class UserSpaceService:
             target_id = str(getattr(row, "targetWorkspaceId", "") or "")
             if not target_id:
                 continue
-            modes[target_id] = self._normalize_agent_grant_mode(
-                getattr(row, "accessMode", "read")
-            )
+            modes[target_id] = self._normalize_agent_grant_mode(getattr(row, "accessMode", "read"))
         return modes
 
     async def resolve_cross_workspace_target(
@@ -13939,13 +12643,8 @@ class UserSpaceService:
             self._list_global_env_var_records(),
         )
 
-        workspace_keys = {
-            str(getattr(row, "key", "") or "").strip() for row in workspace_rows
-        }
-        merged_rows = [
-            self._workspace_env_var_from_record(row, source="workspace")
-            for row in workspace_rows
-        ]
+        workspace_keys = {str(getattr(row, "key", "") or "").strip() for row in workspace_rows}
+        merged_rows = [self._workspace_env_var_from_record(row, source="workspace") for row in workspace_rows]
         for row in global_rows:
             key = str(getattr(row, "key", "") or "").strip()
             if not key or key in workspace_keys:
@@ -13981,13 +12680,8 @@ class UserSpaceService:
             ),
             self._list_global_env_var_records(),
         )
-        workspace_keys = {
-            str(getattr(row, "key", "") or "").strip() for row in workspace_rows
-        }
-        summaries = [
-            self._workspace_env_var_from_record(row, source="workspace")
-            for row in workspace_rows
-        ]
+        workspace_keys = {str(getattr(row, "key", "") or "").strip() for row in workspace_rows}
+        summaries = [self._workspace_env_var_from_record(row, source="workspace") for row in workspace_rows]
         for row in global_rows:
             key = str(getattr(row, "key", "") or "").strip()
             if not key or key in workspace_keys:
@@ -14006,9 +12700,7 @@ class UserSpaceService:
         self,
     ) -> list[UserSpaceWorkspaceEnvVar]:
         rows = await self._list_global_env_var_records()
-        return [
-            self._workspace_env_var_from_record(row, source="global") for row in rows
-        ]
+        return [self._workspace_env_var_from_record(row, source="global") for row in rows]
 
     async def upsert_global_env_var(
         self,
@@ -14030,9 +12722,7 @@ class UserSpaceService:
                 if count >= _GLOBAL_ENV_VAR_MAX_COUNT:
                     raise HTTPException(
                         status_code=400,
-                        detail=(
-                            f"Global environment variable limit reached ({_GLOBAL_ENV_VAR_MAX_COUNT})"
-                        ),
+                        detail=(f"Global environment variable limit reached ({_GLOBAL_ENV_VAR_MAX_COUNT})"),
                     )
 
                 conflict = await self._find_global_env_var_record(db, key=target_key)
@@ -14072,9 +12762,7 @@ class UserSpaceService:
 
             if target_key != key:
                 conflict = await self._find_global_env_var_record(db, key=target_key)
-                if conflict is not None and str(getattr(conflict, "id", "")) != str(
-                    getattr(existing, "id", "")
-                ):
+                if conflict is not None and str(getattr(conflict, "id", "")) != str(getattr(existing, "id", "")):
                     raise HTTPException(
                         status_code=409,
                         detail=f"Environment variable '{target_key}' already exists",
@@ -14084,11 +12772,7 @@ class UserSpaceService:
             if request.value is not None:
                 encrypted_value = encrypt_secret(request.value)
 
-            next_description = (
-                str(getattr(existing, "description", "") or "")
-                if description is None
-                else description
-            )
+            next_description = str(getattr(existing, "description", "") or "") if description is None else description
             existing_id = str(getattr(existing, "id", "") or "")
             await db.execute_raw(
                 (
@@ -14130,9 +12814,7 @@ class UserSpaceService:
             if count >= _GLOBAL_ENV_VAR_MAX_COUNT:
                 raise HTTPException(
                     status_code=400,
-                    detail=(
-                        f"Global environment variable limit reached ({_GLOBAL_ENV_VAR_MAX_COUNT})"
-                    ),
+                    detail=(f"Global environment variable limit reached ({_GLOBAL_ENV_VAR_MAX_COUNT})"),
                 )
 
             conflict = await model.find_first(where={"key": target_key})
@@ -14147,11 +12829,7 @@ class UserSpaceService:
                     "id": str(uuid4()),
                     "key": target_key,
                     # Empty string means "placeholder key" (no secret set yet).
-                    "value": (
-                        encrypt_secret(request.value)
-                        if request.value is not None
-                        else ""
-                    ),
+                    "value": (encrypt_secret(request.value) if request.value is not None else ""),
                     "description": description,
                     "createdAt": now,
                     "updatedAt": now,
@@ -14182,11 +12860,7 @@ class UserSpaceService:
         if request.value is not None:
             encrypted_value = encrypt_secret(request.value)
 
-        next_description = (
-            str(getattr(existing, "description", "") or "")
-            if description is None
-            else description
-        )
+        next_description = str(getattr(existing, "description", "") or "") if description is None else description
 
         updated = await model.update(
             where={"id": str(getattr(existing, "id", "") or "")},
@@ -14226,16 +12900,9 @@ class UserSpaceService:
         if model is None:
             existing = await self._find_global_env_var_record(db, key=normalized_key)
             if existing is None:
-                raise HTTPException(
-                    status_code=404, detail="Environment variable not found"
-                )
+                raise HTTPException(status_code=404, detail="Environment variable not found")
 
-            await db.execute_raw(
-                (
-                    "DELETE FROM global_environment_variables "
-                    f"WHERE id = {self._sql_quote(str(getattr(existing, 'id', '') or ''))}"
-                )
-            )
+            await db.execute_raw((f"DELETE FROM global_environment_variables WHERE id = {self._sql_quote(str(getattr(existing, 'id', '') or ''))}"))
             await self._audit_workspace_env_var_event(
                 workspace_id="__global__",
                 user_id=user_id,
@@ -14246,9 +12913,7 @@ class UserSpaceService:
 
         existing = await model.find_first(where={"key": normalized_key})
         if existing is None:
-            raise HTTPException(
-                status_code=404, detail="Environment variable not found"
-            )
+            raise HTTPException(status_code=404, detail="Environment variable not found")
 
         await model.delete(where={"id": str(getattr(existing, "id", "") or "")})
         await self._audit_workspace_env_var_event(
@@ -14278,23 +12943,17 @@ class UserSpaceService:
         description = request.description
         now = _utc_now()
 
-        existing = await model.find_first(
-            where={"workspaceId": workspace_id, "key": key}
-        )
+        existing = await model.find_first(where={"workspaceId": workspace_id, "key": key})
 
         if existing is None:
             count = await model.count(where={"workspaceId": workspace_id})
             if count >= _WORKSPACE_ENV_VAR_MAX_COUNT:
                 raise HTTPException(
                     status_code=400,
-                    detail=(
-                        f"Workspace environment variable limit reached ({_WORKSPACE_ENV_VAR_MAX_COUNT})"
-                    ),
+                    detail=(f"Workspace environment variable limit reached ({_WORKSPACE_ENV_VAR_MAX_COUNT})"),
                 )
 
-            conflict = await model.find_first(
-                where={"workspaceId": workspace_id, "key": target_key}
-            )
+            conflict = await model.find_first(where={"workspaceId": workspace_id, "key": target_key})
             if conflict is not None:
                 raise HTTPException(
                     status_code=409,
@@ -14307,11 +12966,7 @@ class UserSpaceService:
                     "workspaceId": workspace_id,
                     "key": target_key,
                     # Empty string means "placeholder key" (no secret set yet).
-                    "value": (
-                        encrypt_secret(request.value)
-                        if request.value is not None
-                        else ""
-                    ),
+                    "value": (encrypt_secret(request.value) if request.value is not None else ""),
                     "description": description,
                     "createdAt": now,
                     "updatedAt": now,
@@ -14347,11 +13002,7 @@ class UserSpaceService:
         if request.value is not None:
             encrypted_value = encrypt_secret(request.value)
 
-        next_description = (
-            str(getattr(existing, "description", "") or "")
-            if description is None
-            else description
-        )
+        next_description = str(getattr(existing, "description", "") or "") if description is None else description
 
         updated = await model.update(
             where={"id": str(getattr(existing, "id", "") or "")},
@@ -14397,13 +13048,9 @@ class UserSpaceService:
         normalized_key = self._normalize_workspace_env_var_key(key)
         db = await get_db()
         model = self._workspace_env_var_model(db)
-        existing = await model.find_first(
-            where={"workspaceId": workspace_id, "key": normalized_key}
-        )
+        existing = await model.find_first(where={"workspaceId": workspace_id, "key": normalized_key})
         if existing is None:
-            raise HTTPException(
-                status_code=404, detail="Environment variable not found"
-            )
+            raise HTTPException(status_code=404, detail="Environment variable not found")
 
         now = _utc_now()
         await model.delete(where={"id": str(getattr(existing, "id", "") or "")})
@@ -14468,10 +13115,7 @@ class UserSpaceService:
     # ------------------------------------------------------------------
 
     _WORKSPACE_MOUNT_MAX_COUNT = 50
-    _ERR_MOUNT_SOURCE_DISABLED = (
-        "This mount source has been disabled by an administrator. "
-        "Re-enable it in the Tools panel before using this mount."
-    )
+    _ERR_MOUNT_SOURCE_DISABLED = "This mount source has been disabled by an administrator. Re-enable it in the Tools panel before using this mount."
     _RESERVED_MOUNT_TARGETS = {
         "/workspace",
         "/proc",
@@ -14512,9 +13156,7 @@ class UserSpaceService:
 
     @classmethod
     def _load_mount_source_connection_config(cls, record: Any) -> dict[str, Any]:
-        raw_config = cls._load_connection_config(
-            getattr(record, "connectionConfig", None)
-        )
+        raw_config = cls._load_connection_config(getattr(record, "connectionConfig", None))
         return decrypt_json_passwords(raw_config, CONNECTION_CONFIG_PASSWORD_FIELDS)
 
     @classmethod
@@ -14548,9 +13190,7 @@ class UserSpaceService:
     @classmethod
     def _load_tool_connection_config(cls, tool_record: Any) -> dict[str, Any]:
         """Load and decrypt connection config from a related ToolConfig record."""
-        raw_config = cls._load_connection_config(
-            getattr(tool_record, "connectionConfig", None)
-        )
+        raw_config = cls._load_connection_config(getattr(tool_record, "connectionConfig", None))
         return decrypt_json_passwords(raw_config, CONNECTION_CONFIG_PASSWORD_FIELDS)
 
     @classmethod
@@ -14668,9 +13308,7 @@ class UserSpaceService:
             return "cloud_virtual"
         mount_type = str(connection_config.get("mount_type") or "docker_volume").strip()
         if mount_type not in {"docker_volume", "smb", "nfs", "local"}:
-            raise HTTPException(
-                status_code=400, detail=f"Unsupported mount backend '{mount_type}'"
-            )
+            raise HTTPException(status_code=400, detail=f"Unsupported mount backend '{mount_type}'")
         return cast(UserspaceMountBackend, mount_type)
 
     @classmethod
@@ -14692,13 +13330,9 @@ class UserSpaceService:
             host = str(normalized_config.get("host") or "").strip()
             user = str(normalized_config.get("user") or "").strip()
             if not host:
-                raise HTTPException(
-                    status_code=400, detail="SSH mount sources require a host"
-                )
+                raise HTTPException(status_code=400, detail="SSH mount sources require a host")
             if not user:
-                raise HTTPException(
-                    status_code=400, detail="SSH mount sources require a user"
-                )
+                raise HTTPException(status_code=400, detail="SSH mount sources require a user")
             normalized_config["host"] = host
             normalized_config["user"] = user
             port = normalized_config.get("port")
@@ -14707,9 +13341,7 @@ class UserSpaceService:
                     port_str = str(port)
                     normalized_config["port"] = int(port_str)
                 except (TypeError, ValueError) as exc:
-                    raise HTTPException(
-                        status_code=400, detail="SSH port must be an integer"
-                    ) from exc
+                    raise HTTPException(status_code=400, detail="SSH port must be an integer") from exc
             backend: UserspaceMountBackend = "ssh"
         elif source_type in {"microsoft_drive", "google_drive"}:
             backend = "cloud_virtual"
@@ -14722,8 +13354,7 @@ class UserSpaceService:
                     detail="Cloud mount sources support auth_mode values 'oauth' or 'mock'",
                 )
             if auth_mode == "oauth" and not (
-                str(normalized_config.get("access_token") or "").strip()
-                or str(normalized_config.get("oauth_account_id") or "").strip()
+                str(normalized_config.get("access_token") or "").strip() or str(normalized_config.get("oauth_account_id") or "").strip()
             ):
                 raise HTTPException(
                     status_code=400,
@@ -14742,23 +13373,15 @@ class UserSpaceService:
                 normalized_config["base_path"] = base_path
             elif backend == "smb":
                 if not str(normalized_config.get("smb_host") or "").strip():
-                    raise HTTPException(
-                        status_code=400, detail="SMB mount sources require smb_host"
-                    )
+                    raise HTTPException(status_code=400, detail="SMB mount sources require smb_host")
                 if not str(normalized_config.get("smb_share") or "").strip():
-                    raise HTTPException(
-                        status_code=400, detail="SMB mount sources require smb_share"
-                    )
+                    raise HTTPException(status_code=400, detail="SMB mount sources require smb_share")
                 normalized_config["base_path"] = base_path or "/"
             elif backend == "nfs":
                 if not str(normalized_config.get("nfs_host") or "").strip():
-                    raise HTTPException(
-                        status_code=400, detail="NFS mount sources require nfs_host"
-                    )
+                    raise HTTPException(status_code=400, detail="NFS mount sources require nfs_host")
                 if not str(normalized_config.get("nfs_export") or "").strip():
-                    raise HTTPException(
-                        status_code=400, detail="NFS mount sources require nfs_export"
-                    )
+                    raise HTTPException(status_code=400, detail="NFS mount sources require nfs_export")
                 normalized_config["base_path"] = base_path or "/"
 
         normalized_paths = cls._normalize_mount_source_paths(approved_paths)
@@ -14792,9 +13415,7 @@ class UserSpaceService:
         source_type: UserspaceMountSourceType,
         connection_config: dict[str, Any],
     ) -> dict[str, Any]:
-        oauth_account_id = str(
-            connection_config.get("oauth_account_id") or ""
-        ).strip()
+        oauth_account_id = str(connection_config.get("oauth_account_id") or "").strip()
         if not oauth_account_id:
             return connection_config
         if source_type not in {"microsoft_drive", "google_drive"}:
@@ -14839,10 +13460,7 @@ class UserSpaceService:
                 where={"id": oauth_account_id},
             )
         if account is None:
-            raise CloudProviderAuthError(
-                "Cloud account linked to this mount source is no longer available. "
-                "Reconnect OAuth in the mount source settings."
-            )
+            raise CloudProviderAuthError("Cloud account linked to this mount source is no longer available. Reconnect OAuth in the mount source settings.")
         provider = str(getattr(account, "provider", "") or "")
         if provider != source_type:
             raise HTTPException(
@@ -14886,16 +13504,12 @@ class UserSpaceService:
         return UserspaceMountSource(
             id=str(getattr(record, "id", "") or ""),
             name=str(getattr(record, "name", "") or ""),
-            description=cls._normalize_mount_source_description(
-                getattr(record, "description", None)
-            ),
+            description=cls._normalize_mount_source_description(getattr(record, "description", None)),
             enabled=bool(getattr(record, "enabled", True)),
             source_scope=source_scope,
             owner_user_id=str(getattr(record, "userId", "") or "") or None,
             source_type=source_type,
-            mount_backend=cls._mount_backend_from_source(
-                source_type, connection_config
-            ),
+            mount_backend=cls._mount_backend_from_source(source_type, connection_config),
             tool_config_id=str(tool_config_id) if tool_config_id else None,
             tool_name=tool_name or None,
             oauth_account_id=str(oauth_account_id) if oauth_account_id else None,
@@ -14975,11 +13589,7 @@ class UserSpaceService:
         if not mount_source.enabled:
             return True, None, None
         probe_path = next(
-            (
-                path
-                for path in (mount_source.approved_paths or ["."])
-                if path and path not in {"/"}
-            ),
+            (path for path in (mount_source.approved_paths or ["."]) if path and path not in {"/"}),
             ".",
         )
         return await self._evaluate_mount_source_path_health(mount_source, probe_path)
@@ -15107,9 +13717,7 @@ class UserSpaceService:
             getattr(mount, "syncMode", None),
             legacy_sync_deletes=bool(getattr(mount, "syncDeletes", False)),
         )
-        if preview_token is not None or self._is_destructive_workspace_mount_sync_mode(
-            sync_mode
-        ):
+        if preview_token is not None or self._is_destructive_workspace_mount_sync_mode(sync_mode):
             return await self._sync_workspace_mount_record_once(
                 db,
                 mount,
@@ -15232,18 +13840,10 @@ class UserSpaceService:
                                 sync_mode=sync_mode,
                                 preview_token=preview_token,
                             )
-                        elif not (
-                            allow_destructive_auto_sync_approval
-                            and self._has_destructive_auto_sync_approval(
-                                mount, sync_mode
-                            )
-                        ):
+                        elif not (allow_destructive_auto_sync_approval and self._has_destructive_auto_sync_approval(mount, sync_mode)):
                             raise HTTPException(
                                 status_code=409,
-                                detail=(
-                                    "Destructive sync preview is missing, expired, or stale. "
-                                    "Run preview again before syncing."
-                                ),
+                                detail=("Destructive sync preview is missing, expired, or stale. Run preview again before syncing."),
                             )
 
                     result: Any
@@ -15304,11 +13904,9 @@ class UserSpaceService:
             sync_backend = result.backend_used or preferred_backend
             sync_notice = result.notice
             if result.success:
-                refresh_notice = (
-                    await self._maybe_refresh_active_runtime_mount_after_sync(
-                        workspace_id,
-                        mount_id,
-                    )
+                refresh_notice = await self._maybe_refresh_active_runtime_mount_after_sync(
+                    workspace_id,
+                    mount_id,
                 )
                 sync_notice = self._merge_workspace_mount_sync_notices(
                     sync_notice,
@@ -15327,10 +13925,7 @@ class UserSpaceService:
                 last_sync_error=last_error,
             )
         except CloudProviderAuthError as exc:
-            error_detail = (
-                f"{self._format_workspace_mount_sync_error_detail(exc)[:420]} "
-                "Reconnect OAuth for this mount source and run sync again."
-            )
+            error_detail = f"{self._format_workspace_mount_sync_error_detail(exc)[:420]} Reconnect OAuth for this mount source and run sync again."
             logger.warning(
                 "Mount sync auth expired for %s/%s: %s",
                 workspace_id,
@@ -15394,10 +13989,7 @@ class UserSpaceService:
                 exc,
             )
             detail = str(exc).strip() or "unknown error"
-            return (
-                "Sync completed, but the active runtime was not refreshed automatically: "
-                f"{detail[:240]}"
-            )
+            return f"Sync completed, but the active runtime was not refreshed automatically: {detail[:240]}"
 
     async def _build_workspace_mount_sync_context(
         self,
@@ -15411,20 +14003,25 @@ class UserSpaceService:
             "userMountSource",
             None,
         )
-        source_scope: UserspaceMountSourceScope = "user" if getattr(
-            mount,
-            "userMountSourceId",
-            None,
-        ) or getattr(mount, "userMountSource", None) is not None else "global"
-        mount_source = self._userspace_mount_source_from_record(
-            mount_source_record,
-            source_scope=source_scope,
-        ) if mount_source_record is not None else None
-        source_type = str(
-            getattr(mount_source, "source_type", "")
-            or getattr(mount_source_record, "sourceType", "")
-            or ""
+        source_scope: UserspaceMountSourceScope = (
+            "user"
+            if getattr(
+                mount,
+                "userMountSourceId",
+                None,
+            )
+            or getattr(mount, "userMountSource", None) is not None
+            else "global"
         )
+        mount_source = (
+            self._userspace_mount_source_from_record(
+                mount_source_record,
+                source_scope=source_scope,
+            )
+            if mount_source_record is not None
+            else None
+        )
+        source_type = str(getattr(mount_source, "source_type", "") or getattr(mount_source_record, "sourceType", "") or "")
         mount_id = str(getattr(mount, "id", "") or "")
         workspace_id = str(getattr(mount, "workspaceId", "") or "")
         if source_type not in {"ssh", "microsoft_drive", "google_drive"}:
@@ -15473,9 +14070,7 @@ class UserSpaceService:
             )
         else:
             ssh_config = None
-            remote_path = self._normalize_mount_source_path(
-                str(getattr(mount, "sourcePath", "") or "")
-            )
+            remote_path = self._normalize_mount_source_path(str(getattr(mount, "sourcePath", "") or ""))
             cache_dir = self._base_dir / "cloud_mount_cache" / workspace_id / mount_id
             preferred_backend = source_type
             preferred_notice = None
@@ -15551,16 +14146,10 @@ class UserSpaceService:
             if not preview.success:
                 raise HTTPException(
                     status_code=400,
-                    detail=(
-                        "; ".join(preview.errors[:5])
-                        or "Failed to preview workspace mount sync"
-                    ),
+                    detail=("; ".join(preview.errors[:5]) or "Failed to preview workspace mount sync"),
                 )
         except CloudProviderAuthError as exc:
-            error_detail = (
-                f"{self._format_workspace_mount_sync_error_detail(exc)[:420]} "
-                "Reconnect OAuth for this mount source before previewing again."
-            )
+            error_detail = f"{self._format_workspace_mount_sync_error_detail(exc)[:420]} Reconnect OAuth for this mount source before previewing again."
             logger.warning(
                 "Mount sync preview auth expired for %s/%s: %s",
                 workspace_id,
@@ -15599,9 +14188,7 @@ class UserSpaceService:
             raise
 
         preview_token = secrets.token_urlsafe(24)
-        preview_expires_at = _utc_now() + timedelta(
-            seconds=self._WORKSPACE_MOUNT_SYNC_PREVIEW_TTL_SECONDS
-        )
+        preview_expires_at = _utc_now() + timedelta(seconds=self._WORKSPACE_MOUNT_SYNC_PREVIEW_TTL_SECONDS)
         await self._store_workspace_mount_sync_preview(
             _WorkspaceMountSyncPreviewRecord(
                 token=preview_token,
@@ -15618,9 +14205,7 @@ class UserSpaceService:
             sync_mode=sync_mode,
             sync_backend=preferred_backend,
             sync_notice=preferred_notice,
-            requires_confirmation=self._is_destructive_workspace_mount_sync_mode(
-                sync_mode
-            ),
+            requires_confirmation=self._is_destructive_workspace_mount_sync_mode(sync_mode),
             preview_token=preview_token,
             preview_expires_at=preview_expires_at,
             delete_from_source_count=preview.delete_from_source_count,
@@ -15662,9 +14247,7 @@ class UserSpaceService:
                 "Failed to stage runtime mount content %s into sync cache %s: %s",
                 runtime_dir,
                 cache_dir,
-                (
-                    proc.stderr or proc.stdout or f"rsync exited {proc.returncode}"
-                ).strip()[:300],
+                (proc.stderr or proc.stdout or f"rsync exited {proc.returncode}").strip()[:300],
             )
             return False
 
@@ -15689,9 +14272,7 @@ class UserSpaceService:
         if isinstance(error, HTTPException):
             detail = error.detail
             if isinstance(detail, list):
-                joined = "; ".join(
-                    str(item).strip() for item in detail if str(item).strip()
-                )
+                joined = "; ".join(str(item).strip() for item in detail if str(item).strip())
                 if joined:
                     return joined
             if detail is not None:
@@ -15809,11 +14390,7 @@ class UserSpaceService:
             nonlocal last_emit, last_done
             now = _time.monotonic()
             is_complete = files_total is not None and files_done >= files_total
-            if (
-                not is_complete
-                and files_done == last_done
-                and now - last_emit < min_interval_seconds
-            ):
+            if not is_complete and files_done == last_done and now - last_emit < min_interval_seconds:
                 return
             if not is_complete and now - last_emit < min_interval_seconds:
                 return
@@ -15855,11 +14432,7 @@ class UserSpaceService:
             nonlocal last_emit, last_done
             now = _time.monotonic()
             is_complete = files_total is not None and files_done >= files_total
-            if (
-                not is_complete
-                and files_done == last_done
-                and now - last_emit < min_interval_seconds
-            ):
+            if not is_complete and files_done == last_done and now - last_emit < min_interval_seconds:
                 return
             if not is_complete and now - last_emit < min_interval_seconds:
                 return
@@ -15980,9 +14553,7 @@ class UserSpaceService:
     def _is_same_or_descendant_mount_path(path: str, candidate_ancestor: str) -> bool:
         normalized_path = posixpath.normpath(path)
         normalized_ancestor = posixpath.normpath(candidate_ancestor)
-        return normalized_path == normalized_ancestor or normalized_path.startswith(
-            normalized_ancestor + "/"
-        )
+        return normalized_path == normalized_ancestor or normalized_path.startswith(normalized_ancestor + "/")
 
     @staticmethod
     def _normalize_mount_description(description: str | None) -> str | None:
@@ -15996,11 +14567,7 @@ class UserSpaceService:
         normalized = posixpath.normpath((source_path or "").strip().replace("\\", "/"))
         if normalized in {"", "."}:
             return "."
-        if (
-            normalized.startswith("/")
-            or normalized == ".."
-            or normalized.startswith("../")
-        ):
+        if normalized.startswith("/") or normalized == ".." or normalized.startswith("../"):
             raise HTTPException(
                 status_code=400,
                 detail="Approved mount paths must be relative to the mount source root",
@@ -16040,16 +14607,12 @@ class UserSpaceService:
         return cls._normalize_mount_source_path(normalized.lstrip("/"))
 
     @classmethod
-    def _is_mount_source_within_root(
-        cls, source_path: str, root_source_path: str
-    ) -> bool:
+    def _is_mount_source_within_root(cls, source_path: str, root_source_path: str) -> bool:
         normalized_source = cls._normalize_mount_source_path(source_path)
         normalized_root = cls._normalize_mount_source_path(root_source_path)
         if normalized_root == ".":
             return True
-        return normalized_source == normalized_root or normalized_source.startswith(
-            normalized_root + "/"
-        )
+        return normalized_source == normalized_root or normalized_source.startswith(normalized_root + "/")
 
     @classmethod
     def _ensure_mount_source_within_approved_paths(
@@ -16058,10 +14621,7 @@ class UserSpaceService:
         approved_paths: list[str],
     ) -> None:
         normalized_source = cls._normalize_mount_source_path(source_path)
-        if any(
-            cls._is_mount_source_within_root(normalized_source, approved_path)
-            for approved_path in approved_paths
-        ):
+        if any(cls._is_mount_source_within_root(normalized_source, approved_path) for approved_path in approved_paths):
             return
         raise HTTPException(
             status_code=400,
@@ -16076,15 +14636,10 @@ class UserSpaceService:
         approved_paths: list[str],
     ) -> list[WorkspaceMountDirectoryEntry] | None:
         normalized_source = cls._normalize_mount_source_path(source_path)
-        normalized_approved_paths = [
-            cls._normalize_mount_source_path(path) for path in approved_paths
-        ]
+        normalized_approved_paths = [cls._normalize_mount_source_path(path) for path in approved_paths]
         if any(path == "." for path in normalized_approved_paths):
             return None
-        if any(
-            cls._is_mount_source_within_root(normalized_source, approved_path)
-            for approved_path in normalized_approved_paths
-        ):
+        if any(cls._is_mount_source_within_root(normalized_source, approved_path) for approved_path in normalized_approved_paths):
             return None
 
         entries_by_path: dict[str, WorkspaceMountDirectoryEntry] = {}
@@ -16125,9 +14680,7 @@ class UserSpaceService:
         source_path: str,
     ) -> str:
         normalized = cls._normalize_mount_source_path(source_path)
-        working_directory = str(
-            connection_config.get("working_directory") or ""
-        ).strip()
+        working_directory = str(connection_config.get("working_directory") or "").strip()
         if not working_directory:
             return normalized
         if normalized == ".":
@@ -16150,13 +14703,9 @@ class UserSpaceService:
         connection_config: dict[str, Any],
         source_path: str,
     ) -> str:
-        fs_config = self._build_filesystem_mount_config(
-            connection_config, mount_source_id
-        )
+        fs_config = self._build_filesystem_mount_config(connection_config, mount_source_id)
         normalized = self._normalize_mount_source_path(source_path)
-        async with filesystem_indexer.filesystem_access(
-            fs_config, mount_source_id
-        ) as base_path:
+        async with filesystem_indexer.filesystem_access(fs_config, mount_source_id) as base_path:
             base = Path(base_path)
             resolved = base if normalized == "." else base / normalized
             return str(resolved)
@@ -16258,11 +14807,7 @@ class UserSpaceService:
             command = f"mkdir -p -- {shlex.quote(remote_path)}"
             result = await asyncio.to_thread(execute_ssh_command, ssh_config, command)
             if not result.success:
-                error_msg = (
-                    result.stderr
-                    or result.stdout
-                    or "Failed to create source directory"
-                )
+                error_msg = result.stderr or result.stdout or "Failed to create source directory"
                 raise HTTPException(status_code=400, detail=error_msg)
             return
 
@@ -16292,13 +14837,9 @@ class UserSpaceService:
                 detail="Mount target directories can only be created under /workspace",
             )
 
-        relative_path = self._normalize_workspace_relative_path(
-            target_path[len("/workspace/") :]
-        )
+        relative_path = self._normalize_workspace_relative_path(target_path[len("/workspace/") :])
         if not relative_path:
-            raise HTTPException(
-                status_code=400, detail="Invalid mount target directory"
-            )
+            raise HTTPException(status_code=400, detail="Invalid mount target directory")
 
         self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
         target_dir_path = self._resolve_workspace_file_path(workspace_id, relative_path)
@@ -16398,14 +14939,9 @@ class UserSpaceService:
             CloudOAuthProviderStatus(
                 provider="microsoft_drive",
                 configured=bool(
-                    settings.cloud_mount_microsoft_client_id
-                    and settings.cloud_mount_microsoft_client_secret
-                    and settings.cloud_mount_microsoft_tenant_id
+                    settings.cloud_mount_microsoft_client_id and settings.cloud_mount_microsoft_client_secret and settings.cloud_mount_microsoft_tenant_id
                 ),
-                auth_url_available=bool(
-                    settings.cloud_mount_microsoft_client_id
-                    and settings.cloud_mount_microsoft_tenant_id
-                ),
+                auth_url_available=bool(settings.cloud_mount_microsoft_client_id and settings.cloud_mount_microsoft_tenant_id),
             ),
             CloudOAuthProviderStatus(
                 provider="google_drive",
@@ -16494,11 +15030,7 @@ class UserSpaceService:
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        email = (
-            str(profile.get("mail") or "").strip()
-            or str(profile.get("userPrincipalName") or "").strip()
-            or str(profile.get("email") or "").strip()
-        )
+        email = str(profile.get("mail") or "").strip() or str(profile.get("userPrincipalName") or "").strip() or str(profile.get("email") or "").strip()
         account_name = str(profile.get("displayName") or profile.get("name") or email or request.provider).strip()
         access_token = str(token_payload.get("access_token") or "")
         refresh_token = str(token_payload.get("refresh_token") or "")
@@ -16535,21 +15067,15 @@ class UserSpaceService:
                 "JOIN user_userspace_mount_sources ums ON ums.id = wm.user_mount_source_id "
                 "WHERE wm.workspace_id = $1 "
                 "AND ums.user_id = $2 "
-                "AND ums.source_type = CAST($3 AS \"UserspaceMountSourceType\") "
+                'AND ums.source_type = CAST($3 AS "UserspaceMountSourceType") '
                 "AND ums.oauth_account_id IS NOT NULL",
                 workspace_id_from_state,
                 user_id,
                 request.provider,
             )
-            linked_account_ids = [
-                str(row.get("oauth_account_id") or "").strip()
-                for row in linked_rows
-                if str(row.get("oauth_account_id") or "").strip()
-            ]
+            linked_account_ids = [str(row.get("oauth_account_id") or "").strip() for row in linked_rows if str(row.get("oauth_account_id") or "").strip()]
             if len(linked_account_ids) == 1:
-                existing_account = await db.usercloudoauthaccount.find_first(
-                    where={"id": linked_account_ids[0], "userId": user_id}
-                )
+                existing_account = await db.usercloudoauthaccount.find_first(where={"id": linked_account_ids[0], "userId": user_id})
         if existing_account is None:
             provider_accounts = await db.usercloudoauthaccount.find_many(
                 where={"userId": user_id, "provider": request.provider},
@@ -16573,30 +15099,17 @@ class UserSpaceService:
                     "updatedAt": now,
                 },
             )
-            linked_sources = await db.useruserspacemountsource.find_many(
-                where={"oauthAccountId": account_id}
-            )
-            linked_source_ids = [
-                str(getattr(source, "id", "") or "")
-                for source in linked_sources
-                if str(getattr(source, "id", "") or "")
-            ]
+            linked_sources = await db.useruserspacemountsource.find_many(where={"oauthAccountId": account_id})
+            linked_source_ids = [str(getattr(source, "id", "") or "") for source in linked_sources if str(getattr(source, "id", "") or "")]
             global_linked_rows: list[dict[str, Any]] = await db.query_raw(
-                "SELECT id FROM userspace_mount_sources WHERE connection_config->>'oauth_account_id' = $1",
-                account_id
+                "SELECT id FROM userspace_mount_sources WHERE connection_config->>'oauth_account_id' = $1", account_id
             )
-            global_source_ids = [
-                str(row.get("id") or "")
-                for row in global_linked_rows
-                if str(row.get("id") or "")
-            ]
+            global_source_ids = [str(row.get("id") or "") for row in global_linked_rows if str(row.get("id") or "")]
 
             affected_workspace_ids: set[str] = set()
 
             if linked_source_ids:
-                affected_mounts = await db.workspacemount.find_many(
-                    where={"userMountSourceId": {"in": linked_source_ids}}
-                )
+                affected_mounts = await db.workspacemount.find_many(where={"userMountSourceId": {"in": linked_source_ids}})
                 await db.workspacemount.update_many(
                     where={
                         "userMountSourceId": {"in": linked_source_ids},
@@ -16614,15 +15127,11 @@ class UserSpaceService:
                     },
                 )
                 affected_workspace_ids.update(
-                    str(getattr(mount, "workspaceId", "") or "")
-                    for mount in affected_mounts
-                    if str(getattr(mount, "workspaceId", "") or "")
+                    str(getattr(mount, "workspaceId", "") or "") for mount in affected_mounts if str(getattr(mount, "workspaceId", "") or "")
                 )
 
             if global_source_ids:
-                global_affected_mounts = await db.workspacemount.find_many(
-                    where={"mountSourceId": {"in": global_source_ids}}
-                )
+                global_affected_mounts = await db.workspacemount.find_many(where={"mountSourceId": {"in": global_source_ids}})
                 await db.workspacemount.update_many(
                     where={
                         "mountSourceId": {"in": global_source_ids},
@@ -16640,9 +15149,7 @@ class UserSpaceService:
                     },
                 )
                 affected_workspace_ids.update(
-                    str(getattr(mount, "workspaceId", "") or "")
-                    for mount in global_affected_mounts
-                    if str(getattr(mount, "workspaceId", "") or "")
+                    str(getattr(mount, "workspaceId", "") or "") for mount in global_affected_mounts if str(getattr(mount, "workspaceId", "") or "")
                 )
 
             for workspace_id in affected_workspace_ids:
@@ -16695,36 +15202,24 @@ class UserSpaceService:
         account_id: str,
     ) -> DeleteUserspaceMountSourceResponse:
         db = await get_db()
-        existing = await db.usercloudoauthaccount.find_first(
-            where={"id": account_id, "userId": user_id}
-        )
+        existing = await db.usercloudoauthaccount.find_first(where={"id": account_id, "userId": user_id})
         if not existing:
             raise HTTPException(status_code=404, detail="Cloud account not found")
-        linked_sources = await db.useruserspacemountsource.count(
-            where={"userId": user_id, "oauthAccountId": account_id}
-        )
+        linked_sources = await db.useruserspacemountsource.count(where={"userId": user_id, "oauthAccountId": account_id})
         if linked_sources > 0:
             raise HTTPException(
                 status_code=400,
                 detail="Remove personal cloud sources that use this account before disconnecting it",
             )
         linked_global_rows: list[dict[str, Any]] = await db.query_raw(
-            "SELECT COUNT(*)::int AS cnt FROM userspace_mount_sources "
-            "WHERE connection_config->>'oauth_account_id' = $1",
+            "SELECT COUNT(*)::int AS cnt FROM userspace_mount_sources WHERE connection_config->>'oauth_account_id' = $1",
             account_id,
         )
-        linked_global_sources = (
-            int(linked_global_rows[0].get("cnt", 0))
-            if linked_global_rows
-            else 0
-        )
+        linked_global_sources = int(linked_global_rows[0].get("cnt", 0)) if linked_global_rows else 0
         if linked_global_sources > 0:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Update globally managed mount sources that use this account "
-                    "before disconnecting it"
-                ),
+                detail=("Update globally managed mount sources that use this account before disconnecting it"),
             )
         await db.usercloudoauthaccount.delete(where={"id": account_id})
         return DeleteUserspaceMountSourceResponse(success=True, mount_source_id=account_id)
@@ -16740,8 +15235,7 @@ class UserSpaceService:
             include={"oauthAccount": True},
         )
         count_rows: list[dict[str, Any]] = await db.query_raw(
-            "SELECT user_mount_source_id, COUNT(*)::int AS cnt FROM workspace_mounts "
-            "WHERE user_mount_source_id IS NOT NULL GROUP BY user_mount_source_id"
+            "SELECT user_mount_source_id, COUNT(*)::int AS cnt FROM workspace_mounts WHERE user_mount_source_id IS NOT NULL GROUP BY user_mount_source_id"
         )
         counts = {str(r.get("user_mount_source_id", "")): int(r.get("cnt", 0)) for r in count_rows}
         sources = [
@@ -16752,9 +15246,7 @@ class UserSpaceService:
             )
             for row in rows
         ]
-        health = await asyncio.gather(
-            *(self._evaluate_mount_source_health(source) for source in sources)
-        )
+        health = await asyncio.gather(*(self._evaluate_mount_source_health(source) for source in sources))
         return [
             source.model_copy(
                 update={
@@ -16777,9 +15269,7 @@ class UserSpaceService:
         oauth_account = None
         connection_config = dict(request.connection_config or {})
         if request.oauth_account_id:
-            oauth_account = await db.usercloudoauthaccount.find_first(
-                where={"id": request.oauth_account_id, "userId": user_id}
-            )
+            oauth_account = await db.usercloudoauthaccount.find_first(where={"id": request.oauth_account_id, "userId": user_id})
             if not oauth_account:
                 raise HTTPException(status_code=400, detail="Cloud account not found")
             connection_config["oauth_account_id"] = request.oauth_account_id
@@ -16867,21 +15357,11 @@ class UserSpaceService:
         )
         # Count workspace mounts per source in a single query
         count_rows: list[dict[str, Any]] = await db.query_raw(
-            "SELECT mount_source_id, COUNT(*)::int AS cnt FROM workspace_mounts "
-            "WHERE mount_source_id IS NOT NULL GROUP BY mount_source_id"
+            "SELECT mount_source_id, COUNT(*)::int AS cnt FROM workspace_mounts WHERE mount_source_id IS NOT NULL GROUP BY mount_source_id"
         )
-        counts: dict[str, int] = {
-            str(r.get("mount_source_id", "")): int(r.get("cnt", 0)) for r in count_rows
-        }
-        sources = [
-            self._userspace_mount_source_from_record(
-                row, usage_count=counts.get(str(getattr(row, "id", "")), 0)
-            )
-            for row in rows
-        ]
-        health = await asyncio.gather(
-            *(self._evaluate_mount_source_health(source) for source in sources)
-        )
+        counts: dict[str, int] = {str(r.get("mount_source_id", "")): int(r.get("cnt", 0)) for r in count_rows}
+        sources = [self._userspace_mount_source_from_record(row, usage_count=counts.get(str(getattr(row, "id", "")), 0)) for row in rows]
+        health = await asyncio.gather(*(self._evaluate_mount_source_health(source) for source in sources))
         return [
             source.model_copy(
                 update={
@@ -16904,9 +15384,7 @@ class UserSpaceService:
 
         # Resolve source_type and connection_config from backing tool when provided
         if request.tool_config_id:
-            tool_record = await db.toolconfig.find_unique(
-                where={"id": request.tool_config_id}
-            )
+            tool_record = await db.toolconfig.find_unique(where={"id": request.tool_config_id})
             if not tool_record:
                 raise HTTPException(status_code=400, detail="Backing tool not found")
             tool_type = str(getattr(tool_record, "toolType", ""))
@@ -16915,9 +15393,7 @@ class UserSpaceService:
                     status_code=400,
                     detail="Only SSH and filesystem tools can back mount sources",
                 )
-            source_type: UserspaceMountSourceType = (
-                "ssh" if tool_type == "ssh_shell" else "filesystem"
-            )
+            source_type: UserspaceMountSourceType = "ssh" if tool_type == "ssh_shell" else "filesystem"
             tool_connection = self._load_tool_connection_config(tool_record)
             tool_config_id = request.tool_config_id
         else:
@@ -16935,26 +15411,18 @@ class UserSpaceService:
             connection_config=tool_connection,
         )
 
-        connection_config, approved_paths, _mount_backend = (
-            self._normalize_mount_source_payload(
-                source_type=source_type,
-                connection_config=tool_connection,
-                approved_paths=request.approved_paths,
-            )
+        connection_config, approved_paths, _mount_backend = self._normalize_mount_source_payload(
+            source_type=source_type,
+            connection_config=tool_connection,
+            approved_paths=request.approved_paths,
         )
-        access_user_ids = await self._normalize_mount_source_access_user_ids(
-            request.access_user_ids
-        )
-        access_group_identifiers = self._normalize_mount_source_access_group_identifiers(
-            request.access_group_identifiers
-        )
+        access_user_ids = await self._normalize_mount_source_access_user_ids(request.access_user_ids)
+        access_group_identifiers = self._normalize_mount_source_access_group_identifiers(request.access_group_identifiers)
         now = _utc_now()
         data: dict[str, Any] = {
             "id": str(uuid4()),
             "name": self._normalize_mount_source_name(request.name),
-            "description": self._normalize_mount_source_description(
-                request.description
-            ),
+            "description": self._normalize_mount_source_description(request.description),
             "enabled": bool(request.enabled),
             "sourceType": source_type,
             "connectionConfig": Json(
@@ -16966,11 +15434,7 @@ class UserSpaceService:
             "approvedPaths": Json(approved_paths),
             "accessUserIds": Json(access_user_ids),
             "accessGroupIdentifiers": Json(access_group_identifiers),
-            "syncIntervalSeconds": (
-                request.sync_interval_seconds
-                if request.sync_interval_seconds is not None
-                else 30
-            ),
+            "syncIntervalSeconds": (request.sync_interval_seconds if request.sync_interval_seconds is not None else 30),
             "createdAt": now,
             "updatedAt": now,
         }
@@ -17035,41 +15499,19 @@ class UserSpaceService:
 
         next_description = existing.description
         if "description" in fields_set:
-            next_description = self._normalize_mount_source_description(
-                request.description
-            )
+            next_description = self._normalize_mount_source_description(request.description)
 
-        next_enabled = (
-            existing.enabled if "enabled" not in fields_set else bool(request.enabled)
-        )
-        next_connection_config = (
-            existing.connection_config
-            if "connection_config" not in fields_set
-            else dict(request.connection_config or {})
-        )
-        next_approved_paths = (
-            existing.approved_paths
-            if "approved_paths" not in fields_set
-            else list(request.approved_paths or [])
-        )
-        next_sync_interval = (
-            existing.sync_interval_seconds
-            if "sync_interval_seconds" not in fields_set
-            else request.sync_interval_seconds
-        )
+        next_enabled = existing.enabled if "enabled" not in fields_set else bool(request.enabled)
+        next_connection_config = existing.connection_config if "connection_config" not in fields_set else dict(request.connection_config or {})
+        next_approved_paths = existing.approved_paths if "approved_paths" not in fields_set else list(request.approved_paths or [])
+        next_sync_interval = existing.sync_interval_seconds if "sync_interval_seconds" not in fields_set else request.sync_interval_seconds
         next_access_user_ids = (
-            existing.access_user_ids
-            if "access_user_ids" not in fields_set
-            else await self._normalize_mount_source_access_user_ids(
-                request.access_user_ids
-            )
+            existing.access_user_ids if "access_user_ids" not in fields_set else await self._normalize_mount_source_access_user_ids(request.access_user_ids)
         )
         next_access_group_identifiers = (
             existing.access_group_identifiers
             if "access_group_identifiers" not in fields_set
-            else self._normalize_mount_source_access_group_identifiers(
-                request.access_group_identifiers
-            )
+            else self._normalize_mount_source_access_group_identifiers(request.access_group_identifiers)
         )
 
         if "connection_config" in fields_set:
@@ -17079,12 +15521,10 @@ class UserSpaceService:
                 connection_config=next_connection_config,
             )
 
-        normalized_connection_config, normalized_approved_paths, _mount_backend = (
-            self._normalize_mount_source_payload(
-                source_type=existing.source_type,
-                connection_config=next_connection_config,
-                approved_paths=next_approved_paths,
-            )
+        normalized_connection_config, normalized_approved_paths, _mount_backend = self._normalize_mount_source_payload(
+            source_type=existing.source_type,
+            connection_config=next_connection_config,
+            approved_paths=next_approved_paths,
         )
         update_data: dict[str, Any] = {
             "name": next_name,
@@ -17102,9 +15542,7 @@ class UserSpaceService:
             "updatedAt": _utc_now(),
         }
         if next_sync_interval is not None:
-            update_data["syncIntervalSeconds"] = max(
-                1, min(2592000, next_sync_interval)
-            )
+            update_data["syncIntervalSeconds"] = max(1, min(2592000, next_sync_interval))
         updated = await db.userspacemountsource.update(
             where={"id": mount_source_id},
             data=update_data,
@@ -17115,9 +15553,7 @@ class UserSpaceService:
         # workspace mounts attached to this source so workspace state matches
         # explicit unmount behavior.
         if not next_enabled and existing.enabled:
-            affected_mounts = await db.workspacemount.find_many(
-                where={"mountSourceId": mount_source_id, "enabled": True}
-            )
+            affected_mounts = await db.workspacemount.find_many(where={"mountSourceId": mount_source_id, "enabled": True})
             for mount_row in affected_mounts:
                 await self._disable_workspace_mount_from_source_disable(
                     db,
@@ -17213,9 +15649,7 @@ class UserSpaceService:
     ) -> DeleteUserspaceMountSourceResponse:
         db = await get_db()
         await self._get_mount_source_record(db, mount_source_id)
-        mount_count = await db.workspacemount.count(
-            where={"mountSourceId": mount_source_id}
-        )
+        mount_count = await db.workspacemount.count(where={"mountSourceId": mount_source_id})
         if mount_count > 0:
             raise HTTPException(
                 status_code=400,
@@ -17425,9 +15859,7 @@ class UserSpaceService:
             )
 
         connection_config = self._load_tool_connection_config(tool_record)
-        source_type: UserspaceMountSourceType = (
-            "ssh" if tool_type == "ssh_shell" else "filesystem"
-        )
+        source_type: UserspaceMountSourceType = "ssh" if tool_type == "ssh_shell" else "filesystem"
 
         browser_path = self._normalize_mount_browser_path(request.path)
         source_path = self._browser_path_to_mount_source_path(browser_path)
@@ -17482,9 +15914,7 @@ class UserSpaceService:
                 mount.source_unavailable_reason = None
                 mount.source_unavailable_kind = None
             else:
-                available, unavailable_reason, unavailable_kind = await self._check_mount_source_health(
-                    row, mount_source
-                )
+                available, unavailable_reason, unavailable_kind = await self._check_mount_source_health(row, mount_source)
                 mount.source_available = available
                 mount.source_unavailable_reason = unavailable_reason
                 mount.source_unavailable_kind = unavailable_kind
@@ -17574,9 +16004,7 @@ class UserSpaceService:
         target_path = self._validate_mount_target_path(request.target_path)
         source_directory_to_create: str | None = None
         if request.source_directory_to_create:
-            source_directory_to_create = self._normalize_mount_source_path(
-                request.source_directory_to_create
-            )
+            source_directory_to_create = self._normalize_mount_source_path(request.source_directory_to_create)
             self._ensure_mount_source_within_approved_paths(
                 source_directory_to_create,
                 mount_source.approved_paths,
@@ -17592,9 +16020,7 @@ class UserSpaceService:
 
         target_directory_to_create: str | None = None
         if request.target_directory_to_create:
-            target_directory_to_create = self._validate_mount_target_path(
-                request.target_directory_to_create
-            )
+            target_directory_to_create = self._validate_mount_target_path(request.target_directory_to_create)
             if not target_directory_to_create.startswith("/workspace/"):
                 raise HTTPException(
                     status_code=400,
@@ -17637,35 +16063,29 @@ class UserSpaceService:
         )
 
         now = _utc_now()
-        initial_sync_status = (
-            "synced"
-            if mount_source.source_type in {"filesystem", "microsoft_drive", "google_drive"}
-            else "pending"
-        )
+        initial_sync_status = "synced" if mount_source.source_type in {"filesystem", "microsoft_drive", "google_drive"} else "pending"
         initial_sync_backend: str | None = None
         initial_sync_notice: str | None = None
         if mount_source.source_type == "ssh":
             ssh_config = ssh_config_from_dict(mount_source.connection_config)
-            initial_sync_backend, initial_sync_notice = (
-                await self._resolve_ssh_sync_backend(
-                    ssh_config,
-                    probe_if_unknown=True,
-                )
+            initial_sync_backend, initial_sync_notice = await self._resolve_ssh_sync_backend(
+                ssh_config,
+                probe_if_unknown=True,
             )
         create_data: dict[str, Any] = {
-                "id": str(uuid4()),
-                "workspaceId": workspace_id,
-                "sourcePath": normalized_source_path,
-                "targetPath": target_path,
-                "autoSyncEnabled": bool(request.auto_sync_enabled),
-                "syncIntervalSeconds": request.sync_interval_seconds,
-                "syncMode": request.sync_mode,
-                "description": self._normalize_mount_description(request.description),
-                "syncStatus": initial_sync_status,
-                "syncBackend": initial_sync_backend,
-                "syncNotice": initial_sync_notice,
-                "createdAt": now,
-                "updatedAt": now,
+            "id": str(uuid4()),
+            "workspaceId": workspace_id,
+            "sourcePath": normalized_source_path,
+            "targetPath": target_path,
+            "autoSyncEnabled": bool(request.auto_sync_enabled),
+            "syncIntervalSeconds": request.sync_interval_seconds,
+            "syncMode": request.sync_mode,
+            "description": self._normalize_mount_description(request.description),
+            "syncStatus": initial_sync_status,
+            "syncBackend": initial_sync_backend,
+            "syncNotice": initial_sync_notice,
+            "createdAt": now,
+            "updatedAt": now,
         }
         if request.source_scope == "user":
             create_data["userMountSourceId"] = mount_source.id
@@ -17701,22 +16121,14 @@ class UserSpaceService:
         await self._enforce_workspace_mount_edit_access(existing, user_id)
 
         mount_source_record = getattr(existing, "mountSource", None) or getattr(existing, "userMountSource", None)
-        source_type = (
-            str(getattr(mount_source_record, "sourceType", "") or "")
-            if mount_source_record
-            else ""
-        )
+        source_type = str(getattr(mount_source_record, "sourceType", "") or "") if mount_source_record else ""
         source_enabled = bool(getattr(mount_source_record, "enabled", False))
         current_sync_mode = self._normalize_workspace_mount_sync_mode(
             getattr(existing, "syncMode", None),
             legacy_sync_deletes=bool(getattr(existing, "syncDeletes", False)),
         )
         next_sync_mode = request.sync_mode or current_sync_mode
-        next_auto_sync_enabled = (
-            bool(request.auto_sync_enabled)
-            if request.auto_sync_enabled is not None
-            else bool(getattr(existing, "autoSyncEnabled", False))
-        )
+        next_auto_sync_enabled = bool(request.auto_sync_enabled) if request.auto_sync_enabled is not None else bool(getattr(existing, "autoSyncEnabled", False))
         if request.enabled is not None and not request.enabled:
             next_auto_sync_enabled = False
         if request.enabled is True and not source_enabled:
@@ -17736,11 +16148,9 @@ class UserSpaceService:
             auto_sync_enabled=next_auto_sync_enabled,
         )
 
-        existing_has_destructive_auto_sync_approval = (
-            self._has_destructive_auto_sync_approval(
-                existing,
-                next_sync_mode,
-            )
+        existing_has_destructive_auto_sync_approval = self._has_destructive_auto_sync_approval(
+            existing,
+            next_sync_mode,
         )
         needs_destructive_auto_sync_confirmation = (
             next_auto_sync_enabled
@@ -17755,13 +16165,9 @@ class UserSpaceService:
 
         update_data: dict[str, Any] = {"updatedAt": _utc_now()}
         if request.target_path is not None:
-            update_data["targetPath"] = self._validate_mount_target_path(
-                request.target_path
-            )
+            update_data["targetPath"] = self._validate_mount_target_path(request.target_path)
         if request.description is not None:
-            update_data["description"] = self._normalize_mount_description(
-                request.description
-            )
+            update_data["description"] = self._normalize_mount_description(request.description)
         if request.auto_sync_enabled is not None:
             update_data["autoSyncEnabled"] = next_auto_sync_enabled
         if request.sync_mode is not None:
@@ -17793,10 +16199,7 @@ class UserSpaceService:
             if not preview_token:
                 raise HTTPException(
                     status_code=409,
-                    detail=(
-                        "Destructive auto-sync requires a fresh preview confirmation. "
-                        "Run a dry run before enabling Auto."
-                    ),
+                    detail=("Destructive auto-sync requires a fresh preview confirmation. Run a dry run before enabling Auto."),
                 )
             context = await self._build_workspace_mount_sync_context(
                 existing,
@@ -17833,23 +16236,14 @@ class UserSpaceService:
 
         await self._invalidate_workspace_mount_sync_preview(mount_id)
 
-        updated = await db.workspacemount.update(
-            where={"id": mount_id}, data=update_data
-        )
+        updated = await db.workspacemount.update(where={"id": mount_id}, data=update_data)
         await db.workspace.update(
             where={"id": workspace_id},
             data={"updatedAt": update_data["updatedAt"]},
         )
 
-        if any(
-            field in request.model_fields_set
-            for field in ("auto_sync_enabled", "sync_interval_seconds", "sync_mode", "enabled", "target_path")
-        ):
-            if (
-                next_auto_sync_enabled
-                and bool(update_data.get("enabled", getattr(existing, "enabled", True)))
-                and source_enabled
-            ):
+        if any(field in request.model_fields_set for field in ("auto_sync_enabled", "sync_interval_seconds", "sync_mode", "enabled", "target_path")):
+            if next_auto_sync_enabled and bool(update_data.get("enabled", getattr(existing, "enabled", True))) and source_enabled:
                 self._workspace_mount_watch_next_due_monotonic[mount_id] = 0.0
                 self._workspace_mount_watch_wakeup.set()
             else:
@@ -18166,17 +16560,13 @@ class UserSpaceService:
         source_path: str,
     ) -> WorkspaceMountBrowseResponse:
         ssh_config = ssh_config_from_dict(connection_config)
-        remote_path = self._resolve_ssh_mount_remote_path(
-            connection_config, source_path
-        )
+        remote_path = self._resolve_ssh_mount_remote_path(connection_config, source_path)
         command = f"ls -p1a {shlex.quote(remote_path)}"
 
         try:
             result = await asyncio.to_thread(execute_ssh_command, ssh_config, command)
         except Exception as exc:
-            return WorkspaceMountBrowseResponse(
-                path=browser_path, entries=[], error=str(exc)
-            )
+            return WorkspaceMountBrowseResponse(path=browser_path, entries=[], error=str(exc))
 
         if not result.success:
             error_msg = result.stderr or result.stdout or "Failed to list directory"
@@ -18194,11 +16584,7 @@ class UserSpaceService:
             if not name.endswith("/"):
                 continue
             clean_name = name.rstrip("/")
-            child_browser_path = (
-                f"/{clean_name}"
-                if browser_path == "/"
-                else f"{browser_path.rstrip('/')}/{clean_name}"
-            )
+            child_browser_path = f"/{clean_name}" if browser_path == "/" else f"{browser_path.rstrip('/')}/{clean_name}"
             entries.append(
                 WorkspaceMountDirectoryEntry(
                     name=clean_name,
@@ -18261,9 +16647,7 @@ class UserSpaceService:
                 )
             )
         except Exception as exc:
-            return WorkspaceMountBrowseResponse(
-                path=browser_path, entries=[], error=str(exc)
-            )
+            return WorkspaceMountBrowseResponse(path=browser_path, entries=[], error=str(exc))
 
         def _browse() -> WorkspaceMountBrowseResponse:
             if not resolved_path.exists():
@@ -18290,11 +16674,7 @@ class UserSpaceService:
                             continue
                     except (PermissionError, OSError):
                         continue
-                    child_browser_path = (
-                        f"/{entry.name}"
-                        if browser_path == "/"
-                        else f"{browser_path.rstrip('/')}/{entry.name}"
-                    )
+                    child_browser_path = f"/{entry.name}" if browser_path == "/" else f"{browser_path.rstrip('/')}/{entry.name}"
                     entries.append(
                         WorkspaceMountDirectoryEntry(
                             name=entry.name,
@@ -18343,11 +16723,7 @@ class UserSpaceService:
             return []
 
         specs: list[dict[str, Any]] = []
-        mount_id_filter = (
-            {str(mount_id).strip() for mount_id in mount_ids if str(mount_id).strip()}
-            if mount_ids is not None
-            else None
-        )
+        mount_id_filter = {str(mount_id).strip() for mount_id in mount_ids if str(mount_id).strip()} if mount_ids is not None else None
         for row in rows:
             mount_id = str(getattr(row, "id", "") or "")
             if mount_id_filter is not None and mount_id not in mount_id_filter:
@@ -18371,9 +16747,7 @@ class UserSpaceService:
             target_path = str(getattr(row, "targetPath", "") or "")
 
             if mount_source.source_type == "ssh":
-                local_path = str(
-                    self._base_dir / "mount_cache" / workspace_id / mount_id
-                )
+                local_path = str(self._base_dir / "mount_cache" / workspace_id / mount_id)
                 specs.append(
                     {
                         "source_local_path": local_path,
@@ -18449,11 +16823,7 @@ class UserSpaceService:
         if not rows:
             return False
 
-        mount_id_filter = (
-            {str(mount_id).strip() for mount_id in mount_ids if str(mount_id).strip()}
-            if mount_ids is not None
-            else None
-        )
+        mount_id_filter = {str(mount_id).strip() for mount_id in mount_ids if str(mount_id).strip()} if mount_ids is not None else None
         stage_specs: list[tuple[str, Path]] = []
 
         for row in rows:
@@ -18519,14 +16889,9 @@ class UserSpaceService:
                 None,
             )
             source_type = str(getattr(mount_source, "sourceType", "") or "") if mount_source else ""
-            if (
-                source_type not in self._WORKSPACE_MOUNT_SYNC_CAPABLE_SOURCE_TYPES
-                or not bool(getattr(mount_source, "enabled", False))
-            ):
+            if source_type not in self._WORKSPACE_MOUNT_SYNC_CAPABLE_SOURCE_TYPES or not bool(getattr(mount_source, "enabled", False)):
                 continue
-            target_prefix = workspace_mount_target_repo_relative_path(
-                str(getattr(mount, "targetPath", "") or "")
-            )
+            target_prefix = workspace_mount_target_repo_relative_path(str(getattr(mount, "targetPath", "") or ""))
             if not target_prefix or not workspace_path_matches_mount_prefix(
                 normalized_path,
                 target_prefix,
@@ -18559,9 +16924,7 @@ class UserSpaceService:
         target_paths: list[str],
     ) -> tuple[Any, ...]:
         signatures: list[tuple[Any, ...]] = []
-        for target_path in sorted(
-            {path.strip() for path in target_paths if path.strip()}
-        ):
+        for target_path in sorted({path.strip() for path in target_paths if path.strip()}):
             target_dir = self._resolve_workspace_mount_runtime_target_dir(
                 workspace_id,
                 target_path,
@@ -18680,11 +17043,7 @@ class UserSpaceService:
             WHERE id = {self._sql_quote(workspace_id)}
             LIMIT 1
             """)
-        current_snapshot_id = (
-            str(cursor_rows[0].get("current_snapshot_id"))
-            if cursor_rows and cursor_rows[0].get("current_snapshot_id")
-            else None
-        )
+        current_snapshot_id = str(cursor_rows[0].get("current_snapshot_id")) if cursor_rows and cursor_rows[0].get("current_snapshot_id") else None
         if not current_snapshot_id:
             return True
 
@@ -18708,10 +17067,7 @@ class UserSpaceService:
             }
         )
 
-        paths = {
-            self._normalize_workspace_relative_path(str(getattr(row, "path", "") or ""))
-            for row in rows
-        }
+        paths = {self._normalize_workspace_relative_path(str(getattr(row, "path", "") or "")) for row in rows}
         return sorted(path for path in paths if path)
 
     async def _garbage_collect_workspace_changed_file_acknowledgements(
@@ -18743,17 +17099,11 @@ class UserSpaceService:
             skip=trim_to_rows,
             take=stale_rows_count,
         )
-        stale_ids = [
-            str(getattr(row, "id", "") or "")
-            for row in stale_rows
-            if getattr(row, "id", None)
-        ]
+        stale_ids = [str(getattr(row, "id", "") or "") for row in stale_rows if getattr(row, "id", None)]
         if not stale_ids:
             return
 
-        await db.userspacechangedfileacknowledgement.delete_many(
-            where={"id": {"in": stale_ids}}
-        )
+        await db.userspacechangedfileacknowledgement.delete_many(where={"id": {"in": stale_ids}})
 
     async def acknowledge_workspace_changed_file_path(
         self,
@@ -18791,9 +17141,7 @@ class UserSpaceService:
             workspace_id,
             user_id,
         )
-        return await self.list_workspace_changed_file_acknowledgements(
-            workspace_id, user_id
-        )
+        return await self.list_workspace_changed_file_acknowledgements(workspace_id, user_id)
 
     async def clear_workspace_changed_file_acknowledgements(
         self,
@@ -18819,18 +17167,14 @@ class UserSpaceService:
 
         db = await get_db()
         await db.userspacechangedfileacknowledgement.delete_many(where=where)
-        return await self.list_workspace_changed_file_acknowledgements(
-            workspace_id, user_id
-        )
+        return await self.list_workspace_changed_file_acknowledgements(workspace_id, user_id)
 
     async def clear_workspace_changed_file_acknowledgements_for_all_users(
         self,
         workspace_id: str,
     ) -> None:
         db = await get_db()
-        await db.userspacechangedfileacknowledgement.delete_many(
-            where={"workspaceId": workspace_id}
-        )
+        await db.userspacechangedfileacknowledgement.delete_many(where={"workspaceId": workspace_id})
 
     async def clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
         self,
@@ -18865,10 +17209,7 @@ class UserSpaceService:
         cached = self._file_list_cache.get(workspace_id)
         if cached is not None:
             cached_result, cached_include_dirs, cached_ts = cached
-            if (
-                cached_include_dirs == include_dirs
-                and (_time.monotonic() - cached_ts) < _FILE_LIST_CACHE_TTL_SECONDS
-            ):
+            if cached_include_dirs == include_dirs and (_time.monotonic() - cached_ts) < _FILE_LIST_CACHE_TTL_SECONDS:
                 return cached_result
 
         from ragtime.userspace.runtime_service import userspace_runtime_service
@@ -18877,27 +17218,14 @@ class UserSpaceService:
             workspace_id,
             include_dirs=include_dirs,
         )
-        base_result = [
-            entry
-            for entry in base_result
-            if not self._is_reserved_internal_path(entry.path)
-        ]
+        base_result = [entry for entry in base_result if not self._is_reserved_internal_path(entry.path)]
 
         # Collect repo-relative prefixes for disabled mounts so their files
         # are hidden from the file tree while the mount is unmounted.
-        disabled_prefixes = await self._list_disabled_workspace_mount_target_repo_paths(
-            workspace_id
-        )
+        disabled_prefixes = await self._list_disabled_workspace_mount_target_repo_paths(workspace_id)
 
         if disabled_prefixes:
-            base_result = [
-                f
-                for f in base_result
-                if not any(
-                    self._workspace_path_matches_mount_prefix(f.path, prefix)
-                    for prefix in disabled_prefixes
-                )
-            ]
+            base_result = [f for f in base_result if not any(self._workspace_path_matches_mount_prefix(f.path, prefix) for prefix in disabled_prefixes)]
             # Inject synthetic directory entries for disabled mounts so the
             # tree UI still shows mount-point folders (greyed out / UNMOUNTED).
             existing_paths = {f.path for f in base_result}
@@ -18974,9 +17302,7 @@ class UserSpaceService:
         parsed_live_data_connections = request.live_data_connections or []
         parsed_live_data_checks = request.live_data_checks or []
         workspace_has_tools = bool(workspace.selected_tool_ids)
-        _sqlite_include = (
-            getattr(workspace, "sqlite_persistence_mode", "include") == "include"
-        )
+        _sqlite_include = getattr(workspace, "sqlite_persistence_mode", "include") == "include"
         _sqlite_suffix = (
             " Note: this workspace has SQLite local persistence enabled -- "
             "live data wiring is still required for dashboard datasets; "
@@ -18996,8 +17322,7 @@ class UserSpaceService:
                         "Missing required live_data_connections contract metadata. "
                         "For live-data-requested module source writes in dashboard/* or with artifact_type=module_ts, "
                         "provide at least one connection with component_kind=tool_config, "
-                        "component_id, and request. Set live_data_requested=false for scaffolding without live wiring."
-                        + _sqlite_suffix
+                        "component_id, and request. Set live_data_requested=false for scaffolding without live wiring." + _sqlite_suffix
                     ),
                 )
             if not parsed_live_data_checks:
@@ -19006,8 +17331,7 @@ class UserSpaceService:
                     detail=(
                         "Missing required live_data_checks verification metadata. "
                         "For live-data-requested module source writes, include checks proving successful "
-                        "connection and transformation for each live_data_connections component_id."
-                        + _sqlite_suffix
+                        "connection and transformation for each live_data_connections component_id." + _sqlite_suffix
                     ),
                 )
 
@@ -19017,11 +17341,7 @@ class UserSpaceService:
                 if connection.component_id not in allowed_component_ids:
                     raise HTTPException(
                         status_code=400,
-                        detail=(
-                            "Invalid live_data_connections component_id: "
-                            f"{connection.component_id}. It must match a tool selected "
-                            "for this workspace."
-                        ),
+                        detail=(f"Invalid live_data_connections component_id: {connection.component_id}. It must match a tool selected for this workspace."),
                     )
 
         if parsed_live_data_checks:
@@ -19030,22 +17350,12 @@ class UserSpaceService:
                 if check.component_id not in allowed_component_ids:
                     raise HTTPException(
                         status_code=400,
-                        detail=(
-                            "Invalid live_data_checks component_id: "
-                            f"{check.component_id}. It must match a tool selected "
-                            "for this workspace."
-                        ),
+                        detail=(f"Invalid live_data_checks component_id: {check.component_id}. It must match a tool selected for this workspace."),
                     )
-                if not skip_live_data_enforcement and (
-                    not check.connection_check_passed
-                    or not check.transformation_check_passed
-                ):
+                if not skip_live_data_enforcement and (not check.connection_check_passed or not check.transformation_check_passed):
                     raise HTTPException(
                         status_code=400,
-                        detail=(
-                            "live_data_checks must indicate successful connection and transformation "
-                            f"for component_id={check.component_id}."
-                        ),
+                        detail=(f"live_data_checks must indicate successful connection and transformation for component_id={check.component_id}."),
                     )
 
         if not skip_live_data_enforcement and _requires_live_data_contract(
@@ -19053,22 +17363,13 @@ class UserSpaceService:
             request.live_data_requested,
             workspace_has_tools=workspace_has_tools,
         ):
-            connected_ids = {
-                connection.component_id for connection in parsed_live_data_connections
-            }
-            verified_ids = {
-                check.component_id
-                for check in parsed_live_data_checks
-                if check.connection_check_passed and check.transformation_check_passed
-            }
+            connected_ids = {connection.component_id for connection in parsed_live_data_connections}
+            verified_ids = {check.component_id for check in parsed_live_data_checks if check.connection_check_passed and check.transformation_check_passed}
             missing_verified_ids = sorted(connected_ids - verified_ids)
             if missing_verified_ids:
                 raise HTTPException(
                     status_code=400,
-                    detail=(
-                        "Missing successful live_data_checks verification for component_id(s): "
-                        + ", ".join(missing_verified_ids)
-                    ),
+                    detail=("Missing successful live_data_checks verification for component_id(s): " + ", ".join(missing_verified_ids)),
                 )
 
             # Verify server-side execution proofs for declared connections.
@@ -19080,8 +17381,7 @@ class UserSpaceService:
                         "No server-verified execution proof for component_id(s): "
                         + ", ".join(unproven_ids)
                         + ". Execute a successful query via the workspace tool or "
-                        "execute-component endpoint before persisting live data connections."
-                        + _sqlite_suffix
+                        "execute-component endpoint before persisting live data connections." + _sqlite_suffix
                     ),
                 )
 
@@ -19142,20 +17442,15 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="File not found")
 
         try:
-            artifact_type, live_data_connections, live_data_checks, content, stat = (
-                await asyncio.to_thread(
-                    self._read_workspace_file_sync,
-                    file_path,
-                    decode_errors,
-                )
+            artifact_type, live_data_connections, live_data_checks, content, stat = await asyncio.to_thread(
+                self._read_workspace_file_sync,
+                file_path,
+                decode_errors,
             )
         except _NonUtf8WorkspaceFileError as exc:
             raise HTTPException(
                 status_code=415,
-                detail=(
-                    "Workspace file is not UTF-8 text and cannot be opened in the text editor. "
-                    f"Path: {normalized_path}"
-                ),
+                detail=(f"Workspace file is not UTF-8 text and cannot be opened in the text editor. Path: {normalized_path}"),
             ) from exc
 
         return UserSpaceFileResponse(
@@ -19167,12 +17462,8 @@ class UserSpaceService:
             updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
         )
 
-    async def delete_workspace_file(
-        self, workspace_id: str, relative_path: str, user_id: str
-    ) -> None:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+    async def delete_workspace_file(self, workspace_id: str, relative_path: str, user_id: str) -> None:
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         await self._ensure_workspace_git_repo(workspace_id)
         normalized_path = self._normalize_workspace_relative_path(relative_path)
         if self._is_reserved_internal_path(normalized_path):
@@ -19207,17 +17498,11 @@ class UserSpaceService:
         new_relative_path: str,
         user_id: str,
     ) -> dict[str, str]:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         await self._ensure_workspace_git_repo(workspace_id)
 
-        normalized_old = (
-            (old_relative_path or "").strip().replace("\\", "/").lstrip("/")
-        )
-        normalized_new = (
-            (new_relative_path or "").strip().replace("\\", "/").lstrip("/")
-        )
+        normalized_old = (old_relative_path or "").strip().replace("\\", "/").lstrip("/")
+        normalized_new = (new_relative_path or "").strip().replace("\\", "/").lstrip("/")
         if not normalized_old or not normalized_new:
             raise HTTPException(status_code=400, detail="Invalid file path")
         if normalized_old == normalized_new:
@@ -19225,9 +17510,7 @@ class UserSpaceService:
                 status_code=400,
                 detail="Source and destination paths must be different",
             )
-        if self._is_reserved_internal_path(
-            normalized_old
-        ) or self._is_reserved_internal_path(normalized_new):
+        if self._is_reserved_internal_path(normalized_old) or self._is_reserved_internal_path(normalized_new):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
         normalized_old = await self.ensure_workspace_path_not_in_disabled_mount(
@@ -19257,9 +17540,7 @@ class UserSpaceService:
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="File not found") from exc
         except FileExistsError as exc:
-            raise HTTPException(
-                status_code=409, detail="Target file already exists"
-            ) from exc
+            raise HTTPException(status_code=409, detail="Target file already exists") from exc
 
         await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
             workspace_id,
@@ -19295,25 +17576,13 @@ class UserSpaceService:
             workspace_id=str(row.get("workspace_id") or ""),
             branch_id=branch_id,
             branch_name=branch_name_by_id.get(branch_id, "Branch"),
-            parent_snapshot_id=(
-                str(row.get("parent_snapshot_id"))
-                if row.get("parent_snapshot_id")
-                else None
-            ),
+            parent_snapshot_id=(str(row.get("parent_snapshot_id")) if row.get("parent_snapshot_id") else None),
             is_current=snapshot_id == current_snapshot_id,
             can_rename=True,
             can_delete=can_delete,
-            git_commit_hash=(
-                str(row.get("git_commit_hash")) if row.get("git_commit_hash") else None
-            ),
-            remote_commit_hash=(
-                str(row.get("remote_commit_hash"))
-                if row.get("remote_commit_hash")
-                else None
-            ),
-            message=(
-                str(row.get("message")) if row.get("message") is not None else None
-            ),
+            git_commit_hash=(str(row.get("git_commit_hash")) if row.get("git_commit_hash") else None),
+            remote_commit_hash=(str(row.get("remote_commit_hash")) if row.get("remote_commit_hash") else None),
+            message=(str(row.get("message")) if row.get("message") is not None else None),
             created_at=created_at,
             file_count=int(row.get("file_count") or 0),
         )
@@ -19367,9 +17636,7 @@ class UserSpaceService:
                     """)
                 if cursor_rows:
                     cursor = cursor_rows[0]
-                    if not cursor.get("current_snapshot_id") or not cursor.get(
-                        "current_snapshot_branch_id"
-                    ):
+                    if not cursor.get("current_snapshot_id") or not cursor.get("current_snapshot_branch_id"):
                         latest_rows = await db.query_raw(f"""
                             SELECT s.id AS snapshot_id, s.branch_id
                             FROM userspace_snapshots s
@@ -19386,11 +17653,7 @@ class UserSpaceService:
                             )
                 return
 
-            git_branch = (
-                await self._run_git(
-                    workspace_id, ["branch", "--show-current"], check=False
-                )
-            ).stdout.strip() or "main"
+            git_branch = (await self._run_git(workspace_id, ["branch", "--show-current"], check=False)).stdout.strip() or "main"
             branch_id = str(uuid4())
             await db.execute_raw(f"""
                 INSERT INTO userspace_snapshot_branches
@@ -19425,9 +17688,7 @@ class UserSpaceService:
                 commit_hash, commit_ts, commit_subject = parts
                 snapshot_id = str(uuid4())
                 last_snapshot_id = snapshot_id
-                created_at = datetime.fromtimestamp(
-                    int(commit_ts), tz=timezone.utc
-                ).isoformat()
+                created_at = datetime.fromtimestamp(int(commit_ts), tz=timezone.utc).isoformat()
                 await db.execute_raw(f"""
                     INSERT INTO userspace_snapshots
                     (
@@ -19460,16 +17721,12 @@ class UserSpaceService:
                     """)
                 parent_snapshot_id = snapshot_id
 
-            await self._set_current_snapshot_cursor(
-                workspace_id, last_snapshot_id, branch_id
-            )
+            await self._set_current_snapshot_cursor(workspace_id, last_snapshot_id, branch_id)
 
     async def _get_snapshot_timeline_data(
         self,
         workspace_id: str,
-    ) -> tuple[
-        list[UserSpaceSnapshot], list[UserSpaceSnapshotBranch], str | None, str | None
-    ]:
+    ) -> tuple[list[UserSpaceSnapshot], list[UserSpaceSnapshotBranch], str | None, str | None]:
         db = await get_db()
         cursor_rows = await db.query_raw(f"""
             SELECT current_snapshot_id, current_snapshot_branch_id
@@ -19481,16 +17738,8 @@ class UserSpaceService:
         current_branch_id = None
         if cursor_rows:
             first = cursor_rows[0]
-            current_snapshot_id = (
-                str(first.get("current_snapshot_id"))
-                if first.get("current_snapshot_id")
-                else None
-            )
-            current_branch_id = (
-                str(first.get("current_snapshot_branch_id"))
-                if first.get("current_snapshot_branch_id")
-                else None
-            )
+            current_snapshot_id = str(first.get("current_snapshot_id")) if first.get("current_snapshot_id") else None
+            current_branch_id = str(first.get("current_snapshot_branch_id")) if first.get("current_snapshot_branch_id") else None
 
         branch_rows = await db.query_raw(f"""
             SELECT id, workspace_id, name, git_ref_name, base_snapshot_id,
@@ -19511,16 +17760,8 @@ class UserSpaceService:
                     workspace_id=str(row.get("workspace_id") or ""),
                     name=branch_name,
                     git_ref_name=str(row.get("git_ref_name") or ""),
-                    base_snapshot_id=(
-                        str(row.get("base_snapshot_id"))
-                        if row.get("base_snapshot_id")
-                        else None
-                    ),
-                    branched_from_snapshot_id=(
-                        str(row.get("branched_from_snapshot_id"))
-                        if row.get("branched_from_snapshot_id")
-                        else None
-                    ),
+                    base_snapshot_id=(str(row.get("base_snapshot_id")) if row.get("base_snapshot_id") else None),
+                    branched_from_snapshot_id=(str(row.get("branched_from_snapshot_id")) if row.get("branched_from_snapshot_id") else None),
                     is_active=bool(row.get("is_active")),
                     created_at=_coerce_utc_datetime(row.get("created_at")),
                 )
@@ -19534,11 +17775,7 @@ class UserSpaceService:
             ORDER BY created_at DESC
             """)
         # Compute which snapshots are heads (no other snapshot points to them as parent)
-        child_parent_ids: set[str] = {
-            str(row.get("parent_snapshot_id"))
-            for row in snapshot_rows
-            if row.get("parent_snapshot_id")
-        }
+        child_parent_ids: set[str] = {str(row.get("parent_snapshot_id")) for row in snapshot_rows if row.get("parent_snapshot_id")}
         snapshots = [
             self._snapshot_from_row(
                 row,
@@ -19557,38 +17794,23 @@ class UserSpaceService:
     ) -> UserSpaceSnapshotTimelineResponse:
         await self._enforce_workspace_access(workspace_id, user_id)
         await self._ensure_snapshot_timeline(workspace_id, user_id)
-        snapshots, branches, current_snapshot_id, current_branch_id = (
-            await self._get_snapshot_timeline_data(workspace_id)
-        )
+        snapshots, branches, current_snapshot_id, current_branch_id = await self._get_snapshot_timeline_data(workspace_id)
 
         has_previous = False
         has_next = False
         if current_snapshot_id and current_branch_id:
             current_snapshot = next(
-                (
-                    snapshot
-                    for snapshot in snapshots
-                    if snapshot.id == current_snapshot_id
-                ),
+                (snapshot for snapshot in snapshots if snapshot.id == current_snapshot_id),
                 None,
             )
             if current_snapshot is not None:
                 has_previous = bool(current_snapshot.parent_snapshot_id)
-                has_next = any(
-                    snapshot.branch_id == current_branch_id
-                    and snapshot.parent_snapshot_id == current_snapshot_id
-                    for snapshot in snapshots
-                )
+                has_next = any(snapshot.branch_id == current_branch_id and snapshot.parent_snapshot_id == current_snapshot_id for snapshot in snapshots)
                 if not has_next:
-                    has_next = any(
-                        branch.branched_from_snapshot_id == current_snapshot_id
-                        for branch in branches
-                    )
+                    has_next = any(branch.branched_from_snapshot_id == current_snapshot_id for branch in branches)
 
         # Compute commits_behind + is_stale for each branch
-        self._annotate_branch_staleness(
-            branches, snapshots, current_snapshot_id, current_branch_id
-        )
+        self._annotate_branch_staleness(branches, snapshots, current_snapshot_id, current_branch_id)
 
         return UserSpaceSnapshotTimelineResponse(
             workspace_id=workspace_id,
@@ -19664,9 +17886,7 @@ class UserSpaceService:
 
             branch.is_stale = branch.commits_behind >= threshold
 
-    async def list_snapshots(
-        self, workspace_id: str, user_id: str
-    ) -> list[UserSpaceSnapshot]:
+    async def list_snapshots(self, workspace_id: str, user_id: str) -> list[UserSpaceSnapshot]:
         timeline = await self.get_snapshot_timeline(workspace_id, user_id)
         return timeline.snapshots
 
@@ -19731,13 +17951,9 @@ class UserSpaceService:
             await self._run_git(workspace_id, ["reset", "--hard", commit_hash])
             await self._run_git(workspace_id, ["clean", "-fd"])
             await self._activate_branch(workspace_id, branch_id)
-            await self._set_current_snapshot_cursor(
-                workspace_id, snapshot_id, branch_id
-            )
+            await self._set_current_snapshot_cursor(workspace_id, snapshot_id, branch_id)
 
-        await self.clear_workspace_changed_file_acknowledgements_for_all_users(
-            workspace_id
-        )
+        await self.clear_workspace_changed_file_acknowledgements_for_all_users(workspace_id)
         await self._touch_workspace(workspace_id)
 
         return UserSpaceSnapshot(
@@ -19745,32 +17961,18 @@ class UserSpaceService:
             workspace_id=str(row.get("workspace_id") or ""),
             branch_id=branch_id,
             branch_name=str(row.get("branch_name") or "Branch"),
-            parent_snapshot_id=(
-                str(row.get("parent_snapshot_id"))
-                if row.get("parent_snapshot_id")
-                else None
-            ),
+            parent_snapshot_id=(str(row.get("parent_snapshot_id")) if row.get("parent_snapshot_id") else None),
             is_current=True,
             can_rename=True,
             git_commit_hash=commit_hash,
-            remote_commit_hash=(
-                str(row.get("remote_commit_hash"))
-                if row.get("remote_commit_hash")
-                else None
-            ),
-            message=(
-                str(row.get("message")) if row.get("message") is not None else None
-            ),
+            remote_commit_hash=(str(row.get("remote_commit_hash")) if row.get("remote_commit_hash") else None),
+            message=(str(row.get("message")) if row.get("message") is not None else None),
             created_at=_coerce_utc_datetime(row.get("created_at")),
             file_count=int(row.get("file_count") or 0),
         )
 
-    async def restore_snapshot(
-        self, workspace_id: str, snapshot_id: str, user_id: str
-    ) -> UserSpaceSnapshot:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+    async def restore_snapshot(self, workspace_id: str, snapshot_id: str, user_id: str) -> UserSpaceSnapshot:
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         return await self._restore_snapshot_by_id(workspace_id, snapshot_id, user_id)
 
     async def create_snapshot(
@@ -19804,18 +18006,12 @@ class UserSpaceService:
         Returns:
             The created UserSpaceSnapshot object
         """
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         await self._ensure_snapshot_timeline(workspace_id, user_id)
         await self._ensure_workspace_git_repo(workspace_id)
 
         normalized_message = (message or "Snapshot").strip()
-        commit_subject = (
-            normalized_message.splitlines()[0][:200]
-            if normalized_message
-            else "Snapshot"
-        )
+        commit_subject = normalized_message.splitlines()[0][:200] if normalized_message else "Snapshot"
 
         async with self._snapshot_operation_semaphore:
             db = await get_db()
@@ -19829,16 +18025,8 @@ class UserSpaceService:
             current_branch_id = None
             if cursor_rows:
                 cursor = cursor_rows[0]
-                current_snapshot_id = (
-                    str(cursor.get("current_snapshot_id"))
-                    if cursor.get("current_snapshot_id")
-                    else None
-                )
-                current_branch_id = (
-                    str(cursor.get("current_snapshot_branch_id"))
-                    if cursor.get("current_snapshot_branch_id")
-                    else None
-                )
+                current_snapshot_id = str(cursor.get("current_snapshot_id")) if cursor.get("current_snapshot_id") else None
+                current_branch_id = str(cursor.get("current_snapshot_branch_id")) if cursor.get("current_snapshot_branch_id") else None
 
             if not current_branch_id:
                 branch_rows = await db.query_raw(f"""
@@ -19848,9 +18036,7 @@ class UserSpaceService:
                     ORDER BY created_at ASC
                     LIMIT 1
                     """)
-                current_branch_id = (
-                    str(branch_rows[0].get("id")) if branch_rows else str(uuid4())
-                )
+                current_branch_id = str(branch_rows[0].get("id")) if branch_rows else str(uuid4())
 
             tip_rows = await db.query_raw(f"""
                 SELECT s.id
@@ -19869,21 +18055,13 @@ class UserSpaceService:
                 """)
             branch_tip_id = str(tip_rows[0].get("id")) if tip_rows else None
 
-            if (
-                current_snapshot_id
-                and branch_tip_id
-                and current_snapshot_id != branch_tip_id
-            ):
+            if current_snapshot_id and branch_tip_id and current_snapshot_id != branch_tip_id:
                 branch_count_rows = await db.query_raw(f"""
                     SELECT COUNT(*) AS count
                     FROM userspace_snapshot_branches
                     WHERE workspace_id = {self._sql_quote(workspace_id)}
                     """)
-                branch_count = (
-                    int(branch_count_rows[0].get("count") or 0)
-                    if branch_count_rows
-                    else 0
-                )
+                branch_count = int(branch_count_rows[0].get("count") or 0) if branch_count_rows else 0
                 new_branch_id = str(uuid4())
                 branch_name = f"Branch {branch_count + 1}"
                 branch_ref_name = self._branch_ref_name(new_branch_id)
@@ -19913,9 +18091,7 @@ class UserSpaceService:
                 ["commit", "--allow-empty", "-m", commit_subject],
             )
 
-            commit_hash = (
-                await self._run_git(workspace_id, ["rev-parse", "HEAD"])
-            ).stdout.strip()
+            commit_hash = (await self._run_git(workspace_id, ["rev-parse", "HEAD"])).stdout.strip()
             commit_ts = (
                 await self._run_git(
                     workspace_id,
@@ -19930,11 +18106,7 @@ class UserSpaceService:
                     ["ls-tree", "-r", "--name-only", commit_hash],
                 )
             ).stdout.splitlines()
-            file_count = sum(
-                1
-                for file_name in tracked_files
-                if not self._is_reserved_internal_path(file_name)
-            )
+            file_count = sum(1 for file_name in tracked_files if not self._is_reserved_internal_path(file_name))
 
             snapshot_id = str(uuid4())
             await db.execute_raw(f"""
@@ -19961,9 +18133,7 @@ class UserSpaceService:
                 current_branch_id,
             )
 
-        await self.clear_workspace_changed_file_acknowledgements_for_all_users(
-            workspace_id
-        )
+        await self.clear_workspace_changed_file_acknowledgements_for_all_users(workspace_id)
         await self._touch_workspace(workspace_id, ts=created_at)
 
         timeline = await self.get_snapshot_timeline(workspace_id, user_id)
@@ -19996,9 +18166,7 @@ class UserSpaceService:
         request: UpdateSnapshotRequest,
         user_id: str,
     ) -> UserSpaceSnapshot:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         await self._ensure_snapshot_timeline(workspace_id, user_id)
         db = await get_db()
         await db.execute_raw(f"""
@@ -20009,9 +18177,7 @@ class UserSpaceService:
               AND id = {self._sql_quote(snapshot_id)}
             """)
         timeline = await self.get_snapshot_timeline(workspace_id, user_id)
-        snapshot = next(
-            (item for item in timeline.snapshots if item.id == snapshot_id), None
-        )
+        snapshot = next((item for item in timeline.snapshots if item.id == snapshot_id), None)
         if snapshot is None:
             raise HTTPException(status_code=404, detail="Snapshot not found")
         return snapshot
@@ -20021,9 +18187,7 @@ class UserSpaceService:
         workspace_id: str,
         user_id: str,
     ) -> UserSpaceSnapshot:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         timeline = await self.get_snapshot_timeline(workspace_id, user_id)
         if not timeline.current_snapshot_id or not timeline.current_branch_id:
             raise HTTPException(status_code=409, detail="No current snapshot selected")
@@ -20044,18 +18208,10 @@ class UserSpaceService:
 
         # Secondary fallback using branch metadata for older migrated timelines.
         current_branch = next(
-            (
-                branch
-                for branch in timeline.branches
-                if branch.id == timeline.current_branch_id
-            ),
+            (branch for branch in timeline.branches if branch.id == timeline.current_branch_id),
             None,
         )
-        if (
-            current_branch
-            and current_branch.branched_from_snapshot_id
-            and current_branch.branched_from_snapshot_id in snapshots_by_id
-        ):
+        if current_branch and current_branch.branched_from_snapshot_id and current_branch.branched_from_snapshot_id in snapshots_by_id:
             return await self._restore_snapshot_by_id(
                 workspace_id,
                 current_branch.branched_from_snapshot_id,
@@ -20069,9 +18225,7 @@ class UserSpaceService:
         workspace_id: str,
         user_id: str,
     ) -> UserSpaceSnapshot:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         timeline = await self.get_snapshot_timeline(workspace_id, user_id)
         if not timeline.current_snapshot_id or not timeline.current_branch_id:
             raise HTTPException(status_code=409, detail="No current snapshot selected")
@@ -20080,25 +18234,13 @@ class UserSpaceService:
 
         # Primary behavior at branch points: move to a child-branch head that
         # branched from the current snapshot.
-        child_branches = [
-            branch
-            for branch in timeline.branches
-            if branch.branched_from_snapshot_id == timeline.current_snapshot_id
-        ]
+        child_branches = [branch for branch in timeline.branches if branch.branched_from_snapshot_id == timeline.current_snapshot_id]
         if child_branches:
             current_branch = next(
-                (
-                    branch
-                    for branch in child_branches
-                    if branch.id == timeline.current_branch_id
-                ),
+                (branch for branch in child_branches if branch.id == timeline.current_branch_id),
                 None,
             )
-            preferred_children = [
-                branch
-                for branch in child_branches
-                if current_branch is None or branch.id != current_branch.id
-            ]
+            preferred_children = [branch for branch in child_branches if current_branch is None or branch.id != current_branch.id]
             if not preferred_children:
                 preferred_children = child_branches
 
@@ -20110,11 +18252,7 @@ class UserSpaceService:
                 )
             )
             target_branch_id = preferred_children[0].id
-            target_branch_snapshots = [
-                snapshot
-                for snapshot in timeline.snapshots
-                if snapshot.branch_id == target_branch_id
-            ]
+            target_branch_snapshots = [snapshot for snapshot in timeline.snapshots if snapshot.branch_id == target_branch_id]
             if target_branch_snapshots:
                 target_branch_snapshots.sort(
                     key=lambda snapshot: snapshot.created_at.timestamp(),
@@ -20132,8 +18270,7 @@ class UserSpaceService:
         same_branch_children = [
             snapshot
             for snapshot in timeline.snapshots
-            if snapshot.branch_id == timeline.current_branch_id
-            and snapshot.parent_snapshot_id == timeline.current_snapshot_id
+            if snapshot.branch_id == timeline.current_branch_id and snapshot.parent_snapshot_id == timeline.current_snapshot_id
         ]
         if same_branch_children:
             same_branch_children.sort(
@@ -20157,9 +18294,7 @@ class UserSpaceService:
         request: SwitchSnapshotBranchRequest,
         user_id: str,
     ) -> UserSpaceSnapshotTimelineResponse:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         await self._ensure_snapshot_timeline(workspace_id, user_id)
         db = await get_db()
         rows = await db.query_raw(f"""
@@ -20194,13 +18329,9 @@ class UserSpaceService:
 
         async with self._snapshot_operation_semaphore:
             if branch_ref_name:
-                await self._run_git(
-                    workspace_id, ["checkout", branch_ref_name], check=False
-                )
+                await self._run_git(workspace_id, ["checkout", branch_ref_name], check=False)
             await self._activate_branch(workspace_id, branch_id)
-            await self._set_current_snapshot_cursor(
-                workspace_id, target_snapshot_id, branch_id
-            )
+            await self._set_current_snapshot_cursor(workspace_id, target_snapshot_id, branch_id)
 
         await self._touch_workspace(workspace_id)
         return await self.get_snapshot_timeline(workspace_id, user_id)
@@ -20212,9 +18343,7 @@ class UserSpaceService:
         name: str | None = None,
     ) -> UserSpaceSnapshotTimelineResponse:
         """Create a new branch from the current snapshot."""
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         await self._ensure_snapshot_timeline(workspace_id, user_id)
         await self._ensure_workspace_git_repo(workspace_id)
 
@@ -20228,11 +18357,7 @@ class UserSpaceService:
         if not cursor_rows:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
-        current_snapshot_id = (
-            str(cursor_rows[0].get("current_snapshot_id"))
-            if cursor_rows[0].get("current_snapshot_id")
-            else None
-        )
+        current_snapshot_id = str(cursor_rows[0].get("current_snapshot_id")) if cursor_rows[0].get("current_snapshot_id") else None
         if not current_snapshot_id:
             raise HTTPException(
                 status_code=400,
@@ -20244,9 +18369,7 @@ class UserSpaceService:
             FROM userspace_snapshot_branches
             WHERE workspace_id = {self._sql_quote(workspace_id)}
             """)
-        branch_count = (
-            int(branch_count_rows[0].get("count") or 0) if branch_count_rows else 0
-        )
+        branch_count = int(branch_count_rows[0].get("count") or 0) if branch_count_rows else 0
         branch_name = (name or "").strip() or f"Branch {branch_count + 1}"
         new_branch_id = str(uuid4())
         branch_ref_name = self._branch_ref_name(new_branch_id)
@@ -20287,11 +18410,7 @@ class UserSpaceService:
                 )
                 """)
             # Create an initial snapshot on the new branch so it appears in the timeline
-            remote_col = (
-                self._sql_quote(str(source_remote_commit))
-                if source_remote_commit
-                else "NULL"
-            )
+            remote_col = self._sql_quote(str(source_remote_commit)) if source_remote_commit else "NULL"
             await db.execute_raw(f"""
                 INSERT INTO userspace_snapshots
                 (id, workspace_id, branch_id, git_commit_hash, remote_commit_hash,
@@ -20312,9 +18431,7 @@ class UserSpaceService:
                 )
                 """)
             await self._activate_branch(workspace_id, new_branch_id)
-            await self._set_current_snapshot_cursor(
-                workspace_id, new_snapshot_id, new_branch_id
-            )
+            await self._set_current_snapshot_cursor(workspace_id, new_snapshot_id, new_branch_id)
 
         await self._touch_workspace(workspace_id)
         return await self.get_snapshot_timeline(workspace_id, user_id)
@@ -20326,9 +18443,7 @@ class UserSpaceService:
         user_id: str,
     ) -> UserSpaceSnapshotTimelineResponse:
         """Promote a branch to 'Main' by swapping names with the current Main branch."""
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         await self._ensure_snapshot_timeline(workspace_id, user_id)
         db = await get_db()
 
@@ -20398,9 +18513,7 @@ class UserSpaceService:
                 LIMIT 1
                 """)
             head_snapshot_id = str(head_rows[0].get("id")) if head_rows else None
-            await self._set_current_snapshot_cursor(
-                workspace_id, head_snapshot_id, branch_id
-            )
+            await self._set_current_snapshot_cursor(workspace_id, head_snapshot_id, branch_id)
 
         await self._touch_workspace(workspace_id)
         return await self.get_snapshot_timeline(workspace_id, user_id)
@@ -20417,9 +18530,7 @@ class UserSpaceService:
         ref are also removed and the workspace switches to the most-recently
         active remaining branch.
         """
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         await self._ensure_snapshot_timeline(workspace_id, user_id)
         await self._ensure_workspace_git_repo(workspace_id)
 
@@ -20441,11 +18552,7 @@ class UserSpaceService:
         snap = snap_rows[0]
         branch_id = str(snap.get("branch_id") or "")
         branch_ref_name = str(snap.get("git_ref_name") or "")
-        parent_snapshot_id = (
-            str(snap.get("parent_snapshot_id"))
-            if snap.get("parent_snapshot_id")
-            else None
-        )
+        parent_snapshot_id = str(snap.get("parent_snapshot_id")) if snap.get("parent_snapshot_id") else None
 
         # Reject if this snapshot has children (not a head).
         child_rows = await db.query_raw(f"""
@@ -20468,11 +18575,7 @@ class UserSpaceService:
             LIMIT 1
             """)
         cursor = cursor_rows[0] if cursor_rows else {}
-        current_snapshot_id = (
-            str(cursor.get("current_snapshot_id"))
-            if cursor.get("current_snapshot_id")
-            else None
-        )
+        current_snapshot_id = str(cursor.get("current_snapshot_id")) if cursor.get("current_snapshot_id") else None
 
         async with self._snapshot_operation_semaphore:
             await db.execute_raw(f"""
@@ -20496,9 +18599,7 @@ class UserSpaceService:
                 WHERE workspace_id = {self._sql_quote(workspace_id)}
                   AND branch_id = {self._sql_quote(branch_id)}
                 """)
-            remaining_on_branch = int(
-                count_rows[0].get("cnt") or 0 if count_rows else 0
-            )
+            remaining_on_branch = int(count_rows[0].get("cnt") or 0 if count_rows else 0)
 
             if remaining_on_branch == 0:
                 # Branch is now empty — delete it.
@@ -20534,11 +18635,7 @@ class UserSpaceService:
                 if other_rows:
                     new_branch_id = str(other_rows[0].get("branch_id") or "")
                     new_ref = str(other_rows[0].get("git_ref_name") or "")
-                    new_head = (
-                        str(other_rows[0].get("head_snapshot_id"))
-                        if other_rows[0].get("head_snapshot_id")
-                        else None
-                    )
+                    new_head = str(other_rows[0].get("head_snapshot_id")) if other_rows[0].get("head_snapshot_id") else None
                     if new_ref:
                         await self._run_git(
                             workspace_id,
@@ -20546,17 +18643,13 @@ class UserSpaceService:
                             check=False,
                         )
                     await self._activate_branch(workspace_id, new_branch_id)
-                    await self._set_current_snapshot_cursor(
-                        workspace_id, new_head, new_branch_id
-                    )
+                    await self._set_current_snapshot_cursor(workspace_id, new_head, new_branch_id)
                 else:
                     # No branches remain at all.
                     await self._set_current_snapshot_cursor(workspace_id, None, None)
             elif current_snapshot_id == snapshot_id:
                 # Snapshot was current — move cursor back to parent.
-                await self._set_current_snapshot_cursor(
-                    workspace_id, parent_snapshot_id, branch_id
-                )
+                await self._set_current_snapshot_cursor(workspace_id, parent_snapshot_id, branch_id)
 
         await self._touch_workspace(workspace_id)
         return await self.get_snapshot_timeline(workspace_id, user_id)
@@ -20591,13 +18684,9 @@ class UserSpaceService:
         component_id: str,
     ) -> str:
         """Look up the default query for a component from the sidecar metadata."""
-        entry_file = (
-            self._workspace_files_dir(workspace_id) / _USERSPACE_PREVIEW_ENTRY_PATH
-        )
+        entry_file = self._workspace_files_dir(workspace_id) / _USERSPACE_PREVIEW_ENTRY_PATH
         try:
-            _, connections, _ = await asyncio.to_thread(
-                self._read_artifact_sidecar, entry_file
-            )
+            _, connections, _ = await asyncio.to_thread(self._read_artifact_sidecar, entry_file)
         except Exception:
             return ""
         if not connections:
@@ -20791,24 +18880,16 @@ class UserSpaceService:
         require_result_limit: bool = True,
         enforce_result_limit: bool = True,
     ) -> tuple[ExecuteComponentResponse, str]:
-        tool_type, conn_config, tool_config = (
-            await self._resolve_component_execution_config_for_tool_ids(
-                selected_tool_ids, component_id
-            )
-        )
+        tool_type, conn_config, tool_config = await self._resolve_component_execution_config_for_tool_ids(selected_tool_ids, component_id)
 
         query = self._extract_query_text(request_payload)
         if not query.strip() and sidecar_workspace_id:
             # Fallback: look up default query from live_data_connections sidecar.
             # Try the resolved tool config ID first, then the original component_id.
             resolved_tool_id = str(getattr(tool_config, "id", "") or "").strip()
-            sidecar_query = await self._lookup_sidecar_query(
-                sidecar_workspace_id, resolved_tool_id
-            )
+            sidecar_query = await self._lookup_sidecar_query(sidecar_workspace_id, resolved_tool_id)
             if not sidecar_query and resolved_tool_id != component_id:
-                sidecar_query = await self._lookup_sidecar_query(
-                    sidecar_workspace_id, component_id
-                )
+                sidecar_query = await self._lookup_sidecar_query(sidecar_workspace_id, component_id)
             if sidecar_query:
                 query = sidecar_query
         if not query.strip():
@@ -20854,9 +18935,7 @@ class UserSpaceService:
         workspace: UserSpaceWorkspace,
         component_id: str,
     ) -> tuple[str, dict[str, Any], Any]:
-        return await self._resolve_component_execution_config_for_tool_ids(
-            list(workspace.selected_tool_ids), component_id
-        )
+        return await self._resolve_component_execution_config_for_tool_ids(list(workspace.selected_tool_ids), component_id)
 
     async def _resolve_component_execution_config_for_tool_ids(
         self,
@@ -20867,16 +18946,11 @@ class UserSpaceService:
 
         if resolved_id not in selected_tool_ids:
             # Fallback: try to match by tool name among selected tools.
-            matched_id = await self._resolve_component_id_by_name_for_tool_ids(
-                selected_tool_ids, component_id
-            )
+            matched_id = await self._resolve_component_id_by_name_for_tool_ids(selected_tool_ids, component_id)
             if matched_id is None:
                 raise HTTPException(
                     status_code=403,
-                    detail=(
-                        f"Component {component_id} is not selected "
-                        "for this request."
-                    ),
+                    detail=(f"Component {component_id} is not selected for this request."),
                 )
             resolved_id = matched_id
 
@@ -20891,10 +18965,7 @@ class UserSpaceService:
         if tool_type not in _USPACE_EXEC_SUPPORTED_SQL_TOOLS:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Live preview execution supports SQL tools only "
-                    "(postgres, mysql, mssql, influxdb)."
-                ),
+                detail=("Live preview execution supports SQL tools only (postgres, mysql, mssql, influxdb)."),
             )
 
         conn_config = tool_config.connection_config or {}
@@ -20927,9 +18998,7 @@ class UserSpaceService:
         name: str,
     ) -> str | None:
         """Try to find a tool config by name among the workspace's selected tools."""
-        return await UserSpaceService._resolve_component_id_by_name_for_tool_ids(
-            list(workspace.selected_tool_ids), name
-        )
+        return await UserSpaceService._resolve_component_id_by_name_for_tool_ids(list(workspace.selected_tool_ids), name)
 
     def _build_execute_component_response(
         self,
@@ -21064,9 +19133,7 @@ class UserSpaceService:
                 include_ascii=False,
             )
         else:
-            raise ValueError(
-                f"Unsupported tool type for preview execution: {tool_type}"
-            )
+            raise ValueError(f"Unsupported tool type for preview execution: {tool_type}")
 
     async def _execute_postgres_query(
         self,
@@ -21117,9 +19184,7 @@ class UserSpaceService:
                     connect_host = host
                     connect_port = port
                     if ssh_tunnel_config:
-                        tunnel_cfg = ssh_tunnel_config_from_dict(
-                            ssh_tunnel_config, default_remote_port=5432
-                        )
+                        tunnel_cfg = ssh_tunnel_config_from_dict(ssh_tunnel_config, default_remote_port=5432)
                         if not tunnel_cfg:
                             return "Error: Invalid SSH tunnel configuration"
                         tunnel = SSHTunnel(tunnel_cfg)
@@ -21158,9 +19223,7 @@ class UserSpaceService:
                     timeout=timeout + 5,
                 )
             else:
-                driver_result = await asyncio.get_event_loop().run_in_executor(
-                    None, run_tunnel_query
-                )
+                driver_result = await asyncio.get_event_loop().run_in_executor(None, run_tunnel_query)
             if driver_result:
                 return driver_result
 
@@ -21193,11 +19256,7 @@ class UserSpaceService:
                 container,
                 "bash",
                 "-c",
-                (
-                    'PGPASSWORD="$POSTGRES_PASSWORD" psql --tuples-only --no-align '
-                    '-U "$POSTGRES_USER" -d "$POSTGRES_DB" '
-                    f"-c '{escaped_query}'"
-                ),
+                (f'PGPASSWORD="$POSTGRES_PASSWORD" psql --tuples-only --no-align -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \'{escaped_query}\''),
             ]
             env = None
         else:
@@ -21212,17 +19271,11 @@ class UserSpaceService:
             )
             if timeout > 0:
                 try:
-                    stdout, stderr = await asyncio.wait_for(
-                        process.communicate(), timeout=timeout
-                    )
+                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.communicate()
-                    return (
-                        f"Error: Query timed out after {timeout}s. "
-                        "An admin can increase the tool timeout in "
-                        "Settings > Tools."
-                    )
+                    return f"Error: Query timed out after {timeout}s. An admin can increase the tool timeout in Settings > Tools."
             else:
                 stdout, stderr = await process.communicate()
 
@@ -21238,21 +19291,14 @@ class UserSpaceService:
                 return formatted_output
             return "Error: Unable to parse PostgreSQL component result"
         except asyncio.TimeoutError:
-            return (
-                f"Error: Query timed out after {timeout}s. "
-                "An admin can increase the tool timeout in "
-                "Settings > Tools."
-            )
+            return f"Error: Query timed out after {timeout}s. An admin can increase the tool timeout in Settings > Tools."
         except Exception as e:
             return f"Error: {e}"
 
     @staticmethod
     def _format_postgres_cursor_result(cursor: Any) -> str:
         rows = [dict(row) for row in cursor.fetchall()]
-        columns = [
-            col.name if getattr(col, "name", None) else str(col[0])
-            for col in cursor.description
-        ]
+        columns = [col.name if getattr(col, "name", None) else str(col[0]) for col in cursor.description]
         return format_query_result(
             rows,
             columns,
@@ -21292,9 +19338,7 @@ SELECT json_build_object(
     # Component queries arrive as standalone SQL, but the psql fallback embeds
     # them inside a CTE for JSON transport. Any trailing terminator/comment
     # noise must be removed before embedding or Postgres sees a syntax error.
-    _POSTGRES_TRAILING_NOISE_RE = re.compile(
-        r"(?:\s+|;+|--[^\n]*|/\*[^*]*(?:\*(?!/)[^*]*)*\*/)+\Z"
-    )
+    _POSTGRES_TRAILING_NOISE_RE = re.compile(r"(?:\s+|;+|--[^\n]*|/\*[^*]*(?:\*(?!/)[^*]*)*\*/)+\Z")
 
     @staticmethod
     def _strip_postgres_query_terminator(query: str) -> str:
@@ -21381,9 +19425,7 @@ SELECT json_build_object(
             if isinstance(raw_row, list):
                 row_dict: dict[str, Any] = {}
                 for index, column_name in enumerate(normalized_columns):
-                    row_dict[column_name] = (
-                        raw_row[index] if index < len(raw_row) else None
-                    )
+                    row_dict[column_name] = raw_row[index] if index < len(raw_row) else None
                 parsed_rows.append(row_dict)
 
         return parsed_rows, normalized_columns
@@ -21451,15 +19493,10 @@ SELECT json_build_object(
             sidecar_payload["artifact_type"] = artifact_type
 
         if live_data_connections is not None:
-            sidecar_payload["live_data_connections"] = [
-                connection.model_dump(mode="json")
-                for connection in live_data_connections
-            ]
+            sidecar_payload["live_data_connections"] = [connection.model_dump(mode="json") for connection in live_data_connections]
 
         if live_data_checks is not None:
-            sidecar_payload["live_data_checks"] = [
-                check.model_dump(mode="json") for check in live_data_checks
-            ]
+            sidecar_payload["live_data_checks"] = [check.model_dump(mode="json") for check in live_data_checks]
 
         if sidecar_payload:
             sidecar.write_text(
@@ -21482,9 +19519,7 @@ SELECT json_build_object(
         str,
         os.stat_result,
     ]:
-        artifact_type, live_data_connections, live_data_checks = (
-            self._read_artifact_sidecar(file_path)
-        )
+        artifact_type, live_data_connections, live_data_checks = self._read_artifact_sidecar(file_path)
         try:
             content = file_path.read_text(encoding="utf-8", errors=decode_errors)
         except UnicodeDecodeError as exc:
@@ -21539,11 +19574,7 @@ SELECT json_build_object(
     ) -> str | None:
         importer = PurePosixPath(importer_relative_path)
         base_dir = importer.parent
-        raw_candidate = (
-            PurePosixPath(specifier.lstrip("/"))
-            if specifier.startswith("/")
-            else base_dir / specifier
-        )
+        raw_candidate = PurePosixPath(specifier.lstrip("/")) if specifier.startswith("/") else base_dir / specifier
         normalized = posixpath.normpath(str(raw_candidate).replace("\\", "/"))
         if normalized.startswith("../") or normalized == "..":
             return None

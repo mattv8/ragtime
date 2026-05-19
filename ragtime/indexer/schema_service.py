@@ -60,9 +60,7 @@ DB_TYPE_MSSQL = "mssql"
 DB_TYPE_MYSQL = "mysql"
 
 # Tool types that support schema indexing
-SCHEMA_INDEXER_CAPABLE_TYPES = frozenset(
-    {DB_TYPE_POSTGRES, DB_TYPE_MSSQL, DB_TYPE_MYSQL}
-)
+SCHEMA_INDEXER_CAPABLE_TYPES = frozenset({DB_TYPE_POSTGRES, DB_TYPE_MSSQL, DB_TYPE_MYSQL})
 
 
 class SchemaIndexerService:
@@ -70,9 +68,7 @@ class SchemaIndexerService:
 
     def __init__(self):
         self._active_jobs: Dict[str, SchemaIndexJob] = {}
-        self._active_tasks: Dict[str, asyncio.Task] = (
-            {}
-        )  # prevent GC of fire-and-forget tasks
+        self._active_tasks: Dict[str, asyncio.Task] = {}  # prevent GC of fire-and-forget tasks
         self._cancellation_flags: Dict[str, bool] = {}  # job_id -> should_cancel
 
     # =========================================================================
@@ -129,9 +125,7 @@ class SchemaIndexerService:
 
         # Start background processing — hold a strong reference so the task
         # is not garbage-collected before completion (asyncio keeps only weak refs).
-        task = asyncio.create_task(
-            self._process_index(job, tool_type, connection_config, full_reindex)
-        )
+        task = asyncio.create_task(self._process_index(job, tool_type, connection_config, full_reindex))
         self._active_tasks[job_id] = task
 
         logger.info(f"Started schema indexing job {job_id} for tool {tool_config_id}")
@@ -170,9 +164,7 @@ class SchemaIndexerService:
 
         return None
 
-    async def get_latest_job(
-        self, tool_config_id: str
-    ) -> Optional[SchemaIndexJobResponse]:
+    async def get_latest_job(self, tool_config_id: str) -> Optional[SchemaIndexJobResponse]:
         """Get the most recent job for a tool config."""
         try:
             db = await get_db()
@@ -207,9 +199,7 @@ class SchemaIndexerService:
         # Can only cancel pending/indexing jobs
         if prisma_job.status in ("pending", "indexing"):
             # Job is not running in memory but stuck in DB - directly mark as cancelled
-            logger.info(
-                f"Directly cancelling orphaned schema job {job_id} (not in active jobs)"
-            )
+            logger.info(f"Directly cancelling orphaned schema job {job_id} (not in active jobs)")
             await db.schemaindexjob.update(
                 where={"id": job_id},
                 data={
@@ -302,9 +292,7 @@ class SchemaIndexerService:
                 else:
                     # Use database data - convert to model first
                     job = self._prisma_job_to_model(db_job)
-                    jobs.append(
-                        self.job_to_response(job, cancel_requested_override=False)
-                    )
+                    jobs.append(self.job_to_response(job, cancel_requested_override=False))
 
         except Exception as e:
             logger.warning(f"Error listing schema jobs: {e}")
@@ -341,9 +329,7 @@ class SchemaIndexerService:
             # Get the tool config to get connection details
             tool_config = await repository.get_tool_config(db_job.toolConfigId)
             if not tool_config:
-                logger.warning(
-                    f"Cannot retry: tool config {db_job.toolConfigId} not found"
-                )
+                logger.warning(f"Cannot retry: tool config {db_job.toolConfigId} not found")
                 return None
 
             # Trigger a new indexing job
@@ -359,9 +345,7 @@ class SchemaIndexerService:
             logger.error(f"Error retrying schema job {job_id}: {e}")
             return None
 
-    async def delete_index(
-        self, tool_config_id: str, tool_name: str | None = None
-    ) -> Tuple[bool, str]:
+    async def delete_index(self, tool_config_id: str, tool_name: str | None = None) -> Tuple[bool, str]:
         """
         Delete all schema embeddings for a tool config.
 
@@ -384,28 +368,21 @@ class SchemaIndexerService:
             total_deleted = 0
             for index_name in names_to_delete:
                 # Delete embeddings
-                result = await db.execute_raw(
-                    f"DELETE FROM schema_embeddings WHERE index_name = '{index_name}'"
-                )
+                result = await db.execute_raw(f"DELETE FROM schema_embeddings WHERE index_name = '{index_name}'")
                 deleted_count = result if isinstance(result, int) else 0
                 total_deleted += deleted_count
 
             # Delete jobs
             await db.schemaindexjob.delete_many(where={"toolConfigId": tool_config_id})
 
-            logger.info(
-                f"Deleted schema index for tool {tool_config_id}: "
-                f"{total_deleted} embeddings removed"
-            )
+            logger.info(f"Deleted schema index for tool {tool_config_id}: {total_deleted} embeddings removed")
             return True, f"Deleted {total_deleted} schema embeddings"
 
         except Exception as e:
             logger.error(f"Error deleting schema index: {e}")
             return False, str(e)
 
-    async def get_embedding_count(
-        self, tool_config_id: str, tool_name: str | None = None
-    ) -> int:
+    async def get_embedding_count(self, tool_config_id: str, tool_name: str | None = None) -> int:
         """Get the number of schema embeddings for a tool.
 
         Args:
@@ -424,10 +401,7 @@ class SchemaIndexerService:
         try:
             db = await get_db()
             for index_name in names_to_check:
-                result = await db.query_raw(
-                    f"SELECT COUNT(*) as count FROM schema_embeddings "
-                    f"WHERE index_name = '{index_name}'"
-                )
+                result = await db.query_raw(f"SELECT COUNT(*) as count FROM schema_embeddings WHERE index_name = '{index_name}'")
                 if result and int(result[0].get("count", 0)) > 0:
                     return int(result[0].get("count", 0))
         except Exception as e:
@@ -438,9 +412,7 @@ class SchemaIndexerService:
     # Schema Introspection
     # =========================================================================
 
-    async def test_connection(
-        self, tool_type: str, connection_config: dict
-    ) -> tuple[bool, str | None]:
+    async def test_connection(self, tool_type: str, connection_config: dict) -> tuple[bool, str | None]:
         """
         Test database connectivity before starting indexing.
 
@@ -460,9 +432,7 @@ class SchemaIndexerService:
                 tunnel: SSHTunnel | None = None
                 tunnel_cfg_dict = build_ssh_tunnel_config(connection_config, host, port)
                 if tunnel_cfg_dict and host:
-                    tunnel_cfg = ssh_tunnel_config_from_dict(
-                        tunnel_cfg_dict, default_remote_port=5432
-                    )
+                    tunnel_cfg = ssh_tunnel_config_from_dict(tunnel_cfg_dict, default_remote_port=5432)
                     if tunnel_cfg:
                         tunnel = SSHTunnel(tunnel_cfg)
                         local_port = tunnel.start()
@@ -504,10 +474,7 @@ class SchemaIndexerService:
                     False,
                     "Password authentication failed. Check username and password.",
                 )
-            if (
-                "could not connect" in error_msg.lower()
-                or "connection refused" in error_msg.lower()
-            ):
+            if "could not connect" in error_msg.lower() or "connection refused" in error_msg.lower():
                 return False, "Could not connect to database. Check host and port."
             if "does not exist" in error_msg.lower():
                 return False, "Database does not exist. Check database name."
@@ -572,23 +539,16 @@ class SchemaIndexerService:
         tunnel: SSHTunnel | None = None
         tunnel_cfg_dict = build_ssh_tunnel_config(connection_config, host, port)
         if tunnel_cfg_dict and host:
-            tunnel_cfg = ssh_tunnel_config_from_dict(
-                tunnel_cfg_dict, default_remote_port=5432
-            )
+            tunnel_cfg = ssh_tunnel_config_from_dict(tunnel_cfg_dict, default_remote_port=5432)
             if tunnel_cfg:
                 tunnel = SSHTunnel(tunnel_cfg)
                 local_port = tunnel.start()
-                logger.debug(
-                    f"SSH tunnel established: localhost:{local_port} -> "
-                    f"{tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}"
-                )
+                logger.debug(f"SSH tunnel established: localhost:{local_port} -> {tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}")
                 host = "127.0.0.1"
                 port = local_port
 
         try:
-            return await self._introspect_postgres_impl(
-                host, port, user, password, database, container, on_progress
-            )
+            return await self._introspect_postgres_impl(host, port, user, password, database, container, on_progress)
         finally:
             if tunnel:
                 tunnel.stop()
@@ -663,14 +623,11 @@ class SchemaIndexerService:
         try:
             # Discover all tables, views, and materialized views
             try:
-                table_rows = await self._execute_postgres_query(
-                    tables_query, host, port, user, password, database, container
-                )
+                table_rows = await self._execute_postgres_query(tables_query, host, port, user, password, database, container)
             except Exception as e:
                 if self._is_permission_error(e):
                     logger.warning(
-                        "PostgreSQL table discovery hit permission restrictions; "
-                        "retrying with reduced metadata query: %s",
+                        "PostgreSQL table discovery hit permission restrictions; retrying with reduced metadata query: %s",
                         e,
                     )
                     table_rows = await self._execute_postgres_query(
@@ -686,9 +643,7 @@ class SchemaIndexerService:
                     raise
 
             try:
-                matview_rows = await self._execute_postgres_query(
-                    matview_query, host, port, user, password, database, container
-                )
+                matview_rows = await self._execute_postgres_query(matview_query, host, port, user, password, database, container)
             except Exception as e:
                 if self._is_permission_error(e):
                     logger.warning(
@@ -703,10 +658,7 @@ class SchemaIndexerService:
             all_rows = table_rows + matview_rows
             total_discovered = len(all_rows)
 
-            logger.info(
-                f"Discovered {total_discovered} objects "
-                f"({len(table_rows)} tables/views, {len(matview_rows)} materialized views)"
-            )
+            logger.info(f"Discovered {total_discovered} objects ({len(table_rows)} tables/views, {len(matview_rows)} materialized views)")
 
             # Report initial discovery count
             if on_progress and total_discovered > 0:
@@ -749,9 +701,7 @@ class SchemaIndexerService:
                 try:
                     columns = columns_map.get(object_key, [])
                     if not columns:
-                        raise RuntimeError(
-                            "No column metadata returned for object"
-                        )
+                        raise RuntimeError("No column metadata returned for object")
 
                     pk = pk_map.get(object_key, [])
                     fks = fk_map.get(object_key, [])
@@ -770,9 +720,7 @@ class SchemaIndexerService:
                             foreign_keys=fks,
                             indexes=indexes,
                             check_constraints=check_constraints,
-                            row_count_estimate=(
-                                int(row_estimate) if row_estimate else None
-                            ),
+                            row_count_estimate=(int(row_estimate) if row_estimate else None),
                         )
                     )
                 except Exception as e:
@@ -784,11 +732,7 @@ class SchemaIndexerService:
                     )
 
                 # Report progress after each table
-                if on_progress and (
-                    idx == 0
-                    or idx + 1 == total_discovered
-                    or (idx + 1) % 25 == 0
-                ):
+                if on_progress and (idx == 0 or idx + 1 == total_discovered or (idx + 1) % 25 == 0):
                     await on_progress(total_discovered, idx + 1, full_name)
 
             if skipped_objects:
@@ -798,9 +742,7 @@ class SchemaIndexerService:
                     total_discovered,
                 )
 
-            logger.info(
-                f"Introspected {len(tables)} tables/views/materialized views from PostgreSQL"
-            )
+            logger.info(f"Introspected {len(tables)} tables/views/materialized views from PostgreSQL")
             return tables
 
         except Exception as e:
@@ -993,18 +935,10 @@ class SchemaIndexerService:
             index_rows,
             check_constraint_rows,
         ) = await asyncio.gather(
-            self._execute_postgres_json_query(
-                columns_query, host, port, user, password, database, container
-            ),
-            self._execute_postgres_json_query(
-                primary_keys_query, host, port, user, password, database, container
-            ),
-            self._execute_postgres_json_query(
-                foreign_keys_query, host, port, user, password, database, container
-            ),
-            self._execute_postgres_json_query(
-                indexes_query, host, port, user, password, database, container
-            ),
+            self._execute_postgres_json_query(columns_query, host, port, user, password, database, container),
+            self._execute_postgres_json_query(primary_keys_query, host, port, user, password, database, container),
+            self._execute_postgres_json_query(foreign_keys_query, host, port, user, password, database, container),
+            self._execute_postgres_json_query(indexes_query, host, port, user, password, database, container),
             self._execute_postgres_json_query(
                 check_constraints_query,
                 host,
@@ -1053,9 +987,7 @@ class SchemaIndexerService:
                     }
                 )
             foreign_keys[-1]["columns"].append(row["column_name"])
-            foreign_keys[-1]["references_columns"].append(
-                row["references_column"]
-            )
+            foreign_keys[-1]["references_columns"].append(row["references_column"])
 
         for row in index_rows:
             key = (row["table_schema"], row["table_name"])
@@ -1069,9 +1001,7 @@ class SchemaIndexerService:
 
         for row in check_constraint_rows:
             key = (row["table_schema"], row["table_name"])
-            metadata["check_constraints"].setdefault(key, []).append(
-                {"name": row["name"], "definition": row["definition"]}
-            )
+            metadata["check_constraints"].setdefault(key, []).append({"name": row["name"], "definition": row["definition"]})
 
         return metadata
 
@@ -1086,10 +1016,7 @@ class SchemaIndexerService:
         container: str,
     ) -> List[dict]:
         """Execute a PostgreSQL query and parse the JSON row payload."""
-        wrapped_query = (
-            "SELECT COALESCE(json_agg(row_to_json(query_rows)), '[]'::json)::text "
-            f"FROM ({query}) query_rows"
-        )
+        wrapped_query = f"SELECT COALESCE(json_agg(row_to_json(query_rows)), '[]'::json)::text FROM ({query}) query_rows"
         escaped_query = wrapped_query.replace("'", "'\\''")
 
         if host:
@@ -1118,14 +1045,9 @@ class SchemaIndexerService:
                 timeout=60,
             )
         elif container:
-            inner_cmd = (
-                f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" '
-                f'-d "$POSTGRES_DB" -t -A -c \'{escaped_query}\''
-            )
+            inner_cmd = f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A -c \'{escaped_query}\''
             cmd = ["docker", "exec", "-i", container, "bash", "-c", inner_cmd]
-            result = await asyncio.to_thread(
-                subprocess.run, cmd, capture_output=True, text=True, timeout=60
-            )
+            result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=60)
         else:
             raise ValueError("No PostgreSQL connection configured (host or container)")
 
@@ -1173,19 +1095,12 @@ class SchemaIndexerService:
                 query,
             ]
             env = {"PGPASSWORD": password}
-            result = await asyncio.to_thread(
-                subprocess.run, cmd, capture_output=True, text=True, env=env, timeout=60
-            )
+            result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, env=env, timeout=60)
         elif container:
             # Docker container
-            inner_cmd = (
-                f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" '
-                f'-d "$POSTGRES_DB" -t -A -F "\t" -c \'{escaped_query}\''
-            )
+            inner_cmd = f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A -F "\t" -c \'{escaped_query}\''
             cmd = ["docker", "exec", "-i", container, "bash", "-c", inner_cmd]
-            result = await asyncio.to_thread(
-                subprocess.run, cmd, capture_output=True, text=True, timeout=60
-            )
+            result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=60)
         else:
             raise ValueError("No PostgreSQL connection configured (host or container)")
 
@@ -1316,9 +1231,7 @@ class SchemaIndexerService:
             AND tc.table_name = '{table_name}'
         ORDER BY kcu.ordinal_position
         """
-        results = await self._execute_postgres_simple_query(
-            query, ["column_name"], host, port, user, password, database, container
-        )
+        results = await self._execute_postgres_simple_query(query, ["column_name"], host, port, user, password, database, container)
         return [r["column_name"] for r in results]
 
     async def _get_postgres_foreign_keys(
@@ -1493,18 +1406,11 @@ class SchemaIndexerService:
                 query,
             ]
             env = {"PGPASSWORD": password}
-            result = await asyncio.to_thread(
-                subprocess.run, cmd, capture_output=True, text=True, env=env, timeout=60
-            )
+            result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, env=env, timeout=60)
         elif container:
-            inner_cmd = (
-                f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" '
-                f'-d "$POSTGRES_DB" -t -A -F "\t" -c \'{escaped_query}\''
-            )
+            inner_cmd = f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A -F "\t" -c \'{escaped_query}\''
             cmd = ["docker", "exec", "-i", container, "bash", "-c", inner_cmd]
-            result = await asyncio.to_thread(
-                subprocess.run, cmd, capture_output=True, text=True, timeout=60
-            )
+            result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=60)
         else:
             return []
 
@@ -1557,18 +1463,13 @@ class SchemaIndexerService:
             try:
                 # Set up SSH tunnel if configured
                 if tunnel_cfg_dict:
-                    tunnel_cfg = ssh_tunnel_config_from_dict(
-                        tunnel_cfg_dict, default_remote_port=1433
-                    )
+                    tunnel_cfg = ssh_tunnel_config_from_dict(tunnel_cfg_dict, default_remote_port=1433)
                     if tunnel_cfg:
                         tunnel = SSHTunnel(tunnel_cfg)
                         local_port = tunnel.start()
                         actual_host = "127.0.0.1"
                         actual_port = local_port
-                        logger.debug(
-                            f"SSH tunnel established: localhost:{local_port} -> "
-                            f"{tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}"
-                        )
+                        logger.debug(f"SSH tunnel established: localhost:{local_port} -> {tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}")
 
                 conn = pymssql.connect(
                     server=actual_host,
@@ -1710,9 +1611,7 @@ class SchemaIndexerService:
                                     "references_columns": [],
                                 }
                             fk_map[name]["columns"].append(r["column_name"])
-                            fk_map[name]["references_columns"].append(
-                                r["references_column"]
-                            )
+                            fk_map[name]["references_columns"].append(r["references_column"])
                         fks = list(fk_map.values())
 
                         # Get indexes (non-primary key)
@@ -1735,9 +1634,7 @@ class SchemaIndexerService:
                             {
                                 "name": r["index_name"],
                                 "unique": r["is_unique"],
-                                "columns": (
-                                    r["columns"].split(",") if r["columns"] else []
-                                ),
+                                "columns": (r["columns"].split(",") if r["columns"] else []),
                             }
                             for r in cursor.fetchall()
                         ]
@@ -1767,17 +1664,13 @@ class SchemaIndexerService:
                                 table_name=table_name,
                                 full_name=full_name,
                                 table_type=table_type,
-                                table_comment=(
-                                    str(table_comment) if table_comment else None
-                                ),
+                                table_comment=(str(table_comment) if table_comment else None),
                                 columns=columns,
                                 primary_key=pk,
                                 foreign_keys=fks,
                                 indexes=indexes,
                                 check_constraints=check_constraints,
-                                row_count_estimate=(
-                                    int(row_estimate) if row_estimate else None
-                                ),
+                                row_count_estimate=(int(row_estimate) if row_estimate else None),
                             )
                         )
                     except Exception as e:
@@ -1841,18 +1734,13 @@ class SchemaIndexerService:
             try:
                 # Set up SSH tunnel if configured
                 if tunnel_cfg_dict:
-                    tunnel_cfg = ssh_tunnel_config_from_dict(
-                        tunnel_cfg_dict, default_remote_port=3306
-                    )
+                    tunnel_cfg = ssh_tunnel_config_from_dict(tunnel_cfg_dict, default_remote_port=3306)
                     if tunnel_cfg:
                         tunnel = SSHTunnel(tunnel_cfg)
                         local_port = tunnel.start()
                         actual_host = "127.0.0.1"
                         actual_port = local_port
-                        logger.debug(
-                            f"SSH tunnel established: localhost:{local_port} -> "
-                            f"{tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}"
-                        )
+                        logger.debug(f"SSH tunnel established: localhost:{local_port} -> {tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}")
 
                 conn = pymysql.connect(
                     host=actual_host,
@@ -1997,9 +1885,7 @@ class SchemaIndexerService:
                             {
                                 "name": r["index_name"],
                                 "unique": r["non_unique"] == 0,
-                                "columns": (
-                                    r["columns"].split(",") if r["columns"] else []
-                                ),
+                                "columns": (r["columns"].split(",") if r["columns"] else []),
                             }
                             for r in cursor.fetchall()
                         ]
@@ -2045,9 +1931,7 @@ class SchemaIndexerService:
                                 foreign_keys=fks,
                                 indexes=indexes,
                                 check_constraints=check_constraints,
-                                row_count_estimate=(
-                                    int(row_estimate) if row_estimate else None
-                                ),
+                                row_count_estimate=(int(row_estimate) if row_estimate else None),
                             )
                         )
                     except Exception as e:
@@ -2104,9 +1988,7 @@ class SchemaIndexerService:
 
             # Early connection test - fail fast if credentials are wrong
             logger.info(f"Testing {tool_type} connection...")
-            success, error_msg = await self.test_connection(
-                tool_type, connection_config
-            )
+            success, error_msg = await self.test_connection(tool_type, connection_config)
             if not success:
                 raise RuntimeError(f"Database connection failed: {error_msg}")
 
@@ -2120,10 +2002,7 @@ class SchemaIndexerService:
             # Check for embedding configuration mismatch
             # Auto-correct by forcing full re-index when config changes
             current_config_hash = settings.get_embedding_config_hash()
-            tracking_needs_update = (
-                settings.embedding_dimension is None
-                or settings.embedding_config_hash is None
-            )
+            tracking_needs_update = settings.embedding_dimension is None or settings.embedding_config_hash is None
 
             if settings.embedding_config_hash is not None:
                 if settings.embedding_config_hash != current_config_hash:
@@ -2138,9 +2017,7 @@ class SchemaIndexerService:
             embeddings = await self._get_embeddings(settings)
 
             if embeddings is None:
-                raise RuntimeError(
-                    "No embedding provider configured. Configure an embedding provider in Settings."
-                )
+                raise RuntimeError("No embedding provider configured. Configure an embedding provider in Settings.")
 
             # Check embedding dimension and ensure column matches
             # Timeout after 60 seconds to prevent indefinite hangs
@@ -2150,10 +2027,7 @@ class SchemaIndexerService:
                     timeout=60.0,
                 )
             except asyncio.TimeoutError:
-                raise RuntimeError(
-                    "Embedding provider timed out after 60 seconds. "
-                    "Check that the embedding service is running and responsive."
-                )
+                raise RuntimeError("Embedding provider timed out after 60 seconds. Check that the embedding service is running and responsive.")
             embedding_dim = len(test_embedding[0])
             index_lists = settings.ivfflat_lists or 100
             # This will raise RuntimeError with detailed message if it fails
@@ -2167,32 +2041,24 @@ class SchemaIndexerService:
                         "embedding_config_hash": current_config_hash,
                     }
                 )
-                logger.info(
-                    f"Updated embedding tracking: dim={embedding_dim}, hash={current_config_hash}"
-                )
+                logger.info(f"Updated embedding tracking: dim={embedding_dim}, hash={current_config_hash}")
 
             # Introspect database schema with progress reporting
             logger.info(f"Introspecting {tool_type} schema...")
             job.status_detail = "Discovering tables..."
 
-            async def on_introspection_progress(
-                total: int, introspected: int, table_name: str
-            ):
+            async def on_introspection_progress(total: int, introspected: int, table_name: str):
                 job.total_tables = total
                 job.introspected_tables = introspected
                 if introspected == 0:
                     job.status_detail = f"Discovered {total} tables, introspecting..."
                 elif introspected < total:
-                    job.status_detail = (
-                        f"Introspecting {introspected}/{total}: {table_name}"
-                    )
+                    job.status_detail = f"Introspecting {introspected}/{total}: {table_name}"
                 else:
                     job.status_detail = f"Introspected {total} tables"
                 await self._update_job(job)
 
-            tables = await self.introspect_schema(
-                tool_type, connection_config, on_progress=on_introspection_progress
-            )
+            tables = await self.introspect_schema(tool_type, connection_config, on_progress=on_introspection_progress)
 
             if not tables:
                 job.status = SchemaIndexStatus.COMPLETED
@@ -2249,9 +2115,7 @@ class SchemaIndexerService:
                             timeout=120.0,
                         )
                     except asyncio.TimeoutError:
-                        logger.warning(
-                            f"Embedding timed out for table {table.full_name}, skipping"
-                        )
+                        logger.warning(f"Embedding timed out for table {table.full_name}, skipping")
                         continue
 
                     # Store in database
@@ -2289,9 +2153,7 @@ class SchemaIndexerService:
             job.completed_at = datetime.now(timezone.utc)
             await self._update_job(job)
 
-            logger.info(
-                f"Schema indexing completed: {job.processed_tables} tables indexed"
-            )
+            logger.info(f"Schema indexing completed: {job.processed_tables} tables indexed")
 
         except Exception as e:
             logger.error(f"Schema indexing failed: {e}", exc_info=True)
@@ -2301,9 +2163,7 @@ class SchemaIndexerService:
             try:
                 await self._update_job(job)
             except Exception as db_err:
-                logger.warning(
-                    f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}"
-                )
+                logger.warning(f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}")
 
         finally:
             # Clean up in-memory tracking
@@ -2322,9 +2182,7 @@ class SchemaIndexerService:
     async def _ensure_pgvector(self) -> bool:
         return await ensure_pgvector_extension(logger_override=logger)
 
-    async def _ensure_embedding_column(
-        self, embedding_dim: int = 1536, index_lists: int = 100
-    ) -> bool:
+    async def _ensure_embedding_column(self, embedding_dim: int = 1536, index_lists: int = 100) -> bool:
         """Ensure the embedding column exists with the correct dimension.
 
         Args:
@@ -2343,9 +2201,7 @@ class SchemaIndexerService:
         """Clear all embeddings for an index."""
         try:
             db = await get_db()
-            await db.execute_raw(
-                f"DELETE FROM schema_embeddings WHERE index_name = '{index_name}'"
-            )
+            await db.execute_raw(f"DELETE FROM schema_embeddings WHERE index_name = '{index_name}'")
         except Exception as e:
             logger.warning(f"Error clearing embeddings: {e}")
 
@@ -2415,12 +2271,8 @@ class SchemaIndexerService:
             if tool_config and tool_config.connection_config:
                 connection_config = dict(tool_config.connection_config)
                 connection_config["schema_hash"] = schema_hash
-                connection_config["last_schema_indexed_at"] = datetime.now(
-                    timezone.utc
-                ).isoformat()
-                await repository.update_tool_config(
-                    tool_config_id, {"connection_config": connection_config}
-                )
+                connection_config["last_schema_indexed_at"] = datetime.now(timezone.utc).isoformat()
+                await repository.update_tool_config(tool_config_id, {"connection_config": connection_config})
         except Exception as e:
             logger.warning(f"Error updating schema hash: {e}")
 
@@ -2498,9 +2350,7 @@ class SchemaIndexerService:
         )
 
     @staticmethod
-    def job_to_response(
-        job: SchemaIndexJob, cancel_requested_override: bool | None = None
-    ) -> SchemaIndexJobResponse:
+    def job_to_response(job: SchemaIndexJob, cancel_requested_override: bool | None = None) -> SchemaIndexJobResponse:
         """Convert a SchemaIndexJob to a SchemaIndexJobResponse."""
         return SchemaIndexJobResponse(
             id=job.id,
@@ -2514,11 +2364,7 @@ class SchemaIndexerService:
             total_chunks=job.total_chunks,
             processed_chunks=job.processed_chunks,
             error_message=job.error_message,
-            cancel_requested=(
-                cancel_requested_override
-                if cancel_requested_override is not None
-                else job.cancel_requested
-            ),
+            cancel_requested=(cancel_requested_override if cancel_requested_override is not None else job.cancel_requested),
             status_detail=job.status_detail,
             created_at=job.created_at,
             started_at=job.started_at,
@@ -2589,9 +2435,7 @@ async def search_schema_index(
             content = result.get("content") or ""
             table_name = result.get("table_name") or "unknown"
 
-            output_parts.append(
-                f"[{table_name}] (similarity: {similarity:.3f})\n{content}"
-            )
+            output_parts.append(f"[{table_name}] (similarity: {similarity:.3f})\n{content}")
 
         return "\n\n---\n\n".join(output_parts)
 

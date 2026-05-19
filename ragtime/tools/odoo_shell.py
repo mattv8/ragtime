@@ -50,13 +50,13 @@ def filter_odoo_output(output: str, ssh_mode: bool = False) -> str:
         clean_output = output.strip()
 
         # Check for error marker in the clean output
-        if 'ODOO_ERROR:' in clean_output:
-            error_idx = clean_output.index('ODOO_ERROR:')
-            error_part = clean_output[error_idx + 11:].strip()
+        if "ODOO_ERROR:" in clean_output:
+            error_idx = clean_output.index("ODOO_ERROR:")
+            error_part = clean_output[error_idx + 11 :].strip()
             return f"Error: {error_part}"
 
         # Check for Python exceptions
-        if re.match(r'^Traceback \(most recent call last\):', clean_output):
+        if re.match(r"^Traceback \(most recent call last\):", clean_output):
             return clean_output
 
         # Return the clean stdout
@@ -74,86 +74,94 @@ def filter_odoo_output(output: str, ssh_mode: bool = False) -> str:
 
     # Patterns that indicate shell is ready (user command being entered)
     prompt_patterns = [
-        r'^In \[\d+\]:',      # IPython prompt
-        r'^>>>',              # Standard Python prompt
-        r'^\.\.\.',           # Continuation prompt
+        r"^In \[\d+\]:",  # IPython prompt
+        r"^>>>",  # Standard Python prompt
+        r"^\.\.\.",  # Continuation prompt
     ]
 
     # Patterns that indicate end of Odoo initialization (Docker mode - no prompts)
     registry_loaded_patterns = [
-        r'.*Registry loaded in \d+\.\d+s',
-        r'.*Modules loaded\.',
+        r".*Registry loaded in \d+\.\d+s",
+        r".*Modules loaded\.",
     ]
 
     # Patterns to always skip (initialization noise)
     noise_patterns = [
         # Odoo log lines with timestamps
-        r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ INFO',
-        r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ WARNING',
-        r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ DEBUG',
+        r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ INFO",
+        r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ WARNING",
+        r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ DEBUG",
         # Python warnings
-        r'^/.*\.py:\d+: UserWarning:',
-        r'^\s*import pkg_resources',
-        r'^\s*The pkg_resources package',
-        r'^\s*Refrain from using this package',
+        r"^/.*\.py:\d+: UserWarning:",
+        r"^\s*import pkg_resources",
+        r"^\s*The pkg_resources package",
+        r"^\s*Refrain from using this package",
         # Profiling errors
-        r'^profiling:.*Cannot open',
-        r'^profiling:/tmp/.*\.gcda:Cannot open',
+        r"^profiling:.*Cannot open",
+        r"^profiling:/tmp/.*\.gcda:Cannot open",
         # Custom banners and separators
-        r'^Entering Odoo shell',
-        r'^-{20,}$',  # Long separator lines (20+ dashes)
-        r'^Command:.*odoo.*shell',
-        r'^Command:.*odoo-bin',
+        r"^Entering Odoo shell",
+        r"^-{20,}$",  # Long separator lines (20+ dashes)
+        r"^Command:.*odoo.*shell",
+        r"^Command:.*odoo-bin",
         # Shell version banners
-        r'^Python \d+\.\d+\.\d+',
-        r'^IPython \d+\.\d+',
-        r'^Type .* for help',
-        r'^Tip:',
+        r"^Python \d+\.\d+\.\d+",
+        r"^IPython \d+\.\d+",
+        r"^Type .* for help",
+        r"^Tip:",
         # Object display lines from shell
-        r'^env:',
-        r'^odoo:',
-        r'^openerp:',
-        r'^self:',
-        r'^werkzeug:',
+        r"^env:",
+        r"^odoo:",
+        r"^openerp:",
+        r"^self:",
+        r"^werkzeug:",
         # Module loading
-        r'^.*modules loaded in \d+\.\d+s',
-        r'^loading \d+ modules',
-        r'^Initiating shutdown',
-        r'^Hit CTRL-C',
-        r'^Will use the Wkhtmltopdf binary',
-        r'^addons paths:',
-        r'^database:.*@',
-        r'^Odoo version \d+',
+        r"^.*modules loaded in \d+\.\d+s",
+        r"^loading \d+ modules",
+        r"^Initiating shutdown",
+        r"^Hit CTRL-C",
+        r"^Will use the Wkhtmltopdf binary",
+        r"^addons paths:",
+        r"^database:.*@",
+        r"^Odoo version \d+",
     ]
 
     for line in lines:
         line_stripped = line.rstrip()
 
         # Check for our custom error marker - always capture
-        if 'ODOO_ERROR:' in line_stripped:
-            error_part = line_stripped[line_stripped.index('ODOO_ERROR:') + 11:].strip()
+        if "ODOO_ERROR:" in line_stripped:
+            error_part = line_stripped[line_stripped.index("ODOO_ERROR:") + 11 :].strip()
             return f"Error: {error_part}"
 
         # Check for Python exceptions - always capture
-        if any(re.match(pattern, line_stripped) for pattern in [
-            r'^Traceback \(most recent call last\):',
-            r'^\w+Error:',
-            r'^\w+Exception:',
-        ]):
+        if any(
+            re.match(pattern, line_stripped)
+            for pattern in [
+                r"^Traceback \(most recent call last\):",
+                r"^\w+Error:",
+                r"^\w+Exception:",
+            ]
+        ):
             result_lines.append(line_stripped)
             capturing_output = True
             continue
 
         # If we're already capturing output due to an error, continue capturing
-        if capturing_output and result_lines and any(
-            re.match(pattern, result_lines[0]) for pattern in [
-                r'^Traceback \(most recent call last\):',
-                r'^\w+Error:',
-                r'^\w+Exception:',
-            ]
+        if (
+            capturing_output
+            and result_lines
+            and any(
+                re.match(pattern, result_lines[0])
+                for pattern in [
+                    r"^Traceback \(most recent call last\):",
+                    r"^\w+Error:",
+                    r"^\w+Exception:",
+                ]
+            )
         ):
             # Continue capturing traceback lines
-            if line_stripped.startswith('  ') or re.match(r'^\w+Error:', line_stripped) or re.match(r'^\w+Exception:', line_stripped):
+            if line_stripped.startswith("  ") or re.match(r"^\w+Error:", line_stripped) or re.match(r"^\w+Exception:", line_stripped):
                 result_lines.append(line_stripped)
                 continue
             # End of traceback
@@ -183,8 +191,8 @@ def filter_odoo_output(output: str, ssh_mode: bool = False) -> str:
             if not line_stripped or any(re.match(pattern, line_stripped) for pattern in prompt_patterns):
                 continue
             # Skip Out[N]: prefix but capture remaining content
-            if re.match(r'^Out\[\d+\]:', line_stripped):
-                remaining = re.sub(r'^Out\[\d+\]:\s*', '', line_stripped)
+            if re.match(r"^Out\[\d+\]:", line_stripped):
+                remaining = re.sub(r"^Out\[\d+\]:\s*", "", line_stripped)
                 if remaining:
                     result_lines.append(remaining)
                 capturing_output = True
@@ -197,7 +205,7 @@ def filter_odoo_output(output: str, ssh_mode: bool = False) -> str:
         # Once we're capturing, include everything except profiling noise
         if capturing_output:
             # Skip profiling errors
-            if re.match(r'^profiling:.*Cannot open', line_stripped):
+            if re.match(r"^profiling:.*Cannot open", line_stripped):
                 continue
             result_lines.append(line_stripped)
 
@@ -212,7 +220,7 @@ def filter_odoo_output(output: str, ssh_mode: bool = False) -> str:
 
         if registry_loaded_idx is not None:
             # Capture all non-empty, non-noise lines after "Registry loaded"
-            for line in lines[registry_loaded_idx + 1:]:
+            for line in lines[registry_loaded_idx + 1 :]:
                 line_stripped = line.rstrip()
                 if not line_stripped:
                     continue
@@ -220,16 +228,16 @@ def filter_odoo_output(output: str, ssh_mode: bool = False) -> str:
                 if any(re.match(pattern, line_stripped) for pattern in noise_patterns):
                     continue
                 # Skip profiling errors
-                if re.match(r'^profiling:.*Cannot open', line_stripped):
+                if re.match(r"^profiling:.*Cannot open", line_stripped):
                     continue
                 result_lines.append(line_stripped)
 
     result = "\n".join(result_lines).strip()
 
     # Clean up any remaining shell artifacts
-    result = re.sub(r'^In \[\d+\]:\s*', '', result, flags=re.MULTILINE)
-    result = re.sub(r'^Out\[\d+\]:\s*', '', result, flags=re.MULTILINE)
-    result = re.sub(r'^\.\.\.:?\s*', '', result, flags=re.MULTILINE)
+    result = re.sub(r"^In \[\d+\]:\s*", "", result, flags=re.MULTILINE)
+    result = re.sub(r"^Out\[\d+\]:\s*", "", result, flags=re.MULTILINE)
+    result = re.sub(r"^\.\.\.:?\s*", "", result, flags=re.MULTILINE)
 
     return result
 
@@ -246,22 +254,17 @@ def build_wrapped_code(code: str) -> str:
     # Indent each line of user code by 4 spaces
     indented_code = "\n".join("    " + line for line in code.strip().split("\n"))
 
-    wrapped_code = f'''
+    wrapped_code = f"""
 env = self.env
 try:
 {indented_code}
 except Exception as e:
     print(f"ODOO_ERROR: {{type(e).__name__}}: {{e}}")
-'''
+"""
     return wrapped_code
 
 
-def build_local_shell_command(
-    python_bin: str,
-    odoo_bin: str,
-    database: str,
-    config_path: Optional[str] = None
-) -> list[str]:
+def build_local_shell_command(python_bin: str, odoo_bin: str, database: str, config_path: Optional[str] = None) -> list[str]:
     """Build command for local Odoo shell execution.
 
     Args:
@@ -274,8 +277,11 @@ def build_local_shell_command(
         Command list for subprocess execution
     """
     cmd = [
-        python_bin, odoo_bin, "shell",
-        "-d", database,
+        python_bin,
+        odoo_bin,
+        "shell",
+        "-d",
+        database,
         "--no-http",
         "--shell-interface=ipython",
     ]
@@ -292,7 +298,7 @@ def build_ssh_shell_command(
     remote_odoo_bin: str,
     database: str,
     config_path: Optional[str] = None,
-    ssh_port: int = 22
+    ssh_port: int = 22,
 ) -> list[str]:
     """Build command for remote Odoo shell execution via SSH.
 
@@ -316,12 +322,17 @@ def build_ssh_shell_command(
 
     cmd = [
         "ssh",
-        "-i", ssh_key_path,
-        "-p", str(ssh_port),
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
+        "-i",
+        ssh_key_path,
+        "-p",
+        str(ssh_port),
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
         f"{ssh_user}@{ssh_host}",
-        odoo_cmd
+        odoo_cmd,
     ]
     return cmd

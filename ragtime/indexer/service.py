@@ -53,10 +53,10 @@ from ragtime.indexer.file_utils import (
     extract_archive,
     find_source_dir,
     get_directory_size_bytes,
-    get_matching_pattern,
     get_matching_file_pattern,
-    is_excluded_directory,
+    get_matching_pattern,
     is_excluded_by_patterns,
+    is_excluded_directory,
     should_index_file_type,
 )
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
@@ -138,9 +138,7 @@ async def generate_index_description(
                     details = await get_model_details(model, base_url)
                     if details and has_capability(details, "thinking"):
                         reasoning = True
-                        logger.debug(
-                            f"Ollama model '{model}' supports thinking; enabling reasoning mode"
-                        )
+                        logger.debug(f"Ollama model '{model}' supports thinking; enabling reasoning mode")
                 except Exception:
                     pass
 
@@ -217,10 +215,7 @@ async def generate_index_description(
             if token:
                 from langchain_openai import ChatOpenAI
 
-                base_url = (
-                    app_settings.get("github_copilot_base_url")
-                    or "https://api.githubcopilot.com"
-                )
+                base_url = app_settings.get("github_copilot_base_url") or "https://api.githubcopilot.com"
                 model = app_settings.get("llm_model", "gpt-4o")
                 llm = ChatOpenAI(
                     model=model,
@@ -233,9 +228,7 @@ async def generate_index_description(
                         "User-Agent": "ragtime",
                     },
                 )
-                logger.debug(
-                    f"Using GitHub Copilot for description generation: {model}"
-                )
+                logger.debug(f"Using GitHub Copilot for description generation: {model}")
             else:
                 logger.debug("GitHub Copilot selected but no OAuth token configured")
 
@@ -261,15 +254,11 @@ async def generate_index_description(
                 logger.debug("GitHub Models selected but no PAT token configured")
 
         if llm is None:
-            logger.debug(
-                f"No LLM available for description generation (provider: {provider})"
-            )
+            logger.debug(f"No LLM available for description generation (provider: {provider})")
             return ""
 
         # Sample file paths for context (unique paths only)
-        file_paths = list(
-            set(doc.metadata.get("source", "unknown") for doc in documents[:100])
-        )[:20]
+        file_paths = list(set(doc.metadata.get("source", "unknown") for doc in documents[:100]))[:20]
 
         # Sample some content snippets
         content_samples = [doc.page_content[:500] for doc in documents[:5]]
@@ -278,13 +267,13 @@ async def generate_index_description(
 
 Index name: {index_name}
 Source type: {source_type}
-Source: {source or 'uploaded archive'}
+Source: {source or "uploaded archive"}
 
 Sample file paths:
-{chr(10).join(f'- {p}' for p in file_paths)}
+{chr(10).join(f"- {p}" for p in file_paths)}
 
 Sample content snippets:
-{chr(10).join(f'---{chr(10)}{s}{chr(10)}' for s in content_samples)}
+{chr(10).join(f"---{chr(10)}{s}{chr(10)}" for s in content_samples)}
 
 Write a concise description focusing on:
 - What type of project/codebase this is
@@ -296,9 +285,7 @@ Description:"""
         response = await llm.ainvoke(prompt)
         content = response.content
         description = content.strip() if isinstance(content, str) else str(content)
-        logger.info(
-            f"Auto-generated description for {index_name}: {description[:100]}..."
-        )
+        logger.info(f"Auto-generated description for {index_name}: {description[:100]}...")
         return description
 
     except Exception as e:
@@ -356,9 +343,7 @@ class IndexerService:
 
         return int(round(max(min_timeout, min(max_timeout, timeout))))
 
-    async def _reinitialize_rag_components(
-        self, index_name: Optional[str] = None
-    ) -> None:
+    async def _reinitialize_rag_components(self, index_name: Optional[str] = None) -> None:
         """
         Refresh RAG components to load newly created indexes.
 
@@ -379,13 +364,9 @@ class IndexerService:
             if index_name:
                 loaded = await rag.load_faiss_index_from_metadata(index_name)
                 if loaded:
-                    logger.info(
-                        f"RAG components refreshed successfully for index '{index_name}'"
-                    )
+                    logger.info(f"RAG components refreshed successfully for index '{index_name}'")
                 else:
-                    logger.warning(
-                        f"RAG refresh completed but index '{index_name}' was not loaded"
-                    )
+                    logger.warning(f"RAG refresh completed but index '{index_name}' was not loaded")
             else:
                 await rag.initialize()
                 logger.info("RAG components reinitialized successfully")
@@ -419,9 +400,7 @@ class IndexerService:
             Number of jobs recovered
         """
         jobs = await repository.list_jobs()
-        interrupted = [
-            j for j in jobs if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)
-        ]
+        interrupted = [j for j in jobs if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)]
 
         recovered = 0
         if interrupted:
@@ -452,10 +431,7 @@ class IndexerService:
         jobs = await repository.list_jobs()
         # Keep tmp dirs for: active jobs (pending/processing) and failed upload jobs (for retry)
         keep_job_ids = {
-            j.id
-            for j in jobs
-            if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)
-            or (j.status == IndexStatus.FAILED and j.source_type == "upload")
+            j.id for j in jobs if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING) or (j.status == IndexStatus.FAILED and j.source_type == "upload")
         }
 
         for tmp_path in UPLOAD_TMP_DIR.iterdir():
@@ -477,11 +453,7 @@ class IndexerService:
 
         # Get active jobs that might still complete
         jobs = await repository.list_jobs()
-        active_index_names = {
-            j.name
-            for j in jobs
-            if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)
-        }
+        active_index_names = {j.name for j in jobs if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)}
 
         for index_dir in self.index_base_path.iterdir():
             if not index_dir.is_dir() or index_dir.name.startswith("_"):
@@ -494,16 +466,11 @@ class IndexerService:
             if git_repo.exists() and not faiss_index.exists():
                 # Don't delete if there's an active job for this index
                 if index_dir.name in active_index_names:
-                    logger.debug(
-                        f"Keeping .git_repo for {index_dir.name}: active job exists"
-                    )
+                    logger.debug(f"Keeping .git_repo for {index_dir.name}: active job exists")
                     continue
 
                 # Safe to clean up
-                logger.info(
-                    f"Cleaning orphaned git repo: {index_dir.name}/.git_repo "
-                    "(no FAISS index, no active job)"
-                )
+                logger.info(f"Cleaning orphaned git repo: {index_dir.name}/.git_repo (no FAISS index, no active job)")
                 await asyncio.to_thread(shutil.rmtree, git_repo, ignore_errors=True)
 
                 # If the directory is now empty, remove it too
@@ -589,9 +556,7 @@ class IndexerService:
 
                     logger.info(f"  Extracted {doc_count} documents from {path.name}")
                 except Exception as e:
-                    logger.warning(
-                        f"  Could not extract doc count from {path.name}: {e}"
-                    )
+                    logger.warning(f"  Could not extract doc count from {path.name}: {e}")
 
                 # Calculate size in thread to avoid blocking event loop
                 size_bytes = await asyncio.to_thread(get_directory_size_bytes, path)
@@ -649,20 +614,14 @@ class IndexerService:
             if repo_dir.exists() and clone_complete_marker.exists():
                 # Clone completed previously, skip directly to indexing
                 logger.info(f"Found existing clone for job {job.id}, resuming indexing")
-                self._processing_tasks[job.id] = asyncio.create_task(
-                    self._process_git(job, skip_clone=True)
-                )
+                self._processing_tasks[job.id] = asyncio.create_task(self._process_git(job, skip_clone=True))
             else:
                 # Need to re-clone - clean up any partial clone first
                 if repo_dir.exists():
                     await asyncio.to_thread(shutil.rmtree, repo_dir, ignore_errors=True)
                 if temp_marker_dir.exists():
-                    await asyncio.to_thread(
-                        shutil.rmtree, temp_marker_dir, ignore_errors=True
-                    )
-                self._processing_tasks[job.id] = asyncio.create_task(
-                    self._process_git(job)
-                )
+                    await asyncio.to_thread(shutil.rmtree, temp_marker_dir, ignore_errors=True)
+                self._processing_tasks[job.id] = asyncio.create_task(self._process_git(job))
         elif job.source_type == "upload":
             # Check if tmp file still exists
             tmp_path = UPLOAD_TMP_DIR / job.id
@@ -675,14 +634,10 @@ class IndexerService:
                     # Clean any previous extraction attempt
                     extracted_dir = tmp_path / "extracted"
                     if extracted_dir.exists():
-                        await asyncio.to_thread(
-                            shutil.rmtree, extracted_dir, ignore_errors=True
-                        )
+                        await asyncio.to_thread(shutil.rmtree, extracted_dir, ignore_errors=True)
 
                     temp_dir = tmp_path  # Use tmp dir for extraction
-                    self._processing_tasks[job.id] = asyncio.create_task(
-                        self._process_upload(job, archive_path, temp_dir)
-                    )
+                    self._processing_tasks[job.id] = asyncio.create_task(self._process_upload(job, archive_path, temp_dir))
                     return
 
             # No tmp file - mark as failed
@@ -696,24 +651,10 @@ class IndexerService:
     async def _get_embeddings(self, app_settings: AppSettings):
         """Get the configured embedding model based on app settings."""
         # Use dict-safe access for logging (app_settings may be dict or object)
-        provider = (
-            app_settings.get("embedding_provider")
-            if isinstance(app_settings, dict)
-            else getattr(app_settings, "embedding_provider", None)
-        )
-        model = (
-            app_settings.get("embedding_model")
-            if isinstance(app_settings, dict)
-            else getattr(app_settings, "embedding_model", None)
-        )
-        dims = (
-            app_settings.get("embedding_dimensions")
-            if isinstance(app_settings, dict)
-            else getattr(app_settings, "embedding_dimensions", None)
-        )
-        logger.info(
-            f"Getting embeddings: provider={provider}, model={model}, dimensions={dims}"
-        )
+        provider = app_settings.get("embedding_provider") if isinstance(app_settings, dict) else getattr(app_settings, "embedding_provider", None)
+        model = app_settings.get("embedding_model") if isinstance(app_settings, dict) else getattr(app_settings, "embedding_model", None)
+        dims = app_settings.get("embedding_dimensions") if isinstance(app_settings, dict) else getattr(app_settings, "embedding_dimensions", None)
+        logger.info(f"Getting embeddings: provider={provider}, model={model}, dimensions={dims}")
 
         return await get_embeddings_model(
             app_settings,
@@ -731,9 +672,7 @@ class IndexerService:
         text = str(exc).lower()
         return "rate limit" in text or "rate_limit_exceeded" in text or "429" in text
 
-    def _retry_delay_seconds(
-        self, exc: Exception, attempt: int, base_delay: float = 1.5
-    ) -> float:
+    def _retry_delay_seconds(self, exc: Exception, attempt: int, base_delay: float = 1.5) -> float:
         """Compute delay before retrying after a rate limit.
 
         Uses Retry-After headers or "try again in Xms" hints when available,
@@ -793,18 +732,13 @@ class IndexerService:
 
             micro_batch = batch[j : j + micro_batch_size]
             try:
-                micro_db = await asyncio.to_thread(
-                    FAISS.from_documents, micro_batch, embeddings
-                )
+                micro_db = await asyncio.to_thread(FAISS.from_documents, micro_batch, embeddings)
             except Exception as e:
                 if not is_context_length_error(e):
                     raise
 
                 # Micro-batch failed - process chunks individually
-                logger.info(
-                    f"Micro-batch {j // micro_batch_size + 1} failed, "
-                    f"processing {len(micro_batch)} chunks individually"
-                )
+                logger.info(f"Micro-batch {j // micro_batch_size + 1} failed, processing {len(micro_batch)} chunks individually")
                 micro_db = None
                 for doc in micro_batch:
                     # Check for cancellation between individual chunks
@@ -812,9 +746,7 @@ class IndexerService:
                         raise asyncio.CancelledError("Job cancelled by user")
 
                     try:
-                        single_db = await asyncio.to_thread(
-                            FAISS.from_documents, [doc], embeddings
-                        )
+                        single_db = await asyncio.to_thread(FAISS.from_documents, [doc], embeddings)
                     except Exception as single_e:
                         if not is_context_length_error(single_e):
                             raise
@@ -824,9 +756,7 @@ class IndexerService:
                         tokens = count_tokens(doc.page_content)
                         source = doc.metadata.get("source", "unknown")
                         logger.warning(
-                            f"Chunk exceeds embedding context limit at "
-                            f"{tokens} tiktoken tokens, {len(doc.page_content)} "
-                            f"chars - source: {source} - truncating"
+                            f"Chunk exceeds embedding context limit at {tokens} tiktoken tokens, {len(doc.page_content)} chars - source: {source} - truncating"
                         )
 
                         # Binary character truncation
@@ -835,18 +765,13 @@ class IndexerService:
                         for pct in (0.75, 0.50, 0.25):
                             doc.page_content = content[: int(len(content) * pct)]
                             try:
-                                single_db = await asyncio.to_thread(
-                                    FAISS.from_documents, [doc], embeddings
-                                )
+                                single_db = await asyncio.to_thread(FAISS.from_documents, [doc], embeddings)
                                 break
                             except Exception:
                                 pass
 
                         if single_db is None:
-                            logger.error(
-                                f"Skipping chunk after all truncation "
-                                f"attempts - source: {source}"
-                            )
+                            logger.error(f"Skipping chunk after all truncation attempts - source: {source}")
                             skipped += 1
                             continue
 
@@ -930,10 +855,7 @@ class IndexerService:
                 if completed_count == 0:
                     # First-time index that failed — preserve metadata so the
                     # index card stays visible with Retry button in the UI.
-                    logger.info(
-                        f"Preserving metadata for failed new index '{name}' "
-                        f"(visible in UI with Retry button)"
-                    )
+                    logger.info(f"Preserving metadata for failed new index '{name}' (visible in UI with Retry button)")
                 else:
                     # Re-index failed but previous data may still exist on disk.
                     # Try to restore counts from FAISS files.
@@ -951,10 +873,7 @@ class IndexerService:
                                         get_directory_size_bytes,
                                         index_path,
                                     )
-                                    logger.info(
-                                        f"Restoring metadata counts for '{name}' from FAISS data: "
-                                        f"{doc_count} chunks, {size_bytes} bytes"
-                                    )
+                                    logger.info(f"Restoring metadata counts for '{name}' from FAISS data: {doc_count} chunks, {size_bytes} bytes")
                                     await repository.update_index_metadata_counts(
                                         name=name,
                                         document_count=doc_count,
@@ -963,14 +882,9 @@ class IndexerService:
                                     )
                                     return
                         except Exception as pkl_err:
-                            logger.warning(
-                                f"Could not restore counts from FAISS for '{name}': {pkl_err}"
-                            )
+                            logger.warning(f"Could not restore counts from FAISS for '{name}': {pkl_err}")
 
-                    logger.info(
-                        f"Preserving metadata for '{name}' despite failure "
-                        f"(found {completed_count} completed jobs, no FAISS data to restore from)"
-                    )
+                    logger.info(f"Preserving metadata for '{name}' despite failure (found {completed_count} completed jobs, no FAISS data to restore from)")
 
         except Exception as e:
             # Don't fail the job cleanup if metadata cleanup fails
@@ -1018,10 +932,7 @@ class IndexerService:
 
             # Always preserve existing config_snapshot to maintain user customizations
             # (e.g., git_history_depth, chunk settings, reindex_interval_hours)
-            config_snapshot = (
-                getattr(existing_metadata, "configSnapshot", None)
-                or config.model_dump(mode="json")
-            )
+            config_snapshot = getattr(existing_metadata, "configSnapshot", None) or config.model_dump(mode="json")
 
             # Preserve existing document/chunk counts on re-index so that if the
             # new job fails or is cancelled, the metadata still reflects the
@@ -1038,9 +949,7 @@ class IndexerService:
             document_count = 0
             chunk_count = 0
             size_bytes = 0
-            logger.debug(
-                f"Creating new index '{config.name}': using config from request"
-            )
+            logger.debug(f"Creating new index '{config.name}': using config from request")
 
         await repository.upsert_index_metadata(
             name=config.name,
@@ -1088,16 +997,11 @@ class IndexerService:
             # But allow optimistic indexes through so they show in UI while job is processing
             if vector_store_type == VectorStoreType.FAISS and not is_optimistic:
                 if not path.exists() or not path.is_dir():
-                    logger.warning(
-                        f"Index {meta.name} in database but not on disk: {path}"
-                    )
+                    logger.warning(f"Index {meta.name} in database but not on disk: {path}")
                     return None
 
                 # Verify it's a valid FAISS index
-                if (
-                    not (path / "index.faiss").exists()
-                    and not (path / "index.pkl").exists()
-                ):
+                if not (path / "index.faiss").exists() and not (path / "index.pkl").exists():
                     return None
 
             # Extract metadata fields
@@ -1128,19 +1032,11 @@ class IndexerService:
                     chunk_overlap=config_snapshot_data.get("chunk_overlap", 200),
                     max_file_size_kb=config_snapshot_data.get("max_file_size_kb", 500),
                     ocr_mode=OcrMode(config_snapshot_data.get("ocr_mode", "disabled")),
-                    ocr_provider=(
-                        OcrProvider(config_snapshot_data["ocr_provider"])
-                        if config_snapshot_data.get("ocr_provider")
-                        else None
-                    ),
+                    ocr_provider=(OcrProvider(config_snapshot_data["ocr_provider"]) if config_snapshot_data.get("ocr_provider") else None),
                     ocr_vision_model=config_snapshot_data.get("ocr_vision_model"),
-                    git_clone_timeout_minutes=config_snapshot_data.get(
-                        "git_clone_timeout_minutes", 5
-                    ),
+                    git_clone_timeout_minutes=config_snapshot_data.get("git_clone_timeout_minutes", 5),
                     git_history_depth=config_snapshot_data.get("git_history_depth", 1),
-                    reindex_interval_hours=config_snapshot_data.get(
-                        "reindex_interval_hours", 0
-                    ),
+                    reindex_interval_hours=config_snapshot_data.get("reindex_interval_hours", 0),
                 )
 
             # Keep /indexes request-time work cheap. Git history tooling maintains
@@ -1148,11 +1044,7 @@ class IndexerService:
             # or recursive size scans here because this endpoint is hit frequently.
             git_repo_path = path / ".git_repo"
             git_repo_size_mb = None
-            has_git_history = (
-                source_type == "git"
-                and git_repo_path.exists()
-                and git_repo_path.is_dir()
-            )
+            has_git_history = source_type == "git" and git_repo_path.exists() and git_repo_path.is_dir()
 
             return IndexInfo(
                 name=meta.name,
@@ -1247,13 +1139,9 @@ class IndexerService:
             # Fetch commit count from remote - run in thread to avoid blocking.
             # Use 10s timeout to avoid blocking on very large repos.
             try:
-                count_result = await asyncio.to_thread(
-                    _run_git, "rev-list", "--count", f"origin/{git_branch}", timeout=10
-                )
+                count_result = await asyncio.to_thread(_run_git, "rev-list", "--count", f"origin/{git_branch}", timeout=10)
             except subprocess.TimeoutExpired:
-                logger.warning(
-                    "git rev-list --count timed out for commit history sampling"
-                )
+                logger.warning("git rev-list --count timed out for commit history sampling")
                 return None
 
             if count_result.returncode != 0:
@@ -1283,16 +1171,12 @@ class IndexerService:
             if total_commits == 0:
                 # Try fetching just enough history to sample
                 # Fetch 1001 commits to sample at various depths
-                fetch_result = await asyncio.to_thread(
-                    _run_git, "fetch", "--deepen=1000", "origin", git_branch, timeout=60
-                )
+                fetch_result = await asyncio.to_thread(_run_git, "fetch", "--deepen=1000", "origin", git_branch, timeout=60)
                 if fetch_result.returncode != 0:
                     logger.warning(f"Could not deepen fetch: {fetch_result.stderr}")
 
                 # Now count local commits
-                count_result = await asyncio.to_thread(
-                    _run_git, "rev-list", "--count", f"origin/{git_branch}", timeout=10
-                )
+                count_result = await asyncio.to_thread(_run_git, "rev-list", "--count", f"origin/{git_branch}", timeout=10)
                 if count_result.returncode == 0:
                     total_commits = int(count_result.stdout.strip())
 
@@ -1364,9 +1248,7 @@ class IndexerService:
             logger.warning(f"Failed to sample commit history: {e}")
             return None
 
-    async def analyze_git_repository(
-        self, request: AnalyzeIndexRequest
-    ) -> IndexAnalysisResult:
+    async def analyze_git_repository(self, request: AnalyzeIndexRequest) -> IndexAnalysisResult:
         """
         Analyze a git repository to estimate index size and suggest exclusions.
 
@@ -1404,15 +1286,13 @@ class IndexerService:
             )
             try:
                 _, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=120  # 2 minute timeout for clone
+                    process.communicate(),
+                    timeout=120,  # 2 minute timeout for clone
                 )
             except asyncio.TimeoutError as exc:
                 process.kill()
                 await process.wait()
-                raise RuntimeError(
-                    "Git clone timed out after 2 minutes. "
-                    "The repository may be too large for analysis."
-                ) from exc
+                raise RuntimeError("Git clone timed out after 2 minutes. The repository may be too large for analysis.") from exc
 
             if process.returncode != 0:
                 raise RuntimeError(f"Git clone failed: {stderr.decode()}")
@@ -1646,17 +1526,13 @@ class IndexerService:
             # Simplified: size / effective_chunk_size
             effective_chunk = chunk_size - chunk_overlap
             if effective_chunk > 0:
-                stats["estimated_chunks"] = max(
-                    1, stats["total_size"] // effective_chunk
-                )
+                stats["estimated_chunks"] = max(1, stats["total_size"] // effective_chunk)
             else:
                 stats["estimated_chunks"] = stats["file_count"]
 
         # Get smart exclusion suggestions (LLM if available, otherwise heuristics)
         # Extract repo name from source_dir for context
-        repo_name = (
-            source_dir.name if source_dir.name != "repo" else source_dir.parent.name
-        )
+        repo_name = source_dir.name if source_dir.name != "repo" else source_dir.parent.name
 
         # Get smart suggestions (uses LLM if configured, falls back to heuristics)
         # Pass full ext_stats so LLM can see file counts and estimated chunks
@@ -1669,31 +1545,15 @@ class IndexerService:
         # Add warnings based on what we found
         # Separate truly unparseable from parseable documents and OCR-eligible images
         ocr_images_found = [ext for ext in ext_stats if ext in OCR_EXTENSIONS]
-        unparseable_found = [
-            ext
-            for ext in ext_stats
-            if ext in UNPARSEABLE_BINARY_EXTENSIONS and ext not in OCR_EXTENSIONS
-        ]
-        parseable_docs_found = [
-            ext for ext in ext_stats if ext in PARSEABLE_DOCUMENT_EXTENSIONS
-        ]
+        unparseable_found = [ext for ext in ext_stats if ext in UNPARSEABLE_BINARY_EXTENSIONS and ext not in OCR_EXTENSIONS]
+        parseable_docs_found = [ext for ext in ext_stats if ext in PARSEABLE_DOCUMENT_EXTENSIONS]
 
         if ocr_images_found:
             if ocr_enabled:
-                ocr_method = (
-                    f"Vision ({ocr_provider or 'default provider'})"
-                    if ocr_mode == "vision"
-                    else "Tesseract"
-                )
-                warnings.append(
-                    f"Found image types ({', '.join(ocr_images_found)}) that will be processed "
-                    f"with {ocr_method} to extract text."
-                )
+                ocr_method = f"Vision ({ocr_provider or 'default provider'})" if ocr_mode == "vision" else "Tesseract"
+                warnings.append(f"Found image types ({', '.join(ocr_images_found)}) that will be processed with {ocr_method} to extract text.")
             else:
-                warnings.append(
-                    f"Found image types ({', '.join(ocr_images_found)}) that will be skipped. "
-                    "Enable OCR to extract text from these files."
-                )
+                warnings.append(f"Found image types ({', '.join(ocr_images_found)}) that will be skipped. Enable OCR to extract text from these files.")
 
         if unparseable_found:
             warnings.append(
@@ -1710,25 +1570,21 @@ class IndexerService:
 
         if skipped_oversized > 0:
             warnings.append(
-                f"Skipped {skipped_oversized} files exceeding the {max_file_size_kb}KB size limit. "
-                "Increase max file size if you need to include them."
+                f"Skipped {skipped_oversized} files exceeding the {max_file_size_kb}KB size limit. Increase max file size if you need to include them."
             )
 
         if large_files:
             threshold_kb = int(max_file_size_kb * 0.8)
             if len(large_files) > 5:
                 warnings.append(
-                    f"Found {len(large_files)} files over {threshold_kb}KB (approaching limit). "
-                    f"Examples: {large_files[0][0]} ({large_files[0][1] // 1024}KB)"
+                    f"Found {len(large_files)} files over {threshold_kb}KB (approaching limit). Examples: {large_files[0][0]} ({large_files[0][1] // 1024}KB)"
                 )
             else:
                 for path, size in large_files[:3]:
                     warnings.append(f"Large file: {path} ({size // 1024}KB)")
 
         # Calculate totals
-        total_estimated_chunks = sum(
-            stats["estimated_chunks"] for stats in ext_stats.values()
-        )
+        total_estimated_chunks = sum(stats["estimated_chunks"] for stats in ext_stats.values())
 
         # Estimate index size:
         # - Each chunk embedding ~6KB for 1536 dims (OpenAI) or ~3KB for 768 dims (Ollama)
@@ -1756,8 +1612,7 @@ class IndexerService:
         if estimated_index_size_mb > 1000:  # > 1GB
             warnings.insert(
                 0,
-                f"Estimated index size is {estimated_index_size_mb:.0f}MB. "
-                "Consider adding more exclusion patterns or reducing included file types.",
+                f"Estimated index size is {estimated_index_size_mb:.0f}MB. Consider adding more exclusion patterns or reducing included file types.",
             )
 
         # Warn if embedding dimensions exceed pgvector's index limit (applies to filesystem + doc indexing)
@@ -1794,20 +1649,14 @@ class IndexerService:
 
                 memory_estimate = MemoryEstimate(
                     embedding_dimension=embedding_dim,
-                    steady_memory_mb=round(
-                        mem_est["steady_memory_bytes"] / (1024 * 1024), 1
-                    ),
-                    peak_memory_mb=round(
-                        mem_est["peak_memory_bytes"] / (1024 * 1024), 1
-                    ),
+                    steady_memory_mb=round(mem_est["steady_memory_bytes"] / (1024 * 1024), 1),
+                    peak_memory_mb=round(mem_est["peak_memory_bytes"] / (1024 * 1024), 1),
                     dimension_breakdown=dim_breakdown,
                 )
 
                 # Calculate total memory with existing indexes
                 existing_indexes = await repository.list_index_metadata()
-                existing_memory = sum(
-                    (idx.steadyMemoryBytes or 0) for idx in existing_indexes
-                )
+                existing_memory = sum((idx.steadyMemoryBytes or 0) for idx in existing_indexes)
                 total_memory_with_existing_mb = round(
                     (existing_memory + mem_est["steady_memory_bytes"]) / (1024 * 1024),
                     1,
@@ -1839,9 +1688,7 @@ class IndexerService:
             chunk_overlap=chunk_overlap,
         )
 
-    async def create_index_from_upload(
-        self, file: BinaryIO, filename: str, config: IndexConfig
-    ) -> IndexJob:
+    async def create_index_from_upload(self, file: BinaryIO, filename: str, config: IndexConfig) -> IndexJob:
         """Create an index from an uploaded archive file.
 
         The uploaded file is stored in a persistent tmp directory so it
@@ -1887,14 +1734,10 @@ class IndexerService:
 
             await asyncio.to_thread(_copy_upload)
 
-            logger.info(
-                f"Saved upload to tmp directory for job {job_id}: {archive_path}"
-            )
+            logger.info(f"Saved upload to tmp directory for job {job_id}: {archive_path}")
 
             # Start processing in background — hold strong reference to prevent GC
-            self._processing_tasks[job.id] = asyncio.create_task(
-                self._process_upload(job, archive_path, tmp_dir)
-            )
+            self._processing_tasks[job.id] = asyncio.create_task(self._process_upload(job, archive_path, tmp_dir))
 
         except Exception as e:
             job.status = IndexStatus.FAILED
@@ -1919,16 +1762,12 @@ class IndexerService:
         tmp_path = UPLOAD_TMP_DIR / failed_job.id
 
         if not tmp_path.exists():
-            raise ValueError(
-                "Upload files no longer available. Please re-upload the file."
-            )
+            raise ValueError("Upload files no longer available. Please re-upload the file.")
 
         # Find the archive file (not directories like 'extracted')
         archive_files = [f for f in tmp_path.iterdir() if f.is_file()]
         if not archive_files:
-            raise ValueError(
-                "Upload archive file not found. Please re-upload the file."
-            )
+            raise ValueError("Upload archive file not found. Please re-upload the file.")
 
         archive_path = archive_files[0]
 
@@ -1968,9 +1807,7 @@ class IndexerService:
         new_archive_path = new_tmp_dir / archive_path.name
 
         # Start processing in background — hold strong reference to prevent GC
-        self._processing_tasks[job.id] = asyncio.create_task(
-            self._process_upload(job, new_archive_path, new_tmp_dir)
-        )
+        self._processing_tasks[job.id] = asyncio.create_task(self._process_upload(job, new_archive_path, new_tmp_dir))
 
         return job
 
@@ -2085,17 +1922,13 @@ class IndexerService:
             try:
                 await self._maybe_reinitialize_rag(job)
             except Exception as rag_err:
-                logger.warning(
-                    f"Job {job.id}: Could not reinitialize RAG components: {rag_err}"
-                )
+                logger.warning(f"Job {job.id}: Could not reinitialize RAG components: {rag_err}")
 
             # Update job status - gracefully handle database disconnection
             try:
                 await repository.update_job(job)
             except Exception as db_err:
-                logger.warning(
-                    f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}"
-                )
+                logger.warning(f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}")
 
     async def _process_git(self, job: IndexJob, skip_clone: bool = False):
         """Process a git repository.
@@ -2183,9 +2016,7 @@ class IndexerService:
         finally:
             # Clean up temp marker directory
             if job.status in (IndexStatus.COMPLETED, IndexStatus.FAILED):
-                await asyncio.to_thread(
-                    shutil.rmtree, temp_marker_dir, ignore_errors=True
-                )
+                await asyncio.to_thread(shutil.rmtree, temp_marker_dir, ignore_errors=True)
             self._cancellation_flags.pop(job.id, None)
             self._active_jobs.pop(job.id, None)
             self._processing_tasks.pop(job.id, None)
@@ -2202,17 +2033,13 @@ class IndexerService:
             try:
                 await self._maybe_reinitialize_rag(job)
             except Exception as rag_err:
-                logger.warning(
-                    f"Job {job.id}: Could not reinitialize RAG components: {rag_err}"
-                )
+                logger.warning(f"Job {job.id}: Could not reinitialize RAG components: {rag_err}")
 
             # Update job status - gracefully handle database disconnection
             try:
                 await repository.update_job(job)
             except Exception as db_err:
-                logger.warning(
-                    f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}"
-                )
+                logger.warning(f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}")
 
     async def _clone_git_repo(self, job: IndexJob, repo_dir: Path) -> None:
         """Clone a git repository to the specified directory.
@@ -2244,9 +2071,7 @@ class IndexerService:
         # Build git clone command based on depth setting
         git_args = ["git", "clone", "--progress"]
         if history_depth == 0:
-            logger.info(
-                "Cloning with full history (may take a long time for large repos)"
-            )
+            logger.info("Cloning with full history (may take a long time for large repos)")
         elif history_depth == 1:
             git_args.extend(["--depth", "1"])
             logger.info("Shallow clone (latest commit only)")
@@ -2272,9 +2097,7 @@ class IndexerService:
                 stderr=subprocess.PIPE,
                 env=env,
             )
-            stderr_output = await self._stream_clone_progress(
-                process, job, clone_timeout_seconds
-            )
+            stderr_output = await self._stream_clone_progress(process, job, clone_timeout_seconds)
         except TimeoutError as exc:
             try:
                 process.kill()
@@ -2295,14 +2118,8 @@ class IndexerService:
             # Clean up failed clone
             await asyncio.to_thread(shutil.rmtree, repo_dir, ignore_errors=True)
             error_msg = stderr_output
-            if (
-                "could not read Username" in error_msg
-                or "Authentication failed" in error_msg
-            ):
-                raise RuntimeError(
-                    "Git clone failed: Authentication required. "
-                    "This is a private repository - please provide a valid access token."
-                )
+            if "could not read Username" in error_msg or "Authentication failed" in error_msg:
+                raise RuntimeError("Git clone failed: Authentication required. This is a private repository - please provide a valid access token.")
             raise RuntimeError(f"Git clone failed: {error_msg}")
 
         logger.info("Clone complete")
@@ -2332,9 +2149,7 @@ class IndexerService:
                 *args,
             ]
 
-        def format_dubious_ownership_error(
-            error_msg: str, operation: str
-        ) -> Optional[str]:
+        def format_dubious_ownership_error(error_msg: str, operation: str) -> Optional[str]:
             if "detected dubious ownership" not in error_msg:
                 return None
             repo_path = repo_dir.resolve()
@@ -2363,9 +2178,7 @@ class IndexerService:
         )
         if remote_result.returncode != 0:
             remote_error = remote_result.stderr or remote_result.stdout
-            ownership_error = format_dubious_ownership_error(
-                remote_error, "remote update"
-            )
+            ownership_error = format_dubious_ownership_error(remote_error, "remote update")
             if ownership_error:
                 raise RuntimeError(ownership_error)
             raise RuntimeError(f"Git remote update failed: {remote_error}")
@@ -2388,13 +2201,9 @@ class IndexerService:
                 timeout=10,
                 check=False,
             )
-            current_depth = (
-                int(depth_result.stdout.strip()) if depth_result.returncode == 0 else 1
-            )
+            current_depth = int(depth_result.stdout.strip()) if depth_result.returncode == 0 else 1
         except subprocess.TimeoutExpired:
-            logger.warning(
-                "git rev-list --count timed out (large repo), assuming deep history"
-            )
+            logger.warning("git rev-list --count timed out (large repo), assuming deep history")
             current_depth = 999999  # Assume large depth so we don't re-clone
 
         # Check if repo is shallow
@@ -2404,14 +2213,10 @@ class IndexerService:
         branch = job.git_branch or "main"
         if history_depth == 0 and is_shallow:
             logger.info("Unshallowing repo for full history")
-            fetch_args = repo_git_args(
-                "fetch", "--unshallow", "--progress", "origin", branch
-            )
+            fetch_args = repo_git_args("fetch", "--unshallow", "--progress", "origin", branch)
         elif history_depth > current_depth and is_shallow:
             deepen_amount = history_depth - current_depth
-            logger.info(
-                f"Deepening repo from {current_depth} to {history_depth} commits (+{deepen_amount})"
-            )
+            logger.info(f"Deepening repo from {current_depth} to {history_depth} commits (+{deepen_amount})")
             fetch_args = repo_git_args(
                 "fetch",
                 f"--deepen={deepen_amount}",
@@ -2420,9 +2225,7 @@ class IndexerService:
                 branch,
             )
         else:
-            logger.info(
-                f"Fetching latest changes (depth: {current_depth} -> {history_depth})"
-            )
+            logger.info(f"Fetching latest changes (depth: {current_depth} -> {history_depth})")
             fetch_args = repo_git_args("fetch", "--progress", "origin", branch)
 
         try:
@@ -2433,19 +2236,14 @@ class IndexerService:
                 cwd=repo_dir,
                 env=env,
             )
-            stderr_output = await self._stream_clone_progress(
-                process, job, clone_timeout_seconds
-            )
+            stderr_output = await self._stream_clone_progress(process, job, clone_timeout_seconds)
         except TimeoutError as exc:
             try:
                 process.kill()
                 await process.wait()
             except Exception:
                 pass
-            error_msg = (
-                f"Git fetch timed out after {clone_timeout_minutes} minutes. "
-                "Try increasing the clone timeout in Advanced Options."
-            )
+            error_msg = f"Git fetch timed out after {clone_timeout_minutes} minutes. Try increasing the clone timeout in Advanced Options."
             logger.error(f"Job {job.id}: {error_msg}")
             raise RuntimeError(error_msg) from exc
 
@@ -2454,14 +2252,8 @@ class IndexerService:
             ownership_error = format_dubious_ownership_error(error_msg, "fetch")
             if ownership_error:
                 raise RuntimeError(ownership_error)
-            if (
-                "could not read Username" in error_msg
-                or "Authentication failed" in error_msg
-            ):
-                raise RuntimeError(
-                    "Git fetch failed: Authentication required. "
-                    "This is a private repository - please provide a valid access token."
-                )
+            if "could not read Username" in error_msg or "Authentication failed" in error_msg:
+                raise RuntimeError("Git fetch failed: Authentication required. This is a private repository - please provide a valid access token.")
             raise RuntimeError(f"Git fetch failed: {error_msg}")
 
         # Reset to the fetched branch - run in thread to avoid blocking
@@ -2483,9 +2275,7 @@ class IndexerService:
 
         logger.info("Fetch complete")
 
-    async def _stream_clone_progress(
-        self, process: Any, job: IndexJob, timeout_seconds: int
-    ) -> str:
+    async def _stream_clone_progress(self, process: Any, job: IndexJob, timeout_seconds: int) -> str:
         """Stream git clone progress and update job status.
 
         Args:
@@ -2502,9 +2292,7 @@ class IndexerService:
 
         # Pattern to match git progress output like:
         # "Receiving objects:  45% (12345/27000), 156.00 MiB | 5.23 MiB/s"
-        progress_pattern = re.compile(
-            r"(Receiving objects|Resolving deltas|Updating files):\s+(\d+)%"
-        )
+        progress_pattern = re.compile(r"(Receiving objects|Resolving deltas|Updating files):\s+(\d+)%")
 
         async def read_with_timeout():
             start_time = asyncio.get_event_loop().time()
@@ -2561,9 +2349,7 @@ class IndexerService:
 
         return "".join(stderr_chunks)
 
-    async def _index_git_history(
-        self, repo_dir: Path, index_name: str, depth: int
-    ) -> List:
+    async def _index_git_history(self, repo_dir: Path, index_name: str, depth: int) -> List:
         """Extract git commit history as documents for indexing.
 
         Args:
@@ -2726,9 +2512,7 @@ class IndexerService:
 
         return documents
 
-    async def _create_faiss_index(
-        self, job: IndexJob, source_dir: Path, git_token: Optional[str] = None
-    ):
+    async def _create_faiss_index(self, job: IndexJob, source_dir: Path, git_token: Optional[str] = None):
         """Create FAISS index from source directory."""
         config = job.config
         ocr_mode = config.ocr_mode
@@ -2737,9 +2521,7 @@ class IndexerService:
         ocr_enabled = ocr_mode != OcrMode.DISABLED
 
         # Collect all files to process (run in thread pool as rglob can be slow on large repos)
-        logger.info(
-            f"Job {job.id}: Scanning directory for matching files (this may take a while for large repos)..."
-        )
+        logger.info(f"Job {job.id}: Scanning directory for matching files (this may take a while for large repos)...")
         job.error_message = "Scanning files..."
         await repository.update_job(job)
 
@@ -2779,9 +2561,7 @@ class IndexerService:
         if ocr_mode == OcrMode.VISION:
             settings = await get_app_settings()
             if not effective_ocr_provider:
-                effective_ocr_provider = str(
-                    settings.get("default_ocr_provider") or "ollama"
-                )
+                effective_ocr_provider = str(settings.get("default_ocr_provider") or "ollama")
             effective_ocr_provider = normalize_provider_name(effective_ocr_provider)
             if not ocr_vision_model:
                 ocr_vision_model = settings.get("default_ocr_vision_model")
@@ -2802,9 +2582,7 @@ class IndexerService:
                     ext_lower = file_path.suffix.lower()
 
                     # Use document parser for Office/PDF files and images (when OCR enabled)
-                    if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS or (
-                        ocr_enabled and ext_lower in OCR_EXTENSIONS
-                    ):
+                    if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS or (ocr_enabled and ext_lower in OCR_EXTENSIONS):
                         content = await extract_text_from_file_async(
                             file_path,
                             ocr_mode=ocr_mode.value,
@@ -2845,18 +2623,14 @@ class IndexerService:
 
             ext_lower = file_path.suffix.lower()
             if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS:
-                logger.debug(
-                    f"Parsing document file {file_path.name} with document parser"
-                )
+                logger.debug(f"Parsing document file {file_path.name} with document parser")
             files_to_load.append(file_path)
 
         # Load files in parallel batches
         # Process in batches to allow periodic progress updates and cancellation checks
         batch_size = max_concurrent_loads * 2  # 2x concurrency for good pipeline
         total_to_load = len(files_to_load)
-        logger.info(
-            f"Loading {total_to_load} files with {max_concurrent_loads} concurrent workers"
-        )
+        logger.info(f"Loading {total_to_load} files with {max_concurrent_loads} concurrent workers")
 
         for batch_start in range(0, total_to_load, batch_size):
             # Check for cancellation at batch boundaries
@@ -2900,10 +2674,7 @@ class IndexerService:
             try:
                 await repository.update_job(job)
             except Exception as progress_err:
-                logger.warning(
-                    f"Job {job.id}: Progress update failed "
-                    f"({job.processed_files}/{job.total_files}), continuing: {progress_err}"
-                )
+                logger.warning(f"Job {job.id}: Progress update failed ({job.processed_files}/{job.total_files}), continuing: {progress_err}")
             logger.info(f"Loaded {job.processed_files}/{job.total_files} files")
 
             # Brief yield to event loop between batches
@@ -2912,9 +2683,7 @@ class IndexerService:
         # Index git commit history if depth > 1
         history_depth = getattr(config, "git_history_depth", 1)
         if history_depth != 1:
-            commit_docs = await self._index_git_history(
-                source_dir, job.name, history_depth
-            )
+            commit_docs = await self._index_git_history(source_dir, job.name, history_depth)
             if commit_docs:
                 documents.extend(commit_docs)
                 logger.info(f"Added {len(commit_docs)} commit history documents")
@@ -2955,9 +2724,7 @@ class IndexerService:
         # Get embeddings model
         embeddings = await self._get_embeddings(app_settings)
 
-        logger.info(
-            f"Using {app_settings.embedding_provider} embeddings with model: {app_settings.embedding_model}"
-        )
+        logger.info(f"Using {app_settings.embedding_provider} embeddings with model: {app_settings.embedding_model}")
 
         # Process in batches to show progress and throttle embedding calls
         batch_size = EMBEDDING_SUB_BATCH_SIZE
@@ -2974,8 +2741,7 @@ class IndexerService:
             lmstudio_base_url=getattr(app_settings, "lmstudio_base_url", None),
         )
         logger.debug(
-            f"Embedding model context limit: {max_allowed_tokens} tokens "
-            f"(provider: {app_settings.embedding_provider}, model: {app_settings.embedding_model})"
+            f"Embedding model context limit: {max_allowed_tokens} tokens (provider: {app_settings.embedding_provider}, model: {app_settings.embedding_model})"
         )
 
         # Re-chunk oversized chunks before embedding
@@ -3032,9 +2798,7 @@ class IndexerService:
                 [doc.metadata for doc in docs],
             )
 
-        all_texts, all_metadatas = await asyncio.to_thread(
-            _extract_texts_and_meta, chunks
-        )
+        all_texts, all_metadatas = await asyncio.to_thread(_extract_texts_and_meta, chunks)
 
         # Embed all chunks with sub-batching, cancellation checks, and
         # progressive context-length error recovery
@@ -3057,9 +2821,7 @@ class IndexerService:
                 try:
                     # embed_documents_subbatched handles sub-batching and
                     # event loop yielding internally (50 docs per API call)
-                    batch_embeddings = await embed_documents_subbatched(
-                        embeddings, batch_texts, logger_override=logger
-                    )
+                    batch_embeddings = await embed_documents_subbatched(embeddings, batch_texts, logger_override=logger)
                     all_embeddings.extend(batch_embeddings)
                     break
                 except Exception as e:
@@ -3109,9 +2871,7 @@ class IndexerService:
                                         new_metas.append(meta)
                                 return new_texts, new_metas, rechunked
 
-                            new_texts, new_metas, rechunked_count_batch = (
-                                await asyncio.to_thread(rechunk_batch)
-                            )
+                            new_texts, new_metas, rechunked_count_batch = await asyncio.to_thread(rechunk_batch)
 
                             if rechunked_count_batch > 0:
                                 logger.warning(
@@ -3132,27 +2892,18 @@ class IndexerService:
                             continue  # Retry with re-chunked batch
 
                         # Fallback: embed individually, skipping failures
-                        logger.warning(
-                            f"Context retries exhausted for batch {batch_num}, "
-                            f"embedding individually"
-                        )
+                        logger.warning(f"Context retries exhausted for batch {batch_num}, embedding individually")
                         for text in batch_texts:
                             if self._is_cancelled(job.id):
                                 raise asyncio.CancelledError("Job cancelled by user")
                             try:
-                                single_emb = await asyncio.to_thread(
-                                    embeddings.embed_documents, [text]
-                                )
+                                single_emb = await asyncio.to_thread(embeddings.embed_documents, [text])
                                 all_embeddings.extend(single_emb)
                             except Exception as single_err:
-                                logger.warning(
-                                    f"Skipping chunk ({len(text)} chars): {single_err}"
-                                )
+                                logger.warning(f"Skipping chunk ({len(text)} chars): {single_err}")
                                 # Use zero vector as placeholder to keep alignment
                                 if all_embeddings:
-                                    all_embeddings.append(
-                                        [0.0] * len(all_embeddings[0])
-                                    )
+                                    all_embeddings.append([0.0] * len(all_embeddings[0]))
                                 else:
                                     # Skip - will be caught by alignment check
                                     pass
@@ -3167,10 +2918,7 @@ class IndexerService:
             try:
                 await repository.update_job(job)
             except Exception as progress_err:
-                logger.warning(
-                    f"Job {job.id}: Chunk progress update failed "
-                    f"({embed_progress}/{len(all_texts)}), continuing: {progress_err}"
-                )
+                logger.warning(f"Job {job.id}: Chunk progress update failed ({embed_progress}/{len(all_texts)}), continuing: {progress_err}")
             logger.info(f"Embedded {embed_progress}/{len(all_texts)} chunks")
 
             # Brief pause for rate limits and event loop
@@ -3184,9 +2932,7 @@ class IndexerService:
         # This avoids O(n^2) merge_from overhead entirely.
         # Run list construction + FAISS build together in thread to avoid
         # blocking the event loop when zipping 200K+ items.
-        logger.info(
-            f"Building FAISS index from {len(all_embeddings)} pre-computed embeddings..."
-        )
+        logger.info(f"Building FAISS index from {len(all_embeddings)} pre-computed embeddings...")
 
         _texts = all_texts
         _embeds = all_embeddings

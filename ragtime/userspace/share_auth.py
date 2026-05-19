@@ -9,9 +9,7 @@ SHARE_AUTH_HEADER = "x-userspace-share-auth"
 
 
 def share_auth_cookie_name_for_slug(owner_username: str, share_slug: str) -> str:
-    digest = hashlib.sha256(
-        f"{owner_username}:{share_slug}".encode("utf-8")
-    ).hexdigest()[:16]
+    digest = hashlib.sha256(f"{owner_username}:{share_slug}".encode("utf-8")).hexdigest()[:16]
     return f"userspace_share_auth_{digest}"
 
 

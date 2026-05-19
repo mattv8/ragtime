@@ -95,10 +95,7 @@ def parse_entrypoint_config(workspace_files_path: Path) -> EntrypointStatus:
     if not config_path.exists() or not config_path.is_file():
         return EntrypointStatus(
             state="missing",
-            error=(
-                "No .ragtime/runtime-entrypoint.json found. "
-                "Create one with a command, cwd, and framework to enable preview."
-            ),
+            error=("No .ragtime/runtime-entrypoint.json found. Create one with a command, cwd, and framework to enable preview."),
         )
 
     try:
@@ -130,10 +127,7 @@ def parse_entrypoint_config(workspace_files_path: Path) -> EntrypointStatus:
             framework_known=framework_known,
             command=command,
             cwd=cwd,
-            error=(
-                ".ragtime/runtime-entrypoint.json exists but has no command. "
-                "Add a command field to define how the workspace starts."
-            ),
+            error=(".ragtime/runtime-entrypoint.json exists but has no command. Add a command field to define how the workspace starts."),
             raw=parsed_raw,
         )
 

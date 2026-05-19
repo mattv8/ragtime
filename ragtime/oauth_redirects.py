@@ -28,9 +28,7 @@ DEFAULT_TRUSTED_REDIRECT_URIS: tuple[str, ...] = (
     "https://claude.ai/api/mcp/auth_callback",
 )
 
-LOOPBACK_REDIRECT_HOSTS: frozenset[str] = frozenset(
-    {"127.0.0.1", "localhost", "::1", "[::1]"}
-)
+LOOPBACK_REDIRECT_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
 LOOPBACK_ALLOWED_ORIGINS: tuple[str, ...] = (
     "http://127.0.0.1",
@@ -43,8 +41,7 @@ DEFAULT_ALLOWED_ORIGINS: tuple[str, ...] = tuple(
         {
             f"{parsed.scheme.lower()}://{parsed.hostname.lower()}"
             for uri in DEFAULT_TRUSTED_REDIRECT_URIS
-            if (parsed := urlparse(uri)).scheme in {"http", "https"}
-            and parsed.hostname
+            if (parsed := urlparse(uri)).scheme in {"http", "https"} and parsed.hostname
         }
     )
 )
@@ -55,9 +52,7 @@ def build_allowed_origins(configured_origins: str) -> list[str]:
     if configured_origins == "*":
         return ["*"]
 
-    origins = [
-        origin.strip() for origin in configured_origins.split(",") if origin.strip()
-    ]
+    origins = [origin.strip() for origin in configured_origins.split(",") if origin.strip()]
     resolved = list(DEFAULT_ALLOWED_ORIGINS)
 
     for origin in origins:

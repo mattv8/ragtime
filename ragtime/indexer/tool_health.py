@@ -1,4 +1,3 @@
-
 import asyncio
 import contextlib
 import time
@@ -97,14 +96,8 @@ class ToolHealthMonitor:
             return status.error or "Heartbeat failed"
         return None
 
-    def filter_healthy_tool_config_dicts(
-        self, tool_configs: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        return [
-            config
-            for config in tool_configs
-            if self.is_tool_healthy(str(config.get("id") or ""))
-        ]
+    def filter_healthy_tool_config_dicts(self, tool_configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [config for config in tool_configs if self.is_tool_healthy(str(config.get("id") or ""))]
 
     def healthy_tool_ids_for_configs(self, tool_configs: list[Any]) -> list[str]:
         healthy_ids: list[str] = []
@@ -194,20 +187,14 @@ class ToolHealthMonitor:
 
         return await self._store_statuses(statuses)
 
-    async def _store_statuses(
-        self, statuses: dict[str, ToolHeartbeatStatus]
-    ) -> ToolHealthCheckResult:
+    async def _store_statuses(self, statuses: dict[str, ToolHeartbeatStatus]) -> ToolHealthCheckResult:
         changed_tool_ids: set[str] = set()
         now = datetime.now(timezone.utc)
         async with self._lock:
             for tool_id, status in statuses.items():
                 previous = self._statuses.get(tool_id)
-                previous_healthy = bool(
-                    previous and previous.alive and self.is_status_fresh(previous, now=now)
-                )
-                current_healthy = bool(
-                    status.alive and self.is_status_fresh(status, now=now)
-                )
+                previous_healthy = bool(previous and previous.alive and self.is_status_fresh(previous, now=now))
+                current_healthy = bool(status.alive and self.is_status_fresh(status, now=now))
                 if previous is None or previous_healthy != current_healthy:
                     changed_tool_ids.add(tool_id)
                 self._statuses[tool_id] = status
@@ -237,9 +224,7 @@ class ToolHealthMonitor:
         )
         return await self._store_statuses({tool_id: status})
 
-    async def _persist_statuses(
-        self, statuses: dict[str, ToolHeartbeatStatus]
-    ) -> None:
+    async def _persist_statuses(self, statuses: dict[str, ToolHeartbeatStatus]) -> None:
         if not statuses:
             return
 

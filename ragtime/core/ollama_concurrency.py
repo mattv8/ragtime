@@ -37,9 +37,7 @@ async def _get_concurrency_limit() -> int:
     """
     try:
         settings = await get_app_settings()
-        limit = settings.get(
-            "ocr_concurrency_limit", _DEFAULT_OCR_CONCURRENCY_LIMIT
-        )
+        limit = settings.get("ocr_concurrency_limit", _DEFAULT_OCR_CONCURRENCY_LIMIT)
         return max(1, int(limit))
     except Exception as e:
         logger.debug(f"Could not read ocr_concurrency_limit: {e}")
@@ -78,9 +76,7 @@ async def get_ollama_embedding_semaphore() -> asyncio.Semaphore:
 
     if _ollama_embedding_semaphore is None:
         _embedding_semaphore_limit = _DEFAULT_EMBEDDING_CONCURRENCY_LIMIT
-        _ollama_embedding_semaphore = _new_semaphore(
-            _embedding_semaphore_limit, "embedding"
-        )
+        _ollama_embedding_semaphore = _new_semaphore(_embedding_semaphore_limit, "embedding")
 
     return _ollama_embedding_semaphore
 

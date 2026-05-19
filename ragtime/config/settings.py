@@ -7,11 +7,11 @@ See: ragtime/core/app_settings.py and indexer/routes.py (GET/PUT /indexes/settin
 """
 
 import os
+import secrets
 import sys
 from pathlib import Path
 from typing import Literal
 
-import secrets
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
@@ -22,9 +22,7 @@ from ragtime.oauth_redirects import (
 
 # File to persist auto-generated encryption key (in data volume)
 # Used for both JWT signing and secrets encryption (Fernet)
-ENCRYPTION_KEY_FILE = (
-    Path(os.environ.get("INDEX_DATA_PATH", "/data")) / ".encryption_key"
-)
+ENCRYPTION_KEY_FILE = Path(os.environ.get("INDEX_DATA_PATH", "/data")) / ".encryption_key"
 
 SameSiteType = Literal["lax", "strict", "none"]
 
@@ -135,29 +133,16 @@ class Settings(BaseSettings):
     tavily_api_key: str = Field(
         default="",
         alias="TAVILY_API_KEY",
-        description=(
-            "API key for Tavily web search. When unset, chat diagnostics "
-            "uses the bundled SearXNG service."
-        ),
+        description=("API key for Tavily web search. When unset, chat diagnostics uses the bundled SearXNG service."),
     )
 
     # Cloud userspace mount OAuth app credentials. Admins register one app per
     # provider; individual users authorize their own accounts against it.
-    cloud_mount_microsoft_client_id: str = Field(
-        default="", alias="CLOUD_MOUNT_MICROSOFT_CLIENT_ID"
-    )
-    cloud_mount_microsoft_client_secret: str = Field(
-        default="", alias="CLOUD_MOUNT_MICROSOFT_CLIENT_SECRET"
-    )
-    cloud_mount_microsoft_tenant_id: str = Field(
-        default="", alias="CLOUD_MOUNT_MICROSOFT_TENANT_ID"
-    )
-    cloud_mount_google_client_id: str = Field(
-        default="", alias="CLOUD_MOUNT_GOOGLE_CLIENT_ID"
-    )
-    cloud_mount_google_client_secret: str = Field(
-        default="", alias="CLOUD_MOUNT_GOOGLE_CLIENT_SECRET"
-    )
+    cloud_mount_microsoft_client_id: str = Field(default="", alias="CLOUD_MOUNT_MICROSOFT_CLIENT_ID")
+    cloud_mount_microsoft_client_secret: str = Field(default="", alias="CLOUD_MOUNT_MICROSOFT_CLIENT_SECRET")
+    cloud_mount_microsoft_tenant_id: str = Field(default="", alias="CLOUD_MOUNT_MICROSOFT_TENANT_ID")
+    cloud_mount_google_client_id: str = Field(default="", alias="CLOUD_MOUNT_GOOGLE_CLIENT_ID")
+    cloud_mount_google_client_secret: str = Field(default="", alias="CLOUD_MOUNT_GOOGLE_CLIENT_SECRET")
 
     # Server
     host: str = Field(default="0.0.0.0", alias="HOST")
@@ -220,23 +205,15 @@ class Settings(BaseSettings):
         return key
 
     # Session cookie settings
-    session_cookie_name: str = Field(
-        default="ragtime_session", alias="SESSION_COOKIE_NAME"
-    )
-    session_cookie_secure: bool = Field(
-        default=False, alias="SESSION_COOKIE_SECURE"
-    )  # Set True in production with HTTPS
+    session_cookie_name: str = Field(default="ragtime_session", alias="SESSION_COOKIE_NAME")
+    session_cookie_secure: bool = Field(default=False, alias="SESSION_COOKIE_SECURE")  # Set True in production with HTTPS
     session_cookie_httponly: bool = Field(default=True, alias="SESSION_COOKIE_HTTPONLY")
-    session_cookie_samesite: SameSiteType = Field(
-        default="lax", alias="SESSION_COOKIE_SAMESITE"
-    )
+    session_cookie_samesite: SameSiteType = Field(default="lax", alias="SESSION_COOKIE_SAMESITE")
 
     # Local fallback admin (works when LDAP is unreachable)
     # Username is auto-prefixed with "local:" to avoid collision with LDAP users
     local_admin_user: str = Field(default="admin", alias="LOCAL_ADMIN_USER")
-    local_admin_password: str = Field(
-        default="", alias="LOCAL_ADMIN_PASSWORD"
-    )  # Must be set to enable local admin
+    local_admin_password: str = Field(default="", alias="LOCAL_ADMIN_PASSWORD")  # Must be set to enable local admin
     oauth_trusted_redirect_uris: str = Field(
         default="",
         alias="OAUTH_TRUSTED_REDIRECT_URIS",

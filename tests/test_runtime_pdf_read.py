@@ -42,9 +42,7 @@ class RuntimePdfReadTests(unittest.IsolatedAsyncioTestCase):
             return "First page\n\n\nSecond page\n\nThird page"
 
         transport = httpx.MockTransport(handler)
-        with _patch_async_client(transport), patch.object(
-            service, "_extract_pdf_text", new=fake_extract
-        ):
+        with _patch_async_client(transport), patch.object(service, "_extract_pdf_text", new=fake_extract):
             result = await service.read_pdf(
                 RuntimePdfReadRequest(
                     url="https://example.com/paper.pdf",
@@ -74,9 +72,7 @@ class RuntimePdfReadTests(unittest.IsolatedAsyncioTestCase):
             return "Intro\n\nAttention heads attend to tokens.\n\nConclusion"
 
         transport = httpx.MockTransport(handler)
-        with _patch_async_client(transport), patch.object(
-            service, "_extract_pdf_text", new=fake_extract
-        ):
+        with _patch_async_client(transport), patch.object(service, "_extract_pdf_text", new=fake_extract):
             result = await service.read_pdf(
                 RuntimePdfReadRequest(
                     url="https://example.com/paper.pdf",
@@ -104,9 +100,7 @@ class RuntimePdfReadTests(unittest.IsolatedAsyncioTestCase):
 
         transport = httpx.MockTransport(handler)
         with _patch_async_client(transport):
-            result = await service.read_pdf(
-                RuntimePdfReadRequest(url="https://example.com/paper")
-            )
+            result = await service.read_pdf(RuntimePdfReadRequest(url="https://example.com/paper"))
 
         self.assertEqual(result.status, "not_pdf")
         self.assertEqual(result.content_type, "text/html; charset=utf-8")
@@ -118,17 +112,12 @@ class RuntimePdfReadTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(
                 403,
                 headers={"content-type": "text/html"},
-                content=(
-                    b"<html><body><h1>Access Denied</h1>"
-                    b"You don't have permission to access this PDF.</body></html>"
-                ),
+                content=(b"<html><body><h1>Access Denied</h1>You don't have permission to access this PDF.</body></html>"),
             )
 
         transport = httpx.MockTransport(handler)
         with _patch_async_client(transport):
-            result = await service.read_pdf(
-                RuntimePdfReadRequest(url="https://example.com/paper.pdf")
-            )
+            result = await service.read_pdf(RuntimePdfReadRequest(url="https://example.com/paper.pdf"))
 
         self.assertEqual(result.status, "error")
         self.assertEqual(result.failure_mode, "upstream_http_error")

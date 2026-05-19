@@ -10,15 +10,6 @@ from unittest.mock import patch
 
 from pydantic import ValidationError
 
-inserted_fake_rag_prompts = "ragtime.rag.prompts" not in sys.modules
-if inserted_fake_rag_prompts:
-    fake_rag_package = types.ModuleType("ragtime.rag")
-    fake_prompts_module = types.ModuleType("ragtime.rag.prompts")
-    fake_prompts_module.build_workspace_scm_setup_prompt = lambda *args, **kwargs: ""
-    fake_rag_package.prompts = fake_prompts_module
-    sys.modules.setdefault("ragtime.rag", fake_rag_package)
-    sys.modules["ragtime.rag.prompts"] = fake_prompts_module
-
 from ragtime.core.security import validate_sql_query
 from ragtime.core.sql_utils import enforce_max_results, format_psql_csv_output, format_query_result
 from ragtime.indexer.live_visualizations import (
@@ -28,9 +19,17 @@ from ragtime.indexer.live_visualizations import (
 )
 from ragtime.tools.chart import CreateLiveChartInput, create_chart
 from ragtime.tools.datatable import CreateLiveDataTableInput, create_datatable
-from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse
-from ragtime.userspace.models import UserSpaceWorkspace
+from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspace
 from ragtime.userspace.service import UserSpaceService
+
+inserted_fake_rag_prompts = "ragtime.rag.prompts" not in sys.modules
+if inserted_fake_rag_prompts:
+    fake_rag_package = types.ModuleType("ragtime.rag")
+    fake_prompts_module = types.ModuleType("ragtime.rag.prompts")
+    fake_prompts_module.build_workspace_scm_setup_prompt = lambda *args, **kwargs: ""
+    fake_rag_package.prompts = fake_prompts_module
+    sys.modules.setdefault("ragtime.rag", fake_rag_package)
+    sys.modules["ragtime.rag.prompts"] = fake_prompts_module
 
 if inserted_fake_rag_prompts:
     sys.modules.pop("ragtime.rag", None)
@@ -51,9 +50,7 @@ class _CaptureComponentExecutionService(UserSpaceService):
 
     async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
         self.component_execution_calls.append(dict(kwargs))
-        response = self.captured_response.model_copy(
-            update={"component_id": str(kwargs.get("component_id") or "tool-1")}
-        )
+        response = self.captured_response.model_copy(update={"component_id": str(kwargs.get("component_id") or "tool-1")})
         return (response, "select * from accounts")
 
 
@@ -406,11 +403,7 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
         self.assertIsNone(service.get_live_data_execution_warning("workspace-1"))
 
     def test_postgres_csv_formatter_keeps_multiline_description_in_one_row(self) -> None:
-        output = format_psql_csv_output(
-            'id,description,part_number\n'
-            '1,"Widget body\nwith wrapped notes",ABC-100\n'
-            '2,Plain description,XYZ-200\n'
-        )
+        output = format_psql_csv_output('id,description,part_number\n1,"Widget body\nwith wrapped notes",ABC-100\n2,Plain description,XYZ-200\n')
 
         rows, columns = UserSpaceService._parse_query_output(output)
 
@@ -451,18 +444,14 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
         self.assertEqual(rows[0]["payload"]["nested"], {"amount": 12.5})
 
     def test_postgres_json_transport_wrapper_removes_trailing_semicolon(self) -> None:
-        wrapped_query = UserSpaceService._wrap_postgres_query_for_json_transport(
-            "select id, payload from accounts;"
-        )
+        wrapped_query = UserSpaceService._wrap_postgres_query_for_json_transport("select id, payload from accounts;")
 
         self.assertIn("row_to_json(__ragtime_component_query)", wrapped_query)
         self.assertIn("select id, payload from accounts", wrapped_query)
         self.assertNotIn("accounts;", wrapped_query)
 
     def test_postgres_json_transport_wrapper_removes_semicolon_before_nonce_comment(self) -> None:
-        wrapped_query = UserSpaceService._wrap_postgres_query_for_json_transport(
-            "select id, payload from accounts LIMIT ALL;\n-- ui_refresh_nonce:123"
-        )
+        wrapped_query = UserSpaceService._wrap_postgres_query_for_json_transport("select id, payload from accounts LIMIT ALL;\n-- ui_refresh_nonce:123")
 
         self.assertIn("select id, payload from accounts LIMIT ALL", wrapped_query)
         self.assertNotIn("LIMIT ALL;", wrapped_query)
@@ -514,10 +503,7 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
         self.assertLess(elapsed, 0.5)
 
     def test_component_formatter_preserves_large_result_metadata(self) -> None:
-        source_rows = [
-            {"id": index, "amount": index * 2, "name": f"Customer {index}"}
-            for index in range(2500)
-        ]
+        source_rows = [{"id": index, "amount": index * 2, "name": f"Customer {index}"} for index in range(2500)]
         output = format_query_result(
             source_rows,
             ["id", "amount", "name"],

@@ -5,15 +5,14 @@ This module extracts common file handling functionality used by both
 IndexerService (upload/git) and FilesystemIndexerService (local/SMB/NFS).
 """
 
+import fnmatch
 import hashlib
 import os
 import re
+import tarfile
 import zipfile
 from pathlib import Path
 from typing import List, Optional, Tuple
-
-import fnmatch
-import tarfile
 
 from ragtime.core.file_constants import (
     MINIFIED_PATTERNS,
@@ -225,10 +224,7 @@ def is_excluded_directory(
     if include_hardcoded:
         patterns.extend(HARDCODED_EXCLUDES)
     rel_path = dir_path.relative_to(base_path).as_posix()
-    return (
-        get_matching_pattern(rel_path, dir_path.name, patterns) is not None
-        or get_matching_pattern(f"{rel_path}/", dir_path.name, patterns) is not None
-    )
+    return get_matching_pattern(rel_path, dir_path.name, patterns) is not None or get_matching_pattern(f"{rel_path}/", dir_path.name, patterns) is not None
 
 
 def has_binary_content(file_path: Path, sample_size: int = 8192) -> bool:
@@ -326,19 +322,13 @@ def extract_archive(
                 file_count += 1
                 total_size += info.file_size
                 if file_count > max_file_count:
-                    raise ValueError(
-                        f"Archive contains too many files (max: {max_file_count})"
-                    )
+                    raise ValueError(f"Archive contains too many files (max: {max_file_count})")
                 if total_size > max_total_size:
-                    raise ValueError(
-                        f"Archive too large when extracted (max: {max_total_size // (1024*1024*1024)} GB)"
-                    )
+                    raise ValueError(f"Archive too large when extracted (max: {max_total_size // (1024 * 1024 * 1024)} GB)")
                 # Zip Slip protection: reject entries that escape extract_dir
                 target = (extract_dir_resolved / info.filename).resolve()
                 if not target.is_relative_to(extract_dir_resolved):
-                    raise ValueError(
-                        f"Archive member would escape target directory: {info.filename}"
-                    )
+                    raise ValueError(f"Archive member would escape target directory: {info.filename}")
             zf.extractall(extract_dir)
 
     elif archive_name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2")):
@@ -348,26 +338,17 @@ def extract_archive(
                 file_count += 1
                 total_size += member.size
                 if file_count > max_file_count:
-                    raise ValueError(
-                        f"Archive contains too many files (max: {max_file_count})"
-                    )
+                    raise ValueError(f"Archive contains too many files (max: {max_file_count})")
                 if total_size > max_total_size:
-                    raise ValueError(
-                        f"Archive too large when extracted (max: {max_total_size // (1024*1024*1024)} GB)"
-                    )
+                    raise ValueError(f"Archive too large when extracted (max: {max_total_size // (1024 * 1024 * 1024)} GB)")
             # Use filter='data' to strip path traversal, absolute paths,
             # and dangerous special members (Python 3.12+).
             tf.extractall(extract_dir, filter="data")
 
     else:
-        raise ValueError(
-            f"Unsupported archive format: {archive_path.suffix}. "
-            "Supported: .zip, .tar, .tar.gz, .tgz, .tar.bz2"
-        )
+        raise ValueError(f"Unsupported archive format: {archive_path.suffix}. Supported: .zip, .tar, .tar.gz, .tgz, .tar.bz2")
 
-    logger.info(
-        f"Extracted {file_count} files ({total_size // (1024*1024)} MB) to {extract_dir}"
-    )
+    logger.info(f"Extracted {file_count} files ({total_size // (1024 * 1024)} MB) to {extract_dir}")
 
 
 def find_source_dir(extract_dir: Path) -> Path:
@@ -426,11 +407,7 @@ def collect_files_recursive(
     for dirpath, dirnames, filenames in os.walk(base_path, followlinks=follow_symlinks):
         current_dir = Path(dirpath)
         if not follow_symlinks:
-            dirnames[:] = [
-                dirname
-                for dirname in dirnames
-                if not (current_dir / dirname).is_symlink()
-            ]
+            dirnames[:] = [dirname for dirname in dirnames if not (current_dir / dirname).is_symlink()]
         dirnames[:] = [
             dirname
             for dirname in dirnames
@@ -469,10 +446,7 @@ def collect_files_recursive(
             except OSError:
                 continue
 
-            matches_include = (
-                get_matching_file_pattern(file_path, base_path, include_patterns)
-                is not None
-            )
+            matches_include = get_matching_file_pattern(file_path, base_path, include_patterns) is not None
             if not should_index_file_type(
                 file_path,
                 matches_include_pattern=matches_include,

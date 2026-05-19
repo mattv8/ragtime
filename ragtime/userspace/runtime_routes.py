@@ -14,33 +14,31 @@ from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
-                     WebSocket, WebSocketDisconnect)
-from fastapi.responses import (FileResponse, HTMLResponse, Response,
-                                StreamingResponse)
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import decode_access_token, get_browser_matched_origin
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import SHARE_AUTH_RATE_LIMIT, limiter
-from ragtime.core.security import (get_current_user, get_current_user_optional,
-                                   get_session_token)
-from ragtime.userspace.models import (UserSpaceBrowserAuthorization,
-                                      UserSpaceBrowserAuthRequest,
-                                      UserSpaceBrowserAuthResponse,
-                                      UserSpaceBrowserSurface,
-                                      UserSpaceCapabilityTokenResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpacePreviewLaunchRequest,
-                                      UserSpacePreviewLaunchResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse,
-                                      UserSpaceWorkspaceTabStateResponse)
+from ragtime.core.security import get_current_user, get_current_user_optional, get_session_token
+from ragtime.userspace.models import (
+    UserSpaceBrowserAuthorization,
+    UserSpaceBrowserAuthRequest,
+    UserSpaceBrowserAuthResponse,
+    UserSpaceBrowserSurface,
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceFileResponse,
+    UserSpacePreviewLaunchRequest,
+    UserSpacePreviewLaunchResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+    UserSpaceWorkspaceTabStateResponse,
+)
 from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
-from ragtime.userspace.share_auth import (set_share_auth_cookie,
-                                          share_auth_token_from_request)
+from ragtime.userspace.share_auth import set_share_auth_cookie, share_auth_token_from_request
 
 logger = get_logger(__name__)
 
@@ -76,9 +74,7 @@ def _root_share_target_url(base_url: str, share_path: str, target_path: str) -> 
     normalized_target_path = "/" + (target_path or "/").lstrip("/")
     if normalized_target_path == "/":
         return f"{normalized_base}{normalized_share_path}"
-    return (
-        f"{normalized_base}{normalized_share_path.rstrip('/')}{normalized_target_path}"
-    )
+    return f"{normalized_base}{normalized_share_path.rstrip('/')}{normalized_target_path}"
 
 
 def _workspace_preview_entry_url(
@@ -151,16 +147,14 @@ def _preview_host_unreachable_response(
     """
 
     preview_host = _html.escape(str(getattr(warning, "preview_host", "") or ""))
-    base_domain = _html.escape(
-        str(getattr(warning, "resolved_base_domain", "") or "")
-    )
+    base_domain = _html.escape(str(getattr(warning, "resolved_base_domain", "") or ""))
     origin = _html.escape(preview_origin or "")
     workspace = _html.escape(workspace_id)
     body = (
         "<!doctype html>\n"
-        "<html lang=\"en\"><head><meta charset=\"utf-8\">"
+        '<html lang="en"><head><meta charset="utf-8">'
         "<title>Userspace preview unreachable</title>"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<style>"
         "body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;"
         "max-width:640px;margin:2rem auto;padding:0 1rem;color:#222}"
@@ -177,7 +171,7 @@ def _preview_host_unreachable_response(
         "reverse proxy.</p>"
         f"<p><strong>Workspace:</strong> <code>{workspace}</code><br>"
         f"<strong>Preview origin:</strong> <code>{origin}</code></p>"
-        "<div class=\"hint\"><p><strong>Fix:</strong> configure a wildcard "
+        '<div class="hint"><p><strong>Fix:</strong> configure a wildcard '
         f"vhost <code>*.{base_domain}</code> on your reverse proxy "
         "(Caddy/Traefik/nginx) that forwards to the Ragtime container, or "
         "point <code>USERSPACE_PREVIEW_BASE_DOMAIN</code> at a domain whose "
@@ -301,11 +295,7 @@ def _proxy_request_headers(request: Request) -> dict[str, str]:
         "x-api-key",
         "x-userspace-share-password",
     }
-    forwarded_headers = {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower() not in _blocked
-    }
+    forwarded_headers = {key: value for key, value in request.headers.items() if key.lower() not in _blocked}
     # Preserve request context for framework URL generation and redirects.
     forwarded_headers.setdefault("x-forwarded-proto", request.url.scheme)
     forwarded_headers.setdefault("x-forwarded-host", request.headers.get("host", ""))
@@ -435,19 +425,13 @@ def _to_websocket_url(http_url: str) -> str:
         scheme = "ws"
     else:
         scheme = parsed.scheme
-    return urlunsplit(
-        (scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)
-    )
+    return urlunsplit((scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment))
 
 
 def _sanitize_preview_query(query: str | None) -> str | None:
     if not query:
         return None
-    cleaned_pairs = [
-        (key, value)
-        for key, value in parse_qsl(query, keep_blank_values=True)
-        if key != "cap_token"
-    ]
+    cleaned_pairs = [(key, value) for key, value in parse_qsl(query, keep_blank_values=True) if key != "cap_token"]
     if not cleaned_pairs:
         return None
     return urlencode(cleaned_pairs, doseq=True)
@@ -471,9 +455,7 @@ def _split_pty_token_from_url(ws_url: str) -> tuple[str, str | None]:
             continue
         cleaned_pairs.append((key, value))
     cleaned_query = urlencode(cleaned_pairs, doseq=True) if cleaned_pairs else ""
-    cleaned_url = urlunsplit(
-        (parsed.scheme, parsed.netloc, parsed.path, cleaned_query, parsed.fragment)
-    )
+    cleaned_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, cleaned_query, parsed.fragment))
     return cleaned_url, pty_token
 
 
@@ -490,11 +472,7 @@ async def _proxy_websocket_request(
         await _safe_close_websocket(websocket, code=1011)
         return
 
-    requested_subprotocols = [
-        str(protocol).strip()
-        for protocol in (websocket.scope.get("subprotocols") or [])
-        if str(protocol).strip()
-    ]
+    requested_subprotocols = [str(protocol).strip() for protocol in (websocket.scope.get("subprotocols") or []) if str(protocol).strip()]
 
     # Mirror the worker auth token that _proxy_http_request sends so the
     # upstream runtime worker accepts the WebSocket connection.
@@ -515,9 +493,7 @@ async def _proxy_websocket_request(
             subprotocols=requested_subprotocols or None,
             additional_headers=extra_headers or None,
         ) as upstream:
-            await websocket.accept(
-                subprotocol=getattr(upstream, "subprotocol", None) or None
-            )
+            await websocket.accept(subprotocol=getattr(upstream, "subprotocol", None) or None)
 
             if read_only:
                 await websocket.send_text(
@@ -612,9 +588,7 @@ async def _proxy_http_request(
     # all configured tools so the proxy never cuts off a legitimate query.
     # Falls back to 320 s if no tools are configured.
     proxy_read_timeout = _get_max_proxy_timeout()
-    timeout = httpx.Timeout(
-        connect=2.0, read=proxy_read_timeout, write=proxy_read_timeout, pool=5.0
-    )
+    timeout = httpx.Timeout(connect=2.0, read=proxy_read_timeout, write=proxy_read_timeout, pool=5.0)
     client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
     try:
         upstream_request = client.build_request(
@@ -650,9 +624,7 @@ async def _proxy_http_request(
         sandbox_flags: list[str] | None = None
         try:
             app_settings = await get_app_settings()
-            sandbox_flags = list(
-                app_settings.get("userspace_preview_sandbox_flags") or []
-            )
+            sandbox_flags = list(app_settings.get("userspace_preview_sandbox_flags") or [])
         except Exception:
             sandbox_flags = None
         content = _inject_bridge_script(
@@ -704,9 +676,7 @@ def _build_bridge_script_tag(
 ) -> bytes:
     params = {"workspace_id": workspace_id} if workspace_id else {}
     query = urlencode(params)
-    src = (
-        bridge_script_src or "/__ragtime/bridge.js"
-    ).strip() or "/__ragtime/bridge.js"
+    src = (bridge_script_src or "/__ragtime/bridge.js").strip() or "/__ragtime/bridge.js"
     if query:
         joiner = "&" if "?" in src else "?"
         src = f"{src}{joiner}{query}"
@@ -714,24 +684,14 @@ def _build_bridge_script_tag(
 
 
 def _build_bridge_config_tag(sandbox_flags: list[str]) -> bytes:
-    normalized_flags = [
-        flag.strip() for flag in sandbox_flags if isinstance(flag, str) and flag.strip()
-    ]
+    normalized_flags = [flag.strip() for flag in sandbox_flags if isinstance(flag, str) and flag.strip()]
     serialized_flags = json.dumps(normalized_flags).encode("utf-8")
-    return (
-        b"<script>window.__ragtime_preview_sandbox_flags="
-        + serialized_flags
-        + b";</script>"
-    )
+    return b"<script>window.__ragtime_preview_sandbox_flags=" + serialized_flags + b";</script>"
 
 
 def _build_bridge_context_tag(bridge_context: dict[str, Any]) -> bytes:
-    serialized_context = json.dumps(bridge_context, separators=(",", ":")).encode(
-        "utf-8"
-    )
-    return (
-        b"<script>window.__ragtime_preview_bridge=" + serialized_context + b";</script>"
-    )
+    serialized_context = json.dumps(bridge_context, separators=(",", ":")).encode("utf-8")
+    return b"<script>window.__ragtime_preview_bridge=" + serialized_context + b";</script>"
 
 
 def _inject_bridge_script(
@@ -828,9 +788,7 @@ async def workspace_events_sse(
         while True:
             if await request.is_disconnected():
                 break
-            new_gen = await _runtime_service().wait_workspace_generation(
-                workspace_id, generation, timeout=25.0
-            )
+            new_gen = await _runtime_service().wait_workspace_generation(workspace_id, generation, timeout=25.0)
             if await request.is_disconnected():
                 break
             if new_gen > generation:
@@ -933,22 +891,11 @@ async def get_runtime_screenshot(
 
     normalized_name = (filename or "").strip().replace("\\", "/")
     basename = Path(normalized_name).name
-    if (
-        not basename
-        or basename != normalized_name
-        or not basename.lower().endswith(".png")
-    ):
+    if not basename or basename != normalized_name or not basename.lower().endswith(".png"):
         raise HTTPException(status_code=400, detail="Invalid screenshot filename")
 
     index_data_root = Path(os.getenv("INDEX_DATA_PATH", "/data"))
-    screenshot_dir = (
-        index_data_root
-        / "_userspace"
-        / "workspaces"
-        / workspace_id
-        / "runtime-artifacts"
-        / "screenshots"
-    ).resolve()
+    screenshot_dir = (index_data_root / "_userspace" / "workspaces" / workspace_id / "runtime-artifacts" / "screenshots").resolve()
     screenshot_path = (screenshot_dir / basename).resolve()
 
     try:
@@ -1010,9 +957,7 @@ async def authorize_browser_surfaces(
         )
         max_age = max(
             60,
-            int(
-                (token_response.expires_at - datetime.now(timezone.utc)).total_seconds()
-            ),
+            int((token_response.expires_at - datetime.now(timezone.utc)).total_seconds()),
         )
         response.set_cookie(
             key=str(config["cookie_name"]),
@@ -1147,8 +1092,7 @@ async def issue_shared_preview_launch(
             response,
             authorization["share_auth_token"],
             max_age=max_age,
-            secure=request.url.scheme == "https"
-            or bool(getattr(settings, "session_cookie_secure", False)),
+            secure=request.url.scheme == "https" or bool(getattr(settings, "session_cookie_secure", False)),
             share_token=share_token,
         )
     external_origin = get_browser_matched_origin(
@@ -1197,14 +1141,12 @@ async def issue_shared_preview_launch_by_slug(
         owner_username=owner_username,
         share_slug=share_slug,
     )
-    authorization = (
-        await _userspace_service().authorize_shared_workspace_access_by_slug(
-            owner_username,
-            share_slug,
-            current_user=user,
-            password=share_password,
-            share_auth_token=share_auth_token,
-        )
+    authorization = await _userspace_service().authorize_shared_workspace_access_by_slug(
+        owner_username,
+        share_slug,
+        current_user=user,
+        password=share_password,
+        share_auth_token=share_auth_token,
     )
     workspace_id = authorization["workspace_id"]
     expires_at = authorization["expires_at"]
@@ -1217,8 +1159,7 @@ async def issue_shared_preview_launch_by_slug(
             response,
             authorization["share_auth_token"],
             max_age=max_age,
-            secure=request.url.scheme == "https"
-            or bool(getattr(settings, "session_cookie_secure", False)),
+            secure=request.url.scheme == "https" or bool(getattr(settings, "session_cookie_secure", False)),
             owner_username=owner_username,
             share_slug=share_slug,
         )
@@ -1230,9 +1171,7 @@ async def issue_shared_preview_launch_by_slug(
         return _root_share_launch_response(
             workspace_id=workspace_id,
             base_url=external_origin,
-            share_path=(
-                f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}"
-            ),
+            share_path=(f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}"),
             target_path=payload.path,
         )
     share_access_mode = await _userspace_service().get_share_access_mode(workspace_id)
@@ -1330,18 +1269,14 @@ async def runtime_pty(workspace_id: str, websocket: WebSocket):
         return
 
     try:
-        await _userspace_service().enforce_workspace_role(
-            workspace_id, user_id, "viewer"
-        )
+        await _userspace_service().enforce_workspace_role(workspace_id, user_id, "viewer")
     except HTTPException:
         await websocket.close(code=4403)
         return
 
     can_write = True
     try:
-        await _userspace_service().enforce_workspace_role(
-            workspace_id, user_id, "editor"
-        )
+        await _userspace_service().enforce_workspace_role(workspace_id, user_id, "editor")
     except HTTPException:
         can_write = False
 
@@ -1411,9 +1346,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
 
     await websocket.accept()
     accepted = True
-    await _runtime_service().register_collab_client(
-        workspace_id, snapshot.file_path, websocket, user_id
-    )
+    await _runtime_service().register_collab_client(workspace_id, snapshot.file_path, websocket, user_id)
 
     async def _cleanup_collab() -> None:
         users = await _runtime_service().clear_collab_presence(
@@ -1490,11 +1423,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
             if message_type != "update":
                 continue
             if not can_edit:
-                await websocket.send_text(
-                    json.dumps(
-                        {"type": "error", "message": "Read-only collaboration session"}
-                    )
-                )
+                await websocket.send_text(json.dumps({"type": "error", "message": "Read-only collaboration session"}))
                 continue
 
             content = str(payload.get("content", ""))
@@ -1524,10 +1453,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
                     json.dumps(
                         {
                             "type": "error",
-                            "message": (
-                                f"Version conflict: expected {conflict.expected_version}, "
-                                f"current {conflict.actual_version}"
-                            ),
+                            "message": (f"Version conflict: expected {conflict.expected_version}, current {conflict.actual_version}"),
                         }
                     )
                 )
@@ -1665,9 +1591,7 @@ async def collab_delete_file(
 
 
 @router.api_route("/workspaces/{workspace_id}/preview", methods=_PROXY_METHODS)
-@router.api_route(
-    "/workspaces/{workspace_id}/preview/{path:path}", methods=_PROXY_METHODS
-)
+@router.api_route("/workspaces/{workspace_id}/preview/{path:path}", methods=_PROXY_METHODS)
 async def workspace_preview_path_proxy(
     workspace_id: str,
     request: Request,
@@ -1701,9 +1625,7 @@ async def workspace_preview_path_websocket(
         await websocket.close(code=4401)
         return
     try:
-        await _userspace_service().enforce_workspace_role(
-            workspace_id, token_data.user_id, "viewer"
-        )
+        await _userspace_service().enforce_workspace_role(workspace_id, token_data.user_id, "viewer")
     except HTTPException:
         await websocket.close(code=4403)
         return
@@ -1722,9 +1644,7 @@ async def shared_preview_path_proxy(
     share_token: str,
     request: Request,
     path: str = "",
-    share_password: str | None = Header(
-        default=None, alias="X-UserSpace-Share-Password"
-    ),
+    share_password: str | None = Header(default=None, alias="X-UserSpace-Share-Password"),
     user: Any | None = Depends(get_current_user_optional),
 ) -> Response:
     share_auth_token = share_auth_token_from_request(

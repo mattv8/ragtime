@@ -78,12 +78,8 @@ def _create_optional_runtime_auth_dependency(env_var: str) -> Any:
     return _check_optional_runtime_auth
 
 
-check_optional_manager_auth = _create_optional_runtime_auth_dependency(
-    "RUNTIME_MANAGER_AUTH_TOKEN"
-)
-check_optional_worker_auth = _create_optional_runtime_auth_dependency(
-    "RUNTIME_WORKER_AUTH_TOKEN"
-)
+check_optional_manager_auth = _create_optional_runtime_auth_dependency("RUNTIME_MANAGER_AUTH_TOKEN")
+check_optional_worker_auth = _create_optional_runtime_auth_dependency("RUNTIME_WORKER_AUTH_TOKEN")
 
 OptionalManagerAuth = Depends(check_optional_manager_auth)
 OptionalWorkerAuth = Depends(check_optional_worker_auth)

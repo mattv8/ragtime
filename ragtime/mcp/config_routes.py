@@ -19,9 +19,7 @@ from ragtime.mcp.server import notify_tools_changed
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/mcp-routes", tags=["MCP Routes"])
-default_filter_router = APIRouter(
-    prefix="/mcp-routes/default-filters", tags=["MCP Default Route Filters"]
-)
+default_filter_router = APIRouter(prefix="/mcp-routes/default-filters", tags=["MCP Default Route Filters"])
 
 
 # =============================================================================
@@ -56,21 +54,15 @@ class McpRouteConfig(BaseModel):
 class CreateMcpRouteRequest(BaseModel):
     """Request model for creating an MCP route."""
 
-    name: str = Field(
-        min_length=1, max_length=100, description="User-friendly name for the route"
-    )
+    name: str = Field(min_length=1, max_length=100, description="User-friendly name for the route")
     route_path: str = Field(
         min_length=1,
         max_length=50,
         pattern=r"^[a-z][a-z0-9_]*$",
         description="Route suffix (e.g., 'my_toolset' for /mcp/my_toolset). Lowercase alphanumeric and underscores only.",
     )
-    description: str = Field(
-        default="", max_length=500, description="Description for documentation"
-    )
-    require_auth: bool = Field(
-        default=False, description="Require authentication for this route"
-    )
+    description: str = Field(default="", max_length=500, description="Description for documentation")
+    require_auth: bool = Field(default=False, description="Require authentication for this route")
     auth_password: str | None = Field(
         default=None,
         min_length=8,
@@ -91,24 +83,12 @@ class CreateMcpRouteRequest(BaseModel):
         max_length=500,
         description="LDAP group DN for OAuth2 authorization (e.g., 'CN=MCP Users,OU=Groups,DC=example,DC=com')",
     )
-    include_knowledge_search: bool = Field(
-        default=True, description="Include search_knowledge tool"
-    )
-    include_git_history: bool = Field(
-        default=True, description="Include git history tools"
-    )
-    selected_document_indexes: List[str] = Field(
-        default_factory=list, description="Document index names to include"
-    )
-    selected_filesystem_indexes: List[str] = Field(
-        default_factory=list, description="Filesystem tool IDs to include"
-    )
-    selected_schema_indexes: List[str] = Field(
-        default_factory=list, description="Schema index tool IDs to include"
-    )
-    tool_config_ids: List[str] = Field(
-        default_factory=list, description="IDs of tool configs to include"
-    )
+    include_knowledge_search: bool = Field(default=True, description="Include search_knowledge tool")
+    include_git_history: bool = Field(default=True, description="Include git history tools")
+    selected_document_indexes: List[str] = Field(default_factory=list, description="Document index names to include")
+    selected_filesystem_indexes: List[str] = Field(default_factory=list, description="Filesystem tool IDs to include")
+    selected_schema_indexes: List[str] = Field(default_factory=list, description="Schema index tool IDs to include")
+    tool_config_ids: List[str] = Field(default_factory=list, description="IDs of tool configs to include")
 
 
 class UpdateMcpRouteRequest(BaseModel):
@@ -124,9 +104,7 @@ class UpdateMcpRouteRequest(BaseModel):
         max_length=128,
         description="Password/API key (set to empty string to clear)",
     )
-    clear_password: bool = Field(
-        default=False, description="Set to true to clear the password"
-    )
+    clear_password: bool = Field(default=False, description="Set to true to clear the password")
     auth_method: str | None = Field(
         default=None,
         description="Authentication method: 'password', 'oauth2', or 'client_credentials'",
@@ -136,17 +114,13 @@ class UpdateMcpRouteRequest(BaseModel):
         max_length=255,
         description="OAuth2 client_id for client_credentials grant (pre-shared public identifier)",
     )
-    clear_auth_client_id: bool = Field(
-        default=False, description="Set to true to clear the OAuth2 client_id"
-    )
+    clear_auth_client_id: bool = Field(default=False, description="Set to true to clear the OAuth2 client_id")
     allowed_ldap_group: str | None = Field(
         default=None,
         max_length=500,
         description="LDAP group DN for OAuth2 authorization",
     )
-    clear_allowed_ldap_group: bool = Field(
-        default=False, description="Set to true to clear the allowed LDAP group"
-    )
+    clear_allowed_ldap_group: bool = Field(default=False, description="Set to true to clear the allowed LDAP group")
     include_knowledge_search: bool | None = None
     include_git_history: bool | None = None
     selected_document_indexes: List[str] | None = None
@@ -189,11 +163,7 @@ def _mcp_route_config_from_record(
         selected_document_indexes=route.selectedDocumentIndexes or [],
         selected_filesystem_indexes=route.selectedFilesystemIndexes or [],
         selected_schema_indexes=route.selectedSchemaIndexes or [],
-        tool_config_ids=(
-            tool_config_ids
-            if tool_config_ids is not None
-            else _tool_config_ids_from_selections(route)
-        ),
+        tool_config_ids=(tool_config_ids if tool_config_ids is not None else _tool_config_ids_from_selections(route)),
         created_at=route.createdAt.isoformat(),
         updated_at=route.updatedAt.isoformat(),
     )
@@ -235,16 +205,12 @@ async def get_mcp_route(route_id: str, _user=Depends(require_admin)):
 
 
 @router.post("", response_model=McpRouteConfig)
-async def create_mcp_route(
-    request: CreateMcpRouteRequest, _user=Depends(require_admin)
-):
+async def create_mcp_route(request: CreateMcpRouteRequest, _user=Depends(require_admin)):
     """Create a new custom MCP route. Admin only."""
     db = await get_db()
 
     # Check if route_path already exists
-    existing = await db.mcprouteconfig.find_unique(
-        where={"routePath": request.route_path}
-    )
+    existing = await db.mcprouteconfig.find_unique(where={"routePath": request.route_path})
     if existing:
         raise HTTPException(
             status_code=400,
@@ -302,9 +268,7 @@ async def create_mcp_route(
 
 
 @router.put("/{route_id}", response_model=McpRouteConfig)
-async def update_mcp_route(
-    route_id: str, request: UpdateMcpRouteRequest, _user=Depends(require_admin)
-):
+async def update_mcp_route(route_id: str, request: UpdateMcpRouteRequest, _user=Depends(require_admin)):
     """Update an existing MCP route. Admin only."""
     db = await get_db()
 
@@ -459,38 +423,20 @@ class McpDefaultRouteFilter(BaseModel):
 class CreateMcpDefaultRouteFilterRequest(BaseModel):
     """Request model for creating a default route filter."""
 
-    name: str = Field(
-        min_length=1, max_length=100, description="User-friendly name for the filter"
-    )
-    description: str = Field(
-        default="", max_length=500, description="Description for documentation"
-    )
-    priority: int = Field(
-        default=0, ge=0, le=100, description="Priority (higher = checked first)"
-    )
+    name: str = Field(min_length=1, max_length=100, description="User-friendly name for the filter")
+    description: str = Field(default="", max_length=500, description="Description for documentation")
+    priority: int = Field(default=0, ge=0, le=100, description="Priority (higher = checked first)")
     ldap_group_dn: str = Field(
         min_length=1,
         max_length=500,
         description="LDAP group DN that users must be a member of",
     )
-    include_knowledge_search: bool = Field(
-        default=True, description="Include search_knowledge tool"
-    )
-    include_git_history: bool = Field(
-        default=True, description="Include git history tools"
-    )
-    selected_document_indexes: List[str] = Field(
-        default_factory=list, description="Document index names to include"
-    )
-    selected_filesystem_indexes: List[str] = Field(
-        default_factory=list, description="Filesystem tool IDs to include"
-    )
-    selected_schema_indexes: List[str] = Field(
-        default_factory=list, description="Schema index tool IDs to include"
-    )
-    tool_config_ids: List[str] = Field(
-        default_factory=list, description="IDs of tool configs to include"
-    )
+    include_knowledge_search: bool = Field(default=True, description="Include search_knowledge tool")
+    include_git_history: bool = Field(default=True, description="Include git history tools")
+    selected_document_indexes: List[str] = Field(default_factory=list, description="Document index names to include")
+    selected_filesystem_indexes: List[str] = Field(default_factory=list, description="Filesystem tool IDs to include")
+    selected_schema_indexes: List[str] = Field(default_factory=list, description="Schema index tool IDs to include")
+    tool_config_ids: List[str] = Field(default_factory=list, description="IDs of tool configs to include")
 
 
 class UpdateMcpDefaultRouteFilterRequest(BaseModel):
@@ -532,11 +478,7 @@ def _default_route_filter_from_record(
         selected_document_indexes=filter_record.selectedDocumentIndexes or [],
         selected_filesystem_indexes=filter_record.selectedFilesystemIndexes or [],
         selected_schema_indexes=filter_record.selectedSchemaIndexes or [],
-        tool_config_ids=(
-            tool_config_ids
-            if tool_config_ids is not None
-            else _tool_config_ids_from_selections(filter_record)
-        ),
+        tool_config_ids=(tool_config_ids if tool_config_ids is not None else _tool_config_ids_from_selections(filter_record)),
         created_at=filter_record.createdAt.isoformat(),
         updated_at=filter_record.updatedAt.isoformat(),
     )
@@ -578,16 +520,12 @@ async def get_default_route_filter(filter_id: str, _user=Depends(require_admin))
 
 
 @default_filter_router.post("", response_model=McpDefaultRouteFilter)
-async def create_default_route_filter(
-    request: CreateMcpDefaultRouteFilterRequest, _user=Depends(require_admin)
-):
+async def create_default_route_filter(request: CreateMcpDefaultRouteFilterRequest, _user=Depends(require_admin)):
     """Create a new default route filter. Admin only."""
     db = await get_db()
 
     # Check if ldap_group_dn already exists
-    existing = await db.mcpdefaultroutefilter.find_unique(
-        where={"ldapGroupDn": request.ldap_group_dn}
-    )
+    existing = await db.mcpdefaultroutefilter.find_unique(where={"ldapGroupDn": request.ldap_group_dn})
     if existing:
         raise HTTPException(
             status_code=400,
@@ -688,9 +626,7 @@ async def update_default_route_filter(
                 )
 
         # Delete existing selections
-        await db.mcpdefaultroutefiltertoolselection.delete_many(
-            where={"filterId": filter_id}
-        )
+        await db.mcpdefaultroutefiltertoolselection.delete_many(where={"filterId": filter_id})
 
         # Add new selections
         for tool_id in request.tool_config_ids:
@@ -728,18 +664,14 @@ async def delete_default_route_filter(filter_id: str, _user=Depends(require_admi
 
     await db.mcpdefaultroutefilter.delete(where={"id": filter_id})
 
-    logger.info(
-        f"Deleted default route filter: {existing.name} for group {existing.ldapGroupDn}"
-    )
+    logger.info(f"Deleted default route filter: {existing.name} for group {existing.ldapGroupDn}")
     notify_tools_changed()
 
     return {"status": "deleted", "id": filter_id}
 
 
 @default_filter_router.post("/{filter_id}/toggle")
-async def toggle_default_route_filter(
-    filter_id: str, enabled: bool, _user=Depends(require_admin)
-):
+async def toggle_default_route_filter(filter_id: str, enabled: bool, _user=Depends(require_admin)):
     """Toggle a default route filter's enabled state. Admin only."""
     db = await get_db()
 
@@ -747,9 +679,7 @@ async def toggle_default_route_filter(
     if not existing:
         raise HTTPException(status_code=404, detail="Default route filter not found")
 
-    await db.mcpdefaultroutefilter.update(
-        where={"id": filter_id}, data={"enabled": enabled}
-    )
+    await db.mcpdefaultroutefilter.update(where={"id": filter_id}, data={"enabled": enabled})
 
     logger.info(f"Toggled default route filter {existing.name}: enabled={enabled}")
     notify_tools_changed()

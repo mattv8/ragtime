@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import asyncio
@@ -9,6 +8,7 @@ import httpx
 from fastapi import HTTPException
 
 from ragtime.config import settings
+
 
 @dataclass(frozen=True)
 class RuntimeManagerRequestConfig:
@@ -27,16 +27,12 @@ def get_runtime_manager_request_config() -> RuntimeManagerRequestConfig:
             "http://runtime:8090",
         )
     ).strip()
-    manager_auth_token = str(
-        getattr(settings, "userspace_runtime_manager_auth_token", "")
-    ).strip()
+    manager_auth_token = str(getattr(settings, "userspace_runtime_manager_auth_token", "")).strip()
     headers: dict[str, str] = {}
     if manager_auth_token:
         headers["Authorization"] = f"Bearer {manager_auth_token}"
 
-    timeout_seconds = float(
-        getattr(settings, "userspace_runtime_manager_timeout_seconds", 120.0)
-    )
+    timeout_seconds = float(getattr(settings, "userspace_runtime_manager_timeout_seconds", 120.0))
     retry_attempts = max(
         1,
         int(
@@ -47,9 +43,7 @@ def get_runtime_manager_request_config() -> RuntimeManagerRequestConfig:
             )
         ),
     )
-    retry_base_delay_seconds = float(
-        getattr(settings, "userspace_runtime_manager_retry_delay_seconds", 0.2)
-    )
+    retry_base_delay_seconds = float(getattr(settings, "userspace_runtime_manager_retry_delay_seconds", 0.2))
 
     return RuntimeManagerRequestConfig(
         base_url=base_url.rstrip("/"),
@@ -79,11 +73,7 @@ async def runtime_manager_request(
 ) -> dict[str, Any]:
     config = get_runtime_manager_request_config()
     url = f"{config.base_url}/{path.lstrip('/')}"
-    timeout = httpx.Timeout(
-        timeout_override_seconds
-        if timeout_override_seconds is not None
-        else config.timeout_seconds
-    )
+    timeout = httpx.Timeout(timeout_override_seconds if timeout_override_seconds is not None else config.timeout_seconds)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         response: httpx.Response | None = None
         for attempt in range(1, config.retry_attempts + 1):
@@ -120,10 +110,7 @@ async def runtime_manager_request(
         body_preview = response.text[:256]
         raise HTTPException(
             status_code=502,
-            detail=(
-                f"{request_failed_detail_prefix} "
-                f"({response.status_code}): {body_preview}"
-            ),
+            detail=(f"{request_failed_detail_prefix} ({response.status_code}): {body_preview}"),
         )
 
     if not response.content:

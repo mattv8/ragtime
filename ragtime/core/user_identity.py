@@ -20,10 +20,7 @@ def normalize_user_identity(
     """
 
     normalized_username = str(username or "").strip()
-    if (
-        normalized_username[: len(_LOCAL_USERNAME_PREFIX)].lower()
-        == _LOCAL_USERNAME_PREFIX
-    ):
+    if normalized_username[: len(_LOCAL_USERNAME_PREFIX)].lower() == _LOCAL_USERNAME_PREFIX:
         normalized_username = normalized_username[len(_LOCAL_USERNAME_PREFIX) :].strip()
 
     if lowercase_username:
