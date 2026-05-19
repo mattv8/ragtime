@@ -5,7 +5,7 @@ Provides CRUD endpoints for managing custom MCP routes with tool selection
 and authorization configuration.
 """
 
-from typing import List
+from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -162,6 +162,43 @@ class McpRouteListResponse(BaseModel):
     count: int
 
 
+def _tool_config_ids_from_selections(record: Any) -> List[str]:
+    selections = getattr(record, "toolSelections", None) or []
+    return [selection.toolConfigId for selection in selections]
+
+
+def _mcp_route_config_from_record(
+    route: Any,
+    *,
+    tool_config_ids: List[str] | None = None,
+) -> McpRouteConfig:
+    return McpRouteConfig(
+        id=route.id,
+        name=route.name,
+        route_path=route.routePath,
+        description=route.description,
+        enabled=route.enabled,
+        require_auth=route.requireAuth,
+        has_password=bool(route.authPassword),
+        auth_password=decrypt_secret(route.authPassword) if route.authPassword else None,
+        auth_method=route.authMethod or "password",
+        auth_client_id=getattr(route, "authClientId", None),
+        allowed_ldap_group=route.allowedLdapGroup,
+        include_knowledge_search=route.includeKnowledgeSearch,
+        include_git_history=route.includeGitHistory,
+        selected_document_indexes=route.selectedDocumentIndexes or [],
+        selected_filesystem_indexes=route.selectedFilesystemIndexes or [],
+        selected_schema_indexes=route.selectedSchemaIndexes or [],
+        tool_config_ids=(
+            tool_config_ids
+            if tool_config_ids is not None
+            else _tool_config_ids_from_selections(route)
+        ),
+        created_at=route.createdAt.isoformat(),
+        updated_at=route.updatedAt.isoformat(),
+    )
+
+
 # =============================================================================
 # API Routes
 # =============================================================================
@@ -177,41 +214,7 @@ async def list_mcp_routes(_user=Depends(require_admin)):
         include={"toolSelections": True},
     )
 
-    result = []
-    for route in routes:
-        tool_ids = (
-            [sel.toolConfigId for sel in route.toolSelections]
-            if route.toolSelections
-            else []
-        )
-        # Decrypt password for admin display
-        decrypted_password = (
-            decrypt_secret(route.authPassword) if route.authPassword else None
-        )
-        result.append(
-            McpRouteConfig(
-                id=route.id,
-                name=route.name,
-                route_path=route.routePath,
-                description=route.description,
-                enabled=route.enabled,
-                require_auth=route.requireAuth,
-                has_password=bool(route.authPassword),
-                auth_password=decrypted_password,
-                auth_method=route.authMethod or "password",
-                auth_client_id=getattr(route, "authClientId", None),
-                allowed_ldap_group=route.allowedLdapGroup,
-                include_knowledge_search=route.includeKnowledgeSearch,
-                include_git_history=route.includeGitHistory,
-                selected_document_indexes=route.selectedDocumentIndexes or [],
-                selected_filesystem_indexes=route.selectedFilesystemIndexes or [],
-                selected_schema_indexes=route.selectedSchemaIndexes or [],
-                tool_config_ids=tool_ids,
-                created_at=route.createdAt.isoformat(),
-                updated_at=route.updatedAt.isoformat(),
-            )
-        )
-
+    result = [_mcp_route_config_from_record(route) for route in routes]
     return McpRouteListResponse(routes=result, count=len(result))
 
 
@@ -228,38 +231,7 @@ async def get_mcp_route(route_id: str, _user=Depends(require_admin)):
     if not route:
         raise HTTPException(status_code=404, detail="MCP route not found")
 
-    tool_ids = (
-        [sel.toolConfigId for sel in route.toolSelections]
-        if route.toolSelections
-        else []
-    )
-
-    # Decrypt password for admin display
-    decrypted_password = (
-        decrypt_secret(route.authPassword) if route.authPassword else None
-    )
-
-    return McpRouteConfig(
-        id=route.id,
-        name=route.name,
-        route_path=route.routePath,
-        description=route.description,
-        enabled=route.enabled,
-        require_auth=route.requireAuth,
-        has_password=bool(route.authPassword),
-        auth_password=decrypted_password,
-        auth_method=route.authMethod or "password",
-        auth_client_id=getattr(route, "authClientId", None),
-        allowed_ldap_group=route.allowedLdapGroup,
-        include_knowledge_search=route.includeKnowledgeSearch,
-        include_git_history=route.includeGitHistory,
-        selected_document_indexes=route.selectedDocumentIndexes or [],
-        selected_filesystem_indexes=route.selectedFilesystemIndexes or [],
-        selected_schema_indexes=route.selectedSchemaIndexes or [],
-        tool_config_ids=tool_ids,
-        created_at=route.createdAt.isoformat(),
-        updated_at=route.updatedAt.isoformat(),
-    )
+    return _mcp_route_config_from_record(route)
 
 
 @router.post("", response_model=McpRouteConfig)
@@ -323,31 +295,9 @@ async def create_mcp_route(
     logger.info(f"Created MCP route: {route.name} at /mcp/{route.routePath}")
     notify_tools_changed()
 
-    # Return the decrypted password in the response
-    decrypted_password = (
-        decrypt_secret(route.authPassword) if route.authPassword else None
-    )
-
-    return McpRouteConfig(
-        id=route.id,
-        name=route.name,
-        route_path=route.routePath,
-        description=route.description,
-        enabled=route.enabled,
-        require_auth=route.requireAuth,
-        has_password=bool(route.authPassword),
-        auth_password=decrypted_password,
-        auth_method=route.authMethod or "password",
-        auth_client_id=getattr(route, "authClientId", None),
-        allowed_ldap_group=route.allowedLdapGroup,
-        include_knowledge_search=route.includeKnowledgeSearch,
-        include_git_history=route.includeGitHistory,
-        selected_document_indexes=route.selectedDocumentIndexes or [],
-        selected_filesystem_indexes=route.selectedFilesystemIndexes or [],
-        selected_schema_indexes=route.selectedSchemaIndexes or [],
+    return _mcp_route_config_from_record(
+        route,
         tool_config_ids=request.tool_config_ids,
-        created_at=route.createdAt.isoformat(),
-        updated_at=route.updatedAt.isoformat(),
     )
 
 
@@ -439,44 +389,13 @@ async def update_mcp_route(
         include={"toolSelections": True},
     )
 
-    tool_ids = (
-        [sel.toolConfigId for sel in route.toolSelections]
-        if route and route.toolSelections
-        else []
-    )
-
     logger.info(f"Updated MCP route: {route.name if route else route_id}")
     notify_tools_changed()
 
     if not route:
         return None
 
-    # Decrypt password for admin display
-    decrypted_password = (
-        decrypt_secret(route.authPassword) if route.authPassword else None
-    )
-
-    return McpRouteConfig(
-        id=route.id,
-        name=route.name,
-        route_path=route.routePath,
-        description=route.description,
-        enabled=route.enabled,
-        require_auth=route.requireAuth,
-        has_password=bool(route.authPassword),
-        auth_password=decrypted_password,
-        auth_method=route.authMethod or "password",
-        auth_client_id=getattr(route, "authClientId", None),
-        allowed_ldap_group=route.allowedLdapGroup,
-        include_knowledge_search=route.includeKnowledgeSearch,
-        include_git_history=route.includeGitHistory,
-        selected_document_indexes=route.selectedDocumentIndexes or [],
-        selected_filesystem_indexes=route.selectedFilesystemIndexes or [],
-        selected_schema_indexes=route.selectedSchemaIndexes or [],
-        tool_config_ids=tool_ids,
-        created_at=route.createdAt.isoformat(),
-        updated_at=route.updatedAt.isoformat(),
-    )
+    return _mcp_route_config_from_record(route)
 
 
 @router.delete("/{route_id}")
@@ -510,38 +429,7 @@ async def get_mcp_route_by_path(route_path: str, _user=Depends(require_admin)):
     if not route:
         raise HTTPException(status_code=404, detail="MCP route not found")
 
-    tool_ids = (
-        [sel.toolConfigId for sel in route.toolSelections]
-        if route.toolSelections
-        else []
-    )
-
-    # Decrypt password for admin display
-    decrypted_password = (
-        decrypt_secret(route.authPassword) if route.authPassword else None
-    )
-
-    return McpRouteConfig(
-        id=route.id,
-        name=route.name,
-        route_path=route.routePath,
-        description=route.description,
-        enabled=route.enabled,
-        require_auth=route.requireAuth,
-        has_password=bool(route.authPassword),
-        auth_password=decrypted_password,
-        auth_method=route.authMethod or "password",
-        auth_client_id=getattr(route, "authClientId", None),
-        allowed_ldap_group=route.allowedLdapGroup,
-        include_knowledge_search=route.includeKnowledgeSearch,
-        include_git_history=route.includeGitHistory,
-        selected_document_indexes=route.selectedDocumentIndexes or [],
-        selected_filesystem_indexes=route.selectedFilesystemIndexes or [],
-        selected_schema_indexes=route.selectedSchemaIndexes or [],
-        tool_config_ids=tool_ids,
-        created_at=route.createdAt.isoformat(),
-        updated_at=route.updatedAt.isoformat(),
-    )
+    return _mcp_route_config_from_record(route)
 
 
 # =============================================================================
@@ -627,6 +515,33 @@ class McpDefaultRouteFilterListResponse(BaseModel):
     count: int
 
 
+def _default_route_filter_from_record(
+    filter_record: Any,
+    *,
+    tool_config_ids: List[str] | None = None,
+) -> McpDefaultRouteFilter:
+    return McpDefaultRouteFilter(
+        id=filter_record.id,
+        name=filter_record.name,
+        description=filter_record.description,
+        enabled=filter_record.enabled,
+        priority=filter_record.priority,
+        ldap_group_dn=filter_record.ldapGroupDn,
+        include_knowledge_search=filter_record.includeKnowledgeSearch,
+        include_git_history=filter_record.includeGitHistory,
+        selected_document_indexes=filter_record.selectedDocumentIndexes or [],
+        selected_filesystem_indexes=filter_record.selectedFilesystemIndexes or [],
+        selected_schema_indexes=filter_record.selectedSchemaIndexes or [],
+        tool_config_ids=(
+            tool_config_ids
+            if tool_config_ids is not None
+            else _tool_config_ids_from_selections(filter_record)
+        ),
+        created_at=filter_record.createdAt.isoformat(),
+        updated_at=filter_record.updatedAt.isoformat(),
+    )
+
+
 # =============================================================================
 # Default Route Filter API Routes
 # =============================================================================
@@ -642,30 +557,7 @@ async def list_default_route_filters(_user=Depends(require_admin)):
         include={"toolSelections": True},
     )
 
-    result = []
-    for f in filters:
-        tool_ids = (
-            [sel.toolConfigId for sel in f.toolSelections] if f.toolSelections else []
-        )
-        result.append(
-            McpDefaultRouteFilter(
-                id=f.id,
-                name=f.name,
-                description=f.description,
-                enabled=f.enabled,
-                priority=f.priority,
-                ldap_group_dn=f.ldapGroupDn,
-                include_knowledge_search=f.includeKnowledgeSearch,
-                include_git_history=f.includeGitHistory,
-                selected_document_indexes=f.selectedDocumentIndexes or [],
-                selected_filesystem_indexes=f.selectedFilesystemIndexes or [],
-                selected_schema_indexes=f.selectedSchemaIndexes or [],
-                tool_config_ids=tool_ids,
-                created_at=f.createdAt.isoformat(),
-                updated_at=f.updatedAt.isoformat(),
-            )
-        )
-
+    result = [_default_route_filter_from_record(filter_record) for filter_record in filters]
     return McpDefaultRouteFilterListResponse(filters=result, count=len(result))
 
 
@@ -682,26 +574,7 @@ async def get_default_route_filter(filter_id: str, _user=Depends(require_admin))
     if not f:
         raise HTTPException(status_code=404, detail="Default route filter not found")
 
-    tool_ids = (
-        [sel.toolConfigId for sel in f.toolSelections] if f.toolSelections else []
-    )
-
-    return McpDefaultRouteFilter(
-        id=f.id,
-        name=f.name,
-        description=f.description,
-        enabled=f.enabled,
-        priority=f.priority,
-        ldap_group_dn=f.ldapGroupDn,
-        include_knowledge_search=f.includeKnowledgeSearch,
-        include_git_history=f.includeGitHistory,
-        selected_document_indexes=f.selectedDocumentIndexes or [],
-        selected_filesystem_indexes=f.selectedFilesystemIndexes or [],
-        selected_schema_indexes=f.selectedSchemaIndexes or [],
-        tool_config_ids=tool_ids,
-        created_at=f.createdAt.isoformat(),
-        updated_at=f.updatedAt.isoformat(),
-    )
+    return _default_route_filter_from_record(f)
 
 
 @default_filter_router.post("", response_model=McpDefaultRouteFilter)
@@ -758,21 +631,9 @@ async def create_default_route_filter(
     logger.info(f"Created default route filter: {f.name} for group {f.ldapGroupDn}")
     notify_tools_changed()
 
-    return McpDefaultRouteFilter(
-        id=f.id,
-        name=f.name,
-        description=f.description,
-        enabled=f.enabled,
-        priority=f.priority,
-        ldap_group_dn=f.ldapGroupDn,
-        include_knowledge_search=f.includeKnowledgeSearch,
-        include_git_history=f.includeGitHistory,
-        selected_document_indexes=f.selectedDocumentIndexes or [],
-        selected_filesystem_indexes=f.selectedFilesystemIndexes or [],
-        selected_schema_indexes=f.selectedSchemaIndexes or [],
+    return _default_route_filter_from_record(
+        f,
         tool_config_ids=request.tool_config_ids,
-        created_at=f.createdAt.isoformat(),
-        updated_at=f.updatedAt.isoformat(),
     )
 
 
@@ -849,29 +710,10 @@ async def update_default_route_filter(
     if not f:
         raise HTTPException(status_code=404, detail="Default route filter not found")
 
-    tool_ids = (
-        [sel.toolConfigId for sel in f.toolSelections] if f.toolSelections else []
-    )
-
     logger.info(f"Updated default route filter: {f.name}")
     notify_tools_changed()
 
-    return McpDefaultRouteFilter(
-        id=f.id,
-        name=f.name,
-        description=f.description,
-        enabled=f.enabled,
-        priority=f.priority,
-        ldap_group_dn=f.ldapGroupDn,
-        include_knowledge_search=f.includeKnowledgeSearch,
-        include_git_history=f.includeGitHistory,
-        selected_document_indexes=f.selectedDocumentIndexes or [],
-        selected_filesystem_indexes=f.selectedFilesystemIndexes or [],
-        selected_schema_indexes=f.selectedSchemaIndexes or [],
-        tool_config_ids=tool_ids,
-        created_at=f.createdAt.isoformat(),
-        updated_at=f.updatedAt.isoformat(),
-    )
+    return _default_route_filter_from_record(f)
 
 
 @default_filter_router.delete("/{filter_id}")

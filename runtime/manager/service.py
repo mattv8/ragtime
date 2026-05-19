@@ -444,18 +444,11 @@ class SessionManager:
             )
 
             async with self._lock:
-                session = self._sessions.get(provider_session_id)
-                if not session or session.worker_session_id != worker_session_id:
-                    raise HTTPException(
-                        status_code=404, detail="Runtime session not found"
-                    )
-                self._apply_worker_state(session, worker_data)
-                now = utc_now()
-                session.updated_at = now
-                session.lease_expires_at = now + timedelta(
-                    seconds=self._lease_ttl_seconds
+                return self._apply_worker_data_response(
+                    provider_session_id,
+                    worker_session_id,
+                    worker_data,
                 )
-                return self._as_response(session)
 
     async def refresh_mounts(
         self,
@@ -479,18 +472,26 @@ class SessionManager:
             )
 
             async with self._lock:
-                session = self._sessions.get(provider_session_id)
-                if not session or session.worker_session_id != worker_session_id:
-                    raise HTTPException(
-                        status_code=404, detail="Runtime session not found"
-                    )
-                self._apply_worker_state(session, worker_data)
-                now = utc_now()
-                session.updated_at = now
-                session.lease_expires_at = now + timedelta(
-                    seconds=self._lease_ttl_seconds
+                return self._apply_worker_data_response(
+                    provider_session_id,
+                    worker_session_id,
+                    worker_data,
                 )
-                return self._as_response(session)
+
+    def _apply_worker_data_response(
+        self,
+        provider_session_id: str,
+        worker_session_id: str,
+        worker_data: WorkerSessionResponse,
+    ) -> RuntimeSessionResponse:
+        session = self._sessions.get(provider_session_id)
+        if not session or session.worker_session_id != worker_session_id:
+            raise HTTPException(status_code=404, detail="Runtime session not found")
+        self._apply_worker_state(session, worker_data)
+        now = utc_now()
+        session.updated_at = now
+        session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
+        return self._as_response(session)
 
     def _get_session_or_raise(self, provider_session_id: str) -> ManagerSession:
         """Look up a session without acquiring the lock (caller must hold it or accept race)."""

@@ -231,6 +231,41 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
     onCancel?.();
   };
 
+  const renderIndexConfigurationFields = () => (
+    <>
+      <OcrVectorStoreFields
+        isLoading={isLoading}
+        ocrMode={ocrMode}
+        setOcrMode={setOcrMode}
+        ocrProvider={ocrProvider}
+        setOcrProvider={setOcrProvider}
+        ocrVisionModel={ocrVisionModel}
+        setOcrVisionModel={setOcrVisionModel}
+        visionOcrAvailable={visionOcrAvailable}
+        vectorStoreType={vectorStoreType}
+        setVectorStoreType={setVectorStoreType}
+        vectorStoreDisabled={!!existingVectorStoreType}
+      />
+
+      <details style={{ marginBottom: '16px' }}>
+        <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
+        <IndexConfigFields
+          isLoading={isLoading}
+          filePatterns={filePatterns}
+          setFilePatterns={setFilePatterns}
+          excludePatterns={excludePatterns}
+          setExcludePatterns={setExcludePatterns}
+          chunkSize={chunkSize}
+          setChunkSize={setChunkSize}
+          chunkOverlap={chunkOverlap}
+          setChunkOverlap={setChunkOverlap}
+          maxFileSizeKb={maxFileSizeKb}
+          setMaxFileSizeKb={setMaxFileSizeKb}
+        />
+      </details>
+    </>
+  );
+
   // Upload step - file selection
   if (wizardStep === 'upload' || wizardStep === 'analyzing') {
     return (
@@ -266,36 +301,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
               Index name will be derived from the archive filename. Click "Analyze" to preview the index before creating.
             </p>
 
-            <OcrVectorStoreFields
-              isLoading={isLoading}
-              ocrMode={ocrMode}
-              setOcrMode={setOcrMode}
-              ocrProvider={ocrProvider}
-              setOcrProvider={setOcrProvider}
-              ocrVisionModel={ocrVisionModel}
-              setOcrVisionModel={setOcrVisionModel}
-              visionOcrAvailable={visionOcrAvailable}
-              vectorStoreType={vectorStoreType}
-              setVectorStoreType={setVectorStoreType}
-              vectorStoreDisabled={!!existingVectorStoreType}
-            />
-
-            <details style={{ marginBottom: '16px' }}>
-              <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
-              <IndexConfigFields
-                isLoading={isLoading}
-                filePatterns={filePatterns}
-                setFilePatterns={setFilePatterns}
-                excludePatterns={excludePatterns}
-                setExcludePatterns={setExcludePatterns}
-                chunkSize={chunkSize}
-                setChunkSize={setChunkSize}
-                chunkOverlap={chunkOverlap}
-                setChunkOverlap={setChunkOverlap}
-                maxFileSizeKb={maxFileSizeKb}
-                setMaxFileSizeKb={setMaxFileSizeKb}
-              />
-            </details>
+            {renderIndexConfigurationFields()}
 
             <div className="wizard-actions">
               {onCancel && (
@@ -371,36 +377,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
             compact
           />
 
-          <OcrVectorStoreFields
-            isLoading={isLoading}
-            ocrMode={ocrMode}
-            setOcrMode={setOcrMode}
-            ocrProvider={ocrProvider}
-            setOcrProvider={setOcrProvider}
-            ocrVisionModel={ocrVisionModel}
-            setOcrVisionModel={setOcrVisionModel}
-            visionOcrAvailable={visionOcrAvailable}
-            vectorStoreType={vectorStoreType}
-            setVectorStoreType={setVectorStoreType}
-            vectorStoreDisabled={!!existingVectorStoreType}
-          />
-
-          <details style={{ marginBottom: '16px' }}>
-            <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
-            <IndexConfigFields
-              isLoading={isLoading}
-              filePatterns={filePatterns}
-              setFilePatterns={setFilePatterns}
-              excludePatterns={excludePatterns}
-              setExcludePatterns={setExcludePatterns}
-              chunkSize={chunkSize}
-              setChunkSize={setChunkSize}
-              chunkOverlap={chunkOverlap}
-              setChunkOverlap={setChunkOverlap}
-              maxFileSizeKb={maxFileSizeKb}
-              setMaxFileSizeKb={setMaxFileSizeKb}
-            />
-          </details>
+          {renderIndexConfigurationFields()}
         </details>
 
         {/* Wizard actions */}

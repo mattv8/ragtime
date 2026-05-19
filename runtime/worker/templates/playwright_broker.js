@@ -44,7 +44,7 @@ async function ensureBrowser() {
   return browser;
 }
 
-async function waitForHmrSettle(page, minimumWaitMs) {
+async function waitForStableSignature(page, minimumWaitMs, readSignature) {
   const baseline = Math.max(0, Number(minimumWaitMs) || 0);
   const maxExtraWaitMs = 2500;
   const stableWindowMs = 650;
@@ -52,20 +52,6 @@ async function waitForHmrSettle(page, minimumWaitMs) {
   const startedAt = Date.now();
   let stableSince = 0;
   let previousSignature = '';
-
-  const readSignature = async () => {
-    return await page.evaluate(() => {
-      const title = document.title || '';
-      const ready = document.readyState || '';
-      const href = String(location.href || '');
-      const body = document.body;
-      const root = document.documentElement;
-      const bodyChars = body && body.innerText ? body.innerText.length : 0;
-      const bodyHtml = body && body.innerHTML ? body.innerHTML.length : 0;
-      const rootHtml = root && root.innerHTML ? root.innerHTML.length : 0;
-      return [title, ready, href, bodyChars, bodyHtml, rootHtml].join('|');
-    });
-  };
 
   while (Date.now() - startedAt <= baseline + maxExtraWaitMs) {
     const elapsed = Date.now() - startedAt;
@@ -96,47 +82,44 @@ async function waitForHmrSettle(page, minimumWaitMs) {
   }
 }
 
-async function waitForSettle(page, minimumWaitMs) {
-  const baseline = Math.max(0, Number(minimumWaitMs) || 0);
-  const maxExtraWaitMs = 2500;
-  const stableWindowMs = 650;
-  const pollEveryMs = 250;
-  const startedAt = Date.now();
-  let stableSince = 0;
-  let previousSignature = '';
+async function waitForHmrSettle(page, minimumWaitMs) {
+  await waitForStableSignature(page, minimumWaitMs, async () => {
+    return await page.evaluate(() => {
+      const title = document.title || '';
+      const ready = document.readyState || '';
+      const href = String(location.href || '');
+      const body = document.body;
+      const root = document.documentElement;
+      const bodyChars = body && body.innerText ? body.innerText.length : 0;
+      const bodyHtml = body && body.innerHTML ? body.innerHTML.length : 0;
+      const rootHtml = root && root.innerHTML ? root.innerHTML.length : 0;
+      return [title, ready, href, bodyChars, bodyHtml, rootHtml].join('|');
+    });
+  });
+}
 
-  const readSignature = async () => {
+async function waitForSettle(page, minimumWaitMs) {
+  await waitForStableSignature(page, minimumWaitMs, async () => {
     return await page.evaluate(() => {
       const body = document.body;
       const bodyChars = body && body.innerText ? body.innerText.length : 0;
       const bodyHtml = body && body.innerHTML ? body.innerHTML.length : 0;
       return [bodyChars, bodyHtml].join('|');
     });
-  };
+  });
+}
 
-  while (Date.now() - startedAt <= baseline + maxExtraWaitMs) {
-    const elapsed = Date.now() - startedAt;
-    if (elapsed < baseline) {
-      await page.waitForTimeout(Math.min(pollEveryMs, baseline - elapsed));
-      continue;
+function attachConsoleErrorCapture(page) {
+  const consoleErrors = [];
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') {
+      consoleErrors.push(msg.text().slice(0, 300));
     }
-
-    const signature = await readSignature().catch(() => '');
-    if (!signature) {
-      await page.waitForTimeout(pollEveryMs);
-      continue;
-    }
-
-    if (signature === previousSignature) {
-      if (!stableSince) stableSince = Date.now();
-      if (Date.now() - stableSince >= stableWindowMs) return;
-    } else {
-      previousSignature = signature;
-      stableSince = 0;
-    }
-
-    await page.waitForTimeout(pollEveryMs);
-  }
+  });
+  page.on('pageerror', (err) => {
+    consoleErrors.push(String(err).slice(0, 300));
+  });
+  return consoleErrors;
 }
 
 async function runScreenshot(request) {
@@ -394,21 +377,13 @@ async function runContentProbe(request) {
     const timeoutMs = Number(request.timeout_ms || 15000);
     const waitAfterLoadMs = Number(request.wait_after_load_ms || 2000);
     const injectMockContext = Boolean(request.inject_mock_context);
-    const consoleErrors = [];
+    const consoleErrors = attachConsoleErrorCapture(page);
 
     if (!targetUrl) {
       throw makeError('Content probe request is missing target URL.');
     }
 
     page.setDefaultTimeout(timeoutMs);
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') {
-        consoleErrors.push(msg.text().slice(0, 300));
-      }
-    });
-    page.on('pageerror', (err) => {
-      consoleErrors.push(String(err).slice(0, 300));
-    });
 
     if (injectMockContext) {
       await page.addInitScript(() => {
@@ -504,21 +479,13 @@ async function runExternalBrowse(request) {
     const extractLinks = Boolean(request.extract_links);
     const maxTextChars = Math.max(200, Math.min(20000, Number(request.max_text_chars || 4000)));
     const maxLinks = Math.max(0, Math.min(100, Number(request.max_links || 20)));
-    const consoleErrors = [];
+    const consoleErrors = attachConsoleErrorCapture(page);
 
     if (!targetUrl) {
       throw makeError('External browse request is missing target URL.');
     }
 
     page.setDefaultTimeout(timeoutMs);
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') {
-        consoleErrors.push(msg.text().slice(0, 300));
-      }
-    });
-    page.on('pageerror', (err) => {
-      consoleErrors.push(String(err).slice(0, 300));
-    });
 
     let response = null;
     try {

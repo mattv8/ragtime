@@ -74,6 +74,34 @@ export function OllamaConnectionForm({
   onFetchModels,
   modelAction,
 }: OllamaConnectionFormProps) {
+  const renderModelInput = () => {
+    if (connected && models.length > 0) {
+      return (
+        <select value={model} onChange={(e) => onModelChange(e.target.value)}>
+          <option value="">Select a model...</option>
+          {models.map((modelInfo) => (
+            <option key={modelInfo.id || modelInfo.name} value={modelInfo.id || modelInfo.name}>
+              {modelInfo.name || modelInfo.id}
+              {modelInfo.size ? ` (${(modelInfo.size / 1024 / 1024 / 1024).toFixed(1)}GB)` : ''}
+              {modelInfo.dimensions ? ` [${modelInfo.dimensions} dims]` : ''}
+              {modelInfo.context_limit ? ` [${modelInfo.context_limit.toLocaleString()} ctx]` : ''}
+              {modelInfo.loaded === true ? ' [loaded]' : modelInfo.loaded === false ? ' [not loaded]' : ''}
+            </option>
+          ))}
+        </select>
+      );
+    }
+
+    return (
+      <input
+        type="text"
+        value={model}
+        onChange={(e) => onModelChange(e.target.value)}
+        placeholder={modelPlaceholder}
+      />
+    );
+  };
+
   return (
     <>
       <div className="form-row form-row-4">
@@ -133,49 +161,11 @@ export function OllamaConnectionForm({
         <label>{modelLabel}</label>
         {modelAction ? (
           <div className="input-with-button">
-            {connected && models.length > 0 ? (
-              <select value={model} onChange={(e) => onModelChange(e.target.value)}>
-                <option value="">Select a model...</option>
-                {models.map((m) => (
-                  <option key={m.id || m.name} value={m.id || m.name}>
-                    {m.name || m.id}
-                    {m.size ? ` (${(m.size / 1024 / 1024 / 1024).toFixed(1)}GB)` : ''}
-                    {m.dimensions ? ` [${m.dimensions} dims]` : ''}
-                    {m.context_limit ? ` [${m.context_limit.toLocaleString()} ctx]` : ''}
-                    {m.loaded === true ? ' [loaded]' : m.loaded === false ? ' [not loaded]' : ''}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type="text"
-                value={model}
-                onChange={(e) => onModelChange(e.target.value)}
-                placeholder={modelPlaceholder}
-              />
-            )}
+            {renderModelInput()}
             {modelAction}
           </div>
-        ) : connected && models.length > 0 ? (
-          <select value={model} onChange={(e) => onModelChange(e.target.value)}>
-            <option value="">Select a model...</option>
-            {models.map((m) => (
-              <option key={m.id || m.name} value={m.id || m.name}>
-                {m.name || m.id}
-                {m.size ? ` (${(m.size / 1024 / 1024 / 1024).toFixed(1)}GB)` : ''}
-                {m.dimensions ? ` [${m.dimensions} dims]` : ''}
-                {m.context_limit ? ` [${m.context_limit.toLocaleString()} ctx]` : ''}
-                {m.loaded === true ? ' [loaded]' : m.loaded === false ? ' [not loaded]' : ''}
-              </option>
-            ))}
-          </select>
         ) : (
-          <input
-            type="text"
-            value={model}
-            onChange={(e) => onModelChange(e.target.value)}
-            placeholder={modelPlaceholder}
-          />
+          renderModelInput()
         )}
         <p className="field-help">
           {connected

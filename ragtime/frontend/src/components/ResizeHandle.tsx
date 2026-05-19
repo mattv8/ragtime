@@ -68,19 +68,7 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
     [direction],
   );
 
-  const handlePointerUp = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-      e.currentTarget.releasePointerCapture(e.pointerId);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      isDragging.current = false;
-      onResizeEnd?.();
-    },
-    [onResizeEnd],
-  );
-
-  const handlePointerCancel = useCallback(
+  const finishPointerDrag = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
       e.currentTarget.releasePointerCapture(e.pointerId);
@@ -123,8 +111,8 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
       className={cls}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerCancel}
+      onPointerUp={finishPointerDrag}
+      onPointerCancel={finishPointerDrag}
       style={{ touchAction: 'none' }}
     />
   );
