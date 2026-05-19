@@ -11,7 +11,8 @@ def _repo_root_with_dockerfile() -> Path | None:
     return None
 
 
-def _stage_run_instructions(dockerfile: str) -> dict[str, list[str]]:
+def _dockerfile_stages(dockerfile: str) -> tuple[dict[str, str], dict[str, list[str]]]:
+    stage_parents: dict[str, str] = {}
     instructions_by_stage: dict[str, list[str]] = {}
     current_stage = ""
     current: list[str] = []
@@ -20,6 +21,7 @@ def _stage_run_instructions(dockerfile: str) -> dict[str, list[str]]:
         if line.startswith("FROM "):
             parts = line.split()
             current_stage = parts[-1] if len(parts) >= 4 and parts[-2].upper() == "AS" else parts[1]
+            stage_parents[current_stage] = parts[1]
             instructions_by_stage.setdefault(current_stage, [])
             current = []
             continue
@@ -35,7 +37,27 @@ def _stage_run_instructions(dockerfile: str) -> dict[str, list[str]]:
             instructions_by_stage.setdefault(current_stage, []).append("\n".join(current))
             current = []
 
-    return instructions_by_stage
+    return stage_parents, instructions_by_stage
+
+
+def _stage_run_instructions(dockerfile: str) -> dict[str, list[str]]:
+    return _dockerfile_stages(dockerfile)[1]
+
+
+def _effective_stage_run_instructions(dockerfile: str, stage: str) -> list[str]:
+    stage_parents, instructions_by_stage = _dockerfile_stages(dockerfile)
+    instructions: list[str] = []
+    lineage: list[str] = []
+    current_stage = stage
+
+    while current_stage in instructions_by_stage:
+        lineage.append(current_stage)
+        current_stage = stage_parents.get(current_stage, "")
+
+    for inherited_stage in reversed(lineage):
+        instructions.extend(instructions_by_stage[inherited_stage])
+
+    return instructions
 
 
 class DockerPrismaEngineTests(unittest.TestCase):
@@ -60,10 +82,9 @@ class DockerPrismaEngineTests(unittest.TestCase):
 
     def test_python_test_stage_installs_git_for_git_history_tests(self):
         dockerfile = self._read_dockerfile()
-        stage_instructions = _stage_run_instructions(dockerfile)
         apt_install_instructions = [
             instruction
-            for instruction in stage_instructions["python-test"]
+            for instruction in _effective_stage_run_instructions(dockerfile, "python-test")
             if "apt-get install" in instruction
         ]
 
