@@ -5,6 +5,7 @@ import WebGLGradient from '@/components/WebGLGradient';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ConfigurationWarning, UserSpacePreviewWarning } from '@/types';
 import type { OAuthParams } from '@/components';
+import { BrandName } from '@/utils/buildEnvironment';
 import '@/styles/global.css';
 
 type ViewType = 'chat' | 'userspace' | 'indexer' | 'tools' | 'users' | 'settings';
@@ -726,7 +727,7 @@ export function App() {
         />
       ) : null}
       <nav className="topnav" style={hideChrome ? { display: 'none' } : undefined}>
-        <span className="topnav-brand">{serverName}</span>
+        <span className="topnav-brand"><BrandName name={serverName} /></span>
         <div className="topnav-links">
           <button
             className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}

@@ -10,6 +10,11 @@
 # =============================================================================
 FROM node:20-slim AS frontend-builder
 
+ARG ENVIRONMENT=main
+ARG APP_VERSION=dev
+ENV VITE_RAGTIME_ENVIRONMENT=${ENVIRONMENT}
+ENV VITE_RAGTIME_VERSION=${APP_VERSION}
+
 WORKDIR /frontend
 
 # Copy frontend manifest files
@@ -84,6 +89,8 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
     pip install -r /tmp/requirements.test.txt
 
 WORKDIR /ragtime
+COPY pyproject.toml /ragtime/pyproject.toml
+COPY .jscpd.json /ragtime/.jscpd.json
 COPY docker/Dockerfile /ragtime/docker/Dockerfile
 COPY prisma/ /ragtime/prisma/
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
@@ -94,6 +101,8 @@ COPY runtime/ /ragtime/runtime/
 COPY tests/ /ragtime/tests/
 RUN mkdir -p "$INDEX_DATA_PATH" && \
     python -m compileall ragtime/userspace/runtime_service.py runtime/manager runtime/main.py && \
+    python -m ruff check --select E9,F821,F822,F823 ragtime runtime tests && \
+    npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests && \
     python -m pytest tests
 
 # =============================================================================
@@ -101,15 +110,18 @@ RUN mkdir -p "$INDEX_DATA_PATH" && \
 # =============================================================================
 FROM python:3.12-slim AS production
 
+ARG APP_VERSION=dev
+
 # Labels
 LABEL maintainer="elastropy.com"
 LABEL description="Ragtime - OpenAI-compatible RAG server with tool calling and indexer"
-LABEL version="2.0.0"
+LABEL version="${APP_VERSION}"
 
 # Environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/ragtime \
+    RAGTIME_VERSION=${APP_VERSION} \
     PATH="/opt/venv/bin:$PATH"
 
 # Install runtime dependencies

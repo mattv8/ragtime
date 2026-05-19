@@ -17,7 +17,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Literal, TypedDict, cast
+from typing import Any, Callable, Literal, Optional, TypedDict, cast
 from urllib.parse import quote
 from uuid import uuid4
 

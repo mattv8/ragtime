@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { BrandName } from '@/utils/buildEnvironment';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
 
 export interface OAuthParams {
@@ -101,7 +102,7 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
     <div className="login-container">
       <div className="login-card">
         <div className="login-header">
-          <h1 className="login-title">{serverName}</h1>
+          <h1 className="login-title"><BrandName name={serverName} /></h1>
           <p className="login-subtitle">Sign in to authorize MCP access</p>
         </div>
 

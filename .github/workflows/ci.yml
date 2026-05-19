@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+      - beta
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend Quality and Tests
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate docker compose manifests
+        run: |
+          cp -n .env.example .env
+          docker compose -f docker-compose.yml config >/dev/null
+          docker compose -f docker/docker-compose.dev.yml config >/dev/null
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract cache key
+        id: cache_key
+        run: |
+          REF_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          SAFE_REF=$(echo "$REF_NAME" | sed 's/[\/:@]/-/g')
+          echo "ref=$SAFE_REF" >> "$GITHUB_OUTPUT"
+          echo "short-sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Run backend quality checks and pytest
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          target: python-test
+          push: false
+          cache-from: |
+            type=gha,scope=ragtime-${{ steps.cache_key.outputs.ref }}
+            type=gha,scope=ragtime-main
+            type=gha
+          cache-to: |
+            type=gha,mode=max,scope=ragtime-${{ steps.cache_key.outputs.ref }}
+
+  frontend:
+    name: Frontend Build
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract cache key
+        id: cache_key
+        run: |
+          REF_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          SAFE_REF=$(echo "$REF_NAME" | sed 's/[\/:@]/-/g')
+          echo "ref=$SAFE_REF" >> "$GITHUB_OUTPUT"
+          echo "short-sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          target: frontend-builder
+          push: false
+          build-args: |
+            ENVIRONMENT=${{ github.head_ref || github.ref_name }}
+            APP_VERSION=${{ steps.cache_key.outputs.short-sha }}
+          cache-from: |
+            type=gha,scope=frontend-${{ steps.cache_key.outputs.ref }}
+            type=gha,scope=frontend-main
+            type=gha
+          cache-to: |
+            type=gha,mode=max,scope=frontend-${{ steps.cache_key.outputs.ref }}

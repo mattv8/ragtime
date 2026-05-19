@@ -238,6 +238,35 @@ body.authenticated-webgl-background-active #root {
   letter-spacing: -0.02em;
 }
 
+.brand-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  max-width: 100%;
+}
+
+.environment-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-warning-border);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.version-label {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
 .topnav-links {
   display: flex;
   gap: var(--space-xs);
@@ -1969,6 +1998,8 @@ body.authenticated-webgl-background-active #root {
   font-weight: 700;
   color: var(--color-primary);
   margin-bottom: var(--space-sm);
+  display: flex;
+  justify-content: center;
 }
 
 .login-subtitle {

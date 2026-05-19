@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { api } from '@/api';
 import type { User, AuthStatus, AuthMethodStatus } from '@/types';
+import { BrandName } from '@/utils/buildEnvironment';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
 import WebGLGradient from './WebGLGradient';
 
@@ -67,7 +68,7 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
   return (
     <div className="login-card">
       <div className="login-header">
-        <h1 className="login-title">{serverName}</h1>
+        <h1 className="login-title"><BrandName name={serverName} /></h1>
       </div>
 
       {authStatus.cookie_warning && (

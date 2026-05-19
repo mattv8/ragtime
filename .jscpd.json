@@ -1,0 +1,18 @@
+{
+  "threshold": 2,
+  "reporters": ["console"],
+  "minLines": 12,
+  "minTokens": 80,
+  "format": ["python", "typescript", "tsx", "javascript", "css", "json", "bash", "markup"],
+  "ignore": [
+    "**/.venv/**",
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/__pycache__/**",
+    "**/.data/**",
+    "**/data/**",
+    "ragtime/frontend/.vite/**",
+    "ragtime/frontend/package-lock.json"
+  ]
+}

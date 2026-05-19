@@ -6,6 +6,7 @@ import { api } from '@/api';
 import type { AuthStatus, ChatTask, Conversation, MessageEvent, PublicShareTargetResponse, SharedConversationResponse, User } from '@/types';
 import { formatChatTimestamp } from '@/utils';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
+import { BrandName } from '@/utils/buildEnvironment';
 
 import { LinkifiedText, MemoizedMarkdown, MessageAttachments, ToolCallDisplay, parseMessageContent, type ActiveToolCall } from './ChatPanel';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
@@ -332,7 +333,7 @@ function SharedChatSurface({
     <div className="app-shell app-shell-locked">
       <div className={showLoginModal ? 'shared-blur-host shared-blur-host-active' : 'shared-blur-host'}>
         <nav className="topnav">
-          <span className="topnav-brand">{serverName}</span>
+          <span className="topnav-brand"><BrandName name={serverName} /></span>
           <div className="topnav-links">
             {currentUser ? (
               <>

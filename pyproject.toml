@@ -1,6 +1,6 @@
 [project]
 name = "ragtime"
-version = "2.0.0"
+version = "0.0.0"
 description = "RAG API with Tool Calling - OpenAI-Compatible FastAPI Server"
 requires-python = ">=3.10"
 readme = "README.md"
@@ -65,6 +65,7 @@ runtime = [
 ]
 test = [
     "pytest>=8.3.0,<9.0.0",
+    "ruff>=0.8.0,<1.0.0",
 ]
 legacy = [
     "numpy>=1.24.0,<2.0.0",

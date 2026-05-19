@@ -1,0 +1,15 @@
+# Default owner for review routing.
+* @mattv8
+
+# High-risk release and infrastructure surfaces.
+.github/ @mattv8
+docker/ @mattv8
+docker-compose.yml @mattv8
+prisma/ @mattv8
+
+# Runtime, auth, MCP, and User Space ownership.
+ragtime/api/ @mattv8
+ragtime/core/ @mattv8
+ragtime/mcp/ @mattv8
+ragtime/userspace/ @mattv8
+runtime/ @mattv8

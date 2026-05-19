@@ -135,6 +135,76 @@ curl -X POST http://localhost:8000/v1/chat/completions \
   - Verify both public and internal share flows (slug/token + preview proxy)
   - Verify runtime bootstrap stamp behavior (`.ragtime/.runtime-bootstrap.done`) after editing bootstrap config
 
+## Contribution Workflow
+
+Most contributors only need this section. Maintainers handle promotion from `beta` to `main`.
+
+### Quick Path
+
+1. Fork the repo or create a branch from `beta`.
+2. Make a focused change.
+3. Run the smallest relevant local check you can.
+4. Open a pull request into `beta`, not `main`.
+5. In the PR, describe what changed and how you tested it.
+
+### Branches
+
+| Branch | Who uses it | Purpose |
+|--------|-------------|---------|
+| `beta` | Contributors and maintainers | Integration branch for PRs and quality testing. |
+| `main` | Maintainers | Stable release branch. Contributors should not target this directly. |
+| `feature/*` or `fix/*` | Contributors | Work branches for one focused change. |
+
+### Pull Request Checklist
+
+- Keep the PR focused on one bug fix, feature, or cleanup.
+- Explain the behavior change in plain language.
+- Add or update tests when behavior changes.
+- Mention any database, auth, runtime, or configuration impact.
+- For UI changes, include a screenshot or short note about what you checked.
+
+CI runs automatically on every branch and PR. It checks backend tests, frontend build, critical lint failures, and duplicate-code drift.
+
+Useful local checks:
+
+```bash
+# Full backend quality gate and test suite
+docker build --target python-test -f docker/Dockerfile .
+
+# Frontend typecheck and production build
+docker build --target frontend-builder -f docker/Dockerfile .
+
+# Duplicate-code check only
+npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests
+```
+
+If a local check is slow or hard to run on your machine, say that in the PR and rely on CI.
+
+### Maintainer Release Notes
+
+Maintainers promote tested `beta` changes to `main`. The repository is configured so `mattv8` and official maintainers can promote `beta` to `main` directly without a PR when needed; outside contributors should still use PRs into `beta`.
+
+Container labels:
+
+- Local Vite development displays a `dev` badge next to the Ragtime brand.
+- Non-main container builds display a badge matching the originating branch name, such as `beta`.
+- Main builds do not display a branch badge; they display the short commit SHA.
+
+Ragtime does not use manual release version numbers. Build identity is automatic and comes from Git:
+
+- `main` images publish `:main`, `:latest`, and `:<short-sha>`.
+- `beta` images publish `:beta`, `:latest-beta`, and `:<short-sha>`.
+- The application image label and in-app main build identifier use the same short SHA.
+
+After quality testing `beta`, maintainers can fast-forward or merge `beta` into `main`. CI builds and publishes the new `main` images automatically.
+
+```bash
+git fetch origin
+git checkout main
+git merge --ff-only origin/beta
+git push origin main
+```
+
 ## Adding Tools
 
 Tools are auto-discovered from `ragtime/tools/`. Copy the template and implement:
@@ -153,8 +223,13 @@ After schema changes in `prisma/schema.prisma`:
 
 ```bash
 docker exec ragtime-dev python -m prisma generate
-docker exec ragtime-dev python -m prisma db push
+docker exec ragtime-dev python -m prisma migrate dev --name describe_the_change
+
+# Production-like validation path
+docker exec ragtime-dev python -m prisma migrate deploy
 ```
+
+Do not rely on `db push` for release-bound changes. Committed migrations are the source of truth.
 
 ### Backup & Restore
 
@@ -220,9 +295,14 @@ docker logs -f ragtime-db-dev
 
 ## CI/CD
 
-GitHub Actions builds and pushes to Harbor on every branch:
-- Branch tag: `:main`, `:feature-xyz`
-- Main branch also tagged as `:latest`
-- Images signed with Cosign, SBOM attached
+GitHub Actions separates validation from publishing:
+
+- Every branch push runs backend quality checks, the pytest suite, and the frontend build.
+- PRs into `beta` run the same required checks.
+- Maintainers can promote tested `beta` changes to `main` directly; if a PR is opened into `main`, it must come from `beta`.
+- Container images are published only from `beta`, `main`, and manual workflow dispatches.
+- Branch tags are published as `:beta` and `:main`; beta also publishes `:latest-beta`; main also publishes `:latest`.
+- Every published image also gets a short commit SHA Docker alias.
+- Images are signed with Cosign and SBOM artifacts are attached.
 
 **Required secrets:** `HARBOR_USERNAME`, `HARBOR_PASSWORD`, `COSIGN_PRIVATE_KEY`, `COSIGN_PASSWORD`
