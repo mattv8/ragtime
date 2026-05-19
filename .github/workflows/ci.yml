@@ -19,8 +19,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  backend:
-    name: Backend Quality and Tests
+  compose-manifests:
+    name: Docker Compose Manifests
     runs-on: self-hosted
 
     steps:
@@ -33,6 +33,57 @@ jobs:
           docker compose -f docker-compose.yml config >/dev/null
           docker compose -f docker/docker-compose.dev.yml config >/dev/null
 
+      - name: Summarize docker compose manifests
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
+          ### Docker Compose Manifests
+
+          Validates the root production compose file and the development compose file.
+
+          Local equivalent:
+
+          ```bash
+          cp -n .env.example .env
+          docker compose -f docker-compose.yml config >/dev/null
+          docker compose -f docker/docker-compose.dev.yml config >/dev/null
+          ```
+
+          If this job failed, inspect the `Validate docker compose manifests` step for the compose parser or variable error.
+          MD
+
+  backend-checks:
+    name: ${{ matrix.name }}
+    runs-on: self-hosted
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Compile Python
+            target: python-compile-check
+            cache-scope: compile
+            local-command: python -m compileall ragtime/userspace/runtime_service.py runtime/manager runtime/main.py
+            explanation: Catches syntax errors and broken Python bytecode compilation in runtime-critical modules.
+          - name: Ruff Critical Lint
+            target: python-ruff-check
+            cache-scope: ruff
+            local-command: python -m ruff check --select E9,F821,F822,F823 ragtime runtime tests
+            explanation: Catches syntax errors, undefined names, and other high-signal Python failures.
+          - name: Duplicate Code
+            target: python-duplicate-check
+            cache-scope: duplicate
+            local-command: npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests
+            explanation: Fails when duplicate-code drift exceeds the configured jscpd threshold.
+          - name: Pytest Suite
+            target: python-pytest
+            cache-scope: pytest
+            local-command: python -m pytest tests
+            explanation: Runs the backend pytest suite inside the CI Docker environment.
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -44,19 +95,132 @@ jobs:
           echo "ref=$SAFE_REF" >> "$GITHUB_OUTPUT"
           echo "short-sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      - name: Run backend quality checks and pytest
+      - name: Run ${{ matrix.name }}
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/Dockerfile
-          target: python-test
+          target: ${{ matrix.target }}
           push: false
           cache-from: |
-            type=gha,scope=ragtime-${{ steps.cache_key.outputs.ref }}
-            type=gha,scope=ragtime-main
+            type=gha,scope=backend-${{ matrix.cache-scope }}-${{ steps.cache_key.outputs.ref }}
+            type=gha,scope=backend-${{ matrix.cache-scope }}-main
             type=gha
           cache-to: |
-            type=gha,mode=max,scope=ragtime-${{ steps.cache_key.outputs.ref }}
+            type=gha,mode=max,scope=backend-${{ matrix.cache-scope }}-${{ steps.cache_key.outputs.ref }}
+
+      - name: Explain ${{ matrix.name }}
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
+          ### ${{ matrix.name }}
+
+          ${{ matrix.explanation }}
+
+          Local equivalent:
+
+          ```bash
+          ${{ matrix.local-command }}
+          ```
+
+          If this job failed, open the `Run ${{ matrix.name }}` step above; the tool output immediately before the Docker build error contains the actionable failure.
+          MD
+
+  inline-imports:
+    name: Inline Import Organization
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run inline import organizer
+        run: |
+          set -euo pipefail
+          PYTHON_BIN="$(command -v python3 || command -v python)"
+
+          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py ragtime --apply
+          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py runtime --apply
+          "$PYTHON_BIN" docker/scripts/fix_inline_imports.py tests --apply
+
+          if ! git diff --exit-code -- ragtime runtime tests; then
+            cat <<'MSG'
+          Inline import organization check failed.
+
+          CI ran docker/scripts/fix_inline_imports.py and it changed one or more Python files.
+          Run these commands locally, commit the resulting changes, and push again:
+
+            python3 docker/scripts/fix_inline_imports.py ragtime --apply
+            python3 docker/scripts/fix_inline_imports.py runtime --apply
+            python3 docker/scripts/fix_inline_imports.py tests --apply
+          MSG
+            exit 1
+          fi
+
+      - name: Summarize inline import organization
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
+          ### Inline Import Organization
+
+          Runs `docker/scripts/fix_inline_imports.py` against `ragtime`, `runtime`, and `tests`, then fails if the script produced a diff.
+
+          Local equivalent:
+
+          ```bash
+          python3 docker/scripts/fix_inline_imports.py ragtime --apply
+          python3 docker/scripts/fix_inline_imports.py runtime --apply
+          python3 docker/scripts/fix_inline_imports.py tests --apply
+          git diff --exit-code -- ragtime runtime tests
+          ```
+          MD
+
+  backend:
+    name: Backend Quality and Tests
+    runs-on: self-hosted
+    needs:
+      - compose-manifests
+      - backend-checks
+      - inline-imports
+    if: always()
+
+    steps:
+      - name: Summarize backend quality gate
+        run: |
+          compose_manifests="${{ needs.compose-manifests.result }}"
+          backend_checks="${{ needs.backend-checks.result }}"
+          inline_imports="${{ needs.inline-imports.result }}"
+          failed=0
+
+          if [ "$compose_manifests" != "success" ]; then
+            failed=1
+          fi
+          if [ "$backend_checks" != "success" ]; then
+            failed=1
+          fi
+          if [ "$inline_imports" != "success" ]; then
+            failed=1
+          fi
+
+          {
+            echo "### Backend Quality and Tests"
+            echo
+            echo "| Check group | Result | Where to look if it failed |"
+            echo "| --- | --- | --- |"
+            echo "| Docker Compose manifests | $compose_manifests | Open the Docker Compose Manifests job for parser or variable errors. |"
+            echo "| Compile, Ruff, duplicate-code, and pytest matrix | $backend_checks | Open the failing backend matrix job; each job has a focused name and local command. |"
+            echo "| Inline import organization | $inline_imports | Open the Inline Import Organization job; it prints the exact local commands to run. |"
+            echo
+            if [ "$failed" -eq 0 ]; then
+              echo "All backend quality checks passed."
+            else
+              echo "One or more backend checks failed. The failed job name identifies the category before you inspect logs."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
 
   frontend:
     name: Frontend Build
@@ -93,3 +257,20 @@ jobs:
             type=gha
           cache-to: |
             type=gha,mode=max,scope=frontend-${{ steps.cache_key.outputs.ref }}
+
+      - name: Summarize frontend build
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
+          ### Frontend Build
+
+          Builds the Vite frontend through the Docker `frontend-builder` target.
+
+          Local equivalent:
+
+          ```bash
+          docker build --target frontend-builder -f docker/Dockerfile .
+          ```
+
+          If this job failed, inspect the `Build frontend` step for the npm/Vite error.
+          MD

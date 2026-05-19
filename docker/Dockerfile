@@ -69,9 +69,9 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
     python -c "import chonkie, pandas"
 
 # =============================================================================
-# Stage 3: Python tests
+# Stage 3: Python CI base
 # =============================================================================
-FROM python-builder AS python-test
+FROM python-builder AS python-ci-base
 
 ENV PYTHONPATH=/ragtime \
     INDEX_DATA_PATH=/tmp/ragtime-data \
@@ -99,6 +99,30 @@ RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
 COPY ragtime/ /ragtime/ragtime/
 COPY runtime/ /ragtime/runtime/
 COPY tests/ /ragtime/tests/
+
+FROM python-ci-base AS python-compile-check
+
+RUN mkdir -p "$INDEX_DATA_PATH" && \
+    python -m compileall ragtime/userspace/runtime_service.py runtime/manager runtime/main.py
+
+FROM python-ci-base AS python-ruff-check
+
+RUN python -m ruff check --select E9,F821,F822,F823 ragtime runtime tests
+
+FROM python-ci-base AS python-duplicate-check
+
+RUN npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests
+
+FROM python-ci-base AS python-pytest
+
+RUN mkdir -p "$INDEX_DATA_PATH" && \
+    python -m pytest tests
+
+# =============================================================================
+# Stage 4: Python release/test gate
+# =============================================================================
+FROM python-ci-base AS python-test
+
 RUN mkdir -p "$INDEX_DATA_PATH" && \
     python -m compileall ragtime/userspace/runtime_service.py runtime/manager runtime/main.py && \
     python -m ruff check --select E9,F821,F822,F823 ragtime runtime tests && \
@@ -106,7 +130,7 @@ RUN mkdir -p "$INDEX_DATA_PATH" && \
     python -m pytest tests
 
 # =============================================================================
-# Stage 4: Production image
+# Stage 5: Production image
 # =============================================================================
 FROM python:3.12-slim AS production
 
