@@ -41,19 +41,20 @@ class _CaptureComponentExecutionService(UserSpaceService):
     def __init__(self) -> None:
         super().__init__()
         self.component_execution_calls: list[dict[str, object]] = []
+        self.captured_response = ExecuteComponentResponse(
+            component_id="tool-1",
+            columns=[],
+            rows=[],
+            row_count=0,
+            error="captured",
+        )
 
     async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
         self.component_execution_calls.append(dict(kwargs))
-        return (
-            ExecuteComponentResponse(
-                component_id=str(kwargs.get("component_id") or "tool-1"),
-                columns=[],
-                rows=[],
-                row_count=0,
-                error="captured",
-            ),
-            "select * from accounts",
+        response = self.captured_response.model_copy(
+            update={"component_id": str(kwargs.get("component_id") or "tool-1")}
         )
+        return (response, "select * from accounts")
 
 
 class ChatLiveVisualizationRefreshTests(unittest.TestCase):
@@ -338,6 +339,71 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
         call = service.component_execution_calls[0]
         self.assertIs(call["require_result_limit"], False)
         self.assertIs(call["enforce_result_limit"], False)
+
+    def test_workspace_component_execution_records_live_data_warning_on_error(self) -> None:
+        service = _CaptureComponentExecutionService()
+        now = datetime.now(timezone.utc)
+        workspace = UserSpaceWorkspace(
+            id="workspace-1",
+            name="Workspace",
+            owner_user_id="user-1",
+            selected_tool_ids=["tool-1"],
+            created_at=now,
+            updated_at=now,
+        )
+
+        asyncio.run(
+            service._execute_component_for_workspace(
+                workspace,
+                ExecuteComponentRequest(
+                    component_id="tool-1",
+                    request={"query": "select * from accounts"},
+                ),
+                error_log_prefix="test",
+            )
+        )
+
+        self.assertEqual(
+            service.get_live_data_execution_warning("workspace-1"),
+            "captured",
+        )
+
+    def test_workspace_component_execution_clears_live_data_warning_on_success(self) -> None:
+        service = _CaptureComponentExecutionService()
+        service.record_live_data_execution_warning(
+            "workspace-1",
+            "tool-1",
+            "old failure",
+        )
+        service.captured_response = ExecuteComponentResponse(
+            component_id="tool-1",
+            columns=["name"],
+            rows=[{"name": "A"}],
+            row_count=1,
+            error=None,
+        )
+        now = datetime.now(timezone.utc)
+        workspace = UserSpaceWorkspace(
+            id="workspace-1",
+            name="Workspace",
+            owner_user_id="user-1",
+            selected_tool_ids=["tool-1"],
+            created_at=now,
+            updated_at=now,
+        )
+
+        asyncio.run(
+            service._execute_component_for_workspace(
+                workspace,
+                ExecuteComponentRequest(
+                    component_id="tool-1",
+                    request={"query": "select * from accounts"},
+                ),
+                error_log_prefix="test",
+            )
+        )
+
+        self.assertIsNone(service.get_live_data_execution_warning("workspace-1"))
 
     def test_postgres_csv_formatter_keeps_multiline_description_in_one_row(self) -> None:
         output = format_psql_csv_output(

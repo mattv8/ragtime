@@ -3163,6 +3163,7 @@ export interface UserSpaceRuntimeStatusResponse {
   runtime_has_cap_sys_admin?: boolean | null;
   preview_url?: string | null;
   last_error?: string | null;
+  live_data_warning?: string | null;
   runtime_operation_id?: string | null;
   runtime_operation_phase?: UserSpaceRuntimeOperationPhase | null;
   runtime_operation_started_at?: string | null;

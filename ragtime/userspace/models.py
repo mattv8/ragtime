@@ -994,6 +994,7 @@ class UserSpaceRuntimeStatusResponse(BaseModel):
     runtime_has_cap_sys_admin: bool | None = None
     preview_url: str | None = None
     last_error: str | None = None
+    live_data_warning: str | None = None
     runtime_operation_id: str | None = None
     runtime_operation_phase: RuntimeOperationPhase | None = None
     runtime_operation_started_at: datetime | None = None

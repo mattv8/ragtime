@@ -238,6 +238,7 @@ _SQLITE_IMPORT_STAGING_PROGRESS = 0.05
 _SQLITE_IMPORT_RESTORING_PROGRESS = 0.15
 _SQLITE_IMPORT_TRANSPILING_PROGRESS = 0.3
 _SQLITE_IMPORT_FINALIZING_PROGRESS = 0.97
+_LIVE_DATA_WARNING_MAX_AGE_SECONDS = 60 * 30
 
 
 class _ExecutionProofRecord:
@@ -256,6 +257,23 @@ class _ExecutionProofRecord:
         self.row_count = row_count
         self.timestamp = timestamp
         self.query_hash = query_hash
+
+
+class _LiveDataExecutionWarningRecord:
+    """Transient live-data execution warning for a workspace."""
+
+    __slots__ = ("component_id", "message", "timestamp")
+
+    def __init__(
+        self,
+        *,
+        component_id: str,
+        message: str,
+        timestamp: float,
+    ) -> None:
+        self.component_id = component_id
+        self.message = message
+        self.timestamp = timestamp
 
 
 class _ShareAuthorizationResult(TypedDict, total=False):
@@ -1145,6 +1163,9 @@ class UserSpaceService:
         self._archive_tasks_dir.mkdir(parents=True, exist_ok=True)
         self._sqlite_import_tasks_dir.mkdir(parents=True, exist_ok=True)
         self._execution_proofs: dict[str, dict[str, _ExecutionProofRecord]] = {}
+        self._live_data_execution_warnings: dict[
+            str, _LiveDataExecutionWarningRecord
+        ] = {}
         # TTL-cached entrypoint status per workspace: {workspace_id: (EntrypointStatus, timestamp)}
         self._entrypoint_status_cache: dict[str, tuple[EntrypointStatus, float]] = {}
         # Short-lived file list cache: {workspace_id: (result, include_dirs, timestamp)}
@@ -5775,6 +5796,53 @@ class UserSpaceService:
             if not proof or (now - proof.timestamp) > _EXECUTION_PROOF_MAX_AGE_SECONDS:
                 missing.append(cid)
         return missing
+
+    @staticmethod
+    def _normalize_live_data_warning_message(error_text: str) -> str:
+        compact = re.sub(r"\s+", " ", error_text.replace("\x00", " ")).strip()
+        compact = "".join(
+            char for char in compact if char.isprintable() or char in {"\t", "\n"}
+        )
+        return compact
+
+    def record_live_data_execution_warning(
+        self,
+        workspace_id: str,
+        component_id: str,
+        error_text: str,
+    ) -> bool:
+        """Record the latest live-data execution warning for a workspace."""
+        message = self._normalize_live_data_warning_message(error_text)
+        if not message:
+            return self.clear_live_data_execution_warning(workspace_id)
+
+        current = self._live_data_execution_warnings.get(workspace_id)
+        changed = (
+            current is None
+            or current.component_id != component_id
+            or current.message != message
+        )
+        self._live_data_execution_warnings[workspace_id] = _LiveDataExecutionWarningRecord(
+            component_id=component_id,
+            message=message,
+            timestamp=_utc_now().timestamp(),
+        )
+        return changed
+
+    def clear_live_data_execution_warning(self, workspace_id: str) -> bool:
+        """Clear the latest live-data execution warning for a workspace."""
+        return self._live_data_execution_warnings.pop(workspace_id, None) is not None
+
+    def get_live_data_execution_warning(self, workspace_id: str) -> str | None:
+        """Return the current live-data execution warning if it is still fresh."""
+        record = self._live_data_execution_warnings.get(workspace_id)
+        if record is None:
+            return None
+        now = _utc_now().timestamp()
+        if (now - record.timestamp) > _LIVE_DATA_WARNING_MAX_AGE_SECONDS:
+            self._live_data_execution_warnings.pop(workspace_id, None)
+            return None
+        return record.message
 
     @property
     def root_path(self) -> Path:
@@ -13817,11 +13885,22 @@ class UserSpaceService:
 
         # Confirm the user still has access to the target workspace; this is a
         # defense-in-depth check against grants outliving membership changes.
-        await self._enforce_workspace_access(
-            normalized_target,
-            user_id,
-            required_role="viewer" if action == "read" else "editor",
-        )
+        try:
+            await self._enforce_workspace_access(
+                normalized_target,
+                user_id,
+                required_role="viewer" if action == "read" else "editor",
+            )
+        except HTTPException as exc:
+            if exc.status_code not in {403, 404}:
+                raise
+            raise ValueError(
+                "Cross-workspace access denied: workspace_id="
+                f"{normalized_target} is granted to the source workspace, "
+                "but the current user no longer has the required access to "
+                "that target workspace. Ask the user to open a workspace they "
+                "can access or update the agent grant."
+            ) from exc
 
         # Audit cross-workspace tool access (best-effort, async-safe).
         try:
@@ -20664,6 +20743,13 @@ class UserSpaceService:
                 request.component_id,
                 response.row_count,
                 query,
+            )
+            self.clear_live_data_execution_warning(workspace.id)
+        else:
+            self.record_live_data_execution_warning(
+                workspace.id,
+                request.component_id,
+                response.error,
             )
 
         return response

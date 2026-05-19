@@ -213,6 +213,37 @@ def _format_exception_message(exc: BaseException) -> str:
     return exc.__class__.__name__
 
 
+def _exception_detail_text(exc: BaseException) -> str:
+    if isinstance(exc, HTTPException):
+        detail = getattr(exc, "detail", None)
+        if isinstance(detail, str):
+            return detail.strip()
+        if detail is not None:
+            return str(detail).strip()
+    return _format_exception_message(exc)
+
+
+def _exception_status_code(exc: BaseException) -> int | None:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+
+    response = getattr(exc, "response", None)
+    response_status = getattr(response, "status_code", None)
+    if isinstance(response_status, int):
+        return response_status
+
+    return None
+
+
+def _is_userspace_workspace_not_found(exc: BaseException) -> bool:
+    return (
+        isinstance(exc, HTTPException)
+        and _exception_status_code(exc) == 404
+        and "workspace not found" in _exception_detail_text(exc).lower()
+    )
+
+
 async def _terminate_subprocess_after_timeout(
     process: asyncio.subprocess.Process,
 ) -> None:
@@ -2112,10 +2143,53 @@ class RAGComponents:
                         )
                     return json.dumps(payload, indent=2)
 
-                result = await _orig(*args, **kwargs)
+                try:
+                    result = await _orig(*args, **kwargs)
+                except (ToolException, ValueError, HTTPException) as exc:
+                    detail = (
+                        str(exc.detail).strip()
+                        if isinstance(exc, HTTPException) and exc.detail
+                        else _format_exception_message(exc)
+                    )
+                    payload = {
+                        "tool": _tool_name,
+                        "status": "rejected_not_persisted",
+                        "rejected": True,
+                        "persisted": False,
+                        "retryable": False,
+                        "failure_class": "tool_error",
+                        "message": detail,
+                        "error": detail,
+                        "action_required": (
+                            "Use only the primary workspace or a granted workspace_id "
+                            "listed in the current workspace context."
+                        ),
+                        "next_best_tool": self._next_best_tool_for_failure(
+                            "tool_error",
+                            fallback_tool="assay_userspace_code",
+                        ),
+                    }
+                    request_state["tool_calls"].append(
+                        {
+                            "tool": _tool_name,
+                            "signature": signature,
+                            "repeat_count": call_count,
+                            "status": payload["status"],
+                            "failure_class": payload["failure_class"],
+                            "blocked": True,
+                        }
+                    )
+                    if workspace_id:
+                        self._record_userspace_failure(
+                            workspace_id,
+                            failure_class="tool_error",
+                            summary=detail,
+                            tool_name=_tool_name,
+                        )
+                    return json.dumps(payload, indent=2)
                 parsed = self._parse_json_object(result)
                 status = "completed"
-                failure_class = None
+                failure_class: str | None = None
                 if parsed:
                     status = str(parsed.get("status") or status)
                     failure_class = (
@@ -6031,31 +6105,45 @@ except Exception as e:
         last_error = cls._sanitize_userspace_runtime_error_for_turn_hint(
             str(getattr(status, "last_error", "") or "")
         )
+        live_data_warning = cls._sanitize_userspace_runtime_error_for_turn_hint(
+            str(getattr(status, "live_data_warning", "") or "")
+        )
 
         failed_runtime = session_state == "error" or runtime_phase == "failed"
         has_runtime_blocker = bool(last_error) or failed_runtime
-        if not has_runtime_blocker:
+        if not has_runtime_blocker and not live_data_warning:
             return ""
 
-        status_bits = []
-        if session_state:
-            status_bits.append(f"session_state={session_state}")
-        if runtime_phase:
-            status_bits.append(f"phase={runtime_phase}")
-        status_bits.append(f"devserver_running={str(devserver_running).lower()}")
-        status_text = ", ".join(status_bits)
+        lines: list[str] = []
 
-        if last_error:
-            return (
-                "- Current runtime blocker: "
-                f"{status_text}. Last runtime error: {last_error}. "
-                "Fix this before unrelated feature work; validate the relevant source/entrypoint and re-check the preview.\n"
+        if has_runtime_blocker:
+            status_bits = []
+            if session_state:
+                status_bits.append(f"session_state={session_state}")
+            if runtime_phase:
+                status_bits.append(f"phase={runtime_phase}")
+            status_bits.append(f"devserver_running={str(devserver_running).lower()}")
+            status_text = ", ".join(status_bits)
+
+            if last_error:
+                lines.append(
+                    "- Current runtime blocker: "
+                    f"{status_text}. Last runtime error: {last_error}. "
+                    "Fix this before unrelated feature work; validate the relevant source/entrypoint and re-check the preview."
+                )
+            else:
+                lines.append(
+                    "- Current runtime blocker: "
+                    f"{status_text}. Inspect runtime startup state before unrelated feature work."
+                )
+
+        if live_data_warning:
+            lines.append(
+                "- WARNING Possible live data query issue: "
+                f"{live_data_warning}. Review the component query and retry execute-component before assuming the dataset is empty or unavailable."
             )
 
-        return (
-            "- Current runtime blocker: "
-            f"{status_text}. Inspect runtime startup state before unrelated feature work.\n"
-        )
+        return "\n".join(lines) + "\n"
 
     @staticmethod
     def _build_userspace_mount_prompt_fragment(
@@ -7778,6 +7866,27 @@ except Exception as e:
                             row_count,
                             query_text,
                         )
+                        warning_cleared = userspace_service.clear_live_data_execution_warning(
+                            workspace_id
+                        )
+                        if warning_cleared:
+                            await userspace_runtime_service.bump_workspace_generation(
+                                workspace_id,
+                                "live_data_warning",
+                            )
+                    elif str(result).startswith("Error:"):
+                        warning_changed = (
+                            userspace_service.record_live_data_execution_warning(
+                                workspace_id,
+                                _component_id,
+                                str(result),
+                            )
+                        )
+                        if warning_changed:
+                            await userspace_runtime_service.bump_workspace_generation(
+                                workspace_id,
+                                "live_data_warning",
+                            )
                     return result
 
                 wrapped_tools.append(
@@ -13428,6 +13537,25 @@ except Exception as e:
             f"for model '{resolution.model}'{attempted}"
         )
 
+    def _chat_runtime_error_message(
+        self,
+        exc: BaseException,
+        resolution: object,
+    ) -> str:
+        """Shape chat runtime failures without conflating platform and provider errors."""
+        if _is_userspace_workspace_not_found(exc):
+            return (
+                "A workspace this chat tried to access is no longer available "
+                "or you no longer have access to it. Refresh the workspace list "
+                "and retry from an active workspace."
+            )
+
+        resolution_context = self._llm_error_context(resolution)
+        return (
+            f"I encountered an error processing your request{resolution_context}: "
+            f"{_format_exception_message(exc)}"
+        )
+
     async def _resolve_chat_request_max_tokens(self, provider: str, model: str) -> int:
         """Resolve chat-specific max_tokens, capped to selected model limits when known."""
         assert self._app_settings is not None
@@ -13945,12 +14073,9 @@ except Exception as e:
 
         except Exception as e:
             logger.exception("Error processing query")
-            resolution_context = self._llm_error_context(
-                locals().get("llm_resolution")
-            )
-            return (
-                f"I encountered an error processing your request{resolution_context}: "
-                f"{_format_exception_message(e)}"
+            return self._chat_runtime_error_message(
+                e,
+                locals().get("llm_resolution"),
             )
 
     async def process_query_stream(
@@ -13999,17 +14124,22 @@ except Exception as e:
         request_llm = llm_resolution.llm
         request_model_id = llm_resolution.model
         t_ctx = time.monotonic()
-        request_context = await self._build_request_runtime_context(
-            is_ui=is_ui,
-            executor=executor,
-            blocked_tool_names=blocked_tool_names,
-            workspace_context=workspace_context,
-            add_chat_visualization_prompt=is_ui,
-            user_id=user_id,
-            current_user_context=current_user_context,
-            conversation_id=conversation_id,
-            disabled_builtin_tool_ids=disabled_builtin_tool_ids,
-        )
+        try:
+            request_context = await self._build_request_runtime_context(
+                is_ui=is_ui,
+                executor=executor,
+                blocked_tool_names=blocked_tool_names,
+                workspace_context=workspace_context,
+                add_chat_visualization_prompt=is_ui,
+                user_id=user_id,
+                current_user_context=current_user_context,
+                conversation_id=conversation_id,
+                disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+            )
+        except Exception as e:
+            logger.exception("Error preparing streaming query")
+            yield self._chat_runtime_error_message(e, llm_resolution)
+            return
         system_prompt = self._build_request_system_prompt(
             is_ui=request_context["prompt_is_ui"],
             mode=request_context["mode"],
@@ -14992,12 +15122,9 @@ except Exception as e:
 
         except Exception as e:
             logger.exception("Error in streaming query")
-            resolution_context = self._llm_error_context(
-                locals().get("llm_resolution")
-            )
-            yield (
-                f"I encountered an error processing your request{resolution_context}: "
-                f"{_format_exception_message(e)}"
+            yield self._chat_runtime_error_message(
+                e,
+                locals().get("llm_resolution"),
             )
 
 

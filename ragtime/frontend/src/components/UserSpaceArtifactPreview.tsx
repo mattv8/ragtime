@@ -25,6 +25,7 @@ interface UserSpaceArtifactPreviewProps {
   ownerUsername?: string;
   shareSlug?: string;
   onExecutionStateChange?: (isExecuting: boolean) => void;
+  onLiveDataWarningChange?: (warning: string | null) => void;
   onPreviewSessionExpired?: () => void;
   previewNotice?: {
     id: number;
@@ -45,6 +46,7 @@ export function UserSpaceArtifactPreview({
   ownerUsername,
   shareSlug,
   onExecutionStateChange,
+  onLiveDataWarningChange,
   onPreviewSessionExpired,
   previewNotice,
 }: UserSpaceArtifactPreviewProps) {
@@ -187,17 +189,22 @@ export function UserSpaceArtifactPreview({
             request,
           });
         }
+        onLiveDataWarningChange?.(
+          typeof result.error === 'string' && result.error.trim() ? result.error : null,
+        );
         sendResult(result);
       } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        onLiveDataWarningChange?.(errorMessage || null);
         sendResult({
           rows: [],
           columns: [],
           row_count: 0,
-          error: err instanceof Error ? err.message : String(err),
+          error: errorMessage,
         });
       }
     },
-    [normalizeOrigin, normalizedExpectedPreviewOrigin, workspaceId, shareToken, ownerUsername, shareSlug, onPreviewSessionExpired],
+    [normalizeOrigin, normalizedExpectedPreviewOrigin, workspaceId, shareToken, ownerUsername, shareSlug, onLiveDataWarningChange, onPreviewSessionExpired],
   );
 
   useEffect(() => {

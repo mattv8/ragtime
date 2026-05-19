@@ -1990,6 +1990,9 @@ class UserSpaceRuntimeService:
         user_id: str,
     ) -> UserSpaceRuntimeStatusResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
+        live_data_warning = userspace_service.get_live_data_execution_warning(
+            workspace_id
+        )
         active = await self._get_active_session_row(workspace_id)
         if not active:
             return UserSpaceRuntimeStatusResponse(
@@ -2001,6 +2004,7 @@ class UserSpaceRuntimeService:
                 runtime_capabilities=None,
                 runtime_has_cap_sys_admin=None,
                 preview_url=self._build_preview_origin(workspace_id),
+                live_data_warning=live_data_warning,
             )
 
         session = self._to_runtime_session(active)
@@ -2028,6 +2032,7 @@ class UserSpaceRuntimeService:
                     runtime_capabilities=None,
                     runtime_has_cap_sys_admin=None,
                     preview_url=self._build_preview_origin(workspace_id),
+                    live_data_warning=live_data_warning,
                 )
             logger.warning(
                 "Runtime provider status missing for workspace %s; auto-recovering session",
@@ -2140,6 +2145,7 @@ class UserSpaceRuntimeService:
             runtime_has_cap_sys_admin=runtime_has_cap_sys_admin,
             preview_url=self._build_preview_origin(workspace_id),
             last_error=last_error,
+            live_data_warning=live_data_warning,
             runtime_operation_id=runtime_operation_id,
             runtime_operation_phase=runtime_operation_phase,
             runtime_operation_started_at=runtime_operation_started_at,

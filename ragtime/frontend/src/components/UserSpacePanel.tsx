@@ -1627,6 +1627,24 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, [activeWorkspaceId]);
 
+  const updateActiveWorkspaceConversationId = useCallback((conversationId: string | null) => {
+    activeWorkspaceConversationIdRef.current = conversationId;
+    setActiveWorkspaceConversationId(conversationId);
+  }, []);
+
+  const selectActiveWorkspace = useCallback((workspaceId: string | null) => {
+    const nextWorkspaceId = workspaceId ?? null;
+    const workspaceChanged = activeWorkspaceIdRef.current !== nextWorkspaceId;
+
+    activeWorkspaceIdRef.current = nextWorkspaceId;
+    if (workspaceChanged) {
+      updateActiveWorkspaceConversationId(null);
+      setActiveWorkspaceChatSnapshot(null);
+      setRuntimeStatus(null);
+    }
+    setActiveWorkspaceId(nextWorkspaceId);
+  }, [updateActiveWorkspaceConversationId]);
+
   const loadWorkspaces = useCallback(async (append = false) => {
     if (append) {
       setLoadingMore(true);
@@ -1658,7 +1676,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
         setWorkspaces(nextItems);
         if (nextItems.length === 0) {
-          setActiveWorkspaceId(null);
+          selectActiveWorkspace(null);
           clearCookieValue(lastWorkspaceCookieName);
         } else if (!activeWorkspaceId) {
           const lastWorkspaceId = getCookieValue(lastWorkspaceCookieName);
@@ -1668,7 +1686,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             : null;
 
           if (matchingWorkspace) {
-            setActiveWorkspaceId(matchingWorkspace.id);
+            selectActiveWorkspace(matchingWorkspace.id);
           } else if (restorableWorkspaceId) {
             try {
               const workspace = await api.getUserSpaceWorkspace(restorableWorkspaceId);
@@ -1677,12 +1695,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                   ? prev
                   : [workspace, ...prev]
               ));
-              setActiveWorkspaceId(workspace.id);
+              selectActiveWorkspace(workspace.id);
             } catch {
-              setActiveWorkspaceId(nextItems[0].id);
+              selectActiveWorkspace(nextItems[0].id);
             }
           } else {
-            setActiveWorkspaceId(nextItems[0].id);
+            selectActiveWorkspace(nextItems[0].id);
           }
         }
       }
@@ -1694,7 +1712,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [activeWorkspaceId, lastWorkspaceCookieName, workspaces.length]);
+  }, [activeWorkspaceId, lastWorkspaceCookieName, selectActiveWorkspace, workspaces.length]);
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
@@ -1735,10 +1753,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         return;
       }
 
-      setActiveWorkspaceId(requestedWorkspaceId);
-      setRuntimeStatus(null);
-      setActiveWorkspaceConversationId(null);
-      setActiveWorkspaceChatSnapshot(null);
+      selectActiveWorkspace(requestedWorkspaceId);
     };
 
     void selectWorkspace();
@@ -1746,12 +1761,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     return () => {
       cancelled = true;
     };
-  }, [openWorkspaceRequest?.requestId, openWorkspaceRequest?.workspaceId, toast]);
-
-  useEffect(() => {
-    setActiveWorkspaceConversationId(null);
-    setActiveWorkspaceChatSnapshot(null);
-  }, [activeWorkspaceId]);
+  }, [openWorkspaceRequest?.requestId, openWorkspaceRequest?.workspaceId, selectActiveWorkspace, toast]);
 
   useEffect(() => {
     if (
@@ -3009,7 +3019,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           }
           setRuntimeStatus(null);
           setPreviewLiveDataConnections([]);
-          setActiveWorkspaceId(autoSelectTask.workspace_id);
+          selectActiveWorkspace(autoSelectTask.workspace_id);
         }
       } finally {
         pollInFlight = false;
@@ -3025,7 +3035,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeWorkspaceCreateTaskCount, loadWorkspaces]);
+  }, [activeWorkspaceCreateTaskCount, loadWorkspaces, selectActiveWorkspace]);
 
   useEffect(() => {
     duplicatingWorkspaceTasksRef.current = duplicatingWorkspaceTasks;
@@ -3365,7 +3375,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     try {
       const conversation = await api.createConversation(undefined, activeWorkspaceId);
 
-      setActiveWorkspaceConversationId(conversation.id);
+      updateActiveWorkspaceConversationId(conversation.id);
       setActiveWorkspaceChatSnapshot((current) => ({
         conversations: [
           conversation,
@@ -3381,12 +3391,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     } catch (err) {
       setError(getApiErrorMessage(err, 'Failed to ask the agent to prepare the workspace'));
     }
-  }, [activeWorkspaceId, awaitAvailableModelsReady, expandChat, refreshAvailableModels]);
+  }, [activeWorkspaceId, awaitAvailableModelsReady, expandChat, refreshAvailableModels, updateActiveWorkspaceConversationId]);
 
   const handleUserMessageSubmitted = useCallback(async (_message: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
     await loadWorkspaceData(activeWorkspaceId);
   }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData]);
+
+  const handleLiveDataWarningChange = useCallback((warning: string | null) => {
+    setRuntimeStatus((prev) => (
+      prev ? { ...prev, live_data_warning: warning } : prev
+    ));
+  }, []);
 
   const handleRestoreSnapshot = useCallback(async (snapshotId: string, snapshotBranchId?: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -4634,7 +4650,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             setRuntimeStatus(null);
             setPreviewLiveDataConnections([]);
             const fallback = workspacesRef.current.find((ws) => ws.id !== deletedId)?.id ?? null;
-            setActiveWorkspaceId(fallback);
+            selectActiveWorkspace(fallback);
 
             if (!fallback) {
               clearCookieValue(lastWorkspaceCookieNameRef.current);
@@ -4666,7 +4682,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeWorkspaceDeleteTaskCount, loadWorkspaces]);
+  }, [activeWorkspaceDeleteTaskCount, loadWorkspaces, selectActiveWorkspace]);
 
   const handleOpenMembersModal = useCallback(async () => {
     if (!activeWorkspace || !isOwner) return;
@@ -6500,9 +6516,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             disabled={isDeletingWorkspace}
                             onClick={() => {
                               if (ws.id !== activeWorkspaceId) {
-                                  setRuntimeStatus(null);
+                                setRuntimeStatus(null);
                               }
-                              setActiveWorkspaceId(ws.id);
+                              selectActiveWorkspace(ws.id);
                               setIsWorkspaceMenuOpen(false);
                               setDeleteConfirmWorkspaceId(null);
                             }}
@@ -7082,7 +7098,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 conversationShareableUserIds={workspaceChatShareableUserIds}
                 onUserMessageSubmitted={handleUserMessageSubmitted}
                 onConversationStateChange={handleConversationStateChange}
-                onActiveConversationChange={setActiveWorkspaceConversationId}
+                onActiveConversationChange={updateActiveWorkspaceConversationId}
                 onBranchSwitch={handleBranchSwitch}
                 onOpenWorkspaceFile={handleSelectFile}
                 onMessageSnapshotRestored={handleMessageSnapshotRestored}
@@ -7130,6 +7146,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 previewInstanceKey={`${activeWorkspaceId ?? ''}:${previewRefreshCounter}`}
                 workspaceId={activeWorkspaceId ?? undefined}
                 onExecutionStateChange={setPreviewExecuting}
+                onLiveDataWarningChange={handleLiveDataWarningChange}
                 previewNotice={previewNotice}
                 onPreviewSessionExpired={handlePreviewSessionExpired}
               />
@@ -7156,6 +7173,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                   <div className="userspace-snapshot-info">
                     <strong>Error</strong>
                     <span className="userspace-muted">{runtimeStatus.last_error}</span>
+                  </div>
+                </div>
+              )}
+              {runtimeStatus?.live_data_warning && (
+                <div className="userspace-snapshot-item" style={{ marginBottom: 8 }}>
+                  <div className="userspace-snapshot-info">
+                    <strong>Warning</strong>
+                    <span className="userspace-muted">{`WARNING Possible live data query issue: ${runtimeStatus.live_data_warning}`}</span>
                   </div>
                 </div>
               )}
@@ -8647,14 +8672,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               if (prev.some((w) => w.id === ws.id)) return prev;
               return [...prev, ws];
             });
-            setActiveWorkspaceId(ws.id);
+            selectActiveWorkspace(ws.id);
             setRuntimeStatus(null);
           }}
           onWorkspaceDeleted={(wsId) => {
             setWorkspaces((prev) => prev.filter((w) => w.id !== wsId));
             setWorkspacesTotal((prev) => Math.max(0, prev - 1));
             if (activeWorkspaceId === wsId) {
-              setActiveWorkspaceId(workspaces.find((w) => w.id !== wsId)?.id ?? null);
+              selectActiveWorkspace(workspaces.find((w) => w.id !== wsId)?.id ?? null);
             }
           }}
         />

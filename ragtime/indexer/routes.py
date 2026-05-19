@@ -10682,10 +10682,37 @@ async def _resolve_selected_tool_ids_for_request(
                 effective_workspace_id
             )
         )
+        accessible_modes_for_user = {}
+        for target_workspace_id, access_mode in accessible_modes.items():
+            normalized_access_mode = str(
+                getattr(access_mode, "value", access_mode) or "read"
+            )
+            required_target_role = (
+                "editor" if normalized_access_mode == "read_write" else "viewer"
+            )
+            try:
+                await userspace_service.enforce_workspace_role(
+                    target_workspace_id,
+                    user.id,
+                    required_target_role,
+                    is_admin=user.role == "admin",
+                )
+            except HTTPException as exc:
+                if exc.status_code not in {403, 404}:
+                    raise
+                logger.info(
+                    "Skipping cross-workspace grant from %s to %s for user %s: %s",
+                    effective_workspace_id,
+                    target_workspace_id,
+                    user.id,
+                    exc.detail,
+                )
+                continue
+            accessible_modes_for_user[target_workspace_id] = access_mode
         workspace_context = {
             "workspace_id": effective_workspace_id,
             "user_id": user.id,
-            "accessible_workspace_modes": accessible_modes,
+            "accessible_workspace_modes": accessible_modes_for_user,
         }
 
     if selected_tool_ids:
