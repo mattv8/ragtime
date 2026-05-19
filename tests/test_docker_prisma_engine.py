@@ -1,8 +1,14 @@
+from __future__ import annotations
+
 import unittest
 from pathlib import Path
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+def _repo_root_with_dockerfile() -> Path | None:
+    for candidate in (Path(__file__).resolve().parents[1], Path.cwd()):
+        if (candidate / "docker" / "Dockerfile").is_file():
+            return candidate
+    return None
 
 
 def _stage_run_instructions(dockerfile: str) -> dict[str, list[str]]:
@@ -33,8 +39,14 @@ def _stage_run_instructions(dockerfile: str) -> dict[str, list[str]]:
 
 
 class DockerPrismaEngineTests(unittest.TestCase):
+    def _read_dockerfile(self) -> str:
+        root_dir = _repo_root_with_dockerfile()
+        if root_dir is None:
+            self.skipTest("docker/Dockerfile is not mounted in this test environment")
+        return (root_dir / "docker" / "Dockerfile").read_text(encoding="utf-8")
+
     def test_production_prisma_generate_does_not_hide_engine_in_buildkit_cache(self):
-        dockerfile = (ROOT_DIR / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        dockerfile = self._read_dockerfile()
         stage_instructions = _stage_run_instructions(dockerfile)
         generate_instructions = [
             instruction
@@ -47,7 +59,7 @@ class DockerPrismaEngineTests(unittest.TestCase):
             self.assertNotIn("target=/root/.cache/prisma-python", instruction)
 
     def test_python_test_stage_installs_git_for_git_history_tests(self):
-        dockerfile = (ROOT_DIR / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        dockerfile = self._read_dockerfile()
         stage_instructions = _stage_run_instructions(dockerfile)
         apt_install_instructions = [
             instruction
