@@ -714,6 +714,7 @@ export interface AppSettings {
   postgres_database: string;
   max_query_results: number;
   query_timeout: number;
+  http_proxy_safe_timeout_seconds: number;
   enable_write_ops: boolean;
   snapshot_retention_days: number;
   snapshot_stale_branch_threshold: number;
@@ -833,6 +834,7 @@ export interface UpdateSettingsRequest {
   postgres_database?: string;
   max_query_results?: number;
   query_timeout?: number;
+  http_proxy_safe_timeout_seconds?: number;
   enable_write_ops?: boolean;
   snapshot_retention_days?: number;
   snapshot_stale_branch_threshold?: number;

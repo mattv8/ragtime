@@ -84,6 +84,27 @@ class ChatRuntimeErrorClassificationTests(unittest.TestCase):
         self.assertIn("WARNING Possible live data query issue", hint)
         self.assertIn("column invoice_created_date does not exist", hint)
 
+    def test_userspace_runtime_hint_flags_timeout_warning_with_optimization_guidance(self) -> None:
+        status = SimpleNamespace(
+            session_state="running",
+            runtime_operation_phase=None,
+            devserver_running=True,
+            last_error=None,
+            live_data_warning=(
+                "Live data query exceeded the request timeout of 90s before a response could be returned. "
+                "An admin can increase the selected tool timeout in Settings > Tools."
+            ),
+        )
+
+        hint = RAGComponents._build_userspace_runtime_status_turn_hint(status)
+
+        self.assertIn("WARNING Live data query TIMEOUT", hint)
+        self.assertIn("Do NOT just retry execute-component", hint)
+        self.assertIn("Optimize", hint)
+        self.assertIn("narrow the WHERE clause", hint)
+        # Should not fall back to the generic "Possible live data query issue" line.
+        self.assertNotIn("Possible live data query issue", hint)
+
 
 class CrossWorkspaceResolutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_granted_target_without_user_access_becomes_tool_denial(self) -> None:

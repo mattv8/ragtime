@@ -136,22 +136,22 @@ model AppSettings {
   id String @id @default("default")
 
   // Server Identity
-  serverName String @default("Ragtime") @map("server_name") // Customizable server/model name
+  serverName                          String  @default("Ragtime") @map("server_name") // Customizable server/model name
   authenticatedWebglBackgroundEnabled Boolean @default(true) @map("authenticated_webgl_background_enabled")
 
   // Embedding Configuration (for FAISS indexing)
-  embeddingProvider   String @default("ollama") @map("embedding_provider") // "ollama", "openai", "llama_cpp", "lmstudio", or "omlx"
-  embeddingModel      String @default("nomic-embed-text") @map("embedding_model")
-  embeddingDimensions Int?   @map("embedding_dimensions") // Target dims for OpenAI text-embedding-3-* (MRL)
+  embeddingProvider   String  @default("ollama") @map("embedding_provider") // "ollama", "openai", "llama_cpp", "lmstudio", or "omlx"
+  embeddingModel      String  @default("nomic-embed-text") @map("embedding_model")
+  embeddingDimensions Int?    @map("embedding_dimensions") // Target dims for OpenAI text-embedding-3-* (MRL)
   // Ollama connection settings (separate fields for UI)
-  ollamaProtocol      String @default("http") @map("ollama_protocol") // "http" or "https"
-  ollamaHost          String @default("localhost") @map("ollama_host")
-  ollamaPort          Int    @default(11434) @map("ollama_port")
-  ollamaBaseUrl       String @default("http://localhost:11434") @map("ollama_base_url")
-  llamaCppProtocol    String @default("http") @map("llama_cpp_protocol")
-  llamaCppHost        String @default("host.docker.internal") @map("llama_cpp_host")
-  llamaCppPort        Int    @default(8081) @map("llama_cpp_port")
-  llamaCppBaseUrl     String @default("http://host.docker.internal:8081") @map("llama_cpp_base_url")
+  ollamaProtocol      String  @default("http") @map("ollama_protocol") // "http" or "https"
+  ollamaHost          String  @default("localhost") @map("ollama_host")
+  ollamaPort          Int     @default(11434) @map("ollama_port")
+  ollamaBaseUrl       String  @default("http://localhost:11434") @map("ollama_base_url")
+  llamaCppProtocol    String  @default("http") @map("llama_cpp_protocol")
+  llamaCppHost        String  @default("host.docker.internal") @map("llama_cpp_host")
+  llamaCppPort        Int     @default(8081) @map("llama_cpp_port")
+  llamaCppBaseUrl     String  @default("http://host.docker.internal:8081") @map("llama_cpp_base_url")
   lmstudioProtocol    String  @default("http") @map("lmstudio_protocol")
   lmstudioHost        String  @default("host.docker.internal") @map("lmstudio_host")
   lmstudioPort        Int     @default(1234) @map("lmstudio_port")
@@ -219,6 +219,9 @@ model AppSettings {
   maxQueryResults Int @default(100) @map("max_query_results")
   queryTimeout    Int @default(30) @map("query_timeout")
   maxIterations   Int @default(30) @map("max_iterations") // Agent iteration limit
+
+  // HTTP Request Handling
+  httpProxySafeTimeoutSeconds Int @default(90) @map("http_proxy_safe_timeout_seconds") // Synchronous request cap kept below upstream proxy timeout (seconds)
 
   // Agent Token Optimization
   maxToolOutputChars   Int @default(5000) @map("max_tool_output_chars") // Max chars per tool output before truncation (0=unlimited)
@@ -801,21 +804,21 @@ enum WorkspaceScmAutoSyncPolicy {
 
 /// User account (synced from LDAP or local admin)
 model User {
-  id              String       @id @default(uuid())
-  username        String       @unique // For LDAP: samAccountName/uid, for local: prefixed with "local:"
-  authProvider    AuthProvider @default(ldap) @map("auth_provider")
-  ldapDn          String?      @map("ldap_dn") // LDAP distinguished name (null for local users)
+  id              String        @id @default(uuid())
+  username        String        @unique // For LDAP: samAccountName/uid, for local: prefixed with "local:"
+  authProvider    AuthProvider  @default(ldap) @map("auth_provider")
+  ldapDn          String?       @map("ldap_dn") // LDAP distinguished name (null for local users)
   sourceProvider  AuthProvider? @map("source_provider") // Original upstream provider for cached/synced identities
-  sourceId        String?      @map("source_id") // Provider-specific immutable identifier when available
-  passwordHash    String?      @map("password_hash") // PBKDF2 hash for local_managed users only
-  cachedGroups    Json         @default("[]") @map("cached_groups") // Provider-neutral projected group keys/DNs
-  sourceSyncedAt  DateTime?    @map("source_synced_at")
-  sourceExpiresAt DateTime?    @map("source_expires_at")
+  sourceId        String?       @map("source_id") // Provider-specific immutable identifier when available
+  passwordHash    String?       @map("password_hash") // PBKDF2 hash for local_managed users only
+  cachedGroups    Json          @default("[]") @map("cached_groups") // Provider-neutral projected group keys/DNs
+  sourceSyncedAt  DateTime?     @map("source_synced_at")
+  sourceExpiresAt DateTime?     @map("source_expires_at")
   email           String?
-  displayName     String?      @map("display_name")
-  role            UserRole     @default(user)
-  roleManuallySet Boolean      @default(false) @map("role_manually_set") // True when admin manually changed role; cleared on LDAP login
-  lastLoginAt     DateTime?    @map("last_login_at")
+  displayName     String?       @map("display_name")
+  role            UserRole      @default(user)
+  roleManuallySet Boolean       @default(false) @map("role_manually_set") // True when admin manually changed role; cleared on LDAP login
+  lastLoginAt     DateTime?     @map("last_login_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
@@ -862,17 +865,17 @@ model AuthProviderConfig {
 
 /// Provider-neutral auth group. Local groups can contain internal and LDAP-synced users.
 model AuthGroup {
-  id             String       @id @default(uuid())
-  key            String       @unique
-  displayName    String       @map("display_name")
-  description    String       @default("")
-  provider       AuthProvider @default(local_managed)
-  sourceId       String?      @map("source_id")
-  sourceDn       String?      @map("source_dn")
-  role           UserRole?    @map("role")
-  isLogonGroup   Boolean      @default(false) @map("is_logon_group")
-  createdAt      DateTime     @default(now()) @map("created_at")
-  updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
+  id           String       @id @default(uuid())
+  key          String       @unique
+  displayName  String       @map("display_name")
+  description  String       @default("")
+  provider     AuthProvider @default(local_managed)
+  sourceId     String?      @map("source_id")
+  sourceDn     String?      @map("source_dn")
+  role         UserRole?    @map("role")
+  isLogonGroup Boolean      @default(false) @map("is_logon_group")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @default(now()) @updatedAt @map("updated_at")
 
   memberships AuthGroupMembership[]
 
@@ -1061,24 +1064,24 @@ model Conversation {
 }
 
 model ConversationShare {
-  id                       String                @id @default(uuid())
-  conversationId           String                @map("conversation_id")
-  conversation             Conversation          @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  ownerUserId              String                @map("owner_user_id")
-  ownerUser                User                  @relation("ConversationShareOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
-  label                    String?               @map("label")
-  shareToken               String?               @unique @map("share_token")
-  shareTokenCreatedAt      DateTime?             @map("share_token_created_at")
-  shareSlug                String?               @map("share_slug")
-  shareAccessMode          String                @default("token") @map("share_access_mode")
-  sharePassword            String?               @map("share_password")
-  shareSelectedUserIds     Json                  @default("[]") @map("share_selected_user_ids")
-  shareSelectedLdapGroups  Json                  @default("[]") @map("share_selected_ldap_groups")
-  grantedRole              ConversationShareRole @default(viewer) @map("granted_role")
-  scopeAnchorMessageIdx    Int?                  @map("scope_anchor_message_idx")
-  scopeDirection           String?               @map("scope_direction")
-  createdAt                DateTime              @default(now()) @map("created_at")
-  updatedAt                DateTime              @default(now()) @updatedAt @map("updated_at")
+  id                      String                @id @default(uuid())
+  conversationId          String                @map("conversation_id")
+  conversation            Conversation          @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  ownerUserId             String                @map("owner_user_id")
+  ownerUser               User                  @relation("ConversationShareOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  label                   String?               @map("label")
+  shareToken              String?               @unique @map("share_token")
+  shareTokenCreatedAt     DateTime?             @map("share_token_created_at")
+  shareSlug               String?               @map("share_slug")
+  shareAccessMode         String                @default("token") @map("share_access_mode")
+  sharePassword           String?               @map("share_password")
+  shareSelectedUserIds    Json                  @default("[]") @map("share_selected_user_ids")
+  shareSelectedLdapGroups Json                  @default("[]") @map("share_selected_ldap_groups")
+  grantedRole             ConversationShareRole @default(viewer) @map("granted_role")
+  scopeAnchorMessageIdx   Int?                  @map("scope_anchor_message_idx")
+  scopeDirection          String?               @map("scope_direction")
+  createdAt               DateTime              @default(now()) @map("created_at")
+  updatedAt               DateTime              @default(now()) @updatedAt @map("updated_at")
 
   @@index([conversationId])
   @@index([ownerUserId, shareSlug])
@@ -1137,7 +1140,7 @@ model ConversationVisualizationBranch {
   toolName     String  @map("tool_name")
 
   sequence Int
-  output   String @map("output")
+  output   String  @map("output")
   active   Boolean @default(false)
 
   createdByUserId String? @map("created_by_user_id")
@@ -1215,20 +1218,20 @@ model Workspace {
 }
 
 model WorkspaceShare {
-  id                       String    @id @default(uuid())
-  workspaceId              String    @map("workspace_id")
-  workspace                Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  ownerUserId              String    @map("owner_user_id")
-  label                    String?   @map("label")
-  shareToken               String?   @unique @map("share_token")
-  shareTokenCreatedAt      DateTime? @map("share_token_created_at")
-  shareSlug                String?   @map("share_slug")
-  shareAccessMode          String    @default("token") @map("share_access_mode")
-  sharePassword            String?   @map("share_password")
-  shareSelectedUserIds     Json      @default("[]") @map("share_selected_user_ids")
-  shareSelectedLdapGroups  Json      @default("[]") @map("share_selected_ldap_groups")
-  createdAt                DateTime  @default(now()) @map("created_at")
-  updatedAt                DateTime  @default(now()) @updatedAt @map("updated_at")
+  id                      String    @id @default(uuid())
+  workspaceId             String    @map("workspace_id")
+  workspace               Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  ownerUserId             String    @map("owner_user_id")
+  label                   String?   @map("label")
+  shareToken              String?   @unique @map("share_token")
+  shareTokenCreatedAt     DateTime? @map("share_token_created_at")
+  shareSlug               String?   @map("share_slug")
+  shareAccessMode         String    @default("token") @map("share_access_mode")
+  sharePassword           String?   @map("share_password")
+  shareSelectedUserIds    Json      @default("[]") @map("share_selected_user_ids")
+  shareSelectedLdapGroups Json      @default("[]") @map("share_selected_ldap_groups")
+  createdAt               DateTime  @default(now()) @map("created_at")
+  updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at")
 
   @@index([workspaceId])
   @@index([ownerUserId, shareSlug])
@@ -1403,7 +1406,7 @@ model WorkspaceMount {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
-  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace       Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   mountSource     UserspaceMountSource?     @relation(fields: [mountSourceId], references: [id])
   userMountSource UserUserspaceMountSource? @relation(fields: [userMountSourceId], references: [id], onDelete: Cascade)
 

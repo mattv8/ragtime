@@ -1071,6 +1071,7 @@ class IndexerRepository:
             postgres_database=settings.postgresDb,
             max_query_results=settings.maxQueryResults,
             query_timeout=settings.queryTimeout,
+            http_proxy_safe_timeout_seconds=getattr(settings, "httpProxySafeTimeoutSeconds", 90),
             enable_write_ops=settings.enableWriteOps,
             # Token optimization
             max_tool_output_chars=getattr(settings, "maxToolOutputChars", 5000),
@@ -1223,6 +1224,7 @@ class IndexerRepository:
             "postgres_database": "postgresDb",
             "max_query_results": "maxQueryResults",
             "query_timeout": "queryTimeout",
+            "http_proxy_safe_timeout_seconds": "httpProxySafeTimeoutSeconds",
             "enable_write_ops": "enableWriteOps",
             # Search configuration
             "search_results_k": "searchResultsK",

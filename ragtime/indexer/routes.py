@@ -71,6 +71,7 @@ from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
+from ragtime.core.http_timeouts import get_http_proxy_safe_timeout_seconds
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
     MODEL_FAMILY_PATTERNS,
@@ -11635,6 +11636,25 @@ RERUNNABLE_TOOL_TYPES = frozenset(
 )
 
 
+async def _invoke_retry_terminal_tool_with_http_timeout(tool: Any, tool_input: dict[str, Any]) -> str:
+    timeout_seconds = await get_http_proxy_safe_timeout_seconds()
+    try:
+        output = await asyncio.wait_for(
+            tool.ainvoke(tool_input),
+            timeout=timeout_seconds,
+        )
+        return str(output)
+    except asyncio.TimeoutError:
+        timeout_label = max(1, int(timeout_seconds))
+        timeout_unit = "second" if timeout_label == 1 else "seconds"
+        return (
+            "Error: Replay query timed out after "
+            f"{timeout_label} {timeout_unit} before the tool finished. "
+            "The original query may still need optimization or a shorter timeout; "
+            "rerun it from chat if you need a long-running background attempt."
+        )
+
+
 @router.post("/conversations/{conversation_id}/retry-visualization")
 async def retry_visualization(
     conversation_id: str,
@@ -12003,8 +12023,8 @@ async def retry_terminal_tool(
         if tool is None:
             raise HTTPException(status_code=500, detail="Failed to build tool")
 
-        output = await tool.ainvoke(request.input)
-        return RetryTerminalToolResponse(success=True, output=str(output))
+        output = await _invoke_retry_terminal_tool_with_http_timeout(tool, request.input)
+        return RetryTerminalToolResponse(success=True, output=output)
     except HTTPException:
         raise
     except Exception as e:

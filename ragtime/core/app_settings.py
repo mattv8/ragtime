@@ -240,6 +240,7 @@ class SettingsCache:
                 "postgres_db": prisma_settings.postgresDb,
                 "max_query_results": prisma_settings.maxQueryResults,
                 "query_timeout": prisma_settings.queryTimeout,
+                "http_proxy_safe_timeout_seconds": getattr(prisma_settings, "httpProxySafeTimeoutSeconds", 90),
                 "enable_write_ops": prisma_settings.enableWriteOps,
                 # Token optimization settings
                 "max_tool_output_chars": getattr(prisma_settings, "maxToolOutputChars", 5000),
@@ -332,6 +333,7 @@ class SettingsCache:
                 "postgres_db": "",
                 "max_query_results": 100,
                 "query_timeout": 30,
+                "http_proxy_safe_timeout_seconds": 90,
                 "enable_write_ops": False,
                 # Token optimization settings
                 "max_tool_output_chars": 5000,
