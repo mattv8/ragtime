@@ -303,6 +303,17 @@ INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT = (
 )
 MAX_INTERNAL_AGENT_CONTINUATIONS = 2
 
+# Inactivity timeout for the agent's tool-calling stream AFTER a tool has
+# completed and while no tool is currently running. Some providers (notably
+# GitHub Copilot's Responses API with reasoning) can stall indefinitely
+# between the last tool_end and the synthesis output — especially after
+# long-running tool calls that themselves timed out. When this fires we
+# abort the provider stream and fall through to the tool-free synthesis
+# fallback so the user receives a real answer instead of an empty turn.
+# Tools that are actively executing have their own per-tool timeout
+# (MAX_TOOL_TIMEOUT_SECONDS) and are not affected by this guard.
+AGENT_STREAM_POST_TOOL_INACTIVITY_TIMEOUT_SECONDS: float = 120.0
+
 _USERSPACE_LIVE_DATA_BINDING_VALIDATOR_JS_PATH = Path(__file__).with_name("userspace_live_data_binding_validator.js")
 _USERSPACE_TYPESCRIPT_VALIDATOR_JS_PATH = Path(__file__).with_name("userspace_typescript_validator.js")
 
@@ -5447,10 +5458,30 @@ except Exception as e:
                 lines.append(f"- Current runtime blocker: {status_text}. Inspect runtime startup state before unrelated feature work.")
 
         if live_data_warning:
-            lines.append(
-                "- WARNING Possible live data query issue: "
-                f"{live_data_warning}. Review the component query and retry execute-component before assuming the dataset is empty or unavailable."
+            warning_lower = live_data_warning.lower()
+            is_timeout = (
+                "timeout" in warning_lower
+                or "timed out" in warning_lower
+                or "exceeded the request timeout" in warning_lower
+                or "exceeded the platform-configured timeout" in warning_lower
             )
+            if is_timeout:
+                lines.append(
+                    "- WARNING Live data query TIMEOUT: "
+                    f"{live_data_warning}. Do NOT just retry execute-component "
+                    "with the same payload; it will likely time out again. Optimize "
+                    "or compartmentalize the component query first: narrow the "
+                    "WHERE clause (tighter date/id range), push aggregation "
+                    "into SQL instead of post-processing rows, add LIMIT for "
+                    "exploratory checks, split a heavy query into smaller "
+                    "components, or cache expensive intermediate results. "
+                    "Only then re-run execute-component to validate."
+                )
+            else:
+                lines.append(
+                    "- WARNING Possible live data query issue: "
+                    f"{live_data_warning}. Review the component query and retry execute-component before assuming the dataset is empty or unavailable."
+                )
 
         return "\n".join(lines) + "\n"
 
@@ -12643,15 +12674,59 @@ except Exception as e:
                         attempt_had_tool_activity = False
                         attempt_intermediate_steps: list[Any] = []
                         attempt_replayed_tool_messages: list[BaseMessage] = []
+                        attempt_provider_stalled_after_tool = False
 
-                        async for event in executor.astream_events(
+                        agent_stream = executor.astream_events(
                             {
                                 "input": attempt_input,
                                 "user_input": [HumanMessage(content=attempt_input)],
                                 "chat_history": attempt_chat_history,
                             },
                             version="v2",
-                        ):
+                        )
+                        agent_stream_iter = agent_stream.__aiter__()
+                        while True:
+                            # Only enforce post-tool inactivity timeout when no
+                            # tool is currently running AND we have already seen
+                            # tool activity this attempt. Long-running tool
+                            # executions block the event stream and have their
+                            # own per-tool timeouts; the goal here is to catch
+                            # the model hanging on synthesis AFTER tools finish.
+                            apply_inactivity_timeout = attempt_had_tool_activity and not active_tool_runs
+                            try:
+                                if apply_inactivity_timeout:
+                                    event = await asyncio.wait_for(
+                                        agent_stream_iter.__anext__(),
+                                        timeout=AGENT_STREAM_POST_TOOL_INACTIVITY_TIMEOUT_SECONDS,
+                                    )
+                                else:
+                                    event = await agent_stream_iter.__anext__()
+                            except StopAsyncIteration:
+                                break
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    "Agent stream went silent for %.0fs after tool activity completed "
+                                    "(attempt=%d, emitted_content=%s, replayed_msgs=%d); aborting provider "
+                                    "stream and falling through to tool-free synthesis fallback",
+                                    AGENT_STREAM_POST_TOOL_INACTIVITY_TIMEOUT_SECONDS,
+                                    attempt_number,
+                                    attempt_emitted_content,
+                                    len(attempt_replayed_tool_messages),
+                                )
+                                attempt_provider_stalled_after_tool = True
+                                request_tool_state["provider_stalled_after_tool"] = True
+                                try:
+                                    aclose = getattr(cast(Any, agent_stream_iter), "aclose", None)
+                                    if callable(aclose):
+                                        close_result = aclose()
+                                        if asyncio.iscoroutine(close_result) or isinstance(close_result, asyncio.Future):
+                                            await close_result
+                                except Exception as close_err:
+                                    logger.debug(
+                                        "Failed to close stalled agent stream iterator: %s",
+                                        close_err,
+                                    )
+                                break
                             kind = event.get("event", "")
                             run_id = event.get("run_id", "")
 
@@ -12971,6 +13046,7 @@ except Exception as e:
                             and attempt_had_tool_activity
                             and bool(attempt_intermediate_steps or attempt_replayed_tool_messages)
                             and attempt_number < MAX_INTERNAL_AGENT_CONTINUATIONS
+                            and not attempt_provider_stalled_after_tool
                         )
                         if not should_internal_continue:
                             stop_reason = ""
@@ -12978,6 +13054,8 @@ except Exception as e:
                                 stop_reason = "max_iterations_reached"
                             elif attempt_emitted_content:
                                 stop_reason = "content_emitted"
+                            elif attempt_provider_stalled_after_tool:
+                                stop_reason = "provider_stalled_after_tool"
                             elif not attempt_had_tool_activity:
                                 stop_reason = "no_tool_activity_this_attempt"
                             elif not (attempt_intermediate_steps or attempt_replayed_tool_messages):

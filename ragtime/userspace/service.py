@@ -42,6 +42,7 @@ from ragtime.core.encryption import (
 )
 from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.git import create_repository, parse_git_url
+from ragtime.core.http_timeouts import get_http_proxy_safe_timeout_seconds
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import (
     DB_TYPE_POSTGRES,
@@ -18883,15 +18884,50 @@ class UserSpaceService:
         *,
         error_log_prefix: str,
     ) -> ExecuteComponentResponse:
-        response, query = await self._execute_component_for_selected_tool_ids(
-            selected_tool_ids=list(workspace.selected_tool_ids),
-            component_id=request.component_id,
-            request_payload=request.request,
-            error_log_prefix=error_log_prefix,
-            sidecar_workspace_id=workspace.id,
-            require_result_limit=False,
-            enforce_result_limit=False,
-        )
+        http_timeout_seconds = await get_http_proxy_safe_timeout_seconds()
+        try:
+            response, query = await asyncio.wait_for(
+                self._execute_component_for_selected_tool_ids(
+                    selected_tool_ids=list(workspace.selected_tool_ids),
+                    component_id=request.component_id,
+                    request_payload=request.request,
+                    error_log_prefix=error_log_prefix,
+                    sidecar_workspace_id=workspace.id,
+                    require_result_limit=False,
+                    enforce_result_limit=False,
+                ),
+                timeout=http_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            # The synchronous request exceeded the HTTP-level cap (kept below
+            # the reverse-proxy 524 cliff). The DB-side statement_timeout will
+            # still tear down the running query independently; here we just
+            # need to return a structured response so the runtime bridge can
+            # render the live-data timeout banner instead of a 524.
+            timeout_seconds = max(1, int(http_timeout_seconds))
+            admin_action = self._component_timeout_admin_action()
+            error_message = f"Live data query exceeded the request timeout of {timeout_seconds}s before a response could be returned. {admin_action}"
+            logger.warning(
+                "%s for %s: HTTP execute-component timed out after %ss",
+                error_log_prefix,
+                request.component_id,
+                timeout_seconds,
+            )
+            self.record_live_data_execution_warning(
+                workspace.id,
+                request.component_id,
+                error_message,
+            )
+            return ExecuteComponentResponse(
+                component_id=request.component_id,
+                rows=[],
+                columns=[],
+                row_count=0,
+                error=error_message,
+                error_kind="timeout",
+                timeout_seconds=timeout_seconds,
+                admin_action=admin_action,
+            )
 
         # Mint server-side execution proof for live-data contract verification.
         if not response.error:
@@ -19349,15 +19385,26 @@ class UserSpaceService:
                 stderr=subprocess.PIPE,
                 env=env,
             )
-            if timeout > 0:
-                try:
-                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-                except asyncio.TimeoutError:
-                    process.kill()
-                    await process.communicate()
-                    return f"Error: {self._component_timeout_message(timeout)}"
-            else:
-                stdout, stderr = await process.communicate()
+            try:
+                if timeout > 0:
+                    try:
+                        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        process.kill()
+                        await process.communicate()
+                        return f"Error: {self._component_timeout_message(timeout)}"
+                else:
+                    stdout, stderr = await process.communicate()
+            finally:
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.shield(process.communicate())
+                    except Exception:
+                        pass
 
             if process.returncode != 0:
                 return f"Error: {stderr.decode('utf-8', errors='replace').strip()}"

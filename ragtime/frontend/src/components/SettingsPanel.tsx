@@ -2259,6 +2259,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_duplicate_copy_mounts_default: formData.userspace_duplicate_copy_mounts_default,
         userspace_mount_sync_interval_seconds: formData.userspace_mount_sync_interval_seconds,
         userspace_sqlite_import_max_bytes: formData.userspace_sqlite_import_max_bytes,
+        http_proxy_safe_timeout_seconds: formData.http_proxy_safe_timeout_seconds,
       });
       setSettings(updated);
       setFormData((prev) => ({
@@ -2270,6 +2271,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_duplicate_copy_mounts_default: updated.userspace_duplicate_copy_mounts_default,
         userspace_mount_sync_interval_seconds: updated.userspace_mount_sync_interval_seconds,
         userspace_sqlite_import_max_bytes: updated.userspace_sqlite_import_max_bytes,
+        http_proxy_safe_timeout_seconds: updated.http_proxy_safe_timeout_seconds,
       }));
       toast.success('User Space settings saved.', 5000);
     } catch (err) {
@@ -2285,6 +2287,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     formData.userspace_duplicate_copy_mounts_default,
     formData.userspace_mount_sync_interval_seconds,
     formData.userspace_sqlite_import_max_bytes,
+    formData.http_proxy_safe_timeout_seconds,
   ]);
 
   const loadGlobalEnvVars = useCallback(async () => {
@@ -5807,6 +5810,43 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                       </div>
                       <p className="field-help">
                         Range: 100 MB to 100 GB. Large imports are memory and disk intensive; use higher caps only for trusted dumps on hosts with enough headroom.
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>HTTP Request Timeout</label>
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Cap synchronous User Space live-data and retry-tool requests before a reverse proxy returns an unhelpful 504/524.
+                </p>
+                {(() => {
+                  const currentVal = formData.http_proxy_safe_timeout_seconds
+                    ?? settings?.http_proxy_safe_timeout_seconds
+                    ?? 90;
+
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min="10"
+                          max="300"
+                          step="5"
+                          style={{ flex: 1 }}
+                          value={currentVal}
+                          onChange={(e) => setFormData({
+                            ...formData,
+                            http_proxy_safe_timeout_seconds: parseInt(e.target.value, 10),
+                          })}
+                        />
+                        <span style={{ minWidth: '52px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                          {currentVal}s
+                        </span>
+                      </div>
+                      <p className="field-help">
+                        Default: 90 seconds. Keep this below your load balancer, CDN, or reverse-proxy upstream timeout so Ragtime can return structured timeout guidance to the agent.
                       </p>
                     </>
                   );

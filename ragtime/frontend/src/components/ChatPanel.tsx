@@ -3568,11 +3568,14 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           },
           workspaceId,
         );
-        if (!result.success || !result.output) {
+        if (result.output) {
+          setRetryOutput(result.output);
+          return;
+        }
+        if (!result.success) {
           throw new Error(result.error || 'Re-run failed');
         }
-        setRetryOutput(result.output);
-        return;
+        throw new Error('Re-run produced no output');
       }
     } catch (err) {
       setRetryError(err instanceof Error ? err.message : 'Re-run failed');

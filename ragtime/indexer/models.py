@@ -784,6 +784,14 @@ class AppSettings(BaseModel):
     max_query_results: int = Field(default=100, ge=1, le=1000, description="Maximum rows returned by queries")
     query_timeout: int = Field(default=30, ge=1, le=300, description="Query timeout in seconds")
 
+    # HTTP request handling
+    http_proxy_safe_timeout_seconds: int = Field(
+        default=90,
+        ge=1,
+        le=3600,
+        description="Maximum seconds for synchronous HTTP handlers before returning an in-app timeout response. Set below your upstream reverse-proxy timeout.",
+    )
+
     # Security
     enable_write_ops: bool = Field(default=False, description="Allow write operations (INSERT/UPDATE/DELETE)")
 
@@ -1096,6 +1104,12 @@ class UpdateSettingsRequest(BaseModel):
     postgres_database: Optional[str] = None
     max_query_results: Optional[int] = Field(default=None, ge=1, le=1000)
     query_timeout: Optional[int] = Field(default=None, ge=1, le=300)
+    http_proxy_safe_timeout_seconds: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=3600,
+        description="Maximum seconds for synchronous HTTP handlers before returning an in-app timeout response.",
+    )
     enable_write_ops: Optional[bool] = None
     # Search configuration
     search_results_k: Optional[int] = Field(default=None, ge=1, le=100)
