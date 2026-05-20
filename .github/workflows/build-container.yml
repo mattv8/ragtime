@@ -23,6 +23,12 @@ on:
       - '.github/workflows/build-container.yml'
       - '.github/actions/**'
   workflow_dispatch:
+    inputs:
+      build_legacy_image:
+        description: 'Build and sign the legacy CPU image'
+        required: false
+        type: boolean
+        default: false
 
 env:
   REGISTRY: hub.docker.visnovsky.us
@@ -184,9 +190,9 @@ jobs:
         with:
           repositories: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # Match all tags, but exclude 'latest', 'legacy', and 'buildcache' from deletion
+          # Match all tags, but exclude stable branch, legacy, and buildcache tags from deletion
           tagPattern: '.'
-          excludePattern: ':(latest|main|beta|latest-beta|legacy)$|:buildcache($|-.*$)'
+          excludePattern: ':(latest|main|beta|latest-beta|legacy|legacy-beta)$|:buildcache($|-.*$)'
           keep: '3'
 
   build-runtime:
@@ -277,13 +283,17 @@ jobs:
     name: Build Legacy Image
     runs-on: self-hosted
     needs: [test]
-    # Only build legacy on main branch
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.build_legacy_image == 'true' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta'))
     permissions:
       contents: read
       packages: write
     outputs:
       digest: ${{ steps.build-legacy.outputs.digest }}
+      image-name: ${{ steps.meta.outputs.image-name }}
 
     steps:
       - name: Checkout code
@@ -294,9 +304,26 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Extract commit metadata
+      - name: Determine legacy Docker tags
         id: meta
-        run: echo "short-sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: |
+          REF_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          SAFE_BRANCH=$(echo "$REF_NAME" | sed 's/[\/:@]/-/g')
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            LEGACY_TAG="legacy"
+          else
+            LEGACY_TAG="legacy-${SAFE_BRANCH}"
+          fi
+
+          TAGS="${IMAGE}:${LEGACY_TAG}"
+
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "image-name=${IMAGE}:${LEGACY_TAG}" >> "$GITHUB_OUTPUT"
+          echo "short-sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Legacy tags to be pushed: ${TAGS}"
 
       - name: Log in to Harbor Registry
         uses: docker/login-action@v3
@@ -312,7 +339,7 @@ jobs:
           context: .
           file: ./docker/Dockerfile
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:legacy
+          tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             LEGACY_CPU=1
             APP_VERSION=${{ steps.meta.outputs.short-sha }}
@@ -464,7 +491,7 @@ jobs:
   summary:
     name: Build Summary
     runs-on: self-hosted
-    needs: [build-main, build-runtime, sign, sbom, sync-readme]
+    needs: [build-main, build-runtime, build-legacy, sign, sign-legacy, sbom, sync-readme]
     if: always()
     permissions:
       contents: read
@@ -475,6 +502,8 @@ jobs:
           # Check job statuses
           BUILD_PUSH_STATUS="${{ needs.build-main.result }}"
           SIGN_STATUS="${{ needs.sign.result }}"
+          LEGACY_BUILD_STATUS="${{ needs.build-legacy.result }}"
+          LEGACY_SIGN_STATUS="${{ needs.sign-legacy.result }}"
           SBOM_STATUS="${{ needs.sbom.result }}"
           RUNTIME_STATUS="${{ needs.build-runtime.result }}"
           SYNC_STATUS="${{ needs.sync-readme.result }}"
@@ -527,10 +556,14 @@ jobs:
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            echo "**Legacy Image:** Building asynchronously in separate jobs (build-legacy -> sign-legacy)" >> $GITHUB_STEP_SUMMARY
+          if [ "$LEGACY_BUILD_STATUS" = "success" ] && [ "$LEGACY_SIGN_STATUS" = "success" ]; then
+            echo "**Legacy Image:** Built and signed (${{ needs.build-legacy.outputs.image-name }})" >> $GITHUB_STEP_SUMMARY
+          elif [ "$LEGACY_BUILD_STATUS" = "skipped" ]; then
+            echo "**Legacy Image:** Skipped" >> $GITHUB_STEP_SUMMARY
+          elif [ "$LEGACY_BUILD_STATUS" = "success" ]; then
+            echo "**Legacy Image:** Built, signing $LEGACY_SIGN_STATUS" >> $GITHUB_STEP_SUMMARY
           else
-            echo "**Legacy Image:** Skipped (main branch only)" >> $GITHUB_STEP_SUMMARY
+            echo "**Legacy Image:** $LEGACY_BUILD_STATUS" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
