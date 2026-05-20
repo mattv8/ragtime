@@ -19146,10 +19146,8 @@ class UserSpaceService:
         user = conn_config.get("user", "")
         password = conn_config.get("password", "")
         database = conn_config.get("database", "")
-        timeout = self._resolve_effective_timeout(
-            tool_config.timeout or 30,
-            getattr(tool_config, "timeout_max_seconds", 300) or 300,
-        )
+        timeout_max_seconds = getattr(tool_config, "timeout_max_seconds", 300) or 300
+        timeout = self._resolve_effective_timeout(timeout_max_seconds, timeout_max_seconds)
         max_results = tool_config.max_results or 100
 
         if tool_type == "postgres":

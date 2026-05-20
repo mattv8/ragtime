@@ -652,17 +652,14 @@ class MCPToolAdapter:
             return None
 
         schema = copy.deepcopy(base_schema)
-        timeout = int(config.get("timeout", 30) or 30)
         timeout_max_seconds = int(config.get("timeout_max_seconds", 300) or 0)
+        timeout = max(0, timeout_max_seconds)
 
         if tool_type in {"postgres", "mssql", "mysql", "influxdb"}:
-            timeout = max(0, timeout)
             timeout_schema = {
                 "type": "integer",
                 "description": (
-                    f"Query timeout in seconds (default: {timeout}, "
-                    f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
-                    "Use 0 for no timeout."
+                    f"Query timeout in seconds (default and maximum: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). Use 0 for no timeout."
                 ),
                 "default": timeout,
                 "minimum": 0,
@@ -671,12 +668,11 @@ class MCPToolAdapter:
                 timeout_schema["maximum"] = timeout_max_seconds
             schema["properties"]["timeout"] = timeout_schema
         elif tool_type == "odoo_shell":
-            timeout = max(0, timeout)
             timeout_schema = {
                 "type": "integer",
                 "description": (
-                    f"Execution timeout in seconds (default: {timeout}, "
-                    f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
+                    f"Execution timeout in seconds (default and maximum: "
+                    f"{'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
                     "Use 0 for no timeout."
                 ),
                 "default": timeout,
@@ -686,12 +682,11 @@ class MCPToolAdapter:
                 timeout_schema["maximum"] = timeout_max_seconds
             schema["properties"]["timeout"] = timeout_schema
         elif tool_type == "ssh_shell":
-            timeout = max(0, timeout)
             timeout_schema = {
                 "type": "integer",
                 "description": (
-                    f"Command timeout in seconds (default: {timeout}, "
-                    f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
+                    f"Command timeout in seconds (default and maximum: "
+                    f"{'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
                     "Use 0 for no timeout."
                 ),
                 "default": timeout,

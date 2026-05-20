@@ -1770,7 +1770,6 @@ async def create_tool_config(request: CreateToolConfigRequest, _user: User = Dep
         description=request.description,
         connection_config=connection_config,
         max_results=request.max_results,
-        timeout=request.timeout,
         timeout_max_seconds=request.timeout_max_seconds,
         allow_write=request.allow_write,
         group_id=request.group_id,
