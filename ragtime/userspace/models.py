@@ -741,6 +741,9 @@ class ExecuteComponentResponse(BaseModel):
     columns: list[str]
     row_count: int
     error: str | None = None
+    error_kind: Literal["timeout"] | None = None
+    timeout_seconds: int | None = Field(default=None, ge=0)
+    admin_action: str | None = None
 
 
 class UserSpaceWorkspaceShareLink(BaseModel):

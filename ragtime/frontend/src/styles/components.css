@@ -2356,6 +2356,12 @@ textarea:focus {
   background: var(--color-success-light);
 }
 
+.userspace-preview-exec-notice-error {
+  border: 1px solid var(--color-error-border);
+  color: var(--color-error);
+  background: var(--color-error-light);
+}
+
 .userspace-preview-frame {
   flex: 1;
   width: 100%;

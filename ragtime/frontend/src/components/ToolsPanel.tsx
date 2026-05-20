@@ -1516,7 +1516,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
 
   return (
     <div className="tools-panel">
-      <div className="card">
+      <div className="card" id="tools-connections">
         <div className="card-header">
           <h2>Tool Connections</h2>
           <AnimatedCreateButton

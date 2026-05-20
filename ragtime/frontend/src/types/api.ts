@@ -2951,6 +2951,9 @@ export interface ExecuteComponentResponse {
   columns: string[];
   row_count: number;
   error?: string | null;
+  error_kind?: 'timeout' | null;
+  timeout_seconds?: number | null;
+  admin_action?: string | null;
 }
 
 export interface UserSpaceWorkspaceShareLink {

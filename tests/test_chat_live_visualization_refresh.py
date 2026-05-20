@@ -8,6 +8,15 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+inserted_fake_rag_prompts = "ragtime.rag.prompts" not in sys.modules
+if inserted_fake_rag_prompts:
+    fake_rag_package = types.ModuleType("ragtime.rag")
+    fake_prompts_module = types.ModuleType("ragtime.rag.prompts")
+    setattr(fake_prompts_module, "build_workspace_scm_setup_prompt", lambda *args, **kwargs: "")
+    setattr(fake_rag_package, "prompts", fake_prompts_module)
+    sys.modules.setdefault("ragtime.rag", fake_rag_package)
+    sys.modules["ragtime.rag.prompts"] = fake_prompts_module
+
 from pydantic import ValidationError
 
 from ragtime.core.security import validate_sql_query
@@ -21,15 +30,6 @@ from ragtime.tools.chart import CreateLiveChartInput, create_chart
 from ragtime.tools.datatable import CreateLiveDataTableInput, create_datatable
 from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspace
 from ragtime.userspace.service import UserSpaceService
-
-inserted_fake_rag_prompts = "ragtime.rag.prompts" not in sys.modules
-if inserted_fake_rag_prompts:
-    fake_rag_package = types.ModuleType("ragtime.rag")
-    fake_prompts_module = types.ModuleType("ragtime.rag.prompts")
-    setattr(fake_prompts_module, "build_workspace_scm_setup_prompt", lambda *args, **kwargs: "")
-    setattr(fake_rag_package, "prompts", fake_prompts_module)
-    sys.modules.setdefault("ragtime.rag", fake_rag_package)
-    sys.modules["ragtime.rag.prompts"] = fake_prompts_module
 
 if inserted_fake_rag_prompts:
     sys.modules.pop("ragtime.rag", None)
@@ -401,6 +401,18 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
         )
 
         self.assertIsNone(service.get_live_data_execution_warning("workspace-1"))
+
+    def test_component_timeout_error_sets_timeout_metadata(self) -> None:
+        service = UserSpaceService()
+
+        response = service._build_execute_component_response(
+            component_id="tool-1",
+            raw_output="Error: Live data query exceeded the platform-configured timeout of 300s. An admin can increase the selected tool timeout in Settings > Tools.",
+        )
+
+        self.assertEqual(response.error_kind, "timeout")
+        self.assertEqual(response.timeout_seconds, 300)
+        self.assertIn("Settings > Tools", response.admin_action or "")
 
     def test_postgres_csv_formatter_keeps_multiline_description_in_one_row(self) -> None:
         output = format_psql_csv_output('id,description,part_number\n1,"Widget body\nwith wrapped notes",ABC-100\n2,Plain description,XYZ-200\n')

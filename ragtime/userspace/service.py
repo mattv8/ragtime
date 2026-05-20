@@ -18715,6 +18715,29 @@ class UserSpaceService:
         return min(requested, maximum)
 
     @staticmethod
+    def _component_timeout_admin_action() -> str:
+        return "An admin can increase the selected tool timeout in Settings > Tools."
+
+    @staticmethod
+    def _component_timeout_message(timeout_seconds: int) -> str:
+        return f"Live data query exceeded the platform-configured timeout of {timeout_seconds}s. {UserSpaceService._component_timeout_admin_action()}"
+
+    @staticmethod
+    def _extract_component_timeout_seconds(error: str) -> int | None:
+        normalized = error.strip()
+        if not normalized:
+            return None
+        match = re.search(r"timeout of (\d+)s", normalized, re.IGNORECASE)
+        if not match:
+            match = re.search(r"timed out after (\d+)\s*(?:s|seconds)\b", normalized, re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+
+    @staticmethod
     def _extract_query_text(payload: dict[str, Any] | str) -> str:
         if isinstance(payload, str):
             return payload
@@ -19051,12 +19074,16 @@ class UserSpaceService:
         raw_output: str,
     ) -> ExecuteComponentResponse:
         if raw_output.startswith("Error:"):
+            timeout_seconds = self._extract_component_timeout_seconds(raw_output)
             return ExecuteComponentResponse(
                 component_id=component_id,
                 rows=[],
                 columns=[],
                 row_count=0,
                 error=raw_output,
+                error_kind="timeout" if timeout_seconds is not None else None,
+                timeout_seconds=timeout_seconds,
+                admin_action=self._component_timeout_admin_action() if timeout_seconds is not None else None,
             )
 
         rows, columns = self._parse_query_output(raw_output)
@@ -19244,12 +19271,17 @@ class UserSpaceService:
                         connect_timeout=timeout if timeout > 0 else 30,
                     )
                     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                    if timeout > 0:
+                        cursor.execute("SET statement_timeout = %s", (timeout * 1000,))
                     cursor.execute(query)
                     if cursor.description:
                         return self._format_postgres_cursor_result(cursor)
                     return "Query executed successfully (no results)"
                 except Exception as e:
-                    return f"Error: {e}"
+                    message = str(e).strip()
+                    if timeout > 0 and "statement timeout" in message.lower():
+                        return f"Error: {self._component_timeout_message(timeout)}"
+                    return f"Error: {message or e.__class__.__name__}"
                 finally:
                     if conn:
                         try:
@@ -19263,10 +19295,13 @@ class UserSpaceService:
                             pass
 
             if timeout > 0:
-                driver_result = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(None, run_tunnel_query),
-                    timeout=timeout + 5,
-                )
+                try:
+                    driver_result = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(None, run_tunnel_query),
+                        timeout=timeout + 5,
+                    )
+                except asyncio.TimeoutError:
+                    return f"Error: {self._component_timeout_message(timeout)}"
             else:
                 driver_result = await asyncio.get_event_loop().run_in_executor(None, run_tunnel_query)
             if driver_result:
@@ -19320,7 +19355,7 @@ class UserSpaceService:
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.communicate()
-                    return f"Error: Query timed out after {timeout}s. An admin can increase the tool timeout in Settings > Tools."
+                    return f"Error: {self._component_timeout_message(timeout)}"
             else:
                 stdout, stderr = await process.communicate()
 
@@ -19336,7 +19371,7 @@ class UserSpaceService:
                 return formatted_output
             return "Error: Unable to parse PostgreSQL component result"
         except asyncio.TimeoutError:
-            return f"Error: Query timed out after {timeout}s. An admin can increase the tool timeout in Settings > Tools."
+            return f"Error: {self._component_timeout_message(timeout)}"
         except Exception as e:
             return f"Error: {e}"
 

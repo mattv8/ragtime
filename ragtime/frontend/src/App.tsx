@@ -815,7 +815,7 @@ export function App() {
             onFullscreenChange={setUserspaceFullscreen}
             onPreviewWarningChange={setPreviewWarning}
             onNavigateToTools={(section) => {
-              setHighlightToolsSection(section || 'mount-sources');
+              setHighlightToolsSection(section ?? null);
               setActiveView('tools');
             }}
           />

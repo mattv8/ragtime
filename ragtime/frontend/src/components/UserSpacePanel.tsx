@@ -642,6 +642,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [previewExecuting, setPreviewExecuting] = useState(false);
   const [previewRefreshCounter, setPreviewRefreshCounter] = useState(0);
   const lastPreviewSessionExpiredRefreshRef = useRef<number>(0);
+  const lastLiveDataTimeoutToastRef = useRef<string>('');
   const [previewFrameUrl, setPreviewFrameUrl] = useState<string | null>(null);
   const [previewOrigin, setPreviewOrigin] = useState<string | null>(null);
   const [previewAuthorizationPending, setPreviewAuthorizationPending] = useState(false);
@@ -3403,6 +3404,44 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       prev ? { ...prev, live_data_warning: warning } : prev
     ));
   }, []);
+
+  const handleLiveDataTimeout = useCallback((message: string, timeoutSeconds?: number | null) => {
+    const normalized = message.trim();
+    if (!normalized) return;
+    const signature = `${activeWorkspaceId ?? ''}:${timeoutSeconds ?? ''}:${normalized}`;
+    setRuntimeStatus((prev) => (
+      prev ? { ...prev, live_data_warning: normalized } : prev
+    ));
+    setPreviewNotice({
+      id: Date.now(),
+      message: normalized,
+      tone: 'error',
+    });
+    if (lastLiveDataTimeoutToastRef.current === signature) return;
+    lastLiveDataTimeoutToastRef.current = signature;
+
+    if (currentUser.role === 'admin' && onNavigateToTools) {
+      toast.error(
+        <>
+          {normalized}{' '}
+          <a
+            href="#"
+            onClick={(event) => {
+              event.preventDefault();
+              onNavigateToTools('connections');
+            }}
+            style={{ color: 'inherit', textDecoration: 'underline' }}
+          >
+            Open Tool Connections
+          </a>
+        </>,
+        12000,
+      );
+      return;
+    }
+
+    toast.error(normalized, 12000);
+  }, [activeWorkspaceId, currentUser.role, onNavigateToTools, toast]);
 
   const handleRestoreSnapshot = useCallback(async (snapshotId: string, snapshotBranchId?: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -7147,6 +7186,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 workspaceId={activeWorkspaceId ?? undefined}
                 onExecutionStateChange={setPreviewExecuting}
                 onLiveDataWarningChange={handleLiveDataWarningChange}
+                onLiveDataTimeout={handleLiveDataTimeout}
                 previewNotice={previewNotice}
                 onPreviewSessionExpired={handlePreviewSessionExpired}
               />
@@ -7180,7 +7220,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 <div className="userspace-snapshot-item" style={{ marginBottom: 8 }}>
                   <div className="userspace-snapshot-info">
                     <strong>Warning</strong>
-                    <span className="userspace-muted">{`WARNING Possible live data query issue: ${runtimeStatus.live_data_warning}`}</span>
+                    <span className="userspace-muted">{`Possible live data query issue: ${runtimeStatus.live_data_warning}`}</span>
                   </div>
                 </div>
               )}

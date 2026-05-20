@@ -3,6 +3,7 @@
   var B = 'userspace-exec-v1';
   var E = 'ragtime-execute';
   var R = 'ragtime-execute-result';
+  var X = 'ragtime-execute-error';
   var S = 'ragtime-sandbox-blocked';
   var T = __RAGTIME_RUNTIME_BRIDGE_TIMEOUT_MS__;
   var T_LABEL = '__RAGTIME_RUNTIME_BRIDGE_TIMEOUT_LABEL__';
@@ -189,6 +190,80 @@
     }
   }
 
+  function isLiveDataTimeoutPayload(payload) {
+    if (!payload || typeof payload !== 'object') return false;
+    var error = typeof payload.error === 'string' ? payload.error : '';
+    return payload.error_kind === 'timeout'
+      || /(?:timed out|timeout|statement timeout)/i.test(error);
+  }
+
+  function showLiveDataError(message) {
+    var text = String(message || '').trim();
+    if (!text || !document || !document.body) return;
+    var existing = document.getElementById('ragtime-live-data-error');
+    var box = existing || document.createElement('div');
+    box.id = 'ragtime-live-data-error';
+    box.setAttribute('role', 'alert');
+    box.textContent = text;
+    box.style.position = 'fixed';
+    box.style.left = '16px';
+    box.style.right = '16px';
+    box.style.bottom = '16px';
+    box.style.zIndex = '2147483647';
+    box.style.padding = '12px 14px';
+    box.style.border = '1px solid #f0a7a7';
+    box.style.borderRadius = '8px';
+    box.style.background = '#fff1f1';
+    box.style.color = '#8a1f1f';
+    box.style.font = '13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    box.style.boxShadow = '0 8px 30px rgba(0, 0, 0, 0.16)';
+    box.style.whiteSpace = 'pre-wrap';
+    box.style.wordBreak = 'break-word';
+    if (!existing) {
+      document.body.appendChild(box);
+    }
+  }
+
+  function clearLiveDataError() {
+    if (!document) return;
+    var existing = document.getElementById('ragtime-live-data-error');
+    if (existing && existing.parentNode) {
+      existing.parentNode.removeChild(existing);
+    }
+  }
+
+  function reportLiveDataExecutionError(componentId, payload) {
+    if (!payload || !payload.error) return;
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(
+          {
+            bridge: B,
+            type: X,
+            component_id: componentId,
+            error: payload.error,
+            error_kind: payload.error_kind || null,
+            timeout_seconds: payload.timeout_seconds || null,
+          },
+          getParentOrigin()
+        );
+      }
+    } catch (error) {
+      console.warn('[ragtime bridge] failed to report live data error:', error);
+    }
+  }
+
+  function resolveLiveDataResult(componentId, resolve, payload) {
+    var result = payload || { rows: [], columns: [], row_count: 0 };
+    if (isLiveDataTimeoutPayload(result)) {
+      showLiveDataError(result.error || ('Live data execution timed out after ' + T_LABEL));
+      reportLiveDataExecutionError(componentId, result);
+    } else {
+      clearLiveDataError();
+    }
+    resolve(result);
+  }
+
   function overrideMethod(target, key, buildWrapper) {
     if (!target || typeof buildWrapper !== 'function') {
       return;
@@ -316,7 +391,7 @@
   function executeDirect(componentId, request, resolve) {
     var executeUrl = getDirectExecuteUrl();
     if (!executeUrl) {
-      resolve({ rows: [], columns: [], row_count: 0, error: 'Live data host unavailable in this context' });
+      resolveLiveDataResult(componentId, resolve, { rows: [], columns: [], row_count: 0, error: 'Live data host unavailable in this context' });
       return;
     }
 
@@ -364,11 +439,11 @@
         }
 
         if (result.ok) {
-          resolve(result.payload || { rows: [], columns: [], row_count: 0 });
+          resolveLiveDataResult(componentId, resolve, result.payload || { rows: [], columns: [], row_count: 0 });
           return;
         }
         var detail = result.payload && (result.payload.detail || result.payload.error);
-        resolve({
+        resolveLiveDataResult(componentId, resolve, {
           rows: [],
           columns: [],
           row_count: 0,
@@ -378,7 +453,7 @@
       .catch(function (error) {
         if (abortTimer) { clearTimeout(abortTimer); abortTimer = null; }
         var isAbort = error && (error.name === 'AbortError' || error.code === 20);
-        resolve({
+        resolveLiveDataResult(componentId, resolve, {
           rows: [],
           columns: [],
           row_count: 0,
@@ -426,7 +501,7 @@
             completed = true;
             window.removeEventListener('message', handler);
             clearTimeout(timer);
-            resolve(event.data.result || { rows: [], columns: [], row_count: 0, error: 'Empty response' });
+            resolveLiveDataResult(componentId, resolve, event.data.result || { rows: [], columns: [], row_count: 0, error: 'Empty response' });
           }
         }
         window.addEventListener('message', handler);

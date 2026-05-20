@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { UserSpaceLiveDataConnection } from '@/types';
+import type { ExecuteComponentResponse, UserSpaceLiveDataConnection } from '@/types';
 import { api } from '@/api/client';
 import {
   USERSPACE_EXEC_BRIDGE,
@@ -26,6 +26,7 @@ interface UserSpaceArtifactPreviewProps {
   shareSlug?: string;
   onExecutionStateChange?: (isExecuting: boolean) => void;
   onLiveDataWarningChange?: (warning: string | null) => void;
+  onLiveDataTimeout?: (message: string, timeoutSeconds?: number | null) => void;
   onPreviewSessionExpired?: () => void;
   previewNotice?: {
     id: number;
@@ -47,6 +48,7 @@ export function UserSpaceArtifactPreview({
   shareSlug,
   onExecutionStateChange,
   onLiveDataWarningChange,
+  onLiveDataTimeout,
   onPreviewSessionExpired,
   previewNotice,
 }: UserSpaceArtifactPreviewProps) {
@@ -55,6 +57,7 @@ export function UserSpaceArtifactPreview({
   const [sandboxFlags, setSandboxFlags] = useState<string[]>([]);
   const [sandboxSettingsStatus, setSandboxSettingsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [sandboxBlockedMessage, setSandboxBlockedMessage] = useState<string | null>(null);
+  const [liveDataExecutionError, setLiveDataExecutionError] = useState<string | null>(null);
   const [activePreviewNotice, setActivePreviewNotice] = useState<{
     id: number;
     message: string;
@@ -93,6 +96,17 @@ export function UserSpaceArtifactPreview({
     [expectedPreviewOrigin, normalizeOrigin],
   );
 
+  const getTimeoutMessage = useCallback((result: { error?: string | null; error_kind?: string | null; timeout_seconds?: number | null } | null | undefined): string | null => {
+    if (!result) return null;
+    const rawError = typeof result.error === 'string' ? result.error.trim() : '';
+    const timeoutSeconds = typeof result.timeout_seconds === 'number' ? result.timeout_seconds : null;
+    const looksTimedOut = result.error_kind === 'timeout'
+      || /(?:timed out|timeout|statement timeout)/i.test(rawError);
+    if (!looksTimedOut) return null;
+    const timeoutText = timeoutSeconds != null ? ` of ${timeoutSeconds}s` : '';
+    return rawError || `Live data query exceeded the platform-configured timeout${timeoutText}.`;
+  }, []);
+
   const handleIframeMessage = useCallback(
     async (event: MessageEvent) => {
       const frameWindow = iframeRef.current?.contentWindow;
@@ -120,6 +134,21 @@ export function UserSpaceArtifactPreview({
       }
 
       if (event.data.type === USERSPACE_EXEC_MESSAGE_TYPES.ERROR) {
+        const timeoutMessage = getTimeoutMessage({
+          error: typeof event.data.error === 'string' ? event.data.error : null,
+          error_kind: typeof event.data.error_kind === 'string' ? event.data.error_kind : null,
+          timeout_seconds: typeof event.data.timeout_seconds === 'number' ? event.data.timeout_seconds : null,
+        });
+        const warning = typeof event.data.error === 'string' && event.data.error.trim()
+          ? event.data.error.trim()
+          : null;
+        if (timeoutMessage) {
+          setLiveDataExecutionError(timeoutMessage);
+          onLiveDataTimeout?.(timeoutMessage, typeof event.data.timeout_seconds === 'number' ? event.data.timeout_seconds : null);
+        } else {
+          setLiveDataExecutionError(null);
+        }
+        onLiveDataWarningChange?.(warning);
         console.error('[UserSpacePreview] iframe execute error:', {
           component_id: event.data.component_id,
           error: event.data.error,
@@ -171,7 +200,7 @@ export function UserSpaceArtifactPreview({
       }
 
       try {
-        let result;
+        let result: ExecuteComponentResponse;
         if (shareToken) {
           result = await api.executeUserSpaceSharedComponent(
             shareToken,
@@ -189,12 +218,26 @@ export function UserSpaceArtifactPreview({
             request,
           });
         }
+        const timeoutMessage = getTimeoutMessage(result);
+        if (timeoutMessage) {
+          setLiveDataExecutionError(timeoutMessage);
+          onLiveDataTimeout?.(timeoutMessage, result.timeout_seconds ?? null);
+        } else {
+          setLiveDataExecutionError(null);
+        }
         onLiveDataWarningChange?.(
           typeof result.error === 'string' && result.error.trim() ? result.error : null,
         );
         sendResult(result);
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
+        const timeoutMessage = getTimeoutMessage({ error: errorMessage });
+        if (timeoutMessage) {
+          setLiveDataExecutionError(timeoutMessage);
+          onLiveDataTimeout?.(timeoutMessage, null);
+        } else {
+          setLiveDataExecutionError(null);
+        }
         onLiveDataWarningChange?.(errorMessage || null);
         sendResult({
           rows: [],
@@ -204,7 +247,7 @@ export function UserSpaceArtifactPreview({
         });
       }
     },
-    [normalizeOrigin, normalizedExpectedPreviewOrigin, workspaceId, shareToken, ownerUsername, shareSlug, onLiveDataWarningChange, onPreviewSessionExpired],
+    [normalizeOrigin, normalizedExpectedPreviewOrigin, workspaceId, shareToken, ownerUsername, shareSlug, getTimeoutMessage, onLiveDataWarningChange, onLiveDataTimeout, onPreviewSessionExpired],
   );
 
   useEffect(() => {
@@ -219,6 +262,7 @@ export function UserSpaceArtifactPreview({
   useEffect(() => {
     setPendingExecutions(0);
     setSandboxBlockedMessage(null);
+    setLiveDataExecutionError(null);
     setActivePreviewNotice(null);
   }, [previewInstanceKey, runtimePreviewUrl]);
 
@@ -326,6 +370,11 @@ export function UserSpaceArtifactPreview({
       {sandboxBlockedMessage ? (
         <div className="userspace-preview-exec-error" role="alert">
           {sandboxBlockedMessage}
+        </div>
+      ) : null}
+      {liveDataExecutionError ? (
+        <div className="userspace-preview-exec-error" role="alert">
+          {liveDataExecutionError}
         </div>
       ) : null}
       <iframe
