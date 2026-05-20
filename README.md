@@ -82,8 +82,8 @@ flowchart LR
 
 1. **Create `.env`:**
 
-  Copy [.env.example](.env.example) to [.env](.env).
-  The expanded block below is CI-synced from [.env.example](.env.example), so future edits should go there instead of the README snippet:
+   Copy [.env.example](.env.example) to [.env](.env).
+   The expanded block below is CI-synced from [.env.example](.env.example), so future edits should go there instead of the README snippet:
 
    <details>
    <summary>Click to expand .env template</summary>
@@ -375,7 +375,7 @@ flowchart LR
 
 5. **Access the application:**
    - Web UI: http://localhost:8000
-  - API docs: http://localhost:8000/docs (available when `DEBUG_MODE=true`)
+   - API docs: http://localhost:8000/docs (available when `DEBUG_MODE=true`)
 
    Default credentials: `admin` / (set via `LOCAL_ADMIN_PASSWORD` in `.env`)
 
@@ -557,7 +557,7 @@ CI builds each push; main-branch images are Cosign-signed and ship with an SPDX 
 - Set a strong `LOCAL_ADMIN_PASSWORD` when deploying.
 
 #### Authentication Security
-- **Encryption key is auto-generated** on first startup and stored at `data/.encryption_key`. Include this file in your backups using `backup --include-secret` or your encrypted secrets will be unrecoverable.
+- **Encryption key is auto-generated** on first startup and stored at `data/.encryption_key`. Because API keys and connection passwords are encrypted in the database using this key, ensure you include the `.encryption_key` file in any backups you make of the system.
 - **Rate limiting** protects the login endpoint (5 attempts/minute per IP) to prevent brute-force attacks. In `DEBUG_MODE=true`, rate limiting is disabled for local testing.
 
 #### Debug Mode Warning

@@ -114,16 +114,18 @@ Do not rely on `db push` for release-bound changes. Committed migrations are the
 docker exec ragtime-dev backup > backup.tar.gz
 docker exec ragtime-dev backup --include-secret > backup.tar.gz  # Include encryption key
 docker exec ragtime-dev backup --db-only > db-only.tar.gz
-docker exec ragtime-dev backup --faiss-only > faiss-only.tar.gz
+docker exec ragtime-dev backup --files-only > data-only.tar.gz
 
 # Restore (copy file into container first)
 docker cp backup.tar.gz ragtime-dev:/tmp/backup.tar.gz
 docker exec ragtime-dev restore /tmp/backup.tar.gz
 docker exec ragtime-dev restore --include-secret /tmp/backup.tar.gz  # Restore encryption key
 docker exec ragtime-dev restore --db-only /tmp/backup.tar.gz
+docker exec ragtime-dev restore --mirror-local-admin-from some_user /tmp/backup.tar.gz # Local admin will impersonate
+docker exec ragtime-dev restore --files-only --replace-existing-data /tmp/backup.tar.gz
 ```
 
-> **Important:** Backups contain encrypted secrets (API keys, passwords). Use `--include-secret` to include the encryption key file in your backup. Without the encryption key, you will need to re-enter all passwords after restore.
+> **Important:** Database backups contain encrypted secrets (API keys, passwords), while the encryption key lives in the Ragtime data directory at `.encryption_key`. Use `--include-secret` to include the key file in your backup. Without the key, you will need to re-enter all passwords after restore. `--files-only` backs up the whole Ragtime data directory, including indexes and userspace workspaces.
 
 ### Reset Database
 

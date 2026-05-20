@@ -785,32 +785,10 @@ def _sync_system_dirs_for_chroot(spec: SandboxSpec) -> None:
         except Exception:
             pass
 
-    # Mirror workspace files into /workspace for no-mount chroot mode.
-    # We keep /workspace as a real directory because symlinking to an
-    # absolute host path becomes invalid after chroot.
-    #
-    # IMPORTANT: We do NOT rmtree /workspace here.  This function runs in
-    # every forked child (preexec_fn).  Deleting the directory destroys
-    # the inode and invalidates the cwd of any already-running sandboxed
-    # process (e.g. the devserver), causing it to serve from "/" instead
-    # of "/workspace".  Instead we use an incremental copytree that adds
-    # new / updated files while preserving the directory inode.
-    workspace_src = spec.workspace_files_path
-    ws_dst = rootfs / spec.sandbox_workspace.lstrip("/")
-
-    _ensure_real_directory(ws_dst)
-    if workspace_src.is_dir():
-        try:
-            shutil.copytree(
-                str(workspace_src),
-                str(ws_dst),
-                dirs_exist_ok=True,
-                symlinks=True,
-                ignore_dangling_symlinks=True,
-                copy_function=_copy_file,
-            )
-        except Exception as exc:
-            logger.warning("Failed to mirror workspace into rootfs: %s", exc)
+    # Workspace files are mirrored by provision_rootfs() before the child
+    # process enters the sandbox.  Repeating that copy from preexec after
+    # user-namespace setup can lose write access to the root-owned rootfs
+    # tree on restored/bind-mounted data directories.
 
 
 def _sync_usr_for_chroot(src_usr: Path, dst_usr: Path, *, force: bool = False) -> None:
