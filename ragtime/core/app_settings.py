@@ -419,7 +419,6 @@ class SettingsCache:
                     "description": cfg.description,
                     "connection_config": decrypt_json_passwords(dict(cfg.connectionConfig), CONNECTION_CONFIG_PASSWORD_FIELDS),
                     "max_results": cfg.maxResults,
-                    "timeout": cfg.timeout,
                     "timeout_max_seconds": getattr(cfg, "timeoutMaxSeconds", 300),
                     "allow_write": cfg.allowWrite,
                 }

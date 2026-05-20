@@ -1252,7 +1252,6 @@ export interface ToolConfig {
   description: string;
   connection_config: ConnectionConfig;
   max_results: number;
-  timeout: number;
   timeout_max_seconds: number;
   allow_write: boolean;
   sort_order: number;
@@ -1293,7 +1292,6 @@ export interface CreateToolConfigRequest {
   description?: string;
   connection_config: ConnectionConfig;
   max_results?: number;
-  timeout?: number;
   timeout_max_seconds?: number;
   allow_write?: boolean;
   group_id?: string | null;
@@ -1306,7 +1304,6 @@ export interface UpdateToolConfigRequest {
   description?: string;
   connection_config?: ConnectionConfig;
   max_results?: number;
-  timeout?: number;
   timeout_max_seconds?: number;
   allow_write?: boolean;
   sort_order?: number;

@@ -3073,19 +3073,17 @@ class RAGComponents:
     @staticmethod
     def _add_timeout_field_to_schema(
         schema_class: type[BaseModel],
-        default_timeout: int,
         timeout_max_seconds: int,
         timeout_label: str,
     ) -> type[BaseModel]:
         """Inject a standard timeout field into dynamic tool schemas."""
+        timeout_default = max(0, int(timeout_max_seconds))
         timeout_field: Any = Field(
-            default=default_timeout,
+            default=timeout_default,
             ge=0,
             le=86400,
             description=(
-                f"{timeout_label} timeout in seconds (default: {default_timeout}, "
-                f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
-                "Use 0 for no timeout."
+                f"{timeout_label} timeout in seconds (default and maximum: {'unlimited' if timeout_default == 0 else timeout_default}). Use 0 for no timeout."
             ),
         )
         schema_class.model_fields["timeout"] = timeout_field
@@ -4442,7 +4440,6 @@ class RAGComponents:
     ):
         """Create a PostgreSQL query tool from config."""
         conn_config = config.get("connection_config", {})
-        timeout = config.get("timeout", 30)
         timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
@@ -4454,7 +4451,7 @@ class RAGComponents:
         ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
 
         # Create input schema with captured timeout value
-        _default_timeout = timeout  # Capture for closure
+        _default_timeout = timeout_max_seconds  # Capture for closure
 
         class PostgresInput(BaseModel):
             query: str = Field(
@@ -4465,7 +4462,6 @@ class RAGComponents:
 
         self._add_timeout_field_to_schema(
             PostgresInput,
-            default_timeout=_default_timeout,
             timeout_max_seconds=timeout_max_seconds,
             timeout_label="Query",
         )
@@ -4666,7 +4662,6 @@ class RAGComponents:
         """Create an MSSQL/SQL Server query tool from config."""
 
         conn_config = config.get("connection_config", {})
-        timeout = config.get("timeout", 30)
         timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         max_results = config.get("max_results", 100)
         allow_write = config.get("allow_write", False)
@@ -4691,7 +4686,7 @@ class RAGComponents:
             user=user,
             password=password,
             database=database,
-            timeout=timeout,
+            timeout=timeout_max_seconds,
             timeout_max_seconds=timeout_max_seconds,
             max_results=max_results,
             allow_write=allow_write,
@@ -4710,7 +4705,6 @@ class RAGComponents:
         """Create a MySQL/MariaDB query tool from config."""
 
         conn_config = config.get("connection_config", {})
-        timeout = config.get("timeout", 30)
         timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         max_results = config.get("max_results", 100)
         allow_write = config.get("allow_write", False)
@@ -4735,7 +4729,7 @@ class RAGComponents:
             user=user,
             password=password,
             database=database,
-            timeout=timeout,
+            timeout=timeout_max_seconds,
             timeout_max_seconds=timeout_max_seconds,
             max_results=max_results,
             allow_write=allow_write,
@@ -4754,7 +4748,6 @@ class RAGComponents:
         """Create an InfluxDB 2.x (Flux) query tool from config."""
 
         conn_config = config.get("connection_config", {})
-        timeout = config.get("timeout", 30)
         timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         max_results = config.get("max_results", 100)
         allow_write = config.get("allow_write", False)
@@ -4780,7 +4773,7 @@ class RAGComponents:
             use_https=use_https,
             token=token,
             org=org,
-            timeout=timeout,
+            timeout=timeout_max_seconds,
             timeout_max_seconds=timeout_max_seconds,
             max_results=max_results,
             allow_write=allow_write,
@@ -4792,14 +4785,13 @@ class RAGComponents:
     async def _create_odoo_tool(self, config: dict, tool_name: str, _tool_id: str):
         """Create an Odoo shell tool from config (Docker or SSH mode)."""
         conn_config = config.get("connection_config", {})
-        timeout = config.get("timeout", 60)  # Odoo shell needs more time to initialize
         timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
         mode = conn_config.get("mode", "docker")  # docker or ssh
 
         # Capture timeout for closure
-        _default_timeout = timeout
+        _default_timeout = timeout_max_seconds
 
         class OdooInput(BaseModel):
             code: str = Field(
@@ -4810,7 +4802,6 @@ class RAGComponents:
 
         self._add_timeout_field_to_schema(
             OdooInput,
-            default_timeout=_default_timeout,
             timeout_max_seconds=timeout_max_seconds,
             timeout_label="Execution",
         )
@@ -4994,14 +4985,13 @@ except Exception as e:
     async def _create_ssh_tool(self, config: dict, tool_name: str, _tool_id: str):
         """Create an SSH shell tool from config."""
         conn_config = config.get("connection_config", {})
-        timeout = config.get("timeout", 30)
         timeout_max_seconds = int(config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
         working_directory = conn_config.get("working_directory", "")
 
         # Capture timeout for closure
-        _default_timeout = timeout
+        _default_timeout = timeout_max_seconds
 
         class SSHInput(BaseModel):
             command: str = Field(default="", description="Shell command to execute on the remote server")
@@ -5009,7 +4999,6 @@ except Exception as e:
 
         self._add_timeout_field_to_schema(
             SSHInput,
-            default_timeout=_default_timeout,
             timeout_max_seconds=timeout_max_seconds,
             timeout_label="Command",
         )
@@ -6912,7 +6901,6 @@ except Exception as e:
                 tool_type = (config.get("tool_type") or "").strip()
                 if not tool_id:
                     return None
-                timeout = config.get("timeout") or 30
                 timeout_max = config.get("timeout_max_seconds") or 300
                 connection_mode = (config.get("connection_config") or {}).get("mode") or ""
                 return {
@@ -6920,7 +6908,6 @@ except Exception as e:
                     "tool_config_name": tool_name,
                     "tool_type": tool_type,
                     "connection_mode": str(connection_mode),
-                    "timeout": str(timeout),
                     "timeout_max_seconds": str(timeout_max),
                 }
         return None
@@ -6951,12 +6938,11 @@ except Exception as e:
                 # described in the system prompt and repeating them wastes tokens.
                 continue
 
-            timeout_str = connection_meta.get("timeout", "30")
             timeout_max_str = connection_meta.get("timeout_max_seconds", "300")
             line = (
                 f"- `{tool_name}` -> {connection_meta.get('tool_config_name') or tool_name} "
                 f"(id={connection_meta.get('tool_config_id')}, type={connection_meta.get('tool_type')}, "
-                f"timeout={timeout_str}s, max_timeout={timeout_max_str}s)"
+                f"max_timeout={timeout_max_str}s)"
             )
             lines.append(line)
 

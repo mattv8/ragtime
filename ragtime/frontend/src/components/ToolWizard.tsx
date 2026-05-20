@@ -1795,7 +1795,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [name, setName] = useState(existingTool?.name || '');
   const [description, setDescription] = useState(existingTool?.description || '');
   const [maxResults, setMaxResults] = useState(existingTool?.max_results || 100);
-  const [timeoutValue, setTimeoutValue] = useState(existingTool?.timeout || 30);
   const [timeoutMaxSeconds, setTimeoutMaxSeconds] = useState(existingTool?.timeout_max_seconds ?? 300);
   const [allowWrite, setAllowWrite] = useState(existingTool?.allow_write || false);
 
@@ -1803,8 +1802,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     const parsed = Number.parseInt(value, 10);
     return Number.isNaN(parsed) ? defaultValue : parsed;
   };
-
-  const timeoutInputMax = timeoutMaxSeconds > 0 ? timeoutMaxSeconds : 86400;
 
   // Connection config state
   const [pgConnectionMode, setPgConnectionMode] = useState<'direct' | 'container'>(
@@ -2569,7 +2566,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           description,
           connection_config: getConnectionConfig(),
           max_results: maxResults,
-          timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
         });
@@ -2616,7 +2612,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           description,
           connection_config: getConnectionConfig(),
           max_results: maxResults,
-          timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
         });
@@ -2628,7 +2623,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           description,
           connection_config: getConnectionConfig(),
           max_results: maxResults,
-          timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
         };
@@ -2703,7 +2697,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           description,
           connection_config: connectionConfig,
           max_results: maxResults,
-          timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
         });
@@ -2714,7 +2707,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           description,
           connection_config: connectionConfig,
           max_results: maxResults,
-          timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
           ...(mountOnly && { skip_indexing: true }),
@@ -5009,36 +5001,27 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
         <div className="timeout-row">
           <div className="form-group">
-            <label>Timeout (seconds)</label>
-            <input
-              type="number"
-              value={timeoutValue}
-              onChange={(e) => setTimeoutValue(parseNumberOrDefault(e.target.value, 30))}
-              min={0}
-              max={timeoutInputMax}
-            />
-            <p className="field-help">
-              Maximum time to wait for a command. Use 0 for no timeout.
-            </p>
-          </div>
-
-          <div className="form-group">
             <label>Max Timeout (seconds)</label>
-            <input
-              type="number"
-              value={timeoutMaxSeconds}
-              onChange={(e) => {
-                const value = parseNumberOrDefault(e.target.value, 300);
-                setTimeoutMaxSeconds(value);
-                if (value > 0 && timeoutValue > value) {
-                  setTimeoutValue(value);
-                }
-              }}
-              min={0}
-              max={86400}
-            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <input
+                type="range"
+                min={0}
+                max={3600}
+                value={timeoutMaxSeconds > 3600 ? 3600 : timeoutMaxSeconds}
+                onChange={(e) => setTimeoutMaxSeconds(parseNumberOrDefault(e.target.value, 300))}
+                style={{ flex: 1 }}
+              />
+              <input
+                type="number"
+                value={timeoutMaxSeconds}
+                onChange={(e) => setTimeoutMaxSeconds(parseNumberOrDefault(e.target.value, 300))}
+                min={0}
+                max={86400}
+                style={{ width: '100px' }}
+              />
+            </div>
             <p className="field-help">
-              Maximum timeout the agent can choose. 0 means unlimited.
+              Maximum time a command can run. Use 0 for no timeout.
             </p>
           </div>
         </div>
@@ -5157,36 +5140,27 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
         <div className="timeout-row">
           <div className="form-group">
-            <label>Timeout (seconds)</label>
-            <input
-              type="number"
-              value={timeoutValue}
-              onChange={(e) => setTimeoutValue(parseNumberOrDefault(e.target.value, 30))}
-              min={0}
-              max={timeoutInputMax}
-            />
-            <p className="field-help">
-              Default timeout used for tool calls. Use 0 for no timeout.
-            </p>
-          </div>
-
-          <div className="form-group">
             <label>Max Timeout (seconds)</label>
-            <input
-              type="number"
-              value={timeoutMaxSeconds}
-              onChange={(e) => {
-                const value = parseNumberOrDefault(e.target.value, 300);
-                setTimeoutMaxSeconds(value);
-                if (value > 0 && timeoutValue > value) {
-                  setTimeoutValue(value);
-                }
-              }}
-              min={0}
-              max={86400}
-            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <input
+                type="range"
+                min={0}
+                max={3600}
+                value={timeoutMaxSeconds > 3600 ? 3600 : timeoutMaxSeconds}
+                onChange={(e) => setTimeoutMaxSeconds(parseNumberOrDefault(e.target.value, 300))}
+                style={{ flex: 1 }}
+              />
+              <input
+                type="number"
+                value={timeoutMaxSeconds}
+                onChange={(e) => setTimeoutMaxSeconds(parseNumberOrDefault(e.target.value, 300))}
+                min={0}
+                max={86400}
+                style={{ width: '100px' }}
+              />
+            </div>
             <p className="field-help">
-              Maximum timeout the agent can choose. 0 means unlimited.
+              Maximum time a tool call can run. Use 0 for no timeout.
             </p>
           </div>
         </div>
@@ -5253,8 +5227,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           <h4>Options</h4>
           <ul>
             <li>Max results: {maxResults}</li>
-            <li>Timeout: {timeoutValue === 0 ? 'No timeout' : `${timeoutValue}s`}</li>
-            <li>Max timeout: {timeoutMaxSeconds === 0 ? 'Unlimited' : `${timeoutMaxSeconds}s`}</li>
+            <li>Max timeout: {timeoutMaxSeconds === 0 ? 'No timeout' : `${timeoutMaxSeconds}s`}</li>
             <li>Write operations: {allowWrite ? 'Enabled' : 'Disabled'}</li>
           </ul>
         </div>
