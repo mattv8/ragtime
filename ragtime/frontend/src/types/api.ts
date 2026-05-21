@@ -693,6 +693,8 @@ export interface AppSettings {
   ollama_embedding_timeout_seconds: number;
   // Performance / Memory Configuration
   sequential_index_loading: boolean;
+  chunking_max_workers: number;
+  chunking_max_batch_size: number;
   // API Tool Output Configuration
   tool_output_mode: ToolOutputMode;
   // MCP Configuration
@@ -808,6 +810,8 @@ export interface UpdateSettingsRequest {
   ivfflat_lists?: number;
   // Performance / Memory settings
   sequential_index_loading?: boolean;
+  chunking_max_workers?: number;
+  chunking_max_batch_size?: number;
   // OCR settings
   default_ocr_mode?: OcrMode;
   default_ocr_provider?: OcrProvider | null;

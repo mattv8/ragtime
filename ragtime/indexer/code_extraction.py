@@ -123,9 +123,86 @@ QUERIES: Dict[str, Dict[str, str]] = {
 }
 
 
+def _node_value(node, name: str):
+    value = getattr(node, name, None)
+    return value() if callable(value) else value
+
+
 def _get_node_text(node, source_bytes: bytes) -> str:
     """Helper to get text from a node."""
-    return source_bytes[node.start_byte : node.end_byte].decode("utf-8")
+    start_byte = _node_value(node, "start_byte")
+    end_byte = _node_value(node, "end_byte")
+    return source_bytes[start_byte:end_byte].decode("utf-8")
+
+
+IMPORT_NODE_KINDS = {
+    "import_declaration",
+    "import_from_statement",
+    "import_statement",
+    "namespace_use_declaration",
+    "use_declaration",
+}
+
+DEFINITION_NODE_KINDS = {
+    "class_declaration",
+    "class_definition",
+    "enum_declaration",
+    "function_declaration",
+    "function_definition",
+    "function_item",
+    "interface_declaration",
+    "method_declaration",
+    "method_definition",
+    "struct_item",
+    "trait_item",
+    "type_alias_declaration",
+    "type_declaration",
+}
+
+
+def _iter_children(node):
+    child_count_raw = _node_value(node, "child_count")
+    if isinstance(child_count_raw, int):
+        child_count = child_count_raw
+    else:
+        try:
+            child_count = int(cast(Any, child_count_raw) or 0)
+        except (TypeError, ValueError):
+            child_count = 0
+    for idx in range(child_count):
+        child = node.child(idx)
+        if child is not None:
+            yield child
+
+
+def _walk_nodes(node):
+    yield node
+    for child in _iter_children(node):
+        yield from _walk_nodes(child)
+
+
+def _extract_metadata_by_walk(root_node, source_bytes: bytes) -> tuple[List[str], List[str]]:
+    imports: list[str] = []
+    definitions: list[str] = []
+    seen_imports: set[str] = set()
+    seen_defs: set[str] = set()
+
+    for node in _walk_nodes(root_node):
+        node_kind = _node_value(node, "kind") or _node_value(node, "type")
+        if node_kind in IMPORT_NODE_KINDS:
+            import_text = " ".join(_get_node_text(node, source_bytes).strip().split())
+            if import_text and import_text not in seen_imports:
+                imports.append(import_text)
+                seen_imports.add(import_text)
+        elif node_kind in DEFINITION_NODE_KINDS:
+            sig_line = _get_node_text(node, source_bytes).split("\n")[0].strip()
+            if len(sig_line) > 100:
+                sig_line = sig_line[:97] + "..."
+            if sig_line and sig_line not in seen_defs:
+                definitions.append(sig_line)
+                seen_defs.add(sig_line)
+
+    return imports, definitions
 
 
 def extract_metadata(text: str, file_ext: str) -> tuple[List[str], List[str]]:
@@ -153,13 +230,18 @@ def extract_metadata(text: str, file_ext: str) -> tuple[List[str], List[str]]:
 
     try:
         source_bytes = text.encode("utf-8")
-        tree = cast(Any, parser).parse(source_bytes)
+        try:
+            tree = cast(Any, parser).parse(text)
+        except TypeError:
+            tree = cast(Any, parser).parse(source_bytes)
         if tree is None:
             return [], []
-        root_node = tree.root_node
+        root_node_attr = cast(Any, tree).root_node
+        root_node = root_node_attr() if callable(root_node_attr) else root_node_attr
 
         imports = []
         definitions = []
+        query_api_failed = False
 
         # Get queries for this language
         lang_queries = QUERIES.get(lang_name, {})
@@ -183,6 +265,7 @@ def extract_metadata(text: str, file_ext: str) -> tuple[List[str], List[str]]:
                                     seen_imports.add(import_text)
             except Exception as e:
                 logger.debug(f"Error extracting imports for {lang_name}: {e}")
+                query_api_failed = True
 
         # Extract Definitions using QueryCursor
         if "definitions" in lang_queries:
@@ -209,6 +292,14 @@ def extract_metadata(text: str, file_ext: str) -> tuple[List[str], List[str]]:
                                         seen_defs.add(sig_line)
             except Exception as e:
                 logger.debug(f"Error extracting definitions for {lang_name}: {e}")
+                query_api_failed = True
+
+        if query_api_failed:
+            walk_imports, walk_definitions = _extract_metadata_by_walk(root_node, source_bytes)
+            if not imports:
+                imports = walk_imports
+            if not definitions:
+                definitions = walk_definitions
 
         return imports, definitions
 

@@ -723,6 +723,18 @@ class AppSettings(BaseModel):
         default=False,
         description="If True, load FAISS indexes one at a time (smallest first) to reduce peak memory. If False (default), load all indexes in parallel for faster startup.",
     )
+    chunking_max_workers: int = Field(
+        default=4,
+        ge=1,
+        le=16,
+        description="Maximum parallel processes the chunking pool may use. Lower this if indexing causes OOMs or starves the API; raise on high-memory hosts.",
+    )
+    chunking_max_batch_size: int = Field(
+        default=100,
+        ge=1,
+        le=500,
+        description="Maximum documents submitted to each chunking worker batch. Smaller batches reduce per-worker memory spikes at the cost of throughput.",
+    )
 
     # API Tool Output Configuration
     tool_output_mode: ToolOutputMode = Field(
@@ -1143,6 +1155,18 @@ class UpdateSettingsRequest(BaseModel):
     )
     # Performance / Memory configuration
     sequential_index_loading: Optional[bool] = None
+    chunking_max_workers: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=16,
+        description="Maximum parallel chunking worker processes (1-16).",
+    )
+    chunking_max_batch_size: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=500,
+        description="Maximum documents per chunking worker batch (1-500).",
+    )
     # API Tool Output configuration
     tool_output_mode: Optional[str] = Field(
         default=None,

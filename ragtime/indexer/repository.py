@@ -1087,6 +1087,8 @@ class IndexerRepository:
             ivfflat_lists=getattr(settings, "ivfflatLists", 100),
             # Performance configuration
             sequential_index_loading=getattr(settings, "sequentialIndexLoading", False),
+            chunking_max_workers=getattr(settings, "chunkingMaxWorkers", 4),
+            chunking_max_batch_size=getattr(settings, "chunkingMaxBatchSize", 100),
             # API Tool Output configuration
             tool_output_mode=ToolOutputMode(getattr(settings, "toolOutputMode", "default") or "default"),
             # MCP configuration
@@ -1237,6 +1239,8 @@ class IndexerRepository:
             "ivfflat_lists": "ivfflatLists",
             # Performance configuration
             "sequential_index_loading": "sequentialIndexLoading",
+            "chunking_max_workers": "chunkingMaxWorkers",
+            "chunking_max_batch_size": "chunkingMaxBatchSize",
             # API Tool Output configuration
             "tool_output_mode": "toolOutputMode",
             # MCP configuration

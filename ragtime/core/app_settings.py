@@ -256,6 +256,8 @@ class SettingsCache:
                 "ivfflat_lists": prisma_settings.ivfflatLists,
                 # Performance / Memory configuration
                 "sequential_index_loading": prisma_settings.sequentialIndexLoading,
+                "chunking_max_workers": getattr(prisma_settings, "chunkingMaxWorkers", 4),
+                "chunking_max_batch_size": getattr(prisma_settings, "chunkingMaxBatchSize", 100),
                 # API Tool Output configuration
                 "tool_output_mode": getattr(prisma_settings, "toolOutputMode", "default"),
                 # LLM settings
@@ -349,6 +351,8 @@ class SettingsCache:
                 "ivfflat_lists": 100,
                 # Performance / Memory configuration
                 "sequential_index_loading": False,
+                "chunking_max_workers": 4,
+                "chunking_max_batch_size": 100,
                 # API Tool Output configuration
                 "tool_output_mode": "default",
                 # LLM settings
@@ -443,7 +447,24 @@ class SettingsCache:
 async def get_app_settings() -> dict:
     """Get application settings from database."""
     cache = SettingsCache.get_instance()
-    return await cache.get_settings()
+    was_empty = cache._settings is None
+    settings = await cache.get_settings()
+    if was_empty:
+        _apply_runtime_setting_hooks(settings)
+    return settings
+
+
+def _apply_runtime_setting_hooks(settings: dict) -> None:
+    """Push setting values into runtime singletons that need them."""
+    try:
+        from ragtime.indexer.chunking import configure_chunking_pool
+
+        configure_chunking_pool(
+            max_workers=settings.get("chunking_max_workers"),
+            max_batch_size=settings.get("chunking_max_batch_size"),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Failed to apply chunking pool settings: {exc}")
 
 
 async def get_tool_configs() -> List[dict]:

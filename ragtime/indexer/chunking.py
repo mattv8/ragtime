@@ -19,6 +19,7 @@ import multiprocessing
 import os
 import warnings
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, get_args
 
@@ -54,36 +55,124 @@ TIKTOKEN_ENCODING = "cl100k_base"
 _process_pool: Optional[ProcessPoolExecutor] = None
 _pool_max_workers: int = 1
 
+_GIB = 1024 * 1024 * 1024
+# Defaults preserve historical behavior. The active values can be overridden at
+# runtime by `configure_chunking_pool()` (typically driven by app settings).
+_DEFAULT_MAX_CHUNKING_WORKERS = 4
+_DEFAULT_MAX_CHUNKING_BATCH_SIZE = 100
+_CHUNKING_WORKERS_HARD_CEILING = 16
+_CHUNKING_BATCH_SIZE_HARD_CEILING = 500
+_configured_max_workers: int = _DEFAULT_MAX_CHUNKING_WORKERS
+_configured_max_batch_size: int = _DEFAULT_MAX_CHUNKING_BATCH_SIZE
+
+
+def configure_chunking_pool(
+    max_workers: int | None = None,
+    max_batch_size: int | None = None,
+) -> None:
+    """Apply runtime caps for the shared chunking process pool.
+
+    Values are clamped to safe ranges. If `max_workers` changes the active
+    pool size, the existing pool is shut down so it is recreated lazily with
+    the new size on next use. Safe to call repeatedly (e.g. on settings reload).
+    """
+    global _configured_max_workers, _configured_max_batch_size
+
+    if max_workers is not None:
+        clamped_workers = max(1, min(int(max_workers), _CHUNKING_WORKERS_HARD_CEILING))
+        if clamped_workers != _configured_max_workers:
+            _configured_max_workers = clamped_workers
+            if _process_pool is not None and _pool_max_workers != clamped_workers:
+                shutdown_process_pool(wait=False, cancel_futures=False)
+
+    if max_batch_size is not None:
+        _configured_max_batch_size = max(1, min(int(max_batch_size), _CHUNKING_BATCH_SIZE_HARD_CEILING))
+
+
+def _read_cgroup_int(path: str) -> int | None:
+    try:
+        value = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not value or value == "max":
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    # Docker sometimes reports host-ish sentinel values for unlimited memory.
+    if parsed <= 0 or parsed > 1_000 * _GIB:
+        return None
+    return parsed
+
+
+def _get_cgroup_memory_limit_bytes() -> int | None:
+    """Return the container memory limit when cgroups expose one."""
+    return _read_cgroup_int("/sys/fs/cgroup/memory.max") or _read_cgroup_int("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+
+
+def _get_effective_memory_limit_bytes() -> int | None:
+    cgroup_limit = _get_cgroup_memory_limit_bytes()
+    if cgroup_limit is not None:
+        return cgroup_limit
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().total)
+    except Exception:
+        pass
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        page_count = os.sysconf("SC_PHYS_PAGES")
+        return int(page_size * page_count)
+    except (OSError, ValueError):
+        return None
+
+
+def _resolve_worker_count(cpu_count: int) -> int:
+    """Return the worker count for the pool, capped by configured ceiling."""
+    cpu_limited = max(1, cpu_count // 4)
+    return max(1, min(cpu_limited, _configured_max_workers))
+
+
+def _effective_batch_size(requested_batch_size: int) -> int:
+    return max(1, min(int(requested_batch_size), _configured_max_batch_size))
+
 
 def _get_process_pool() -> ProcessPoolExecutor:
     """Get or create the shared process pool.
 
-    Workers are capped at 4 to prevent CPU saturation during background
-    indexing jobs. On high-core-count machines, using cpu_count-1 workers
-    starves the main event loop (uvicorn/API/UI/MCP) of CPU time.
+    The worker count is bounded by `_configured_max_workers` (default 4,
+    tunable via `configure_chunking_pool` / Settings UI) to prevent CPU
+    saturation during background indexing jobs. On high-core-count machines,
+    using cpu_count-1 workers starves the main event loop (uvicorn/API/UI/MCP)
+    of CPU time.
     """
     global _process_pool, _pool_max_workers
 
     if _process_pool is None:
         cpu_count = os.cpu_count() or 2
-        # Cap at 4 workers to keep the main event loop responsive.
-        # Background chunking is I/O + CPU mixed; 4 workers provide good
-        # throughput without starving HTTP request handling.
-        _pool_max_workers = min(4, max(1, cpu_count // 4))
+        memory_limit_bytes = _get_effective_memory_limit_bytes()
+        _pool_max_workers = _resolve_worker_count(cpu_count)
         _process_pool = ProcessPoolExecutor(
             max_workers=_pool_max_workers,
             mp_context=multiprocessing.get_context("spawn"),
         )
-        logger.info(f"Created process pool for chunking: {_pool_max_workers} workers (capped to keep API/UI/MCP responsive, {cpu_count} cores available)")
+        memory_note = f", memory limit ~{memory_limit_bytes / _GIB:.1f}GiB" if memory_limit_bytes else ""
+        logger.info(
+            f"Created process pool for chunking: {_pool_max_workers} workers "
+            f"(cap={_configured_max_workers}, batch_cap={_configured_max_batch_size}, "
+            f"{cpu_count} cores available{memory_note})"
+        )
 
     return _process_pool
 
 
-def shutdown_process_pool():
+def shutdown_process_pool(wait: bool = True, cancel_futures: bool = False):
     """Shutdown the process pool gracefully."""
     global _process_pool
     if _process_pool is not None:
-        _process_pool.shutdown(wait=True)
+        _process_pool.shutdown(wait=wait, cancel_futures=cancel_futures)
         _process_pool = None
         logger.info("Chunking process pool shut down")
 
@@ -642,6 +731,73 @@ def _chunk_document_batch_sync(
     return all_chunks, splitter_counts
 
 
+def _chunk_document_batch_recursive_sync(
+    batch_data: List[Tuple[str, dict]],
+    chunk_size: int,
+    chunk_overlap: int,
+    use_tokens: bool,
+) -> Tuple[List[Tuple[str, dict]], Dict[str, int]]:
+    """Chunk a batch without CodeChunker after a worker crash."""
+    all_chunks = []
+    splitter_counts: Dict[str, int] = {}
+
+    for content, metadata in batch_data:
+        file_path = metadata.get("source", "unknown")
+        try:
+            docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, metadata, use_tokens)
+            splitter_counts["chonkie_recursive_pool_fallback"] = splitter_counts.get("chonkie_recursive_pool_fallback", 0) + 1
+        except Exception as e:
+            logger.error(f"Recursive fallback chunking failed for {file_path}: {e}")
+            fallback_meta = metadata.copy()
+            fallback_meta["chunker"] = "whole_document_pool_fallback"
+            docs = [Document(page_content=content, metadata=fallback_meta)]
+            splitter_counts["whole_document_pool_fallback"] = splitter_counts.get("whole_document_pool_fallback", 0) + 1
+
+        for doc in docs:
+            all_chunks.append((doc.page_content, doc.metadata))
+
+    return all_chunks, splitter_counts
+
+
+async def _retry_chunk_documents_individually(
+    doc_data: List[Tuple[str, dict]],
+    chunk_size: int,
+    chunk_overlap: int,
+    use_tokens: bool,
+) -> List[Tuple[List[Tuple[str, dict]], Dict[str, int]]]:
+    """Retry a failed process-pool wave one document at a time."""
+    loop = asyncio.get_event_loop()
+    results: List[Tuple[List[Tuple[str, dict]], Dict[str, int]]] = []
+
+    for idx, doc_item in enumerate(doc_data):
+        try:
+            pool = _get_process_pool()
+            result = await loop.run_in_executor(
+                pool,
+                _chunk_document_batch_sync,
+                [doc_item],
+                chunk_size,
+                chunk_overlap,
+                use_tokens,
+            )
+        except BrokenProcessPool:
+            file_path = doc_item[1].get("source", "unknown")
+            logger.error(f"Chunking worker terminated while processing {file_path}; falling back to recursive chunking for that document")
+            shutdown_process_pool(wait=False, cancel_futures=True)
+            result = _chunk_document_batch_recursive_sync(
+                [doc_item],
+                chunk_size,
+                chunk_overlap,
+                use_tokens,
+            )
+
+        results.append(result)
+        if idx % 10 == 9:
+            await asyncio.sleep(0)
+
+    return results
+
+
 async def chunk_documents_parallel(
     documents: List[Document],
     chunk_size: int,
@@ -664,6 +820,7 @@ async def chunk_documents_parallel(
     if not documents:
         return []
 
+    batch_size = _effective_batch_size(batch_size)
     pool = _get_process_pool()
     total_docs = len(documents)
     all_chunks: List[Document] = []
@@ -685,14 +842,16 @@ async def chunk_documents_parallel(
 
         wave_indices = batch_ranges[wave_start : wave_start + wave_size]
         futures = []
+        wave_doc_data: List[Tuple[str, dict]] = []
 
         for i in wave_indices:
             batch_docs = documents[i : i + batch_size]
             # Prepare serializable data for the subprocess.
             # This list comprehension and the subsequent run_in_executor submit()
             # both run in the event loop thread (ProcessPoolExecutor pickles args
-            # synchronously). Keep batch_size reasonable (100) to limit blocking.
+            # synchronously). Keep batch_size bounded to limit blocking and memory spikes.
             batch_data = [(doc.page_content, doc.metadata) for doc in batch_docs]
+            wave_doc_data.extend(batch_data)
             future = loop.run_in_executor(
                 pool,
                 _chunk_document_batch_sync,
@@ -706,6 +865,21 @@ async def chunk_documents_parallel(
         # Await all futures in this wave concurrently
         try:
             results = await asyncio.gather(*futures)
+        except BrokenProcessPool as e:
+            for future in futures:
+                future.cancel()
+            logger.warning(
+                f"Chunking process pool broke while processing {len(wave_doc_data)} document(s); "
+                f"restarting the pool and retrying this wave one document at a time: {e}"
+            )
+            shutdown_process_pool(wait=False, cancel_futures=True)
+            results = await _retry_chunk_documents_individually(
+                wave_doc_data,
+                chunk_size,
+                chunk_overlap,
+                use_tokens,
+            )
+            pool = _get_process_pool()
         except Exception as e:
             logger.error(f"Batch chunking error: {e}")
             raise

@@ -1873,6 +1873,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         omlx_api_key: formData.omlx_api_key,
         ollama_embedding_timeout_seconds: formData.ollama_embedding_timeout_seconds,
         sequential_index_loading: formData.sequential_index_loading,
+        chunking_max_workers: formData.chunking_max_workers,
+        chunking_max_batch_size: formData.chunking_max_batch_size,
         default_ocr_mode: formData.default_ocr_mode,
         default_ocr_provider: formData.default_ocr_provider,
         default_ocr_vision_model: formData.default_ocr_vision_model,
@@ -4431,6 +4433,64 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 <p className="field-help">
                   <strong>Sequential:</strong> Indexes load one at a time (smallest first), reducing peak
                   memory to ~1.8x the largest index. Useful when RAM is limited or OOM errors occur on startup.
+                </p>
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group" style={{ flex: 1 }} id="setting-chunking_max_workers">
+                <label>Chunking Pool Workers</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <input
+                    type="range"
+                    min={1}
+                    max={16}
+                    step={1}
+                    style={{ flex: 1 }}
+                    value={formData.chunking_max_workers ?? settings?.chunking_max_workers ?? 4}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        chunking_max_workers: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '48px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {formData.chunking_max_workers ?? settings?.chunking_max_workers ?? 4}
+                  </span>
+                </div>
+                <p className="field-help">
+                  Maximum parallel processes used by the chunking pool during indexing.
+                  Lower this (e.g. 2) if indexing causes OOMs or starves the API/UI; raise on high-memory hosts.
+                  Default 4. Changing this restarts the pool on next use.
+                </p>
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }} id="setting-chunking_max_batch_size">
+                <label>Chunking Batch Size</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <input
+                    type="range"
+                    min={10}
+                    max={500}
+                    step={10}
+                    style={{ flex: 1 }}
+                    value={formData.chunking_max_batch_size ?? settings?.chunking_max_batch_size ?? 100}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        chunking_max_batch_size: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '48px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {formData.chunking_max_batch_size ?? settings?.chunking_max_batch_size ?? 100}
+                  </span>
+                </div>
+                <p className="field-help">
+                  Maximum documents submitted to each chunking worker batch.
+                  Smaller batches reduce per-worker memory spikes at the cost of throughput.
+                  Default 100.
                 </p>
               </div>
             </div>
