@@ -584,9 +584,9 @@ async def get_workspace_collab_presence(
         uid = str(entry.get("user_id") or "")
         if not uid:
             continue
-        row = user_lookup.get(uid)
-        username = str(getattr(row, "username", "") or "") if row else None
-        display_name = str(getattr(row, "displayName", "") or "") if row else None
+        presence_user = user_lookup.get(uid)
+        username = str(getattr(presence_user, "username", "") or "") if presence_user else None
+        display_name = str(getattr(presence_user, "displayName", "") or "") if presence_user else None
         users.append(
             UserSpaceCollabPresenceUser(
                 user_id=uid,

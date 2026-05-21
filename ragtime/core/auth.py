@@ -36,7 +36,7 @@ from ldap3.core.exceptions import (  # type: ignore[import-untyped]
     LDAPException,
 )
 from ldap3.utils.conv import escape_filter_chars  # type: ignore[import-untyped]
-from prisma import Json
+from prisma import Json, types
 from prisma.enums import AuthProvider, UserRole
 from pydantic import BaseModel
 
@@ -359,7 +359,7 @@ async def update_auth_provider_config(
     cache_ttl_minutes: int | None = None,
 ) -> AuthProviderConfigData:
     """Update provider-neutral authentication policy flags."""
-    data: dict[str, Any] = {}
+    data: types.AuthProviderConfigUpdateInput = {}
     if local_users_enabled is not None:
         data["localUsersEnabled"] = local_users_enabled
     if ldap_lazy_sync_enabled is not None:
@@ -370,9 +370,18 @@ async def update_auth_provider_config(
         data["cacheTtlMinutes"] = max(int(cache_ttl_minutes), 1)
 
     db = await get_db()
+    create_data: types.AuthProviderConfigCreateInput = {"id": "default"}
+    if local_users_enabled is not None:
+        create_data["localUsersEnabled"] = local_users_enabled
+    if ldap_lazy_sync_enabled is not None:
+        create_data["ldapLazySyncEnabled"] = ldap_lazy_sync_enabled
+    if manual_role_override_wins is not None:
+        create_data["manualRoleOverrideWins"] = manual_role_override_wins
+    if cache_ttl_minutes is not None:
+        create_data["cacheTtlMinutes"] = max(int(cache_ttl_minutes), 1)
     await db.authproviderconfig.upsert(
         where={"id": "default"},
-        data={"create": {"id": "default", **data}, "update": data},
+        data={"create": create_data, "update": data},
     )
     return await get_auth_provider_config()
 
@@ -776,14 +785,14 @@ async def _sync_user_auth_groups(
             continue
         source_provider_value = _provider_value(source_provider)
         key = _group_key(source_provider_value, normalized_identifier)
-        create_data: dict[str, Any] = {
+        create_data: types.AuthGroupCreateInput = {
             "key": key,
             "displayName": _display_name_from_group_identifier(normalized_identifier),
             "provider": source_provider,
             "sourceId": normalized_identifier,
             "sourceDn": (normalized_identifier if source_provider_value == "ldap" else None),
         }
-        update_data: dict[str, Any] = {
+        update_data: types.AuthGroupUpdateInput = {
             "displayName": _display_name_from_group_identifier(normalized_identifier),
             "sourceId": normalized_identifier,
             "sourceDn": (normalized_identifier if source_provider_value == "ldap" else None),
@@ -922,7 +931,7 @@ async def _upsert_provider_user_profile(
     existing_user = await db.user.find_unique(where={"username": profile.username})
 
     role = UserRole.admin if profile.role == "admin" else UserRole.user
-    update_data: dict[str, Any] = {
+    update_data: types.UserUpdateInput = {
         "authProvider": provider,
         "ldapDn": profile.source_dn if provider == AuthProvider.ldap else None,
         "sourceProvider": provider,
@@ -943,12 +952,27 @@ async def _upsert_provider_user_profile(
             update_data["role"] = await _apply_local_group_role(existing_user, role)
         user = await db.user.update(where={"id": existing_user.id}, data=update_data)
     else:
-        create_data = {
+        create_data: types.UserCreateInput = {
             "username": profile.username,
-            **update_data,
+            "authProvider": provider,
+            "ldapDn": profile.source_dn if provider == AuthProvider.ldap else None,
+            "sourceProvider": provider,
+            "sourceId": profile.source_id,
+            "email": profile.email,
+            "displayName": profile.display_name,
+            "cachedGroups": Json(profile.groups),
+            "sourceSyncedAt": now,
+            "sourceExpiresAt": expires_at,
             "role": role,
         }
+        if mark_login:
+            create_data["lastLoginAt"] = now
+        if password_hash is not None:
+            create_data["passwordHash"] = password_hash
         user = await db.user.create(data=create_data)
+
+    if user is None:
+        raise RuntimeError("Failed to upsert user profile")
 
     await _sync_user_auth_groups(
         user_id=user.id,
@@ -964,6 +988,8 @@ async def _upsert_provider_user_profile(
                 where={"id": user.id},
                 data={"role": effective_role},
             )
+            if user is None:
+                raise RuntimeError("Failed to update user role")
 
     await _record_auth_sync_event(
         username=profile.username,
@@ -1730,10 +1756,12 @@ async def authenticate_local_managed(username: str, password: str) -> AuthResult
         return AuthResult(success=False, error="User not in authorized group")
 
     role = await resolve_user_effective_role(user, auth_config=auth_config)
-    update_data: dict[str, Any] = {"lastLoginAt": datetime.now(timezone.utc)}
+    update_data: types.UserUpdateInput = {"lastLoginAt": datetime.now(timezone.utc)}
     if not (auth_config.manual_role_override_wins and user.roleManuallySet):
         update_data["role"] = role
     user = await db.user.update(where={"id": user.id}, data=update_data)
+    if user is None:
+        return AuthResult(success=False, error="Failed to update user session")
 
     return AuthResult(
         success=True,
@@ -1767,7 +1795,7 @@ async def create_or_update_local_managed_user(
     else:
         existing = await db.user.find_unique(where={"username": normalized_username})
 
-    data: dict[str, Any] = {
+    data: types.UserCreateInput = {
         "username": normalized_username,
         "authProvider": AuthProvider.local_managed,
         "ldapDn": None,
@@ -1788,13 +1816,33 @@ async def create_or_update_local_managed_user(
     if existing:
         if _provider_value(existing.authProvider) not in {"local_managed", "ldap"}:
             raise ValueError("Cannot convert this account type")
+        update_data: types.UserUpdateInput = {
+            "username": normalized_username,
+            "authProvider": AuthProvider.local_managed,
+            "ldapDn": None,
+            "sourceProvider": AuthProvider.local_managed,
+            "sourceId": normalized_username,
+            "cachedGroups": Json([]),
+            "sourceSyncedAt": None,
+            "sourceExpiresAt": None,
+            "displayName": display_name or normalized_username,
+            "email": email,
+            "role": role,
+        }
+        if role_manually_set is not None:
+            update_data["roleManuallySet"] = role_manually_set
+        if password:
+            update_data["passwordHash"] = hash_local_password(password)
         if not password:
-            data.pop("passwordHash", None)
-        user = await db.user.update(where={"id": existing.id}, data=data)
+            update_data.pop("passwordHash", None)
+        user = await db.user.update(where={"id": existing.id}, data=update_data)
     else:
         if not password:
             raise ValueError("Password is required for new internal users")
         user = await db.user.create(data=data)
+
+    if user is None:
+        raise RuntimeError("Failed to upsert local managed user")
 
     await _record_auth_sync_event(
         username=user.username,

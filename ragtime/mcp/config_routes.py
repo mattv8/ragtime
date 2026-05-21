@@ -8,6 +8,8 @@ and authorization configuration.
 from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException
+from prisma import types
+from prisma.enums import McpAuthMethod
 from pydantic import BaseModel, Field
 
 from ragtime.core.database import get_db
@@ -169,6 +171,16 @@ def _mcp_route_config_from_record(
     )
 
 
+def _mcp_auth_method_from_request(value: str) -> McpAuthMethod:
+    try:
+        return McpAuthMethod(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Authentication method must be 'password', 'oauth2', or 'client_credentials'",
+        ) from exc
+
+
 # =============================================================================
 # API Routes
 # =============================================================================
@@ -228,12 +240,12 @@ async def create_mcp_route(request: CreateMcpRouteRequest, _user=Depends(require
                 )
 
     # Create the route
-    create_data = {
+    create_data: types.McpRouteConfigCreateInput = {
         "name": request.name,
         "routePath": request.route_path,
         "description": request.description,
         "requireAuth": request.require_auth,
-        "authMethod": request.auth_method,
+        "authMethod": _mcp_auth_method_from_request(request.auth_method),
         "authClientId": request.auth_client_id,
         "allowedLdapGroup": request.allowed_ldap_group,
         "includeKnowledgeSearch": request.include_knowledge_search,
@@ -278,7 +290,7 @@ async def update_mcp_route(route_id: str, request: UpdateMcpRouteRequest, _user=
         raise HTTPException(status_code=404, detail="MCP route not found")
 
     # Build update data
-    update_data: dict = {}
+    update_data: types.McpRouteConfigUpdateInput = {}
     if request.name is not None:
         update_data["name"] = request.name
     if request.description is not None:
@@ -306,7 +318,7 @@ async def update_mcp_route(route_id: str, request: UpdateMcpRouteRequest, _user=
 
     # Handle auth method
     if request.auth_method is not None:
-        update_data["authMethod"] = request.auth_method
+        update_data["authMethod"] = _mcp_auth_method_from_request(request.auth_method)
 
     # Handle OAuth2 client_id (plaintext, public identifier)
     if request.clear_auth_client_id:
@@ -543,7 +555,7 @@ async def create_default_route_filter(request: CreateMcpDefaultRouteFilterReques
                 )
 
     # Create the filter
-    create_data = {
+    create_data: types.McpDefaultRouteFilterCreateInput = {
         "name": request.name,
         "description": request.description,
         "priority": request.priority,
@@ -590,7 +602,7 @@ async def update_default_route_filter(
         raise HTTPException(status_code=404, detail="Default route filter not found")
 
     # Build update data
-    update_data: dict = {}
+    update_data: types.McpDefaultRouteFilterUpdateInput = {}
     if request.name is not None:
         update_data["name"] = request.name
     if request.description is not None:

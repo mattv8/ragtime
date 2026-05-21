@@ -1,5 +1,7 @@
 from typing import Any
 
+from . import types as types
+
 class Prisma:
     def __init__(self, *args: Any, **kwargs: Any) -> None: ...
     def __getattr__(self, name: str) -> Any: ...

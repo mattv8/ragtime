@@ -88,7 +88,8 @@ def _enable_dynamic_tool_refresh(server: Server) -> None:
             experimental_capabilities=experimental_capabilities,
         )
 
-    server.create_initialization_options = create_initialization_options_with_tool_refresh
+    server_any = cast(Any, server)
+    server_any.create_initialization_options = create_initialization_options_with_tool_refresh
 
 
 def register_tools_changed_callback(callback: Callable[[], None]) -> None:
