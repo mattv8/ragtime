@@ -144,7 +144,8 @@ _SCREENSHOT_WAIT_AFTER_LOAD_HMR_FLOOR_MS = 1800
 _PLAYWRIGHT_BROKER_READY_TIMEOUT_SECONDS = 20.0
 _PLAYWRIGHT_BROKER_STDERR_MAX_LINES = 40
 _PLAYWRIGHT_BROKER_POOL_SIZE = 2
-_OBJECT_STORAGE_READY_TIMEOUT_SECONDS = 10.0
+_OBJECT_STORAGE_READY_TIMEOUT_SECONDS = 30.0
+_OBJECT_STORAGE_STDERR_READ_TIMEOUT_SECONDS = 2.0
 _OBJECT_STORAGE_CONFIG_DIRNAME = "s3"
 _OBJECT_STORAGE_CONFIG_NAME = "config.json"
 _OBJECT_STORAGE_ENDPOINT_ENV_KEY = "RAGTIME_OBJECT_STORAGE_ENDPOINT"
@@ -703,15 +704,32 @@ class WorkerService:
                 process.kill()
             except Exception:
                 pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2)
+            except Exception:
+                pass
             stderr_tail = ""
             try:
-                stderr_tail = (await asyncio.wait_for(stderr.read(), timeout=1)).decode("utf-8", errors="replace").strip()
+                stderr_tail = (
+                    (await asyncio.wait_for(stderr.read(), timeout=_OBJECT_STORAGE_STDERR_READ_TIMEOUT_SECONDS)).decode("utf-8", errors="replace").strip()
+                )
             except Exception:
                 stderr_tail = ""
-            detail = "Workspace object storage timed out during startup."
+            stdout_tail = ""
+            try:
+                stdout_tail = (
+                    (await asyncio.wait_for(stdout.read(), timeout=_OBJECT_STORAGE_STDERR_READ_TIMEOUT_SECONDS)).decode("utf-8", errors="replace").strip()
+                )
+            except Exception:
+                stdout_tail = ""
+            exit_code = process.returncode
+            cause = str(exc) or type(exc).__name__
+            detail = f"Workspace object storage timed out during startup after {_OBJECT_STORAGE_READY_TIMEOUT_SECONDS:.0f}s (exit={exit_code}, cause={cause})."
             if stderr_tail:
-                detail = f"{detail} {stderr_tail}"
-            return f"{detail} ({exc})"
+                detail = f"{detail} stderr: {stderr_tail}"
+            if stdout_tail:
+                detail = f"{detail} stdout: {stdout_tail}"
+            return detail
 
         if not ready_line:
             stderr_tail = ""
