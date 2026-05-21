@@ -79,6 +79,16 @@ jobs:
             cache-scope: duplicate
             local-command: npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests
             explanation: Fails when duplicate-code drift exceeds the configured jscpd threshold.
+          - name: Mypy Type Check
+            target: python-mypy-check
+            cache-scope: mypy
+            local-command: python -m mypy --config-file pyproject.toml docker/scripts ragtime runtime tests
+            explanation: Runs mypy across the Python codebase using the repository configuration in pyproject.toml.
+          - name: Pylance/Pyright Problem Check
+            target: python-pyright-check
+            cache-scope: pyright
+            local-command: python -m pyright --pythonpath .venv/bin/python
+            explanation: Runs Pyright, the same static analysis engine used by Pylance, across the configured Python workspace.
           - name: Pytest Suite
             target: python-pytest
             cache-scope: pytest
@@ -209,7 +219,7 @@ jobs:
             echo "| Check group | Result | Where to look if it failed |"
             echo "| --- | --- | --- |"
             echo "| Docker Compose manifests | $compose_manifests | Open the Docker Compose Manifests job for parser or variable errors. |"
-            echo "| Compile, Ruff, duplicate-code, and pytest matrix | $backend_checks | Open the failing backend matrix job; each job has a focused name and local command. |"
+            echo "| Compile, Ruff, duplicate-code, mypy, Pylance/Pyright, and pytest matrix | $backend_checks | Open the failing backend matrix job; each job has a focused name and local command. |"
             echo "| Inline import organization | $inline_imports | Open the Inline Import Organization job; it prints the exact local commands to run. |"
             echo
             if [ "$failed" -eq 0 ]; then

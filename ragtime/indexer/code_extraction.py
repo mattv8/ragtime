@@ -132,6 +132,8 @@ def _get_node_text(node, source_bytes: bytes) -> str:
     """Helper to get text from a node."""
     start_byte = _node_value(node, "start_byte")
     end_byte = _node_value(node, "end_byte")
+    if not isinstance(start_byte, int) or not isinstance(end_byte, int):
+        return ""
     return source_bytes[start_byte:end_byte].decode("utf-8")
 
 

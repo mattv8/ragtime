@@ -90,14 +90,18 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
     python /tmp/install_deps_from_pyproject.py /tmp/pyproject.toml test /tmp/requirements.test.txt && \
     pip install -r /tmp/requirements.test.txt
 
-RUN command -v ruff >/dev/null && python -m ruff --version
+RUN command -v ruff >/dev/null && python -m ruff --version && \
+    python -m mypy --version && \
+    python -m pyright --version
 
 WORKDIR /ragtime
+RUN ln -s /opt/venv /ragtime/.venv
 COPY pyproject.toml /ragtime/pyproject.toml
 COPY .jscpd.json /ragtime/.jscpd.json
 COPY docker/Dockerfile /ragtime/docker/Dockerfile
 COPY docker/scripts/ /ragtime/docker/scripts/
 COPY prisma/ /ragtime/prisma/
+COPY typings/ /ragtime/typings/
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     --mount=type=cache,id=ragtime-prisma-cache,target=/root/.cache/prisma-python,sharing=locked \
     python -m prisma generate
@@ -127,6 +131,14 @@ FROM python-ci-base AS python-duplicate-check
 
 RUN npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests
 
+FROM python-ci-base AS python-mypy-check
+
+RUN python -m mypy --config-file pyproject.toml docker/scripts ragtime runtime tests
+
+FROM python-ci-base AS python-pyright-check
+
+RUN python -m pyright --pythonpath .venv/bin/python
+
 FROM python-ci-base AS python-pytest
 
 RUN mkdir -p "$INDEX_DATA_PATH" && \
@@ -147,6 +159,8 @@ RUN mkdir -p "$INDEX_DATA_PATH" && \
     python docker/scripts/fix_inline_imports.py runtime --check && \
     python docker/scripts/fix_inline_imports.py tests --check && \
     npx --yes jscpd@4.0.5 --config .jscpd.json ragtime runtime tests && \
+    python -m mypy --config-file pyproject.toml docker/scripts ragtime runtime tests && \
+    python -m pyright --pythonpath .venv/bin/python && \
     python -m pytest tests
 
 # =============================================================================

@@ -33,7 +33,7 @@
         "reveal": "always",
         "panel": "dedicated"
       },
-      "detail": "Run the aggregate Docker python-test target plus the frontend-builder target to match backend quality checks and frontend build coverage from CI."
+      "detail": "Run the aggregate Docker python-test target, including mypy and Pyright/Pylance problem checks, plus the frontend-builder target to match backend quality checks and frontend build coverage from CI."
     },
     {
       "type": "shell",
