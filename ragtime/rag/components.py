@@ -132,6 +132,7 @@ from ragtime.core.ssh import (
     ssh_tunnel_config_from_dict,
 )
 from ragtime.core.tokenization import truncate_to_token_budget
+from ragtime.core.type_coercion import coerce_int_metadata
 from ragtime.indexer.chat_attachments import preprocess_chat_attachment_content_parts
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
@@ -303,16 +304,19 @@ INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT = (
 )
 MAX_INTERNAL_AGENT_CONTINUATIONS = 2
 
-# Inactivity timeout for the agent's tool-calling stream AFTER a tool has
-# completed and while no tool is currently running. Some providers (notably
-# GitHub Copilot's Responses API with reasoning) can stall indefinitely
-# between the last tool_end and the synthesis output — especially after
-# long-running tool calls that themselves timed out. When this fires we
-# abort the provider stream and fall through to the tool-free synthesis
-# fallback so the user receives a real answer instead of an empty turn.
-# Tools that are actively executing have their own per-tool timeout
-# (MAX_TOOL_TIMEOUT_SECONDS) and are not affected by this guard.
-AGENT_STREAM_POST_TOOL_INACTIVITY_TIMEOUT_SECONDS: float = 120.0
+# Inactivity guard for the agent's tool-calling event stream.
+# Two failure modes need to be covered:
+#   1. Provider stalls AFTER the last tool_end (no synthesis output). Some
+#      providers (notably GitHub Copilot's Responses API with reasoning) can
+#      stall indefinitely here, especially after a tool call that timed out.
+#   2. A tool starts but never emits tool_end (provider/proxy hangup mid-call,
+#      or a tool that swallows its own timeout without raising).
+# A single uniform deadline covers both: the tool's own per-call timeout caps
+# at MAX_TOOL_TIMEOUT_SECONDS, plus a small grace for event propagation. When
+# this fires we close the provider stream and fall through to the tool-free
+# synthesis fallback (with a synthetic failed-tool result if a tool was
+# active) so the user receives a real answer instead of an empty turn.
+AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS: float = float(MAX_TOOL_TIMEOUT_SECONDS) + 15.0
 
 _USERSPACE_LIVE_DATA_BINDING_VALIDATOR_JS_PATH = Path(__file__).with_name("userspace_live_data_binding_validator.js")
 _USERSPACE_TYPESCRIPT_VALIDATOR_JS_PATH = Path(__file__).with_name("userspace_typescript_validator.js")
@@ -339,6 +343,24 @@ def resolve_effective_timeout(requested_timeout: int, timeout_max_seconds: int) 
     if max_timeout == 0:
         return requested
     return min(requested, max_timeout)
+
+
+def _format_active_tool_timeout_output(tool_name: str) -> str:
+    return (
+        f"Error: Tool {tool_name} took too long and timed out before returning a final result. "
+        "Treat this as a failed tool result and continue using the available context."
+    )
+
+
+def _format_active_tool_stream_error_output(tool_name: str, exc: BaseException) -> str:
+    status_code = _exception_status_code(exc)
+    detail = _format_exception_message(exc)
+    if status_code == 524 or "524" in detail:
+        detail = f"HTTP 524 timeout: {detail}"
+    return (
+        f"Error: Tool {tool_name} failed before returning a final result: {detail}. "
+        "Treat this as a failed tool result and continue using the available context."
+    )
 
 
 def clamp_search_parameters(k: int, max_chars_per_result: int) -> tuple[int, int]:
@@ -12662,6 +12684,59 @@ except Exception as e:
                         attempt_replayed_tool_messages: list[BaseMessage] = []
                         attempt_provider_stalled_after_tool = False
 
+                        def _record_synthetic_tool_failure(failed_run_id: str, failure_output: str) -> dict[str, Any]:
+                            active_tool_runs.discard(failed_run_id)
+                            start_payload = _tool_start_payloads.pop(failed_run_id, None)
+                            start_info = _tool_start_times.pop(failed_run_id, None)
+                            tool_name = str((start_payload or {}).get("tool") or (start_info[1] if start_info else "unknown"))
+                            connection_meta = self._get_tool_connection_metadata(tool_name)
+                            presentation_meta = normalize_tool_presentation(tool_name, connection_meta)
+                            tool_args = start_payload.get("input") if start_payload else {}
+                            if not isinstance(tool_args, dict):
+                                tool_args = {"input": tool_args}
+                            tool_call_id = failed_run_id or f"stream_tool_{len(attempt_replayed_tool_messages)}"
+                            attempt_replayed_tool_messages.extend(
+                                [
+                                    AIMessage(
+                                        content="",
+                                        tool_calls=[
+                                            {
+                                                "name": (start_payload.get("tool", tool_name) if start_payload else tool_name),
+                                                "args": tool_args,
+                                                "id": tool_call_id,
+                                            }
+                                        ],
+                                    ),
+                                    ToolMessage(
+                                        content=failure_output,
+                                        tool_call_id=tool_call_id,
+                                    ),
+                                ]
+                            )
+                            tool_event = {
+                                "type": "tool_end",
+                                "tool": tool_name,
+                                "output": failure_output,
+                                "connection": connection_meta,
+                                "run_id": failed_run_id,
+                            }
+                            if presentation_meta:
+                                tool_event["presentation"] = presentation_meta
+                            return tool_event
+
+                        async def _close_agent_stream_iter() -> None:
+                            try:
+                                aclose = getattr(cast(Any, agent_stream_iter), "aclose", None)
+                                if callable(aclose):
+                                    close_result = aclose()
+                                    if asyncio.iscoroutine(close_result) or isinstance(close_result, asyncio.Future):
+                                        await close_result
+                            except Exception as close_err:
+                                logger.debug(
+                                    "Failed to close agent stream iterator: %s",
+                                    close_err,
+                                )
+
                         agent_stream = executor.astream_events(
                             {
                                 "input": attempt_input,
@@ -12672,47 +12747,77 @@ except Exception as e:
                         )
                         agent_stream_iter = agent_stream.__aiter__()
                         while True:
-                            # Only enforce post-tool inactivity timeout when no
-                            # tool is currently running AND we have already seen
-                            # tool activity this attempt. Long-running tool
-                            # executions block the event stream and have their
-                            # own per-tool timeouts; the goal here is to catch
-                            # the model hanging on synthesis AFTER tools finish.
-                            apply_inactivity_timeout = attempt_had_tool_activity and not active_tool_runs
+                            # A single inactivity guard covers both "provider
+                            # stalled after tool_end" and "tool started but
+                            # never emitted tool_end". Apply it once any tool
+                            # activity has been observed this attempt; the
+                            # deadline is sized to MAX_TOOL_TIMEOUT_SECONDS so
+                            # legitimate long-running tools complete normally.
+                            apply_inactivity_timeout = attempt_had_tool_activity
                             try:
                                 if apply_inactivity_timeout:
                                     event = await asyncio.wait_for(
                                         agent_stream_iter.__anext__(),
-                                        timeout=AGENT_STREAM_POST_TOOL_INACTIVITY_TIMEOUT_SECONDS,
+                                        timeout=AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS,
                                     )
                                 else:
                                     event = await agent_stream_iter.__anext__()
                             except StopAsyncIteration:
                                 break
                             except asyncio.TimeoutError:
+                                if active_tool_runs:
+                                    stalled_run_id = next(iter(active_tool_runs))
+                                    start_payload = _tool_start_payloads.get(stalled_run_id)
+                                    start_info = _tool_start_times.get(stalled_run_id)
+                                    tool_name = str((start_payload or {}).get("tool") or (start_info[1] if start_info else "unknown"))
+                                    logger.warning(
+                                        "Tool %s produced no completion event within %.0fs (run_id=%s); "
+                                        "closing the stalled stream and continuing with a synthetic tool failure",
+                                        tool_name,
+                                        AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS,
+                                        stalled_run_id[:8],
+                                    )
+                                    request_tool_state["active_tool_stream_timed_out"] = True
+                                    await _close_agent_stream_iter()
+                                    yield _record_synthetic_tool_failure(
+                                        stalled_run_id,
+                                        _format_active_tool_timeout_output(tool_name),
+                                    )
+                                    break
+
                                 logger.warning(
                                     "Agent stream went silent for %.0fs after tool activity completed "
                                     "(attempt=%d, emitted_content=%s, replayed_msgs=%d); aborting provider "
                                     "stream and falling through to tool-free synthesis fallback",
-                                    AGENT_STREAM_POST_TOOL_INACTIVITY_TIMEOUT_SECONDS,
+                                    AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS,
                                     attempt_number,
                                     attempt_emitted_content,
                                     len(attempt_replayed_tool_messages),
                                 )
                                 attempt_provider_stalled_after_tool = True
                                 request_tool_state["provider_stalled_after_tool"] = True
-                                try:
-                                    aclose = getattr(cast(Any, agent_stream_iter), "aclose", None)
-                                    if callable(aclose):
-                                        close_result = aclose()
-                                        if asyncio.iscoroutine(close_result) or isinstance(close_result, asyncio.Future):
-                                            await close_result
-                                except Exception as close_err:
-                                    logger.debug(
-                                        "Failed to close stalled agent stream iterator: %s",
-                                        close_err,
-                                    )
+                                await _close_agent_stream_iter()
                                 break
+                            except Exception as stream_err:
+                                if active_tool_runs:
+                                    failed_run_id = next(iter(active_tool_runs))
+                                    start_payload = _tool_start_payloads.get(failed_run_id)
+                                    start_info = _tool_start_times.get(failed_run_id)
+                                    tool_name = str((start_payload or {}).get("tool") or (start_info[1] if start_info else "unknown"))
+                                    logger.warning(
+                                        "Tool %s stream failed before a completion event (run_id=%s); continuing with a synthetic tool failure",
+                                        tool_name,
+                                        failed_run_id[:8],
+                                        exc_info=True,
+                                    )
+                                    request_tool_state["active_tool_stream_failed"] = True
+                                    await _close_agent_stream_iter()
+                                    yield _record_synthetic_tool_failure(
+                                        failed_run_id,
+                                        _format_active_tool_stream_error_output(tool_name, stream_err),
+                                    )
+                                    break
+                                raise
                             kind = event.get("event", "")
                             run_id = event.get("run_id", "")
 

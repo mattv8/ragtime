@@ -28,6 +28,7 @@ from typing import Any, Callable, Literal, Optional
 import paramiko
 
 from ragtime.core.logging import get_logger
+from ragtime.core.type_coercion import coerce_int_metadata
 
 logger = get_logger(__name__)
 
@@ -1777,40 +1778,22 @@ def ssh_tunnel_config_from_dict(config_dict: dict, default_remote_port: int = 33
     server's perspective when tunneling).
     """
 
-    def _coerce_int(value, default: int) -> int:
-        """Best-effort int conversion that tolerates blanks and wrong types."""
-        try:
-            if value is None:
-                return default
-            if isinstance(value, bool):
-                return int(value)
-            if isinstance(value, (int, float)):
-                return int(value)
-            if isinstance(value, str):
-                stripped = value.strip()
-                if not stripped:
-                    return default
-                return int(stripped)
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
     # Remote endpoint is the main host/port - this is where the database is
     # from the SSH server's perspective (usually 127.0.0.1 / localhost)
     remote_host = config_dict.get("host", "127.0.0.1") or "127.0.0.1"
-    remote_port = _coerce_int(config_dict.get("port", default_remote_port), default_remote_port)
+    remote_port = coerce_int_metadata(config_dict.get("port", default_remote_port), default=default_remote_port)
 
     return SSHTunnelConfig(
         ssh_host=config_dict.get("ssh_tunnel_host", ""),
         ssh_user=config_dict.get("ssh_tunnel_user", ""),
-        ssh_port=_coerce_int(config_dict.get("ssh_tunnel_port", 22), 22),
+        ssh_port=coerce_int_metadata(config_dict.get("ssh_tunnel_port", 22), default=22),
         ssh_password=config_dict.get("ssh_tunnel_password"),
         ssh_key_path=config_dict.get("ssh_tunnel_key_path"),
         ssh_key_content=config_dict.get("ssh_tunnel_key_content"),
         ssh_key_passphrase=config_dict.get("ssh_tunnel_key_passphrase"),
         remote_host=remote_host,
         remote_port=remote_port,
-        timeout=_coerce_int(config_dict.get("ssh_tunnel_timeout", 30), 30),
+        timeout=coerce_int_metadata(config_dict.get("ssh_tunnel_timeout", 30), default=30),
     )
 
 

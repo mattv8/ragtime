@@ -26,6 +26,38 @@ class _HangingAsyncStream:
         self.aclose_called = True
 
 
+class _ActiveToolTimeoutExecutor:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.closed = asyncio.Event()
+        self.tools: list[object] = []
+
+    def astream_events(self, *_args, **_kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return self._stalled_tool_stream()
+        return self._final_text_stream()
+
+    async def _stalled_tool_stream(self):
+        try:
+            yield {
+                "event": "on_tool_start",
+                "run_id": "run-1",
+                "name": "query_production_infoscan_database",
+                "data": {"input": {"query": "select pg_sleep(999)", "timeout": 1}},
+            }
+            await asyncio.Event().wait()
+        finally:
+            self.closed.set()
+
+    async def _final_text_stream(self):
+        yield {
+            "event": "on_chat_model_stream",
+            "run_id": "model-1",
+            "data": {"chunk": SimpleNamespace(content="The query tool timed out.")},
+        }
+
+
 class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_task_closes_stream_iterator(self) -> None:
         service = background_tasks.BackgroundTaskService()
@@ -139,12 +171,81 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
     """
 
     def test_constant_is_defined_and_positive(self) -> None:
-        from ragtime.rag.components import (
-            AGENT_STREAM_POST_TOOL_INACTIVITY_TIMEOUT_SECONDS,
+        from ragtime.rag.components import AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS
+
+        self.assertIsInstance(AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS, float)
+        self.assertGreater(AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS, 0)
+
+    def test_active_tool_timeout_output_is_agent_actionable(self) -> None:
+        from ragtime.rag import components
+
+        output = components._format_active_tool_timeout_output("query_production_infoscan_database")
+
+        self.assertIn("Tool query_production_infoscan_database took too long and timed out", output)
+        self.assertIn("Treat this as a failed tool result", output)
+
+    async def test_process_query_stream_synthesizes_active_tool_timeout_result(self) -> None:
+        from ragtime.rag import components
+
+        rag_components = components.RAGComponents()
+        executor = _ActiveToolTimeoutExecutor()
+        rag_components.agent_executor_ui = executor  # type: ignore[assignment]
+        request_tool_state: dict[str, object] = {}
+        request_context = {
+            "prompt_is_ui": True,
+            "mode": "chat",
+            "allowed_tool_config_ids": set(),
+            "runtime_tools": [],
+            "request_tool_state": request_tool_state,
+            "prompt_additions": "",
+            "user_identity_turn_line": "",
+            "include_sqlite_persistence": False,
+            "userspace_env_var_turn_hint": "",
+            "userspace_runtime_status_turn_hint": "",
+            "workspace_id": None,
+        }
+        llm_resolution = components.RequestLLMResolution(
+            llm=object(),
+            provider="test_provider",
+            model="test-model",
         )
 
-        self.assertIsInstance(AGENT_STREAM_POST_TOOL_INACTIVITY_TIMEOUT_SECONDS, float)
-        self.assertGreater(AGENT_STREAM_POST_TOOL_INACTIVITY_TIMEOUT_SECONDS, 0)
+        async def collect_outputs() -> list[object]:
+            outputs: list[object] = []
+            async for item in rag_components.process_query_stream("hello", is_ui=True):
+                outputs.append(item)
+            return outputs
+
+        with (
+            mock.patch.object(rag_components, "_convert_message_to_langchain_async", mock.AsyncMock(return_value="hello")),
+            mock.patch.object(rag_components, "_get_request_scoped_llm", mock.AsyncMock(return_value=llm_resolution)),
+            mock.patch.object(rag_components, "_build_request_runtime_context", mock.AsyncMock(return_value=request_context)),
+            mock.patch.object(rag_components, "_build_request_system_prompt", return_value="system"),
+            mock.patch.object(rag_components, "_build_turn_reminder_text", return_value=""),
+            mock.patch.object(rag_components, "_build_context_headroom_prompt", mock.AsyncMock(return_value="")),
+            mock.patch.object(rag_components, "_build_runtime_executor", return_value=executor),
+            mock.patch.object(
+                rag_components,
+                "_get_tool_connection_metadata",
+                return_value={"timeout_max_seconds": "1"},
+            ),
+            mock.patch.object(rag_components, "_persist_provider_prompt_debug_record", mock.AsyncMock()),
+            mock.patch.object(components, "AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS", 0.05),
+        ):
+            outputs = await asyncio.wait_for(collect_outputs(), timeout=1.0)
+
+        self.assertTrue(executor.closed.is_set())
+        self.assertIsInstance(outputs[0], dict)
+        self.assertIsInstance(outputs[1], dict)
+        tool_start = outputs[0]
+        tool_end = outputs[1]
+        assert isinstance(tool_start, dict)
+        assert isinstance(tool_end, dict)
+        self.assertEqual(tool_start["type"], "tool_start")
+        self.assertEqual(tool_end["type"], "tool_end")
+        self.assertIn("took too long and timed out", tool_end["output"])
+        self.assertIn("The query tool timed out.", outputs)
+        self.assertTrue(request_tool_state["active_tool_stream_timed_out"])
 
     async def test_wait_for_aborts_and_closes_stalled_agent_stream(self) -> None:
         stall_event = asyncio.Event()

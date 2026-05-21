@@ -137,6 +137,7 @@ from ragtime.core.ssh import (
     test_ssh_connection,
 )
 from ragtime.core.tokenization import count_tokens
+from ragtime.core.type_coercion import coerce_int_metadata, coerce_positive_int_metadata
 from ragtime.core.usage_accounting import (
     _estimate_input_tokens,
     _estimate_output_tokens,
@@ -3214,25 +3215,6 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
         return ToolTestResponse(success=False, message=f"Unknown tool type: {tool_type_str}")
 
 
-def _coerce_int(value, default: int) -> int:
-    """Best-effort int conversion for heartbeat inputs."""
-    try:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return int(value)
-        if isinstance(value, (int, float)):
-            return int(value)
-        if isinstance(value, str):
-            stripped = value.strip()
-            if not stripped:
-                return default
-            return int(stripped)
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
 def _start_ssh_tunnel_if_enabled(config: dict, host: str, port: int) -> tuple[Optional["SSHTunnel"], str, int]:
     """Start SSH tunnel if enabled and return (tunnel, host, port)."""
     tunnel_cfg_dict = build_ssh_tunnel_config(config, host, port)
@@ -3248,7 +3230,7 @@ def _start_ssh_tunnel_if_enabled(config: dict, host: str, port: int) -> tuple[Op
 async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
     """Quick PostgreSQL heartbeat check."""
     host = config.get("host", "")
-    port = _coerce_int(config.get("port", 5432), 5432)
+    port = coerce_int_metadata(config.get("port", 5432), default=5432)
     user = config.get("user", "")
     password = config.get("password", "")
     database = config.get("database", "")
@@ -3305,7 +3287,7 @@ async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
 async def _heartbeat_mysql(config: dict) -> ToolTestResponse:
     """Quick MySQL/MariaDB heartbeat check."""
     host = config.get("host", "")
-    port = _coerce_int(config.get("port", 3306), 3306)
+    port = coerce_int_metadata(config.get("port", 3306), default=3306)
     user = config.get("user", "")
     password = config.get("password", "")
     database = config.get("database", "")
@@ -3338,7 +3320,7 @@ async def _heartbeat_mysql(config: dict) -> ToolTestResponse:
 async def _heartbeat_mssql(config: dict) -> ToolTestResponse:
     """Quick MSSQL heartbeat check."""
     host = config.get("host", "")
-    port = _coerce_int(config.get("port", 1433), 1433)
+    port = coerce_int_metadata(config.get("port", 1433), default=1433)
     user = config.get("user", "")
     password = config.get("password", "")
     database = config.get("database", "")
@@ -3367,7 +3349,7 @@ async def _heartbeat_mssql(config: dict) -> ToolTestResponse:
 async def _heartbeat_influxdb(config: dict) -> ToolTestResponse:
     """Quick InfluxDB heartbeat check."""
     host = config.get("host", "")
-    port = _coerce_int(config.get("port", 8086), 8086)
+    port = coerce_int_metadata(config.get("port", 8086), default=8086)
     use_https = bool(config.get("use_https", False))
     token = config.get("token", "")
     org = config.get("org", "")
@@ -3602,7 +3584,7 @@ async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
     """Quick SolidWorks PDM database heartbeat check."""
 
     host = config.get("host", "")
-    port = _coerce_int(config.get("port", 1433), 1433)
+    port = coerce_int_metadata(config.get("port", 1433), default=1433)
     user = config.get("user", "")
     password = config.get("password", "")
     database = config.get("database", "")
@@ -3977,7 +3959,7 @@ async def _test_mysql_connection(config: dict) -> ToolTestResponse:
 async def _test_influxdb_connection(config: dict) -> ToolTestResponse:
     """Test InfluxDB connection. Supports direct and SSH tunnel modes."""
     host = config.get("host", "")
-    port = _coerce_int(config.get("port", 8086), 8086)
+    port = coerce_int_metadata(config.get("port", 8086), default=8086)
     use_https = bool(config.get("use_https", False))
     token = config.get("token", "")
     org = config.get("org", "")
@@ -4003,7 +3985,7 @@ async def _test_influxdb_connection(config: dict) -> ToolTestResponse:
         ssh_tunnel_config = {
             "ssh_tunnel_enabled": True,
             "ssh_tunnel_host": ssh_tunnel_host,
-            "ssh_tunnel_port": _coerce_int(config.get("ssh_tunnel_port", 22), 22),
+            "ssh_tunnel_port": coerce_int_metadata(config.get("ssh_tunnel_port", 22), default=22),
             "ssh_tunnel_user": ssh_tunnel_user,
             "ssh_tunnel_password": config.get("ssh_tunnel_password", ""),
             "ssh_tunnel_key_path": config.get("ssh_tunnel_key_path", ""),
@@ -8312,21 +8294,6 @@ async def unload_lmstudio_model(
 def _extract_context_limit_from_model_row(row: dict[str, Any]) -> int | None:
     """Extract context-window token limit from provider model metadata payloads."""
 
-    def _coerce_int(value: Any) -> int | None:
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, int):
-            return value if value > 0 else None
-        if isinstance(value, float):
-            coerced = int(value)
-            return coerced if coerced > 0 else None
-        if isinstance(value, str):
-            value = value.strip()
-            if value.isdigit():
-                parsed = int(value)
-                return parsed if parsed > 0 else None
-        return None
-
     context_window_keys = [
         "context_limit",
         "context_window",
@@ -8347,32 +8314,32 @@ def _extract_context_limit_from_model_row(row: dict[str, Any]) -> int | None:
         capabilities_limits = capabilities_obj.get("limits")
         if isinstance(capabilities_limits, dict):
             for key in context_window_keys:
-                parsed = _coerce_int(capabilities_limits.get(key))
+                parsed = coerce_positive_int_metadata(capabilities_limits.get(key))
                 if parsed is not None:
                     return parsed
             for key in input_budget_keys:
-                parsed = _coerce_int(capabilities_limits.get(key))
+                parsed = coerce_positive_int_metadata(capabilities_limits.get(key))
                 if parsed is not None:
                     return parsed
 
     limits_obj = row.get("limits")
     if isinstance(limits_obj, dict):
         for key in context_window_keys:
-            parsed = _coerce_int(limits_obj.get(key))
+            parsed = coerce_positive_int_metadata(limits_obj.get(key))
             if parsed is not None:
                 return parsed
         for key in input_budget_keys:
-            parsed = _coerce_int(limits_obj.get(key))
+            parsed = coerce_positive_int_metadata(limits_obj.get(key))
             if parsed is not None:
                 return parsed
 
     for key in context_window_keys:
-        parsed = _coerce_int(row.get(key))
+        parsed = coerce_positive_int_metadata(row.get(key))
         if parsed is not None:
             return parsed
 
     for key in input_budget_keys:
-        parsed = _coerce_int(row.get(key))
+        parsed = coerce_positive_int_metadata(row.get(key))
         if parsed is not None:
             return parsed
 
@@ -8382,21 +8349,6 @@ def _extract_context_limit_from_model_row(row: dict[str, Any]) -> int | None:
 def _extract_output_limit_from_model_row(row: dict[str, Any]) -> int | None:
     """Extract output-token limit from provider model metadata payloads."""
 
-    def _coerce_int(value: Any) -> int | None:
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, int):
-            return value if value > 0 else None
-        if isinstance(value, float):
-            coerced = int(value)
-            return coerced if coerced > 0 else None
-        if isinstance(value, str):
-            value = value.strip()
-            if value.isdigit():
-                parsed = int(value)
-                return parsed if parsed > 0 else None
-        return None
-
     keys = ["max_output_tokens", "output_tokens"]
 
     capabilities_obj = row.get("capabilities")
@@ -8404,19 +8356,19 @@ def _extract_output_limit_from_model_row(row: dict[str, Any]) -> int | None:
         capabilities_limits = capabilities_obj.get("limits")
         if isinstance(capabilities_limits, dict):
             for key in keys:
-                parsed = _coerce_int(capabilities_limits.get(key))
+                parsed = coerce_positive_int_metadata(capabilities_limits.get(key))
                 if parsed is not None:
                     return parsed
 
     limits_obj = row.get("limits")
     if isinstance(limits_obj, dict):
         for key in keys:
-            parsed = _coerce_int(limits_obj.get(key))
+            parsed = coerce_positive_int_metadata(limits_obj.get(key))
             if parsed is not None:
                 return parsed
 
     for key in keys:
-        parsed = _coerce_int(row.get(key))
+        parsed = coerce_positive_int_metadata(row.get(key))
         if parsed is not None:
             return parsed
 

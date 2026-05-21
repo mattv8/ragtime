@@ -45,3 +45,26 @@ def coerce_bool_metadata(value: Any, default: bool = False) -> bool:
     if text in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def coerce_positive_int_metadata(value: Any) -> int | None:
+    """Coerce metadata to a strictly positive int, or None when not parseable.
+
+    Used for provider-supplied numeric limits where a missing, zero, negative,
+    or malformed value should be ignored rather than silently zeroed.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        coerced = int(value)
+        return coerced if coerced > 0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            parsed = int(text)
+            return parsed if parsed > 0 else None
+    return None
