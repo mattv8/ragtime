@@ -1728,6 +1728,8 @@ class RAGComponents:
             return "invalid_component_id"
         if "invalid file path" in combined or "does not exist" in combined:
             return "path_invalid"
+        if "missing required content" in combined or "content was omitted" in combined:
+            return "content_missing"
         return "validation_failed"
 
     @staticmethod
@@ -1751,6 +1753,7 @@ class RAGComponents:
             "entrypoint_missing",
             "entrypoint_invalid",
             "entrypoint_wiring_required",
+            "content_missing",
         }:
             return "upsert_userspace_file"
         if failure_class in {
@@ -7183,6 +7186,7 @@ except Exception as e:
         """Create request-scoped User Space file tools for agentic artifact editing."""
 
         accessible_modes_local: dict[str, str] = dict(accessible_workspace_modes or {})
+        primary_workspace_id = workspace_id
 
         async def _resolve_target_workspace(
             requested_workspace_id: Optional[str],
@@ -7533,14 +7537,16 @@ except Exception as e:
                 default=None,
                 description=("Optional target workspace ID for cross-workspace access. Requires read_write grant for non-primary workspaces."),
             )
-            content: str = Field(
-                default="",
+            content: str | None = Field(
+                default=None,
                 description=("Full UTF-8 file content to write. Omit when using files for a batched multi-file upsert (per-entry content is required there)."),
             )
 
             @field_validator("content", mode="before")
             @classmethod
-            def _coerce_content_to_str(cls, v: Any) -> str:
+            def _coerce_content_to_str(cls, v: Any) -> str | None:
+                if v is None:
+                    return None
                 if isinstance(v, str):
                     return v
                 # LLM sometimes passes a dict/list instead of a string
@@ -8105,7 +8111,10 @@ except Exception as e:
             if op == "read":
                 next_best = "list_userspace_files" if rejected_count else "patch_userspace_file"
             elif rejected_count:
-                next_best = "patch_userspace_file"
+                next_best = self._next_best_tool_for_failure(
+                    aggregate_failure_class,
+                    fallback_tool="patch_userspace_file",
+                )
             elif op in ("upsert", "patch"):
                 next_best = "validate_userspace_code"
             else:
@@ -9221,7 +9230,7 @@ except Exception as e:
             return json.dumps(response_payload, indent=2)
 
         async def upsert_userspace_file(
-            content: str = "",
+            content: Any | None = None,
             path: str = "",
             artifact_type: ArtifactType | None = "module_ts",
             live_data_requested: bool = False,
@@ -9244,15 +9253,13 @@ except Exception as e:
                     entry_path = (raw.get("path") or "").strip()
                     if not entry_path:
                         continue
-                    if "content" not in raw:
-                        continue
                     normalized_entries.append(raw)
                 if not normalized_entries:
-                    raise ToolException("Invalid files: provide at least one entry with path and content.")
+                    raise ToolException("Invalid files: provide at least one entry with a non-empty path.")
 
                 async def _invoke_upsert_entry(entry: dict[str, Any]) -> str:
                     return await upsert_userspace_file(
-                        content=entry.get("content") or "",
+                        content=entry.get("content") if "content" in entry else None,
                         path=entry.get("path") or "",
                         artifact_type=entry.get("artifact_type", "module_ts"),
                         live_data_requested=bool(entry.get("live_data_requested", False)),
@@ -9267,14 +9274,39 @@ except Exception as e:
                     entries=normalized_entries,
                     invoke_entry=_invoke_upsert_entry,
                 )
+            path = (path or "").strip()
+            if not path:
+                raise ToolException("path is required. Provide a relative workspace file path (for example: dashboard/main.ts).")
+            if content is None:
+                self._record_userspace_failure(
+                    workspace_id or primary_workspace_id,
+                    failure_class="content_missing",
+                    summary=(f"upsert_userspace_file rejected {path}: content was omitted."),
+                    tool_name="upsert_userspace_file",
+                )
+                return _render_userspace_tool_payload(
+                    tool_name="upsert_userspace_file",
+                    status="rejected_not_persisted",
+                    rejected=True,
+                    persisted=False,
+                    retryable=True,
+                    failure_class="content_missing",
+                    next_best_tool="upsert_userspace_file",
+                    path=path,
+                    error=(
+                        "Missing required content. Single-file upserts must include the full UTF-8 file content; omitted content is not treated as an empty file."
+                    ),
+                    action_required=(
+                        "Retry upsert_userspace_file with a content field containing the complete file body, or use patch_userspace_file for a targeted edit."
+                    ),
+                )
+            if not isinstance(content, str):
+                content = json.dumps(content, indent=2)
+
             target_ws, target_uid = await _resolve_target_workspace(workspace_id, "write")
             workspace_id = target_ws
             user_id = target_uid
             await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
-
-            path = (path or "").strip()
-            if not path:
-                raise ToolException("path is required. Provide a relative workspace file path (for example: dashboard/main.ts).")
 
             warnings: list[str] = []
             allowed_violations: list[str] = []
