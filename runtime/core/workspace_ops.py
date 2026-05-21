@@ -97,6 +97,37 @@ def workspace_path_matches_mount_prefix(path: str, prefix: str) -> bool:
     return normalized_path == normalized_prefix or normalized_path.startswith(normalized_prefix + "/")
 
 
+def resolve_workspace_mount_source_path(
+    mounts: list[dict[str, Any]],
+    rel_path: str,
+) -> tuple[Path, bool] | None:
+    """Map a workspace-relative path to its source-side filesystem path.
+
+    Iterates ``mounts`` looking for the deepest target prefix that contains
+    ``rel_path`` and returns the corresponding source-side absolute path plus
+    the mount's read-only flag. Returns None if no mount matches.
+    """
+    normalized = rel_path.strip().replace("\\", "/").lstrip("/")
+    if not normalized:
+        return None
+    candidates: list[tuple[str, Path, bool]] = []
+    for mount in mounts:
+        repo_rel = workspace_mount_target_repo_relative_path(str(mount.get("target_path", "") or ""))
+        source_local_path = str(mount.get("source_local_path", "") or "").strip()
+        if not repo_rel or not source_local_path:
+            continue
+        if not workspace_path_matches_mount_prefix(normalized, repo_rel):
+            continue
+        source_root = Path(source_local_path)
+        suffix = normalized[len(repo_rel) :].lstrip("/")
+        source_file = source_root if not suffix else source_root.joinpath(*suffix.split("/"))
+        candidates.append((repo_rel, source_file, bool(mount.get("read_only", True))))
+    if not candidates:
+        return None
+    _, source_file, read_only = max(candidates, key=lambda item: len(item[0]))
+    return source_file, read_only
+
+
 def deduplicate_ancestor_paths(paths: list[str]) -> list[str]:
     if len(paths) <= 1:
         return list(paths)

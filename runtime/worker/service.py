@@ -69,6 +69,7 @@ from ..core.workspace_ops import (
     deduplicate_ancestor_paths,
     list_mount_source_tree_entries,
     list_workspace_tree_entries,
+    resolve_workspace_mount_source_path,
     sync_scope_relative_paths,
     workspace_mount_target_repo_relative_path,
     workspace_path_matches_mount_prefix,
@@ -766,6 +767,8 @@ class WorkerService:
             if target:
                 target_paths.add(target)
         return target_paths
+
+    _resolve_workspace_mount_file_path = staticmethod(resolve_workspace_mount_source_path)
 
     async def _materialize_workspace_mounts(self, session: WorkerSession) -> None:
         mounts = list(session.workspace_mounts or [])
@@ -2201,7 +2204,8 @@ class WorkerService:
                 file_path,
                 enforce_sqlite_managed=True,
             )
-            target = session.workspace_files_path / rel_path
+            mounted_target = self._resolve_workspace_mount_file_path(session.workspace_mounts, rel_path)
+            target = mounted_target[0] if mounted_target else session.workspace_files_path / rel_path
             if not target.exists() or not target.is_file():
                 return self._runtime_file_response(session, rel_path, "", False)
             content = await asyncio.to_thread(target.read_text, encoding="utf-8")
@@ -2222,7 +2226,10 @@ class WorkerService:
                 file_path,
                 enforce_sqlite_managed=True,
             )
-            target = session.workspace_files_path / rel_path
+            mounted_target = self._resolve_workspace_mount_file_path(session.workspace_mounts, rel_path)
+            if mounted_target and mounted_target[1]:
+                raise HTTPException(status_code=403, detail="Mounted workspace paths are read-only")
+            target = mounted_target[0] if mounted_target else session.workspace_files_path / rel_path
             target.parent.mkdir(parents=True, exist_ok=True)
             await asyncio.to_thread(target.write_text, content, encoding="utf-8")
             session.updated_at = utc_now()
@@ -2237,7 +2244,10 @@ class WorkerService:
                 file_path,
                 enforce_sqlite_managed=True,
             )
-            target = session.workspace_files_path / rel_path
+            mounted_target = self._resolve_workspace_mount_file_path(session.workspace_mounts, rel_path)
+            if mounted_target and mounted_target[1]:
+                raise HTTPException(status_code=403, detail="Mounted workspace paths are read-only")
+            target = mounted_target[0] if mounted_target else session.workspace_files_path / rel_path
             if target.exists() and target.is_file():
                 target.unlink()
             session.updated_at = utc_now()

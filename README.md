@@ -570,6 +570,7 @@ The SSH tool uses Paramiko with `AutoAddPolicy`, which accepts any host key with
 - The default compose files include mounts for `docker.sock` and optional privileged flags to support advanced tool features (container exec, SSH tunnels, NFS/SMB mounts).
 - If you do not need these features, remove or comment out the corresponding lines in your compose file.
 - For NFS/SMB filesystem indexing, the container may require elevated privileges. Consider the security implications before enabling `privileged: true` or `SYS_ADMIN` capabilities.
+- Filesystem sources attached to User Space workspaces only need to be mounted into the `runtime` container (the ragtime container does not need to see the source). The `runtime` container also needs mount authority (`privileged: true` or `cap_add: [SYS_ADMIN]`) so it can bind-mount the source into the workspace sandbox without copying or changing source permissions. Filesystem sources used purely for indexing only need to be mounted into the `ragtime` container; mount them in both services if the same source is used for both indexing and User Space workspaces.
 
 #### Third-Party Data Relay
 Queries and tool calls may forward your data to external services you configure (OpenAI, Anthropic, Ollama, llama.cpp, LM Studio, PostgreSQL, MSSQL, SSH hosts). Only connect to services you trust with your data.

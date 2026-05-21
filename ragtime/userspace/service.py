@@ -16805,11 +16805,14 @@ class UserSpaceService:
                     }
                 )
             elif mount_source.source_type == "filesystem":
+                # Userspace live mounts are bind-mounted inside the runtime
+                # container. The control plane only needs to compute the
+                # path string that runtime will see; the underlying volume
+                # must be mounted into the runtime container by the operator.
                 try:
-                    resolved = await self._resolve_filesystem_mount_source_local_path(
-                        mount_source_id=mount_source.id,
-                        connection_config=mount_source.connection_config,
-                        source_path=source_path,
+                    resolved = self._resolve_filesystem_mount_source_path(
+                        mount_source.connection_config,
+                        source_path,
                     )
                 except Exception:
                     logger.warning(
@@ -16824,6 +16827,7 @@ class UserSpaceService:
                         "target_path": target_path,
                         "source_type": mount_source.source_type,
                         "mount_backend": mount_source.mount_backend,
+                        "runtime_mount_mode": "live_bind",
                         "read_only": True,
                     }
                 )

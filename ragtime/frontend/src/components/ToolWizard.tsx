@@ -61,9 +61,15 @@ function isSystemMount(containerPath: string): boolean {
 interface FilesystemBrowserProps {
   currentPath: string;
   onSelectPath: (path: string) => void;
+  /**
+   * When true, guidance/discovery targets the runtime container (User Space
+   * live bind mounts). When false (default), it targets the ragtime
+   * container (filesystem indexer source paths).
+   */
+  forUserspaceMount?: boolean;
 }
 
-function FilesystemBrowser({ currentPath, onSelectPath }: FilesystemBrowserProps) {
+function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = false }: FilesystemBrowserProps) {
   const [mounts, setMounts] = useState<MountInfo[]>([]);
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [browsePath, setBrowsePath] = useState<string>('');
@@ -83,7 +89,7 @@ function FilesystemBrowser({ currentPath, onSelectPath }: FilesystemBrowserProps
 
     const loadMounts = async () => {
       try {
-        const result = await api.discoverMounts();
+        const result = await api.discoverMounts(forUserspaceMount ? 'userspace_mount' : 'indexing');
         const userMounts = result.mounts.filter(m => !isSystemMount(m.container_path));
         setMounts(userMounts);
         setDockerExample(result.docker_compose_example);
@@ -101,7 +107,7 @@ function FilesystemBrowser({ currentPath, onSelectPath }: FilesystemBrowserProps
       }
     };
     loadMounts();
-  }, [currentPath]);
+  }, [currentPath, forUserspaceMount]);
 
   // Browse current path when expanded
   const browseCurrent = useCallback(async () => {
@@ -253,7 +259,11 @@ function FilesystemBrowser({ currentPath, onSelectPath }: FilesystemBrowserProps
     <div className="filesystem-browser">
       {/* Header with guide link */}
       <div className="mounts-header">
-        <span className="mounts-title">Select a Docker Mount:</span>
+        <span className="mounts-title">
+          {forUserspaceMount
+            ? 'Select a mount on the runtime container:'
+            : 'Select a mount on the ragtime container:'}
+        </span>
         <button
           type="button"
           className="btn-link"
@@ -266,11 +276,26 @@ function FilesystemBrowser({ currentPath, onSelectPath }: FilesystemBrowserProps
       {/* Mount Guide */}
       {showMountGuide && (
         <div className="mount-guide">
-          <h4>How to Add a Volume Mount</h4>
+          <h4>{forUserspaceMount ? 'How to Add a User Space Mount' : 'How to Add a Volume Mount'}</h4>
+          {forUserspaceMount ? (
+            <p className="field-help">
+              User Space live mounts are bind-mounted inside the <code>runtime</code> container.
+              You only need to expose the volume on the <code>runtime</code> service—the ragtime
+              container does not need to see this path for User Space workspaces.
+            </p>
+          ) : (
+            <p className="field-help">
+              Filesystem indexer source paths must be visible to the <code>ragtime</code> container.
+              If this mount source will also be attached to a User Space workspace, add the same
+              volume to the <code>runtime</code> service as well.
+            </p>
+          )}
           <pre className="code-block">{dockerExample}</pre>
           <p className="field-help">
             After modifying docker-compose.yml, restart the container with:
-            <code>docker compose -f docker/docker-compose.dev.yml restart ragtime</code>
+            <code>{forUserspaceMount
+              ? 'docker compose -f docker/docker-compose.dev.yml restart runtime'
+              : 'docker compose -f docker/docker-compose.dev.yml restart ragtime'}</code>
           </p>
         </div>
       )}
@@ -4650,6 +4675,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         <FilesystemBrowser
           currentPath={filesystemConfig.base_path}
           onSelectPath={(path) => setFilesystemConfig({ ...filesystemConfig, base_path: path })}
+          forUserspaceMount={mountOnly}
         />
       )}
 

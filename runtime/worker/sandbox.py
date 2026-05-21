@@ -29,6 +29,7 @@ import ctypes
 import ctypes.util
 import logging
 import os
+import posixpath
 import shutil
 import stat
 import threading
@@ -62,6 +63,7 @@ MS_PRIVATE = 1 << 18  # 262144
 MS_NOSUID = 2
 MS_NODEV = 4
 MS_NOEXEC = 8
+MNT_DETACH = 2
 
 # Syscall numbers (x86_64)
 SYS_PIVOT_ROOT = 155
@@ -291,11 +293,13 @@ def materialize_mounts(
     """Copy mount sources into the sandbox rootfs under their target paths.
 
     Each mount dict must have ``source_local_path`` and ``target_path``.
-    Content is copied read-only (no bind mount syscalls needed).  This is
-    safe for both pivot_root and chroot modes and does not require
-    CAP_SYS_ADMIN.
+    Content is copied read-only by default.  When a mount spec requests
+    ``runtime_mount_mode=live_bind`` and the runtime has mount authority,
+    the source is bind-mounted read-only onto the workspace target instead
+    so host-side changes remain visible without rewriting source perms.
     """
     rootfs = spec.rootfs_path
+    caps = detect_capabilities()
 
     def resolve_target_path(target: str) -> Path | None:
         normalized = (target or "").strip().replace("\\", "/").lstrip("/")
@@ -312,7 +316,51 @@ def materialize_mounts(
             return None
         return candidate
 
+    def resolve_workspace_bind_target(target: str) -> Path | None:
+        raw = (target or "").strip().replace("\\", "/")
+        if not raw or "\x00" in raw:
+            return None
+        normalized = posixpath.normpath(raw)
+        workspace_prefix = SANDBOX_WORKSPACE_MOUNT.rstrip("/") + "/"
+        if not normalized.startswith(workspace_prefix):
+            return None
+        relative = normalized[len(workspace_prefix) :].strip("/")
+        if not relative or relative == ".":
+            return None
+        parts = relative.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            return None
+        return spec.workspace_files_path.joinpath(*parts)
+
+    def unmount_if_mounted(path: Path) -> None:
+        try:
+            if os.path.ismount(path):
+                _syscall_umount2(str(path), MNT_DETACH)
+        except OSError as exc:
+            logger.warning("materialize_mounts: failed to unmount %s: %s", path, exc)
+
+    def copy_mount_source(source_path: Path, dest: Path) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(
+            str(source_path),
+            str(dest),
+            symlinks=True,
+            ignore_dangling_symlinks=True,
+            copy_function=_copy_file,
+        )
+
+    def bind_mount_source(source_path: Path, dest: Path, *, read_only: bool) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        unmount_if_mounted(dest)
+        _ensure_real_directory(dest)
+        _syscall_mount(str(source_path), str(dest), None, MS_BIND | MS_REC)
+        if read_only:
+            _syscall_mount(str(source_path), str(dest), None, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC)
+
     for target in clear_targets or [str(mount.get("target_path") or "") for mount in mounts]:
+        live_dest = resolve_workspace_bind_target(str(target or ""))
+        if live_dest is not None:
+            unmount_if_mounted(live_dest)
         dest = resolve_target_path(str(target or ""))
         if dest is None:
             continue
@@ -335,20 +383,30 @@ def materialize_mounts(
             continue
         source_path = Path(source)
         if not source_path.is_dir():
-            logger.debug("materialize_mounts: source %s not a directory, skipping", source)
+            message = f"Workspace mount source is not available in the runtime container: {source}"
+            if str(mount.get("runtime_mount_mode") or "") == "live_bind":
+                raise FileNotFoundError(message)
+            logger.warning("materialize_mounts: %s", message)
             continue
         dest = resolve_target_path(str(target))
         if dest is None:
             continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        if str(mount.get("runtime_mount_mode") or "") == "live_bind":
+            live_dest = resolve_workspace_bind_target(str(target))
+            if live_dest is None:
+                raise ValueError(f"Live workspace mount target must be under {SANDBOX_WORKSPACE_MOUNT}: {target}")
+            if caps.can_mount:
+                bind_mount_source(
+                    source_path,
+                    live_dest,
+                    read_only=bool(mount.get("read_only", True)),
+                )
+                continue
+            raise PermissionError("Live workspace mounts require runtime mount authority. Enable SYS_ADMIN or privileged mode for the runtime container.")
+
         try:
-            shutil.copytree(
-                str(source_path),
-                str(dest),
-                symlinks=True,
-                ignore_dangling_symlinks=True,
-                copy_function=_copy_file,
-            )
+            copy_mount_source(source_path, dest)
         except Exception as exc:
             logger.warning(
                 "materialize_mounts: failed to copy %s -> %s: %s",

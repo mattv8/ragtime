@@ -52,7 +52,10 @@ class StartSessionRequest(BaseModel):
     )
     workspace_mounts: list[dict[str, Any]] = Field(
         default_factory=list,
-        description=("Workspace mount specs resolved by control plane. Each entry has source_local_path, target_path, tool_type, read_only."),
+        description=(
+            "Workspace mount specs resolved by control plane. Each entry has source_local_path, target_path, "
+            "source_type, mount_backend, read_only, and optional runtime_mount_mode."
+        ),
     )
 
 
@@ -121,7 +124,7 @@ class WorkerStartSessionRequest(BaseModel):
     )
     workspace_mounts: list[dict[str, Any]] = Field(
         default_factory=list,
-        description="Workspace mount specs for sandbox materialization",
+        description="Workspace mount specs for sandbox materialization or live bind mounting",
     )
 
 

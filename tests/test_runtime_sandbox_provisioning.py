@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest import mock
 
 from runtime.worker import sandbox
+from runtime.worker.service import WorkerService
 
 
 class SandboxProvisioningTests(unittest.TestCase):
@@ -107,6 +108,129 @@ class SandboxProvisioningTests(unittest.TestCase):
 
             provision.assert_called_once_with(spec)
             sync.assert_called_once_with(spec)
+
+    def test_materialize_mounts_live_binds_filesystem_source_when_mount_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source = tmp / "source"
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            source.mkdir()
+            files.mkdir()
+            (source / "ledger.txt").write_text("live\n", encoding="utf-8")
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="pivot_root",
+            )
+            caps = sandbox.SandboxCapabilities(
+                has_cap_sys_admin=True,
+                can_pivot_root=True,
+                can_mount=True,
+                mode="pivot_root",
+            )
+
+            with (
+                mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+                mock.patch.object(sandbox, "_syscall_mount") as mount_call,
+                mock.patch.object(sandbox.shutil, "copytree") as copytree,
+            ):
+                sandbox.materialize_mounts(
+                    spec,
+                    [
+                        {
+                            "source_local_path": str(source),
+                            "target_path": "/workspace/reconciliations",
+                            "runtime_mount_mode": "live_bind",
+                            "read_only": True,
+                        }
+                    ],
+                )
+
+            copytree.assert_not_called()
+            self.assertTrue((files / "reconciliations").is_dir())
+            self.assertEqual(mount_call.call_args_list[0].args[:2], (str(source), str(files / "reconciliations")))
+
+    def test_materialize_mounts_live_bind_missing_source_fails_loudly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            files.mkdir()
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="chroot",
+            )
+
+            with self.assertRaises(FileNotFoundError):
+                sandbox.materialize_mounts(
+                    spec,
+                    [
+                        {
+                            "source_local_path": str(tmp / "missing"),
+                            "target_path": "/workspace/reconciliations",
+                            "runtime_mount_mode": "live_bind",
+                            "read_only": True,
+                        }
+                    ],
+                )
+
+    def test_materialize_mounts_live_bind_requires_mount_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source = tmp / "source"
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            source.mkdir()
+            files.mkdir()
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="chroot",
+            )
+            caps = sandbox.SandboxCapabilities(
+                has_cap_sys_admin=False,
+                can_user_ns=False,
+                can_mount=False,
+                mode="chroot",
+            )
+
+            with mock.patch.object(sandbox, "detect_capabilities", return_value=caps):
+                with self.assertRaises(PermissionError):
+                    sandbox.materialize_mounts(
+                        spec,
+                        [
+                            {
+                                "source_local_path": str(source),
+                                "target_path": "/workspace/reconciliations",
+                                "runtime_mount_mode": "live_bind",
+                                "read_only": True,
+                            }
+                        ],
+                    )
+
+    def test_runtime_mount_file_resolution_prefers_deepest_mount_prefix(self) -> None:
+        resolved = WorkerService._resolve_workspace_mount_file_path(
+            [
+                {
+                    "source_local_path": "/mnt/accounting",
+                    "target_path": "/workspace/reconciliations",
+                    "read_only": True,
+                },
+                {
+                    "source_local_path": "/mnt/accounting/special",
+                    "target_path": "/workspace/reconciliations/special",
+                    "read_only": False,
+                },
+            ],
+            "reconciliations/special/may.xlsx",
+        )
+
+        self.assertEqual(resolved, (Path("/mnt/accounting/special/may.xlsx"), False))
 
 
 if __name__ == "__main__":

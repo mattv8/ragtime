@@ -4676,40 +4676,74 @@ class MountDiscoveryResponse(BaseModel):
     response_model=MountDiscoveryResponse,
     tags=["Filesystem Indexer"],
 )
-async def discover_mounts(_user: User = Depends(require_admin)):
+async def discover_mounts(
+    context: str = Query(
+        "indexing",
+        description=(
+            "Which container's mounts to discover. 'indexing' inspects the ragtime "
+            "container (filesystem indexer source paths); 'userspace_mount' inspects "
+            "the runtime container (paths bind-mounted into userspace sandboxes)."
+        ),
+    ),
+    _user: User = Depends(require_admin),
+):
     """
     Discover current volume mounts in the container.
 
     Returns mounted paths and example docker-compose configuration for adding new mounts.
     """
+    context_normalized = (context or "indexing").strip().lower()
+    if context_normalized not in {"indexing", "userspace_mount"}:
+        context_normalized = "indexing"
     mounts = []
-    hostname = os.environ.get("HOSTNAME", "")
+
+    target_hostnames: list[str]
+    if context_normalized == "userspace_mount":
+        # Runtime container is the authoritative mount target for userspace
+        # live-bind mounts. Try common container names; production uses
+        # "runtime" and the dev compose stack uses "runtime-dev".
+        target_hostnames = [
+            os.environ.get("RUNTIME_CONTAINER_NAME", "").strip(),
+            "runtime",
+            "runtime-dev",
+        ]
+        target_hostnames = [name for name in target_hostnames if name]
+    else:
+        target_hostnames = [os.environ.get("HOSTNAME", "")]
+        target_hostnames = [name for name in target_hostnames if name]
+
+    inspected_container: str | None = None
 
     try:
-        # Get mount information from Docker inspect
-        if hostname:
+        for hostname in target_hostnames:
             cmd = ["docker", "inspect", "-f", "{{json .Mounts}}", hostname]
             process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, _stderr = await process.communicate()
+            if process.returncode != 0:
+                continue
+            import json
 
-            if process.returncode == 0:
-                import json
-
-                mount_data = json.loads(stdout.decode().strip())
-                for m in mount_data:
-                    mounts.append(
-                        MountInfo(
-                            container_path=m.get("Destination", ""),
-                            host_path=m.get("Source", ""),
-                            read_only=m.get("RW", True) is False,
-                            mount_type=m.get("Type", "bind"),
-                        )
+            try:
+                mount_data = json.loads(stdout.decode().strip() or "[]")
+            except json.JSONDecodeError:
+                continue
+            inspected_container = hostname
+            for m in mount_data:
+                mounts.append(
+                    MountInfo(
+                        container_path=m.get("Destination", ""),
+                        host_path=m.get("Source", ""),
+                        read_only=m.get("RW", True) is False,
+                        mount_type=m.get("Type", "bind"),
                     )
+                )
+            if mounts:
+                break
     except Exception as e:
         logger.warning(f"Failed to inspect mounts: {e}")
 
-    # Also check /proc/mounts as fallback
-    if not mounts:
+    # Fall back to /proc/mounts only when inspecting the local container.
+    if not mounts and context_normalized == "indexing":
         try:
             with open("/proc/mounts", "r", encoding="utf-8") as f:
                 for line in f:
@@ -4734,17 +4768,39 @@ async def discover_mounts(_user: User = Depends(require_admin)):
         "/mnt/shared",
     ]
 
-    # Docker-compose example
-    docker_compose_example = """# Add this to your docker-compose.yml under the ragtime service volumes:
-volumes:
-  # Example: Mount your Documents folder
-  - /path/to/your/documents:/mnt/documents:ro
+    if context_normalized == "userspace_mount":
+        target_container = inspected_container or "runtime"
+        docker_compose_example = f"""# User Space live mounts: add the volume to the runtime service only.
+# (The ragtime container does NOT need the mount for User Space workspaces.)
+services:
+  {target_container}:
+    volumes:
+      # Example: expose shared accounting files to User Space sandboxes
+      - /path/to/your/documents:/mnt/documents:ro
 
-  # Windows example (WSL path)
-  - /mnt/c/Users/YourName/Documents:/mnt/documents:ro
+      # Windows example (WSL path)
+      - /mnt/c/Users/YourName/Documents:/mnt/documents:ro
 
-  # Linux/Mac example
-  - ~/Documents:/mnt/documents:ro
+      # Linux/Mac example
+      - ~/Documents:/mnt/documents:ro
+
+# Then restart the runtime container:
+# docker compose -f docker/docker-compose.dev.yml restart {target_container}"""
+    else:
+        docker_compose_example = """# Filesystem indexer source: add the volume to the ragtime service.
+# (Also add the same mount to the runtime service if any User Space workspaces
+# will use this mount source for live bind-mounts.)
+services:
+  ragtime:
+    volumes:
+      # Example: Mount your Documents folder
+      - /path/to/your/documents:/mnt/documents:ro
+
+      # Windows example (WSL path)
+      - /mnt/c/Users/YourName/Documents:/mnt/documents:ro
+
+      # Linux/Mac example
+      - ~/Documents:/mnt/documents:ro
 
 # Then restart the container:
 # docker compose -f docker/docker-compose.dev.yml restart ragtime"""

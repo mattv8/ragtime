@@ -1310,9 +1310,14 @@ export const api = {
 
   /**
    * Discover current volume mounts in the container
+   *
+   * @param context - 'indexing' (default) inspects the ragtime container for
+   *   filesystem indexer source paths. 'userspace_mount' inspects the runtime
+   *   container for paths bind-mounted into User Space sandboxes.
    */
-  async discoverMounts(): Promise<import('@/types').MountDiscoveryResponse> {
-    const response = await apiFetch(`${API_BASE}/filesystem/mounts`);
+  async discoverMounts(context?: 'indexing' | 'userspace_mount'): Promise<import('@/types').MountDiscoveryResponse> {
+    const query = context ? `?context=${encodeURIComponent(context)}` : '';
+    const response = await apiFetch(`${API_BASE}/filesystem/mounts${query}`);
     return handleResponse<import('@/types').MountDiscoveryResponse>(response);
   },
 
