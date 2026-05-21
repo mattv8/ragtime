@@ -1866,7 +1866,7 @@ class WorkerService:
                     self._devserver_log_paths[session.id] = log_path
                     self._devserver_log_handles[session.id] = log_handle
                     # Capture everything spawn_sandboxed needs so we can
-                    # release the lock before the slow sandbox provisioning.
+                    # release the lock before process creation.
                     _sandbox_spec = session.sandbox_spec
                     _spawn_command = list(resolution.command)
                     _launch_cwd = self._resolve_launch_cwd(session)
@@ -1876,8 +1876,6 @@ class WorkerService:
                     }
 
                 # --- Part 2: spawn sandbox OUTSIDE the lock ---
-                # ensure_sandbox_ready / shutil.copytree runs here without
-                # holding self._lock.
                 _process: asyncio.subprocess.Process | None = None
                 _spawn_error: str | None = None
                 try:

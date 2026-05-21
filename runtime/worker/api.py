@@ -546,7 +546,7 @@ async def pty(worker_session_id: str, websocket: WebSocket):
 
     # Build sandbox environment for the PTY session
     sandbox_spec = session.sandbox_spec
-    ensure_sandbox_ready(sandbox_spec)
+    await asyncio.to_thread(ensure_sandbox_ready, sandbox_spec)
 
     # Write bash init file inside the sandbox rootfs so that PS1 renders
     # a literal "$" regardless of UID, and updates based on the current

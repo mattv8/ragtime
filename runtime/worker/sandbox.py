@@ -31,6 +31,8 @@ import logging
 import os
 import shutil
 import stat
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Sequence
@@ -143,6 +145,8 @@ class SandboxCapabilities:
 
 
 _capabilities_cache: dict[str, SandboxCapabilities] = {}
+_rootfs_provision_locks: dict[str, threading.Lock] = {}
+_rootfs_provision_locks_guard = threading.Lock()
 
 
 def detect_capabilities() -> SandboxCapabilities:
@@ -180,6 +184,16 @@ def detect_capabilities() -> SandboxCapabilities:
     return caps
 
 
+def _rootfs_provision_lock(rootfs_path: Path) -> threading.Lock:
+    key = str(rootfs_path)
+    with _rootfs_provision_locks_guard:
+        lock = _rootfs_provision_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _rootfs_provision_locks[key] = lock
+        return lock
+
+
 # ---------------------------------------------------------------------------
 # Rootfs provisioning
 # ---------------------------------------------------------------------------
@@ -194,6 +208,16 @@ class SandboxSpec:
     rootfs_path: Path  # Host path: .../workspaces/<id>/rootfs
     sandbox_workspace: str = SANDBOX_WORKSPACE_MOUNT  # Path inside sandbox
     mode: str = "chroot"  # "pivot_root" | "chroot"
+
+
+def _workspace_mirror_required(spec: SandboxSpec, caps: SandboxCapabilities) -> bool:
+    if spec.mode == "pivot_root" and caps.can_mount:
+        return False
+    return True
+
+
+def _chroot_system_sync_required(spec: SandboxSpec, caps: SandboxCapabilities) -> bool:
+    return spec.mode == "chroot" and caps.mode == "chroot" and not caps.can_user_ns
 
 
 def provision_rootfs(spec: SandboxSpec) -> None:
@@ -225,10 +249,12 @@ def provision_rootfs(spec: SandboxSpec) -> None:
     ws_dir = rootfs / spec.sandbox_workspace.lstrip("/")
     _ensure_real_directory(ws_dir)
 
-    # Pre-populate workspace mirror so the first forked child doesn't
-    # need a full copy.  Uses dirs_exist_ok=True (idempotent).
+    # In mount-capable sandbox modes the child bind-mounts the real
+    # workspace over this directory, so mirroring would only add startup I/O.
+    # Chroot fallback without mounts still needs a copied workspace tree.
+    caps = detect_capabilities()
     workspace_src = spec.workspace_files_path
-    if workspace_src.is_dir():
+    if _workspace_mirror_required(spec, caps) and workspace_src.is_dir():
         try:
             shutil.copytree(
                 str(workspace_src),
@@ -907,7 +933,21 @@ def get_sandbox_spec(
 
 def ensure_sandbox_ready(spec: SandboxSpec) -> None:
     """Provision the rootfs directory tree (idempotent)."""
-    provision_rootfs(spec)
+    start = time.monotonic()
+    with _rootfs_provision_lock(spec.rootfs_path):
+        provision_rootfs(spec)
+        caps = detect_capabilities()
+        if _chroot_system_sync_required(spec, caps):
+            _sync_system_dirs_for_chroot(spec)
+
+    elapsed = time.monotonic() - start
+    if elapsed >= 1:
+        logger.info(
+            "Sandbox rootfs ready for workspace %s in %.2fs (mode=%s)",
+            spec.workspace_id,
+            elapsed,
+            spec.mode,
+        )
 
 
 def make_sandbox_preexec(spec: SandboxSpec, target_cwd: str | None = None) -> Any:
