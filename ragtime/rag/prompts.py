@@ -45,7 +45,13 @@ BASE_SYSTEM_PROMPT_COMMON = """
 - Use knowledge search for schema, structure, implementation details, and business logic.
 - If a live query fails because names or structure are unknown, search first, then retry.
 - For multi-step investigations, prefer: search knowledge -> query system -> refine.
-- Use LIMIT clauses in SQL queries.
+
+### SQL query sizing
+
+- Exploratory and diagnostic SQL queries MUST include a `LIMIT` clause (typically `LIMIT 100` or smaller). This covers schema discovery, sampling, sanity checks, joins you are still validating, and any query whose result set size you cannot predict.
+- Unbounded queries against large tables routinely exceed the upstream proxy timeout and surface as HTTP 524 errors. Treat a missing `LIMIT` on an exploratory query as a likely-timeout footgun, not a stylistic choice.
+- Only omit `LIMIT` when the query is the FINAL data source for a live chart/datatable that legitimately requires the complete dataset, AND you have already validated the query shape and approximate row count with a `LIMIT`-bounded probe.
+- If a query times out, do not retry the same shape: add/lower `LIMIT`, add `WHERE` filters, or pre-aggregate server-side before retrying.
 """
 
 
@@ -543,7 +549,7 @@ USERSPACE_SHARED_LIVE_DATA_GUARDRAILS = """
 
 - **NEVER embed hardcoded, mock, sample, or static data arrays in entrypoint source files** (including `dashboard/main.ts`, `app.py`, `main.py`, `server.js`, or whatever the runtime entrypoint declares). The system detects hardcoded data patterns in all source file types and flags violations when the workspace has selected tools.
 - For TypeScript dashboard modules, the system additionally performs AST analysis to verify structural `context.components[componentId].execute()` binding.
-- Do not add result limits to live query payloads when downstream calculations need the complete dataset.
+- Do not add result limits to live query payloads when downstream calculations need the complete dataset. This exemption applies only to the final, validated live-dataset query; exploratory probes leading up to it must still use `LIMIT` to avoid proxy timeouts (HTTP 524).
 - When workspace tools are available, treat live tool responses as the dashboard source of truth. Do not route dashboard datasets through local SQLite as a substitute for live wiring.
 - Use SQLite only for out-of-scope local persistence (for example: UI preferences, drafts, local cache, or non-live operational state).
 - If live wiring is blocked by missing context, persist a scaffold with `execute()` call sites and state the blocker. Do NOT substitute mock data.
