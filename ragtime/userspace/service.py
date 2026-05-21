@@ -66,6 +66,7 @@ from ragtime.core.ssh import (
     ssh_tunnel_config_from_dict,
     sync_ssh_directory,
 )
+from ragtime.core.type_coercion import coerce_bool_metadata, coerce_int_metadata
 from ragtime.core.user_identity import normalize_user_identity
 from ragtime.core.workspace_ops import (
     PLATFORM_MANAGED_GITIGNORE_PATTERNS,
@@ -3384,7 +3385,7 @@ class UserSpaceService:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception as exc:
             raise HTTPException(status_code=400, detail="Archive manifest is invalid") from exc
-        if not isinstance(manifest, dict) or int(manifest.get("version") or 0) != 1:
+        if not isinstance(manifest, dict) or coerce_int_metadata(manifest.get("version")) != 1:
             raise HTTPException(status_code=400, detail="Unsupported archive manifest version")
         return manifest
 
@@ -5972,7 +5973,7 @@ class UserSpaceService:
     def _is_legacy_default_bootstrap(payload: dict[str, Any]) -> bool:
         if payload.get("managed_by") is not None or payload.get("template_version") is not None:
             return False
-        if int(payload.get("version") or 0) != 1:
+        if coerce_int_metadata(payload.get("version")) != 1:
             return False
         commands = payload.get("commands")
         if not isinstance(commands, list):
@@ -6001,8 +6002,8 @@ class UserSpaceService:
             return
 
         managed_by = str(existing.get("managed_by") or "").strip()
-        auto_update = bool(existing.get("auto_update", managed_by == "ragtime"))
-        template_version = int(existing.get("template_version") or 0)
+        auto_update = coerce_bool_metadata(existing.get("auto_update"), managed_by == "ragtime")
+        template_version = coerce_int_metadata(existing.get("template_version"))
         is_legacy_default = self._is_legacy_default_bootstrap(existing)
         should_update = (managed_by == "ragtime" and auto_update and template_version < _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION) or is_legacy_default
         if not should_update:
