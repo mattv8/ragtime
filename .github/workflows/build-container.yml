@@ -93,7 +93,9 @@ jobs:
     name: Build Application Image
     runs-on: self-hosted
     needs: [test]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta'
+    if: >-
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta') &&
+      !(github.event_name == 'workflow_dispatch' && github.event.inputs.build_legacy_image == 'true')
     permissions:
       contents: read
       packages: write
@@ -199,7 +201,9 @@ jobs:
     name: Build Runtime Image
     runs-on: self-hosted
     needs: [test]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta'
+    if: >-
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta') &&
+      !(github.event_name == 'workflow_dispatch' && github.event.inputs.build_legacy_image == 'true')
     permissions:
       contents: read
       packages: write
