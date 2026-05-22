@@ -684,11 +684,25 @@ textarea:focus {
   padding: 2px;
 }
 
+.userspace-workspace-select-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .userspace-workspace-item .model-selector-item-name {
   white-space: normal;
   overflow: visible;
   text-overflow: clip;
   line-height: 1.25;
+}
+
+.userspace-workspace-search-snippet {
+  margin-top: 0;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 /* Live/interrupted state indicators inside workspace trigger and dropdown rows */
@@ -790,6 +804,34 @@ textarea:focus {
   border-radius: var(--radius-sm);
 }
 
+.chat-conversation-search.admin-ws-search {
+  padding: 0 0 var(--space-md);
+}
+
+.admin-ws-search .chat-conversation-search-input {
+  padding-right: 44px !important;
+}
+
+.admin-ws-search .chat-conversation-search-clear {
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+}
+
+.admin-ws-search .chat-conversation-search-clear:hover {
+  background: var(--color-surface-hover);
+}
+
+.admin-ws-search .chat-conversation-search-spinner {
+  right: 36px;
+}
+
+.admin-ws-search-empty {
+  justify-content: center;
+  text-align: center;
+}
+
 .admin-ws-loading,
 .admin-ws-empty {
   display: flex;
@@ -862,7 +904,7 @@ textarea:focus {
 .admin-ws-item-select {
   flex: 1;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-xs);
   padding: 4px 8px;
   border: none;
@@ -873,11 +915,24 @@ textarea:focus {
   text-align: left;
 }
 
-.admin-ws-item-name {
+.admin-ws-item-copy {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.admin-ws-item-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.admin-ws-search-snippet {
+  margin-top: 0;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .admin-ws-badge-own {

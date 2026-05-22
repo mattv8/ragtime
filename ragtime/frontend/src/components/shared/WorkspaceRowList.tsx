@@ -8,6 +8,8 @@ interface WorkspaceRowListProps {
   users: User[];
   disabled?: boolean;
   deletingWorkspaceIds?: ReadonlySet<string>;
+  renderName?: (ws: UserSpaceWorkspace) => ReactNode;
+  renderSubtext?: (ws: UserSpaceWorkspace) => ReactNode;
   renderMeta?: (ws: UserSpaceWorkspace) => ReactNode;
   onTransfer: (workspaceId: string, newOwnerId: string) => Promise<void>;
   onDelete: (workspaceId: string) => Promise<void>;
@@ -20,6 +22,8 @@ export function WorkspaceRowList({
   users,
   disabled = false,
   deletingWorkspaceIds,
+  renderName,
+  renderSubtext,
   renderMeta,
   onTransfer,
   onDelete,
@@ -73,7 +77,10 @@ export function WorkspaceRowList({
 
         const nameContent = (
           <>
-            <span className="admin-ws-item-name">{ws.name}</span>
+            <span className="admin-ws-item-copy">
+              <span className="admin-ws-item-name">{renderName ? renderName(ws) : ws.name}</span>
+              {renderSubtext?.(ws)}
+            </span>
             {renderMeta?.(ws)}
           </>
         );

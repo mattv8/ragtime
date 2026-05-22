@@ -9761,6 +9761,84 @@ class WorkspaceConversationStateSummaryItem(BaseModel):
     )
 
 
+class WorkspaceConversationSearchRequest(BaseModel):
+    workspace_ids: List[str] = Field(
+        default_factory=list,
+        description="Workspace IDs to search within.",
+    )
+    query: str = Field(
+        default="",
+        max_length=200,
+        description="Search query to match against workspace chat titles and visible text.",
+    )
+
+
+class WorkspaceConversationSearchMatch(BaseModel):
+    workspace_id: str = Field(description="Workspace ID containing a matching chat.")
+    conversation_id: str = Field(description="Conversation ID containing the match.")
+    conversation_title: str = Field(description="Conversation title for the matching chat.")
+    snippet: Optional[str] = Field(default=None, description="Short visible-text snippet around the match when available.")
+
+
+class WorkspaceConversationSearchResponse(BaseModel):
+    matches: List[WorkspaceConversationSearchMatch] = Field(
+        default_factory=list,
+        description="Workspace chat matches grouped client-side by workspace.",
+    )
+
+
+def _message_content_visible_text(content: object) -> str:
+    parsed = parse_message_content(content) if isinstance(content, str) else content
+    if isinstance(parsed, str):
+        return parsed
+    if isinstance(parsed, list):
+        parts: list[str] = []
+        for part in parsed:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+        return "\n".join(parts)
+    return ""
+
+
+def _conversation_visible_search_text(messages: object) -> str:
+    if not isinstance(messages, list):
+        return ""
+
+    parts: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content_text = _message_content_visible_text(message.get("content"))
+        if content_text:
+            parts.append(content_text)
+        events = message.get("events")
+        if isinstance(events, list):
+            for event in events:
+                if not isinstance(event, dict) or event.get("type") == "tool":
+                    continue
+                content = event.get("content") or event.get("reasoning") or event.get("error")
+                if isinstance(content, str) and content:
+                    parts.append(content)
+    return "\n".join(parts)
+
+
+def _search_snippet(text: str, query: str, radius: int = 80) -> Optional[str]:
+    needle = query.strip().lower()
+    if not needle:
+        return None
+    normalized = text.lower()
+    index = normalized.find(needle)
+    if index < 0:
+        return None
+    start = max(0, index - radius)
+    end = min(len(text), index + len(needle) + radius)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(text) else ""
+    return f"{prefix}{text[start:end].replace(chr(10), ' ').strip()}{suffix}"
+
+
 class UpdateConversationShareSlugRequest(BaseModel):
     slug: str = Field(min_length=1, max_length=120)
 
@@ -10143,6 +10221,54 @@ async def get_workspaces_conversation_state_summary_lite(
         )
         for workspace_id in deduped_workspace_ids
     ]
+
+
+@router.post(
+    "/conversations/workspaces/search",
+    response_model=WorkspaceConversationSearchResponse,
+)
+async def search_workspaces_conversations(
+    request: WorkspaceConversationSearchRequest,
+    user: User = Depends(get_current_user),
+):
+    """Search chat text across multiple workspaces without returning full conversations."""
+    query = request.query.strip()
+    workspace_ids = [workspace_id.strip() for workspace_id in request.workspace_ids if workspace_id and workspace_id.strip()]
+    if not query or not workspace_ids:
+        return WorkspaceConversationSearchResponse(matches=[])
+
+    deduped_workspace_ids = list(dict.fromkeys(workspace_ids))[:500]
+    rows = await repository.search_workspace_conversation_rows(
+        workspace_ids=deduped_workspace_ids,
+        query=query,
+        user_id=user.id,
+        include_all=user.role == "admin",
+    )
+
+    matches: list[WorkspaceConversationSearchMatch] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        workspace_id = str(row.get("workspace_id") or "")
+        conversation_id = str(row.get("conversation_id") or "")
+        if not workspace_id or not conversation_id or (workspace_id, conversation_id) in seen:
+            continue
+        seen.add((workspace_id, conversation_id))
+
+        title = str(row.get("title") or "Untitled Chat")
+        visible_text = _conversation_visible_search_text(row.get("messages"))
+        snippet = _search_snippet(title, query, radius=40) or _search_snippet(visible_text, query)
+        if snippet is None and query.lower() not in title.lower():
+            continue
+        matches.append(
+            WorkspaceConversationSearchMatch(
+                workspace_id=workspace_id,
+                conversation_id=conversation_id,
+                conversation_title=title,
+                snippet=snippet,
+            )
+        )
+
+    return WorkspaceConversationSearchResponse(matches=matches)
 
 
 @router.post("/conversations", response_model=ConversationResponse)

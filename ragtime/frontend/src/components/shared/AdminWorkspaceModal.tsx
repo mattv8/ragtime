@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AlertCircle, ChevronDown, ChevronRight, X } from 'lucide-react';
 import { MiniLoadingSpinner } from './MiniLoadingSpinner';
 import { WorkspaceRowList } from './WorkspaceRowList';
@@ -14,6 +14,7 @@ import {
   resolveWorkspaceInterruptStateFromSummary,
 } from '@/utils';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
+import { useWorkspaceChatSearch } from '@/utils/useWorkspaceChatSearch';
 
 const WORKSPACE_DELETE_TASK_POLL_INTERVAL_MS = 1000;
 
@@ -73,6 +74,49 @@ function formatWorkspaceDeleteTasksStatus(tasks: UserSpaceWorkspaceDeleteTask[])
     : `Deleting ${tasks.length} workspaces...`;
 }
 
+function workspaceMatchesQuery(workspace: UserSpaceWorkspace, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) {
+    return true;
+  }
+
+  const haystack = [
+    workspace.name,
+    workspace.owner_display_name,
+    workspace.owner_username,
+  ].filter(Boolean).join(' ').toLowerCase();
+  return haystack.includes(needle);
+}
+
+function SearchHighlightedText({ text, query }: { text: string; query: string }) {
+  const needle = query.trim();
+  if (!needle) return <>{text}</>;
+
+  const lowerText = text.toLowerCase();
+  const lowerNeedle = needle.toLowerCase();
+  const segments: ReactNode[] = [];
+  let cursor = 0;
+  let matchIndex = lowerText.indexOf(lowerNeedle);
+
+  while (matchIndex !== -1) {
+    if (matchIndex > cursor) {
+      segments.push(text.slice(cursor, matchIndex));
+    }
+    segments.push(
+      <mark key={`${matchIndex}-${segments.length}`} className="chat-search-highlight">
+        {text.slice(matchIndex, matchIndex + needle.length)}
+      </mark>,
+    );
+    cursor = matchIndex + needle.length;
+    matchIndex = lowerText.indexOf(lowerNeedle, cursor);
+  }
+
+  if (cursor < text.length) {
+    segments.push(text.slice(cursor));
+  }
+  return <>{segments}</>;
+}
+
 export function AdminWorkspaceModal({
   isOpen,
   onClose,
@@ -85,6 +129,7 @@ export function AdminWorkspaceModal({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [workspaceSearchQuery, setWorkspaceSearchQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [workspaceChatStates, setWorkspaceChatStates] = useState<Record<string, { hasLive: boolean; hasInterrupted: boolean }>>({});
@@ -176,6 +221,7 @@ export function AdminWorkspaceModal({
 
   useEffect(() => {
     if (isOpen) {
+      setWorkspaceSearchQuery('');
       void loadWorkspaces();
       void api.listUsers().then(setAllUsers).catch(() => {});
     }
@@ -214,6 +260,45 @@ export function AdminWorkspaceModal({
       .map(([key, value]) => ({ key, label: value.label, workspaces: value.workspaces }))
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [workspaces]);
+
+  const hasWorkspaceSearchQuery = workspaceSearchQuery.trim().length > 0;
+  const workspaceSearchIds = useMemo(() => workspaces.map((workspace) => workspace.id), [workspaces]);
+  const workspaceChatSearch = useWorkspaceChatSearch({
+    workspaceIds: workspaceSearchIds,
+    query: workspaceSearchQuery,
+    enabled: isOpen && hasWorkspaceSearchQuery,
+  });
+
+  const filteredGroupedWorkspaces = useMemo<OwnerGroup[]>(() => {
+    const needle = workspaceSearchQuery.trim().toLowerCase();
+    if (!needle) {
+      return groupedWorkspaces;
+    }
+
+    return groupedWorkspaces
+      .map((group) => ({
+        ...group,
+        workspaces: group.workspaces.filter((workspace) => (
+          workspaceMatchesQuery(workspace, workspaceSearchQuery)
+          || workspaceChatSearch.matchedWorkspaceIds.has(workspace.id)
+        )),
+      }))
+      .filter((group) => group.workspaces.length > 0);
+  }, [groupedWorkspaces, workspaceSearchQuery, workspaceChatSearch.matchedWorkspaceIds]);
+
+  const canLoadMoreWorkspaces = workspaces.length < total;
+
+  const renderLoadMoreButton = () => (!canLoadMoreWorkspaces ? null : (
+    <div className="admin-ws-load-more">
+      <button
+        className="btn btn-secondary btn-sm"
+        onClick={() => void loadWorkspaces(true)}
+        disabled={loadingMore}
+      >
+        {loadingMore ? 'Loading...' : `Load more (${workspaces.length} of ${total})`}
+      </button>
+    </div>
+  ));
 
   // Auto-collapse newly discovered groups
   useEffect(() => {
@@ -392,6 +477,33 @@ export function AdminWorkspaceModal({
         </div>
 
         <div className="modal-body">
+          <div className="chat-conversation-search chat-conversation-search-modal admin-ws-search">
+            <input
+              type="text"
+              className="chat-conversation-search-input"
+              placeholder="Search workspaces..."
+              value={workspaceSearchQuery}
+              onChange={(e) => setWorkspaceSearchQuery(e.target.value)}
+              aria-label="Search workspaces by name or owner"
+            />
+            {workspaceSearchQuery && (
+              <button
+                type="button"
+                className="chat-conversation-search-clear"
+                onClick={() => setWorkspaceSearchQuery('')}
+                title="Clear search"
+                aria-label="Clear search"
+              >
+                <X size={12} />
+              </button>
+            )}
+            {workspaceChatSearch.loading && (
+              <span className="chat-conversation-search-spinner" title="Searching workspace chat contents">
+                <MiniLoadingSpinner variant="icon" size={12} />
+              </span>
+            )}
+          </div>
+
           {error && (
             <div className="admin-ws-error">{error}</div>
           )}
@@ -407,17 +519,31 @@ export function AdminWorkspaceModal({
               <MiniLoadingSpinner variant="icon" size={20} />
               <span>Loading workspaces...</span>
             </div>
+          ) : hasWorkspaceSearchQuery && filteredGroupedWorkspaces.length === 0 && workspaceChatSearch.loading ? (
+            <div className="admin-ws-loading">
+              <MiniLoadingSpinner variant="icon" size={16} />
+              <span>Searching workspace chats...</span>
+            </div>
+          ) : hasWorkspaceSearchQuery && filteredGroupedWorkspaces.length === 0 ? (
+            <div className="admin-ws-groups">
+              <div className="admin-ws-empty admin-ws-search-empty">
+                No workspaces match "{workspaceSearchQuery.trim()}".
+              </div>
+              {renderLoadMoreButton()}
+            </div>
           ) : workspaces.length === 0 ? (
             <div className="admin-ws-empty">No workspaces found.</div>
           ) : (
             <div className="admin-ws-groups">
-              {groupedWorkspaces.map((group) => {
-                const isCollapsed = collapsedGroups[group.key] ?? true;
+              {filteredGroupedWorkspaces.map((group) => {
+                const isCollapsed = hasWorkspaceSearchQuery ? false : (collapsedGroups[group.key] ?? true);
                 return (
                   <div key={group.key} className="admin-ws-group">
                     <button className="admin-ws-group-header" onClick={() => toggleGroup(group.key)}>
                       {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-                      <span className="admin-ws-group-name">{group.label}</span>
+                      <span className="admin-ws-group-name">
+                        <SearchHighlightedText text={group.label} query={workspaceSearchQuery} />
+                      </span>
                       <span className="admin-ws-group-count">{group.workspaces.length}</span>
                     </button>
                     {!isCollapsed && (
@@ -428,6 +554,20 @@ export function AdminWorkspaceModal({
                         onTransfer={handleTransfer}
                         onDelete={handleDelete}
                         onSelect={handleSelect}
+                        renderName={(ws) => (
+                          <SearchHighlightedText text={ws.name} query={workspaceSearchQuery} />
+                        )}
+                        renderSubtext={(ws) => {
+                          const snippet = workspaceChatSearch.snippetsByWorkspaceId[ws.id];
+                          if (!snippet || ws.name.toLowerCase().includes(workspaceSearchQuery.trim().toLowerCase())) {
+                            return null;
+                          }
+                          return (
+                            <span className="chat-conversation-snippet admin-ws-search-snippet">
+                              <SearchHighlightedText text={snippet} query={workspaceSearchQuery} />
+                            </span>
+                          );
+                        }}
                         renderMeta={(ws) => (
                           <>
                             {ws.owner_user_id === currentUser.id && <span className="admin-ws-badge-own">You</span>}
@@ -450,17 +590,7 @@ export function AdminWorkspaceModal({
                 );
               })}
 
-              {workspaces.length < total && (
-                <div className="admin-ws-load-more">
-                  <button
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => void loadWorkspaces(true)}
-                    disabled={loadingMore}
-                  >
-                    {loadingMore ? 'Loading...' : `Load more (${workspaces.length} of ${total})`}
-                  </button>
-                </div>
-              )}
+              {renderLoadMoreButton()}
             </div>
           )}
         </div>

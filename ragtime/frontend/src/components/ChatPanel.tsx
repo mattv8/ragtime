@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, useDeferredValue, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -5419,12 +5419,6 @@ function getConversationSearchText(conversation: Conversation): string {
   return parts.join('\n');
 }
 
-function conversationMatchesQuery(conversation: Conversation, query: string): boolean {
-  const needle = query.trim().toLowerCase();
-  if (!needle) return true;
-  return getConversationSearchText(conversation).toLowerCase().includes(needle);
-}
-
 function buildConversationSnippet(conversation: Conversation, query: string, radius = 60): string | null {
   const needle = query.trim().toLowerCase();
   if (!needle) return null;
@@ -5781,6 +5775,9 @@ export function ChatPanel({
   } = useAvailableModels();
   const [isWorkspaceConversationMenuOpen, setIsWorkspaceConversationMenuOpen] = useState(false);
   const [workspaceConversationSearchQuery, setWorkspaceConversationSearchQuery] = useState('');
+  const deferredConversationSearchQuery = useDeferredValue(conversationSearchQuery);
+  const deferredWorkspaceConversationSearchQuery = useDeferredValue(workspaceConversationSearchQuery);
+  const deferredArchiveSearchQuery = useDeferredValue(archiveSearchQuery);
   const workspaceConversationSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [conversationMembers, setConversationMembers] = useState<ConversationMember[]>([]);
@@ -5788,6 +5785,20 @@ export function ChatPanel({
   const [conversationToolGroupIds, setConversationToolGroupIds] = useState<string[]>([]);
   const [conversationDisabledBuiltInToolIds, setConversationDisabledBuiltInToolIds] = useState<string[]>([]);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
+  const conversationSearchTextById = useMemo(() => {
+    const searchTextById = new Map<string, string>();
+    for (const conversation of [...conversations, ...archivedConversations, ...workspaceArchivedConversations]) {
+      if (!searchTextById.has(conversation.id)) {
+        searchTextById.set(conversation.id, getConversationSearchText(conversation).toLowerCase());
+      }
+    }
+    return searchTextById;
+  }, [conversations, archivedConversations, workspaceArchivedConversations]);
+  const conversationMatchesCachedQuery = useCallback((conversation: Conversation, query: string): boolean => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return true;
+    return (conversationSearchTextById.get(conversation.id) ?? getConversationSearchText(conversation).toLowerCase()).includes(needle);
+  }, [conversationSearchTextById]);
   const [toolGroups, setToolGroups] = useState<ToolGroupInfo[]>([]);
   const [showMembersModal, setShowMembersModal] = useState(false);
   const [memberPickerUsers, setMemberPickerUsers] = useState<UserDirectoryEntry[]>([]);
@@ -6886,19 +6897,19 @@ export function ChatPanel({
   // chats appear without an extra click. Debounced through the search input.
   useEffect(() => {
     if (workspaceId) return;
-    if (!conversationSearchQuery.trim()) return;
+    if (!deferredConversationSearchQuery.trim()) return;
     if (archiveLoading) return;
     if (archiveLoaded && archiveFullyLoaded) return;
     void loadArchivedConversations();
-  }, [conversationSearchQuery, workspaceId, archiveLoaded, archiveFullyLoaded, archiveLoading, loadArchivedConversations]);
+  }, [deferredConversationSearchQuery, workspaceId, archiveLoaded, archiveFullyLoaded, archiveLoading, loadArchivedConversations]);
 
   useEffect(() => {
     if (!workspaceId) return;
-    if (!workspaceConversationSearchQuery.trim()) return;
+    if (!deferredWorkspaceConversationSearchQuery.trim()) return;
     if (workspaceArchiveLoaded || workspaceArchiveLoading) return;
     void loadArchivedWorkspaceConversations();
   }, [
-    workspaceConversationSearchQuery,
+    deferredWorkspaceConversationSearchQuery,
     workspaceId,
     workspaceArchiveLoaded,
     workspaceArchiveLoading,
@@ -6939,11 +6950,11 @@ export function ChatPanel({
   useEffect(() => {
     if (!showArchiveModal) return;
     if (workspaceId) return;
-    if (!archiveSearchQuery.trim()) return;
+    if (!deferredArchiveSearchQuery.trim()) return;
     if (archiveLoading) return;
     if (archiveLoaded && archiveFullyLoaded) return;
     void loadArchivedConversations();
-  }, [showArchiveModal, archiveSearchQuery, workspaceId, archiveLoaded, archiveFullyLoaded, archiveLoading, loadArchivedConversations]);
+  }, [showArchiveModal, deferredArchiveSearchQuery, workspaceId, archiveLoaded, archiveFullyLoaded, archiveLoading, loadArchivedConversations]);
 
   const handleArchiveModalScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     if (archiveLoading || !archiveLoaded || archiveFullyLoaded) return;
@@ -8841,7 +8852,7 @@ export function ChatPanel({
               ))}
             </div>
           ) : (() => {
-            const trimmedQuery = conversationSearchQuery.trim();
+            const trimmedQuery = deferredConversationSearchQuery.trim();
             // While searching, fold archived hits into the visible list so
             // matches across older chats surface inline.
             const baseConversations = trimmedQuery && !workspaceId
@@ -8851,7 +8862,7 @@ export function ChatPanel({
                 ]
               : conversations;
             const filteredConversations = trimmedQuery
-              ? baseConversations.filter((c) => conversationMatchesQuery(c, trimmedQuery))
+              ? baseConversations.filter((c) => conversationMatchesCachedQuery(c, trimmedQuery))
               : baseConversations;
 
             if (filteredConversations.length === 0) {
@@ -9061,7 +9072,7 @@ export function ChatPanel({
                         )}
                         <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace chats">
                           {(() => {
-                            const needle = workspaceConversationSearchQuery.trim().toLowerCase();
+                            const needle = deferredWorkspaceConversationSearchQuery.trim().toLowerCase();
                             const hydratedWorkspaceConversationsById = new Map(
                               workspaceArchivedConversationOptions.map((conversation) => [conversation.id, conversation]),
                             );
@@ -9080,12 +9091,12 @@ export function ChatPanel({
                                 ]
                               : workspaceConversationOptions;
                             const filtered = needle
-                              ? searchBase.filter((c) => conversationMatchesQuery(c, needle))
+                              ? searchBase.filter((c) => conversationMatchesCachedQuery(c, needle))
                               : searchBase;
                             if (filtered.length === 0) {
                               return (
                                 <div className="model-selector-empty">
-                                  {needle ? `No chats match "${workspaceConversationSearchQuery.trim()}"` : 'No chats yet'}
+                                  {needle ? `No chats match "${deferredWorkspaceConversationSearchQuery.trim()}"` : 'No chats yet'}
                                 </div>
                               );
                             }
@@ -9149,12 +9160,12 @@ export function ChatPanel({
                                   ) : (
                                     <>
                                       <span className="model-selector-item-name chat-workspace-conversation-item-name">
-                                        {workspaceConversationSearchQuery.trim()
+                                        {deferredWorkspaceConversationSearchQuery.trim()
                                           ? <HighlightedText text={conversation.title || 'Untitled Chat'} query={workspaceConversationSearchQuery} />
                                           : (conversation.title || 'Untitled Chat')}
                                       </span>
                                       {(() => {
-                                        const snippet = workspaceConversationSearchQuery.trim()
+                                        const snippet = deferredWorkspaceConversationSearchQuery.trim()
                                           ? buildConversationSnippet(conversation, workspaceConversationSearchQuery)
                                           : null;
                                         if (!snippet) return null;
@@ -10337,9 +10348,9 @@ export function ChatPanel({
                   </button>
                 </div>
               ) : (() => {
-                const trimmed = archiveSearchQuery.trim();
+                const trimmed = deferredArchiveSearchQuery.trim();
                 const list = trimmed
-                  ? archivedConversations.filter((c) => conversationMatchesQuery(c, trimmed))
+                  ? archivedConversations.filter((c) => conversationMatchesCachedQuery(c, trimmed))
                   : archivedConversations;
                 if (list.length === 0) {
                   return (

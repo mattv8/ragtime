@@ -2135,6 +2135,66 @@ class IndexerRepository:
             return 0
         return int(rows[0].get("conversation_count") or 0)
 
+    async def search_workspace_conversation_rows(
+        self,
+        workspace_ids: list[str],
+        query: str,
+        user_id: Optional[str] = None,
+        include_all: bool = False,
+        limit_per_workspace: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Return lightweight conversation rows matching a workspace chat search."""
+        deduped_workspace_ids = [workspace_id for workspace_id in dict.fromkeys(workspace_ids) if workspace_id]
+        needle = query.strip()
+        if not deduped_workspace_ids or not needle:
+            return []
+
+        db = await self._get_db()
+        workspace_id_clause = ", ".join(_sql_quote_literal(workspace_id) for workspace_id in deduped_workspace_ids)
+        pattern = _sql_quote_literal(f"%{needle}%")
+        access_clause = ""
+        if not include_all:
+            if not user_id:
+                return []
+            quoted_user_id = _sql_quote_literal(user_id)
+            access_clause = f"""
+                AND (
+                    w.owner_user_id = {quoted_user_id}
+                    OR EXISTS (
+                        SELECT 1
+                        FROM workspace_members wm
+                        WHERE wm.workspace_id = w.id
+                        AND wm.user_id = {quoted_user_id}
+                    )
+                )
+            """
+
+        per_workspace_limit = max(1, min(int(limit_per_workspace), 5))
+        rows = await db.query_raw(f"""
+            WITH ranked_matches AS (
+                SELECT
+                    c.workspace_id,
+                    c.id AS conversation_id,
+                    c.title,
+                    c.messages,
+                    c.updated_at,
+                    row_number() OVER (PARTITION BY c.workspace_id ORDER BY c.updated_at DESC, c.id DESC) AS rn
+                FROM conversations c
+                JOIN workspaces w ON w.id = c.workspace_id
+                WHERE c.workspace_id IN ({workspace_id_clause})
+                {access_clause}
+                AND (
+                    c.title ILIKE {pattern}
+                    OR c.messages::text ILIKE {pattern}
+                )
+            )
+            SELECT workspace_id, conversation_id, title, messages, updated_at
+            FROM ranked_matches
+            WHERE rn <= {per_workspace_limit}
+            ORDER BY updated_at DESC, conversation_id DESC
+            """)
+        return [dict(row) for row in rows]
+
     async def list_conversations_by_ids(self, conversation_ids: list[str]) -> list[Conversation]:
         """List conversations by explicit IDs, newest first."""
         if not conversation_ids:

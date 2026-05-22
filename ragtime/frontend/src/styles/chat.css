@@ -880,6 +880,15 @@ textarea.chat-header-title-input {
 .model-selector-search-clear:hover {
   color: var(--color-text-primary);
 }
+.model-selector-search-spinner {
+  position: absolute;
+  right: 30px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  color: var(--color-text-muted);
+}
 /* Scrollable inner container — its own rounded card */
 .model-selector-dropdown-inner {
   max-height: 360px;

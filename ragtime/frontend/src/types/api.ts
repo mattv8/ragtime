@@ -2004,6 +2004,22 @@ export interface WorkspaceConversationStateSummaryItem {
   has_interrupted_task: boolean;
 }
 
+export interface WorkspaceConversationSearchRequest {
+  workspace_ids: string[];
+  query: string;
+}
+
+export interface WorkspaceConversationSearchMatch {
+  workspace_id: string;
+  conversation_id: string;
+  conversation_title: string;
+  snippet?: string | null;
+}
+
+export interface WorkspaceConversationSearchResponse {
+  matches: WorkspaceConversationSearchMatch[];
+}
+
 export interface WorkspaceChatStateResponse {
   conversations: Conversation[];
   interrupted_conversation_ids: string[];

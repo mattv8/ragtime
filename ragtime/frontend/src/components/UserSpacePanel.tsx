@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, CopyPlus, Crown, Database, ExternalLink, File, FolderGit2Icon, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { keymap } from '@codemirror/view';
@@ -44,6 +44,7 @@ import {
 } from '@/utils/mountSyncIntervals';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
+import { useWorkspaceChatSearch } from '@/utils/useWorkspaceChatSearch';
 import { ChatPanel } from './ChatPanel';
 import { ResizeHandle } from './ResizeHandle';
 import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
@@ -77,6 +78,35 @@ interface CachedUserSpaceFile {
 }
 
 type ShareLinkType = 'named' | 'anonymous' | 'subdomain';
+
+function SearchHighlightedText({ text, query }: { text: string; query: string }) {
+  const needle = query.trim();
+  if (!needle) return <>{text}</>;
+
+  const lowerText = text.toLowerCase();
+  const lowerNeedle = needle.toLowerCase();
+  const segments: ReactNode[] = [];
+  let cursor = 0;
+  let matchIndex = lowerText.indexOf(lowerNeedle);
+
+  while (matchIndex !== -1) {
+    if (matchIndex > cursor) {
+      segments.push(text.slice(cursor, matchIndex));
+    }
+    segments.push(
+      <mark key={`${matchIndex}-${segments.length}`} className="chat-search-highlight">
+        {text.slice(matchIndex, matchIndex + needle.length)}
+      </mark>,
+    );
+    cursor = matchIndex + needle.length;
+    matchIndex = lowerText.indexOf(lowerNeedle, cursor);
+  }
+
+  if (cursor < text.length) {
+    segments.push(text.slice(cursor));
+  }
+  return <>{segments}</>;
+}
 
 type MountSyncPreviewIntent = 'sync' | 'enable-auto' | 'update-auto-sync-mode';
 
@@ -1181,6 +1211,23 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     () => (activeWorkspaceId ? (workspaceChatStates[activeWorkspaceId] ?? DEFAULT_WORKSPACE_CHAT_STATE) : DEFAULT_WORKSPACE_CHAT_STATE),
     [activeWorkspaceId, workspaceChatStates]
   );
+  const workspacePickerHasSearch = workspacePickerSearch.trim().length > 0;
+  const workspacePickerIds = useMemo(() => workspaces.map((workspace) => workspace.id), [workspaces]);
+  const workspacePickerChatSearch = useWorkspaceChatSearch({
+    workspaceIds: workspacePickerIds,
+    query: workspacePickerSearch,
+    enabled: isWorkspaceMenuOpen && workspacePickerHasSearch,
+  });
+  const filteredWorkspacePickerWorkspaces = useMemo(() => {
+    const needle = workspacePickerSearch.trim().toLowerCase();
+    if (!needle) {
+      return workspaces;
+    }
+    return workspaces.filter((workspace) => (
+      workspace.name.toLowerCase().includes(needle)
+      || workspacePickerChatSearch.matchedWorkspaceIds.has(workspace.id)
+    ));
+  }, [workspaces, workspacePickerSearch, workspacePickerChatSearch.matchedWorkspaceIds]);
 
   const previewWorkspaceFiles = useMemo(() => {
     const modules: Record<string, string> = {};
@@ -6459,21 +6506,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                         <X size={12} />
                       </button>
                     )}
+                    {workspacePickerChatSearch.loading && (
+                      <span className="model-selector-search-spinner" title="Searching workspace chat contents">
+                        <MiniLoadingSpinner variant="icon" size={12} />
+                      </span>
+                    )}
                   </div>
                 )}
                 <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace list">
                   {(() => {
-                    const needle = workspacePickerSearch.trim().toLowerCase();
-                    const filteredWorkspaces = needle
-                      ? workspaces.filter((ws) => ws.name.toLowerCase().includes(needle))
-                      : workspaces;
-                    if (filteredWorkspaces.length === 0) {
+                    if (filteredWorkspacePickerWorkspaces.length === 0) {
+                      if (workspacePickerChatSearch.loading) {
+                        return (
+                          <div className="model-selector-empty">Searching workspace chats...</div>
+                        );
+                      }
                       return (
                         <div className="model-selector-empty">No workspaces match "{workspacePickerSearch.trim()}"</div>
                       );
                     }
-                    return filteredWorkspaces.map((ws) => {
+                    return filteredWorkspacePickerWorkspaces.map((ws) => {
                     const workspaceChatState = workspaceChatStates[ws.id] ?? DEFAULT_WORKSPACE_CHAT_STATE;
+                    const workspaceSearchSnippet = workspacePickerChatSearch.snippetsByWorkspaceId[ws.id];
                     const canDeleteWorkspace =
                       ws.owner_user_id === currentUser.id ||
                       ws.members.some((member) => member.user_id === currentUser.id && member.role === 'owner');
@@ -6536,7 +6590,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                               setDeleteConfirmWorkspaceId(null);
                             }}
                           >
-                            <span className="model-selector-item-name">{ws.name}</span>
+                            <span className="userspace-workspace-select-copy">
+                              <span className="model-selector-item-name">
+                                <SearchHighlightedText text={ws.name} query={workspacePickerSearch} />
+                              </span>
+                              {workspaceSearchSnippet && !ws.name.toLowerCase().includes(workspacePickerSearch.trim().toLowerCase()) && (
+                                <span className="chat-conversation-snippet userspace-workspace-search-snippet">
+                                  <SearchHighlightedText text={workspaceSearchSnippet} query={workspacePickerSearch} />
+                                </span>
+                              )}
+                            </span>
                             {!workspaceChatState.hasLive && workspaceChatState.hasInterrupted && (
                               <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
                                 <AlertCircle size={13} />
