@@ -6,6 +6,7 @@ import hashlib
 import html
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -74,6 +75,8 @@ from ..core.workspace_ops import (
     workspace_mount_target_repo_relative_path,
     workspace_path_matches_mount_prefix,
 )
+
+logger = logging.getLogger(__name__)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -855,15 +858,34 @@ class WorkerService:
         """Return canonical entrypoint status for a workspace."""
         return parse_entrypoint_config(workspace_root)
 
-    def _read_runtime_bootstrap_config_sync(self, workspace_root: Path) -> list[dict[str, str]]:
+    @staticmethod
+    def _load_runtime_bootstrap_config_dict_sync(workspace_root: Path) -> dict[str, Any] | None:
         config_path = workspace_root / RUNTIME_BOOTSTRAP_CONFIG_PATH
         if not config_path.exists() or not config_path.is_file():
-            return []
+            return None
         try:
             raw = json.loads(config_path.read_text(encoding="utf-8"))
         except Exception:
+            return None
+        return raw if isinstance(raw, dict) else None
+
+    @staticmethod
+    def _normalize_bootstrap_watch_paths(raw_config: dict[str, Any] | None) -> list[str]:
+        if not isinstance(raw_config, dict):
             return []
-        if not isinstance(raw, dict):
+        watch_paths = raw_config.get("watch_paths")
+        if not isinstance(watch_paths, list):
+            return []
+        normalized: list[str] = []
+        for item in watch_paths:
+            relative = str(item or "").strip().replace("\\", "/")
+            if relative:
+                normalized.append(relative)
+        return normalized
+
+    def _read_runtime_bootstrap_config_sync(self, workspace_root: Path) -> list[dict[str, str]]:
+        raw = self._load_runtime_bootstrap_config_dict_sync(workspace_root)
+        if raw is None:
             return []
         commands = raw.get("commands")
         if not isinstance(commands, list):
@@ -892,6 +914,40 @@ class WorkerService:
             workspace_root,
         )
 
+    def _sync_missing_bootstrap_watch_paths_to_sandbox_sync(self, session: WorkerSession) -> None:
+        """Prune sandbox-mirror copies of bootstrap watch paths absent from canonical files.
+
+        ``rootfs/workspace`` is an incremental ``copytree(dirs_exist_ok=True)``
+        mirror, so files deleted from canonical ``files/`` persist there. When
+        those files (e.g. ``package-lock.json``) gate bootstrap commands, the
+        stale mirror copy steers ``npm ci`` toward a lock that no longer
+        matches the canonical workspace. Pruning only the configured
+        ``watch_paths`` keeps mirrored build artifacts (``node_modules`` etc.)
+        intact.
+        """
+        rootfs_workspace = session.sandbox_spec.rootfs_path / SANDBOX_WORKSPACE_MOUNT.lstrip("/")
+        if not rootfs_workspace.is_dir():
+            return
+
+        raw_config = self._load_runtime_bootstrap_config_dict_sync(session.workspace_files_path)
+        for relative in self._normalize_bootstrap_watch_paths(raw_config):
+            source = self._resolve_bootstrap_relative_path(session.workspace_files_path, relative)
+            mirror = self._resolve_bootstrap_relative_path(rootfs_workspace, relative)
+            if source is None or mirror is None or source.exists() or not mirror.exists():
+                continue
+            try:
+                if mirror.is_symlink() or mirror.is_file():
+                    mirror.unlink()
+                elif mirror.is_dir():
+                    shutil.rmtree(mirror)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to remove stale sandbox bootstrap path %s for workspace %s: %s",
+                    relative,
+                    session.workspace_id,
+                    exc,
+                )
+
     def _runtime_bootstrap_config_digest_sync(self, workspace_root: Path) -> str | None:
         config_path = workspace_root / RUNTIME_BOOTSTRAP_CONFIG_PATH
         if not config_path.exists() or not config_path.is_file():
@@ -910,15 +966,12 @@ class WorkerService:
         if not isinstance(parsed, dict):
             return hashlib.sha256(payload).hexdigest()
 
-        watch_paths = parsed.get("watch_paths")
-        if not isinstance(watch_paths, list):
+        watch_relatives = self._normalize_bootstrap_watch_paths(parsed)
+        if not isinstance(parsed.get("watch_paths"), list):
             return hashlib.sha256(payload).hexdigest()
 
         digest = hashlib.sha256(payload)
-        for watch_item in watch_paths:
-            relative = str(watch_item or "").strip().replace("\\", "/")
-            if not relative:
-                continue
+        for relative in watch_relatives:
             resolved = self._resolve_bootstrap_relative_path(workspace_root, relative)
             if resolved is None:
                 continue
@@ -1117,6 +1170,15 @@ class WorkerService:
         commands = await self._read_runtime_bootstrap_config(workspace_root)
         if not commands:
             return None
+
+        # Bootstrap commands run inside the sandbox where ``rootfs/workspace``
+        # is an additive mirror of canonical ``files/``. Prune stale mirror
+        # copies of watched files (e.g. an orphaned ``package-lock.json``)
+        # before any command observes them.
+        await asyncio.to_thread(
+            self._sync_missing_bootstrap_watch_paths_to_sandbox_sync,
+            session,
+        )
 
         for command_cfg in commands:
             when_exists = command_cfg.get("when_exists", "")

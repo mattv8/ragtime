@@ -1,8 +1,10 @@
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+from runtime.core.shared import RUNTIME_BOOTSTRAP_CONFIG_PATH
 from runtime.worker import sandbox
 from runtime.worker.service import WorkerService
 
@@ -231,6 +233,70 @@ class SandboxProvisioningTests(unittest.TestCase):
         )
 
         self.assertEqual(resolved, (Path("/mnt/accounting/special/may.xlsx"), False))
+
+    def test_bootstrap_watch_sync_removes_stale_sandbox_lockfile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            rootfs_workspace = rootfs / "workspace"
+            files.mkdir()
+            rootfs_workspace.mkdir(parents=True)
+            (files / "package.json").write_text('{"devDependencies":{"esbuild":"^0.25.0"}}\n', encoding="utf-8")
+            (rootfs_workspace / "package.json").write_text('{"devDependencies":{"esbuild":"^0.25.0"}}\n', encoding="utf-8")
+            (rootfs_workspace / "package-lock.json").write_text(
+                '{"packages":{"":{"dependencies":{"esbuild":"^0.28.0"}}}}\n',
+                encoding="utf-8",
+            )
+            config_path = files / RUNTIME_BOOTSTRAP_CONFIG_PATH
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                '{"watch_paths":["package.json","package-lock.json"],"commands":[]}\n',
+                encoding="utf-8",
+            )
+
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="chroot",
+            )
+            session = self._worker_session("session-1", spec, files, rootfs)
+
+            WorkerService()._sync_missing_bootstrap_watch_paths_to_sandbox_sync(session)
+
+            self.assertFalse((rootfs_workspace / "package-lock.json").exists())
+            self.assertTrue((rootfs_workspace / "package.json").exists())
+
+    @staticmethod
+    def _worker_session(session_id: str, spec: sandbox.SandboxSpec, files: Path, rootfs: Path):
+        from runtime.worker.service import WorkerSession
+
+        return WorkerSession(
+            id=session_id,
+            workspace_id=spec.workspace_id,
+            provider_session_id="provider-session-1",
+            workspace_root=rootfs.parent,
+            workspace_files_path=files,
+            sandbox_spec=spec,
+            pty_access_token="pty-token",
+            workspace_env={},
+            workspace_env_visibility={},
+            workspace_mounts=[],
+            mount_targets_to_clear=set(),
+            state="running",
+            devserver_running=False,
+            devserver_port=None,
+            devserver_command=None,
+            launch_framework=None,
+            launch_cwd=None,
+            last_error=None,
+            runtime_operation_id=None,
+            runtime_operation_phase=None,
+            runtime_operation_started_at=None,
+            runtime_operation_updated_at=None,
+            updated_at=datetime.now(timezone.utc),
+        )
 
 
 if __name__ == "__main__":
