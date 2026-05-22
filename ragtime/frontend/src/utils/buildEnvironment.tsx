@@ -17,7 +17,7 @@ export function BrandName({ name }: BrandNameProps) {
     <span className="brand-name">
       <span>{name}</span>
       {environmentBadgeLabel && <span className="environment-badge">{environmentBadgeLabel}</span>}
-      {isMainEnvironment && versionLabel && <span className="version-label">{versionLabel}</span>}
+      {versionLabel && <span className="version-label">{versionLabel}</span>}
     </span>
   );
 }

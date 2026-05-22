@@ -240,7 +240,7 @@ body.authenticated-webgl-background-active #root {
 
 .brand-name {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-end;
   gap: var(--space-xs);
   max-width: 100%;
 }
@@ -249,15 +249,16 @@ body.authenticated-webgl-background-active #root {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 2px 7px;
+  padding: 1px 5px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--color-warning-border);
   background: var(--color-warning-bg);
   color: var(--color-warning-text);
-  font-size: var(--text-xs);
+  font-size: 0.6rem;
   font-weight: 700;
   line-height: 1.2;
   text-transform: uppercase;
+  margin-bottom: 1px;
 }
 
 .version-label {
