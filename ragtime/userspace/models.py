@@ -17,6 +17,7 @@ ShareAccessMode = Literal[
     "selected_users",
     "ldap_groups",
 ]
+ShareLinkStyle = Literal["named", "anonymous", "subdomain"]
 WorkspaceScmProvider = Literal["github", "gitlab", "generic"]
 WorkspaceScmDirection = Literal["import", "export"]
 WorkspaceScmRemoteRole = Literal["upstream", "publish"]
@@ -778,6 +779,7 @@ class UserSpaceWorkspaceShareLinkStatus(BaseModel):
     selected_user_ids: list[str] = Field(default_factory=list)
     selected_ldap_groups: list[str] = Field(default_factory=list)
     has_password: bool = False
+    active_share_style: ShareLinkStyle = "anonymous"
 
 
 class UserSpaceWorkspaceShareLinkListResponse(BaseModel):
@@ -811,6 +813,7 @@ class UpdateWorkspaceShareAccessRequest(BaseModel):
     password: str | None = Field(default=None, max_length=512)
     selected_user_ids: list[str] = Field(default_factory=list)
     selected_ldap_groups: list[str] = Field(default_factory=list)
+    active_share_style: ShareLinkStyle | None = None
 
 
 class UpdateWorkspaceShareSlugRequest(BaseModel):

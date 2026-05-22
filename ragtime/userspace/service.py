@@ -10950,6 +10950,8 @@ class UserSpaceService:
         share_token = str(getattr(share_record, "shareToken", "") or "")
         share_slug = str(getattr(share_record, "shareSlug", "") or "")
         access_mode, password_encrypted, selected_user_ids, selected_ldap_groups = self._extract_share_access_state(share_record)
+        active_style_raw = str(getattr(share_record, "activeShareStyle", "") or "").strip().lower()
+        active_share_style = active_style_raw if active_style_raw in ("named", "anonymous", "subdomain") else "anonymous"
         created_at = getattr(share_record, "shareTokenCreatedAt", None)
         label_value = getattr(share_record, "label", None)
         label = str(label_value).strip() if label_value else None
@@ -10974,6 +10976,7 @@ class UserSpaceService:
             selected_user_ids=selected_user_ids,
             selected_ldap_groups=selected_ldap_groups,
             has_password=bool(password_encrypted),
+            active_share_style=cast(Any, active_share_style),
         )
 
     async def list_workspace_share_links(
@@ -11224,6 +11227,8 @@ class UserSpaceService:
             "shareSelectedLdapGroups": Json(selected_ldap_groups),
             "updatedAt": _utc_now(),
         }
+        if request.active_share_style in ("named", "anonymous", "subdomain"):
+            update_data["activeShareStyle"] = request.active_share_style
         if mode == "password":
             password = (request.password or "").strip()
             if not password:
@@ -11365,6 +11370,8 @@ class UserSpaceService:
         share_slug = str(getattr(share_record, "shareSlug", "") or "")
         access_mode, password_encrypted, selected_user_ids, selected_ldap_groups = self._extract_share_access_state(share_record)
         granted_role = str(getattr(share_record, "grantedRole", "viewer") or "viewer")
+        active_style_raw = str(getattr(share_record, "activeShareStyle", "") or "").strip().lower()
+        active_share_style = active_style_raw if active_style_raw in ("named", "anonymous", "subdomain") else "anonymous"
         created_at = getattr(share_record, "shareTokenCreatedAt", None)
         label_value = getattr(share_record, "label", None)
         label = str(label_value).strip() if label_value else None
@@ -11406,6 +11413,7 @@ class UserSpaceService:
             granted_role=cast(Any, granted_role),
             scope_anchor_message_idx=(int(scope_anchor) if scope_anchor is not None else None),
             scope_direction=cast(Any, scope_direction),
+            active_share_style=cast(Any, active_share_style),
         )
 
     async def list_conversation_share_links(
@@ -11709,6 +11717,8 @@ class UserSpaceService:
             "grantedRole": request.granted_role,
             "updatedAt": _utc_now(),
         }
+        if request.active_share_style in ("named", "anonymous", "subdomain"):
+            update_data["activeShareStyle"] = request.active_share_style
         if mode == "password":
             password = (request.password or "").strip()
             if not password:

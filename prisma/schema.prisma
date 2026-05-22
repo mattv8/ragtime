@@ -1078,6 +1078,7 @@ model ConversationShare {
   sharePassword           String?               @map("share_password")
   shareSelectedUserIds    Json                  @default("[]") @map("share_selected_user_ids")
   shareSelectedLdapGroups Json                  @default("[]") @map("share_selected_ldap_groups")
+  activeShareStyle        String                @default("anonymous") @map("active_share_style")
   grantedRole             ConversationShareRole @default(viewer) @map("granted_role")
   scopeAnchorMessageIdx   Int?                  @map("scope_anchor_message_idx")
   scopeDirection          String?               @map("scope_direction")
@@ -1231,6 +1232,7 @@ model WorkspaceShare {
   sharePassword           String?   @map("share_password")
   shareSelectedUserIds    Json      @default("[]") @map("share_selected_user_ids")
   shareSelectedLdapGroups Json      @default("[]") @map("share_selected_ldap_groups")
+  activeShareStyle        String    @default("anonymous") @map("active_share_style")
   createdAt               DateTime  @default(now()) @map("created_at")
   updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at")
 

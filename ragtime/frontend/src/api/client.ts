@@ -3289,6 +3289,7 @@ export const api = {
       selected_ldap_groups: [],
       has_password: false,
       granted_role: 'viewer',
+      active_share_style: 'named',
     };
   },
 

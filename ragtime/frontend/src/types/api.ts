@@ -2991,6 +2991,7 @@ export interface UserSpaceWorkspaceShareLinkStatus {
   selected_user_ids: string[];
   selected_ldap_groups: string[];
   has_password: boolean;
+  active_share_style: ShareLinkStyle;
 }
 
 export interface UserSpaceWorkspaceShareLinkListResponse {
@@ -3014,11 +3015,14 @@ export type UserSpaceShareAccessMode =
   | 'selected_users'
   | 'ldap_groups';
 
+export type ShareLinkStyle = 'named' | 'anonymous' | 'subdomain';
+
 export interface UpdateUserSpaceWorkspaceShareAccessRequest {
   share_access_mode: UserSpaceShareAccessMode;
   password?: string | null;
   selected_user_ids?: string[];
   selected_ldap_groups?: string[];
+  active_share_style?: ShareLinkStyle;
 }
 
 export interface WorkspaceShareSlugAvailabilityResponse {
@@ -3066,6 +3070,7 @@ export interface ConversationShareLinkStatus {
   granted_role: ConversationShareRole;
   scope_anchor_message_idx?: number | null;
   scope_direction?: 'forward' | 'backward' | null;
+  active_share_style: ShareLinkStyle;
 }
 
 export interface ConversationShareLinkListResponse {
@@ -3092,6 +3097,7 @@ export interface UpdateConversationShareAccessRequest {
   selected_user_ids?: string[];
   selected_ldap_groups?: string[];
   granted_role?: ConversationShareRole;
+  active_share_style?: ShareLinkStyle;
 }
 
 export interface ConversationShareSlugAvailabilityResponse {

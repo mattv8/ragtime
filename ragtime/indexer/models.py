@@ -2241,6 +2241,7 @@ ConversationShareAccessMode = Literal[
     "selected_users",
     "ldap_groups",
 ]
+ConversationShareLinkStyle = Literal["named", "anonymous", "subdomain"]
 
 
 class ConversationShareLink(BaseModel):
@@ -2274,6 +2275,7 @@ class ConversationShareLinkStatus(BaseModel):
     granted_role: ConversationShareRole = "viewer"
     scope_anchor_message_idx: int | None = None
     scope_direction: Literal["forward", "backward"] | None = None
+    active_share_style: ConversationShareLinkStyle = "anonymous"
 
 
 class ConversationShareLinkListResponse(BaseModel):
@@ -2294,6 +2296,7 @@ class UpdateConversationShareAccessRequest(BaseModel):
     selected_user_ids: list[str] = Field(default_factory=list)
     selected_ldap_groups: list[str] = Field(default_factory=list)
     granted_role: ConversationShareRole = "viewer"
+    active_share_style: ConversationShareLinkStyle | None = None
 
 
 class UpdateConversationShareLinkRequest(BaseModel):

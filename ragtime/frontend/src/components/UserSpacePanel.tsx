@@ -211,10 +211,6 @@ function browserPathToWorkspaceMountTargetPath(browserPath: string): string {
   return normalized === '/' ? '/workspace' : `/workspace${normalized}`;
 }
 
-function getShareLinkTypeStorageKey(workspaceId: string): string {
-  return `userspace-share-link-type:${workspaceId}`;
-}
-
 const WORKSPACE_MOUNT_SYNC_MODE_OPTIONS: Array<{
   value: WorkspaceMountSyncMode;
   label: string;
@@ -686,7 +682,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [rotatingShareLink, setRotatingShareLink] = useState(false);
   const [revokingShareLink, setRevokingShareLink] = useState(false);
   const [deletingSelectedShareLink, setDeletingSelectedShareLink] = useState(false);
-  const [autoCreateShareLinkAttempted, setAutoCreateShareLinkAttempted] = useState(false);
   const [shareSlugDraft, setShareSlugDraft] = useState('');
   const [checkingShareSlug, setCheckingShareSlug] = useState(false);
   const [shareSlugAvailable, setShareSlugAvailable] = useState<boolean | null>(null);
@@ -5571,6 +5566,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setShareSelectedUserIdsDraft(status.selected_user_ids ?? []);
     setShareSelectedLdapGroupsDraft(status.selected_ldap_groups ?? []);
     setSharePasswordDraft('');
+    setShareLinkType(status.active_share_style ?? 'anonymous');
   }, [activeWorkspace?.name]);
 
   const syncWorkspaceShareSelection = useCallback((
@@ -5589,7 +5585,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setShareLinks(links);
     setSelectedShareId(nextSelected?.id ?? null);
 
-    applyWorkspaceShareStatus(nextSelected ?? {
+    const resolvedStatus = nextSelected ?? {
       id: '',
       workspace_id: workspaceId,
       has_share_link: false,
@@ -5607,7 +5603,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       selected_user_ids: [],
       selected_ldap_groups: [],
       has_password: false,
-    });
+      active_share_style: 'anonymous',
+    };
+    applyWorkspaceShareStatus(resolvedStatus);
+    return resolvedStatus;
   }, [applyWorkspaceShareStatus, selectedShareId]);
 
   const loadShareLinkStatus = useCallback(async (preferredShareId?: string | null) => {
@@ -5615,24 +5614,26 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setShareLinks([]);
       setSelectedShareId(null);
       setShareLinkStatus(null);
-      return;
+      return null;
     }
 
     setLoadingShareStatus(true);
     try {
       const response = await api.listUserSpaceWorkspaceShareLinks(activeWorkspaceId);
-      syncWorkspaceShareSelection(
+      const status = syncWorkspaceShareSelection(
         activeWorkspaceId,
         response.links,
         response.owner_username,
         preferredShareId,
       );
       setError(null);
+      return status;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load share link state');
       setShareLinks([]);
       setSelectedShareId(null);
       setShareLinkStatus(null);
+      return null;
     } finally {
       setLoadingShareStatus(false);
     }
@@ -5640,8 +5641,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
   useEffect(() => {
     if (!showShareModal) return;
+    if (shareLinkStatus && shareLinkStatus.workspace_id === activeWorkspaceId) return;
     void loadShareLinkStatus();
-  }, [loadShareLinkStatus, showShareModal]);
+  }, [activeWorkspaceId, loadShareLinkStatus, shareLinkStatus, showShareModal]);
 
   const activeShareLinkStatus = useMemo(() => {
     if (!shareLinkStatus || !activeWorkspaceId) {
@@ -5659,36 +5661,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     applyWorkspaceShareStatus(selected);
   }, [applyWorkspaceShareStatus, shareLinks]);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (!activeWorkspaceId) {
-      setShareLinkType('anonymous');
-      return;
-    }
-    const stored = window.localStorage.getItem(getShareLinkTypeStorageKey(activeWorkspaceId));
-    if (stored === 'named' || stored === 'anonymous' || stored === 'subdomain') {
-      setShareLinkType(stored);
-      return;
-    }
-    setShareLinkType('anonymous');
-  }, [activeWorkspaceId]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !activeWorkspaceId) return;
-    window.localStorage.setItem(getShareLinkTypeStorageKey(activeWorkspaceId), shareLinkType);
-  }, [activeWorkspaceId, shareLinkType]);
-
-  const handleOpenShareModal = useCallback(() => {
+  const handleOpenShareModal = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
-    setShareSlugDraft(activeShareLinkStatus?.share_slug ?? getDefaultShareSlug(activeWorkspace?.name));
+    const status = await loadShareLinkStatus();
+    if (!status) {
+      return;
+    }
+
+    setShareSlugDraft(status.share_slug ?? getDefaultShareSlug(activeWorkspace?.name));
     setShareSlugEdited(false);
     setShareSlugAvailable(null);
-    setShareAccessMode(activeShareLinkStatus?.share_access_mode ?? 'token');
-    setShareSelectedUserIdsDraft(activeShareLinkStatus?.selected_user_ids ?? []);
-    setShareSelectedLdapGroupsDraft(activeShareLinkStatus?.selected_ldap_groups ?? []);
+    setShareAccessMode(status.share_access_mode ?? 'token');
+    setShareSelectedUserIdsDraft(status.selected_user_ids ?? []);
+    setShareSelectedLdapGroupsDraft(status.selected_ldap_groups ?? []);
     setSharePasswordDraft('');
     setShareLdapGroupDraft('');
-    setAutoCreateShareLinkAttempted(false);
     void api.listUsersDirectory().then(setAllUsers).catch(() => setAllUsers([]));
     void (async () => {
       setLoadingLdapGroups(true);
@@ -5722,11 +5709,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   }, [
     activeWorkspace?.name,
     activeWorkspaceId,
-    activeShareLinkStatus?.selected_ldap_groups,
-    activeShareLinkStatus?.selected_user_ids,
-    activeShareLinkStatus?.share_access_mode,
-    activeShareLinkStatus?.share_slug,
     canEditWorkspace,
+    loadShareLinkStatus,
   ]);
 
   const handleEnsureShareLink = useCallback(async (rotateToken = false) => {
@@ -5759,6 +5743,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         selected_user_ids: activeShareLinkStatus?.selected_user_ids ?? [],
         selected_ldap_groups: activeShareLinkStatus?.selected_ldap_groups ?? [],
         has_password: activeShareLinkStatus?.has_password ?? false,
+        active_share_style: activeShareLinkStatus?.active_share_style ?? 'anonymous',
       } satisfies UserSpaceWorkspaceShareLinkStatus;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create share link');
@@ -5775,24 +5760,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     activeShareLinkStatus?.share_access_mode,
     canEditWorkspace,
     loadShareLinkStatus,
-  ]);
-
-  useEffect(() => {
-    if (!showShareModal || !activeWorkspaceId || !canEditWorkspace) return;
-    if (loadingShareStatus || sharingWorkspace || autoCreateShareLinkAttempted) return;
-    if (shareLinks.length > 0) return;
-
-    setAutoCreateShareLinkAttempted(true);
-    void handleEnsureShareLink(false);
-  }, [
-    showShareModal,
-    activeWorkspaceId,
-    canEditWorkspace,
-    loadingShareStatus,
-    sharingWorkspace,
-    autoCreateShareLinkAttempted,
-    shareLinks.length,
-    handleEnsureShareLink,
   ]);
 
   const resolveShareUrl = useCallback((status: UserSpaceWorkspaceShareLinkStatus | null | undefined): string | null => {
@@ -5968,11 +5935,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
       const selectedUserIds = normalizeUniqueStrings(shareSelectedUserIdsDraft);
       const selectedLdapGroups = normalizeUniqueStrings(shareSelectedLdapGroupsDraft);
+      const styleChanged = shareLinkType !== (status.active_share_style ?? 'anonymous');
       const hasAccessChanges =
         shareAccessMode !== status.share_access_mode
         || !areSameNormalizedStringArrays(selectedUserIds, status.selected_user_ids ?? [])
         || !areSameNormalizedStringArrays(selectedLdapGroups, status.selected_ldap_groups ?? [])
-        || (shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim()));
+        || (shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim()))
+        || styleChanged;
 
       if (hasAccessChanges) {
         status = await api.updateUserSpaceWorkspaceShareAccess(activeWorkspaceId, currentShareId, {
@@ -5980,6 +5949,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           password: sharePasswordDraft.trim() || undefined,
           selected_user_ids: selectedUserIds,
           selected_ldap_groups: selectedLdapGroups,
+          active_share_style: shareLinkType,
         });
       }
 
@@ -6001,6 +5971,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     shareSlugDraft,
     shareSelectedLdapGroupsDraft,
     shareSelectedUserIdsDraft,
+    shareLinkType,
     loadShareLinkStatus,
   ]);
 
@@ -6082,16 +6053,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       activeShareLinkStatus.selected_ldap_groups ?? [],
     );
     const pendingPasswordChange = shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim());
+    const styleChanged = shareLinkType !== (activeShareLinkStatus.active_share_style ?? 'anonymous');
 
     return slugChanged
       || accessModeChanged
       || selectedUsersChanged
       || selectedLdapGroupsChanged
-      || pendingPasswordChange;
+      || pendingPasswordChange
+      || styleChanged;
   }, [
     activeShareLinkStatus,
     shareAccessMode,
     sharePasswordDraft,
+    shareLinkType,
     shareSelectedLdapGroupsDraft,
     shareSelectedUserIdsDraft,
     shareSlugDraft,

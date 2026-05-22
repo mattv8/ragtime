@@ -15,12 +15,13 @@ type ShareStatus = UserSpaceWorkspaceShareLinkStatus | ConversationShareLinkStat
 
 import { LdapGroupSelect } from '../LdapGroupSelect';
 import { InlineCopyButton } from './InlineCopyButton';
+import type { ShareLinkStyle } from '@/types';
 
 interface ShareLinkModalProps {
   isOpen: boolean;
   loadingShareStatus: boolean;
   title?: string;
-  shareLinkType: 'named' | 'anonymous' | 'subdomain';
+  shareLinkType: ShareLinkStyle;
   shareStatus: ShareStatus | null;
   shareLinks?: ShareStatus[];
   selectedShareId?: string | null;
@@ -59,7 +60,7 @@ interface ShareLinkModalProps {
   onSaveShareLabel?: (label: string) => void;
   onDeleteSelectedShareLink?: (shareId: string) => void;
   onShareSlugChange: (value: string) => void;
-  onShareLinkTypeChange: (value: 'named' | 'anonymous' | 'subdomain') => void;
+  onShareLinkTypeChange: (value: ShareLinkStyle) => void;
   onShareAccessModeChange: (value: ShareAccessMode) => void;
   onSharePasswordDraftChange: (value: string) => void;
   onToggleShareSelectedUser: (userId: string) => void;
@@ -175,7 +176,11 @@ export function ShareLinkModal({
   }
 
   const selectedShareLabel = selectedShare?.label?.trim() || '';
-  const selectedShareDisplayLabel = selectedShareLabel || 'Untitled link';
+  const selectedShareIndex = selectedShare?.id
+    ? availableShareLinks.findIndex((link) => link.id === selectedShare.id)
+    : -1;
+  const selectedShareDisplayLabel = selectedShareLabel
+    || (selectedShareIndex >= 0 ? `Untitled link ${selectedShareIndex + 1}` : 'Untitled link');
   const selectedShareScopeSummary = selectedShare && 'scope_anchor_message_idx' in selectedShare
     && typeof selectedShare.scope_anchor_message_idx === 'number'
     ? selectedShare.scope_direction === 'backward'
@@ -432,8 +437,7 @@ export function ShareLinkModal({
                   </div>
                 )}
 
-                {showProtectedSubdomainNotice && (
-                  <div className="userspace-share-warning-banner" role="alert">
+                {showProtectedSubdomainNotice && (                  <div className="userspace-share-warning-banner" role="alert">
                     Warning: if this workspace has already been unlocked in this browser, opening the subdomain link again may not prompt you to login. Protection is still enforced for new sessions and other browsers.
                   </div>
                 )}
@@ -577,7 +581,13 @@ export function ShareLinkModal({
             <button
               className="btn btn-secondary"
               onClick={onSaveShareAccess}
-              disabled={savingShareAccess || sharingWorkspace || revokingShareLink || checkingShareSlug}
+              disabled={
+                savingShareAccess
+                || sharingWorkspace
+                || revokingShareLink
+                || checkingShareSlug
+                || (Boolean(shareStatus?.has_share_link) && !shareHasUnsavedChanges)
+              }
             >
               {savingShareAccess ? 'Saving Access...' : 'Save Access'}
             </button>

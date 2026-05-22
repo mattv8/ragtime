@@ -81,6 +81,7 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
     setShareAnchorMessageIdx(status.scope_anchor_message_idx ?? null);
     setShareScopeDirection(status.scope_direction ?? 'forward');
     setShareSlugAvailable(null);
+    setShareLinkType(status.active_share_style ?? 'named');
   }, []);
 
   const syncShareSelection = useCallback((
@@ -117,6 +118,7 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
       granted_role: 'viewer',
       scope_anchor_message_idx: null,
       scope_direction: null,
+      active_share_style: 'named',
     });
   }, [applyShareStatus, selectedShareId]);
 
@@ -249,6 +251,8 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
     const scopeAnchorChanged = shareAnchorMessageIdx !== (shareStatus.scope_anchor_message_idx ?? null);
     const scopeDirectionChanged = shareAnchorMessageIdx !== null
       && shareScopeDirection !== (shareStatus.scope_direction ?? 'forward');
+    const styleChanged = shareStatus.has_share_link
+      && shareLinkType !== (shareStatus.active_share_style ?? 'named');
     return normalizedDraftSlug !== normalizedStatusSlug
       || shareAccessMode !== shareStatus.share_access_mode
       || grantedRoleDraft !== shareStatus.granted_role
@@ -256,12 +260,14 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
       || selectedGroupsChanged
       || scopeAnchorChanged
       || scopeDirectionChanged
+      || styleChanged
       || (shareAccessMode === 'password' && sharePasswordDraft.trim().length > 0);
   }, [
     grantedRoleDraft,
     shareAccessMode,
     shareAnchorMessageIdx,
     shareLdapGroupDraft,
+    shareLinkType,
     sharePasswordDraft,
     shareScopeDirection,
     shareSelectedLdapGroupsDraft,
@@ -393,12 +399,14 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
 
       const selectedUserIds = normalizeUniqueStrings(shareSelectedUserIdsDraft);
       const selectedLdapGroups = normalizeUniqueStrings(shareSelectedLdapGroupsDraft);
+      const styleChanged = shareLinkType !== (shareStatus?.active_share_style ?? 'named');
       const hasAccessChanges =
         shareAccessMode !== (shareStatus?.share_access_mode ?? 'token')
         || grantedRoleDraft !== (shareStatus?.granted_role ?? 'viewer')
         || !areSameNormalizedStringArrays(selectedUserIds, shareStatus?.selected_user_ids || [])
         || !areSameNormalizedStringArrays(selectedLdapGroups, shareStatus?.selected_ldap_groups || [])
-        || (shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim()));
+        || (shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim()))
+        || styleChanged;
 
       if (hasAccessChanges) {
         await api.updateConversationShareAccess(activeConversationId, currentShareId, {
@@ -407,6 +415,7 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
           selected_user_ids: selectedUserIds,
           selected_ldap_groups: selectedLdapGroups,
           granted_role: grantedRoleDraft,
+          active_share_style: shareLinkType,
         });
       }
 
@@ -426,6 +435,7 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
     loadShareStatus,
     shareAccessMode,
     shareAnchorMessageIdx,
+    shareLinkType,
     sharePasswordDraft,
     shareScopeDirection,
     shareSelectedLdapGroupsDraft,
