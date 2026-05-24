@@ -24,6 +24,7 @@ from ragtime.core.sql_utils import (
     validate_sql_query,
 )
 from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
+from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
 
 logger = get_logger(__name__)
 
@@ -32,14 +33,9 @@ logger = get_logger(__name__)
 MAX_TOOL_TIMEOUT_SECONDS = 300
 
 
-def resolve_effective_timeout(requested_timeout: int, timeout_max_seconds: int) -> int:
-    """Resolve runtime timeout using per-tool max (0 = unlimited)."""
-    requested = max(0, int(requested_timeout))
-    max_timeout = max(0, int(timeout_max_seconds))
-
-    if max_timeout == 0:
-        return requested
-    return min(requested, max_timeout)
+def resolve_effective_timeout(requested_timeout: int | None, timeout_max_seconds: int) -> int:
+    """Resolve runtime timeout using per-tool max (0 max = unlimited)."""
+    return resolve_effective_tool_timeout(requested_timeout, timeout_max_seconds)
 
 
 def _build_influxdb_url(host: str, port: int, use_https: bool) -> str:
@@ -50,6 +46,7 @@ def _build_influxdb_url(host: str, port: int, use_https: bool) -> str:
 
 def create_influxdb_query_input(default_timeout: int, timeout_max_seconds: int) -> type[BaseModel]:
     """Create InfluxdbQueryInput with dynamic default timeout."""
+    timeout_hint = "Use 0 for no timeout." if timeout_max_seconds == 0 else "Use 0 or omit to use the configured maximum."
 
     class InfluxdbQueryInputModel(BaseModel):
         """Input schema for InfluxDB Flux queries."""
@@ -73,7 +70,7 @@ def create_influxdb_query_input(default_timeout: int, timeout_max_seconds: int) 
             description=(
                 f"Query timeout in seconds (default: {default_timeout}, "
                 f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
-                "Use 0 for no timeout."
+                f"{timeout_hint}"
             ),
         )
 

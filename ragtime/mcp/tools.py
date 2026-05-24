@@ -656,10 +656,11 @@ class MCPToolAdapter:
         timeout = max(0, timeout_max_seconds)
 
         if tool_type in {"postgres", "mssql", "mysql", "influxdb"}:
+            timeout_hint = "Use 0 for no timeout." if timeout_max_seconds == 0 else "Use 0 or omit to use the configured maximum."
             timeout_schema = {
                 "type": "integer",
                 "description": (
-                    f"Query timeout in seconds (default and maximum: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). Use 0 for no timeout."
+                    f"Query timeout in seconds (default and maximum: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). {timeout_hint}"
                 ),
                 "default": timeout,
                 "minimum": 0,
@@ -668,12 +669,11 @@ class MCPToolAdapter:
                 timeout_schema["maximum"] = timeout_max_seconds
             schema["properties"]["timeout"] = timeout_schema
         elif tool_type == "odoo_shell":
+            timeout_hint = "Use 0 for no timeout." if timeout_max_seconds == 0 else "Use 0 or omit to use the configured maximum."
             timeout_schema = {
                 "type": "integer",
                 "description": (
-                    f"Execution timeout in seconds (default and maximum: "
-                    f"{'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
-                    "Use 0 for no timeout."
+                    f"Execution timeout in seconds (default and maximum: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). {timeout_hint}"
                 ),
                 "default": timeout,
                 "minimum": 0,
@@ -682,12 +682,11 @@ class MCPToolAdapter:
                 timeout_schema["maximum"] = timeout_max_seconds
             schema["properties"]["timeout"] = timeout_schema
         elif tool_type == "ssh_shell":
+            timeout_hint = "Use 0 for no timeout." if timeout_max_seconds == 0 else "Use 0 or omit to use the configured maximum."
             timeout_schema = {
                 "type": "integer",
                 "description": (
-                    f"Command timeout in seconds (default and maximum: "
-                    f"{'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
-                    "Use 0 for no timeout."
+                    f"Command timeout in seconds (default and maximum: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). {timeout_hint}"
                 ),
                 "default": timeout,
                 "minimum": 0,

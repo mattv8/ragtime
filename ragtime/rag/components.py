@@ -132,6 +132,7 @@ from ragtime.core.ssh import (
     ssh_tunnel_config_from_dict,
 )
 from ragtime.core.tokenization import truncate_to_token_budget
+from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata
 from ragtime.indexer.chat_attachments import preprocess_chat_attachment_content_parts
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
@@ -335,14 +336,9 @@ def escape_prompt_template_braces(text: str) -> str:
     return re.sub(r"(?<!\})\}(?!\})", "}}", escaped_open)
 
 
-def resolve_effective_timeout(requested_timeout: int, timeout_max_seconds: int) -> int:
-    """Resolve runtime timeout using per-tool max (0 = unlimited)."""
-    requested = max(0, int(requested_timeout))
-    max_timeout = max(0, int(timeout_max_seconds))
-
-    if max_timeout == 0:
-        return requested
-    return min(requested, max_timeout)
+def resolve_effective_timeout(requested_timeout: int | None, timeout_max_seconds: int) -> int:
+    """Resolve runtime timeout using per-tool max (0 max = unlimited)."""
+    return resolve_effective_tool_timeout(requested_timeout, timeout_max_seconds)
 
 
 def _format_active_tool_timeout_output(tool_name: str) -> str:
@@ -3103,13 +3099,16 @@ class RAGComponents:
     ) -> type[BaseModel]:
         """Inject a standard timeout field into dynamic tool schemas."""
         timeout_default = max(0, int(timeout_max_seconds))
+        timeout_description = (
+            f"{timeout_label} timeout in seconds (default: unlimited). Use 0 for no timeout."
+            if timeout_default == 0
+            else f"{timeout_label} timeout in seconds (default and maximum: {timeout_default}). Use 0 or omit to use the configured maximum."
+        )
         timeout_field: Any = Field(
             default=timeout_default,
             ge=0,
             le=86400,
-            description=(
-                f"{timeout_label} timeout in seconds (default and maximum: {'unlimited' if timeout_default == 0 else timeout_default}). Use 0 for no timeout."
-            ),
+            description=timeout_description,
         )
         schema_class.model_fields["timeout"] = timeout_field
         schema_class.model_rebuild()
@@ -4929,7 +4928,7 @@ except Exception as e:
                     key_path=conn_config.get("ssh_key_path"),
                     key_content=conn_config.get("ssh_key_content"),
                     key_passphrase=conn_config.get("ssh_key_passphrase"),
-                    timeout=effective_timeout if effective_timeout > 0 else 3600,
+                    timeout=effective_timeout,
                 )
 
                 # Build remote Odoo shell command
@@ -5080,7 +5079,7 @@ except Exception as e:
                 key_path=key_path,
                 key_content=key_content,
                 key_passphrase=key_passphrase,
-                timeout=effective_timeout if effective_timeout > 0 else 3600,
+                timeout=effective_timeout,
             )
 
             # If working_directory is set, expand env vars for path validation

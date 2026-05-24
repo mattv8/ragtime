@@ -168,7 +168,7 @@ def _build_connect_kwargs(config: SSHConfig) -> dict:
         "hostname": config.host,
         "port": config.port,
         "username": config.user,
-        "timeout": config.timeout,
+        "timeout": config.timeout if config.timeout > 0 else 30,
         "allow_agent": False,
         "look_for_keys": False,
     }
@@ -209,6 +209,25 @@ def _error_result(message: str) -> SSHResult:
     return SSHResult(stdout="", stderr=message, exit_code=-1, success=False)
 
 
+def _wrap_command_with_timeout(command: str, timeout_seconds: int) -> str:
+    """Wrap a remote command so the server terminates it after the deadline.
+
+    Paramiko channel timeouts only limit the client-side wait. For long-running
+    commands like journalctl, we also need a server-side timeout so the remote
+    process is not left running after the client disconnects.
+    """
+    if timeout_seconds <= 0:
+        return command
+
+    quoted_command = shlex.quote(command)
+    return (
+        'command_shell="${SHELL:-/bin/sh}"; '
+        "if command -v timeout >/dev/null 2>&1; then "
+        f'timeout --signal=TERM --kill-after=5s {int(timeout_seconds)}s "$command_shell" -lc {quoted_command}; '
+        f'else "$command_shell" -lc {quoted_command}; fi'
+    )
+
+
 def execute_ssh_command(
     config: SSHConfig,
     command: str,
@@ -231,8 +250,10 @@ def execute_ssh_command(
     try:
         client = _create_ssh_client(config)
 
+        wrapped_command = _wrap_command_with_timeout(command, config.timeout)
+
         # Execute command
-        stdin, stdout, stderr = client.exec_command(command, timeout=config.timeout)
+        stdin, stdout, stderr = client.exec_command(wrapped_command, timeout=config.timeout if config.timeout > 0 else None)
 
         # Send input data if provided
         if input_data:
@@ -276,19 +297,19 @@ def execute_ssh_command(
         # Filter out harmless stderr noise (e.g., tput warnings) at the source
         stderr_data = _filter_stderr_noise(stderr_data)
 
-        if timed_out:
-            exit_code = -1
-            # Append timeout note to stderr but mark as success so partial stdout is returned
+        exit_code = -1 if timed_out else channel.recv_exit_status()
+
+        remote_timeout = exit_code in {124, 137}
+        if timed_out or remote_timeout:
             timeout_msg = f"[Command execution timed out after {config.timeout} seconds]"
-            stderr_data = f"{stderr_data}\n{timeout_msg}" if stderr_data else timeout_msg
-        else:
-            exit_code = channel.recv_exit_status()
+            if timeout_msg not in stderr_data:
+                stderr_data = f"{stderr_data}\n{timeout_msg}" if stderr_data else timeout_msg
 
         return SSHResult(
             stdout=stdout_data,
             stderr=stderr_data,
             exit_code=exit_code,
-            success=(exit_code == 0) or timed_out,
+            success=(exit_code == 0) and not timed_out and not remote_timeout,
         )
 
     except paramiko.AuthenticationException as e:

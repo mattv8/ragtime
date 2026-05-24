@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import DB_TYPE_MYSQL, enforce_max_results, format_query_result, validate_sql_query
 from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
+from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
 
 logger = get_logger(__name__)
 
@@ -24,18 +25,14 @@ logger = get_logger(__name__)
 MAX_TOOL_TIMEOUT_SECONDS = 300
 
 
-def resolve_effective_timeout(requested_timeout: int, timeout_max_seconds: int) -> int:
-    """Resolve runtime timeout using per-tool max (0 = unlimited)."""
-    requested = max(0, int(requested_timeout))
-    max_timeout = max(0, int(timeout_max_seconds))
-
-    if max_timeout == 0:
-        return requested
-    return min(requested, max_timeout)
+def resolve_effective_timeout(requested_timeout: int | None, timeout_max_seconds: int) -> int:
+    """Resolve runtime timeout using per-tool max (0 max = unlimited)."""
+    return resolve_effective_tool_timeout(requested_timeout, timeout_max_seconds)
 
 
 def create_mysql_query_input(default_timeout: int, timeout_max_seconds: int) -> type[BaseModel]:
     """Create MysqlQueryInput with dynamic default timeout."""
+    timeout_hint = "Use 0 for no timeout." if timeout_max_seconds == 0 else "Use 0 or omit to use the configured maximum."
 
     class MysqlQueryInput(BaseModel):
         """Input schema for MySQL queries."""
@@ -59,7 +56,7 @@ def create_mysql_query_input(default_timeout: int, timeout_max_seconds: int) -> 
             description=(
                 f"Query timeout in seconds (default: {default_timeout}, "
                 f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
-                "Use 0 for no timeout."
+                f"{timeout_hint}"
             ),
         )
 
