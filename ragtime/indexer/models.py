@@ -438,6 +438,10 @@ class AppSettings(BaseModel):
         default=True,
         description="If True, show the animated WebGL gradient behind authenticated app pages.",
     )
+    openapi_model_prefix_enabled: bool = Field(
+        default=True,
+        description="If True, prefix OpenAI-compatible API model names with the server name.",
+    )
 
     # Embedding Configuration (for FAISS indexing)
     embedding_provider: str = Field(
@@ -1025,6 +1029,7 @@ class UpdateSettingsRequest(BaseModel):
     # Server branding
     server_name: Optional[str] = None
     authenticated_webgl_background_enabled: Optional[bool] = None
+    openapi_model_prefix_enabled: Optional[bool] = None
     # Embedding settings
     embedding_provider: Optional[str] = None
     embedding_model: Optional[str] = None

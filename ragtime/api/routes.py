@@ -66,6 +66,8 @@ _models_cache: dict[tuple, tuple[float, list[_OpenAPIModelEntry]]] = {}
 def _models_cache_key(app_settings: dict, default_provider: str) -> tuple:
     """Build a stable cache key for /v1/models responses."""
     sync_chat = bool(app_settings.get("openapi_sync_chat_models", True))
+    server_name = _normalize_label_part(app_settings.get("server_name", "Ragtime"))
+    prefix_enabled = bool(app_settings.get("openapi_model_prefix_enabled", True))
     allowed_openapi = tuple(str(v).strip() for v in (app_settings.get("allowed_openapi_models") or []) if str(v).strip())
     allowed_chat = tuple(str(v).strip() for v in (app_settings.get("allowed_chat_models") or []) if str(v).strip())
     llm_model = str(app_settings.get("llm_model", "") or "").strip()
@@ -73,6 +75,8 @@ def _models_cache_key(app_settings: dict, default_provider: str) -> tuple:
     return (
         default_provider,
         sync_chat,
+        server_name,
+        prefix_enabled,
         allowed_openapi,
         allowed_chat,
         llm_model,
@@ -316,6 +320,52 @@ def _ensure_unique_openapi_model_ids(
     return result
 
 
+def _openapi_model_name_prefix(app_settings: dict) -> str:
+    if not bool(app_settings.get("openapi_model_prefix_enabled", True)):
+        return ""
+    return _normalize_label_part(app_settings.get("server_name", "Ragtime"))
+
+
+def _prefix_openapi_model_id(model_id: str, prefix: str) -> str:
+    display_id = _normalize_label_part(model_id)
+    normalized_prefix = _normalize_label_part(prefix)
+    if not display_id or not normalized_prefix:
+        return display_id
+
+    folded_display_id = display_id.casefold()
+    folded_prefix = normalized_prefix.casefold()
+    if folded_display_id == folded_prefix or folded_display_id.startswith(f"{folded_prefix} "):
+        return display_id
+
+    return f"{normalized_prefix} {display_id}"
+
+
+def _apply_openapi_model_name_prefix(
+    entries: list[_OpenAPIModelEntry],
+    app_settings: dict,
+) -> list[_OpenAPIModelEntry]:
+    prefix = _openapi_model_name_prefix(app_settings)
+    if not prefix:
+        return entries
+
+    prefixed_entries: list[_OpenAPIModelEntry] = []
+    for entry in entries:
+        display_id = _prefix_openapi_model_id(entry.id, prefix)
+        root = _prefix_openapi_model_id(entry.root, prefix)
+        if display_id == entry.id and root == entry.root:
+            prefixed_entries.append(entry)
+            continue
+        prefixed_entries.append(
+            replace(
+                entry,
+                id=display_id,
+                root=root,
+                selection_keys=_selection_key_variants(display_id, root, *entry.selection_keys),
+            )
+        )
+    return prefixed_entries
+
+
 def _model_entry_to_info(entry: _OpenAPIModelEntry, created: int) -> ModelInfo:
     return ModelInfo(
         id=entry.id,
@@ -407,6 +457,7 @@ async def _get_openapi_model_entries(
             entries = [_build_fallback_openapi_model_entry(default_provider, "gpt-4.1")]
 
         entries = _ensure_unique_openapi_model_ids(entries)
+        entries = _apply_openapi_model_name_prefix(entries, app_settings)
         _set_cached_model_entries(cache_key, entries)
         return entries
 
@@ -420,6 +471,8 @@ def _find_openapi_model_entry(
         return None
     for entry in entries:
         if entry.id.casefold() == requested:
+            return entry
+        if any(key.casefold() == requested for key in entry.selection_keys):
             return entry
     return None
 
@@ -440,6 +493,7 @@ async def _resolve_effective_model(
 
         runtime_model = _normalize_runtime_model(default_provider, requested)
         advertised_model = _normalize_openapi_model_id(default_provider, runtime_model)
+        advertised_model = _prefix_openapi_model_id(advertised_model, _openapi_model_name_prefix(app_settings))
         return runtime_model, advertised_model or requested
 
     configured_openapi_model = _configured_openapi_model(app_settings)
@@ -457,6 +511,7 @@ async def _resolve_effective_model(
             default_provider,
             configured_runtime_model,
         )
+        advertised_model = _prefix_openapi_model_id(advertised_model, _openapi_model_name_prefix(app_settings))
         return configured_runtime_model, advertised_model
 
     first_entry = entries[0] if entries else None

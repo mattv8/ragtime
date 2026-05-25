@@ -230,6 +230,7 @@ class SettingsCache:
             self._settings = {
                 "server_name": prisma_settings.serverName,
                 "authenticated_webgl_background_enabled": getattr(prisma_settings, "authenticatedWebglBackgroundEnabled", True),
+                "openapi_model_prefix_enabled": getattr(prisma_settings, "openapiModelPrefixEnabled", True),
                 "enabled_tools": prisma_settings.enabledTools,
                 "odoo_container": prisma_settings.odooContainer,
                 "postgres_container": prisma_settings.postgresContainer,

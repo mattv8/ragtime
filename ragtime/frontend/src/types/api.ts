@@ -605,6 +605,7 @@ export interface AppSettings {
   // Server branding
   server_name: string;
   authenticated_webgl_background_enabled: boolean;
+  openapi_model_prefix_enabled: boolean;
   // Embedding Configuration (for FAISS indexing)
   embedding_provider: 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio' | 'omlx';
   embedding_model: string;
@@ -734,6 +735,7 @@ export interface UpdateSettingsRequest {
   // Server branding
   server_name?: string;
   authenticated_webgl_background_enabled?: boolean;
+  openapi_model_prefix_enabled?: boolean;
   // Embedding settings
   embedding_provider?: 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio' | 'omlx';
   embedding_model?: string;

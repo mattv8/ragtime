@@ -1329,6 +1329,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         // Server branding
         server_name: data.server_name,
         authenticated_webgl_background_enabled: data.authenticated_webgl_background_enabled ?? true,
+        openapi_model_prefix_enabled: data.openapi_model_prefix_enabled ?? true,
         // Embedding settings
         ...getEmbeddingSettingsFormData(data),
         // LLM settings
@@ -1785,6 +1786,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       const dataToSave = {
         server_name: normalizedServerName,
         authenticated_webgl_background_enabled: formData.authenticated_webgl_background_enabled ?? settings?.authenticated_webgl_background_enabled ?? true,
+        openapi_model_prefix_enabled: formData.openapi_model_prefix_enabled ?? settings?.openapi_model_prefix_enabled ?? true,
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
@@ -1792,6 +1794,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         ...prev,
         server_name: normalizedServerName,
         authenticated_webgl_background_enabled: updated.authenticated_webgl_background_enabled ?? true,
+        openapi_model_prefix_enabled: updated.openapi_model_prefix_enabled ?? true,
       }));
       // Show restart guidance in the dismissable security banner.
       sessionStorage.setItem('ragtime_branding_restart_notice', 'true');
@@ -2780,7 +2783,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
               gap: '1rem',
               alignItems: 'start',
             }}
@@ -2812,6 +2815,26 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
               </label>
               <p className="field-help">
                 Show the WebGL gradient behind authenticated app pages. Disable this to use the static theme background after login.
+              </p>
+            </div>
+
+            <div className="form-group">
+              <label className="chat-toggle-control" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <label className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    checked={formData.openapi_model_prefix_enabled ?? settings?.openapi_model_prefix_enabled ?? true}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      openapi_model_prefix_enabled: e.target.checked,
+                    })}
+                  />
+                  <span className="toggle-slider"></span>
+                </label>
+                <span>Prefix API Model Names</span>
+              </label>
+              <p className="field-help">
+                Add the server name before models listed by the OpenAI-compatible API.
               </p>
             </div>
           </div>

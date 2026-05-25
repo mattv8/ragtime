@@ -8,6 +8,7 @@ from pydantic import SecretStr
 import ragtime.core.model_limits as model_limits
 import ragtime.indexer.routes as indexer_routes
 from ragtime.api.routes import (
+    _apply_openapi_model_name_prefix,
     _build_openapi_model_entry,
     _ensure_unique_openapi_model_ids,
     _normalize_openapi_model_id,
@@ -346,6 +347,60 @@ class ModelResolutionTests(unittest.TestCase):
 
         self.assertEqual(runtime_model, "github_copilot::claude-haiku-4.5")
         self.assertEqual(response_model, "Anthropic Claude Haiku 4.5")
+
+    def test_openapi_model_name_prefix_uses_server_name(self) -> None:
+        entry = _build_openapi_model_entry(
+            AvailableModel(
+                id="claude-haiku-4.5",
+                name="Claude Haiku 4.5",
+                provider="github_copilot",
+                model_provider_label="Anthropic",
+                model_family="Claude Haiku",
+                display_name="4.5",
+            ),
+            "openai",
+        )
+
+        prefixed = _apply_openapi_model_name_prefix(
+            [entry],
+            {"server_name": "Staging Ragtime", "openapi_model_prefix_enabled": True},
+        )[0]
+
+        self.assertEqual(prefixed.id, "Staging Ragtime Anthropic Claude Haiku 4.5")
+        self.assertEqual(prefixed.root, "Staging Ragtime Anthropic Claude Haiku 4.5")
+        self.assertIn("Anthropic Claude Haiku 4.5", prefixed.selection_keys)
+
+    def test_openapi_prefixed_model_id_resolves_to_runtime_model(self) -> None:
+        entry = _build_openapi_model_entry(
+            AvailableModel(
+                id="claude-haiku-4.5",
+                name="Claude Haiku 4.5",
+                provider="github_copilot",
+                model_provider_label="Anthropic",
+                model_family="Claude Haiku",
+                display_name="4.5",
+            ),
+            "openai",
+        )
+        prefixed = _apply_openapi_model_name_prefix(
+            [entry],
+            {"server_name": "Staging Ragtime", "openapi_model_prefix_enabled": True},
+        )[0]
+
+        with mock.patch(
+            "ragtime.api.routes._get_openapi_model_entries",
+            new=mock.AsyncMock(return_value=[prefixed]),
+        ):
+            runtime_model, response_model = asyncio.run(
+                _resolve_effective_model(
+                    "Anthropic Claude Haiku 4.5",
+                    {"server_name": "Staging Ragtime", "openapi_model_prefix_enabled": True},
+                    "openai",
+                )
+            )
+
+        self.assertEqual(runtime_model, "github_copilot::claude-haiku-4.5")
+        self.assertEqual(response_model, "Staging Ragtime Anthropic Claude Haiku 4.5")
 
     def test_openapi_compact_provider_tokens_are_not_runtime_aliases(self) -> None:
         self.assertEqual(
