@@ -39,7 +39,7 @@ FROM python:3.12-slim-trixie AS python-builder
 
 # Build arguments
 ARG DEBIAN_FRONTEND=noninteractive
-# Set LEGACY_CPU=1 to build NumPy from source for older CPUs without X86_V2 support
+# Set LEGACY_CPU=1 to use dependency pins compatible with older CPUs without X86_V2 support
 ARG LEGACY_CPU=0
 
 # Install build dependencies
@@ -53,18 +53,21 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Install Python dependencies from pyproject groups
-# For legacy CPU support, use NumPy 1.x which has better compatibility with older CPUs
-# Install all app deps first, then force-reinstall legacy overrides.
+# For legacy CPU support, constrain the full app install up front so pip never
+# selects wheels that require newer CPU instructions, then force-reinstall the
+# legacy overrides to keep the final environment honest.
 COPY pyproject.toml /tmp/pyproject.toml
 COPY docker/scripts/install_deps_from_pyproject.py /tmp/install_deps_from_pyproject.py
 RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=locked \
     python /tmp/install_deps_from_pyproject.py /tmp/pyproject.toml app /tmp/requirements.app.txt && \
     if [ "$LEGACY_CPU" = "1" ]; then \
-        echo "Installing all dependencies..." && \
-        pip install -r /tmp/requirements.app.txt && \
         python /tmp/install_deps_from_pyproject.py /tmp/pyproject.toml legacy /tmp/requirements.legacy.txt && \
-        echo "Force-reinstalling legacy CPU packages (NumPy 1.x, rawpy <0.22)..." && \
-        pip install --force-reinstall --no-deps -r /tmp/requirements.legacy.txt; \
+        python /tmp/install_deps_from_pyproject.py /tmp/pyproject.toml legacy-constraints /tmp/constraints.legacy.txt && \
+        echo "Installing all dependencies with legacy CPU constraints..." && \
+        pip install -c /tmp/constraints.legacy.txt -r /tmp/requirements.app.txt && \
+        echo "Force-reinstalling legacy CPU packages..." && \
+        pip install --force-reinstall --no-deps -r /tmp/requirements.legacy.txt && \
+        python -c "from importlib.metadata import version; assert version('faiss-cpu') == '1.13.0', version('faiss-cpu'); import faiss; print('legacy faiss-cpu import ok', version('faiss-cpu'))"; \
     else \
         pip install -r /tmp/requirements.app.txt; \
     fi && \

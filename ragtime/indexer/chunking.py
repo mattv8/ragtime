@@ -51,6 +51,7 @@ logger = get_logger(__name__)
 # tokenizer that roughly matches most embedding model tokenization
 TIKTOKEN_ENCODING = "cl100k_base"
 
+
 # Global process pool - initialized lazily
 _process_pool: Optional[ProcessPoolExecutor] = None
 _pool_max_workers: int = 1
@@ -466,7 +467,7 @@ def _chunk_with_chonkie_code(
 
     # Create chunker - may raise if language not supported
     chunker = CodeChunker(
-        tokenizer=tokenizer,
+        tokenizer,
         chunk_size=effective_chunk_size,
         language=language,
     )
@@ -497,7 +498,7 @@ def _chunk_with_chonkie_code(
                     # Valid mapping found (manual or auto)
                     logger.debug(f"Mapping detected language '{detected_lang}' to '{mapped_lang}' for {source_path}")
                     chunker = CodeChunker(
-                        tokenizer=tokenizer,
+                        tokenizer,
                         chunk_size=effective_chunk_size,
                         language=mapped_lang,
                     )
@@ -511,7 +512,7 @@ def _chunk_with_chonkie_code(
     # This helps retrieval when function calls reference other functions
     if chunk_overlap > 0 and len(chunks) > 1:
         refinery = OverlapRefinery(
-            tokenizer=tokenizer,
+            tokenizer,
             context_size=chunk_overlap,
             mode="recursive",  # Use delimiter-aware overlap
             method="suffix",  # Add context from previous chunk
@@ -597,7 +598,7 @@ def _chunk_with_recursive(
     # min_characters_per_chunk needs adjustment for token mode
     min_chars = 20 if use_tokens else 50
     chunker = RecursiveChunker(
-        tokenizer=tokenizer,
+        tokenizer,
         chunk_size=chunk_size,
         min_characters_per_chunk=min_chars,
     )

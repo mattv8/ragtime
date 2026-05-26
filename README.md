@@ -618,7 +618,7 @@ Your CPU lacks the X86_V2 instruction set required by modern NumPy binaries. Use
 image: hub.docker.visnovsky.us/library/ragtime:legacy
 ```
 
-This image builds NumPy from source without CPU-specific optimizations.
+This image pins CPU-sensitive native dependencies, including NumPy and FAISS, to versions compatible with older virtual CPU profiles.
 
 ## Contributing
 
