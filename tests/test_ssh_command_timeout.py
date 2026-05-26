@@ -80,7 +80,7 @@ class ExecuteSshCommandTimeoutTests(unittest.TestCase):
         executed_command, timeout = client.commands[0]
         self.assertEqual(timeout, 60)
         self.assertIn("timeout --signal=TERM --kill-after=5s 60s", executed_command)
-        self.assertIn('"$command_shell" -lc', executed_command)
+        self.assertIn('"$command_shell" -lc \'eval "$1" & child=$!;', executed_command)
         self.assertIn("journalctl -f", executed_command)
 
     def test_timeout_wrapper_preserves_shell_for_multiline_commands(self) -> None:

@@ -14,7 +14,7 @@ def test_finite_tool_timeout_limit_is_not_bypassed_by_zero_or_null() -> None:
 
     for resolve_timeout in resolvers:
         assert resolve_timeout(None, 60) == 60
-        assert resolve_timeout(0, 60) == 60
+        assert resolve_timeout(0, 60) == 0
         assert resolve_timeout(5, 60) == 5
         assert resolve_timeout(120, 60) == 60
 

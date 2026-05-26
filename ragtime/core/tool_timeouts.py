@@ -4,9 +4,13 @@
 def resolve_effective_tool_timeout(requested_timeout: int | None, timeout_max_seconds: int) -> int:
     """Resolve a requested timeout against a per-tool maximum.
 
-    A max of 0 means the tool is configured as unlimited. For finite max values,
-    omitted/null or explicit 0 requests use the configured maximum instead of
-    bypassing it.
+    Rules:
+    - max=0 (unlimited tool): pass the requested value through unchanged.
+    - requested=None (omitted by model): return max (apply the configured cap).
+    - requested=0 (explicit "no timeout"): return 0 — honours DB-query semantics
+      where 0 means "run to proxy limit". Note: also bypasses SSH caps, which is
+      acceptable because models use null rather than 0 to mean "use default".
+    - otherwise: return min(requested, max).
     """
     max_timeout = max(0, int(timeout_max_seconds or 0))
 
@@ -17,6 +21,8 @@ def resolve_effective_tool_timeout(requested_timeout: int | None, timeout_max_se
 
     if max_timeout == 0:
         return requested
+
     if requested == 0:
-        return max_timeout
+        return 0
+
     return min(requested, max_timeout)

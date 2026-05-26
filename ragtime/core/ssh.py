@@ -220,10 +220,13 @@ def _wrap_command_with_timeout(command: str, timeout_seconds: int) -> str:
         return command
 
     quoted_command = shlex.quote(command)
+    # We use a trap to forward the TERM signal to the child command process.
+    # Without this, `timeout` kills only the shell, leaving long-running
+    # descendants (like docker events) orphaned holding resources.
     return (
         'command_shell="${SHELL:-/bin/sh}"; '
         "if command -v timeout >/dev/null 2>&1; then "
-        f'timeout --signal=TERM --kill-after=5s {int(timeout_seconds)}s "$command_shell" -lc {quoted_command}; '
+        f'timeout --signal=TERM --kill-after=5s {int(timeout_seconds)}s "$command_shell" -lc \'eval "$1" & child=$!; trap "kill -TERM $child 2>/dev/null" TERM INT EXIT; wait $child\' _ {quoted_command}; '
         f'else "$command_shell" -lc {quoted_command}; fi'
     )
 
