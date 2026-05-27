@@ -190,6 +190,11 @@ flowchart LR
    # Maximum concurrent runtime sessions in running/starting state (default: 12)
    # RUNTIME_MAX_SESSIONS=12
 
+    # Optional override for concurrent workspace startup/bootstrap operations per
+    # runtime worker. By default, the worker sizes this automatically from runtime
+    # namespace isolation, CPU, memory, and session capacity.
+    # RUNTIME_STARTUP_CONCURRENCY=
+
    # Chat web search uses the bundled internal SearXNG service by default.
    # Set TAVILY_API_KEY to use Tavily instead (get a key at https://app.tavily.com/home).
    # TAVILY_API_KEY=
@@ -328,11 +333,13 @@ flowchart LR
          RUNTIME_WORKER_BASE_URL: ${RUNTIME_WORKER_BASE_URL:-http://runtime:8090}
          RUNTIME_WORKSPACE_ROOT: ${RUNTIME_WORKSPACE_ROOT:-/data/_userspace}
          RUNTIME_MAX_SESSIONS: ${RUNTIME_MAX_SESSIONS:-12}
+         RUNTIME_STARTUP_CONCURRENCY: ${RUNTIME_STARTUP_CONCURRENCY:-}
          RUNTIME_LEASE_TTL_SECONDS: ${RUNTIME_LEASE_TTL_SECONDS:-3600}
          RUNTIME_RECONCILE_INTERVAL_SECONDS: ${RUNTIME_RECONCILE_INTERVAL_SECONDS:-15}
        volumes:
          - ./data:/data
-       # Uncomment below to enable full runtime sandbox isolation (pivot_root + mount namespace)
+        # Uncomment below to enable full runtime sandbox isolation when the host
+        # permits mount and PID namespaces (otherwise runtime falls back to chroot).
        # privileged: true
        # cap_add:
        #   - SYS_ADMIN

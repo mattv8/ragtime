@@ -52,6 +52,7 @@ from runtime.worker.sandbox import (
     ensure_sandbox_ready,
     get_sandbox_spec,
     materialize_mounts,
+    recommended_startup_concurrency,
     sandbox_diagnostics,
     spawn_sandboxed,
 )
@@ -234,7 +235,12 @@ class WorkerService:
         self._runtime_config_file = ".ragtime/runtime-entrypoint.json"
         self._startup_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_startup_locks: dict[str, asyncio.Lock] = {}
-        self._startup_semaphore = asyncio.Semaphore(get_positive_int_env("RUNTIME_STARTUP_CONCURRENCY", 2))
+        self._startup_semaphore = asyncio.Semaphore(
+            get_positive_int_env(
+                "RUNTIME_STARTUP_CONCURRENCY",
+                recommended_startup_concurrency(),
+            )
+        )
         self._mount_materialization_semaphore = asyncio.Semaphore(
             get_positive_int_env(
                 "RUNTIME_MOUNT_MATERIALIZATION_CONCURRENCY",

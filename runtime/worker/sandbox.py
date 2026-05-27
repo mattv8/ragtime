@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import ctypes.util
+import errno
 import logging
 import os
 import posixpath
@@ -66,10 +67,27 @@ MS_NOEXEC = 8
 MNT_DETACH = 2
 
 # Syscall numbers (x86_64)
+SYS_CAPSET = 126
 SYS_PIVOT_ROOT = 155
 SYS_MOUNT = 165
 SYS_UMOUNT2 = 166
 SYS_UNSHARE = 272
+
+# prctl(2) constants
+PR_CAPBSET_DROP = 24
+PR_SET_NO_NEW_PRIVS = 38
+LINUX_CAPABILITY_VERSION_3 = 0x20080522
+_CAPABILITY_WORDS = 2
+_MAX_CAPABILITY_INDEX = 63
+_SANDBOX_CGROUP_PIDS_FLOOR = 64
+_SANDBOX_CGROUP_PIDS_MIN = 128
+_SANDBOX_CGROUP_PIDS_DEFAULT = 512
+_SANDBOX_CGROUP_PIDS_MAX = 1024
+_SANDBOX_CGROUP_PIDS_RESERVE = 128
+_SANDBOX_CGROUP_PARENT = "/sys/fs/cgroup/ragtime-sandboxes"
+_STARTUP_CONCURRENCY_MAX = 4
+_STARTUP_CONCURRENCY_CPU_DIVISOR = 2
+_STARTUP_CONCURRENCY_BYTES_PER_SLOT = 2 * 1024 * 1024 * 1024
 
 # Directories from the host container to bind-mount read-only into each
 # workspace rootfs (lightweight — no copy, shared pages).
@@ -116,19 +134,20 @@ _libc_name = ctypes.util.find_library("c")
 _libc = ctypes.CDLL(_libc_name or "libc.so.6", use_errno=True)
 
 
-def _can_unshare_userns() -> bool:
-    """Probe whether user namespaces are permitted in this container."""
+def _can_unshare_flags(flags: int) -> bool:
+    """Probe whether unshare(flags) is permitted without perturbing this process."""
     try:
         pid = os.fork()
-        if pid == 0:
-            # Child: try unshare(CLONE_NEWUSER)
-            ret = _libc.unshare(CLONE_NEWUSER)
-            os._exit(0 if ret == 0 else 1)
-        else:
-            _, status = os.waitpid(pid, 0)
-            return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
     except Exception:
         return False
+    if pid == 0:
+        try:
+            ret = _libc.unshare(flags)
+        except Exception:
+            os._exit(1)
+        os._exit(0 if ret == 0 else 1)
+    _, status = os.waitpid(pid, 0)
+    return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
 
 
 @dataclass
@@ -139,6 +158,17 @@ class SandboxCapabilities:
     can_pivot_root: bool = False
     can_user_ns: bool = False
     can_mount: bool = False
+    unshare_flags: int = 0
+    dropped_unshare_flags: int = 0
+    mount_namespace: bool = False
+    pid_namespace: bool = False
+    uts_namespace: bool = False
+    ipc_namespace: bool = False
+    cgroup_pids_available: bool = False
+    cgroup_pids_parent: str | None = None
+    cgroup_pids_max: int | None = None
+    drop_capabilities: bool = True
+    no_new_privs: bool = True
     mode: str = "unavailable"  # "pivot_root" | "chroot" | "unavailable"
 
     @property
@@ -151,6 +181,129 @@ _rootfs_provision_locks: dict[str, threading.Lock] = {}
 _rootfs_provision_locks_guard = threading.Lock()
 
 
+def _unshare_flag_names(flags: int) -> list[str]:
+    return [name for bit, name in _UNSHARE_FLAG_NAMES if flags & bit]
+
+
+def _read_cgroup_limit(path: Path) -> int | None:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw or raw == "max":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _detect_memory_limit_bytes() -> int | None:
+    cgroup_value = _read_cgroup_limit(Path("/sys/fs/cgroup/memory.max"))
+    if cgroup_value is not None:
+        return cgroup_value
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if not line.startswith("MemTotal:"):
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                return int(parts[1]) * 1024
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _runtime_max_sessions() -> int:
+    raw = os.getenv("RUNTIME_MAX_SESSIONS", "12").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 12
+    return value if value > 0 else 12
+
+
+def _calculate_sandbox_pids_max(
+    *,
+    total_pids_limit: int | None,
+    memory_limit_bytes: int | None,
+    cpu_count: int | None,
+    max_sessions: int,
+) -> int:
+    cpu = max(1, int(cpu_count or 1))
+    memory_gib = 0
+    if memory_limit_bytes is not None and memory_limit_bytes > 0:
+        memory_gib = max(1, memory_limit_bytes // (1024 * 1024 * 1024))
+
+    resource_target = _SANDBOX_CGROUP_PIDS_DEFAULT
+    if cpu_count is not None or memory_limit_bytes is not None:
+        resource_target = (cpu * 64) + (memory_gib * 64)
+    resource_target = max(_SANDBOX_CGROUP_PIDS_MIN, min(_SANDBOX_CGROUP_PIDS_MAX, resource_target))
+
+    if total_pids_limit is None:
+        return resource_target
+
+    session_count = max(1, int(max_sessions or 1))
+    reserve = min(max(_SANDBOX_CGROUP_PIDS_RESERVE, total_pids_limit // 10), _SANDBOX_CGROUP_PIDS_MAX)
+    per_session_budget = max(_SANDBOX_CGROUP_PIDS_FLOOR, (max(0, total_pids_limit - reserve) // session_count))
+    return max(_SANDBOX_CGROUP_PIDS_FLOOR, min(resource_target, per_session_budget, _SANDBOX_CGROUP_PIDS_MAX))
+
+
+def _default_sandbox_pids_max(root: Path) -> int:
+    return _calculate_sandbox_pids_max(
+        total_pids_limit=_read_cgroup_limit(root / "pids.max"),
+        memory_limit_bytes=_detect_memory_limit_bytes(),
+        cpu_count=os.cpu_count(),
+        max_sessions=_runtime_max_sessions(),
+    )
+
+
+def recommended_startup_concurrency() -> int:
+    caps = detect_capabilities()
+    if not caps.pid_namespace:
+        return 1
+
+    cpu_slots = max(1, (os.cpu_count() or 1) // _STARTUP_CONCURRENCY_CPU_DIVISOR)
+    memory_limit = _detect_memory_limit_bytes()
+    if memory_limit is None:
+        memory_slots = cpu_slots
+    else:
+        memory_slots = max(1, memory_limit // _STARTUP_CONCURRENCY_BYTES_PER_SLOT)
+    return max(1, min(_STARTUP_CONCURRENCY_MAX, cpu_slots, memory_slots, _runtime_max_sessions()))
+
+
+def _detect_cgroup_pids_limit() -> tuple[bool, str | None, int | None]:
+    parent = Path(_SANDBOX_CGROUP_PARENT)
+    root = parent.parent
+    if not (root / "cgroup.controllers").exists():
+        return False, None, None
+    try:
+        controllers = (root / "cgroup.controllers").read_text(encoding="utf-8").split()
+    except OSError:
+        return False, None, None
+    if "pids" not in controllers:
+        return False, None, None
+    try:
+        pids_max = _default_sandbox_pids_max(root)
+        parent.mkdir(parents=True, exist_ok=True)
+        try:
+            (root / "cgroup.subtree_control").write_text("+pids", encoding="utf-8")
+        except OSError as exc:
+            if exc.errno not in {errno.EBUSY, errno.EPERM, errno.EACCES, errno.EROFS}:
+                raise
+        probe = parent / ".probe"
+        probe.mkdir(exist_ok=True)
+        (probe / "pids.max").write_text(str(pids_max), encoding="utf-8")
+        try:
+            probe.rmdir()
+        except OSError:
+            pass
+        return True, str(parent), pids_max
+    except OSError:
+        return False, None, None
+
+
 def detect_capabilities() -> SandboxCapabilities:
     """Detect what sandbox primitives are available (cached after first call)."""
     cached = _capabilities_cache.get("caps")
@@ -159,34 +312,79 @@ def detect_capabilities() -> SandboxCapabilities:
 
     caps = SandboxCapabilities()
     caps.has_cap_sys_admin = has_cap_sys_admin()
-    caps.can_user_ns = _can_unshare_userns()
+    caps.can_user_ns = _can_unshare_flags(CLONE_NEWUSER)
 
-    # Test mount capability by trying a private mount namespace
-    if caps.has_cap_sys_admin:
-        caps.can_mount = True
-        caps.can_pivot_root = True
+    requested_flags = CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID
+    supported_flags = 0
+    for flag in (CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWPID):
+        if caps.has_cap_sys_admin and _can_unshare_flags(flag):
+            supported_flags |= flag
+    if caps.can_user_ns and not caps.has_cap_sys_admin:
+        user_mount_flags = CLONE_NEWUSER | CLONE_NEWNS
+        if _can_unshare_flags(user_mount_flags):
+            supported_flags |= user_mount_flags
+
+    # Probe the final usable combination once. Some kernels/security profiles
+    # accept individual flags but reject the combined call used by real spawns.
+    candidate_flags = supported_flags & (requested_flags | CLONE_NEWUSER)
+    if candidate_flags and not _can_unshare_flags(candidate_flags):
+        reduced_flags = 0
+        for flag in (CLONE_NEWUSER, CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWPID):
+            trial = reduced_flags | (candidate_flags & flag)
+            if trial and _can_unshare_flags(trial):
+                reduced_flags = trial
+        candidate_flags = reduced_flags
+
+    caps.unshare_flags = candidate_flags
+    caps.dropped_unshare_flags = requested_flags & ~candidate_flags
+    caps.mount_namespace = bool(candidate_flags & CLONE_NEWNS)
+    caps.pid_namespace = bool(candidate_flags & CLONE_NEWPID)
+    caps.uts_namespace = bool(candidate_flags & CLONE_NEWUTS)
+    caps.ipc_namespace = bool(candidate_flags & CLONE_NEWIPC)
+    caps.can_mount = caps.mount_namespace and (caps.has_cap_sys_admin or bool(candidate_flags & CLONE_NEWUSER))
+    caps.can_pivot_root = caps.has_cap_sys_admin and caps.can_mount and caps.pid_namespace
+
+    cgroup_available, cgroup_parent, cgroup_pids_max = _detect_cgroup_pids_limit()
+    caps.cgroup_pids_available = cgroup_available
+    caps.cgroup_pids_parent = cgroup_parent
+    caps.cgroup_pids_max = cgroup_pids_max
+
+    if caps.can_pivot_root:
         caps.mode = "pivot_root"
+    elif os.geteuid() == 0:
+        caps.mode = "chroot"
     else:
-        # Even without CAP_SYS_ADMIN, chroot may work if we are uid 0
-        if os.geteuid() == 0:
-            caps.mode = "chroot"
-            caps.can_mount = False  # mount() requires CAP_SYS_ADMIN
-        else:
-            caps.mode = "unavailable"
+        caps.mode = "unavailable"
 
     _capabilities_cache["caps"] = caps
     logger.info(
-        "Sandbox capabilities detected: mode=%s, cap_sys_admin=%s, user_ns=%s, mount=%s, pivot_root=%s",
+        "Sandbox capabilities detected: mode=%s, cap_sys_admin=%s, user_ns=%s, mount=%s, "
+        "pivot_root=%s, unshare_flags=%s, dropped_unshare_flags=%s, pid_namespace=%s, "
+        "cgroup_pids=%s, cgroup_pids_max=%s, drop_caps=%s, no_new_privs=%s",
         caps.mode,
         caps.has_cap_sys_admin,
         caps.can_user_ns,
         caps.can_mount,
         caps.can_pivot_root,
+        _unshare_flag_names(caps.unshare_flags),
+        _unshare_flag_names(caps.dropped_unshare_flags),
+        caps.pid_namespace,
+        caps.cgroup_pids_available,
+        caps.cgroup_pids_max,
+        caps.drop_capabilities,
+        caps.no_new_privs,
     )
+    if caps.dropped_unshare_flags:
+        logger.warning(
+            "Sandbox namespace support degraded; unsupported flags dropped: %s",
+            _unshare_flag_names(caps.dropped_unshare_flags),
+        )
     return caps
 
 
 def _pivot_root_unshare_flags(caps: SandboxCapabilities) -> int:
+    if caps.unshare_flags:
+        return caps.unshare_flags
     flags = CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID
     if caps.can_user_ns and not caps.has_cap_sys_admin:
         flags |= CLONE_NEWUSER
@@ -220,13 +418,13 @@ class SandboxSpec:
 
 
 def _workspace_mirror_required(spec: SandboxSpec, caps: SandboxCapabilities) -> bool:
-    if spec.mode == "pivot_root" and caps.can_mount:
+    if caps.can_mount:
         return False
     return True
 
 
 def _chroot_system_sync_required(spec: SandboxSpec, caps: SandboxCapabilities) -> bool:
-    return spec.mode == "chroot" and caps.mode == "chroot" and not caps.can_user_ns
+    return spec.mode == "chroot" and caps.mode == "chroot" and not caps.can_mount
 
 
 def provision_rootfs(spec: SandboxSpec) -> None:
@@ -590,7 +788,7 @@ def _syscall_pivot_root(new_root: str, put_old: str) -> int:
     return ret
 
 
-def _setup_sandbox_mounts(spec: SandboxSpec) -> None:
+def _setup_sandbox_mounts(spec: SandboxSpec, *, mount_proc: bool) -> None:
     """Perform bind mounts and /proc mount inside the sandbox.
 
     MUST be called in a child process that has already done
@@ -654,12 +852,16 @@ def _setup_sandbox_mounts(spec: SandboxSpec) -> None:
         except OSError:
             pass
 
-    # Mount /proc
-    proc_dst = os.path.join(rootfs, "proc")
-    try:
-        _syscall_mount("proc", proc_dst, "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC)
-    except OSError:
-        pass  # Non-fatal; some commands will degrade
+    # Mount a fresh /proc only when this process also has a private PID
+    # namespace. Without CLONE_NEWPID, a new procfs exposes the runtime
+    # container's process tree to every workspace and makes fork/job-control
+    # failures much harder to reason about.
+    if mount_proc:
+        proc_dst = os.path.join(rootfs, "proc")
+        try:
+            _syscall_mount("proc", proc_dst, "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC)
+        except OSError:
+            pass  # Non-fatal; some commands will degrade
 
     # Mount /dev/shm as tmpfs
     shm_dst = os.path.join(rootfs, "dev/shm")
@@ -717,6 +919,75 @@ def _setup_user_namespace_mappings() -> None:
         Path("/proc/self/gid_map").write_text(f"0 {gid} 1\n", encoding="utf-8")
     except (PermissionError, OSError):
         pass
+
+
+def _sanitize_cgroup_component(value: str) -> str:
+    sanitized = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value.strip())
+    return sanitized[:120] or "workspace"
+
+
+def _sandbox_cgroup_path(spec: SandboxSpec, caps: SandboxCapabilities) -> Path | None:
+    if not caps.cgroup_pids_available or not caps.cgroup_pids_parent:
+        return None
+    return Path(caps.cgroup_pids_parent) / _sanitize_cgroup_component(spec.workspace_id)
+
+
+def _prepare_sandbox_cgroup(spec: SandboxSpec, caps: SandboxCapabilities) -> None:
+    cgroup_path = _sandbox_cgroup_path(spec, caps)
+    if cgroup_path is None or caps.cgroup_pids_max is None:
+        return
+    try:
+        cgroup_path.mkdir(parents=True, exist_ok=True)
+        (cgroup_path / "pids.max").write_text(str(caps.cgroup_pids_max), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Failed to prepare sandbox pids cgroup for %s: %s", spec.workspace_id, exc)
+
+
+def _assign_current_process_to_sandbox_cgroup(spec: SandboxSpec, caps: SandboxCapabilities) -> None:
+    cgroup_path = _sandbox_cgroup_path(spec, caps)
+    if cgroup_path is None:
+        return
+    try:
+        (cgroup_path / "cgroup.procs").write_text(str(os.getpid()), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Failed to assign sandbox process to pids cgroup for %s: %s", spec.workspace_id, exc)
+
+
+class _CapHeader(ctypes.Structure):
+    _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+
+
+class _CapData(ctypes.Structure):
+    _fields_ = [
+        ("effective", ctypes.c_uint32),
+        ("permitted", ctypes.c_uint32),
+        ("inheritable", ctypes.c_uint32),
+    ]
+
+
+def _drop_process_capabilities(*, no_new_privs: bool) -> None:
+    for cap_index in range(_MAX_CAPABILITY_INDEX + 1):
+        ret = _libc.prctl(PR_CAPBSET_DROP, cap_index, 0, 0, 0)
+        if ret == 0:
+            continue
+        err = ctypes.get_errno()
+        if err == errno.EINVAL:
+            break
+        if err not in {errno.EPERM, errno.EACCES}:
+            logger.debug("Failed to drop capability %s from bounding set: %s", cap_index, os.strerror(err))
+
+    header = _CapHeader(version=LINUX_CAPABILITY_VERSION_3, pid=0)
+    data = (_CapData * _CAPABILITY_WORDS)()
+    ret = _libc.syscall(SYS_CAPSET, ctypes.byref(header), ctypes.byref(data))
+    if ret != 0:
+        err = ctypes.get_errno()
+        logger.warning("Failed to clear sandbox process capabilities: %s", os.strerror(err))
+
+    if no_new_privs:
+        ret = _libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+        if ret != 0:
+            err = ctypes.get_errno()
+            logger.warning("Failed to set no_new_privs for sandbox process: %s", os.strerror(err))
 
 
 # ---------------------------------------------------------------------------
@@ -848,57 +1119,36 @@ def _sandbox_preexec(spec: SandboxSpec, caps: SandboxCapabilities, target_cwd: s
     ``os._exit(126)`` so the parent sees a clean failure.
     """
     try:
-        if caps.mode == "pivot_root":
-            # Full namespace isolation + pivot_root
-            unshare_flags = _pivot_root_unshare_flags(caps)
-            # NET namespace - only if we have full caps (network isolation)
-            if caps.has_cap_sys_admin:
-                # Don't isolate network - devserver needs localhost access
-                pass
+        if caps.mode in {"pivot_root", "chroot"}:
+            _assign_current_process_to_sandbox_cgroup(spec, caps)
 
-            # DIAGNOSTIC (temporary): probe both flag combinations in
-            # forked children so we can compare with vs without
-            # CLONE_NEWUSER without affecting the real preexec process.
-            _probe_unshare_combinations(unshare_flags, caps)
-
-            ret = _libc.unshare(unshare_flags)
-            if ret != 0:
-                err = ctypes.get_errno()
-                logger.error("unshare() failed: %s", os.strerror(err))
-                _diagnose_unshare_failure(unshare_flags, err, caps)
-                os._exit(126)
+            unshare_flags = caps.unshare_flags
+            if unshare_flags:
+                ret = _libc.unshare(unshare_flags)
+                if ret != 0:
+                    err = ctypes.get_errno()
+                    logger.error("unshare() failed: %s", os.strerror(err))
+                    _diagnose_unshare_failure(unshare_flags, err, caps)
+                    os._exit(126)
 
             if caps.can_user_ns and (unshare_flags & CLONE_NEWUSER):
                 _setup_user_namespace_mappings()
 
-            _setup_sandbox_mounts(spec)
+        if caps.mode == "pivot_root":
+            _setup_sandbox_mounts(spec, mount_proc=caps.pid_namespace)
             _do_pivot_root(spec)
 
         elif caps.mode == "chroot":
-            # chroot-only fallback — still provides filesystem confinement
-            # Try to get a private mount namespace even without CAP_SYS_ADMIN
-            # (may work if user namespaces are available)
-            got_mount_ns = False
-            if caps.can_user_ns:
-                ret = _libc.unshare(CLONE_NEWUSER | CLONE_NEWNS)
-                if ret == 0:
-                    _setup_user_namespace_mappings()
-                    got_mount_ns = True
-
-            if got_mount_ns:
-                # We have a mount namespace, do bind mounts
+            if caps.can_mount:
                 try:
-                    _setup_sandbox_mounts(spec)
+                    _setup_sandbox_mounts(spec, mount_proc=caps.pid_namespace)
                 except OSError as exc:
-                    # Mount failed but we can still chroot
                     logger.warning(
                         "Sandbox mount setup failed in chroot mode, continuing with basic chroot: %s",
                         exc,
                     )
                     _sync_system_dirs_for_chroot(spec)
             else:
-                # No mount namespace available — perform minimal setup
-                # Sync essential system dirs for chroot operation
                 _sync_system_dirs_for_chroot(spec)
 
             _do_chroot(spec)
@@ -907,13 +1157,14 @@ def _sandbox_preexec(spec: SandboxSpec, caps: SandboxCapabilities, target_cwd: s
             logger.error("Sandbox mode '%s' is not supported", caps.mode)
             os._exit(126)
 
-        # Set hostname inside the sandbox (UTS namespace)
-        try:
-            import socket
+        # Set hostname only after entering a private UTS namespace.
+        if caps.uts_namespace:
+            try:
+                import socket
 
-            socket.sethostname("sandbox")
-        except Exception:
-            pass
+                socket.sethostname("sandbox")
+            except Exception:
+                pass
 
         # chdir to the correct directory inside sandbox
         if target_cwd:
@@ -923,6 +1174,14 @@ def _sandbox_preexec(spec: SandboxSpec, caps: SandboxCapabilities, target_cwd: s
                 os.chdir(spec.sandbox_workspace)
         else:
             os.chdir(spec.sandbox_workspace)
+
+        if caps.drop_capabilities:
+            _drop_process_capabilities(no_new_privs=caps.no_new_privs)
+        elif caps.no_new_privs:
+            ret = _libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+            if ret != 0:
+                err = ctypes.get_errno()
+                logger.warning("Failed to set no_new_privs for sandbox process: %s", os.strerror(err))
 
     except Exception as exc:
         logger.error("Sandbox setup failed: %s", exc, exc_info=True)
@@ -1122,6 +1381,7 @@ def ensure_sandbox_ready(spec: SandboxSpec) -> None:
     with _rootfs_provision_lock(spec.rootfs_path):
         provision_rootfs(spec)
         caps = detect_capabilities()
+        _prepare_sandbox_cgroup(spec, caps)
         if _chroot_system_sync_required(spec, caps):
             _sync_system_dirs_for_chroot(spec)
 
@@ -1253,6 +1513,13 @@ def cleanup_sandbox(spec: SandboxSpec) -> None:
     except Exception:
         pass
 
+    cgroup_path = _sandbox_cgroup_path(spec, detect_capabilities())
+    if cgroup_path is not None:
+        try:
+            cgroup_path.rmdir()
+        except OSError:
+            pass
+
     logger.info("Sandbox cleanup completed for rootfs: %s", rootfs)
 
 
@@ -1266,6 +1533,19 @@ def sandbox_diagnostics() -> dict[str, Any]:
         "can_pivot_root": caps.can_pivot_root,
         "can_user_ns": caps.can_user_ns,
         "can_mount": caps.can_mount,
+        "unshare_flags": caps.unshare_flags,
+        "unshare_flag_names": _unshare_flag_names(caps.unshare_flags),
+        "dropped_unshare_flags": caps.dropped_unshare_flags,
+        "dropped_unshare_flag_names": _unshare_flag_names(caps.dropped_unshare_flags),
+        "mount_namespace": caps.mount_namespace,
+        "pid_namespace": caps.pid_namespace,
+        "uts_namespace": caps.uts_namespace,
+        "ipc_namespace": caps.ipc_namespace,
+        "cgroup_pids_available": caps.cgroup_pids_available,
+        "cgroup_pids_parent": caps.cgroup_pids_parent,
+        "cgroup_pids_max": caps.cgroup_pids_max,
+        "drop_capabilities": caps.drop_capabilities,
+        "no_new_privs": caps.no_new_privs,
         "euid": os.geteuid(),
         "egid": os.getegid(),
     }

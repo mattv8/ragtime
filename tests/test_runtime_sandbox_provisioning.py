@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -10,6 +11,9 @@ from runtime.worker.service import WorkerService
 
 
 class SandboxProvisioningTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        sandbox._capabilities_cache.clear()
+
     def test_provision_rootfs_skips_workspace_copy_when_bind_mount_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -138,6 +142,138 @@ class SandboxProvisioningTests(unittest.TestCase):
         flags = sandbox._pivot_root_unshare_flags(caps)
 
         self.assertTrue(flags & sandbox.CLONE_NEWUSER)
+
+    def test_detect_capabilities_degrades_to_chroot_when_pid_namespace_rejected(self) -> None:
+        def can_unshare(flags: int) -> bool:
+            if flags == sandbox.CLONE_NEWUSER:
+                return False
+            if flags & sandbox.CLONE_NEWPID:
+                return False
+            return True
+
+        with (
+            mock.patch.object(sandbox, "has_cap_sys_admin", return_value=True),
+            mock.patch.object(sandbox.os, "geteuid", return_value=0),
+            mock.patch.object(sandbox, "_can_unshare_flags", side_effect=can_unshare),
+            mock.patch.object(sandbox, "_detect_cgroup_pids_limit", return_value=(False, None, None)),
+        ):
+            caps = sandbox.detect_capabilities()
+
+        self.assertEqual(caps.mode, "chroot")
+        self.assertTrue(caps.can_mount)
+        self.assertFalse(caps.can_pivot_root)
+        self.assertFalse(caps.pid_namespace)
+        self.assertTrue(caps.mount_namespace)
+        self.assertTrue(caps.dropped_unshare_flags & sandbox.CLONE_NEWPID)
+
+    def test_calculate_sandbox_pids_max_scales_up_on_resource_rich_host(self) -> None:
+        pids_max = sandbox._calculate_sandbox_pids_max(
+            total_pids_limit=77064,
+            memory_limit_bytes=64 * 1024 * 1024 * 1024,
+            cpu_count=16,
+            max_sessions=12,
+        )
+
+        self.assertEqual(pids_max, 1024)
+
+    def test_calculate_sandbox_pids_max_scales_down_on_small_host(self) -> None:
+        pids_max = sandbox._calculate_sandbox_pids_max(
+            total_pids_limit=None,
+            memory_limit_bytes=2 * 1024 * 1024 * 1024,
+            cpu_count=2,
+            max_sessions=12,
+        )
+
+        self.assertEqual(pids_max, 256)
+
+    def test_calculate_sandbox_pids_max_respects_constrained_pids_budget(self) -> None:
+        pids_max = sandbox._calculate_sandbox_pids_max(
+            total_pids_limit=1000,
+            memory_limit_bytes=64 * 1024 * 1024 * 1024,
+            cpu_count=16,
+            max_sessions=12,
+        )
+
+        self.assertEqual(pids_max, 72)
+
+    def test_recommended_startup_concurrency_stays_single_without_pid_namespace(self) -> None:
+        caps = sandbox.SandboxCapabilities(pid_namespace=False, mode="chroot")
+
+        with (
+            mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+            mock.patch.object(sandbox.os, "cpu_count", return_value=16),
+            mock.patch.object(sandbox, "_detect_memory_limit_bytes", return_value=16 * 1024 * 1024 * 1024),
+            mock.patch.dict(os.environ, {"RUNTIME_MAX_SESSIONS": "12"}, clear=False),
+        ):
+            concurrency = sandbox.recommended_startup_concurrency()
+
+        self.assertEqual(concurrency, 1)
+
+    def test_recommended_startup_concurrency_scales_with_isolated_resources(self) -> None:
+        caps = sandbox.SandboxCapabilities(pid_namespace=True, mode="pivot_root")
+
+        with (
+            mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+            mock.patch.object(sandbox.os, "cpu_count", return_value=16),
+            mock.patch.object(sandbox, "_detect_memory_limit_bytes", return_value=16 * 1024 * 1024 * 1024),
+            mock.patch.dict(os.environ, {"RUNTIME_MAX_SESSIONS": "12"}, clear=False),
+        ):
+            concurrency = sandbox.recommended_startup_concurrency()
+
+        self.assertEqual(concurrency, 4)
+
+    def test_recommended_startup_concurrency_respects_session_capacity(self) -> None:
+        caps = sandbox.SandboxCapabilities(pid_namespace=True, mode="pivot_root")
+
+        with (
+            mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+            mock.patch.object(sandbox.os, "cpu_count", return_value=16),
+            mock.patch.object(sandbox, "_detect_memory_limit_bytes", return_value=16 * 1024 * 1024 * 1024),
+            mock.patch.dict(os.environ, {"RUNTIME_MAX_SESSIONS": "2"}, clear=False),
+        ):
+            concurrency = sandbox.recommended_startup_concurrency()
+
+        self.assertEqual(concurrency, 2)
+
+    def test_setup_sandbox_mounts_skips_proc_without_pid_namespace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            files.mkdir()
+            for relative in ("bin", "usr", "lib", "sbin", "workspace", "dev", "dev/pts", "dev/shm", "proc"):
+                (rootfs / relative).mkdir(parents=True, exist_ok=True)
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="chroot",
+            )
+
+            with mock.patch.object(sandbox, "_syscall_mount") as mount_call:
+                sandbox._setup_sandbox_mounts(spec, mount_proc=False)
+
+        self.assertFalse(any(call.args[2] == "proc" for call in mount_call.call_args_list))
+
+    def test_setup_sandbox_mounts_mounts_proc_with_pid_namespace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            files.mkdir()
+            for relative in ("bin", "usr", "lib", "sbin", "workspace", "dev", "dev/pts", "dev/shm", "proc"):
+                (rootfs / relative).mkdir(parents=True, exist_ok=True)
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="pivot_root",
+            )
+
+            with mock.patch.object(sandbox, "_syscall_mount") as mount_call:
+                sandbox._setup_sandbox_mounts(spec, mount_proc=True)
+
+        self.assertTrue(any(call.args[2] == "proc" for call in mount_call.call_args_list))
 
     def test_materialize_mounts_live_binds_filesystem_source_when_mount_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
