@@ -25,6 +25,11 @@ from prisma.models import IndexMetadata as PrismaIndexMetadata
 
 from ragtime.chat_runtime.presets import CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.core.database import get_db
+from ragtime.core.datetimes import (
+    coerce_utc_datetime,
+    parse_utc_iso_datetime,
+    utc_now,
+)
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
     decrypt_json_passwords,
@@ -639,8 +644,8 @@ class IndexerRepository:
             "ocrMode": ocr_mode or "disabled",
             "ocrProvider": ocr_provider,
             "ocrVisionModel": ocr_vision_model,
-            "createdAt": datetime.utcnow(),
-            "lastModified": datetime.utcnow(),
+            "createdAt": utc_now(),
+            "lastModified": utc_now(),
         }
         update_data: dict = {
             "description": description,
@@ -656,7 +661,7 @@ class IndexerRepository:
             "ocrMode": ocr_mode or "disabled",
             "ocrProvider": ocr_provider,
             "ocrVisionModel": ocr_vision_model,
-            "lastModified": datetime.utcnow(),
+            "lastModified": utc_now(),
         }
 
         # Only update displayName if provided (don't overwrite with None)
@@ -705,7 +710,7 @@ class IndexerRepository:
                 "documentCount": document_count,
                 "chunkCount": chunk_count,
                 "sizeBytes": size_bytes,
-                "lastModified": datetime.utcnow(),
+                "lastModified": utc_now(),
             },
         )
         logger.debug(f"Updated counts for index {name}: {document_count} docs, {chunk_count} chunks")
@@ -1718,7 +1723,7 @@ class IndexerRepository:
             await db.toolconfig.update(
                 where={"id": config_id},
                 data={
-                    "lastTestAt": datetime.utcnow(),
+                    "lastTestAt": utc_now(),
                     "lastTestResult": success,
                     "lastTestError": error,
                 },
@@ -2242,7 +2247,7 @@ class IndexerRepository:
         new_message: dict[str, Any] = {
             "role": role,
             "content": content,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now().isoformat(),
             "message_id": str(uuid.uuid4()),
         }
         # Store chronological events only; compatibility tool_calls are derived on read.
@@ -2259,7 +2264,7 @@ class IndexerRepository:
             data={
                 "messages": Json(messages),
                 "totalTokens": total_tokens,
-                "updatedAt": datetime.utcnow(),
+                "updatedAt": utc_now(),
             },
             include={"user": True},
         )
@@ -2326,7 +2331,7 @@ class IndexerRepository:
                 where={"id": conversation_id},
                 data={
                     "messages": Json(messages),
-                    "updatedAt": datetime.utcnow(),
+                    "updatedAt": utc_now(),
                 },
             )
             return True
@@ -2345,7 +2350,7 @@ class IndexerRepository:
         try:
             updated = await db.conversation.update(
                 where={"id": conversation_id},
-                data={"title": title, "updatedAt": datetime.utcnow()},
+                data={"title": title, "updatedAt": utc_now()},
                 include={"user": True},
             )
             return self._prisma_conversation_to_model(updated)
@@ -2360,7 +2365,7 @@ class IndexerRepository:
         try:
             updated = await db.conversation.update(
                 where={"id": conversation_id},
-                data={"model": model, "updatedAt": datetime.utcnow()},
+                data={"model": model, "updatedAt": utc_now()},
                 include={"user": True},
             )
             return self._prisma_conversation_to_model(updated)
@@ -2379,7 +2384,7 @@ class IndexerRepository:
                     Any,
                     {
                         "toolOutputMode": tool_output_mode,
-                        "updatedAt": datetime.utcnow(),
+                        "updatedAt": utc_now(),
                     },
                 ),
                 include={"user": True},
@@ -2409,7 +2414,7 @@ class IndexerRepository:
                 data={
                     "messages": Json(truncated),
                     "totalTokens": total_tokens,
-                    "updatedAt": datetime.utcnow(),
+                    "updatedAt": utc_now(),
                 },
                 include={"user": True},
             )
@@ -2474,7 +2479,7 @@ class IndexerRepository:
                             "messages": Json(truncated),
                             "totalTokens": total_tokens,
                             "activeBranchId": None,
-                            "updatedAt": datetime.utcnow(),
+                            "updatedAt": utc_now(),
                         },
                     )
 
@@ -2529,7 +2534,7 @@ class IndexerRepository:
                                 where={"id": current_branch_id},
                                 data={
                                     "preservedMessages": Json(current_downstream),
-                                    "updatedAt": datetime.utcnow(),
+                                    "updatedAt": utc_now(),
                                 },
                             )
                         else:
@@ -2552,7 +2557,7 @@ class IndexerRepository:
                                     where={"id": live_branch.id},
                                     data={
                                         "preservedMessages": Json(current_downstream),
-                                        "updatedAt": datetime.utcnow(),
+                                        "updatedAt": utc_now(),
                                     },
                                 )
                             else:
@@ -2579,7 +2584,7 @@ class IndexerRepository:
                             "messages": Json(new_messages),
                             "totalTokens": total_tokens,
                             "activeBranchId": branch_id,
-                            "updatedAt": datetime.utcnow(),
+                            "updatedAt": utc_now(),
                         },
                         include={"user": True},
                     )
@@ -2751,7 +2756,7 @@ class IndexerRepository:
                         data={
                             "messages": Json(refreshed_messages),
                             "totalTokens": total_tokens,
-                            "updatedAt": datetime.utcnow(),
+                            "updatedAt": utc_now(),
                         },
                         include={"user": True},
                     )
@@ -2891,7 +2896,7 @@ class IndexerRepository:
                         data={
                             "messages": Json(refreshed_messages),
                             "totalTokens": total_tokens,
-                            "updatedAt": datetime.utcnow(),
+                            "updatedAt": utc_now(),
                         },
                         include={"user": True},
                     )
@@ -2961,7 +2966,7 @@ class IndexerRepository:
                             where={"id": conversation_id},
                             data={
                                 "activeBranchId": None,
-                                "updatedAt": datetime.utcnow(),
+                                "updatedAt": utc_now(),
                             },
                             include={"user": True},
                         )
@@ -2976,7 +2981,7 @@ class IndexerRepository:
                             where={"id": active_branch_id},
                             data={
                                 "preservedMessages": Json(downstream),
-                                "updatedAt": datetime.utcnow(),
+                                "updatedAt": utc_now(),
                             },
                         )
 
@@ -3009,7 +3014,7 @@ class IndexerRepository:
                                 "messages": Json(new_messages),
                                 "totalTokens": total_tokens,
                                 "activeBranchId": live_branch.id,
-                                "updatedAt": datetime.utcnow(),
+                                "updatedAt": utc_now(),
                             },
                             include={"user": True},
                         )
@@ -3023,7 +3028,7 @@ class IndexerRepository:
                             "messages": Json(truncated),
                             "totalTokens": total_tokens,
                             "activeBranchId": None,
-                            "updatedAt": datetime.utcnow(),
+                            "updatedAt": utc_now(),
                         },
                         include={"user": True},
                     )
@@ -3053,7 +3058,7 @@ class IndexerRepository:
                             where={"id": conversation_id},
                             data={
                                 "activeBranchId": None,
-                                "updatedAt": datetime.utcnow(),
+                                "updatedAt": utc_now(),
                             },
                         )
 
@@ -3087,7 +3092,7 @@ class IndexerRepository:
             return False
         db = await self._get_db()
         try:
-            now = datetime.utcnow()
+            now = utc_now()
             await db.conversationmessagesnapshotlink.upsert(
                 where={
                     "conversationId_messageId": {
@@ -3323,7 +3328,7 @@ class IndexerRepository:
                 ChatMessage(
                     role=m.get("role", "user"),
                     content=m.get("content", ""),
-                    timestamp=(datetime.fromisoformat(m["timestamp"]) if "timestamp" in m else datetime.utcnow()),
+                    timestamp=(parse_utc_iso_datetime(m["timestamp"]) if "timestamp" in m else utc_now()),
                     message_id=m.get("message_id"),
                     tool_calls=tool_calls,
                     events=events,
@@ -3452,7 +3457,7 @@ class IndexerRepository:
                 ChatMessage(
                     role=m.get("role", "user"),
                     content=m.get("content", ""),
-                    timestamp=(datetime.fromisoformat(m["timestamp"]) if "timestamp" in m else datetime.utcnow()),
+                    timestamp=(parse_utc_iso_datetime(m["timestamp"]) if "timestamp" in m else utc_now()),
                     message_id=m.get("message_id"),
                     tool_calls=tool_calls,
                     events=events,
@@ -3641,17 +3646,17 @@ class IndexerRepository:
 
         update_data: dict[str, Any] = {
             "status": _to_prisma_task_status(status),
-            "lastUpdateAt": datetime.utcnow(),
+            "lastUpdateAt": utc_now(),
         }
 
         if status == ChatTaskStatus.running:
-            update_data["startedAt"] = datetime.utcnow()
+            update_data["startedAt"] = utc_now()
         elif status in (
             ChatTaskStatus.completed,
             ChatTaskStatus.failed,
             ChatTaskStatus.cancelled,
         ):
-            update_data["completedAt"] = datetime.utcnow()
+            update_data["completedAt"] = utc_now()
 
         if error_message:
             update_data["errorMessage"] = _sanitize_for_postgres(error_message)
@@ -3719,7 +3724,7 @@ class IndexerRepository:
                 where={"id": task_id},
                 data={
                     "streamingState": Json(streaming_state),
-                    "lastUpdateAt": datetime.utcnow(),
+                    "lastUpdateAt": utc_now(),
                 },
             )
             return self._prisma_task_to_model(prisma_task)
@@ -3764,8 +3769,8 @@ class IndexerRepository:
                     "status": _to_prisma_task_status(ChatTaskStatus.completed),
                     "responseContent": response_content,
                     "streamingState": Json(streaming_state),
-                    "completedAt": datetime.utcnow(),
-                    "lastUpdateAt": datetime.utcnow(),
+                    "completedAt": utc_now(),
+                    "lastUpdateAt": utc_now(),
                 },
             )
 
@@ -3790,8 +3795,8 @@ class IndexerRepository:
                 where={"id": task_id},
                 data={  # type: ignore[arg-type]
                     "status": _to_prisma_task_status(ChatTaskStatus.cancelled),
-                    "completedAt": datetime.utcnow(),
-                    "lastUpdateAt": datetime.utcnow(),
+                    "completedAt": utc_now(),
+                    "lastUpdateAt": utc_now(),
                 },
             )
 
@@ -3810,7 +3815,7 @@ class IndexerRepository:
     async def cleanup_stale_tasks(self, max_age_seconds: int = 3600) -> int:
         """Clean up stale tasks that have been running for too long."""
         db = await self._get_db()
-        cutoff = datetime.utcnow() - timedelta(seconds=max_age_seconds)
+        cutoff = utc_now() - timedelta(seconds=max_age_seconds)
 
         try:
             # Find stale running tasks
@@ -3836,7 +3841,7 @@ class IndexerRepository:
                     data={  # type: ignore[arg-type]
                         "status": _to_prisma_task_status(ChatTaskStatus.failed),
                         "errorMessage": "Task timed out",
-                        "completedAt": datetime.utcnow(),
+                        "completedAt": utc_now(),
                     },
                 )
                 # Clear from conversation

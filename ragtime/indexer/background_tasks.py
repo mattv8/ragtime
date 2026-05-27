@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Union, cast
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ragtime.core.app_settings import SettingsCache
+from ragtime.core.datetimes import coerce_utc_datetime
+from ragtime.core.datetimes import utc_now
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import strip_table_metadata
@@ -449,8 +451,8 @@ class BackgroundTaskService:
                     where={"id": prisma_task.id},
                     data={
                         "status": "interrupted",
-                        "completedAt": datetime.utcnow(),
-                        "lastUpdateAt": datetime.utcnow(),
+                        "completedAt": utc_now(),
+                        "lastUpdateAt": utc_now(),
                     },
                 )
                 # Clear the active task reference from the conversation
@@ -682,8 +684,8 @@ class BackgroundTaskService:
                     # Check if re-indexing is due
                     last_modified = metadata.lastModified
                     if last_modified:
-                        next_reindex = last_modified + timedelta(hours=interval_hours)
-                        if datetime.utcnow() < next_reindex.replace(tzinfo=None):
+                        next_reindex = coerce_utc_datetime(last_modified + timedelta(hours=interval_hours))
+                        if utc_now() < next_reindex:
                             continue  # Not due yet
 
                     # Check if there's already a running job for this index
@@ -871,7 +873,7 @@ class BackgroundTaskService:
                 # Track running tools by run_id -> index in events list
                 running_tool_indices: dict[str, int] = {}
                 hit_max_iterations = False  # Track if we hit the iteration limit
-                last_update = datetime.utcnow()
+                last_update = utc_now()
                 current_version = 0  # Version counter for efficient client polling
 
                 # Use UI agent (with chart tool and enhanced prompt)
@@ -986,7 +988,7 @@ class BackgroundTaskService:
 
                             # Update streaming state less frequently (every 400ms) for text tokens
                             # Tool events are still updated immediately above
-                            now = datetime.utcnow()
+                            now = utc_now()
                             if (now - last_update).total_seconds() > 0.4:
                                 result = await repository.update_chat_task_streaming_state(
                                     task_id,
@@ -1057,7 +1059,7 @@ class BackgroundTaskService:
                                 current_version = result.streaming_state.version
                                 await task_event_bus.publish(task_id, result.streaming_state.dict())
                                 await _notify_conversation_progress(conversation_id, task_id)
-                            last_update = datetime.utcnow()
+                            last_update = utc_now()
 
                         elif event_type == "tool_end":
                             run_id = event.get("run_id", "")
@@ -1091,7 +1093,7 @@ class BackgroundTaskService:
                                     current_version = result.streaming_state.version
                                     await task_event_bus.publish(task_id, result.streaming_state.dict())
                                     await _notify_conversation_progress(conversation_id, task_id)
-                                last_update = datetime.utcnow()
+                                last_update = utc_now()
 
                         elif event_type == "max_iterations_reached":
                             hit_max_iterations = True
@@ -1109,7 +1111,7 @@ class BackgroundTaskService:
                                 current_version = result.streaming_state.version
                                 await task_event_bus.publish(task_id, result.streaming_state.dict())
                                 await _notify_conversation_progress(conversation_id, task_id)
-                            last_update = datetime.utcnow()
+                            last_update = utc_now()
 
                         elif event_type == "tool_generating":
                             # LLM is streaming tool call arguments - update
@@ -1137,7 +1139,7 @@ class BackgroundTaskService:
                                     )
 
                             # Throttle updates to avoid flooding the SSE bus
-                            now = datetime.utcnow()
+                            now = utc_now()
                             if (now - last_update).total_seconds() > 0.6:
                                 result = await repository.update_chat_task_streaming_state(
                                     task_id,
@@ -1167,7 +1169,7 @@ class BackgroundTaskService:
                                 # Publish reasoning while it is still streaming. Without
                                 # this, the UI only sees the thinking block after a later
                                 # final/commentary/tool update flushes task state.
-                                now = datetime.utcnow()
+                                now = utc_now()
                                 if reasoning_was_inactive or (now - last_update).total_seconds() > 0.4:
                                     result = await repository.update_chat_task_streaming_state(
                                         task_id,

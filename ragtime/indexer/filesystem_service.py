@@ -32,6 +32,7 @@ from prisma.errors import TableNotFoundError
 
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
+from ragtime.core.datetimes import utc_now
 from ragtime.core.file_constants import (
     OCR_EXTENSIONS,
     PARSEABLE_DOCUMENT_EXTENSIONS,
@@ -100,8 +101,8 @@ class MountInfo:
     mount_point: str
     mount_type: str  # "smb" or "nfs"
     effective_path: str  # mount_point + base_path offset
-    mounted_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    last_accessed: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    mounted_at: datetime = field(default_factory=utc_now)
+    last_accessed: datetime = field(default_factory=utc_now)
     reference_count: int = 0  # Number of active jobs using this mount
 
 
@@ -123,7 +124,7 @@ class FilesystemIndexerService:
 
     def _prune_analysis_state(self) -> None:
         """Bound analysis in-memory state by age and max records."""
-        now = datetime.now(timezone.utc).timestamp()
+        now = utc_now().timestamp()
         expired_ids: list[str] = []
         for job_id, job in self._analysis_jobs.items():
             completed_at = getattr(job, "completed_at", None)
@@ -292,7 +293,7 @@ class FilesystemIndexerService:
                 logger.info(f"Reusing existing mount for {mount_key}")
                 with self._mount_lock:
                     existing_mount.reference_count += 1
-                    existing_mount.last_accessed = datetime.now(timezone.utc)
+                    existing_mount.last_accessed = utc_now()
                 try:
                     yield Path(existing_mount.effective_path)
                 finally:
@@ -826,7 +827,7 @@ class FilesystemIndexerService:
                 data={
                     "status": PrismaFilesystemIndexStatus.cancelled,
                     "errorMessage": "Job cancelled (was orphaned)",
-                    "completedAt": datetime.now(timezone.utc),
+                    "completedAt": utc_now(),
                 },
             )
             return True
@@ -1232,7 +1233,7 @@ class FilesystemIndexerService:
         """Process filesystem indexing job."""
         try:
             job.status = FilesystemIndexStatus.INDEXING
-            job.started_at = datetime.utcnow()
+            job.started_at = utc_now()
             await self._update_job(job)
 
             # Get app settings for embeddings
@@ -1365,7 +1366,7 @@ class FilesystemIndexerService:
                     logger.info(f"Job {job.id} cancelled during collection")
                     job.status = FilesystemIndexStatus.CANCELLED
                     job.error_message = "Cancelled by user"
-                    job.completed_at = datetime.utcnow()
+                    job.completed_at = utc_now()
                     job.cancel_requested = True
                     await self._update_job(job)
                     return
@@ -1378,7 +1379,7 @@ class FilesystemIndexerService:
 
                 if not files:
                     job.status = FilesystemIndexStatus.COMPLETED
-                    job.completed_at = datetime.utcnow()
+                    job.completed_at = utc_now()
                     job.error_message = "No files matched the configured patterns"
                     await self._update_job(job)
                     return
@@ -1486,7 +1487,7 @@ class FilesystemIndexerService:
                         logger.info(f"Job {job.id} cancelled by user")
                         job.status = FilesystemIndexStatus.CANCELLED
                         job.error_message = "Cancelled by user"
-                        job.completed_at = datetime.utcnow()
+                        job.completed_at = utc_now()
                         job.cancel_requested = True
                         await self._update_job(job)
                         return
@@ -1644,7 +1645,7 @@ class FilesystemIndexerService:
                                 if not full_reindex:
                                     job.status = FilesystemIndexStatus.FAILED
                                     job.error_message = "Embedding dimension changed. A full re-index is required."
-                                    job.completed_at = datetime.utcnow()
+                                    job.completed_at = utc_now()
                                     await self._update_job(job)
                                     return
                                 settings.embedding_dimension = current_dim
@@ -1694,7 +1695,7 @@ class FilesystemIndexerService:
                                         file_size=file_stat.st_size,
                                         mime_type=mimetypes.guess_type(str(file_path))[0],
                                         chunk_count=chunk_count,
-                                        last_indexed=datetime.utcnow(),
+                                        last_indexed=utc_now(),
                                     )
                                 )
 
@@ -1732,7 +1733,7 @@ class FilesystemIndexerService:
             await self._update_tool_config_last_indexed(job.tool_config_id)
 
             job.status = FilesystemIndexStatus.COMPLETED
-            job.completed_at = datetime.utcnow()
+            job.completed_at = utc_now()
             logger.info(
                 f"Indexing completed: {job.processed_files} processed, "
                 f"{job.skipped_files} skipped, {job.total_chunks} chunks "
@@ -1750,7 +1751,7 @@ class FilesystemIndexerService:
             logger.exception(f"Filesystem indexing failed: {e}")
             job.status = FilesystemIndexStatus.FAILED
             job.error_message = str(e)
-            job.completed_at = datetime.utcnow()
+            job.completed_at = utc_now()
 
             # Only try to update DB if not shutting down
             if not self._shutdown:
@@ -1796,7 +1797,7 @@ class FilesystemIndexerService:
             tool_config = await repository.get_tool_config(tool_config_id)
             if tool_config and tool_config.connection_config:
                 connection_config = dict(tool_config.connection_config)
-                connection_config["last_indexed_at"] = datetime.now(timezone.utc).isoformat()
+                connection_config["last_indexed_at"] = utc_now().isoformat()
                 await repository.update_tool_config(tool_config_id, {"connection_config": connection_config})
         except Exception as e:
             logger.warning(f"Failed to update last_indexed_at: {e}")
@@ -2063,13 +2064,13 @@ class FilesystemIndexerService:
                 if not base_path.exists():
                     job.status = FilesystemAnalysisStatus.FAILED
                     job.error_message = f"Path does not exist: {effective_path}"
-                    job.completed_at = datetime.now(timezone.utc)
+                    job.completed_at = utc_now()
                     return
 
                 if not base_path.is_dir():
                     job.status = FilesystemAnalysisStatus.FAILED
                     job.error_message = f"Path is not a directory: {effective_path}"
-                    job.completed_at = datetime.now(timezone.utc)
+                    job.completed_at = utc_now()
                     return
 
                 # First pass: count directories for progress estimation
@@ -2321,7 +2322,7 @@ class FilesystemIndexerService:
 
                 self._analysis_results[job.id] = result
                 job.status = FilesystemAnalysisStatus.COMPLETED
-                job.completed_at = datetime.now(timezone.utc)
+                job.completed_at = utc_now()
 
                 logger.info(f"Filesystem analysis completed: {total_files} files, {total_estimated_chunks} chunks, {elapsed:.1f}s")
 
@@ -2329,7 +2330,7 @@ class FilesystemIndexerService:
             logger.exception(f"Filesystem analysis failed: {e}")
             job.status = FilesystemAnalysisStatus.FAILED
             job.error_message = str(e)
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = utc_now()
         finally:
             self._running_tasks.pop(job.id, None)
             self._prune_analysis_state()

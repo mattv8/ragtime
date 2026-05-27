@@ -23,6 +23,7 @@ from starlette.websockets import WebSocket
 
 from ragtime.config import settings
 from ragtime.core.database import get_db
+from ragtime.core.datetimes import utc_now
 from ragtime.core.logging import get_logger
 from ragtime.core.runtime_manager_client import (
     RuntimeManagerRequestConfig as _RuntimeManagerRequestConfig,
@@ -141,10 +142,6 @@ class UserSpaceRuntimeService:
         # the grant's TTL window.
         self._consumed_preview_grant_jtis: dict[str, float] = {}
         self._consumed_preview_grant_lock = asyncio.Lock()
-
-    @staticmethod
-    def _utc_now() -> datetime:
-        return datetime.now(timezone.utc)
 
     @staticmethod
     def _control_plane_base_url() -> str:
@@ -324,7 +321,7 @@ class UserSpaceRuntimeService:
         *,
         ttl_seconds: int,
     ) -> tuple[str, datetime]:
-        now = self._utc_now()
+        now = utc_now()
         expires_at = now + timedelta(seconds=self._clamp_preview_token_ttl_seconds(ttl_seconds))
         payload = {key: value for key, value in claims.items() if value is not None}
         payload.update(
@@ -354,7 +351,7 @@ class UserSpaceRuntimeService:
         *,
         session_expires_at: datetime | None = None,
     ) -> datetime:
-        expires_at = self._utc_now() + timedelta(seconds=self._clamp_preview_token_ttl_seconds(_RUNTIME_PREVIEW_SESSION_TTL_SECONDS))
+        expires_at = utc_now() + timedelta(seconds=self._clamp_preview_token_ttl_seconds(_RUNTIME_PREVIEW_SESSION_TTL_SECONDS))
         if session_expires_at is None:
             return expires_at
         if session_expires_at.tzinfo is None:
@@ -722,7 +719,7 @@ class UserSpaceRuntimeService:
         self,
         session: UserSpaceRuntimeSession,
     ) -> None:
-        now = self._utc_now()
+        now = utc_now()
         async with self._runtime_cache_lock:
             self._preview_upstream_cache[session.workspace_id] = _PreviewUpstreamCacheEntry(
                 provider_session_id=session.provider_session_id,
@@ -739,7 +736,7 @@ class UserSpaceRuntimeService:
             entry = self._preview_upstream_cache.get(workspace_id)
             if entry is None:
                 return None
-            if entry.expires_at <= self._utc_now():
+            if entry.expires_at <= utc_now():
                 self._preview_upstream_cache.pop(workspace_id, None)
                 return None
             return entry.base_url
@@ -754,7 +751,7 @@ class UserSpaceRuntimeService:
         async with self._runtime_cache_lock:
             self._provider_status_cache[provider_session_id] = _ProviderStatusCacheEntry(
                 payload=dict(payload),
-                cached_at=self._utc_now(),
+                cached_at=utc_now(),
             )
 
     async def _get_cached_provider_status(
@@ -792,7 +789,7 @@ class UserSpaceRuntimeService:
             session.id,
             {
                 "state": "stopped",
-                "lastHeartbeatAt": self._utc_now(),
+                "lastHeartbeatAt": utc_now(),
                 "lastError": detail[:500],
             },
         )
@@ -850,7 +847,7 @@ class UserSpaceRuntimeService:
         ok: bool,
     ) -> None:
         async with self._runtime_cache_lock:
-            cache[key] = _PreviewProbeCacheEntry(ok=ok, checked_at=self._utc_now())
+            cache[key] = _PreviewProbeCacheEntry(ok=ok, checked_at=utc_now())
 
     async def _run_cached_probe(
         self,
@@ -1036,7 +1033,7 @@ class UserSpaceRuntimeService:
         session_id: str | None = None,
         ttl_seconds: int = _RUNTIME_CAPABILITY_TTL_SECONDS,
     ) -> UserSpaceCapabilityTokenResponse:
-        now = self._utc_now()
+        now = utc_now()
         expires_at = now + timedelta(seconds=max(60, min(ttl_seconds, 3600)))
         claims = {
             "sub": user_id,
@@ -1393,7 +1390,7 @@ class UserSpaceRuntimeService:
                 if provider_status is not None:
                     delta = self._merge_provider_status(session, provider_status)
                     if delta:
-                        delta["lastHeartbeatAt"] = self._utc_now()
+                        delta["lastHeartbeatAt"] = utc_now()
                         current = await self._runtime_session_update_row(
                             model,
                             session.id,
@@ -1421,7 +1418,7 @@ class UserSpaceRuntimeService:
                     "state": delta.get("state", str(provider_data.get("state") or "running")),
                     "runtimeProvider": self._runtime_provider_name(),
                     "providerSessionId": str(provider_data.get("provider_session_id") or session.provider_session_id or ""),
-                    "lastHeartbeatAt": self._utc_now(),
+                    "lastHeartbeatAt": utc_now(),
                 }
             )
             current = await self._runtime_session_update_row(
@@ -1455,7 +1452,7 @@ class UserSpaceRuntimeService:
                 workspace_id,
             )
 
-        now = self._utc_now()
+        now = utc_now()
         provider_data = await self._runtime_provider_start_session(
             workspace_id,
             leased_by_user_id,
@@ -1839,7 +1836,7 @@ class UserSpaceRuntimeService:
             active_session.id,
             {
                 "state": "stopped",
-                "lastHeartbeatAt": self._utc_now(),
+                "lastHeartbeatAt": utc_now(),
                 "lastError": provider_stop_error,
             },
         )
@@ -1940,7 +1937,7 @@ class UserSpaceRuntimeService:
                 # session is still active in DB.
                 fresh_check = await self._get_active_session_row(workspace_id)
                 if fresh_check and getattr(fresh_check, "id", None) == session.id:
-                    delta["lastHeartbeatAt"] = self._utc_now()
+                    delta["lastHeartbeatAt"] = utc_now()
                     db = await get_db()
                     model = self._runtime_session_model(db)
                     updated = await self._runtime_session_update_row(
@@ -2072,7 +2069,7 @@ class UserSpaceRuntimeService:
                 active_session.id,
                 {
                     "state": "stopped",
-                    "lastHeartbeatAt": self._utc_now(),
+                    "lastHeartbeatAt": utc_now(),
                     "lastError": provider_stop_error,
                 },
             )
@@ -2273,7 +2270,7 @@ class UserSpaceRuntimeService:
                         "state",
                         str(provider_status.get("state") or active_session.state),
                     ),
-                    "lastHeartbeatAt": self._utc_now(),
+                    "lastHeartbeatAt": utc_now(),
                     "lastError": None,
                 }
             )
@@ -2560,7 +2557,7 @@ class UserSpaceRuntimeService:
             artifact_type=None,
             live_data_connections=None,
             live_data_checks=None,
-            updated_at=self._utc_now(),
+            updated_at=utc_now(),
         )
 
     async def runtime_fs_write(
@@ -2594,7 +2591,7 @@ class UserSpaceRuntimeService:
             artifact_type=None,
             live_data_connections=None,
             live_data_checks=None,
-            updated_at=self._utc_now(),
+            updated_at=utc_now(),
         )
 
     async def runtime_fs_delete(
@@ -2729,7 +2726,7 @@ class UserSpaceRuntimeService:
                 "user_id": user_id,
                 "cursor": payload.get("cursor"),
                 "selection": payload.get("selection"),
-                "updated_at": self._utc_now().isoformat(),
+                "updated_at": utc_now().isoformat(),
             }
             return list(presence_for_doc.values())
 
@@ -3015,7 +3012,7 @@ class UserSpaceRuntimeService:
         if row:
             await model.update(
                 where={"id": row.id},
-                data={"filePath": normalized_new, "updatedAt": self._utc_now()},
+                data={"filePath": normalized_new, "updatedAt": utc_now()},
             )
 
         await userspace_service.touch_workspace(workspace_id)
@@ -3189,7 +3186,7 @@ class UserSpaceRuntimeService:
         db = await get_db()
         model = self._collab_doc_model(db)
         encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        now = self._utc_now()
+        now = utc_now()
         row = await model.find_first(where={"workspaceId": workspace_id, "filePath": file_path})
         payload = {
             "checkpointVersion": version,
@@ -3232,7 +3229,7 @@ class UserSpaceRuntimeService:
             },
             order={"updatedAt": "desc"},
         )
-        now = self._utc_now()
+        now = utc_now()
         provider_stop_errors: dict[str, str | None] = {}
         for session in sessions:
             raw_provider_session_id = getattr(session, "providerSessionId", None)

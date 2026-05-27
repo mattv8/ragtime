@@ -15,7 +15,7 @@ import shutil
 import subprocess
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
 
@@ -28,6 +28,7 @@ from pydantic import SecretStr
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
+from ragtime.core.datetimes import utc_now
 from ragtime.core.embedding_models import (
     get_embedding_model_context_limit,
     get_embedding_models,
@@ -416,7 +417,7 @@ class IndexerService:
                     logger.error(f"Failed to recover job {job.id}: {e}")
                     job.status = IndexStatus.FAILED
                     job.error_message = f"Recovery failed: {e}"
-                    job.completed_at = datetime.utcnow()
+                    job.completed_at = utc_now()
                     await repository.update_job(job)
 
         # Clean up orphaned directories (always run, after job recovery)
@@ -645,7 +646,7 @@ class IndexerService:
             # No tmp file - mark as failed
             job.status = IndexStatus.FAILED
             job.error_message = "Upload file lost during restart - please re-upload"
-            job.completed_at = datetime.utcnow()
+            job.completed_at = utc_now()
             await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
             self._processing_tasks.pop(job.id, None)
@@ -832,7 +833,7 @@ class IndexerService:
         # Update status in database
         job.status = IndexStatus.FAILED
         job.error_message = "Job cancelled by user"
-        job.completed_at = datetime.utcnow()
+        job.completed_at = utc_now()
         await repository.update_job(job)
 
         logger.info(f"Cancelled job {job_id}")
@@ -1749,7 +1750,7 @@ class IndexerService:
         except Exception as e:
             job.status = IndexStatus.FAILED
             job.error_message = str(e)
-            job.completed_at = datetime.utcnow()
+            job.completed_at = utc_now()
             await repository.update_job(job)
             self._active_jobs.pop(job_id, None)
             self._processing_tasks.pop(job_id, None)
@@ -1863,7 +1864,7 @@ class IndexerService:
         """Process an uploaded archive file (zip, tar, tar.gz, tar.bz2)."""
         try:
             job.status = IndexStatus.PROCESSING
-            job.started_at = datetime.utcnow()
+            job.started_at = utc_now()
             await repository.update_job(job)
 
             # Check for cancellation
@@ -1892,7 +1893,7 @@ class IndexerService:
             # Only mark completed if not cancelled
             if not self._is_cancelled(job.id):
                 job.status = IndexStatus.COMPLETED
-                job.completed_at = datetime.utcnow()
+                job.completed_at = utc_now()
 
         except asyncio.CancelledError:
             # Job was cancelled - status already set by cancel_job()
@@ -1905,7 +1906,7 @@ class IndexerService:
                 logger.exception(f"Failed to process upload for job {job.id}")
                 job.status = IndexStatus.FAILED
                 job.error_message = str(e) or repr(e)
-                job.completed_at = datetime.utcnow()
+                job.completed_at = utc_now()
                 # Clean up optimistic metadata for failed new indexes
                 await self._cleanup_failed_index_metadata(job.name)
 
@@ -1959,7 +1960,7 @@ class IndexerService:
 
         try:
             job.status = IndexStatus.PROCESSING
-            job.started_at = datetime.utcnow()
+            job.started_at = utc_now()
             await repository.update_job(job)
 
             # Check for cancellation
@@ -2006,7 +2007,7 @@ class IndexerService:
             # Only mark completed if not cancelled
             if not self._is_cancelled(job.id):
                 job.status = IndexStatus.COMPLETED
-                job.completed_at = datetime.utcnow()
+                job.completed_at = utc_now()
 
         except asyncio.CancelledError:
             # Job was cancelled - status already set by cancel_job()
@@ -2019,7 +2020,7 @@ class IndexerService:
                 logger.exception(f"Failed to process git for job {job.id}")
                 job.status = IndexStatus.FAILED
                 job.error_message = str(e) or repr(e)
-                job.completed_at = datetime.utcnow()
+                job.completed_at = utc_now()
                 # Clean up optimistic metadata for failed new indexes
                 await self._cleanup_failed_index_metadata(job.name)
 

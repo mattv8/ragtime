@@ -14,6 +14,7 @@ from typing import Any, Optional, cast
 from prisma.enums import UsageAttemptStatus
 
 from ragtime.core.database import get_db
+from ragtime.core.datetimes import utc_now
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import normalize_provider_name
 from ragtime.core.tokenization import count_tokens
@@ -131,7 +132,7 @@ async def finalize_usage_attempt(
         update_data: dict[str, Any] = {
             "status": _usage_attempt_status(status),
             "outputTokens": output_tokens,
-            "finalizedAt": datetime.utcnow(),
+            "finalizedAt": utc_now(),
         }
         if input_tokens is not None:
             update_data["inputTokens"] = input_tokens
@@ -172,7 +173,7 @@ async def finalize_stale_attempts_for_tasks(task_ids: list[str]) -> int:
                 where={"id": attempt.id},
                 data={
                     "status": UsageAttemptStatus.interrupted,
-                    "finalizedAt": datetime.utcnow(),
+                    "finalizedAt": utc_now(),
                     "failureReason": "Task interrupted by server restart",
                 },
             )

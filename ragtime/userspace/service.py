@@ -33,6 +33,13 @@ from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config, user_matches_group_identifier
 from ragtime.core.database import get_db
+from ragtime.core.datetimes import (
+    coerce_utc_datetime as coerce_utc_datetime_strict,
+)
+from ragtime.core.datetimes import (
+    parse_utc_iso_datetime,
+    utc_now,
+)
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
     decrypt_json_passwords,
@@ -926,26 +933,17 @@ _AGENT_WRITABLE_RAGTIME_FILES = frozenset({"runtime-entrypoint.json", "runtime-b
 _AGENT_WRITABLE_RAGTIME_PREFIXES = ("db/migrations/", "scripts/")
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _coerce_utc_datetime(value: Any) -> datetime:
+def coerce_utc_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+        return coerce_utc_datetime_strict(value)
     if isinstance(value, str):
         normalized = value.strip()
         if normalized:
             try:
-                parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+                return parse_utc_iso_datetime(normalized)
             except ValueError:
-                return _utc_now()
-            if parsed.tzinfo is None:
-                return parsed.replace(tzinfo=timezone.utc)
-            return parsed.astimezone(timezone.utc)
-    return _utc_now()
+                return utc_now()
+    return utc_now()
 
 
 def _normalize_workspace_name_for_uniqueness(name: str) -> str:
@@ -1349,7 +1347,7 @@ class UserSpaceService:
             or preview_record.workspace_id != workspace_id
             or preview_record.direction != direction
             or preview_record.state_fingerprint != state_fingerprint
-            or preview_record.expires_at <= _utc_now()
+            or preview_record.expires_at <= utc_now()
         ):
             raise HTTPException(
                 status_code=409,
@@ -1433,7 +1431,7 @@ class UserSpaceService:
             or preview_record.workspace_id != workspace_id
             or preview_record.mount_id != mount_id
             or preview_record.sync_mode != sync_mode
-            or preview_record.expires_at <= _utc_now()
+            or preview_record.expires_at <= utc_now()
         ):
             raise HTTPException(
                 status_code=409,
@@ -1515,7 +1513,7 @@ class UserSpaceService:
         task.add_done_callback(partial(self._prune_workspace_duplicate_task, task_id))
 
     def _prune_expired_workspace_create_task_statuses(self) -> None:
-        cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_CREATE_TASK_TTL_SECONDS)
+        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_CREATE_TASK_TTL_SECONDS)
         for task_id, record in list(self._workspace_create_task_statuses.items()):
             if record.phase not in {"completed", "failed"}:
                 continue
@@ -1524,7 +1522,7 @@ class UserSpaceService:
             self._workspace_create_task_statuses.pop(task_id, None)
 
     def _prune_expired_workspace_duplicate_task_statuses(self) -> None:
-        cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_DUPLICATE_TASK_TTL_SECONDS)
+        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_DUPLICATE_TASK_TTL_SECONDS)
         for task_id, record in list(self._workspace_duplicate_task_statuses.items()):
             if record.phase not in {"completed", "failed"}:
                 continue
@@ -1559,7 +1557,7 @@ class UserSpaceService:
         if record is None:
             return
         record.phase = phase
-        record.updated_at = _utc_now()
+        record.updated_at = utc_now()
         record.error = error if phase == "failed" else None
         if workspace_id is not None:
             record.workspace_id = workspace_id
@@ -1595,7 +1593,7 @@ class UserSpaceService:
         if record is None:
             return
         record.phase = phase
-        record.updated_at = _utc_now()
+        record.updated_at = utc_now()
         record.error = error if phase == "failed" else None
         if workspace_id is not None:
             record.workspace_id = workspace_id
@@ -1789,7 +1787,7 @@ class UserSpaceService:
         task.add_done_callback(partial(self._prune_workspace_sqlite_import_task, task_id, workspace_id))
 
     def _prune_expired_workspace_sqlite_import_task_statuses(self) -> None:
-        cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_SQLITE_IMPORT_TASK_TTL_SECONDS)
+        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_SQLITE_IMPORT_TASK_TTL_SECONDS)
         for task_id, record in list(self._workspace_sqlite_import_task_statuses.items()):
             if record.phase not in {"completed", "failed"} or record.updated_at > cutoff:
                 continue
@@ -1818,7 +1816,7 @@ class UserSpaceService:
         if record is None:
             return
         record.phase = phase
-        record.updated_at = _utc_now()
+        record.updated_at = utc_now()
         if progress is not None:
             record.progress = max(0.0, min(1.0, progress))
         if dialect_detected is not None:
@@ -2006,7 +2004,7 @@ class UserSpaceService:
         task.add_done_callback(partial(self._prune_workspace_archive_import_task, task_id, workspace_id))
 
     def _prune_expired_workspace_archive_export_task_statuses(self) -> None:
-        cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_ARCHIVE_EXPORT_TASK_TTL_SECONDS)
+        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_ARCHIVE_EXPORT_TASK_TTL_SECONDS)
         for task_id, record in list(self._workspace_archive_export_task_statuses.items()):
             # Completed exports are kept as a persistent history (file-backed) until
             # the user explicitly deletes them. Only prune failed exports on TTL.
@@ -2018,7 +2016,7 @@ class UserSpaceService:
             self._remove_workspace_archive_dir_sync(self._workspace_archive_task_dir(task_id))
 
     def _prune_expired_workspace_archive_import_task_statuses(self) -> None:
-        cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_ARCHIVE_IMPORT_TASK_TTL_SECONDS)
+        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_ARCHIVE_IMPORT_TASK_TTL_SECONDS)
         for task_id, record in list(self._workspace_archive_import_task_statuses.items()):
             if record.phase not in {"completed", "failed"}:
                 continue
@@ -2192,7 +2190,7 @@ class UserSpaceService:
         if record is None:
             return
         record.phase = phase
-        record.updated_at = _utc_now()
+        record.updated_at = utc_now()
         if warnings is not None:
             record.warnings = list(warnings)
         if archive_path is not None:
@@ -2228,7 +2226,7 @@ class UserSpaceService:
         if record is None:
             return
         record.phase = phase
-        record.updated_at = _utc_now()
+        record.updated_at = utc_now()
         if archive_format is not None:
             record.archive_format = archive_format
         if warnings is not None:
@@ -3041,7 +3039,7 @@ class UserSpaceService:
     @staticmethod
     def _json_safe_value(value: Any) -> Any:
         if isinstance(value, datetime):
-            return _coerce_utc_datetime(value).isoformat()
+            return coerce_utc_datetime(value).isoformat()
         return value
 
     @classmethod
@@ -3056,7 +3054,7 @@ class UserSpaceService:
         if value is None or isinstance(value, (str, int, float, bool)):
             return value
         if isinstance(value, datetime):
-            return _coerce_utc_datetime(value).isoformat()
+            return coerce_utc_datetime(value).isoformat()
         if isinstance(value, Json):
             return cls._json_safe_clone(value.data, seen)
 
@@ -3507,7 +3505,7 @@ class UserSpaceService:
                         "base_snapshot_id": str(row.get("base_snapshot_id") or "") or None,
                         "branched_from_snapshot_id": str(row.get("branched_from_snapshot_id") or "") or None,
                         "is_active": bool(row.get("is_active")),
-                        "created_at": _coerce_utc_datetime(row.get("created_at")).isoformat(),
+                        "created_at": coerce_utc_datetime(row.get("created_at")).isoformat(),
                     }
                     for row in branch_rows
                 ],
@@ -3520,7 +3518,7 @@ class UserSpaceService:
                         "remote_commit_hash": str(row.get("remote_commit_hash") or "") or None,
                         "file_count": int(row.get("file_count") or 0),
                         "parent_snapshot_id": str(row.get("parent_snapshot_id") or "") or None,
-                        "created_at": _coerce_utc_datetime(row.get("created_at")).isoformat(),
+                        "created_at": coerce_utc_datetime(row.get("created_at")).isoformat(),
                     }
                     for row in snapshot_rows
                 ],
@@ -3594,7 +3592,7 @@ class UserSpaceService:
                     {self._sql_quote(snapshot_id_map.get(base_snapshot_id) if base_snapshot_id else None)},
                     {self._sql_quote(snapshot_id_map.get(branched_from_snapshot_id) if branched_from_snapshot_id else None)},
                     {"TRUE" if bool(branch.get("is_active")) else "FALSE"},
-                    {self._sql_quote(str(branch.get("created_at") or _utc_now().isoformat()))},
+                    {self._sql_quote(str(branch.get("created_at") or utc_now().isoformat()))},
                     NOW()
                 )
                 """)
@@ -3623,7 +3621,7 @@ class UserSpaceService:
                     {int(snapshot.get("file_count") or 0)},
                     {self._sql_quote(snapshot_id_map.get(parent_snapshot_id) if parent_snapshot_id else None)},
                     {self._sql_quote(user_id)},
-                    {self._sql_quote(str(snapshot.get("created_at") or _utc_now().isoformat()))},
+                    {self._sql_quote(str(snapshot.get("created_at") or utc_now().isoformat()))},
                     NOW()
                 )
                 """)
@@ -3741,7 +3739,7 @@ class UserSpaceService:
             )
             manifest: dict[str, Any] = {
                 "version": 1,
-                "exported_at": _utc_now().isoformat(),
+                "exported_at": utc_now().isoformat(),
                 "workspace": {
                     "name": workspace.name,
                     "description": workspace.description,
@@ -3796,7 +3794,7 @@ class UserSpaceService:
                 record.total_bytes = total_bytes
                 record.processed_bytes = processed_bytes
                 record.current_file_path = current_file
-                record.updated_at = _utc_now()
+                record.updated_at = utc_now()
 
             await asyncio.to_thread(
                 self._write_workspace_archive_sync,
@@ -3960,7 +3958,7 @@ class UserSpaceService:
             if existing_record is not None:
                 return self._workspace_archive_export_task_model(existing_record)
             task_id = str(uuid4())
-            now = _utc_now()
+            now = utc_now()
             record = _WorkspaceArchiveExportTaskRecord(
                 task_id=task_id,
                 workspace_id=workspace_id,
@@ -4141,7 +4139,7 @@ class UserSpaceService:
             if existing_record is not None:
                 return self._workspace_archive_import_task_model(existing_record)
             task_id = str(uuid4())
-            now = _utc_now()
+            now = utc_now()
             task_dir = self._workspace_archive_task_dir(task_id)
             task_dir.mkdir(parents=True, exist_ok=True)
             final_archive_path = task_dir / f"upload{self._workspace_archive_extension(archive_format)}"
@@ -4240,7 +4238,7 @@ class UserSpaceService:
                 return self._workspace_sqlite_import_task_model(existing_record)
 
             task_id = str(uuid4())
-            now = _utc_now()
+            now = utc_now()
             task_dir = self._workspace_sqlite_import_task_dir(task_id)
             task_dir.mkdir(parents=True, exist_ok=True)
             suffix = Path(uploaded_file_name).suffix or ".sql"
@@ -4627,7 +4625,7 @@ class UserSpaceService:
         resolved_model = _resolve_default_conversation_model(app_settings)
 
         task_id = str(uuid4())
-        now = _utc_now()
+        now = utc_now()
         requested_name = (request.name or "").strip() or None
         record = _WorkspaceCreateTaskRecord(
             task_id=task_id,
@@ -4678,7 +4676,7 @@ class UserSpaceService:
         )
 
         task_id = str(uuid4())
-        now = _utc_now()
+        now = utc_now()
         record = _WorkspaceDuplicateTaskRecord(
             task_id=task_id,
             source_workspace_id=source_workspace.id,
@@ -4761,7 +4759,7 @@ class UserSpaceService:
         task.add_done_callback(partial(self._prune_runtime_restart_batch_task, task_id))
 
     def _prune_expired_runtime_restart_batch_task_statuses(self) -> None:
-        cutoff = _utc_now() - timedelta(seconds=_RUNTIME_RESTART_BATCH_TASK_TTL_SECONDS)
+        cutoff = utc_now() - timedelta(seconds=_RUNTIME_RESTART_BATCH_TASK_TTL_SECONDS)
         for task_id, record in list(self._runtime_restart_batch_task_statuses.items()):
             if record.phase not in {"completed", "completed_with_failures", "failed"}:
                 continue
@@ -4820,7 +4818,7 @@ class UserSpaceService:
         if record is None:
             return
         record.phase = phase
-        now = _utc_now()
+        now = utc_now()
         if phase == "restarting" and record.started_at is None:
             record.started_at = now
         record.updated_at = now
@@ -4837,7 +4835,7 @@ class UserSpaceService:
             return
         record.current_workspace_id = workspace_id
         record.current_workspace_name = workspace_name
-        record.updated_at = _utc_now()
+        record.updated_at = utc_now()
 
     def _set_runtime_restart_workspace_phase(
         self,
@@ -4857,7 +4855,7 @@ class UserSpaceService:
         )
         if target is None:
             return
-        now = _utc_now()
+        now = utc_now()
         if phase == "restarting" and target.started_at is None:
             target.started_at = now
         target.phase = phase
@@ -4980,7 +4978,7 @@ class UserSpaceService:
                 "list_active_runtime_workspace_targets",
             )
             targets = await list_active_targets()
-            now = _utc_now()
+            now = utc_now()
             task_id = str(uuid4())
             workspace_results = [
                 _RuntimeRestartWorkspaceTaskRecord(
@@ -5054,7 +5052,7 @@ class UserSpaceService:
         task.add_done_callback(partial(self._prune_workspace_delete_task, task_id, workspace_id))
 
     def _prune_expired_workspace_delete_task_statuses(self) -> None:
-        cutoff = _utc_now() - timedelta(seconds=_WORKSPACE_DELETE_TASK_TTL_SECONDS)
+        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_DELETE_TASK_TTL_SECONDS)
         for task_id, record in list(self._workspace_delete_task_statuses.items()):
             if record.phase not in {"completed", "failed"}:
                 continue
@@ -5087,7 +5085,7 @@ class UserSpaceService:
         if record is None:
             return
         record.phase = phase
-        record.updated_at = _utc_now()
+        record.updated_at = utc_now()
         record.error = error if phase == "failed" else None
 
     async def _run_workspace_delete_task(
@@ -5134,7 +5132,7 @@ class UserSpaceService:
                 return self._workspace_delete_task_model(existing_record)
 
             task_id = str(uuid4())
-            now = _utc_now()
+            now = utc_now()
             record = _WorkspaceDeleteTaskRecord(
                 task_id=task_id,
                 workspace_id=workspace_id,
@@ -5255,7 +5253,7 @@ class UserSpaceService:
         proof = _ExecutionProofRecord(
             component_id=component_id,
             row_count=row_count,
-            timestamp=_utc_now().timestamp(),
+            timestamp=utc_now().timestamp(),
             query_hash=hashlib.sha256(query.strip().encode()).hexdigest(),
         )
         self._execution_proofs.setdefault(workspace_id, {})[component_id] = proof
@@ -5266,7 +5264,7 @@ class UserSpaceService:
         component_ids: set[str],
     ) -> list[str]:
         """Return component_ids that lack valid (non-expired) server-side proofs."""
-        now = _utc_now().timestamp()
+        now = utc_now().timestamp()
         workspace_proofs = self._execution_proofs.get(workspace_id, {})
         missing: list[str] = []
         for cid in sorted(component_ids):
@@ -5297,7 +5295,7 @@ class UserSpaceService:
         self._live_data_execution_warnings[workspace_id] = _LiveDataExecutionWarningRecord(
             component_id=component_id,
             message=message,
-            timestamp=_utc_now().timestamp(),
+            timestamp=utc_now().timestamp(),
         )
         return changed
 
@@ -5310,7 +5308,7 @@ class UserSpaceService:
         record = self._live_data_execution_warnings.get(workspace_id)
         if record is None:
             return None
-        now = _utc_now().timestamp()
+        now = utc_now().timestamp()
         if (now - record.timestamp) > _LIVE_DATA_WARNING_MAX_AGE_SECONDS:
             self._live_data_execution_warnings.pop(workspace_id, None)
             return None
@@ -5441,7 +5439,7 @@ class UserSpaceService:
         }
 
     def _default_object_storage_config(self, workspace_id: str) -> dict[str, Any]:
-        now = _utc_now()
+        now = utc_now()
         default_bucket = self._default_object_storage_bucket_name(workspace_id)
         secret = secrets.token_urlsafe(32)
         return {
@@ -5511,7 +5509,7 @@ class UserSpaceService:
                 return datetime.fromisoformat(text)
             except Exception:
                 pass
-        return _utc_now()
+        return utc_now()
 
     @staticmethod
     def _bucket_public_object_root(bucket: dict[str, Any]) -> str:
@@ -5649,7 +5647,7 @@ class UserSpaceService:
         if any(str((bucket or {}).get("name") or "") == bucket_name for bucket in buckets):
             raise HTTPException(status_code=409, detail="Bucket already exists")
 
-        now = _utc_now()
+        now = utc_now()
         buckets.append(
             self._build_object_storage_bucket_record(
                 name=bucket_name,
@@ -5665,7 +5663,7 @@ class UserSpaceService:
         db = await get_db()
         await db.workspace.update(
             where={"id": workspace_id},
-            data={"updatedAt": _utc_now()},
+            data={"updatedAt": utc_now()},
         )
         return self._object_storage_config_model(workspace_id, payload)
 
@@ -5695,7 +5693,7 @@ class UserSpaceService:
 
         if request.description is not None:
             target["description"] = self._normalize_object_storage_bucket_description(request.description)
-        target["updated_at"] = _utc_now().isoformat()
+        target["updated_at"] = utc_now().isoformat()
         if request.make_default:
             payload["default_bucket_name"] = normalized_name
 
@@ -5703,7 +5701,7 @@ class UserSpaceService:
         db = await get_db()
         await db.workspace.update(
             where={"id": workspace_id},
-            data={"updatedAt": _utc_now()},
+            data={"updatedAt": utc_now()},
         )
         return self._object_storage_config_model(workspace_id, payload)
 
@@ -5751,7 +5749,7 @@ class UserSpaceService:
         db = await get_db()
         await db.workspace.update(
             where={"id": workspace_id},
-            data={"updatedAt": _utc_now()},
+            data={"updatedAt": utc_now()},
         )
         return DeleteUserSpaceObjectStorageBucketResponse(
             success=True,
@@ -5797,8 +5795,8 @@ class UserSpaceService:
             key=str(row.get("key") or ""),
             value=str(row.get("value") or ""),
             description=(str(row.get("description")) if row.get("description") is not None else None),
-            created_at=_coerce_utc_datetime(row.get("created_at")),
-            updated_at=_coerce_utc_datetime(row.get("updated_at")),
+            created_at=coerce_utc_datetime(row.get("created_at")),
+            updated_at=coerce_utc_datetime(row.get("updated_at")),
         )
 
     async def _find_global_env_var_record(
@@ -5857,7 +5855,7 @@ class UserSpaceService:
             "workspace": {"connect": {"id": workspace_id}},
             "eventType": event_type,
             "eventPayload": payload_json,
-            "createdAt": created_at or _utc_now(),
+            "createdAt": created_at or utc_now(),
         }
         if user_id:
             data["user"] = {"connect": {"id": user_id}}
@@ -6265,7 +6263,7 @@ class UserSpaceService:
         redundant filesystem reads within the same request flow.
         """
         cached = self._entrypoint_status_cache.get(workspace_id)
-        now = _utc_now().timestamp()
+        now = utc_now().timestamp()
         if cached is not None:
             status, ts = cached
             if (now - ts) < _ENTRYPOINT_STATUS_CACHE_TTL_SECONDS:
@@ -6606,7 +6604,7 @@ class UserSpaceService:
                 "syncProgressFilesTotal": None,
                 "syncProgressMessage": None,
                 "syncStartedAt": None,
-                "updatedAt": _utc_now(),
+                "updatedAt": utc_now(),
             },
         )
 
@@ -8573,7 +8571,7 @@ class UserSpaceService:
         if not share_record_id or not proof:
             raise HTTPException(status_code=403, detail="Share password not configured")
 
-        now = _utc_now()
+        now = utc_now()
         expires_at = now + timedelta(seconds=_SHARE_PASSWORD_ACCESS_TTL_SECONDS)
         payload = {
             "kind": _SHARE_PASSWORD_ACCESS_TOKEN_KIND,
@@ -8772,7 +8770,7 @@ class UserSpaceService:
         try:
             await db.workspace.update(
                 where={"id": workspace_id},
-                data={"updatedAt": ts or _utc_now()},
+                data={"updatedAt": ts or utc_now()},
             )
         except Exception:
             logger.debug("Failed to update workspace timestamp for %s", workspace_id)
@@ -9483,11 +9481,11 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
         update_data: dict[str, Any] = {
-            "scmLastSyncAt": _utc_now(),
+            "scmLastSyncAt": utc_now(),
             "scmLastSyncDirection": direction,
             "scmLastSyncStatus": status,
             "scmLastSyncMessage": message,
-            "scmConnectedAt": getattr(current_record, "scmConnectedAt", None) or _utc_now(),
+            "scmConnectedAt": getattr(current_record, "scmConnectedAt", None) or utc_now(),
         }
         if git_url is not None:
             update_data["scmGitUrl"] = git_url
@@ -9940,7 +9938,7 @@ class UserSpaceService:
             where={"id": workspace_id},
             data={
                 "scmToken": encrypt_secret(normalized_token),
-                "updatedAt": _utc_now(),
+                "updatedAt": utc_now(),
             },
         )
 
@@ -10089,7 +10087,7 @@ class UserSpaceService:
         preview_expires_at: datetime | None = None
         if state == "destructive" and store_preview:
             preview_token = secrets.token_urlsafe(24)
-            preview_expires_at = _utc_now() + timedelta(seconds=_WORKSPACE_SCM_PREVIEW_TTL_SECONDS)
+            preview_expires_at = utc_now() + timedelta(seconds=_WORKSPACE_SCM_PREVIEW_TTL_SECONDS)
             await self._store_workspace_scm_preview(
                 _WorkspaceScmPreviewRecord(
                     token=preview_token,
@@ -10216,8 +10214,8 @@ class UserSpaceService:
             "scmGitBranch": self._normalize_workspace_scm_branch(request.git_branch),
             "scmProvider": parsed.provider.value,
             "scmRepoVisibility": (request.repo_visibility or getattr(workspace_record, "scmRepoVisibility", None) or "private"),
-            "scmConnectedAt": getattr(workspace_record, "scmConnectedAt", None) or _utc_now(),
-            "updatedAt": _utc_now(),
+            "scmConnectedAt": getattr(workspace_record, "scmConnectedAt", None) or utc_now(),
+            "updatedAt": utc_now(),
         }
         if request.git_token:
             update_data["scmToken"] = encrypt_secret(request.git_token.strip())
@@ -10257,7 +10255,7 @@ class UserSpaceService:
                     "scmAutoPullIntervalSeconds": _WORKSPACE_SCM_AUTO_SYNC_DEFAULT_INTERVAL_SECONDS,
                     "scmSyncPaused": False,
                     "scmSyncPausedReason": None,
-                    "updatedAt": _utc_now(),
+                    "updatedAt": utc_now(),
                 },
             )
 
@@ -10839,7 +10837,7 @@ class UserSpaceService:
     async def create_workspace(self, request: CreateWorkspaceRequest, user_id: str) -> UserSpaceWorkspace:
         db = await get_db()
 
-        now = _utc_now()
+        now = utc_now()
         workspace_id = str(uuid4())
         requested_name = (request.name or "").strip()
 
@@ -11064,7 +11062,7 @@ class UserSpaceService:
                         "ownerUserId": owner_user_id,
                         "label": normalized_label,
                         "shareToken": candidate,
-                        "shareTokenCreatedAt": _utc_now(),
+                        "shareTokenCreatedAt": utc_now(),
                         "shareSlug": share_slug,
                         "shareAccessMode": "token",
                         "shareSelectedUserIds": Json([]),
@@ -11129,7 +11127,7 @@ class UserSpaceService:
         normalized_label = (label or "").strip() or None
         share_record = await db.workspaceshare.update(
             where={"id": share_id},
-            data={"label": normalized_label, "updatedAt": _utc_now()},
+            data={"label": normalized_label, "updatedAt": utc_now()},
         )
         owner_username = await self._get_public_owner_username(str(getattr(workspace_record, "ownerUserId", "") or ""))
         return self._workspace_share_status_from_record(workspace_id, owner_username, share_record, base_url=base_url)
@@ -11160,7 +11158,7 @@ class UserSpaceService:
         try:
             share_record = await db.workspaceshare.update(
                 where={"id": share_id},
-                data={"shareSlug": normalized_slug, "updatedAt": _utc_now()},
+                data={"shareSlug": normalized_slug, "updatedAt": utc_now()},
             )
         except Exception as exc:
             if _is_share_slug_conflict_error(exc):
@@ -11225,7 +11223,7 @@ class UserSpaceService:
             "shareAccessMode": mode,
             "shareSelectedUserIds": Json(selected_user_ids),
             "shareSelectedLdapGroups": Json(selected_ldap_groups),
-            "updatedAt": _utc_now(),
+            "updatedAt": utc_now(),
         }
         if request.active_share_style in ("named", "anonymous", "subdomain"):
             update_data["activeShareStyle"] = request.active_share_style
@@ -11490,7 +11488,7 @@ class UserSpaceService:
                             "ownerUserId": owner_user_id,
                             "label": normalized_label,
                             "shareToken": candidate,
-                            "shareTokenCreatedAt": _utc_now(),
+                            "shareTokenCreatedAt": utc_now(),
                             "shareSlug": share_slug,
                             "shareAccessMode": "token",
                             "shareSelectedUserIds": Json([]),
@@ -11606,7 +11604,7 @@ class UserSpaceService:
     ) -> ConversationShareLinkStatus:
         share_record, _conversation, owner_user_id = await self._ensure_conversation_share_owner(share_id, conversation_id, user_id, is_admin=is_admin)
         owner_username = await self._get_public_owner_username(owner_user_id)
-        update_data: dict[str, Any] = {"updatedAt": _utc_now()}
+        update_data: dict[str, Any] = {"updatedAt": utc_now()}
         if update_label:
             update_data["label"] = (label or "").strip() or None
         if update_scope:
@@ -11648,7 +11646,7 @@ class UserSpaceService:
                 {
                     "shareSlug": normalized_slug,
                     "ownerUserId": owner_user_id,
-                    "updatedAt": _utc_now(),
+                    "updatedAt": utc_now(),
                 },
             ),
         )
@@ -11715,7 +11713,7 @@ class UserSpaceService:
             "shareSelectedUserIds": Json(selected_user_ids),
             "shareSelectedLdapGroups": Json(selected_ldap_groups),
             "grantedRole": request.granted_role,
-            "updatedAt": _utc_now(),
+            "updatedAt": utc_now(),
         }
         if request.active_share_style in ("named", "anonymous", "subdomain"):
             update_data["activeShareStyle"] = request.active_share_style
@@ -12113,7 +12111,7 @@ class UserSpaceService:
         current_ws = await self._enforce_workspace_access(workspace_id, user_id, required_role="editor", is_admin=is_admin)
         db = await get_db()
 
-        update_data: dict[str, Any] = {"updatedAt": _utc_now()}
+        update_data: dict[str, Any] = {"updatedAt": utc_now()}
 
         if request.owner_user_id is not None:
             if not is_admin:
@@ -12241,7 +12239,7 @@ class UserSpaceService:
 
         await db.workspace.update(
             where={"id": workspace_id},
-            data={"updatedAt": _utc_now()},
+            data={"updatedAt": utc_now()},
         )
 
         refreshed = await db.workspace.find_unique(
@@ -12291,8 +12289,8 @@ class UserSpaceService:
             granted_by_user_id=str(getattr(record, "grantedByUserId", "") or ""),
             granted_by_username=granted_by_username,
             expires_at=getattr(record, "expiresAt", None),
-            created_at=_coerce_utc_datetime(getattr(record, "createdAt", None)),
-            updated_at=_coerce_utc_datetime(getattr(record, "updatedAt", None)),
+            created_at=coerce_utc_datetime(getattr(record, "createdAt", None)),
+            updated_at=coerce_utc_datetime(getattr(record, "updatedAt", None)),
         )
 
     @staticmethod
@@ -12445,7 +12443,7 @@ class UserSpaceService:
             }
         )
 
-        now = _utc_now()
+        now = utc_now()
         if existing is None:
             record = await model.create(
                 data={
@@ -12581,7 +12579,7 @@ class UserSpaceService:
             return {}
 
         rows = await model.find_many(where={"sourceWorkspaceId": source_workspace_id})
-        now = _utc_now()
+        now = utc_now()
         modes: dict[str, WorkspaceAgentGrantMode] = {}
         for row in rows:
             expires_at = getattr(row, "expiresAt", None)
@@ -12753,7 +12751,7 @@ class UserSpaceService:
         key = self._normalize_workspace_env_var_key(request.key)
         target_key = self._normalize_workspace_env_var_key(request.new_key or key)
         description = request.description
-        now = _utc_now()
+        now = utc_now()
 
         if model is None:
             existing = await self._find_global_env_var_record(db, key=key)
@@ -12981,7 +12979,7 @@ class UserSpaceService:
         key = self._normalize_workspace_env_var_key(request.key)
         target_key = self._normalize_workspace_env_var_key(request.new_key or key)
         description = request.description
-        now = _utc_now()
+        now = utc_now()
 
         existing = await model.find_first(where={"workspaceId": workspace_id, "key": key})
 
@@ -13092,7 +13090,7 @@ class UserSpaceService:
         if existing is None:
             raise HTTPException(status_code=404, detail="Environment variable not found")
 
-        now = _utc_now()
+        now = utc_now()
         await model.delete(where={"id": str(getattr(existing, "id", "") or "")})
         await db.workspace.update(
             where={"id": workspace_id},
@@ -14230,7 +14228,7 @@ class UserSpaceService:
             raise
 
         preview_token = secrets.token_urlsafe(24)
-        preview_expires_at = _utc_now() + timedelta(seconds=self._WORKSPACE_MOUNT_SYNC_PREVIEW_TTL_SECONDS)
+        preview_expires_at = utc_now() + timedelta(seconds=self._WORKSPACE_MOUNT_SYNC_PREVIEW_TTL_SECONDS)
         await self._store_workspace_mount_sync_preview(
             _WorkspaceMountSyncPreviewRecord(
                 token=preview_token,
@@ -14358,7 +14356,7 @@ class UserSpaceService:
             "syncProgressFilesTotal": None,
             "syncProgressMessage": error_detail,
             "syncStartedAt": None,
-            "updatedAt": _utc_now(),
+            "updatedAt": utc_now(),
         }
         if disable_auto_sync:
             update_data["autoSyncEnabled"] = False
@@ -14380,7 +14378,7 @@ class UserSpaceService:
         sync_notice: str | None,
         message: str = "Preparing sync",
     ) -> None:
-        now = _utc_now()
+        now = utc_now()
         await db.workspacemount.update(
             where={"id": mount_id},
             data={
@@ -14410,7 +14408,7 @@ class UserSpaceService:
         data: dict[str, Any] = {
             "syncProgressFilesDone": max(0, int(files_done)),
             "syncProgressMessage": (message or None),
-            "updatedAt": _utc_now(),
+            "updatedAt": utc_now(),
         }
         if files_total is not None:
             data["syncProgressFilesTotal"] = max(0, int(files_total))
@@ -14502,7 +14500,7 @@ class UserSpaceService:
         last_sync_error: str | None,
         update_last_sync_at: bool,
     ) -> None:
-        now = _utc_now()
+        now = utc_now()
         data: dict[str, Any] = {
             "syncStatus": sync_status,
             "syncBackend": sync_backend,
@@ -14552,7 +14550,7 @@ class UserSpaceService:
                 "syncProgressFilesTotal": final_progress_total,
                 "syncProgressMessage": final_progress_message,
                 "syncStartedAt": None,
-                "updatedAt": _utc_now(),
+                "updatedAt": utc_now(),
             },
         )
         return WorkspaceMountSyncResponse(
@@ -15009,7 +15007,7 @@ class UserSpaceService:
             )
 
         state = secrets.token_urlsafe(24)
-        expires_at = _utc_now() + timedelta(minutes=10)
+        expires_at = utc_now() + timedelta(minutes=10)
         redirect_uri = request.redirect_uri or "urn:ietf:wg:oauth:2.0:oob"
         self._cloud_oauth_states[state] = {
             "user_id": user_id,
@@ -15040,7 +15038,7 @@ class UserSpaceService:
             token_payload = {
                 "access_token": f"mock-{request.provider}-{secrets.token_urlsafe(8)}",
                 "refresh_token": f"mock-refresh-{secrets.token_urlsafe(8)}",
-                "expires_at": _utc_now() + timedelta(days=365),
+                "expires_at": utc_now() + timedelta(days=365),
                 "scope": "mock",
             }
             profile = {
@@ -15055,7 +15053,7 @@ class UserSpaceService:
             state = self._cloud_oauth_states.pop(request.state, None)
             if not state or state.get("user_id") != user_id or state.get("provider") != request.provider:
                 raise HTTPException(status_code=400, detail="OAuth state is invalid or expired")
-            if state.get("expires_at") and state["expires_at"] < _utc_now():
+            if state.get("expires_at") and state["expires_at"] < utc_now():
                 raise HTTPException(status_code=400, detail="OAuth state is expired")
             redirect_uri = request.redirect_uri or str(state.get("redirect_uri") or "")
             workspace_id_from_state = str(state.get("workspace_id") or "").strip() or None
@@ -15086,7 +15084,7 @@ class UserSpaceService:
             metadata["mock_tree"] = request.mock_tree
 
         db = await get_db()
-        now = _utc_now()
+        now = utc_now()
         existing_account = await db.usercloudoauthaccount.find_first(
             where=cast(
                 Any,
@@ -15330,7 +15328,7 @@ class UserSpaceService:
             connection_config=connection_config,
             approved_paths=request.approved_paths,
         )
-        now = _utc_now()
+        now = utc_now()
         created = await db.useruserspacemountsource.create(
             data=cast(
                 Any,
@@ -15386,7 +15384,7 @@ class UserSpaceService:
                     "oauthAccountId": next_oauth_account_id,
                     "connectionConfig": Json(encrypt_json_passwords(normalized_config, CONNECTION_CONFIG_PASSWORD_FIELDS)),
                     "approvedPaths": Json(approved_paths),
-                    "updatedAt": _utc_now(),
+                    "updatedAt": utc_now(),
                 },
             ),
             include={"oauthAccount": True},
@@ -15475,7 +15473,7 @@ class UserSpaceService:
         )
         access_user_ids = await self._normalize_mount_source_access_user_ids(request.access_user_ids)
         access_group_identifiers = self._normalize_mount_source_access_group_identifiers(request.access_group_identifiers)
-        now = _utc_now()
+        now = utc_now()
         data: dict[str, Any] = {
             "id": str(uuid4()),
             "name": self._normalize_mount_source_name(request.name),
@@ -15596,7 +15594,7 @@ class UserSpaceService:
             "approvedPaths": Json(normalized_approved_paths),
             "accessUserIds": Json(next_access_user_ids),
             "accessGroupIdentifiers": Json(next_access_group_identifiers),
-            "updatedAt": _utc_now(),
+            "updatedAt": utc_now(),
         }
         if next_sync_interval is not None:
             update_data["syncIntervalSeconds"] = max(1, min(2592000, next_sync_interval))
@@ -15622,7 +15620,7 @@ class UserSpaceService:
             # mounts so the watch loop no longer schedules new syncs.
             await db.workspacemount.update_many(
                 where={"mountSourceId": mount_source_id, "autoSyncEnabled": True},
-                data={"autoSyncEnabled": False, "updatedAt": _utc_now()},
+                data={"autoSyncEnabled": False, "updatedAt": utc_now()},
             )
             # Evict any in-flight watch entries so the background loop
             # immediately stops tracking these mounts.
@@ -15647,7 +15645,7 @@ class UserSpaceService:
     ) -> None:
         mount_id = str(getattr(mount_row, "id", "") or "")
         workspace_id = str(getattr(mount_row, "workspaceId", "") or "")
-        now = _utc_now()
+        now = utc_now()
 
         await db.workspacemount.update(
             where={"id": mount_id},
@@ -16119,7 +16117,7 @@ class UserSpaceService:
             auto_sync_enabled=bool(request.auto_sync_enabled),
         )
 
-        now = _utc_now()
+        now = utc_now()
         initial_sync_status = "synced" if mount_source.source_type in {"filesystem", "microsoft_drive", "google_drive"} else "pending"
         initial_sync_backend: str | None = None
         initial_sync_notice: str | None = None
@@ -16220,7 +16218,7 @@ class UserSpaceService:
             )
         )
 
-        update_data: dict[str, Any] = {"updatedAt": _utc_now()}
+        update_data: dict[str, Any] = {"updatedAt": utc_now()}
         if request.target_path is not None:
             update_data["targetPath"] = self._validate_mount_target_path(request.target_path)
         if request.description is not None:
@@ -16403,7 +16401,7 @@ class UserSpaceService:
 
         await self._enforce_workspace_mount_edit_access(existing, user_id)
 
-        now = _utc_now()
+        now = utc_now()
         target_path = str(getattr(existing, "targetPath", "") or "")
         await db.workspacemount.delete(where={"id": mount_id})
         await db.workspace.update(where={"id": workspace_id}, data={"updatedAt": now})
@@ -16548,7 +16546,7 @@ class UserSpaceService:
             sync_progress_files_done=0,
             sync_progress_files_total=None,
             sync_progress_message="Queued for sync",
-            sync_started_at=_utc_now(),
+            sync_started_at=utc_now(),
             last_sync_error=None,
         )
 
@@ -17296,7 +17294,7 @@ class UserSpaceService:
                         UserSpaceFileInfo(
                             path=prefix,
                             size_bytes=0,
-                            updated_at=_utc_now(),
+                            updated_at=utc_now(),
                             entry_type="directory",
                         )
                     )
@@ -17629,7 +17627,7 @@ class UserSpaceService:
         can_delete: bool = False,
     ) -> UserSpaceSnapshot:
         created_at_raw = row.get("created_at")
-        created_at = _coerce_utc_datetime(created_at_raw)
+        created_at = coerce_utc_datetime(created_at_raw)
         branch_id = str(row.get("branch_id") or "")
         snapshot_id = str(row.get("id") or "")
         return UserSpaceSnapshot(
@@ -17824,7 +17822,7 @@ class UserSpaceService:
                     base_snapshot_id=(str(row.get("base_snapshot_id")) if row.get("base_snapshot_id") else None),
                     branched_from_snapshot_id=(str(row.get("branched_from_snapshot_id")) if row.get("branched_from_snapshot_id") else None),
                     is_active=bool(row.get("is_active")),
-                    created_at=_coerce_utc_datetime(row.get("created_at")),
+                    created_at=coerce_utc_datetime(row.get("created_at")),
                 )
             )
 
@@ -18028,7 +18026,7 @@ class UserSpaceService:
             git_commit_hash=commit_hash,
             remote_commit_hash=(str(row.get("remote_commit_hash")) if row.get("remote_commit_hash") else None),
             message=(str(row.get("message")) if row.get("message") is not None else None),
-            created_at=_coerce_utc_datetime(row.get("created_at")),
+            created_at=coerce_utc_datetime(row.get("created_at")),
             file_count=int(row.get("file_count") or 0),
         )
 

@@ -9,7 +9,7 @@ import base64
 import hashlib
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional, Tuple, cast
 from urllib.parse import urlparse
 
@@ -109,7 +109,7 @@ class RedirectUriValidationResult:
 
 def _usage_window_start(days: int) -> datetime:
     """Return the UTC start-of-day for an inclusive N-day usage window."""
-    today_utc = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     return today_utc - timedelta(days=days - 1)
 
 
