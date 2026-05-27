@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import tempfile
 import unittest
@@ -15,6 +16,30 @@ class SandboxProvisioningTests(unittest.TestCase):
     def tearDown(self) -> None:
         sandbox._capabilities_cache.clear()
 
+    def _pivot_root_spec(self, files: Path, rootfs: Path) -> sandbox.SandboxSpec:
+        return sandbox.SandboxSpec(
+            workspace_id="workspace-1",
+            workspace_files_path=files,
+            rootfs_path=rootfs,
+            mode="pivot_root",
+        )
+
+    def _pivot_root_caps(self) -> sandbox.SandboxCapabilities:
+        return sandbox.SandboxCapabilities(
+            has_cap_sys_admin=True,
+            can_pivot_root=True,
+            can_mount=True,
+            mode="pivot_root",
+        )
+
+    def _chroot_caps_no_mount(self) -> sandbox.SandboxCapabilities:
+        return sandbox.SandboxCapabilities(
+            has_cap_sys_admin=False,
+            can_user_ns=False,
+            can_mount=False,
+            mode="chroot",
+        )
+
     def test_provision_rootfs_skips_workspace_copy_when_bind_mount_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -22,18 +47,8 @@ class SandboxProvisioningTests(unittest.TestCase):
             rootfs = tmp / "rootfs"
             files.mkdir()
             (files / "app.py").write_text("print('hello')\n", encoding="utf-8")
-            spec = sandbox.SandboxSpec(
-                workspace_id="workspace-1",
-                workspace_files_path=files,
-                rootfs_path=rootfs,
-                mode="pivot_root",
-            )
-            caps = sandbox.SandboxCapabilities(
-                has_cap_sys_admin=True,
-                can_pivot_root=True,
-                can_mount=True,
-                mode="pivot_root",
-            )
+            spec = self._pivot_root_spec(files, rootfs)
+            caps = self._pivot_root_caps()
 
             with (
                 mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
@@ -77,18 +92,8 @@ class SandboxProvisioningTests(unittest.TestCase):
                 path = legacy_workspace / relative_path
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(f"{relative_path}\n", encoding="utf-8")
-            spec = sandbox.SandboxSpec(
-                workspace_id="workspace-1",
-                workspace_files_path=files,
-                rootfs_path=rootfs,
-                mode="pivot_root",
-            )
-            caps = sandbox.SandboxCapabilities(
-                has_cap_sys_admin=True,
-                can_pivot_root=True,
-                can_mount=True,
-                mode="pivot_root",
-            )
+            spec = self._pivot_root_spec(files, rootfs)
+            caps = self._pivot_root_caps()
 
             with (
                 mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
@@ -109,6 +114,100 @@ class SandboxProvisioningTests(unittest.TestCase):
             self.assertEqual(list((rootfs / "workspace").iterdir()), [])
             copytree.assert_not_called()
 
+    def test_provision_rootfs_prefers_legacy_workspace_over_newer_canonical_on_mode_transition(self) -> None:
+        """Regression: a chroot->pivot_root capability flip must not lose data.
+
+        Reproduces the production failure where ``rootfs/workspace`` held
+        the authoritative chroot-era SQLite database but the canonical
+        ``files/`` copy had been touched by the new pivot_root-mode session
+        moments earlier.  Under the previous mtime-based reconcile the
+        newer canonical bytes won and the legacy data was silently archived.
+        The current source-wins reconcile must restore the legacy bytes.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            legacy_workspace = rootfs / "workspace"
+            files.mkdir()
+            legacy_db = legacy_workspace / ".ragtime" / "db" / "app.sqlite3"
+            legacy_db.parent.mkdir(parents=True)
+            legacy_db.write_bytes(b"legacy-chroot-era-rich-data")
+            os.utime(legacy_db, (1000, 1000))
+            canonical_db = files / ".ragtime" / "db" / "app.sqlite3"
+            canonical_db.parent.mkdir(parents=True)
+            canonical_db.write_bytes(b"new-but-empty")
+            os.utime(canonical_db, (5000, 5000))
+            spec = self._pivot_root_spec(files, rootfs)
+            caps = self._pivot_root_caps()
+
+            with (
+                mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+                mock.patch.object(sandbox, "_provision_etc"),
+                mock.patch.object(sandbox, "_provision_dev"),
+                mock.patch.object(sandbox.shutil, "copytree"),
+            ):
+                sandbox.provision_rootfs(spec)
+
+            self.assertEqual(canonical_db.read_bytes(), b"legacy-chroot-era-rich-data")
+            archives = list((tmp / sandbox._WORKSPACE_LEGACY_RECOVERY_DIR).glob("chroot-workspace-*"))
+            self.assertEqual(len(archives), 1)
+            self.assertEqual(
+                (archives[0] / ".ragtime" / "db" / "app.sqlite3").read_bytes(),
+                b"legacy-chroot-era-rich-data",
+            )
+
+    def test_provision_rootfs_writes_sandbox_layout_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            files.mkdir()
+            spec = self._pivot_root_spec(files, rootfs)
+            caps = self._pivot_root_caps()
+
+            with (
+                mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+                mock.patch.object(sandbox, "_provision_etc"),
+                mock.patch.object(sandbox, "_provision_dev"),
+                mock.patch.object(sandbox.shutil, "copytree"),
+            ):
+                sandbox.provision_rootfs(spec)
+
+            marker_path = tmp / sandbox._SANDBOX_LAYOUT_MARKER_FILENAME
+            self.assertTrue(marker_path.is_file())
+            payload = json.loads(marker_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["mode"], "pivot_root")
+            self.assertTrue(payload["can_mount"])
+            self.assertEqual(payload["version"], sandbox._SANDBOX_LAYOUT_MARKER_VERSION)
+
+    def test_provision_rootfs_logs_layout_transition_when_mode_flips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            files.mkdir()
+            (tmp / sandbox._SANDBOX_LAYOUT_MARKER_FILENAME).write_text(
+                '{"version": 1, "mode": "chroot", "can_mount": false, "updated_at": "2026-05-27T18:00:00Z"}',
+                encoding="utf-8",
+            )
+            spec = self._pivot_root_spec(files, rootfs)
+            caps = self._pivot_root_caps()
+
+            with (
+                mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+                mock.patch.object(sandbox, "_provision_etc"),
+                mock.patch.object(sandbox, "_provision_dev"),
+                mock.patch.object(sandbox.shutil, "copytree"),
+                self.assertLogs(sandbox.logger, level="INFO") as captured,
+            ):
+                sandbox.provision_rootfs(spec)
+
+            self.assertTrue(
+                any("chroot -> pivot_root" in msg for msg in captured.output),
+                msg=f"Expected transition log entry; got {captured.output!r}",
+            )
+
     def test_provision_rootfs_mirrors_workspace_for_no_mount_chroot(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -122,12 +221,7 @@ class SandboxProvisioningTests(unittest.TestCase):
                 rootfs_path=rootfs,
                 mode="chroot",
             )
-            caps = sandbox.SandboxCapabilities(
-                has_cap_sys_admin=False,
-                can_user_ns=False,
-                can_mount=False,
-                mode="chroot",
-            )
+            caps = self._chroot_caps_no_mount()
 
             with (
                 mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
@@ -170,12 +264,7 @@ class SandboxProvisioningTests(unittest.TestCase):
                 rootfs_path=rootfs,
                 mode="chroot",
             )
-            caps = sandbox.SandboxCapabilities(
-                has_cap_sys_admin=False,
-                can_user_ns=False,
-                can_mount=False,
-                mode="chroot",
-            )
+            caps = self._chroot_caps_no_mount()
 
             with mock.patch.object(sandbox, "detect_capabilities", return_value=caps):
                 sandbox.cleanup_sandbox(spec)
