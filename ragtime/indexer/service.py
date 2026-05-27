@@ -1749,6 +1749,7 @@ class IndexerService:
         except Exception as e:
             job.status = IndexStatus.FAILED
             job.error_message = str(e)
+            job.completed_at = datetime.utcnow()
             await repository.update_job(job)
             self._active_jobs.pop(job_id, None)
             self._processing_tasks.pop(job_id, None)
@@ -1904,6 +1905,7 @@ class IndexerService:
                 logger.exception(f"Failed to process upload for job {job.id}")
                 job.status = IndexStatus.FAILED
                 job.error_message = str(e) or repr(e)
+                job.completed_at = datetime.utcnow()
                 # Clean up optimistic metadata for failed new indexes
                 await self._cleanup_failed_index_metadata(job.name)
 
@@ -2017,6 +2019,7 @@ class IndexerService:
                 logger.exception(f"Failed to process git for job {job.id}")
                 job.status = IndexStatus.FAILED
                 job.error_message = str(e) or repr(e)
+                job.completed_at = datetime.utcnow()
                 # Clean up optimistic metadata for failed new indexes
                 await self._cleanup_failed_index_metadata(job.name)
 

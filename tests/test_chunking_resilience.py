@@ -100,6 +100,42 @@ function Example(props: Props) {
         self.assertEqual(chunks[0][1]["chunker"], "whole_document_pool_fallback")
         self.assertEqual(counts["whole_document_pool_fallback"], 1)
 
+    def test_rechunk_oversized_content_uses_legacy_recursive_chunker_signature(self) -> None:
+        class LegacyRecursiveChunker:
+            def __init__(self, tokenizer_or_token_counter, chunk_size, min_characters_per_chunk):
+                self.tokenizer_or_token_counter = tokenizer_or_token_counter
+                self.chunk_size = chunk_size
+                self.min_characters_per_chunk = min_characters_per_chunk
+
+            def chunk(self, content):
+                return [mock.Mock(text=content[: self.chunk_size]), mock.Mock(text=content[self.chunk_size :])]
+
+        class LegacyOverlapRefinery:
+            def __init__(self, tokenizer_or_token_counter, context_size, mode, method, merge, inplace):
+                self.tokenizer_or_token_counter = tokenizer_or_token_counter
+                self.context_size = context_size
+                self.mode = mode
+                self.method = method
+                self.merge = merge
+                self.inplace = inplace
+
+            def refine(self, chunks):
+                return chunks
+
+        with (
+            mock.patch.object(chunking, "RecursiveChunker", LegacyRecursiveChunker),
+            mock.patch.object(chunking, "OverlapRefinery", LegacyOverlapRefinery),
+        ):
+            docs = chunking.rechunk_oversized_content(
+                "alpha beta gamma delta",
+                safe_token_limit=3,
+                chunk_overlap=1,
+                metadata={"source": "oversized.txt"},
+            )
+
+        self.assertEqual([doc.metadata["chunker"] for doc in docs], ["rechunk_oversized", "rechunk_oversized"])
+        self.assertEqual([doc.metadata["source"] for doc in docs], ["oversized.txt", "oversized.txt"])
+
 
 if __name__ == "__main__":
     unittest.main()

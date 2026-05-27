@@ -55,6 +55,11 @@ type UnifiedJob = {
 };
 
 const RECENT_LIMIT = 5;
+const TERMINAL_JOB_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+
+function isTerminalJobStatus(status: string): boolean {
+  return TERMINAL_JOB_STATUSES.has(status);
+}
 
 /**
  * Get a human-readable status message for a processing job
@@ -358,7 +363,11 @@ function getElapsedDuration(job: UnifiedJob, nowMs: number): string {
     return '-';
   }
 
-  const endMs = job.completedAt ? new Date(job.completedAt).getTime() : nowMs;
+  const endMs = job.completedAt
+    ? new Date(job.completedAt).getTime()
+    : isTerminalJobStatus(job.status)
+      ? startMs
+      : nowMs;
   if (Number.isNaN(endMs)) {
     return '-';
   }

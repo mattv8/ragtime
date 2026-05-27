@@ -944,7 +944,7 @@ def rechunk_oversized_content(
 
     # Use tiktoken for accurate token counting
     chunker = RecursiveChunker(
-        tokenizer=TIKTOKEN_ENCODING,
+        TIKTOKEN_ENCODING,
         chunk_size=effective_chunk_size,
         min_characters_per_chunk=20,
     )
@@ -954,7 +954,7 @@ def rechunk_oversized_content(
     # Apply overlap to add context from adjacent chunks
     if chunk_overlap > 0 and len(chunks) > 1:
         refinery = OverlapRefinery(
-            tokenizer=TIKTOKEN_ENCODING,
+            TIKTOKEN_ENCODING,
             context_size=chunk_overlap,
             mode="recursive",  # Use delimiter-aware overlap
             method="suffix",  # Add context from previous chunk

@@ -140,6 +140,42 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(order[-2:], ["hot-load", "update:completed"])
 
+    async def test_failed_git_job_sets_completed_at(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = IndexerService(index_base_path=directory)
+
+            job = SimpleNamespace(
+                id="job-1",
+                name="failed-index",
+                status=IndexStatus.PENDING,
+                started_at=None,
+                completed_at=None,
+                error_message=None,
+                git_url="https://example.com/repo.git",
+                git_branch="main",
+                git_token=None,
+            )
+
+            async def update_job(current_job):
+                return current_job
+
+            with (
+                patch(
+                    "ragtime.indexer.service.repository.update_job",
+                    new=update_job,
+                ),
+                patch.object(service, "_clone_git_repo", new=AsyncMock()),
+                patch.object(service, "_create_faiss_index", new=AsyncMock(side_effect=RuntimeError("boom"))),
+                patch.object(service, "_cleanup_failed_index_metadata", new=AsyncMock()),
+                patch.object(service, "_maybe_reinitialize_rag", new=AsyncMock()),
+                patch("ragtime.indexer.service.shutdown_process_pool"),
+            ):
+                await service._process_git(cast(Any, job))
+
+            self.assertEqual(job.status, IndexStatus.FAILED)
+            self.assertEqual(job.error_message, "boom")
+            self.assertIsNotNone(job.completed_at)
+
 
 if __name__ == "__main__":
     unittest.main()
