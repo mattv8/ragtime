@@ -111,6 +111,34 @@ class SandboxProvisioningTests(unittest.TestCase):
             provision.assert_called_once_with(spec)
             sync.assert_called_once_with(spec)
 
+    def test_pivot_root_unshare_flags_skip_user_namespace_with_sys_admin(self) -> None:
+        caps = sandbox.SandboxCapabilities(
+            has_cap_sys_admin=True,
+            can_pivot_root=True,
+            can_user_ns=True,
+            can_mount=True,
+            mode="pivot_root",
+        )
+
+        flags = sandbox._pivot_root_unshare_flags(caps)
+
+        self.assertTrue(flags & sandbox.CLONE_NEWNS)
+        self.assertTrue(flags & sandbox.CLONE_NEWPID)
+        self.assertFalse(flags & sandbox.CLONE_NEWUSER)
+
+    def test_pivot_root_unshare_flags_include_user_namespace_without_sys_admin(self) -> None:
+        caps = sandbox.SandboxCapabilities(
+            has_cap_sys_admin=False,
+            can_pivot_root=False,
+            can_user_ns=True,
+            can_mount=False,
+            mode="pivot_root",
+        )
+
+        flags = sandbox._pivot_root_unshare_flags(caps)
+
+        self.assertTrue(flags & sandbox.CLONE_NEWUSER)
+
     def test_materialize_mounts_live_binds_filesystem_source_when_mount_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

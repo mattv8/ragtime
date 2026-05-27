@@ -186,6 +186,13 @@ def detect_capabilities() -> SandboxCapabilities:
     return caps
 
 
+def _pivot_root_unshare_flags(caps: SandboxCapabilities) -> int:
+    flags = CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID
+    if caps.can_user_ns and not caps.has_cap_sys_admin:
+        flags |= CLONE_NEWUSER
+    return flags
+
+
 def _rootfs_provision_lock(rootfs_path: Path) -> threading.Lock:
     key = str(rootfs_path)
     with _rootfs_provision_locks_guard:
@@ -717,6 +724,122 @@ def _setup_user_namespace_mappings() -> None:
 # ---------------------------------------------------------------------------
 
 
+_UNSHARE_FLAG_NAMES: tuple[tuple[int, str], ...] = (
+    (CLONE_NEWNS, "CLONE_NEWNS"),
+    (CLONE_NEWUTS, "CLONE_NEWUTS"),
+    (CLONE_NEWIPC, "CLONE_NEWIPC"),
+    (CLONE_NEWPID, "CLONE_NEWPID"),
+    (CLONE_NEWUSER, "CLONE_NEWUSER"),
+)
+
+
+def _probe_unshare(flags: int, label: str) -> str:
+    """Fork, attempt unshare(flags) in the child, return a result string."""
+    import errno as _errno
+
+    try:
+        r, w = os.pipe()
+        pid = os.fork()
+    except OSError as exc:
+        return f"{label} fork_failed={exc}"
+    if pid == 0:
+        os.close(r)
+        ctypes.set_errno(0)
+        ret = _libc.unshare(flags)
+        err = ctypes.get_errno()
+        if ret == 0:
+            payload = f"{label} 0x{flags:x} OK"
+        else:
+            pn = _errno.errorcode.get(err, str(err))
+            payload = f"{label} 0x{flags:x} FAIL errno={pn} ({err}) {os.strerror(err)}"
+        try:
+            os.write(w, payload.encode())
+        except OSError:
+            pass
+        os._exit(0)
+    os.close(w)
+    try:
+        data = os.read(r, 4096).decode(errors="replace")
+    except OSError:
+        data = f"{label} read_failed"
+    os.close(r)
+    try:
+        os.waitpid(pid, 0)
+    except OSError:
+        pass
+    return data
+
+
+def _persist_diagnostic(lines: list[str]) -> None:
+    try:
+        debug_path = os.environ.get("RUNTIME_SANDBOX_DEBUG_LOG", "/tmp/sandbox-unshare-debug.log")
+        with open(debug_path, "a", encoding="utf-8") as fh:
+            fh.write(f"--- {time.time():.3f} pid={os.getpid()} ---\n")
+            for line in lines:
+                fh.write(line + "\n")
+            fh.write("\n")
+    except OSError:
+        pass
+
+
+def _probe_unshare_combinations(unshare_flags: int, caps: SandboxCapabilities) -> None:
+    """Startup-time probe: log result of unshare with and without
+    CLONE_NEWUSER (and each flag individually) so we can identify which
+    flag the kernel/security profile is rejecting. Runs in forked
+    children so it does not perturb the real preexec process.
+    """
+    lines: list[str] = []
+
+    def _emit(msg: str) -> None:
+        lines.append(msg)
+        logger.error("%s", msg)
+
+    _emit(
+        "unshare probe header: requested=0x%x pid=%d ppid=%d euid=%d egid=%d "
+        "has_cap_sys_admin=%s can_user_ns=%s can_mount=%s"
+        % (
+            unshare_flags,
+            os.getpid(),
+            os.getppid(),
+            os.geteuid(),
+            os.getegid(),
+            caps.has_cap_sys_admin,
+            caps.can_user_ns,
+            caps.can_mount,
+        )
+    )
+
+    # Original combo (the suspected-buggy set: includes CLONE_NEWUSER)
+    original_combo = unshare_flags | CLONE_NEWUSER
+    _emit("probe: " + _probe_unshare(original_combo, "WITH_NEWUSER"))
+
+    # Fixed combo (current production candidate, no CLONE_NEWUSER)
+    fixed_combo = unshare_flags & ~CLONE_NEWUSER
+    if fixed_combo != original_combo:
+        _emit("probe: " + _probe_unshare(fixed_combo, "WITHOUT_NEWUSER"))
+
+    # Individual flag isolation
+    for bit, name in _UNSHARE_FLAG_NAMES:
+        _emit("probe: " + _probe_unshare(bit, f"SOLO_{name}"))
+
+    _persist_diagnostic(lines)
+
+
+def _diagnose_unshare_failure(
+    unshare_flags: int,
+    err: int,
+    caps: SandboxCapabilities,
+) -> None:
+    """Called only when the real unshare in the preexec child fails."""
+    import errno as _errno
+
+    requested = [name for bit, name in _UNSHARE_FLAG_NAMES if unshare_flags & bit]
+    errno_name = _errno.errorcode.get(err, str(err))
+    msg = "unshare diagnostic: real_call_failed flags=0x%x [%s] errno=%s (%d) %s" % (unshare_flags, ",".join(requested), errno_name, err, os.strerror(err))
+    logger.error("%s", msg)
+    _persist_diagnostic([msg])
+
+
 def _sandbox_preexec(spec: SandboxSpec, caps: SandboxCapabilities, target_cwd: str | None = None) -> None:
     """Configure the sandbox inside the forked child, before exec.
 
@@ -727,18 +850,22 @@ def _sandbox_preexec(spec: SandboxSpec, caps: SandboxCapabilities, target_cwd: s
     try:
         if caps.mode == "pivot_root":
             # Full namespace isolation + pivot_root
-            unshare_flags = CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID
-            if caps.can_user_ns:
-                unshare_flags |= CLONE_NEWUSER
+            unshare_flags = _pivot_root_unshare_flags(caps)
             # NET namespace - only if we have full caps (network isolation)
             if caps.has_cap_sys_admin:
                 # Don't isolate network - devserver needs localhost access
                 pass
 
+            # DIAGNOSTIC (temporary): probe both flag combinations in
+            # forked children so we can compare with vs without
+            # CLONE_NEWUSER without affecting the real preexec process.
+            _probe_unshare_combinations(unshare_flags, caps)
+
             ret = _libc.unshare(unshare_flags)
             if ret != 0:
                 err = ctypes.get_errno()
                 logger.error("unshare() failed: %s", os.strerror(err))
+                _diagnose_unshare_failure(unshare_flags, err, caps)
                 os._exit(126)
 
             if caps.can_user_ns and (unshare_flags & CLONE_NEWUSER):
