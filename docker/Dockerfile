@@ -102,6 +102,7 @@ RUN ln -s /opt/venv /ragtime/.venv
 COPY pyproject.toml /ragtime/pyproject.toml
 COPY .jscpd.json /ragtime/.jscpd.json
 COPY docker/Dockerfile /ragtime/docker/Dockerfile
+COPY docker/entrypoint.sh /ragtime/docker/entrypoint.sh
 COPY docker/scripts/ /ragtime/docker/scripts/
 COPY prisma/ /ragtime/prisma/
 COPY typings/ /ragtime/typings/

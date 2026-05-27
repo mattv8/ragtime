@@ -917,7 +917,8 @@ def _syscall_mount(
     ret = _libc.mount(src, tgt, fs, flags, d)
     if ret != 0:
         err = ctypes.get_errno()
-        raise OSError(err, f"mount({source}, {target}, {fstype}, {flags:#x}): {os.strerror(err)}")
+        errno_name = errno.errorcode.get(err, str(err))
+        raise OSError(err, f"mount({source}, {target}, {fstype}, {flags}): {errno_name} {os.strerror(err)}")
     return ret
 
 
@@ -1218,8 +1219,6 @@ _UNSHARE_FLAG_NAMES: tuple[tuple[int, str], ...] = (
 
 def _probe_unshare(flags: int, label: str) -> str:
     """Fork, attempt unshare(flags) in the child, return a result string."""
-    import errno as _errno
-
     try:
         r, w = os.pipe()
         pid = os.fork()
@@ -1233,7 +1232,7 @@ def _probe_unshare(flags: int, label: str) -> str:
         if ret == 0:
             payload = f"{label} 0x{flags:x} OK"
         else:
-            pn = _errno.errorcode.get(err, str(err))
+            pn = errno.errorcode.get(err, str(err))
             payload = f"{label} 0x{flags:x} FAIL errno={pn} ({err}) {os.strerror(err)}"
         try:
             os.write(w, payload.encode())
@@ -1314,10 +1313,8 @@ def _diagnose_unshare_failure(
     caps: SandboxCapabilities,
 ) -> None:
     """Called only when the real unshare in the preexec child fails."""
-    import errno as _errno
-
     requested = [name for bit, name in _UNSHARE_FLAG_NAMES if unshare_flags & bit]
-    errno_name = _errno.errorcode.get(err, str(err))
+    errno_name = errno.errorcode.get(err, str(err))
     msg = "unshare diagnostic: real_call_failed flags=0x%x [%s] errno=%s (%d) %s" % (unshare_flags, ",".join(requested), errno_name, err, os.strerror(err))
     logger.error("%s", msg)
     _persist_diagnostic([msg])
