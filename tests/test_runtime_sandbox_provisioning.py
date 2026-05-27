@@ -744,6 +744,31 @@ class SandboxProvisioningTests(unittest.TestCase):
             self.assertFalse((rootfs_workspace / "package-lock.json").exists())
             self.assertTrue((rootfs_workspace / "package.json").exists())
 
+    def test_devserver_error_compaction_preserves_missing_package(self) -> None:
+        log = (
+            "node:internal/modules/esm/resolve:873\n"
+            "  throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);\n"
+            "        ^\n\n"
+            "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'better-sqlite3' imported from "
+            "/workspace/server/dev_server.mjs\n"
+            "    at packageResolve (node:internal/modules/esm/resolve:873:9)\n"
+            "    at moduleResolve (node:internal/modules/esm/resolve:946:18)\n"
+            "    at defaultResolve (node:internal/modules/esm/resolve:1188:11)\n"
+            "    at ModuleLoader.defaultResolve (node:internal/modules/esm/loader:642:12)\n"
+            "    at #cachedDefaultResolve (node:internal/modules/esm/loader:591:25)\n"
+            "    at ModuleLoader.resolve (node:internal/modules/esm/loader:574:38)\n"
+            "    at ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:236:38)\n"
+            "    at ModuleJob._link (node:internal/modules/esm/module_job:130:49) {\n"
+            "  code: 'ERR_MODULE_NOT_FOUND'\n"
+            "}\n\n"
+            "Node.js v20.19.2\n"
+        )
+
+        compact = WorkerService._compact_devserver_log_for_error(log)
+
+        self.assertIn("Cannot find package 'better-sqlite3'", compact)
+        self.assertLessEqual(len(compact), 400)
+
     @staticmethod
     def _worker_session(session_id: str, spec: sandbox.SandboxSpec, files: Path, rootfs: Path):
         from runtime.worker.service import WorkerSession

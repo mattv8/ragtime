@@ -143,6 +143,16 @@ _FRAMEWORK_PIP_PACKAGES: dict[str, list[str]] = {
 
 _RUNTIME_DEVSERVER_LOG_DIR = "/tmp/ragtime-runtime-devserver"
 _RUNTIME_DEVSERVER_LOG_TAIL_CHARS = 400
+# When the devserver log overflows the tail budget the bare tail often drops
+# the most actionable line (e.g. ``Cannot find package 'foo'``). Patterns
+# matched here are hoisted in front of the tail so that signal survives.
+_DEVSERVER_ERROR_SUMMARY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"Error \[ERR_MODULE_NOT_FOUND\]: "
+        r"(?P<detail>Cannot find (?:package|module) '[^']+' imported from \S+)"
+    ),
+    re.compile(r"(?P<detail>ModuleNotFoundError: No module named '[^']+')"),
+)
 MAX_USERSPACE_SCREENSHOT_WIDTH = 1600
 MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
 MAX_USERSPACE_SCREENSHOT_PIXELS = 1_440_000
@@ -1357,6 +1367,33 @@ class WorkerService:
         log_dir.mkdir(parents=True, exist_ok=True)
         return log_dir / f"{session_id}.log"
 
+    @staticmethod
+    def _normalize_log_text(text: str) -> str:
+        """Strip null bytes (rejected by PG TEXT) and collapse whitespace."""
+        return " ".join(text.replace("\x00", "").split())
+
+    @staticmethod
+    def _compact_devserver_log_for_error(content: str) -> str:
+        compact = WorkerService._normalize_log_text(content)
+        tail_chars = _RUNTIME_DEVSERVER_LOG_TAIL_CHARS
+        if len(compact) <= tail_chars:
+            return compact
+
+        tail = compact[-tail_chars:]
+        for pattern in _DEVSERVER_ERROR_SUMMARY_PATTERNS:
+            match = pattern.search(compact)
+            if not match:
+                continue
+            summary = match.group("detail").strip()
+            if not summary or summary in tail:
+                return tail
+            separator = " ... "
+            tail_budget = tail_chars - len(summary) - len(separator)
+            if tail_budget <= 0:
+                return summary[:tail_chars]
+            return f"{summary}{separator}{tail[-tail_budget:]}"
+        return tail
+
     def _read_devserver_log_tail(self, session_id: str) -> str:
         log_path = self._devserver_log_paths.get(session_id)
         if not log_path:
@@ -1365,20 +1402,14 @@ class WorkerService:
             if not log_path.exists() or not log_path.is_file():
                 return ""
             content = log_path.read_text(encoding="utf-8", errors="replace").strip()
-            # PostgreSQL text columns reject null bytes (0x00)
-            content = content.replace("\x00", "")
         except Exception:
             return ""
         if not content:
             return ""
-        compact = " ".join(content.split())
-        if len(compact) > _RUNTIME_DEVSERVER_LOG_TAIL_CHARS:
-            return compact[-_RUNTIME_DEVSERVER_LOG_TAIL_CHARS:]
-        return compact
+        return self._compact_devserver_log_for_error(content)
 
     def _playwright_broker_error_tail(self, slot: PlaywrightBrokerSlot) -> str:
-        compact = " ".join(line.replace("\x00", "").strip() for line in slot.stderr_lines if line and line.strip())
-        compact = " ".join(compact.split())
+        compact = self._normalize_log_text(" ".join(line for line in slot.stderr_lines if line and line.strip()))
         if len(compact) > _RUNTIME_DEVSERVER_LOG_TAIL_CHARS:
             return compact[-_RUNTIME_DEVSERVER_LOG_TAIL_CHARS:]
         return compact
