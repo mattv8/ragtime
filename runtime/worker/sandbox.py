@@ -29,6 +29,7 @@ import ctypes
 import ctypes.util
 import errno
 import filecmp
+import json
 import logging
 import os
 import posixpath
@@ -113,6 +114,16 @@ SANDBOX_WORKSPACE_MOUNT = "/workspace"
 # Path inside sandbox where /proc is mounted
 SANDBOX_PROC_MOUNT = "/proc"
 _WORKSPACE_LEGACY_RECOVERY_DIR = "_legacy_workspace_recoveries"
+# Marker file recording the sandbox layout the workspace was last provisioned
+# with.  Lives at the workspace root (sibling of ``files/`` and ``rootfs/``)
+# so it survives both kinds of layout migration.  This gives bootstrap-time
+# code a single, queryable source of truth for the previous-vs-current
+# sandbox mode, which is what we use to detect host-level capability flips
+# (for example, the operator toggling ``cap_add: [SYS_ADMIN]`` or
+# ``privileged: true`` in compose) and react to them rather than relying on
+# mtime heuristics across two co-existing copies of the workspace tree.
+_SANDBOX_LAYOUT_MARKER_FILENAME = "_ragtime_sandbox_layout.json"
+_SANDBOX_LAYOUT_MARKER_VERSION = 1
 # Indexing/search exclusions used when mirroring or scanning a workspace for
 # discovery; intentionally broad to keep search indexes lean.
 _WORKSPACE_SYNC_SKIP_DIRS = DEFAULT_EXCLUDE_DIR_NAMES
@@ -453,6 +464,65 @@ def _chroot_system_sync_required(spec: SandboxSpec, caps: SandboxCapabilities) -
     return spec.mode == "chroot" and caps.mode == "chroot" and not caps.can_mount
 
 
+def _sandbox_layout_marker_path(spec: SandboxSpec) -> Path:
+    return spec.rootfs_path.parent / _SANDBOX_LAYOUT_MARKER_FILENAME
+
+
+def _read_sandbox_layout_marker(spec: SandboxSpec) -> dict[str, Any] | None:
+    """Return the recorded layout marker for ``spec`` or None if absent/invalid.
+
+    The marker is the single source of truth for the sandbox mode this
+    workspace was last provisioned with.  It allows future bootstrap
+    changes to detect cross-mode transitions (for example, the operator
+    flipping CAP_SYS_ADMIN / ``privileged: true`` in compose) without
+    relying on heuristics over the on-disk workspace tree.
+    """
+    path = _sandbox_layout_marker_path(spec)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "Ignoring unreadable sandbox layout marker for %s at %s: %s",
+            spec.workspace_id,
+            path,
+            exc,
+        )
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _write_sandbox_layout_marker(spec: SandboxSpec, caps: SandboxCapabilities) -> None:
+    """Persist the current sandbox mode for ``spec``.
+
+    Called after successful provisioning and after a successful in-mode
+    cleanup-time reconcile, so a subsequent provision can tell whether
+    the runtime's capability profile has changed since the last session.
+    """
+    path = _sandbox_layout_marker_path(spec)
+    payload = {
+        "version": _SANDBOX_LAYOUT_MARKER_VERSION,
+        "mode": caps.mode,
+        "can_mount": bool(caps.can_mount),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.warning(
+            "Failed to persist sandbox layout marker for %s at %s: %s",
+            spec.workspace_id,
+            path,
+            exc,
+        )
+
+
 def _safe_legacy_archive_path(workspace_root: Path, label: str) -> Path:
     archive_root = workspace_root / _WORKSPACE_LEGACY_RECOVERY_DIR
     archive_root.mkdir(parents=True, exist_ok=True)
@@ -480,14 +550,25 @@ def _copy_workspace_symlink(src: Path, dst: Path) -> str:
     return "copied"
 
 
-def _copy_workspace_file_if_needed(src: Path, dst: Path) -> str:
+def _copy_workspace_file_if_needed(src: Path, dst: Path, *, prefer_source: bool = False) -> str:
+    """Copy ``src`` to ``dst`` when content differs.
+
+    When ``prefer_source`` is True, the source side is treated as the
+    authoritative copy and always wins on conflict.  This is the correct
+    semantics for legacy/mode-transition reconciliation, where ``src``
+    is the previous authoritative location (e.g. ``rootfs/workspace`` from
+    a prior chroot-mode session) and ``dst`` may have been touched by a
+    fresh, half-initialized canonical bootstrap.  Comparing mtimes across
+    those two snapshots is unsafe and silently discards real data when
+    the canonical copy happens to be newer.
+    """
     src_stat = src.stat()
     if dst.exists():
         if dst.is_file():
             dst_stat = dst.stat()
             if src_stat.st_size == dst_stat.st_size and filecmp.cmp(src, dst, shallow=False):
                 return "same"
-            if src_stat.st_mtime <= dst_stat.st_mtime:
+            if not prefer_source and src_stat.st_mtime <= dst_stat.st_mtime:
                 return "preserved_canonical"
         else:
             return "preserved_canonical"
@@ -504,6 +585,7 @@ def _sync_workspace_copy_to_canonical(
     source_workspace: Path,
     *,
     skip_dirs: frozenset[str] = _WORKSPACE_SYNC_SKIP_DIRS,
+    prefer_source: bool = False,
 ) -> dict[str, int]:
     canonical = spec.workspace_files_path
     stats = {
@@ -537,7 +619,7 @@ def _sync_workspace_copy_to_canonical(
                 if src.is_symlink():
                     result = _copy_workspace_symlink(src, dst)
                 elif src.is_file():
-                    result = _copy_workspace_file_if_needed(src, dst)
+                    result = _copy_workspace_file_if_needed(src, dst, prefer_source=prefer_source)
                 else:
                     stats["skipped"] += 1
                     continue
@@ -565,10 +647,19 @@ def _reconcile_workspace_copy(spec: SandboxSpec, *, label: str) -> None:
     if not has_content:
         return
 
+    # ``source_workspace`` is the previous authoritative location for the
+    # workspace tree: either a same-mode chroot session that wrote into
+    # ``rootfs/workspace`` directly, or a prior chroot-mode session whose
+    # data is now stranded under a pivot_root-capable runtime.  In both
+    # cases the canonical ``files/`` copy may have been newly initialized
+    # by the current mode and contain only a half-baked skeleton, so a
+    # source-wins copy is the only safe policy.  See the matching
+    # explanation in ``_copy_workspace_file_if_needed``.
     stats = _sync_workspace_copy_to_canonical(
         spec,
         source_workspace,
         skip_dirs=_WORKSPACE_RECOVERY_SKIP_DIRS,
+        prefer_source=True,
     )
     archive = _safe_legacy_archive_path(spec.rootfs_path.parent, label)
     try:
@@ -621,15 +712,31 @@ def provision_rootfs(spec: SandboxSpec) -> None:
 
     # /workspace mount point (project files). Older chroot-only runtimes
     # wrote directly into this rootfs copy; reconcile it before the mount
-    # capable path shadows it with the canonical files/ bind mount.
+    # capable path shadows it with the canonical files/ bind mount.  When
+    # the workspace was last provisioned in a different sandbox mode
+    # (typically because the host's capability profile changed — for
+    # example, the operator enabled CAP_SYS_ADMIN or ``privileged: true``
+    # in compose), this reconcile is what migrates the previous
+    # authoritative copy into the new one.  The marker below records the
+    # mode we're provisioning under so the next provision can detect the
+    # transition without inspecting the workspace tree itself.
     ws_dir = rootfs / spec.sandbox_workspace.lstrip("/")
+    caps = detect_capabilities()
+    previous_marker = _read_sandbox_layout_marker(spec)
+    previous_mode = (previous_marker or {}).get("mode") if previous_marker else None
+    if previous_mode and previous_mode != caps.mode:
+        logger.info(
+            "Sandbox layout transition for %s: %s -> %s; running workspace reconcile",
+            spec.workspace_id,
+            previous_mode,
+            caps.mode,
+        )
     _reconcile_workspace_copy(spec, label="chroot-workspace")
     _ensure_real_directory(ws_dir)
 
     # In mount-capable sandbox modes the child bind-mounts the real
     # workspace over this directory, so mirroring would only add startup I/O.
     # Chroot fallback without mounts still needs a copied workspace tree.
-    caps = detect_capabilities()
     workspace_src = spec.workspace_files_path
     if workspace_mirror_required(spec, caps) and workspace_src.is_dir():
         try:
@@ -657,6 +764,11 @@ def provision_rootfs(spec: SandboxSpec) -> None:
     # /root for root user home
     root_home = rootfs / "root"
     root_home.mkdir(parents=True, exist_ok=True)
+
+    # Record the sandbox mode used for this provision so the next session
+    # can detect a capability flip (and trigger the layout-transition
+    # reconcile above) without inspecting the workspace tree itself.
+    _write_sandbox_layout_marker(spec, caps)
 
 
 def materialize_mounts(
@@ -1738,6 +1850,9 @@ def cleanup_sandbox(spec: SandboxSpec) -> None:
     caps = detect_capabilities()
     if workspace_mirror_required(spec, caps):
         _reconcile_workspace_copy(spec, label="chroot-workspace-cleanup")
+        # Refresh the marker so a subsequent provision sees the most
+        # recently used mode even when no transition occurred.
+        _write_sandbox_layout_marker(spec, caps)
 
     _terminate_sandbox_cgroup_processes(spec, caps)
 
